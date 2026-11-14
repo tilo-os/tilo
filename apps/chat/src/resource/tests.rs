@@ -6,43 +6,6 @@ use ui::framework::testing::TestApp;
 use ui::search::SearchProvider as _;
 use ui::tilo_resource::Resource as _;
 
-/// Outside a call, a voice channel offers joining it, not its controls:
-/// search and menus must not offer turning a camera on with no call to show
-/// it in, and an agent is told why.
-fn a_calls_own_controls_are_unavailable_until_you_join_it() {
-    use ui::tilo_actions::Availability;
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    let resources = app.harness().resources();
-    let call = crate::testing::call_row("c_voice");
-    let availability = |action: &str| {
-        ui::tilo_actions::flatten(&resources)
-            .into_iter()
-            .find(|flat| flat.resource_id.as_str() == call && flat.action.id == action)
-            .map(|flat| flat.action.contract.availability.clone())
-    };
-    assert!(matches!(
-        availability("join-call"),
-        Some(Availability::Available)
-    ));
-    for id in [
-        "leave-call",
-        "mute",
-        "unmute",
-        "deafen",
-        "undeafen",
-        "camera-on",
-        "camera-off",
-        "share-screen",
-        "stop-sharing-screen",
-    ] {
-        let now = availability(id);
-        assert!(
-            matches!(&now, Some(Availability::Unavailable { code, .. }) if code == "not_in_call"),
-            "{id}: {now:?}"
-        );
-    }
-}
-
 /// The row of sidebar place `id` where the shell's list paints it.
 fn sidebar_row(app: &mut TestApp<ChatShell>, id: &str) -> vello::kurbo::Rect {
     app.with_widget::<ui::widget::NavList, _>(|list| list.row_rect(id))
@@ -449,33 +412,6 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
     assert!(messages(&mut app).is_empty());
 }
 
-fn a_new_workspace_record_opens_with_chat_and_voice_and_nothing_else() {
-    let app = TestApp::<ChatShell>::new().unwrap();
-    let state = app.state();
-    assert_eq!(state.people.len(), 1, "only its creator");
-    assert_eq!(
-        state
-            .channel_rows()
-            .iter()
-            .map(|channel| (channel.name.clone(), channel.kind))
-            .collect::<Vec<_>>(),
-        [
-            ("chat".to_owned(), crate::model::ChannelKind::Text),
-            ("voice".to_owned(), crate::model::ChannelKind::Voice),
-        ],
-        "exactly one text channel #chat and one voice channel #voice"
-    );
-    assert!(
-        state.categories.is_empty(),
-        "no categories unless someone makes one"
-    );
-    let mut app = app;
-    assert!(
-        crate::testing::mounted_messages(&mut app).is_empty(),
-        "no fabricated conversation"
-    );
-}
-
 /// The root's action `id`, as the window publishes it now.
 fn root_action(app: &mut TestApp<ChatShell>, id: &str) -> ui::tilo_actions::ActionSpec {
     fn find(
@@ -497,86 +433,135 @@ fn root_action(app: &mut TestApp<ChatShell>, id: &str) -> ui::tilo_actions::Acti
     find(&app.harness().resources(), id).unwrap_or_else(|| panic!("the Chat root publishes {id}"))
 }
 
-fn the_root_offers_call_starts_with_and_without_the_camera() {
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    for (id, label) in [
-        ("start-call", "Start a call"),
-        ("start-video-call", "Start a video call"),
-    ] {
-        let start = root_action(&mut app, id);
-        assert_eq!(start.label, label);
-        assert_eq!(start.kind, ui::tilo_actions::OperationKind::Effect);
-        assert_eq!(
-            start.contract.retry,
-            ui::tilo_actions::RetryPolicy::Idempotent
-        );
-    }
-}
+tilo_test_env::scenario! {
+    /// What a chat nobody wrote in yet holds and publishes.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_fresh_chat_publishes_its_channels_calls_and_offers;
 
-/// What the package manifest offers while Chat is closed is what the running
-/// app publishes on its root, with the same label, kind and confirmation, so
-/// launching it from the catalogue lands on a real action.
-fn the_actions_the_manifest_offers_while_closed_are_published() {
-    use tilo_app_package::manifest::{Manifest, OfferKind, OfferOperation};
-    use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
-    let manifest =
-        Manifest::from_toml_str(include_str!("../../tilo-app.toml")).expect("the manifest");
-    assert!(!manifest.offers.is_empty(), "Chat offers actions");
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    for offer in &manifest.offers {
-        assert_eq!(offer.resource, Chat::KIND, "offered on the root");
-        let action = root_action(&mut app, &offer.action);
-        assert_eq!(action.label, offer.label);
-        let kind = match offer.kind {
-            OfferKind::Read => ActionKind::Read,
-            OfferKind::Undoable => ActionKind::Undoable,
-            OfferKind::Outside => ActionKind::Outside,
+    phase a_calls_own_controls_are_unavailable_until_you_join_it;
+    // Outside a call, a voice channel offers joining it, not its controls:
+    // search and menus must not offer turning a camera on with no call to show
+    // it in, and an agent is told why.
+    {
+        use ui::tilo_actions::Availability;
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let resources = app.harness().resources();
+        let call = crate::testing::call_row("c_voice");
+        let availability = |action: &str| {
+            ui::tilo_actions::flatten(&resources)
+                .into_iter()
+                .find(|flat| flat.resource_id.as_str() == call && flat.action.id == action)
+                .map(|flat| flat.action.contract.availability.clone())
         };
-        assert_eq!(action.contract.kind, kind, "{}", offer.action);
-        let operation = match offer.operation {
-            OfferOperation::Document => OperationKind::Document,
-            OfferOperation::Effect => OperationKind::Effect,
-            OfferOperation::View => OperationKind::View,
-        };
-        assert_eq!(action.kind, operation, "{}", offer.action);
+        assert!(matches!(
+            availability("join-call"),
+            Some(Availability::Available)
+        ));
+        for id in [
+            "leave-call",
+            "mute",
+            "unmute",
+            "deafen",
+            "undeafen",
+            "camera-on",
+            "camera-off",
+            "share-screen",
+            "stop-sharing-screen",
+        ] {
+            let now = availability(id);
+            assert!(
+                matches!(&now, Some(Availability::Unavailable { code, .. }) if code == "not_in_call"),
+                "{id}: {now:?}"
+            );
+        }
+    }
+
+    phase a_new_workspace_record_opens_with_chat_and_voice_and_nothing_else;
+    {
+        let app = TestApp::<ChatShell>::new().unwrap();
+        let state = app.state();
+        assert_eq!(state.people.len(), 1, "only its creator");
         assert_eq!(
-            offer.confirm,
-            action.contract.confirmation != ConfirmationPolicy::None,
-            "{}",
-            offer.action
+            state
+                .channel_rows()
+                .iter()
+                .map(|channel| (channel.name.clone(), channel.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("chat".to_owned(), crate::model::ChannelKind::Text),
+                ("voice".to_owned(), crate::model::ChannelKind::Voice),
+            ],
+            "exactly one text channel #chat and one voice channel #voice"
         );
         assert!(
-            action.params().is_empty(),
-            "{} takes no parameters",
-            offer.action
+            state.categories.is_empty(),
+            "no categories unless someone makes one"
+        );
+        let mut app = app;
+        assert!(
+            crate::testing::mounted_messages(&mut app).is_empty(),
+            "no fabricated conversation"
         );
     }
-}
 
-/// What a chat nobody wrote in yet holds and publishes.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn a_fresh_chat_publishes_its_channels_calls_and_offers() {
-    crate::testing::cases!(
-        a_calls_own_controls_are_unavailable_until_you_join_it,
-        a_new_workspace_record_opens_with_chat_and_voice_and_nothing_else,
-        the_root_offers_call_starts_with_and_without_the_camera,
-        the_actions_the_manifest_offers_while_closed_are_published,
-    );
-}
+    phase the_root_offers_call_starts_with_and_without_the_camera;
+    {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        for (id, label) in [
+            ("start-call", "Start a call"),
+            ("start-video-call", "Start a video call"),
+        ] {
+            let start = root_action(&mut app, id);
+            assert_eq!(start.label, label);
+            assert_eq!(start.kind, ui::tilo_actions::OperationKind::Effect);
+            assert_eq!(
+                start.contract.retry,
+                ui::tilo_actions::RetryPolicy::Idempotent
+            );
+        }
+    }
 
-fn start_call_through_the_door_makes_a_voice_channel_and_joins_it() {
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    app.call("start-call", serde_json::json!({})).unwrap();
-    app.settle();
-    assert!(
-        app.state()
-            .channel_rows()
-            .iter()
-            .any(|channel| channel.kind == crate::model::ChannelKind::Voice),
-        "the starter's voice channel stands"
-    );
+    phase the_actions_the_manifest_offers_while_closed_are_published;
+    // What the package manifest offers while Chat is closed is what the running
+    // app publishes on its root, with the same label, kind and confirmation, so
+    // launching it from the catalogue lands on a real action.
+    {
+        use tilo_app_package::manifest::{Manifest, OfferKind, OfferOperation};
+        use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
+        let manifest =
+            Manifest::from_toml_str(include_str!("../../tilo-app.toml")).expect("the manifest");
+        assert!(!manifest.offers.is_empty(), "Chat offers actions");
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        for offer in &manifest.offers {
+            assert_eq!(offer.resource, Chat::KIND, "offered on the root");
+            let action = root_action(&mut app, &offer.action);
+            assert_eq!(action.label, offer.label);
+            let kind = match offer.kind {
+                OfferKind::Read => ActionKind::Read,
+                OfferKind::Undoable => ActionKind::Undoable,
+                OfferKind::Outside => ActionKind::Outside,
+            };
+            assert_eq!(action.contract.kind, kind, "{}", offer.action);
+            let operation = match offer.operation {
+                OfferOperation::Document => OperationKind::Document,
+                OfferOperation::Effect => OperationKind::Effect,
+                OfferOperation::View => OperationKind::View,
+            };
+            assert_eq!(action.kind, operation, "{}", offer.action);
+            assert_eq!(
+                offer.confirm,
+                action.contract.confirmation != ConfirmationPolicy::None,
+                "{}",
+                offer.action
+            );
+            assert!(
+                action.params().is_empty(),
+                "{} takes no parameters",
+                offer.action
+            );
+        }
+    }
 }
 
 #[test]
@@ -714,82 +699,6 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
             .collect::<Vec<_>>(),
         ["agent-task:44444444-4444-4444-8444-444444444444"],
         "the reaction is the agent's"
-    );
-}
-
-fn history_entries_render_as_the_apps_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    let agent = ActionInvoker::actor("agent-task:55555555-5555-4555-8555-555555555555")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
-    let (channel, _) = general(&app);
-    app.call_by(
-        agent.clone(),
-        &crate::testing::chain(),
-        "post",
-        serde_json::json!({"channel": "c_chat", "text": "Standup moved to 10"}),
-    )
-    .unwrap();
-    app.settle();
-    let posted_id = messages(&mut app).pop().unwrap().id;
-    let posted = crate::testing::message_item(&posted_id);
-    let react = crate::parts::ChatPart::paths()
-        .messages
-        .item(&ui::tilo_resource::Id::from_raw(&posted_id))
-        .reactions
-        .react("👍");
-    app.call_by(
-        agent.clone(),
-        &crate::testing::chain(),
-        ui::tilo_resource::FIELD_EDIT,
-        serde_json::json!({ (ui::tilo_resource::EDIT_PARAM): react }),
-    )
-    .unwrap();
-    app.call_by(
-        agent.clone(),
-        &posted,
-        "edit-message",
-        serde_json::json!({"text": "Standup moved to 10:30"}),
-    )
-    .unwrap();
-    app.call_by(
-        agent.clone(),
-        &channel,
-        "set-channel-topic",
-        serde_json::json!({"topic": "Daily notes"}),
-    )
-    .unwrap();
-    app.call_by(
-        agent.clone(),
-        Chat::KIND,
-        "create-category",
-        serde_json::json!({"name": "Offsite"}),
-    )
-    .unwrap();
-    app.call_by(
-        agent,
-        &channel,
-        "mark-read",
-        serde_json::json!({"part": 0, "seen": 1}),
-    )
-    .unwrap();
-    app.settle();
-
-    let sentences = app.sentences(app.history().iter().filter(|entry| {
-        entry.invoker.as_ref().is_some_and(|invoker| {
-            invoker.actor == "agent-task:55555555-5555-4555-8555-555555555555"
-        })
-    }));
-    assert_eq!(
-        sentences,
-        // What it did to the messages is in the history of the part that
-        // holds them; the record's history has the rest.
-        [
-            "Set the topic of #chat to Daily notes",
-            "Created the category Offsite",
-            "Marked #chat read",
-        ]
     );
 }
 
@@ -979,77 +888,6 @@ fn stopping_shared_context_wakes_the_native_presentation() {
     );
 }
 
-/// A file another step handed over posts by its content address: described
-/// from its bytes where it is posted, and refused when it is not here.
-fn a_handed_over_file_posts_as_a_file() {
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    let _ = general(&app);
-    let hash = app.content().put(b"minutes of the meeting").unwrap();
-    app.call_on(
-        &crate::testing::chain(),
-        "post-file",
-        serde_json::json!({"channel": "c_chat",
-            "content": ui::tilo_actions::content_resource(&hash),
-            "name": "minutes.txt",
-            "text": "Here are the minutes",
-        }),
-    )
-    .unwrap();
-    app.settle();
-    let posted = messages(&mut app).pop().unwrap();
-    assert_eq!(posted.text, "Here are the minutes");
-    assert_eq!(
-        posted.attachments,
-        [tilo_reference::Attached::File {
-            name: "minutes.txt".into(),
-            blob: hash,
-            size: 22,
-        }]
-    );
-    let missing = tilo_content::hash_bytes(b"never stored");
-    assert!(
-        app.call_on(
-            &crate::testing::chain(),
-            "post-file",
-            serde_json::json!({"channel": "c_chat", "content": missing, "name": "x.txt"}),
-        )
-        .is_err()
-    );
-}
-
-/// A message another replica posts (a workspace's bot bridging Discord, another
-/// member's device) shows in a window that is only being watched: its
-/// arrival in the window's store wakes the window, so the window's own
-/// frames show it, with no input and no frame forced to sync.
-fn a_message_another_replica_posts_shows_without_input() {
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    crate::testing::mounted_post(&mut app, "c_chat", "hello from here");
-    app.settle();
-    let shows = |app: &mut TestApp<ChatShell>, text: &str| {
-        app.harness()
-            .a11y_nodes()
-            .iter()
-            .any(|(_, node)| node.label().is_some_and(|label| label.contains(text)))
-    };
-    assert!(shows(&mut app, "hello from here"));
-    let text = "hello from the bridge";
-    let changed = app
-        .replica_arrives(&crate::parts::part(0), |doc| {
-            let mut bot =
-                ui::tilo_resource::Replica::<crate::parts::ChatPart>::from_doc(std::mem::take(doc))
-                    .as_author("bot");
-            bot.apply(crate::testing::post("c_chat", text, None))
-                .expect("the bot posts");
-            *doc = bot.doc().clone();
-        })
-        .unwrap();
-    assert!(changed, "the bot's post is new here");
-    for _ in 0..4 {
-        app.frame();
-    }
-    assert!(shows(&mut app, text), "the bot's post shows with no input");
-}
-
 /// The channels a narrow window shows on their own know who is in a call,
 /// though the conversation behind them is not drawn, and follow someone
 /// joining it.
@@ -1106,50 +944,208 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
-/// A past version reads through the `read` door and draws in the chat's own
-/// view with the channel as it was named then.
-fn a_past_version_reads_and_shows_its_channel() {
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    app.call(
-        "create-channel-with-id",
-        serde_json::json!({"id": "c_kumquat", "name": "kumquat-parade"}),
-    )
-    .unwrap();
-    let past = app.versions().pop().unwrap().hash;
-    app.call_on(
-        &item("channels", "c_kumquat"),
-        "rename-channel",
-        serde_json::json!({"name": "renamed-later"}),
-    )
-    .unwrap();
+tilo_test_env::scenario! {
+    /// What reaches a mounted chat through its actions and its record.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn calls_files_versions_history_and_other_replicas_reach_the_window_through_its_door;
 
-    let read = app
-        .call("read", serde_json::json!({"version": past.to_string()}))
-        .unwrap()
+    phase start_call_through_the_door_makes_a_voice_channel_and_joins_it;
+    {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.call("start-call", serde_json::json!({})).unwrap();
+        app.settle();
+        assert!(
+            app.state()
+                .channel_rows()
+                .iter()
+                .any(|channel| channel.kind == crate::model::ChannelKind::Voice),
+            "the starter's voice channel stands"
+        );
+    }
+
+    phase history_entries_render_as_the_apps_sentences;
+    {
+        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let agent = ActionInvoker::actor("agent-task:55555555-5555-4555-8555-555555555555")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada");
+        let (channel, _) = general(&app);
+        app.call_by(
+            agent.clone(),
+            &crate::testing::chain(),
+            "post",
+            serde_json::json!({"channel": "c_chat", "text": "Standup moved to 10"}),
+        )
         .unwrap();
-    let content = read["content"].to_string();
-    assert!(content.contains("kumquat-parade"), "{read}");
-    assert!(!content.contains("renamed-later"), "{read}");
+        app.settle();
+        let posted_id = messages(&mut app).pop().unwrap().id;
+        let posted = crate::testing::message_item(&posted_id);
+        let react = crate::parts::ChatPart::paths()
+            .messages
+            .item(&ui::tilo_resource::Id::from_raw(&posted_id))
+            .reactions
+            .react("👍");
+        app.call_by(
+            agent.clone(),
+            &crate::testing::chain(),
+            ui::tilo_resource::FIELD_EDIT,
+            serde_json::json!({ (ui::tilo_resource::EDIT_PARAM): react }),
+        )
+        .unwrap();
+        app.call_by(
+            agent.clone(),
+            &posted,
+            "edit-message",
+            serde_json::json!({"text": "Standup moved to 10:30"}),
+        )
+        .unwrap();
+        app.call_by(
+            agent.clone(),
+            &channel,
+            "set-channel-topic",
+            serde_json::json!({"topic": "Daily notes"}),
+        )
+        .unwrap();
+        app.call_by(
+            agent.clone(),
+            Chat::KIND,
+            "create-category",
+            serde_json::json!({"name": "Offsite"}),
+        )
+        .unwrap();
+        app.call_by(
+            agent,
+            &channel,
+            "mark-read",
+            serde_json::json!({"part": 0, "seen": 1}),
+        )
+        .unwrap();
+        app.settle();
 
-    let texts = app.past_version(&[past]).unwrap().texts();
-    assert!(
-        texts.iter().any(|text| text.contains("kumquat-parade")),
-        "{texts:?}"
-    );
-}
+        let sentences = app.sentences(app.history().iter().filter(|entry| {
+            entry.invoker.as_ref().is_some_and(|invoker| {
+                invoker.actor == "agent-task:55555555-5555-4555-8555-555555555555"
+            })
+        }));
+        assert_eq!(
+            sentences,
+            // What it did to the messages is in the history of the part that
+            // holds them; the record's history has the rest.
+            [
+                "Set the topic of #chat to Daily notes",
+                "Created the category Offsite",
+                "Marked #chat read",
+            ]
+        );
+    }
 
-/// What reaches a mounted chat through its actions and its record.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn calls_files_versions_history_and_other_replicas_reach_the_window_through_its_door() {
-    crate::testing::cases!(
-        start_call_through_the_door_makes_a_voice_channel_and_joins_it,
-        history_entries_render_as_the_apps_sentences,
-        a_handed_over_file_posts_as_a_file,
-        a_message_another_replica_posts_shows_without_input,
-        a_past_version_reads_and_shows_its_channel,
-    );
+    phase a_handed_over_file_posts_as_a_file;
+    // A file another step handed over posts by its content address: described
+    // from its bytes where it is posted, and refused when it is not here.
+    {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let _ = general(&app);
+        let hash = app.content().put(b"minutes of the meeting").unwrap();
+        app.call_on(
+            &crate::testing::chain(),
+            "post-file",
+            serde_json::json!({"channel": "c_chat",
+                "content": ui::tilo_actions::content_resource(&hash),
+                "name": "minutes.txt",
+                "text": "Here are the minutes",
+            }),
+        )
+        .unwrap();
+        app.settle();
+        let posted = messages(&mut app).pop().unwrap();
+        assert_eq!(posted.text, "Here are the minutes");
+        assert_eq!(
+            posted.attachments,
+            [tilo_reference::Attached::File {
+                name: "minutes.txt".into(),
+                blob: hash,
+                size: 22,
+            }]
+        );
+        let missing = tilo_content::hash_bytes(b"never stored");
+        assert!(
+            app.call_on(
+                &crate::testing::chain(),
+                "post-file",
+                serde_json::json!({"channel": "c_chat", "content": missing, "name": "x.txt"}),
+            )
+            .is_err()
+        );
+    }
+
+    phase a_message_another_replica_posts_shows_without_input;
+    // A message another replica posts (a workspace's bot bridging Discord, another
+    // member's device) shows in a window that is only being watched: its
+    // arrival in the window's store wakes the window, so the window's own
+    // frames show it, with no input and no frame forced to sync.
+    {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        crate::testing::mounted_post(&mut app, "c_chat", "hello from here");
+        app.settle();
+        let shows = |app: &mut TestApp<ChatShell>, text: &str| {
+            app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label().is_some_and(|label| label.contains(text)))
+        };
+        assert!(shows(&mut app, "hello from here"));
+        let text = "hello from the bridge";
+        let changed = app
+            .replica_arrives(&crate::parts::part(0), |doc| {
+                let mut bot =
+                    ui::tilo_resource::Replica::<crate::parts::ChatPart>::from_doc(std::mem::take(doc))
+                        .as_author("bot");
+                bot.apply(crate::testing::post("c_chat", text, None))
+                    .expect("the bot posts");
+                *doc = bot.doc().clone();
+            })
+            .unwrap();
+        assert!(changed, "the bot's post is new here");
+        for _ in 0..4 {
+            app.frame();
+        }
+        assert!(shows(&mut app, text), "the bot's post shows with no input");
+    }
+
+    phase a_past_version_reads_and_shows_its_channel;
+    // A past version reads through the `read` door and draws in the chat's own
+    // view with the channel as it was named then.
+    {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.call(
+            "create-channel-with-id",
+            serde_json::json!({"id": "c_kumquat", "name": "kumquat-parade"}),
+        )
+        .unwrap();
+        let past = app.versions().pop().unwrap().hash;
+        app.call_on(
+            &item("channels", "c_kumquat"),
+            "rename-channel",
+            serde_json::json!({"name": "renamed-later"}),
+        )
+        .unwrap();
+
+        let read = app
+            .call("read", serde_json::json!({"version": past.to_string()}))
+            .unwrap()
+            .unwrap();
+        let content = read["content"].to_string();
+        assert!(content.contains("kumquat-parade"), "{read}");
+        assert!(!content.contains("renamed-later"), "{read}");
+
+        let texts = app.past_version(&[past]).unwrap().texts();
+        assert!(
+            texts.iter().any(|text| text.contains("kumquat-parade")),
+            "{texts:?}"
+        );
+    }
 }
 
 /// A window too narrow for the channels beside the conversation opens on the conversation: it is

@@ -308,44 +308,6 @@ mod tests {
         })
     }
 
-    fn retry_after_reload_keeps_one_attributed_message_and_report() {
-        use ui::tilo_resource::Resource as _;
-        let (mut doc, submission) = seeded();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        let saved = doc.save();
-        let mut restored = Doc::load(&saved).unwrap();
-        apply_as(&mut restored, "visitor:one", action(&submission)).unwrap();
-        let messages = messages(&restored, &submission.destination.channel);
-        let matching: Vec<_> = messages
-            .iter()
-            .filter(|message| message.id == message_id(&submission.id))
-            .collect();
-        assert_eq!(matching.len(), 1);
-        assert_eq!(matching[0].author, "visitor:one");
-        assert_eq!(
-            report(&restored, &submission.id)
-                .unwrap()
-                .unwrap()
-                .submission,
-            submission
-        );
-        let state = Chat::read(&restored).unwrap();
-        let report_id = crate::testing::item("feedback", &submission.id);
-        let entries = Chat::search(&state);
-        let matching: Vec<_> = entries
-            .iter()
-            .filter(|entry| entry.anchor.as_deref() == Some(report_id.as_str()))
-            .collect();
-        assert_eq!(
-            matching.len(),
-            1,
-            "a retried report has one typed search result"
-        );
-        assert_eq!(matching[0].title, submission.feedback.text);
-        let published = Chat::child(&state, &report_id).expect("the report is an item");
-        assert!(published.actions.iter().any(|spec| spec.id == "triage"));
-    }
-
     #[test]
     fn unauthored_and_conflicting_retries_are_refused_without_changes() {
         let (mut doc, submission) = seeded();
@@ -376,223 +338,133 @@ mod tests {
         assert_eq!(doc.get_heads(), before);
     }
 
-    fn concurrent_first_submissions_both_survive() {
-        let (mut doc, submission) = seeded();
-        let mut peer = doc.fork();
-        let mut other = submission.clone();
-        other.id = "fedcba9876543210fedcba9876543210".into();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        apply_as(&mut peer, "visitor:two", action(&other)).unwrap();
-        doc.merge_incoming(&mut peer).unwrap();
-        assert_eq!(reports(&doc).unwrap().len(), 2);
-        assert!(report(&doc, &submission.id).unwrap().is_some());
-        assert!(report(&doc, &other.id).unwrap().is_some());
-    }
+    tilo_test_env::scenario! {
+        /// Filing a report and triaging it, retried, reloaded and merged.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn submissions_and_triage_are_attributed_and_survive_retries_and_merges;
 
-    fn triage_is_attributed_and_preserves_the_issue() {
-        let (mut doc, submission) = seeded();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        apply_as(
-            &mut doc,
-            "maintainer:one",
-            triage(&submission, &TriageUpdate::Investigating),
-        )
-        .unwrap();
-        apply_as(
-            &mut doc,
-            "maintainer:two",
-            triage(
-                &submission,
-                &TriageUpdate::Duplicate {
-                    report: "fedcba9876543210fedcba9876543210".into(),
-                },
-            ),
-        )
-        .unwrap();
-        let report = report(&doc, &submission.id).unwrap().unwrap();
-        assert_eq!(report.submission, submission);
-        assert_eq!(report.author, "visitor:one");
-        assert_eq!(
-            report
-                .triage
+        phase retry_after_reload_keeps_one_attributed_message_and_report;
+        {
+            use ui::tilo_resource::Resource as _;
+            let (mut doc, submission) = seeded();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            let saved = doc.save();
+            let mut restored = Doc::load(&saved).unwrap();
+            apply_as(&mut restored, "visitor:one", action(&submission)).unwrap();
+            let messages = messages(&restored, &submission.destination.channel);
+            let matching: Vec<_> = messages
                 .iter()
-                .map(|entry| entry.author.as_str())
-                .collect::<Vec<_>>(),
-            ["maintainer:one", "maintainer:two"]
-        );
-        assert_eq!(report.triage[0].update, TriageUpdate::Investigating);
-        assert!(
+                .filter(|message| message.id == message_id(&submission.id))
+                .collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].author, "visitor:one");
+            assert_eq!(
+                report(&restored, &submission.id)
+                    .unwrap()
+                    .unwrap()
+                    .submission,
+                submission
+            );
+            let state = Chat::read(&restored).unwrap();
+            let report_id = crate::testing::item("feedback", &submission.id);
+            let entries = Chat::search(&state);
+            let matching: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.anchor.as_deref() == Some(report_id.as_str()))
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "a retried report has one typed search result"
+            );
+            assert_eq!(matching[0].title, submission.feedback.text);
+            let published = Chat::child(&state, &report_id).expect("the report is an item");
+            assert!(published.actions.iter().any(|spec| spec.id == "triage"));
+        }
+
+        phase concurrent_first_submissions_both_survive;
+        {
+            let (mut doc, submission) = seeded();
+            let mut peer = doc.fork();
+            let mut other = submission.clone();
+            other.id = "fedcba9876543210fedcba9876543210".into();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut peer, "visitor:two", action(&other)).unwrap();
+            doc.merge_incoming(&mut peer).unwrap();
+            assert_eq!(reports(&doc).unwrap().len(), 2);
+            assert!(report(&doc, &submission.id).unwrap().is_some());
+            assert!(report(&doc, &other.id).unwrap().is_some());
+        }
+
+        phase triage_is_attributed_and_preserves_the_issue;
+        {
+            let (mut doc, submission) = seeded();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
             apply_as(
                 &mut doc,
                 "maintainer:one",
-                Chat::TRIAGE.with(chat::Triage {
-                    report: Id::from_raw(submission.id),
-                    update: serde_json::json!({"status": "lost"}),
-                })
+                triage(&submission, &TriageUpdate::Investigating),
             )
-            .is_err()
-        );
-    }
+            .unwrap();
+            apply_as(
+                &mut doc,
+                "maintainer:two",
+                triage(
+                    &submission,
+                    &TriageUpdate::Duplicate {
+                        report: "fedcba9876543210fedcba9876543210".into(),
+                    },
+                ),
+            )
+            .unwrap();
+            let report = report(&doc, &submission.id).unwrap().unwrap();
+            assert_eq!(report.submission, submission);
+            assert_eq!(report.author, "visitor:one");
+            assert_eq!(
+                report
+                    .triage
+                    .iter()
+                    .map(|entry| entry.author.as_str())
+                    .collect::<Vec<_>>(),
+                ["maintainer:one", "maintainer:two"]
+            );
+            assert_eq!(report.triage[0].update, TriageUpdate::Investigating);
+            assert!(
+                apply_as(
+                    &mut doc,
+                    "maintainer:one",
+                    Chat::TRIAGE.with(chat::Triage {
+                        report: Id::from_raw(submission.id),
+                        update: serde_json::json!({"status": "lost"}),
+                    })
+                )
+                .is_err()
+            );
+        }
 
-    fn concurrent_retry_deduplicates_the_visible_report_message() {
-        let (mut doc, submission) = seeded();
-        let mut peer = doc.fork();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        apply_as(&mut peer, "visitor:one", action(&submission)).unwrap();
-        doc.merge_incoming(&mut peer).unwrap();
-        assert_eq!(reports(&doc).unwrap().len(), 1);
-        assert_eq!(
-            messages(&doc, &submission.destination.channel)
-                .iter()
-                .filter(|message| message.id == message_id(&submission.id))
-                .count(),
-            1
-        );
-    }
-
-    /// Filing a report and triaging it, retried, reloaded and merged.
-    /// Each case was a test of its own, on a fixture of its own; a failure
-    /// names the cases that failed.
-    #[test]
-    fn submissions_and_triage_are_attributed_and_survive_retries_and_merges() {
-        crate::testing::cases!(
-            retry_after_reload_keeps_one_attributed_message_and_report,
-            concurrent_first_submissions_both_survive,
-            triage_is_attributed_and_preserves_the_issue,
-            concurrent_retry_deduplicates_the_visible_report_message,
-        );
+        phase concurrent_retry_deduplicates_the_visible_report_message;
+        {
+            let (mut doc, submission) = seeded();
+            let mut peer = doc.fork();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            apply_as(&mut peer, "visitor:one", action(&submission)).unwrap();
+            doc.merge_incoming(&mut peer).unwrap();
+            assert_eq!(reports(&doc).unwrap().len(), 1);
+            assert_eq!(
+                messages(&doc, &submission.destination.channel)
+                    .iter()
+                    .filter(|message| message.id == message_id(&submission.id))
+                    .count(),
+                1
+            );
+        }
     }
 
     /// Seed the demo and file `submission` as `visitor:one` in `doc`.
     fn filed(doc: &mut Doc, submission: &Submission) {
         crate::demo::seed(doc).unwrap();
         apply_as(doc, "visitor:one", action(submission)).unwrap();
-    }
-
-    fn canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records() {
-        use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
-        let (_, submission) = seeded();
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = RecordOwners::new(temp.path().join("profile"));
-        let store = owners
-            .open("so.tilo.chat", &submission.destination.room)
-            .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.workspace"));
-        store
-            .reserve_record(&checkout)
-            .unwrap()
-            .initialize(|doc| {
-                filed(doc, &submission);
-                Ok::<(), String>(())
-            })
-            .unwrap();
-        store.try_flush().unwrap();
-        assert!(
-            receipt_from_record(
-                &store,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_ok()
-        );
-        store
-            .with(&checkout.id, |doc| {
-                ui::tilo_resource::write_key(
-                    doc,
-                    &ROOT,
-                    "newer_edit",
-                    &ui::tilo_resource::Atom("not yet stored".into()),
-                )
-                .unwrap();
-            })
-            .unwrap();
-        assert!(
-            receipt_from_record(
-                &store,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_err()
-        );
-        store.try_flush().unwrap();
-        assert!(
-            receipt_from_record(
-                &store,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_ok()
-        );
-        let memory = RecordStore::new(
-            ui::record::RecordSet::in_memory().with_home(&submission.destination.room),
-        );
-        memory.create_record(&checkout).unwrap();
-        memory
-            .with(&checkout.id, |doc| filed(doc, &submission))
-            .unwrap();
-        assert!(
-            receipt_from_record(
-                &memory,
-                &checkout.id,
-                &submission.id,
-                &submission.destination
-            )
-            .is_err()
-        );
-    }
-
-    fn primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp() {
-        use ui::record::{RecordCheckout, RecordKind, RecordOwners};
-        let (_, submission) = seeded();
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = RecordOwners::new(temp.path().join("profile"));
-        let store = owners
-            .open(
-                <crate::resource::ChatShell as ui::framework::ResourceApp>::ID,
-                &submission.destination.room,
-            )
-            .unwrap();
-        let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
-        store
-            .reserve_record(&primary)
-            .unwrap()
-            .initialize(|doc| {
-                filed(doc, &submission);
-                Ok::<(), String>(())
-            })
-            .unwrap();
-        store.try_flush().unwrap();
-        assert!(
-            store
-                .read(&primary.id, |doc| ui::record::workspace_scope(doc)
-                    .is_none())
-                .unwrap()
-        );
-        assert!(
-            receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
-                .is_ok()
-        );
-        let mut elsewhere = submission.destination.clone();
-        elsewhere.room = "another-room".into();
-        assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
-        store
-            .with(&primary.id, |doc| {
-                ui::tilo_resource::write_key(
-                    doc,
-                    &ROOT,
-                    "later",
-                    &ui::tilo_resource::Atom("unsaved".into()),
-                )
-                .unwrap();
-            })
-            .unwrap();
-        assert!(
-            receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
-                .is_err()
-        );
     }
 
     /// The record the reporter's window showed: a chat whose channels they
@@ -730,47 +602,171 @@ mod tests {
         );
     }
 
-    fn receipt_requires_saved_destination_and_canonical_attributed_message() {
-        use ui::record::RecordSaveStatus;
-        let (mut doc, submission) = seeded();
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        for status in [
-            RecordSaveStatus::Saving,
-            RecordSaveStatus::MemoryOnly,
-            RecordSaveStatus::Failed("disk full".into()),
-        ] {
+    tilo_test_env::scenario! {
+        /// When a filed report earns its durable receipt.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_receipt_is_given_only_for_a_saved_attributed_report;
+
+        phase canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records;
+        {
+            use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
+            let (_, submission) = seeded();
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = RecordOwners::new(temp.path().join("profile"));
+            let store = owners
+                .open("so.tilo.chat", &submission.destination.room)
+                .unwrap();
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.workspace"));
+            store
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|doc| {
+                    filed(doc, &submission);
+                    Ok::<(), String>(())
+                })
+                .unwrap();
+            store.try_flush().unwrap();
             assert!(
-                durable_receipt(&doc, &submission.id, &submission.destination, &status).is_err()
+                receipt_from_record(
+                    &store,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_ok()
+            );
+            store
+                .with(&checkout.id, |doc| {
+                    ui::tilo_resource::write_key(
+                        doc,
+                        &ROOT,
+                        "newer_edit",
+                        &ui::tilo_resource::Atom("not yet stored".into()),
+                    )
+                    .unwrap();
+                })
+                .unwrap();
+            assert!(
+                receipt_from_record(
+                    &store,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_err()
+            );
+            store.try_flush().unwrap();
+            assert!(
+                receipt_from_record(
+                    &store,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_ok()
+            );
+            let memory = RecordStore::new(
+                ui::record::RecordSet::in_memory().with_home(&submission.destination.room),
+            );
+            memory.create_record(&checkout).unwrap();
+            memory
+                .with(&checkout.id, |doc| filed(doc, &submission))
+                .unwrap();
+            assert!(
+                receipt_from_record(
+                    &memory,
+                    &checkout.id,
+                    &submission.id,
+                    &submission.destination
+                )
+                .is_err()
             );
         }
-        let receipt = durable_receipt(
-            &doc,
-            &submission.id,
-            &submission.destination,
-            &RecordSaveStatus::Saved,
-        )
-        .unwrap();
-        assert_eq!(receipt.digest, submission.digest().unwrap());
-        assert_eq!(
-            receipt.report,
-            crate::testing::item("messages", &message_id(&submission.id))
-        );
-        let mut elsewhere = submission.destination.clone();
-        elsewhere.room = "other-room".into();
-        assert!(
-            durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
-        );
-    }
 
-    /// When a filed report earns its durable receipt.
-    /// Each case was a test of its own, on a fixture of its own; a failure
-    /// names the cases that failed.
-    #[test]
-    fn a_receipt_is_given_only_for_a_saved_attributed_report() {
-        crate::testing::cases!(
-            canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records,
-            primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp,
-            receipt_requires_saved_destination_and_canonical_attributed_message,
-        );
+        phase primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp;
+        {
+            use ui::record::{RecordCheckout, RecordKind, RecordOwners};
+            let (_, submission) = seeded();
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = RecordOwners::new(temp.path().join("profile"));
+            let store = owners
+                .open(
+                    <crate::resource::ChatShell as ui::framework::ResourceApp>::ID,
+                    &submission.destination.room,
+                )
+                .unwrap();
+            let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+            store
+                .reserve_record(&primary)
+                .unwrap()
+                .initialize(|doc| {
+                    filed(doc, &submission);
+                    Ok::<(), String>(())
+                })
+                .unwrap();
+            store.try_flush().unwrap();
+            assert!(
+                store
+                    .read(&primary.id, |doc| ui::record::workspace_scope(doc)
+                        .is_none())
+                    .unwrap()
+            );
+            assert!(
+                receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                    .is_ok()
+            );
+            let mut elsewhere = submission.destination.clone();
+            elsewhere.room = "another-room".into();
+            assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
+            store
+                .with(&primary.id, |doc| {
+                    ui::tilo_resource::write_key(
+                        doc,
+                        &ROOT,
+                        "later",
+                        &ui::tilo_resource::Atom("unsaved".into()),
+                    )
+                    .unwrap();
+                })
+                .unwrap();
+            assert!(
+                receipt_from_record(&store, &primary.id, &submission.id, &submission.destination)
+                    .is_err()
+            );
+        }
+
+        phase receipt_requires_saved_destination_and_canonical_attributed_message;
+        {
+            use ui::record::RecordSaveStatus;
+            let (mut doc, submission) = seeded();
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            for status in [
+                RecordSaveStatus::Saving,
+                RecordSaveStatus::MemoryOnly,
+                RecordSaveStatus::Failed("disk full".into()),
+            ] {
+                assert!(
+                    durable_receipt(&doc, &submission.id, &submission.destination, &status).is_err()
+                );
+            }
+            let receipt = durable_receipt(
+                &doc,
+                &submission.id,
+                &submission.destination,
+                &RecordSaveStatus::Saved,
+            )
+            .unwrap();
+            assert_eq!(receipt.digest, submission.digest().unwrap());
+            assert_eq!(
+                receipt.report,
+                crate::testing::item("messages", &message_id(&submission.id))
+            );
+            let mut elsewhere = submission.destination.clone();
+            elsewhere.room = "other-room".into();
+            assert!(
+                durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
+            );
+        }
     }
 }

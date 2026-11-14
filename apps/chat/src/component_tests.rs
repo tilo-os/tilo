@@ -1680,30 +1680,31 @@ fn a_new_message_leaves_the_window_at_rest(frame: &mut ui::headless::FrameHarnes
     eprintln!("{report}");
 }
 
-/// What a new message and a keystroke cost a Chat open over a long channel.
-/// Posting the channel's 300 messages is most of what each case costs, so the
-/// three share one mount: the new message first, which finds the window at
-/// rest, then the keystrokes, which leave the composer focused and typed in.
-#[test]
-fn a_long_channel_stays_cheap_for_a_new_message_and_a_keystroke() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-long-channel");
-    let chain = crate::testing::chain();
-    for index in 0..300 {
-        frame
-            .call_on(
-                &chain,
-                "post",
-                serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
-            )
-            .unwrap();
+tilo_test_env::scenario! {
+    /// What a new message and a keystroke cost a Chat open over a long channel.
+    /// Posting the channel's 300 messages is most of what each case costs, so the
+    /// three share one mount: the new message first, which finds the window at
+    /// rest, then the keystrokes, which leave the composer focused and typed in.
+    fn a_long_channel_stays_cheap_for_a_new_message_and_a_keystroke;
+
+    steps;
+    {
+        let (mut frame, _records, _checkout) = semantic_component_harness("chat-long-channel");
+        let chain = crate::testing::chain();
+        for index in 0..300 {
+            frame
+                .call_on(
+                    &chain,
+                    "post",
+                    serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
+                )
+                .unwrap();
+        }
+        a_new_message_leaves_the_window_at_rest(&mut frame);
+        a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_alone(&mut frame);
+        a_keystroke_in_the_composer_of_a_long_channel_handled(&mut frame);
+        frame.close_components();
     }
-    crate::testing::cases_on!(
-        &mut frame;
-        a_new_message_leaves_the_window_at_rest,
-        a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_alone,
-        a_keystroke_in_the_composer_of_a_long_channel_handled,
-    );
-    frame.close_components();
 }
 
 /// A newcomer's page in a public workspace holds none of the workspace's chat

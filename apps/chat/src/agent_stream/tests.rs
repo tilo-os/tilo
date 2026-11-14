@@ -35,119 +35,6 @@ fn stream(doc: &Workspace) -> AgentStream {
     message(doc).work.unwrap().stream.unwrap()
 }
 
-fn live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failure() {
-    let mut doc = fixture();
-    apply(
-        &mut doc,
-        1,
-        AgentOutput::TextDelta {
-            text: "Hello 🌍".into(),
-        },
-    );
-    let duplicate = event(
-        1,
-        AgentOutput::TextDelta {
-            text: "Hello 🌍".into(),
-        },
-    );
-    assert!(crate::testing::apply_part_as(&mut doc, crate::model::ME, duplicate).is_err());
-    assert!(
-        crate::testing::apply_part_as(
-            &mut doc,
-            crate::model::ME,
-            event(3, AgentOutput::TextDelta { text: "gap".into() })
-        )
-        .is_err()
-    );
-    apply(
-        &mut doc,
-        2,
-        AgentOutput::ReasoningDelta {
-            text: "Provider summary 🦀".into(),
-        },
-    );
-    apply(
-        &mut doc,
-        3,
-        AgentOutput::TextDelta {
-            text: " — retained".into(),
-        },
-    );
-    apply(
-        &mut doc,
-        4,
-        AgentOutput::Finished {
-            outcome: AgentFinish::Failed,
-            detail: "Connection lost".into(),
-        },
-    );
-    // What a part keeps is what loads back.
-    let loaded = crate::messages::Messages::single(crate::messages::read_part(
-        &automerge::AutoCommit::load(&doc.part_bytes(0).unwrap()).unwrap(),
-    ));
-    let reply = crate::projection::message_row(
-        &Id::from_raw("stream_reply"),
-        loaded.get(&Id::from_raw("stream_reply")).unwrap(),
-    );
-    let kept = reply.work.as_ref().unwrap().stream.clone().unwrap();
-    assert_eq!(reply.text, "Hello 🌍 — retained");
-    assert_eq!(kept.reasoning, "Provider summary 🦀");
-    assert_eq!(kept.finish, Some(AgentFinish::Failed));
-    assert_eq!(kept.detail, "Connection lost");
-}
-
-fn terminal_outcomes_remain_distinct_and_a_retry_cannot_reuse_a_reply() {
-    for finish in [
-        AgentFinish::Complete,
-        AgentFinish::Truncated,
-        AgentFinish::Refused,
-        AgentFinish::Cancelled,
-        AgentFinish::Failed,
-    ] {
-        let mut doc = fixture();
-        apply(
-            &mut doc,
-            1,
-            AgentOutput::TextDelta {
-                text: "partial".into(),
-            },
-        );
-        apply(
-            &mut doc,
-            2,
-            AgentOutput::Finished {
-                outcome: finish,
-                detail: String::new(),
-            },
-        );
-        assert!(
-            crate::testing::apply_part_as(
-                &mut doc,
-                crate::model::ME,
-                event(
-                    3,
-                    AgentOutput::TextDelta {
-                        text: "must not append".into()
-                    }
-                )
-            )
-            .is_err()
-        );
-        let mut retry = AgentStreamEvent {
-            run: "retry".into(),
-            sequence: 1,
-            event: AgentOutput::TextDelta {
-                text: "must not replace".into(),
-            },
-        };
-        assert!(!stream(&doc).accepts(&retry));
-        retry.run = "run".into();
-        assert!(!stream(&doc).accepts(&retry));
-        assert_eq!(stream(&doc).finish, Some(finish));
-        assert_eq!(message(&doc).text, "partial");
-    }
-}
-
 #[test]
 fn only_the_reply_author_can_append_and_rejected_output_creates_no_message() {
     let mut doc = fixture();
@@ -236,87 +123,198 @@ fn reasoning_history_grows_linearly_with_received_content() {
     assert_eq!(kept.sequence, 192);
 }
 
-fn work_updates_do_not_erase_provider_stream_or_trace() {
-    let mut doc = fixture();
-    let summons = Id::from_raw("m_concept");
-    let reply = crate::record::reply_id(&summons, crate::model::ME);
-    let output = |sequence, event| {
-        ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
-            channel: Id::from_raw("c_crit"),
-            reply: reply.to_string(),
-            name: None,
-            event: serde_json::to_value(AgentStreamEvent {
-                run: "interleaved".into(),
-                sequence,
-                event,
-            })
-            .unwrap(),
-        })
-    };
-    crate::testing::apply_part_as(
-        &mut doc,
-        crate::model::ME,
-        output(
-            1,
-            AgentOutput::ReasoningDelta {
-                text: "Preserved reasoning".into(),
-            },
-        ),
-    )
-    .unwrap();
-    crate::testing::apply_part_as(
-        &mut doc,
-        crate::model::ME,
-        ChatPart::RECORD_WORK.with(chat_part::RecordWork {
-            message: summons,
-            work: crate::record::WorkUpdate {
-                state: "doing".into(),
-                app: None,
-                did: Some("Read source".into()),
-                about: Some("Evidence".into()),
-                trace: vec![crate::record::StepUpdate {
-                    id: "step".into(),
-                    sequence: 0,
-                    resource: "notes".into(),
-                    label: "Read".into(),
-                    outcome: "applied".into(),
-                    why: None,
-                }],
-                detail: None,
-            },
-            say: None,
-        }),
-    )
-    .unwrap();
-    crate::testing::apply_part_as(
-        &mut doc,
-        crate::model::ME,
-        output(
-            2,
-            AgentOutput::TextDelta {
-                text: "Answer".into(),
-            },
-        ),
-    )
-    .unwrap();
-    let message = doc.message_row(reply.as_str()).unwrap();
-    let work = message.work.unwrap();
-    assert_eq!(work.stream.unwrap().reasoning, "Preserved reasoning");
-    assert_eq!(work.trace.len(), 1);
-    assert_eq!(work.trace[0].label, "Read");
-    assert_eq!(message.text, "Answer");
-}
+tilo_test_env::scenario! {
+    /// What a streamed reply records of its events.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_reply_stream_keeps_its_text_work_and_outcome;
 
-/// What a streamed reply records of its events.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn a_reply_stream_keeps_its_text_work_and_outcome() {
-    crate::testing::cases!(
-        live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failure,
-        terminal_outcomes_remain_distinct_and_a_retry_cannot_reuse_a_reply,
-        work_updates_do_not_erase_provider_stream_or_trace,
-    );
+    phase live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failure;
+    {
+        let mut doc = fixture();
+        apply(
+            &mut doc,
+            1,
+            AgentOutput::TextDelta {
+                text: "Hello 🌍".into(),
+            },
+        );
+        let duplicate = event(
+            1,
+            AgentOutput::TextDelta {
+                text: "Hello 🌍".into(),
+            },
+        );
+        assert!(crate::testing::apply_part_as(&mut doc, crate::model::ME, duplicate).is_err());
+        assert!(
+            crate::testing::apply_part_as(
+                &mut doc,
+                crate::model::ME,
+                event(3, AgentOutput::TextDelta { text: "gap".into() })
+            )
+            .is_err()
+        );
+        apply(
+            &mut doc,
+            2,
+            AgentOutput::ReasoningDelta {
+                text: "Provider summary 🦀".into(),
+            },
+        );
+        apply(
+            &mut doc,
+            3,
+            AgentOutput::TextDelta {
+                text: " — retained".into(),
+            },
+        );
+        apply(
+            &mut doc,
+            4,
+            AgentOutput::Finished {
+                outcome: AgentFinish::Failed,
+                detail: "Connection lost".into(),
+            },
+        );
+        // What a part keeps is what loads back.
+        let loaded = crate::messages::Messages::single(crate::messages::read_part(
+            &automerge::AutoCommit::load(&doc.part_bytes(0).unwrap()).unwrap(),
+        ));
+        let reply = crate::projection::message_row(
+            &Id::from_raw("stream_reply"),
+            loaded.get(&Id::from_raw("stream_reply")).unwrap(),
+        );
+        let kept = reply.work.as_ref().unwrap().stream.clone().unwrap();
+        assert_eq!(reply.text, "Hello 🌍 — retained");
+        assert_eq!(kept.reasoning, "Provider summary 🦀");
+        assert_eq!(kept.finish, Some(AgentFinish::Failed));
+        assert_eq!(kept.detail, "Connection lost");
+    }
+
+    phase terminal_outcomes_remain_distinct_and_a_retry_cannot_reuse_a_reply;
+    {
+        for finish in [
+            AgentFinish::Complete,
+            AgentFinish::Truncated,
+            AgentFinish::Refused,
+            AgentFinish::Cancelled,
+            AgentFinish::Failed,
+        ] {
+            let mut doc = fixture();
+            apply(
+                &mut doc,
+                1,
+                AgentOutput::TextDelta {
+                    text: "partial".into(),
+                },
+            );
+            apply(
+                &mut doc,
+                2,
+                AgentOutput::Finished {
+                    outcome: finish,
+                    detail: String::new(),
+                },
+            );
+            assert!(
+                crate::testing::apply_part_as(
+                    &mut doc,
+                    crate::model::ME,
+                    event(
+                        3,
+                        AgentOutput::TextDelta {
+                            text: "must not append".into()
+                        }
+                    )
+                )
+                .is_err()
+            );
+            let mut retry = AgentStreamEvent {
+                run: "retry".into(),
+                sequence: 1,
+                event: AgentOutput::TextDelta {
+                    text: "must not replace".into(),
+                },
+            };
+            assert!(!stream(&doc).accepts(&retry));
+            retry.run = "run".into();
+            assert!(!stream(&doc).accepts(&retry));
+            assert_eq!(stream(&doc).finish, Some(finish));
+            assert_eq!(message(&doc).text, "partial");
+        }
+    }
+
+    phase work_updates_do_not_erase_provider_stream_or_trace;
+    {
+        let mut doc = fixture();
+        let summons = Id::from_raw("m_concept");
+        let reply = crate::record::reply_id(&summons, crate::model::ME);
+        let output = |sequence, event| {
+            ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
+                channel: Id::from_raw("c_crit"),
+                reply: reply.to_string(),
+                name: None,
+                event: serde_json::to_value(AgentStreamEvent {
+                    run: "interleaved".into(),
+                    sequence,
+                    event,
+                })
+                .unwrap(),
+            })
+        };
+        crate::testing::apply_part_as(
+            &mut doc,
+            crate::model::ME,
+            output(
+                1,
+                AgentOutput::ReasoningDelta {
+                    text: "Preserved reasoning".into(),
+                },
+            ),
+        )
+        .unwrap();
+        crate::testing::apply_part_as(
+            &mut doc,
+            crate::model::ME,
+            ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+                message: summons,
+                work: crate::record::WorkUpdate {
+                    state: "doing".into(),
+                    app: None,
+                    did: Some("Read source".into()),
+                    about: Some("Evidence".into()),
+                    trace: vec![crate::record::StepUpdate {
+                        id: "step".into(),
+                        sequence: 0,
+                        resource: "notes".into(),
+                        label: "Read".into(),
+                        outcome: "applied".into(),
+                        why: None,
+                    }],
+                    detail: None,
+                },
+                say: None,
+            }),
+        )
+        .unwrap();
+        crate::testing::apply_part_as(
+            &mut doc,
+            crate::model::ME,
+            output(
+                2,
+                AgentOutput::TextDelta {
+                    text: "Answer".into(),
+                },
+            ),
+        )
+        .unwrap();
+        let message = doc.message_row(reply.as_str()).unwrap();
+        let work = message.work.unwrap();
+        assert_eq!(work.stream.unwrap().reasoning, "Preserved reasoning");
+        assert_eq!(work.trace.len(), 1);
+        assert_eq!(work.trace[0].label, "Read");
+        assert_eq!(message.text, "Answer");
+    }
 }
 
 #[test]

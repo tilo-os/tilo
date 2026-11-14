@@ -161,109 +161,12 @@ fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
     })
 }
 
-fn a_new_chat_starts_with_its_creator_and_the_workspaces_two_channels() {
-    let ada = workspace();
-    let chat = ada.state().unwrap();
-    let channels = chat.channel_rows();
-    assert_eq!(
-        channels
-            .iter()
-            .map(|channel| (channel.id.as_str(), channel.name.as_str(), channel.kind))
-            .collect::<Vec<_>>(),
-        [
-            (CHAT_CHANNEL, "chat", ChannelKind::Text),
-            (VOICE_CHANNEL, "voice", ChannelKind::Voice)
-        ]
-    );
-    assert!(
-        chat.categories.is_empty(),
-        "no categories until someone makes one"
-    );
-    let people = chat.user_rows();
-    assert_eq!(
-        people
-            .iter()
-            .map(|person| (person.id.as_str(), person.name.as_str()))
-            .collect::<Vec<_>>(),
-        [(ADA, "Ada"), (BO, "Bo")]
-    );
-}
-
 /// The workspace's two channels as a replica of `chat` lists them.
 fn workspace_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
     chat.channel_rows()
         .into_iter()
         .map(|channel| (channel.id, channel.name, channel.kind))
         .collect()
-}
-
-fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
-    let mut genesis = Replica::<Chat>::new().as_author(ADA);
-    // Each device seeds the record it found empty, at once: Ada's laptop
-    // and phone, and Bo in the same workspace. Each device writes its own
-    // changes for the person at it, as a host does: two devices writing as
-    // one actor would each make that actor's first change, which no sync
-    // can hold both of.
-    let mut laptop = genesis.fork().as_invoker(ADA);
-    let mut phone = genesis.fork().as_invoker(ADA);
-    let mut bo = genesis.fork().as_invoker(BO);
-    laptop.apply(begin("Ada", "AD")).unwrap();
-    phone.apply(begin("Ada", "AD")).unwrap();
-    bo.apply(begin("Bo", "BO")).unwrap();
-    // A device opening the workspace after it synced makes nothing more.
-    let mut first = genesis.fork().as_invoker(ADA);
-    first.apply(begin("Ada", "AD")).unwrap();
-    let mut second = first.fork().as_invoker(BO);
-    second.apply(begin("Bo", "BO")).unwrap();
-    laptop.sync_with(&mut phone).unwrap();
-    laptop.sync_with(&mut bo).unwrap();
-    first.sync_with(&mut second).unwrap();
-    let expected = vec![
-        (
-            CHAT_CHANNEL.to_owned(),
-            "chat".to_owned(),
-            ChannelKind::Text,
-        ),
-        (
-            VOICE_CHANNEL.to_owned(),
-            "voice".to_owned(),
-            ChannelKind::Voice,
-        ),
-    ];
-    for replica in [&laptop, &phone, &bo, &first, &second] {
-        let chat = replica.state().expect("the merged chat opens");
-        assert_eq!(workspace_channels(&chat), expected);
-        assert!(chat.categories.is_empty());
-        assert!(
-            chat.channels.quarantined().is_empty(),
-            "every channel is complete: {:?}",
-            chat.channels.quarantined()
-        );
-        for (_, channel) in chat.channels.iter() {
-            assert_eq!(channel.category, None);
-            assert!(channel.topic.is_empty() && !channel.archived);
-        }
-    }
-    assert_eq!(
-        laptop.state().unwrap().channels,
-        bo.state().unwrap().channels,
-        "every device holds the same two"
-    );
-}
-
-fn posting_records_its_author_time_and_mentions() {
-    let mut ada = Talk::new();
-    ada.set_now_ms(1_234_000);
-    ada.apply(post("hi @Bo, the deck is up")).unwrap();
-    let chat = ada.chat.state().unwrap();
-    let rows = ada.rows("c_chat");
-    assert_eq!(rows.len(), 1);
-    let message = &rows[0];
-    assert_eq!(message.author, ADA, "the poster is whoever invoked");
-    assert_eq!(message.ts, 1234, "the time is the action's");
-    assert_eq!(message.mentions.len(), 1);
-    assert_eq!(message.mentions[0].user, BO);
-    assert_eq!(chat.unread(&ada.messages(), "c_chat", BO), 1);
 }
 
 #[test]
@@ -284,43 +187,6 @@ fn a_member_cannot_backdate_a_post() {
     );
 }
 
-fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
-    let mut ada = Talk::new();
-    assert!(ada.apply(post("   ")).is_err(), "an empty message");
-    assert!(
-        ada.apply(post(&"x".repeat(MAX_MESSAGE_TEXT_BYTES + 1)))
-            .is_err(),
-        "a document, not a turn"
-    );
-    assert!(
-        ada.apply(post_to("c_voice", "hello")).is_err(),
-        "a voice channel has no timeline"
-    );
-    assert!(ada.apply(post_to("c_gone", "hello")).is_err());
-    assert!(
-        ada.apply(ChatPart::POST.with(chat_part::Post {
-            message: NewMessage {
-                channel: id("c_chat"),
-                text: "look".into(),
-                parent: None,
-                quoted: None,
-                body: None,
-                attachments: vec![tilo_reference::Attached::Image {
-                    name: "shot.png".into(),
-                    blob: "not-a-hash".into(),
-                    w: 10,
-                    h: 10,
-                },],
-                mentions: None,
-                written: None,
-            },
-        }))
-        .is_err(),
-        "an attachment is a content address"
-    );
-    assert!(ada.messages().is_empty());
-}
-
 fn post_to(channel: &str, text: &str) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
         message: post_fields(channel, text),
@@ -338,103 +204,6 @@ fn post_fields(channel: &str, text: &str) -> NewMessage {
         mentions: None,
         written: None,
     }
-}
-
-fn a_reply_to_a_missing_or_deleted_message_is_refused() {
-    let mut ada = Talk::new();
-    assert!(
-        ada.apply(reply(&id("missing"), "Where did it go?"))
-            .is_err()
-    );
-    assert!(ada.messages().is_empty());
-
-    ada.apply(post("The plan")).unwrap();
-    let parent = ada.said("The plan");
-    ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
-        message: parent.clone(),
-    }))
-    .unwrap();
-    assert!(ada.apply(reply(&parent, "My answer")).is_err());
-    assert!(
-        ada.messages().is_empty(),
-        "a reply must not be accepted into a thread nobody can open"
-    );
-}
-
-fn an_attachment_is_posted_by_its_content_address() {
-    let mut ada = Talk::new();
-    let blob = "ab".repeat(32);
-    ada.apply(ChatPart::POST.with(chat_part::Post {
-        message: NewMessage {
-            channel: id("c_chat"),
-            text: String::new(),
-            parent: None,
-            quoted: None,
-            body: None,
-            attachments: vec![tilo_reference::Attached::File {
-                name: "notes.md".into(),
-                blob: blob.clone(),
-                size: 1200,
-            }],
-            mentions: None,
-            written: None,
-        },
-    }))
-    .unwrap();
-    let rows = ada.rows("c_chat");
-    assert_eq!(
-        rows[0].attachments,
-        [tilo_reference::Attached::File {
-            name: "notes.md".into(),
-            blob,
-            size: 1200,
-        }]
-    );
-}
-
-fn a_resource_a_session_places_is_attachable_by_its_published_address() {
-    // A tlolang app publishes each of its resources by its address (`tl:<app>:<id>`, the root
-    // of Tasks among them): a reference to one names the address and the app the address
-    // spells, and the catalogue names its kind. It attaches as any shared record does, and it
-    // reads back from the record unchanged — the address the drag carried, never a second form
-    // invented for it.
-    const ROOT: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
-    let mut ada = Talk::new();
-    let attached = tilo_reference::Attached::resource(
-        tilo_reference::ResourceAt {
-            app: "so.tilo.lang.tasks".into(),
-            record: None,
-            reference: tilo_reference::ResourceRef::whole(
-                "tl.so.tilo.lang.tasks.Tasks",
-                ROOT,
-                "Tasks",
-            ),
-        },
-        None,
-        "Tasks",
-    );
-    assert!(
-        crate::record::valid_attached(&attached),
-        "a published resource address is a bounded address"
-    );
-    ada.apply(ChatPart::POST.with(chat_part::Post {
-        message: NewMessage {
-            channel: id("c_chat"),
-            text: "what is left?".into(),
-            parent: None,
-            quoted: None,
-            body: None,
-            attachments: vec![attached.clone()],
-            mentions: None,
-            written: None,
-        },
-    }))
-    .unwrap();
-    assert_eq!(
-        ada.rows("c_chat")[0].attachments,
-        [attached],
-        "the resource the person dropped rides with the message, as it was attached"
-    );
 }
 
 #[test]
@@ -479,474 +248,339 @@ fn a_resource_reference_with_no_kind_yet_attaches_until_a_catalogue_names_it() {
     }
 }
 
-fn threads_answer_top_level_messages_of_their_channel() {
-    let mut ada = Talk::new();
-    ada.apply(post("the plan")).unwrap();
-    let plan = ada.said("the plan");
-    ada.apply(reply(&plan, "sounds good")).unwrap();
-    let answer = ada.said("sounds good");
-    assert!(
-        ada.apply(reply(&answer, "nested")).is_err(),
-        "a reply answers a top-level message"
-    );
-    let rows = ada.rows("c_chat");
-    assert_eq!(crate::model::reply_count(&rows, plan.as_str()), 1);
-    assert_eq!(ada.messages().top_level(&id("c_chat")), 1);
-}
+tilo_test_env::scenario! {
+    /// The workspace's channels and categories, and how far each person read them.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn channels_categories_and_read_marks_are_kept_in_the_chat_record;
 
-fn reactions_are_each_persons_own() {
-    let mut ada = Talk::new();
-    ada.apply(post("ship it")).unwrap();
-    let message = ada.said("ship it");
-    let react = |emoji: &str| reaction(&message).react(emoji).into();
-    let mut bo = ada.fork_as(BO);
-    ada.apply(react("🎉")).unwrap();
-    bo.apply(react("🎉")).unwrap();
-    bo.apply(react("👍")).unwrap();
-    ada.sync_with(&mut bo);
-    let reactions = |talk: &Talk| {
-        talk.rows("c_chat")[0]
-            .reactions
-            .iter()
-            .map(|reaction| (reaction.emoji.clone(), reactors(reaction)))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        reactions(&ada),
-        [
-            ("🎉".to_owned(), vec![ADA.to_owned(), BO.to_owned()]),
-            ("👍".to_owned(), vec![BO.to_owned()]),
-        ],
-        "both first reactions with one emoji count"
-    );
-    bo.apply(reaction(&message).unreact("👍").into()).unwrap();
-    bo.apply(reaction(&message).unreact("🎉").into()).unwrap();
-    assert_eq!(
-        reactions(&bo),
-        [("🎉".to_owned(), vec![ADA.to_owned()])],
-        "taking back a reaction leaves the others'"
-    );
-    assert!(bo.apply(react("")).is_err());
-}
-
-fn an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message() {
-    let mut ada = Talk::new();
-    ada.set_now_ms(10_000);
-    ada.apply(post("teh plan")).unwrap();
-    let message = ada.said("teh plan");
-    ada.set_now_ms(20_000);
-    let edit = |text: &str| {
-        ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
-            message: message.clone(),
-            text: text.into(),
-            body: None,
-            mentions: None,
-        })
-    };
-    ada.apply(edit("the plan, @Bo")).unwrap();
-    ada.apply(edit("the plan, @Bo")).unwrap();
-    let row = ada.rows("c_chat").remove(0);
-    assert!(row.edited);
-    assert_eq!(row.text, "the plan, @Bo");
-    assert_eq!(
-        row.history,
-        [crate::model::EditRecord {
-            ts: 20,
-            text: "teh plan".into(),
-        }],
-        "an unchanged edit records nothing"
-    );
-    assert_eq!(row.mentions.len(), 1, "the edit's mentions are resolved");
-    ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
-        message: message.clone(),
-    }))
-    .unwrap();
-    assert!(ada.messages().is_empty());
-    assert!(
-        ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage { message }))
-            .is_err()
-    );
-}
-
-fn channels_and_categories_are_made_moved_and_deleted() {
-    let mut ada = workspace();
-    ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
-        name: "Projects".parse().unwrap(),
-    }))
-    .unwrap();
-    let projects = ada
-        .state()
-        .unwrap()
-        .category_rows()
-        .into_iter()
-        .find(|category| category.name == "Projects")
-        .unwrap()
-        .id;
-    for name in ["#alpha", "beta"] {
-        ada.apply(Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-            name: name.parse().unwrap(),
-            category: Some(id(&projects)),
-            kind: None,
-            topic: None,
-        }))
-        .unwrap();
+    phase a_new_chat_starts_with_its_creator_and_the_workspaces_two_channels;
+    {
+        let ada = workspace();
+        let chat = ada.state().unwrap();
+        let channels = chat.channel_rows();
+        assert_eq!(
+            channels
+                .iter()
+                .map(|channel| (channel.id.as_str(), channel.name.as_str(), channel.kind))
+                .collect::<Vec<_>>(),
+            [
+                (CHAT_CHANNEL, "chat", ChannelKind::Text),
+                (VOICE_CHANNEL, "voice", ChannelKind::Voice)
+            ]
+        );
+        assert!(
+            chat.categories.is_empty(),
+            "no categories until someone makes one"
+        );
+        let people = chat.user_rows();
+        assert_eq!(
+            people
+                .iter()
+                .map(|person| (person.id.as_str(), person.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(ADA, "Ada"), (BO, "Bo")]
+        );
     }
-    assert!(
-        ada.apply(Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-            name: "x".parse().unwrap(),
-            category: Some(id("cat_gone")),
-            kind: None,
-            topic: None,
-        }))
-        .is_err()
-    );
-    let names = |replica: &Replica<Chat>| {
-        replica
-            .state()
-            .unwrap()
-            .channel_rows()
-            .into_iter()
-            .filter(|channel| channel.category == projects)
-            .map(|channel| channel.name)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        names(&ada),
-        ["alpha", "beta"],
-        "a leading # is not the name"
-    );
-    let beta = ada
-        .state()
-        .unwrap()
-        .channel_rows()
-        .into_iter()
-        .find(|channel| channel.name == "beta")
-        .unwrap()
-        .id;
-    ada.apply(Chat::MOVE_CHANNEL.with(chat::MoveChannel {
-        channel: id(&beta),
-        up: true,
-    }))
-    .unwrap();
-    assert_eq!(names(&ada), ["beta", "alpha"]);
-    ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
-        channel: id(&beta),
-        category: None,
-    }))
-    .unwrap();
-    assert_eq!(names(&ada), ["alpha"], "filed under no category");
-    ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
-        channel: id(&beta),
-        category: Some(id(&projects)),
-    }))
-    .unwrap();
-    assert_eq!(names(&ada), ["beta", "alpha"], "back where it was listed");
-    assert!(
-        ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
-            channel: id(&beta),
-            category: Some(id("cat_gone")),
-        }))
-        .is_err()
-    );
-    ada.apply_confirmed(Chat::DELETE_CATEGORY.with(chat::DeleteCategory {
-        category: id(&projects),
-    }))
-    .unwrap();
-    let chat = ada.state().unwrap();
-    assert!(chat.categories.get(&id(&projects)).is_none());
-    assert!(
-        chat.channel_rows()
-            .iter()
-            .filter(|channel| channel.name == "alpha" || channel.name == "beta")
-            .all(|channel| channel.category.is_empty()),
-        "its channels stay, uncategorised"
-    );
-}
 
-/// Categories and channels are put in an order at once, each channel under
-/// the category named; what is not named keeps its place, and a category
-/// moves one place at a time.
-fn the_workspaces_channels_are_arranged_in_one_go() {
-    let mut ada = workspace();
-    for name in ["A", "B"] {
+    phase channels_and_categories_are_made_moved_and_deleted;
+    {
+        let mut ada = workspace();
         ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
-            name: name.parse().unwrap(),
+            name: "Projects".parse().unwrap(),
         }))
         .unwrap();
-    }
-    let category = |replica: &Replica<Chat>, name: &str| {
-        replica
+        let projects = ada
             .state()
             .unwrap()
-            .categories
-            .iter()
-            .find(|(_, c)| c.name == name)
-            .map(|(id, _)| id.as_str().to_owned())
+            .category_rows()
+            .into_iter()
+            .find(|category| category.name == "Projects")
             .unwrap()
-    };
-    let (a, b) = (category(&ada, "A"), category(&ada, "B"));
-    for (channel, under) in [("c_x", &a), ("c_y", &a), ("c_z", &b)] {
-        ada.apply(
-            Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
-                id: channel.into(),
-                name: channel.trim_start_matches("c_").parse().unwrap(),
-                category: Some(id(under)),
+            .id;
+        for name in ["#alpha", "beta"] {
+            ada.apply(Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+                name: name.parse().unwrap(),
+                category: Some(id(&projects)),
                 kind: None,
                 topic: None,
-                participants: None,
-            }),
-        )
-        .unwrap();
-    }
-    let place = |channel: &str, category: Option<&String>| ChannelPlace {
-        channel: channel.into(),
-        category: category.cloned(),
-    };
-    ada.apply(Chat::ARRANGE_CHANNELS.with(chat::ArrangeChannels {
-        categories: vec![b.clone(), a.clone()],
-        channels: vec![
-            place("c_z", Some(&a)),
-            place("c_y", Some(&a)),
-            place("c_x", Some(&b)),
-        ],
-    }))
-    .unwrap();
-    let listed = |replica: &Replica<Chat>, under: &str| {
-        replica
+            }))
+            .unwrap();
+        }
+        assert!(
+            ada.apply(Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+                name: "x".parse().unwrap(),
+                category: Some(id("cat_gone")),
+                kind: None,
+                topic: None,
+            }))
+            .is_err()
+        );
+        let names = |replica: &Replica<Chat>| {
+            replica
+                .state()
+                .unwrap()
+                .channel_rows()
+                .into_iter()
+                .filter(|channel| channel.category == projects)
+                .map(|channel| channel.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&ada),
+            ["alpha", "beta"],
+            "a leading # is not the name"
+        );
+        let beta = ada
             .state()
             .unwrap()
             .channel_rows()
             .into_iter()
-            .filter(|channel| channel.category == under)
-            .map(|channel| channel.name)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(listed(&ada, &a), ["z", "y"]);
-    assert_eq!(listed(&ada, &b), ["x"]);
-    let categories = |replica: &Replica<Chat>| {
-        replica
+            .find(|channel| channel.name == "beta")
+            .unwrap()
+            .id;
+        ada.apply(Chat::MOVE_CHANNEL.with(chat::MoveChannel {
+            channel: id(&beta),
+            up: true,
+        }))
+        .unwrap();
+        assert_eq!(names(&ada), ["beta", "alpha"]);
+        ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
+            channel: id(&beta),
+            category: None,
+        }))
+        .unwrap();
+        assert_eq!(names(&ada), ["alpha"], "filed under no category");
+        ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
+            channel: id(&beta),
+            category: Some(id(&projects)),
+        }))
+        .unwrap();
+        assert_eq!(names(&ada), ["beta", "alpha"], "back where it was listed");
+        assert!(
+            ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
+                channel: id(&beta),
+                category: Some(id("cat_gone")),
+            }))
+            .is_err()
+        );
+        ada.apply_confirmed(Chat::DELETE_CATEGORY.with(chat::DeleteCategory {
+            category: id(&projects),
+        }))
+        .unwrap();
+        let chat = ada.state().unwrap();
+        assert!(chat.categories.get(&id(&projects)).is_none());
+        assert!(
+            chat.channel_rows()
+                .iter()
+                .filter(|channel| channel.name == "alpha" || channel.name == "beta")
+                .all(|channel| channel.category.is_empty()),
+            "its channels stay, uncategorised"
+        );
+    }
+
+    phase the_workspaces_channels_are_arranged_in_one_go;
+    // Categories and channels are put in an order at once, each channel under
+    // the category named; what is not named keeps its place, and a category
+    // moves one place at a time.
+    {
+        let mut ada = workspace();
+        for name in ["A", "B"] {
+            ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
+                name: name.parse().unwrap(),
+            }))
+            .unwrap();
+        }
+        let category = |replica: &Replica<Chat>, name: &str| {
+            replica
+                .state()
+                .unwrap()
+                .categories
+                .iter()
+                .find(|(_, c)| c.name == name)
+                .map(|(id, _)| id.as_str().to_owned())
+                .unwrap()
+        };
+        let (a, b) = (category(&ada, "A"), category(&ada, "B"));
+        for (channel, under) in [("c_x", &a), ("c_y", &a), ("c_z", &b)] {
+            ada.apply(
+                Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
+                    id: channel.into(),
+                    name: channel.trim_start_matches("c_").parse().unwrap(),
+                    category: Some(id(under)),
+                    kind: None,
+                    topic: None,
+                    participants: None,
+                }),
+            )
+            .unwrap();
+        }
+        let place = |channel: &str, category: Option<&String>| ChannelPlace {
+            channel: channel.into(),
+            category: category.cloned(),
+        };
+        ada.apply(Chat::ARRANGE_CHANNELS.with(chat::ArrangeChannels {
+            categories: vec![b.clone(), a.clone()],
+            channels: vec![
+                place("c_z", Some(&a)),
+                place("c_y", Some(&a)),
+                place("c_x", Some(&b)),
+            ],
+        }))
+        .unwrap();
+        let listed = |replica: &Replica<Chat>, under: &str| {
+            replica
+                .state()
+                .unwrap()
+                .channel_rows()
+                .into_iter()
+                .filter(|channel| channel.category == under)
+                .map(|channel| channel.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed(&ada, &a), ["z", "y"]);
+        assert_eq!(listed(&ada, &b), ["x"]);
+        let categories = |replica: &Replica<Chat>| {
+            replica
+                .state()
+                .unwrap()
+                .categories
+                .values()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(categories(&ada), ["B", "A"]);
+        // The starter's channels, not named, are where they were.
+        let rows = ada.state().unwrap().channel_rows();
+        assert_eq!(rows.first().map(|c| c.id.as_str()), Some(CHAT_CHANNEL));
+
+        ada.apply(Chat::MOVE_CATEGORY.with(chat::MoveCategory {
+            category: id(&a),
+            up: true,
+        }))
+        .unwrap();
+        assert_eq!(categories(&ada), ["A", "B"]);
+        ada.apply(Chat::MOVE_CATEGORY.with(chat::MoveCategory {
+            category: id(&a),
+            up: true,
+        }))
+        .unwrap();
+        assert_eq!(categories(&ada), ["A", "B"], "the first stays first");
+
+        for refused in [
+            chat::ArrangeChannels {
+                categories: vec![a.clone(), a],
+                channels: Vec::new(),
+            },
+            chat::ArrangeChannels {
+                categories: Vec::new(),
+                channels: vec![place("c_gone", None)],
+            },
+            chat::ArrangeChannels {
+                categories: Vec::new(),
+                channels: vec![place("c_x", Some(&"cat_gone".to_owned()))],
+            },
+        ] {
+            assert!(ada.apply(Chat::ARRANGE_CHANNELS.with(refused)).is_err());
+        }
+    }
+
+    phase a_channel_is_filed_only_under_a_category_that_exists;
+    {
+        let mut ada = workspace();
+        let create = |category| {
+            Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+                name: "project".parse().unwrap(),
+                category: Some(category),
+                kind: None,
+                topic: None,
+            })
+        };
+        let before = ada.state().unwrap();
+        assert!(ada.apply(create(id("missing"))).is_err());
+        let after = ada.state().unwrap();
+        assert_eq!(
+            after.channels, before.channels,
+            "no hidden channel is created"
+        );
+        ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
+            name: "Work".parse().unwrap(),
+        }))
+        .unwrap();
+        let work = ada
             .state()
             .unwrap()
             .categories
-            .values()
-            .map(|c| c.name.clone())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(categories(&ada), ["B", "A"]);
-    // The starter's channels, not named, are where they were.
-    let rows = ada.state().unwrap().channel_rows();
-    assert_eq!(rows.first().map(|c| c.id.as_str()), Some(CHAT_CHANNEL));
-
-    ada.apply(Chat::MOVE_CATEGORY.with(chat::MoveCategory {
-        category: id(&a),
-        up: true,
-    }))
-    .unwrap();
-    assert_eq!(categories(&ada), ["A", "B"]);
-    ada.apply(Chat::MOVE_CATEGORY.with(chat::MoveCategory {
-        category: id(&a),
-        up: true,
-    }))
-    .unwrap();
-    assert_eq!(categories(&ada), ["A", "B"], "the first stays first");
-
-    for refused in [
-        chat::ArrangeChannels {
-            categories: vec![a.clone(), a],
-            channels: Vec::new(),
-        },
-        chat::ArrangeChannels {
-            categories: Vec::new(),
-            channels: vec![place("c_gone", None)],
-        },
-        chat::ArrangeChannels {
-            categories: Vec::new(),
-            channels: vec![place("c_x", Some(&"cat_gone".to_owned()))],
-        },
-    ] {
-        assert!(ada.apply(Chat::ARRANGE_CHANNELS.with(refused)).is_err());
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        ada.apply(create(work.clone())).unwrap();
+        let chat = ada.state().unwrap();
+        assert!(
+            chat.channels
+                .values()
+                .any(|channel| { channel.name == "project" && channel.category == Some(work.clone()) })
+        );
     }
-}
 
-fn a_channel_is_filed_only_under_a_category_that_exists() {
-    let mut ada = workspace();
-    let create = |category| {
-        Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-            name: "project".parse().unwrap(),
-            category: Some(category),
-            kind: None,
-            topic: None,
-        })
-    };
-    let before = ada.state().unwrap();
-    assert!(ada.apply(create(id("missing"))).is_err());
-    let after = ada.state().unwrap();
-    assert_eq!(
-        after.channels, before.channels,
-        "no hidden channel is created"
-    );
-    ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
-        name: "Work".parse().unwrap(),
-    }))
-    .unwrap();
-    let work = ada
-        .state()
-        .unwrap()
-        .categories
-        .ids()
-        .next()
-        .cloned()
-        .unwrap();
-    ada.apply(create(work.clone())).unwrap();
-    let chat = ada.state().unwrap();
-    assert!(
-        chat.channels
-            .values()
-            .any(|channel| { channel.name == "project" && channel.category == Some(work.clone()) })
-    );
-}
-
-fn deleting_a_channel_takes_its_read_marks() {
-    let mut ada = Talk::new();
-    ada.apply(post("hello")).unwrap();
-    ada.chat
-        .apply(Chat::MARK_READ.with(chat::MarkRead {
-            channel: id("c_chat"),
-            part: 0,
-            seen: 1,
-        }))
-        .unwrap();
-    ada.chat
-        .apply_confirmed(Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
-            channel: id("c_chat"),
-        }))
-        .unwrap();
-    let chat = ada.chat.state().unwrap();
-    assert_eq!(
-        chat.read_mark("c_chat", ADA),
-        crate::parts::ReadMark::default()
-    );
-    assert!(
-        chat.message_rows(&ada.messages(), "c_chat").len() == 1
-            && chat.channels.get(&id("c_chat")).is_none(),
-        "its messages stay in their part, in a channel nobody shows"
-    );
-}
-
-fn a_read_mark_is_the_readers_own_and_never_counts_unseen_messages() {
-    let mut ada = Talk::new();
-    for text in ["one", "two", "three"] {
-        ada.apply(post(text)).unwrap();
-    }
-    let mut bo = ada.fork_as(BO);
-    let mark = |seen: u32| {
-        Chat::MARK_READ.with(chat::MarkRead {
-            channel: id("c_chat"),
-            part: 0,
-            seen,
-        })
-    };
-    bo.chat.apply(mark(2)).unwrap();
-    let chat = bo.chat.state().unwrap();
-    let held = bo.messages();
-    assert_eq!(chat.unread(&held, "c_chat", BO), 1);
-    assert_eq!(chat.unread(&held, "c_chat", ADA), 3, "Ada read nothing");
-    bo.chat.apply(mark(3)).unwrap();
-    let three = crate::parts::ReadMark { part: 0, seen: 3 };
-    assert_eq!(bo.chat.state().unwrap().read_mark("c_chat", BO), three);
-    bo.chat.apply(mark(1)).unwrap();
-    assert_eq!(
-        bo.chat.state().unwrap().read_mark("c_chat", BO),
-        three,
-        "a mark never moves back"
-    );
-}
-
-/// The workspace's channels and categories, and how far each person read them.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn channels_categories_and_read_marks_are_kept_in_the_chat_record() {
-    crate::testing::cases!(
-        a_new_chat_starts_with_its_creator_and_the_workspaces_two_channels,
-        channels_and_categories_are_made_moved_and_deleted,
-        the_workspaces_channels_are_arranged_in_one_go,
-        a_channel_is_filed_only_under_a_category_that_exists,
-        deleting_a_channel_takes_its_read_marks,
-        a_read_mark_is_the_readers_own_and_never_counts_unseen_messages,
-    );
-}
-
-fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
-    const AGENT: &str = "agent-task:22222222-2222-4222-8222-222222222222";
-    let mut ada = Talk::new();
-    ada.apply(post("@Tide chart the revenue")).unwrap();
-    let summons = ada.said("@Tide chart the revenue");
-    let mut agent = ada.fork_as(AGENT);
-    let work = |state: &str, outcome: &str| {
-        ChatPart::RECORD_WORK.with(chat_part::RecordWork {
-            message: summons.clone(),
-            work: WorkUpdate {
-                state: state.into(),
-                app: None,
-                did: Some("Add function".into()),
-                about: Some("Revenue".into()),
-                trace: vec![StepUpdate {
-                    id: "00000000-0000-4000-8000-000000000007".into(),
-                    sequence: 0,
-                    resource: "calculator.workspace".into(),
-                    label: "Add function".into(),
-                    outcome: outcome.into(),
-                    why: None,
-                }],
-                detail: None,
-            },
-            say: Some("On it.".into()),
-        })
-    };
-    agent.apply(work("doing", "asked")).unwrap();
-    agent.apply(work("done", "applied")).unwrap();
-    let chat = agent.chat.state().unwrap();
-    let held = agent.messages();
-    let reply = chat
-        .message_row(&held, reply_id(&summons, AGENT).as_str())
-        .expect("the agent's reply is made once");
-    assert_eq!(reply.author, AGENT);
-    assert_eq!(reply.parent.as_deref(), Some(summons.as_str()));
-    assert_eq!(reply.text, "On it.");
-    assert!(
-        reply
-            .author
-            .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-    );
-    let work = reply.work.expect("the reply carries the work");
-    assert!(matches!(
-        work.state,
-        crate::model::AgentWorkState::Done { .. }
-    ));
-    assert_eq!(work.trace.len(), 1, "a step is rewritten, never repeated");
-    assert_eq!(
-        work.trace[0].outcome,
-        crate::model::AgentStepOutcome::Applied
-    );
-    assert_eq!(chat.message_rows(&held, "c_chat").len(), 2);
-    assert!(
-        agent
-            .apply(ChatPart::RECORD_WORK.with(chat_part::RecordWork {
-                message: summons,
-                work: WorkUpdate {
-                    state: "dancing".into(),
-                    app: None,
-                    did: None,
-                    about: None,
-                    trace: Vec::new(),
-                    detail: None,
-                },
-                say: None,
+    phase deleting_a_channel_takes_its_read_marks;
+    {
+        let mut ada = Talk::new();
+        ada.apply(post("hello")).unwrap();
+        ada.chat
+            .apply(Chat::MARK_READ.with(chat::MarkRead {
+                channel: id("c_chat"),
+                part: 0,
+                seen: 1,
             }))
-            .is_err(),
-        "an unknown state is refused"
-    );
+            .unwrap();
+        ada.chat
+            .apply_confirmed(Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
+                channel: id("c_chat"),
+            }))
+            .unwrap();
+        let chat = ada.chat.state().unwrap();
+        assert_eq!(
+            chat.read_mark("c_chat", ADA),
+            crate::parts::ReadMark::default()
+        );
+        assert!(
+            chat.message_rows(&ada.messages(), "c_chat").len() == 1
+                && chat.channels.get(&id("c_chat")).is_none(),
+            "its messages stay in their part, in a channel nobody shows"
+        );
+    }
+
+    phase a_read_mark_is_the_readers_own_and_never_counts_unseen_messages;
+    {
+        let mut ada = Talk::new();
+        for text in ["one", "two", "three"] {
+            ada.apply(post(text)).unwrap();
+        }
+        let mut bo = ada.fork_as(BO);
+        let mark = |seen: u32| {
+            Chat::MARK_READ.with(chat::MarkRead {
+                channel: id("c_chat"),
+                part: 0,
+                seen,
+            })
+        };
+        bo.chat.apply(mark(2)).unwrap();
+        let chat = bo.chat.state().unwrap();
+        let held = bo.messages();
+        assert_eq!(chat.unread(&held, "c_chat", BO), 1);
+        assert_eq!(chat.unread(&held, "c_chat", ADA), 3, "Ada read nothing");
+        bo.chat.apply(mark(3)).unwrap();
+        let three = crate::parts::ReadMark { part: 0, seen: 3 };
+        assert_eq!(bo.chat.state().unwrap().read_mark("c_chat", BO), three);
+        bo.chat.apply(mark(1)).unwrap();
+        assert_eq!(
+            bo.chat.state().unwrap().read_mark("c_chat", BO),
+            three,
+            "a mark never moves back"
+        );
+    }
 }
 
 #[test]
@@ -1077,79 +711,131 @@ fn messages_channels_and_categories_change_only_through_their_actions() {
     assert_eq!(chat.state().unwrap(), before);
 }
 
-fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
-    let mut ada = Talk::new();
-    ada.apply(post("base")).unwrap();
-    let base = ada.said("base");
-    let mut bo = ada.fork_as(BO);
-    ada.apply(post("from ada")).unwrap();
-    bo.apply(post("from bo")).unwrap();
-    let react = || reaction(&base).react("🎉").into();
-    ada.apply(react()).unwrap();
-    bo.apply(react()).unwrap();
-    bo.chat
-        .apply(Chat::SET_CHANNEL_TOPIC.with(chat::SetChannelTopic {
-            channel: id("c_chat"),
-            topic: "Planning".into(),
-        }))
-        .unwrap();
-    bo.apply(reply(&base, "threaded")).unwrap();
-    ada.sync_with(&mut bo);
-    assert_eq!(ada.chat.state().unwrap(), bo.chat.state().unwrap());
-    assert_eq!(ada.part.state().unwrap(), bo.part.state().unwrap());
-    let rows = ada.rows("c_chat");
-    assert_eq!(rows.len(), 4);
-    assert_eq!(reactors(&rows[0].reactions[0]), [ADA, BO]);
-    assert_eq!(
-        ada.chat
-            .state()
-            .unwrap()
-            .channels
-            .get(&id("c_chat"))
-            .unwrap()
-            .topic,
-        "Planning"
-    );
-}
+tilo_test_env::scenario! {
+    /// Concurrent writers and a replayed log end in one record.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn replicas_converge_and_a_replayed_log_reproduces_the_record;
 
-fn replaying_the_log_reproduces_the_record() {
-    let mut ada = Talk::new();
-    let mut fresh = ada.part.fork();
-    ada.set_now_ms(5_000);
-    ada.apply(post("one")).unwrap();
-    let one = ada.said("one");
-    ada.apply(reply(&one, "two")).unwrap();
-    ada.apply(reaction(&one).react("👍").into()).unwrap();
-    for envelope in ada.part.log().to_vec() {
-        fresh.replay(&envelope).unwrap();
+    phase first_opens_on_two_devices_converge_on_exactly_chat_and_voice;
+    {
+        let mut genesis = Replica::<Chat>::new().as_author(ADA);
+        // Each device seeds the record it found empty, at once: Ada's laptop
+        // and phone, and Bo in the same workspace. Each device writes its own
+        // changes for the person at it, as a host does: two devices writing as
+        // one actor would each make that actor's first change, which no sync
+        // can hold both of.
+        let mut laptop = genesis.fork().as_invoker(ADA);
+        let mut phone = genesis.fork().as_invoker(ADA);
+        let mut bo = genesis.fork().as_invoker(BO);
+        laptop.apply(begin("Ada", "AD")).unwrap();
+        phone.apply(begin("Ada", "AD")).unwrap();
+        bo.apply(begin("Bo", "BO")).unwrap();
+        // A device opening the workspace after it synced makes nothing more.
+        let mut first = genesis.fork().as_invoker(ADA);
+        first.apply(begin("Ada", "AD")).unwrap();
+        let mut second = first.fork().as_invoker(BO);
+        second.apply(begin("Bo", "BO")).unwrap();
+        laptop.sync_with(&mut phone).unwrap();
+        laptop.sync_with(&mut bo).unwrap();
+        first.sync_with(&mut second).unwrap();
+        let expected = vec![
+            (
+                CHAT_CHANNEL.to_owned(),
+                "chat".to_owned(),
+                ChannelKind::Text,
+            ),
+            (
+                VOICE_CHANNEL.to_owned(),
+                "voice".to_owned(),
+                ChannelKind::Voice,
+            ),
+        ];
+        for replica in [&laptop, &phone, &bo, &first, &second] {
+            let chat = replica.state().expect("the merged chat opens");
+            assert_eq!(workspace_channels(&chat), expected);
+            assert!(chat.categories.is_empty());
+            assert!(
+                chat.channels.quarantined().is_empty(),
+                "every channel is complete: {:?}",
+                chat.channels.quarantined()
+            );
+            for (_, channel) in chat.channels.iter() {
+                assert_eq!(channel.category, None);
+                assert!(channel.topic.is_empty() && !channel.archived);
+            }
+        }
+        assert_eq!(
+            laptop.state().unwrap().channels,
+            bo.state().unwrap().channels,
+            "every device holds the same two"
+        );
     }
-    assert_eq!(
-        ada.part.heads(),
-        fresh.heads(),
-        "the same changes, byte for byte"
-    );
-    let (left, right) = (ada.part.state().unwrap(), fresh.state().unwrap());
-    assert_eq!(left, right);
-    assert_eq!(
-        ada.chat
-            .state()
-            .unwrap()
-            .message_rows(&Messages::single(right), "c_chat")
-            .len(),
-        2
-    );
-}
 
-/// Concurrent writers and a replayed log end in one record.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn replicas_converge_and_a_replayed_log_reproduces_the_record() {
-    crate::testing::cases!(
-        first_opens_on_two_devices_converge_on_exactly_chat_and_voice,
-        two_replicas_converge_on_concurrent_posts_reactions_and_renames,
-        replaying_the_log_reproduces_the_record,
-    );
+    phase two_replicas_converge_on_concurrent_posts_reactions_and_renames;
+    {
+        let mut ada = Talk::new();
+        ada.apply(post("base")).unwrap();
+        let base = ada.said("base");
+        let mut bo = ada.fork_as(BO);
+        ada.apply(post("from ada")).unwrap();
+        bo.apply(post("from bo")).unwrap();
+        let react = || reaction(&base).react("🎉").into();
+        ada.apply(react()).unwrap();
+        bo.apply(react()).unwrap();
+        bo.chat
+            .apply(Chat::SET_CHANNEL_TOPIC.with(chat::SetChannelTopic {
+                channel: id("c_chat"),
+                topic: "Planning".into(),
+            }))
+            .unwrap();
+        bo.apply(reply(&base, "threaded")).unwrap();
+        ada.sync_with(&mut bo);
+        assert_eq!(ada.chat.state().unwrap(), bo.chat.state().unwrap());
+        assert_eq!(ada.part.state().unwrap(), bo.part.state().unwrap());
+        let rows = ada.rows("c_chat");
+        assert_eq!(rows.len(), 4);
+        assert_eq!(reactors(&rows[0].reactions[0]), [ADA, BO]);
+        assert_eq!(
+            ada.chat
+                .state()
+                .unwrap()
+                .channels
+                .get(&id("c_chat"))
+                .unwrap()
+                .topic,
+            "Planning"
+        );
+    }
+
+    phase replaying_the_log_reproduces_the_record;
+    {
+        let mut ada = Talk::new();
+        let mut fresh = ada.part.fork();
+        ada.set_now_ms(5_000);
+        ada.apply(post("one")).unwrap();
+        let one = ada.said("one");
+        ada.apply(reply(&one, "two")).unwrap();
+        ada.apply(reaction(&one).react("👍").into()).unwrap();
+        for envelope in ada.part.log().to_vec() {
+            fresh.replay(&envelope).unwrap();
+        }
+        assert_eq!(
+            ada.part.heads(),
+            fresh.heads(),
+            "the same changes, byte for byte"
+        );
+        let (left, right) = (ada.part.state().unwrap(), fresh.state().unwrap());
+        assert_eq!(left, right);
+        assert_eq!(
+            ada.chat
+                .state()
+                .unwrap()
+                .message_rows(&Messages::single(right), "c_chat")
+                .len(),
+            2
+        );
+    }
 }
 
 #[test]
@@ -1761,303 +1447,643 @@ fn reactors(group: &crate::model::Reaction) -> Vec<String> {
         .collect()
 }
 
-fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
-    let mut ada = workspace();
-    let mut bo = ada.fork().as_author(BO);
-    bo.apply(Chat::INTRODUCE.with(chat::Introduce {
-        name: String::new(),
-        initials: "BO".into(),
-        color: 2,
-    }))
-    .unwrap();
-    ada.sync_with(&mut bo).unwrap();
-    let chat = ada.state().unwrap();
-    let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
-    let row = chat
-        .conversation_rows(
-            ADA,
-            &crate::messages::Messages::default(),
-            &crate::projection::AgentNames::new(),
-        )
-        .into_iter()
-        .find(|row| row.id == with_bo.to_string())
-        .expect("Ada lists her conversation with Bo");
-    assert!(row.direct, "it is a conversation, not a channel");
-    assert_eq!(row.name, crate::identity::unnamed_label(BO));
-    let row = chat
-        .conversation_rows(
-            BO,
-            &crate::messages::Messages::default(),
-            &crate::projection::AgentNames::new(),
-        )
-        .into_iter()
-        .find(|row| row.id == with_bo.to_string())
-        .expect("Bo lists it too");
-    assert_eq!(row.name, "Ada", "each of them names the other");
-}
+tilo_test_env::scenario! {
+    /// A direct conversation: its name for each participant, who posts to it and its one id.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_conversation_is_named_and_shared_by_its_participants;
 
-/// A conversation's participants say who it is with, not who may use it:
-/// every member reads any conversation, and a member who is not one of its
-/// participants posts to it like anyone else.
-fn a_conversation_is_about_its_participants_not_who_may_read_it() {
-    const CY: &str = "u_cy";
-    let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
-    let mut ada = Talk::new();
-    let mut cy = ada.fork_as(CY);
-    cy.apply(post_to(with_bo.as_str(), "in their conversation"))
+    phase a_person_the_workspace_has_no_name_for_goes_by_their_tag;
+    {
+        let mut ada = workspace();
+        let mut bo = ada.fork().as_author(BO);
+        bo.apply(Chat::INTRODUCE.with(chat::Introduce {
+            name: String::new(),
+            initials: "BO".into(),
+            color: 2,
+        }))
         .unwrap();
-    ada.sync_with(&mut cy);
-    let rows = ada.rows(with_bo.as_str());
-    let row = rows
-        .iter()
-        .find(|row| row.text == "in their conversation")
-        .expect("a member who is not a participant posts to the conversation");
-    assert_eq!(row.author, CY);
-    assert_eq!(
-        ada.chat
-            .state()
-            .unwrap()
-            .conversation_participants(&with_bo)
-            .len(),
-        2,
-        "and the conversation stays Ada's and Bo's"
-    );
-}
+        ada.sync_with(&mut bo).unwrap();
+        let chat = ada.state().unwrap();
+        let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
+        let row = chat
+            .conversation_rows(
+                ADA,
+                &crate::messages::Messages::default(),
+                &crate::projection::AgentNames::new(),
+            )
+            .into_iter()
+            .find(|row| row.id == with_bo.to_string())
+            .expect("Ada lists her conversation with Bo");
+        assert!(row.direct, "it is a conversation, not a channel");
+        assert_eq!(row.name, crate::identity::unnamed_label(BO));
+        let row = chat
+            .conversation_rows(
+                BO,
+                &crate::messages::Messages::default(),
+                &crate::projection::AgentNames::new(),
+            )
+            .into_iter()
+            .find(|row| row.id == with_bo.to_string())
+            .expect("Bo lists it too");
+        assert_eq!(row.name, "Ada", "each of them names the other");
+    }
 
-/// Two devices opening the same conversation at once make one: its id names
-/// its participants, so neither has to write it first and neither can make a
-/// second.
-fn two_devices_opening_the_same_conversation_at_once_share_one() {
-    let mut ada = Talk::new();
-    let mut bo = ada.fork_as(BO);
-    let from_ada = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
-    let from_bo = Chat::direct_id([MemberId::person(BO), MemberId::person(ADA)]);
-    assert_eq!(from_ada, from_bo, "the id is the set, in any order");
-    ada.apply(post_to(from_ada.as_str(), "from Ada")).unwrap();
-    bo.apply(post_to(from_bo.as_str(), "from Bo")).unwrap();
-    ada.sync_with(&mut bo);
-    let rows = ada.rows(from_ada.as_str());
-    for text in ["from Ada", "from Bo"] {
-        assert!(
-            rows.iter().any(|row| row.text == text),
-            "both messages are in the one conversation: {rows:?}"
+    phase a_conversation_is_about_its_participants_not_who_may_read_it;
+    // A conversation's participants say who it is with, not who may use it:
+    // every member reads any conversation, and a member who is not one of its
+    // participants posts to it like anyone else.
+    {
+        const CY: &str = "u_cy";
+        let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
+        let mut ada = Talk::new();
+        let mut cy = ada.fork_as(CY);
+        cy.apply(post_to(with_bo.as_str(), "in their conversation"))
+            .unwrap();
+        ada.sync_with(&mut cy);
+        let rows = ada.rows(with_bo.as_str());
+        let row = rows
+            .iter()
+            .find(|row| row.text == "in their conversation")
+            .expect("a member who is not a participant posts to the conversation");
+        assert_eq!(row.author, CY);
+        assert_eq!(
+            ada.chat
+                .state()
+                .unwrap()
+                .conversation_participants(&with_bo)
+                .len(),
+            2,
+            "and the conversation stays Ada's and Bo's"
         );
     }
-    let chat = ada.chat.state().unwrap();
-    assert!(
-        !chat.channels.contains(&from_ada),
-        "the conversation is never written first: its id is enough"
-    );
-    assert_eq!(
-        Chat::direct_participants(&from_ada).map(|participants| participants.len()),
-        Some(2)
-    );
+
+    phase two_devices_opening_the_same_conversation_at_once_share_one;
+    // Two devices opening the same conversation at once make one: its id names
+    // its participants, so neither has to write it first and neither can make a
+    // second.
+    {
+        let mut ada = Talk::new();
+        let mut bo = ada.fork_as(BO);
+        let from_ada = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
+        let from_bo = Chat::direct_id([MemberId::person(BO), MemberId::person(ADA)]);
+        assert_eq!(from_ada, from_bo, "the id is the set, in any order");
+        ada.apply(post_to(from_ada.as_str(), "from Ada")).unwrap();
+        bo.apply(post_to(from_bo.as_str(), "from Bo")).unwrap();
+        ada.sync_with(&mut bo);
+        let rows = ada.rows(from_ada.as_str());
+        for text in ["from Ada", "from Bo"] {
+            assert!(
+                rows.iter().any(|row| row.text == text),
+                "both messages are in the one conversation: {rows:?}"
+            );
+        }
+        let chat = ada.chat.state().unwrap();
+        assert!(
+            !chat.channels.contains(&from_ada),
+            "the conversation is never written first: its id is enough"
+        );
+        assert_eq!(
+            Chat::direct_participants(&from_ada).map(|participants| participants.len()),
+            Some(2)
+        );
+    }
 }
 
-/// A direct conversation: its name for each participant, who posts to it and its one id.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn a_conversation_is_named_and_shared_by_its_participants() {
-    crate::testing::cases!(
-        a_person_the_workspace_has_no_name_for_goes_by_their_tag,
-        a_conversation_is_about_its_participants_not_who_may_read_it,
-        two_devices_opening_the_same_conversation_at_once_share_one,
-    );
-}
+tilo_test_env::scenario! {
+    /// What changes a message after it was posted.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn reactions_edits_agent_work_and_retries_change_a_message;
 
-/// A retry asks the agent again on the same message by moving it to its next attempt: the reply
-/// the agent writes then is a reply of its own, and the reply the person gave up on is never
-/// reused. A stale press — one whose reply is no longer the message's attempt — asks nothing.
-fn a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing() {
-    let mut ada = Talk::new();
-    ada.apply(post("Add the revenue curve")).unwrap();
-    let summons = ada.said("Add the revenue curve");
-    // The agent's answer, as an agent writes it: `record-work` derives the reply the person then
-    // gives up on.
-    let agent = "agent:tide";
-    let mut answer = ada.part.fork().as_agent_for(agent, ADA);
-    answer
-        .apply(
-            ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
+    phase reactions_are_each_persons_own;
+    {
+        let mut ada = Talk::new();
+        ada.apply(post("ship it")).unwrap();
+        let message = ada.said("ship it");
+        let react = |emoji: &str| reaction(&message).react(emoji).into();
+        let mut bo = ada.fork_as(BO);
+        ada.apply(react("🎉")).unwrap();
+        bo.apply(react("🎉")).unwrap();
+        bo.apply(react("👍")).unwrap();
+        ada.sync_with(&mut bo);
+        let reactions = |talk: &Talk| {
+            talk.rows("c_chat")[0]
+                .reactions
+                .iter()
+                .map(|reaction| (reaction.emoji.clone(), reactors(reaction)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            reactions(&ada),
+            [
+                ("🎉".to_owned(), vec![ADA.to_owned(), BO.to_owned()]),
+                ("👍".to_owned(), vec![BO.to_owned()]),
+            ],
+            "both first reactions with one emoji count"
+        );
+        bo.apply(reaction(&message).unreact("👍").into()).unwrap();
+        bo.apply(reaction(&message).unreact("🎉").into()).unwrap();
+        assert_eq!(
+            reactions(&bo),
+            [("🎉".to_owned(), vec![ADA.to_owned()])],
+            "taking back a reaction leaves the others'"
+        );
+        assert!(bo.apply(react("")).is_err());
+    }
+
+    phase an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message;
+    {
+        let mut ada = Talk::new();
+        ada.set_now_ms(10_000);
+        ada.apply(post("teh plan")).unwrap();
+        let message = ada.said("teh plan");
+        ada.set_now_ms(20_000);
+        let edit = |text: &str| {
+            ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+                message: message.clone(),
+                text: text.into(),
+                body: None,
+                mentions: None,
+            })
+        };
+        ada.apply(edit("the plan, @Bo")).unwrap();
+        ada.apply(edit("the plan, @Bo")).unwrap();
+        let row = ada.rows("c_chat").remove(0);
+        assert!(row.edited);
+        assert_eq!(row.text, "the plan, @Bo");
+        assert_eq!(
+            row.history,
+            [crate::model::EditRecord {
+                ts: 20,
+                text: "teh plan".into(),
+            }],
+            "an unchanged edit records nothing"
+        );
+        assert_eq!(row.mentions.len(), 1, "the edit's mentions are resolved");
+        ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
+            message: message.clone(),
+        }))
+        .unwrap();
+        assert!(ada.messages().is_empty());
+        assert!(
+            ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage { message }))
+                .is_err()
+        );
+    }
+
+    phase an_edit_is_held_to_the_longest_text_a_message_may_hold;
+    // An edit is held to the length a post is: one byte past the longest text is
+    // refused and leaves the message as it read, and the longest text is taken whole.
+    {
+        let mut ada = Talk::new();
+        ada.apply(post("short")).unwrap();
+        let message = ada.said("short");
+        let edit = |text: String| {
+            ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+                message: message.clone(),
+                text,
+                body: None,
+                mentions: None,
+            })
+        };
+        assert!(
+            ada.apply(edit("x".repeat(MAX_MESSAGE_TEXT_BYTES + 1)))
+                .is_err(),
+            "one byte past the longest text"
+        );
+        let row = ada.rows("c_chat").remove(0);
+        assert_eq!(row.text, "short", "a refused edit changes nothing");
+        assert!(!row.edited, "and records no edit");
+        ada.apply(edit("x".repeat(MAX_MESSAGE_TEXT_BYTES))).unwrap();
+        let row = ada.rows("c_chat").remove(0);
+        assert_eq!(row.text.len(), MAX_MESSAGE_TEXT_BYTES);
+        assert!(row.edited);
+    }
+
+    phase an_agent_records_its_work_on_its_own_reply_to_the_summons;
+    {
+        const AGENT: &str = "agent-task:22222222-2222-4222-8222-222222222222";
+        let mut ada = Talk::new();
+        ada.apply(post("@Tide chart the revenue")).unwrap();
+        let summons = ada.said("@Tide chart the revenue");
+        let mut agent = ada.fork_as(AGENT);
+        let work = |state: &str, outcome: &str| {
+            ChatPart::RECORD_WORK.with(chat_part::RecordWork {
                 message: summons.clone(),
-                work: crate::record::WorkUpdate {
-                    state: "provider_failed".into(),
+                work: WorkUpdate {
+                    state: state.into(),
                     app: None,
-                    did: None,
-                    about: None,
-                    trace: Vec::new(),
+                    did: Some("Add function".into()),
+                    about: Some("Revenue".into()),
+                    trace: vec![StepUpdate {
+                        id: "00000000-0000-4000-8000-000000000007".into(),
+                        sequence: 0,
+                        resource: "calculator.workspace".into(),
+                        label: "Add function".into(),
+                        outcome: outcome.into(),
+                        why: None,
+                    }],
                     detail: None,
                 },
-                say: Some("The model connection closed".into()),
-            }),
-        )
+                say: Some("On it.".into()),
+            })
+        };
+        agent.apply(work("doing", "asked")).unwrap();
+        agent.apply(work("done", "applied")).unwrap();
+        let chat = agent.chat.state().unwrap();
+        let held = agent.messages();
+        let reply = chat
+            .message_row(&held, reply_id(&summons, AGENT).as_str())
+            .expect("the agent's reply is made once");
+        assert_eq!(reply.author, AGENT);
+        assert_eq!(reply.parent.as_deref(), Some(summons.as_str()));
+        assert_eq!(reply.text, "On it.");
+        assert!(
+            reply
+                .author
+                .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+        );
+        let work = reply.work.expect("the reply carries the work");
+        assert!(matches!(
+            work.state,
+            crate::model::AgentWorkState::Done { .. }
+        ));
+        assert_eq!(work.trace.len(), 1, "a step is rewritten, never repeated");
+        assert_eq!(
+            work.trace[0].outcome,
+            crate::model::AgentStepOutcome::Applied
+        );
+        assert_eq!(chat.message_rows(&held, "c_chat").len(), 2);
+        assert!(
+            agent
+                .apply(ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+                    message: summons,
+                    work: WorkUpdate {
+                        state: "dancing".into(),
+                        app: None,
+                        did: None,
+                        about: None,
+                        trace: Vec::new(),
+                        detail: None,
+                    },
+                    say: None,
+                }))
+                .is_err(),
+            "an unknown state is refused"
+        );
+    }
+
+    phase a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing;
+    // A retry asks the agent again on the same message by moving it to its next attempt: the reply
+    // the agent writes then is a reply of its own, and the reply the person gave up on is never
+    // reused. A stale press — one whose reply is no longer the message's attempt — asks nothing.
+    {
+        let mut ada = Talk::new();
+        ada.apply(post("Add the revenue curve")).unwrap();
+        let summons = ada.said("Add the revenue curve");
+        // The agent's answer, as an agent writes it: `record-work` derives the reply the person then
+        // gives up on.
+        let agent = "agent:tide";
+        let mut answer = ada.part.fork().as_agent_for(agent, ADA);
+        answer
+            .apply(
+                ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
+                    message: summons.clone(),
+                    work: crate::record::WorkUpdate {
+                        state: "provider_failed".into(),
+                        app: None,
+                        did: None,
+                        about: None,
+                        trace: Vec::new(),
+                        detail: None,
+                    },
+                    say: Some("The model connection closed".into()),
+                }),
+            )
+            .unwrap();
+        ada.part.sync_with(&mut answer).unwrap();
+        let first = reply_id_at(&summons, agent, 0);
+        assert!(
+            ada.part.state().unwrap().messages.get(&first).is_some(),
+            "the agent wrote the reply the person gives up on"
+        );
+        ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
+            message: summons.clone(),
+            reply: first.clone(),
+        }))
         .unwrap();
-    ada.part.sync_with(&mut answer).unwrap();
-    let first = reply_id_at(&summons, agent, 0);
-    assert!(
-        ada.part.state().unwrap().messages.get(&first).is_some(),
-        "the agent wrote the reply the person gives up on"
-    );
-    ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
-        message: summons.clone(),
-        reply: first.clone(),
-    }))
-    .unwrap();
-    assert_eq!(
-        ada.part
-            .state()
-            .unwrap()
-            .messages
-            .get(&summons)
-            .unwrap()
-            .attempts,
-        1,
-        "the question is in its second attempt"
-    );
-    // The answer the agent writes now is the second attempt's reply, never the first's.
-    let second = reply_id_at(&summons, agent, 1);
-    assert_ne!(
-        first, second,
-        "a retried turn is answered in a reply of its own"
-    );
-    // A stale press (the same reply again, a step run twice) asks nothing: the message is in a
-    // later attempt now.
-    ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
-        message: summons.clone(),
-        reply: first,
-    }))
-    .unwrap();
-    assert_eq!(
-        ada.part
-            .state()
-            .unwrap()
-            .messages
-            .get(&summons)
-            .unwrap()
-            .attempts,
-        1,
-        "a stale Retry asks nothing twice"
-    );
+        assert_eq!(
+            ada.part
+                .state()
+                .unwrap()
+                .messages
+                .get(&summons)
+                .unwrap()
+                .attempts,
+            1,
+            "the question is in its second attempt"
+        );
+        // The answer the agent writes now is the second attempt's reply, never the first's.
+        let second = reply_id_at(&summons, agent, 1);
+        assert_ne!(
+            first, second,
+            "a retried turn is answered in a reply of its own"
+        );
+        // A stale press (the same reply again, a step run twice) asks nothing: the message is in a
+        // later attempt now.
+        ada.apply(ChatPart::RETRY.with(crate::messages::chat_part::Retry {
+            message: summons.clone(),
+            reply: first,
+        }))
+        .unwrap();
+        assert_eq!(
+            ada.part
+                .state()
+                .unwrap()
+                .messages
+                .get(&summons)
+                .unwrap()
+                .attempts,
+            1,
+            "a stale Retry asks nothing twice"
+        );
+    }
 }
 
-/// An edit is held to the length a post is: one byte past the longest text is
-/// refused and leaves the message as it read, and the longest text is taken whole.
-fn an_edit_is_held_to_the_longest_text_a_message_may_hold() {
-    let mut ada = Talk::new();
-    ada.apply(post("short")).unwrap();
-    let message = ada.said("short");
-    let edit = |text: String| {
-        ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
-            message: message.clone(),
-            text,
-            body: None,
-            mentions: None,
-        })
-    };
-    assert!(
-        ada.apply(edit("x".repeat(MAX_MESSAGE_TEXT_BYTES + 1)))
+tilo_test_env::scenario! {
+    /// What a post, a reply, a quote and an attachment record, and which of them are refused.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn posts_replies_quotes_and_attachments_are_recorded_or_refused;
+
+    phase posting_records_its_author_time_and_mentions;
+    {
+        let mut ada = Talk::new();
+        ada.set_now_ms(1_234_000);
+        ada.apply(post("hi @Bo, the deck is up")).unwrap();
+        let chat = ada.chat.state().unwrap();
+        let rows = ada.rows("c_chat");
+        assert_eq!(rows.len(), 1);
+        let message = &rows[0];
+        assert_eq!(message.author, ADA, "the poster is whoever invoked");
+        assert_eq!(message.ts, 1234, "the time is the action's");
+        assert_eq!(message.mentions.len(), 1);
+        assert_eq!(message.mentions[0].user, BO);
+        assert_eq!(chat.unread(&ada.messages(), "c_chat", BO), 1);
+    }
+
+    phase a_post_that_says_nothing_or_is_misplaced_is_refused;
+    {
+        let mut ada = Talk::new();
+        assert!(ada.apply(post("   ")).is_err(), "an empty message");
+        assert!(
+            ada.apply(post(&"x".repeat(MAX_MESSAGE_TEXT_BYTES + 1)))
+                .is_err(),
+            "a document, not a turn"
+        );
+        assert!(
+            ada.apply(post_to("c_voice", "hello")).is_err(),
+            "a voice channel has no timeline"
+        );
+        assert!(ada.apply(post_to("c_gone", "hello")).is_err());
+        assert!(
+            ada.apply(ChatPart::POST.with(chat_part::Post {
+                message: NewMessage {
+                    channel: id("c_chat"),
+                    text: "look".into(),
+                    parent: None,
+                    quoted: None,
+                    body: None,
+                    attachments: vec![tilo_reference::Attached::Image {
+                        name: "shot.png".into(),
+                        blob: "not-a-hash".into(),
+                        w: 10,
+                        h: 10,
+                    },],
+                    mentions: None,
+                    written: None,
+                },
+            }))
             .is_err(),
-        "one byte past the longest text"
-    );
-    let row = ada.rows("c_chat").remove(0);
-    assert_eq!(row.text, "short", "a refused edit changes nothing");
-    assert!(!row.edited, "and records no edit");
-    ada.apply(edit("x".repeat(MAX_MESSAGE_TEXT_BYTES))).unwrap();
-    let row = ada.rows("c_chat").remove(0);
-    assert_eq!(row.text.len(), MAX_MESSAGE_TEXT_BYTES);
-    assert!(row.edited);
-}
+            "an attachment is a content address"
+        );
+        assert!(ada.messages().is_empty());
+    }
 
-/// What changes a message after it was posted.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn reactions_edits_agent_work_and_retries_change_a_message() {
-    crate::testing::cases!(
-        reactions_are_each_persons_own,
-        an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message,
-        an_edit_is_held_to_the_longest_text_a_message_may_hold,
-        an_agent_records_its_work_on_its_own_reply_to_the_summons,
-        a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing,
-    );
-}
+    phase a_reply_to_a_missing_or_deleted_message_is_refused;
+    {
+        let mut ada = Talk::new();
+        assert!(
+            ada.apply(reply(&id("missing"), "Where did it go?"))
+                .is_err()
+        );
+        assert!(ada.messages().is_empty());
 
-fn a_reply_that_quotes_a_span_stores_the_span_and_its_words() {
-    // A reply answering a run of a message carries the run as it read when it was written, and
-    // where it stands in the answered message, so the quote draws those words and pressing it
-    // opens on them.
-    let mut ada = Talk::new();
-    let answered = "The curve is flat from April to June, then climbs.";
-    ada.apply(post(answered)).unwrap();
-    let parent = ada.said(answered);
-    let chosen = "flat from April to June";
-    let start = answered.find(chosen).expect("the words are in the message");
-    let end = start + chosen.len();
-    let quote = crate::record::Quote {
-        text: chosen.to_owned(),
-        start: u64::try_from(start).expect("an offset"),
-        end: u64::try_from(end).expect("an offset"),
-    };
-    ada.apply(ChatPart::POST.with(chat_part::Post {
-        message: NewMessage {
-            channel: id("c_chat"),
-            text: "so the summer is the flat one".into(),
-            parent: Some(parent.clone()),
-            quoted: Some(quote.clone()),
-            body: None,
-            attachments: Vec::new(),
-            mentions: None,
-            written: None,
-        },
-    }))
-    .unwrap();
-    let reply = ada
-        .part
-        .state()
-        .unwrap()
-        .messages
-        .iter()
-        .find(|(_, message)| message.parent.as_ref() == Some(&parent))
-        .map(|(_, message)| message.clone())
-        .expect("the reply is stored");
-    assert_eq!(
-        reply.quoted,
-        Some(quote),
-        "the reply keeps the run it quotes, never the whole message"
-    );
-    // And the projection the window and a place read carries it, so the quote draws the span.
-    let rows = ada.rows("c_chat");
-    let parent_text = parent.to_string();
-    let said = rows
-        .iter()
-        .find(|row| row.parent.as_ref() == Some(&parent_text))
-        .expect("the reply's row");
-    assert_eq!(
-        said.quoted.as_ref().map(|quoted| quoted.text.as_str()),
-        Some(chosen)
-    );
-}
+        ada.apply(post("The plan")).unwrap();
+        let parent = ada.said("The plan");
+        ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
+            message: parent.clone(),
+        }))
+        .unwrap();
+        assert!(ada.apply(reply(&parent, "My answer")).is_err());
+        assert!(
+            ada.messages().is_empty(),
+            "a reply must not be accepted into a thread nobody can open"
+        );
+    }
 
-fn a_quote_outside_its_answered_message_is_refused() {
-    // A quoted span names a run of the message it answers: one past the end, backwards, or of a
-    // message that is not the one answered is refused, so a quote never opens on nothing.
-    let mut ada = Talk::new();
-    ada.apply(post("A short note")).unwrap();
-    let parent = ada.said("A short note");
-    let quote = |start: u64, end: u64| crate::record::Quote {
-        text: "short".to_owned(),
-        start,
-        end,
-    };
-    for (start, end) in [(0, 500), (5, 2), (3, 3)] {
+    phase an_attachment_is_posted_by_its_content_address;
+    {
+        let mut ada = Talk::new();
+        let blob = "ab".repeat(32);
+        ada.apply(ChatPart::POST.with(chat_part::Post {
+            message: NewMessage {
+                channel: id("c_chat"),
+                text: String::new(),
+                parent: None,
+                quoted: None,
+                body: None,
+                attachments: vec![tilo_reference::Attached::File {
+                    name: "notes.md".into(),
+                    blob: blob.clone(),
+                    size: 1200,
+                }],
+                mentions: None,
+                written: None,
+            },
+        }))
+        .unwrap();
+        let rows = ada.rows("c_chat");
+        assert_eq!(
+            rows[0].attachments,
+            [tilo_reference::Attached::File {
+                name: "notes.md".into(),
+                blob,
+                size: 1200,
+            }]
+        );
+    }
+
+    phase a_resource_a_session_places_is_attachable_by_its_published_address;
+    {
+        // A tlolang app publishes each of its resources by its address (`tl:<app>:<id>`, the root
+        // of Tasks among them): a reference to one names the address and the app the address
+        // spells, and the catalogue names its kind. It attaches as any shared record does, and it
+        // reads back from the record unchanged — the address the drag carried, never a second form
+        // invented for it.
+        const ROOT: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+        let mut ada = Talk::new();
+        let attached = tilo_reference::Attached::resource(
+            tilo_reference::ResourceAt {
+                app: "so.tilo.lang.tasks".into(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole(
+                    "tl.so.tilo.lang.tasks.Tasks",
+                    ROOT,
+                    "Tasks",
+                ),
+            },
+            None,
+            "Tasks",
+        );
+        assert!(
+            crate::record::valid_attached(&attached),
+            "a published resource address is a bounded address"
+        );
+        ada.apply(ChatPart::POST.with(chat_part::Post {
+            message: NewMessage {
+                channel: id("c_chat"),
+                text: "what is left?".into(),
+                parent: None,
+                quoted: None,
+                body: None,
+                attachments: vec![attached.clone()],
+                mentions: None,
+                written: None,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            ada.rows("c_chat")[0].attachments,
+            [attached],
+            "the resource the person dropped rides with the message, as it was attached"
+        );
+    }
+
+    phase threads_answer_top_level_messages_of_their_channel;
+    {
+        let mut ada = Talk::new();
+        ada.apply(post("the plan")).unwrap();
+        let plan = ada.said("the plan");
+        ada.apply(reply(&plan, "sounds good")).unwrap();
+        let answer = ada.said("sounds good");
+        assert!(
+            ada.apply(reply(&answer, "nested")).is_err(),
+            "a reply answers a top-level message"
+        );
+        let rows = ada.rows("c_chat");
+        assert_eq!(crate::model::reply_count(&rows, plan.as_str()), 1);
+        assert_eq!(ada.messages().top_level(&id("c_chat")), 1);
+    }
+
+    phase a_reply_that_quotes_a_span_stores_the_span_and_its_words;
+    {
+        // A reply answering a run of a message carries the run as it read when it was written, and
+        // where it stands in the answered message, so the quote draws those words and pressing it
+        // opens on them.
+        let mut ada = Talk::new();
+        let answered = "The curve is flat from April to June, then climbs.";
+        ada.apply(post(answered)).unwrap();
+        let parent = ada.said(answered);
+        let chosen = "flat from April to June";
+        let start = answered.find(chosen).expect("the words are in the message");
+        let end = start + chosen.len();
+        let quote = crate::record::Quote {
+            text: chosen.to_owned(),
+            start: u64::try_from(start).expect("an offset"),
+            end: u64::try_from(end).expect("an offset"),
+        };
+        ada.apply(ChatPart::POST.with(chat_part::Post {
+            message: NewMessage {
+                channel: id("c_chat"),
+                text: "so the summer is the flat one".into(),
+                parent: Some(parent.clone()),
+                quoted: Some(quote.clone()),
+                body: None,
+                attachments: Vec::new(),
+                mentions: None,
+                written: None,
+            },
+        }))
+        .unwrap();
+        let reply = ada
+            .part
+            .state()
+            .unwrap()
+            .messages
+            .iter()
+            .find(|(_, message)| message.parent.as_ref() == Some(&parent))
+            .map(|(_, message)| message.clone())
+            .expect("the reply is stored");
+        assert_eq!(
+            reply.quoted,
+            Some(quote),
+            "the reply keeps the run it quotes, never the whole message"
+        );
+        // And the projection the window and a place read carries it, so the quote draws the span.
+        let rows = ada.rows("c_chat");
+        let parent_text = parent.to_string();
+        let said = rows
+            .iter()
+            .find(|row| row.parent.as_ref() == Some(&parent_text))
+            .expect("the reply's row");
+        assert_eq!(
+            said.quoted.as_ref().map(|quoted| quoted.text.as_str()),
+            Some(chosen)
+        );
+    }
+
+    phase a_quote_outside_its_answered_message_is_refused;
+    {
+        // A quoted span names a run of the message it answers: one past the end, backwards, or of a
+        // message that is not the one answered is refused, so a quote never opens on nothing.
+        let mut ada = Talk::new();
+        ada.apply(post("A short note")).unwrap();
+        let parent = ada.said("A short note");
+        let quote = |start: u64, end: u64| crate::record::Quote {
+            text: "short".to_owned(),
+            start,
+            end,
+        };
+        for (start, end) in [(0, 500), (5, 2), (3, 3)] {
+            assert!(
+                ada.apply(ChatPart::POST.with(chat_part::Post {
+                    message: NewMessage {
+                        channel: id("c_chat"),
+                        text: "an answer".into(),
+                        parent: Some(parent.clone()),
+                        quoted: Some(quote(start, end)),
+                        body: None,
+                        attachments: Vec::new(),
+                        mentions: None,
+                        written: None,
+                    },
+                }))
+                .is_err(),
+                "a run {start}..{end} is no span of the answered message"
+            );
+        }
+        // A run that ends inside a character is no span either.
+        ada.apply(post("n\u{e9}")).unwrap();
+        let accented = ada.said("n\u{e9}");
         assert!(
             ada.apply(ChatPart::POST.with(chat_part::Post {
                 message: NewMessage {
                     channel: id("c_chat"),
                     text: "an answer".into(),
-                    parent: Some(parent.clone()),
-                    quoted: Some(quote(start, end)),
+                    parent: Some(accented),
+                    quoted: Some(quote(0, 2)),
                     body: None,
                     attachments: Vec::new(),
                     mentions: None,
@@ -2065,53 +2091,17 @@ fn a_quote_outside_its_answered_message_is_refused() {
                 },
             }))
             .is_err(),
-            "a run {start}..{end} is no span of the answered message"
+            "a run 0..2 splits the second character"
         );
     }
-    // A run that ends inside a character is no span either.
-    ada.apply(post("n\u{e9}")).unwrap();
-    let accented = ada.said("n\u{e9}");
-    assert!(
-        ada.apply(ChatPart::POST.with(chat_part::Post {
-            message: NewMessage {
-                channel: id("c_chat"),
-                text: "an answer".into(),
-                parent: Some(accented),
-                quoted: Some(quote(0, 2)),
-                body: None,
-                attachments: Vec::new(),
-                mentions: None,
-                written: None,
-            },
-        }))
-        .is_err(),
-        "a run 0..2 splits the second character"
-    );
-}
 
-/// The longest text a message may hold is taken whole; one byte more is
-/// refused (`a_post_that_says_nothing_or_is_misplaced_is_refused`).
-fn a_message_of_exactly_the_longest_text_is_taken() {
-    let mut ada = Talk::new();
-    ada.apply(post(&"x".repeat(MAX_MESSAGE_TEXT_BYTES)))
-        .unwrap();
-    assert_eq!(ada.rows("c_chat")[0].text.len(), MAX_MESSAGE_TEXT_BYTES);
-}
-
-/// What a post, a reply, a quote and an attachment record, and which of them are refused.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn posts_replies_quotes_and_attachments_are_recorded_or_refused() {
-    crate::testing::cases!(
-        posting_records_its_author_time_and_mentions,
-        a_post_that_says_nothing_or_is_misplaced_is_refused,
-        a_reply_to_a_missing_or_deleted_message_is_refused,
-        an_attachment_is_posted_by_its_content_address,
-        a_resource_a_session_places_is_attachable_by_its_published_address,
-        threads_answer_top_level_messages_of_their_channel,
-        a_reply_that_quotes_a_span_stores_the_span_and_its_words,
-        a_quote_outside_its_answered_message_is_refused,
-        a_message_of_exactly_the_longest_text_is_taken,
-    );
+    phase a_message_of_exactly_the_longest_text_is_taken;
+    // The longest text a message may hold is taken whole; one byte more is
+    // refused (`a_post_that_says_nothing_or_is_misplaced_is_refused`).
+    {
+        let mut ada = Talk::new();
+        ada.apply(post(&"x".repeat(MAX_MESSAGE_TEXT_BYTES)))
+            .unwrap();
+        assert_eq!(ada.rows("c_chat")[0].text.len(), MAX_MESSAGE_TEXT_BYTES);
+    }
 }

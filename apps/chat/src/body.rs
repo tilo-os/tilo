@@ -93,56 +93,54 @@ mod tests {
         }
     }
 
-    fn a_body_reads_back_as_plain_text_and_its_mentions() {
-        let mut first = BlockContent::paragraph("a", "hi @Ada");
-        first.marks = vec![MarkSpan::new(3..7, Mark::Mention("u-ada".into()))];
-        let second = BlockContent::paragraph("b", "and @Ada again");
-        let blocks = [first, second];
-        assert_eq!(plain_text(&blocks), "hi @Ada\nand @Ada again");
-        let found = mentions(&blocks, &[ada()]);
-        assert_eq!(found.len(), 2, "{found:?}");
-        assert_eq!((found[0].start, found[0].len), (3, 4));
-        assert_eq!(found[0].slice(&plain_text(&blocks)), "@Ada");
-        assert_eq!(
-            found[1].slice(&plain_text(&blocks)),
-            "@Ada",
-            "typed by hand"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A message body read back, as it is written now and as an old message kept it.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn a_body_reads_as_text_and_mentions_new_or_old;
 
-    fn an_old_message_shows_its_text_with_its_mentions_marked() {
-        let text = "ping @Ada\nsecond line";
-        let mentions = [Mention {
-            user: "u-ada".into(),
-            start: 5,
-            len: 4,
-            is_agent: false,
-        }];
-        let blocks = legacy("m1", text, &mentions);
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, text);
-        assert_eq!(
-            blocks[0].marks,
-            [MarkSpan::new(5..9, Mark::Mention("u-ada".into()))]
-        );
-        let stale = [Mention {
-            start: 90,
-            ..mentions[0].clone()
-        }];
-        assert!(
-            legacy("m1", text, &stale)[0].marks.is_empty(),
-            "a stale offset is skipped"
-        );
-    }
+        phase a_body_reads_back_as_plain_text_and_its_mentions;
+        {
+            let mut first = BlockContent::paragraph("a", "hi @Ada");
+            first.marks = vec![MarkSpan::new(3..7, Mark::Mention("u-ada".into()))];
+            let second = BlockContent::paragraph("b", "and @Ada again");
+            let blocks = [first, second];
+            assert_eq!(plain_text(&blocks), "hi @Ada\nand @Ada again");
+            let found = mentions(&blocks, &[ada()]);
+            assert_eq!(found.len(), 2, "{found:?}");
+            assert_eq!((found[0].start, found[0].len), (3, 4));
+            assert_eq!(found[0].slice(&plain_text(&blocks)), "@Ada");
+            assert_eq!(
+                found[1].slice(&plain_text(&blocks)),
+                "@Ada",
+                "typed by hand"
+            );
+        }
 
-    /// A message body read back, as it is written now and as an old message kept it.
-    /// Each case was a test of its own, on a fixture of its own; a failure
-    /// names the cases that failed.
-    #[test]
-    fn a_body_reads_as_text_and_mentions_new_or_old() {
-        crate::testing::cases!(
-            a_body_reads_back_as_plain_text_and_its_mentions,
-            an_old_message_shows_its_text_with_its_mentions_marked,
-        );
+        phase an_old_message_shows_its_text_with_its_mentions_marked;
+        {
+            let text = "ping @Ada\nsecond line";
+            let mentions = [Mention {
+                user: "u-ada".into(),
+                start: 5,
+                len: 4,
+                is_agent: false,
+            }];
+            let blocks = legacy("m1", text, &mentions);
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].text, text);
+            assert_eq!(
+                blocks[0].marks,
+                [MarkSpan::new(5..9, Mark::Mention("u-ada".into()))]
+            );
+            let stale = [Mention {
+                start: 90,
+                ..mentions[0].clone()
+            }];
+            assert!(
+                legacy("m1", text, &stale)[0].marks.is_empty(),
+                "a stale offset is skipped"
+            );
+        }
     }
 }

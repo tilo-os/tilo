@@ -197,9 +197,10 @@ mod tests {
         .collect()
     }
 
-    #[test]
-    fn resolve_maps_whole_word_workspace_names_to_participant_ids() {
-        // Phase: a_mention_is_a_participant_id_not_a_string.
+    tilo_test_env::scenario! {
+        fn resolve_maps_whole_word_workspace_names_to_participant_ids;
+
+        phase a_mention_is_a_participant_id_not_a_string;
         {
             let m = resolve("morning @Ada", &workspace());
             assert_eq!(m.len(), 1);
@@ -207,7 +208,8 @@ mod tests {
             assert_eq!(m[0].slice("morning @Ada"), "@Ada");
             assert!(!m[0].is_agent);
         }
-        // Phase: the_longest_matching_name_wins.
+
+        phase the_longest_matching_name_wins;
         {
             let text = "@Ada Lovelace can you look";
             let m = resolve(text, &workspace());
@@ -215,7 +217,8 @@ mod tests {
             assert_eq!(m[0].user, "u_lovelace");
             assert_eq!(m[0].slice(text), "@Ada Lovelace");
         }
-        // Phase: an_agent_resolves_the_same_way_a_person_does.
+
+        phase an_agent_resolves_the_same_way_a_person_does;
         {
             let m = resolve("@Scribe please summarise", &workspace());
             assert_eq!(m[0].user, "agent:agent_scribe", "the member's key");
@@ -224,16 +227,19 @@ mod tests {
                 "the workspace's agent flag travels with the mention"
             );
         }
-        // Phase: an_unknown_name_is_left_as_prose.
+
+        phase an_unknown_name_is_left_as_prose;
         {
             assert!(resolve("email me @ ada@example.com", &workspace()).is_empty());
             assert!(resolve("@Nobody", &workspace()).is_empty());
         }
-        // Phase: a_name_inside_a_longer_word_is_not_a_mention.
+
+        phase a_name_inside_a_longer_word_is_not_a_mention;
         {
             assert!(resolve("@Adamant", &workspace()).is_empty());
         }
-        // Phase: offsets_slice_the_body_they_came_from.
+
+        phase offsets_slice_the_body_they_came_from;
         {
             let text = "cc @Ada and @Scribe";
             let m = resolve(text, &workspace());

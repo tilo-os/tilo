@@ -78,9 +78,10 @@ impl CallChromeMotion {
 mod tests {
     use super::CallChromeMotion;
 
-    #[test]
-    fn call_chrome_motion_lands_without_animating_when_reduced_or_pinned() {
-        // Phase: reduced_motion_snaps_the_same_geometry_driver_to_its_target.
+    tilo_test_env::scenario! {
+        fn call_chrome_motion_lands_without_animating_when_reduced_or_pinned;
+
+        phase reduced_motion_snaps_the_same_geometry_driver_to_its_target;
         {
             let mut motion = CallChromeMotion::default();
             motion.reconcile(true, &ui::theme::Theme::dark());
@@ -89,7 +90,7 @@ mod tests {
             assert!(!motion.animating);
         }
 
-        // Phase: visual_review_can_pin_a_true_mid_morph_geometry.
+        phase visual_review_can_pin_a_true_mid_morph_geometry;
         {
             let mut motion = CallChromeMotion::default();
             motion.pin_for_visual_review(0.5);

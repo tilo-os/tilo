@@ -184,9 +184,10 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     );
 }
 
-#[test]
-fn people_on_screen_are_named_honestly_and_you_by_your_name() {
-    // Phase: roster_vocabulary_never_calls_an_agent_a_person.
+tilo_test_env::scenario! {
+    fn people_on_screen_are_named_honestly_and_you_by_your_name;
+
+    phase roster_vocabulary_never_calls_an_agent_a_person;
     {
         let mut app = ChatApp::new_ephemeral();
         app.users = vec![user("u_me", false), user("u_scribe", true)];
@@ -200,7 +201,7 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         assert_eq!(app.roster_label(), "People");
     }
 
-    // Phase: an_unnamed_participant_is_not_shown_their_routing_token.
+    phase an_unnamed_participant_is_not_shown_their_routing_token;
     {
         let app = ChatApp::new_ephemeral();
         let stranger = "peer@9007495404254172154";
@@ -219,7 +220,7 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         );
     }
 
-    // Phase: your_own_name_is_known_before_the_workspace_has_heard_of_you.
+    phase your_own_name_is_known_before_the_workspace_has_heard_of_you;
     {
         let mut app = ChatApp::new_ephemeral();
         app.me.name = "Ada".to_string();
@@ -232,14 +233,14 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         );
     }
 
-    // Phase: the_person_reading_the_screen_is_shown_their_name.
+    phase the_person_reading_the_screen_is_shown_their_name;
     {
         let app = ChatApp::new_ephemeral();
         let me = app.me.id.clone();
         assert_eq!(app.user_name(&me), crate::identity::DEMO_NAME);
     }
 
-    // Phase: people_sharing_a_name_are_numbered_as_the_workspace_numbers_them.
+    phase people_sharing_a_name_are_numbered_as_the_workspace_numbers_them;
     {
         use ui::permissions::UserId;
         let mut app = ChatApp::new_ephemeral();

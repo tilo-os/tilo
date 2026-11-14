@@ -210,132 +210,130 @@ impl SpeakingRings {
 mod tests {
     use super::*;
 
-    fn a_face_rings_while_its_person_is_heard_and_settles_to_nothing() {
-        let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
-        let now = ui::time::now();
-        let mut rings = SpeakingRings::default();
-        rings.reconcile(["ada".to_owned()].into(), motion, now);
-        assert_eq!(rings.level("ada", now), 1.0, "heard: ringed at once");
-        assert_eq!(rings.level("bo", now), 0.0);
-        rings.reconcile(std::collections::BTreeSet::new(), motion, now);
-        assert!(rings.animating, "a pause eases out");
-        let later = now + std::time::Duration::from_secs(1);
-        rings.reconcile(std::collections::BTreeSet::new(), motion, later);
-        assert_eq!(rings.level("ada", later), 0.0);
-        assert!(!rings.animating, "a quiet call costs no frames");
-    }
+    tilo_test_env::scenario! {
+        /// The call's local state: its rings, its resets and its handoff to the floating host.
+        /// Each case was a test of its own, on a fixture of its own; a failure
+        /// names the cases that failed.
+        fn call_state_and_speaking_rings_follow_joins_leaves_and_handoff;
 
-    fn native_voice_starts_unjoined_and_each_join_is_muted_audio_only() {
-        let mut state = CallState::default();
-        assert!(!state.active);
-        assert!(state.muted);
-        assert!(state.audio_only);
-        state.join("first");
-        state.muted = false;
-        state.audio_only = false;
-        state.join("second");
-        assert!(state.muted);
-        assert!(state.audio_only);
-        state.muted = false;
-        state.leave();
-        assert!(!state.active);
-        assert!(state.muted);
-    }
-
-    fn participant_list_auto_expands_only_for_small_calls() {
-        assert!(CallState::auto_participants_expanded(3));
-        assert!(CallState::auto_participants_expanded(8));
-        assert!(!CallState::auto_participants_expanded(9));
-        assert!(CallState::auto_participants_expanded(0), "an empty call");
-        assert!(CallState::auto_participants_expanded(1), "alone in it");
-        assert!(
-            !CallState::auto_participants_expanded(usize::MAX),
-            "the largest count there is"
-        );
-    }
-
-    fn join_leave_and_deafen_reset_audio_overlay_and_share_state() {
-        // Phase: join_and_leave_reset_overlay_layout.
+        phase a_face_rings_while_its_person_is_heard_and_settles_to_nothing;
         {
-            let mut c = CallState {
-                expanded: true,
-                ..CallState::default()
-            };
-            c.leave();
-            assert!(!c.active && !c.expanded);
-            assert!(matches!(
-                c.placement.attachment(),
-                ui::floating_surface::Attachment::App { .. }
-            ));
-            c.join("c_warroom");
-            assert!(c.active);
-            assert_eq!(c.channel, "c_warroom");
-            assert!(matches!(
-                c.placement.attachment(),
-                ui::floating_surface::Attachment::App { .. }
-            ));
+            let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
+            let now = ui::time::now();
+            let mut rings = SpeakingRings::default();
+            rings.reconcile(["ada".to_owned()].into(), motion, now);
+            assert_eq!(rings.level("ada", now), 1.0, "heard: ringed at once");
+            assert_eq!(rings.level("bo", now), 0.0);
+            rings.reconcile(std::collections::BTreeSet::new(), motion, now);
+            assert!(rings.animating, "a pause eases out");
+            let later = now + std::time::Duration::from_secs(1);
+            rings.reconcile(std::collections::BTreeSet::new(), motion, later);
+            assert_eq!(rings.level("ada", later), 0.0);
+            assert!(!rings.animating, "a quiet call costs no frames");
         }
-        // Phase: join_and_leave_clear_the_screen_share_flag.
+
+        phase native_voice_starts_unjoined_and_each_join_is_muted_audio_only;
         {
-            let mut c = CallState::default();
-            c.join("c_huddle");
-            c.sharing = true;
-            c.leave();
-            assert!(!c.sharing, "leaving a call stops the local screen share");
-            c.sharing = true;
-            c.join("c_other");
+            let mut state = CallState::default();
+            assert!(!state.active);
+            assert!(state.muted);
+            assert!(state.audio_only);
+            state.join("first");
+            state.muted = false;
+            state.audio_only = false;
+            state.join("second");
+            assert!(state.muted);
+            assert!(state.audio_only);
+            state.muted = false;
+            state.leave();
+            assert!(!state.active);
+            assert!(state.muted);
+        }
+
+        phase participant_list_auto_expands_only_for_small_calls;
+        {
+            assert!(CallState::auto_participants_expanded(3));
+            assert!(CallState::auto_participants_expanded(8));
+            assert!(!CallState::auto_participants_expanded(9));
+            assert!(CallState::auto_participants_expanded(0), "an empty call");
+            assert!(CallState::auto_participants_expanded(1), "alone in it");
             assert!(
-                !c.sharing,
-                "joining a fresh call starts with no screen share"
+                !CallState::auto_participants_expanded(usize::MAX),
+                "the largest count there is"
             );
         }
-    }
 
-    fn call_hands_off_to_the_shared_floating_host_as_a_semantic_element() {
-        // Phase: call_uses_shared_floating_handoff.
+        phase join_leave_and_deafen_reset_audio_overlay_and_share_state;
         {
-            let mut c = CallState::default();
-            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-            let desktop = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            c.placement
-                .begin_drag(vello::kurbo::Point::new(700.0, 140.0), app, desktop);
-            assert_eq!(
+            // Phase: join_and_leave_reset_overlay_layout.
+            {
+                let mut c = CallState {
+                    expanded: true,
+                    ..CallState::default()
+                };
+                c.leave();
+                assert!(!c.active && !c.expanded);
+                assert!(matches!(
+                    c.placement.attachment(),
+                    ui::floating_surface::Attachment::App { .. }
+                ));
+                c.join("c_warroom");
+                assert!(c.active);
+                assert_eq!(c.channel, "c_warroom");
+                assert!(matches!(
+                    c.placement.attachment(),
+                    ui::floating_surface::Attachment::App { .. }
+                ));
+            }
+            // Phase: join_and_leave_clear_the_screen_share_flag.
+            {
+                let mut c = CallState::default();
+                c.join("c_huddle");
+                c.sharing = true;
+                c.leave();
+                assert!(!c.sharing, "leaving a call stops the local screen share");
+                c.sharing = true;
+                c.join("c_other");
+                assert!(
+                    !c.sharing,
+                    "joining a fresh call starts with no screen share"
+                );
+            }
+        }
+
+        phase call_hands_off_to_the_shared_floating_host_as_a_semantic_element;
+        {
+            // Phase: call_uses_shared_floating_handoff.
+            {
+                let mut c = CallState::default();
+                let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+                let desktop = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 c.placement
-                    .update_drag(vello::kurbo::Point::new(950.0, 140.0), app, desktop),
-                ui::floating_surface::Handoff::Detached
-            );
+                    .begin_drag(vello::kurbo::Point::new(700.0, 140.0), app, desktop);
+                assert_eq!(
+                    c.placement
+                        .update_drag(vello::kurbo::Point::new(950.0, 140.0), app, desktop),
+                    ui::floating_surface::Handoff::Detached
+                );
+            }
+            // Phase: call_handoff_names_the_semantic_app_element.
+            {
+                let mut c = CallState::default();
+                c.join("c_huddle");
+                let region = Rect::new(40.0, 28.0, 432.0, 288.0);
+                let request = c
+                    .floating_request(region, Rect::new(48.0, 36.0, 424.0, 280.0))
+                    .expect("an active call can be handed to the shared floating host");
+                assert_eq!(request.id, "chat-call:c_huddle");
+                assert_eq!(
+                    request.source,
+                    ui::floating_surface::FloatingSource::AppElement {
+                        app_id: "so.tilo.chat".into(),
+                        element_id: "active-call:c_huddle".into(),
+                        region,
+                    }
+                );
+            }
         }
-        // Phase: call_handoff_names_the_semantic_app_element.
-        {
-            let mut c = CallState::default();
-            c.join("c_huddle");
-            let region = Rect::new(40.0, 28.0, 432.0, 288.0);
-            let request = c
-                .floating_request(region, Rect::new(48.0, 36.0, 424.0, 280.0))
-                .expect("an active call can be handed to the shared floating host");
-            assert_eq!(request.id, "chat-call:c_huddle");
-            assert_eq!(
-                request.source,
-                ui::floating_surface::FloatingSource::AppElement {
-                    app_id: "so.tilo.chat".into(),
-                    element_id: "active-call:c_huddle".into(),
-                    region,
-                }
-            );
-        }
-    }
-
-    /// The call's local state: its rings, its resets and its handoff to the floating host.
-    /// Each case was a test of its own, on a fixture of its own; a failure
-    /// names the cases that failed.
-    #[test]
-    fn call_state_and_speaking_rings_follow_joins_leaves_and_handoff() {
-        crate::testing::cases!(
-            a_face_rings_while_its_person_is_heard_and_settles_to_nothing,
-            native_voice_starts_unjoined_and_each_join_is_muted_audio_only,
-            participant_list_auto_expands_only_for_small_calls,
-            join_leave_and_deafen_reset_audio_overlay_and_share_state,
-            call_hands_off_to_the_shared_floating_host_as_a_semantic_element,
-        );
     }
 }

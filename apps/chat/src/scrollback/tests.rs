@@ -500,33 +500,36 @@ fn writer(per_part: usize) -> Window {
     ada
 }
 
-#[test]
-fn a_long_channel_reads_back_part_by_part_and_only_for_the_channel_in_view() {
-    let mut ada = writer(MANY);
-    crate::testing::cases_on!(
-        &mut ada;
-        scrolling_back_opens_earlier_parts_in_order_without_moving_the_view,
-        no_channel_in_view_reads_nothing_back,
-    );
+tilo_test_env::scenario! {
+    fn a_long_channel_reads_back_part_by_part_and_only_for_the_channel_in_view;
+
+    steps;
+    {
+        let mut ada = writer(MANY);
+        scrolling_back_opens_earlier_parts_in_order_without_moving_the_view(&mut ada);
+        no_channel_in_view_reads_nothing_back(&mut ada);
+    }
 }
 
-#[test]
-fn a_short_channel_reads_back_to_what_there_is_and_no_further() {
-    let mut ada = writer(2);
-    crate::testing::cases_on!(
-        &mut ada;
-        a_short_channel_reads_back_until_it_has_something_to_show,
-        an_earlier_part_the_workspace_lacks_ends_in_a_final_state,
-        a_channel_with_nothing_earlier_reads_nothing_back,
-    );
+tilo_test_env::scenario! {
+    fn a_short_channel_reads_back_to_what_there_is_and_no_further;
+
+    steps;
+    {
+        let mut ada = writer(2);
+        a_short_channel_reads_back_until_it_has_something_to_show(&mut ada);
+        an_earlier_part_the_workspace_lacks_ends_in_a_final_state(&mut ada);
+        a_channel_with_nothing_earlier_reads_nothing_back(&mut ada);
+    }
 }
 
-#[test]
-fn unread_counts_and_the_first_unread_message_follow_the_read_mark() {
-    let mut ada = writer(3);
-    crate::testing::cases_on!(
-        &mut ada;
-        a_joined_device_counts_unread_across_parts_it_does_not_hold,
-        the_first_unread_message_follows_the_read_mark,
-    );
+tilo_test_env::scenario! {
+    fn unread_counts_and_the_first_unread_message_follow_the_read_mark;
+
+    steps;
+    {
+        let mut ada = writer(3);
+        a_joined_device_counts_unread_across_parts_it_does_not_hold(&mut ada);
+        the_first_unread_message_follows_the_read_mark(&mut ada);
+    }
 }

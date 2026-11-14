@@ -22,61 +22,59 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
     assert_eq!(ChatEffect::SEND_DIRECT_MESSAGE.id, "send-direct-message");
 }
 
-/// The conversation two people have is named by the two of them, whichever
-/// order they are named in, once.
-fn a_conversation_is_named_by_its_participants_once() {
-    let ada = MemberId::person("ad".repeat(32));
-    let bob = MemberId::person("b0".repeat(32));
-    let one = Chat::direct_id([ada.clone(), bob.clone()]);
-    let other = Chat::direct_id([bob.clone(), ada.clone(), ada.clone()]);
-    assert_eq!(one, other, "one conversation per pair, however named");
-    assert_eq!(
-        Chat::direct_participants(&one),
-        Some(vec![ada, bob]),
-        "the id names its participants back"
-    );
-    assert_eq!(Chat::direct_participants(&"c_general".into()), None);
-    // A conversation with oneself names one person; an id that names nobody,
-    // or holds a key that is no member, names no conversation.
-    let cy = MemberId::person("c1".repeat(32));
-    let alone = Chat::direct_id([cy.clone()]);
-    assert_eq!(
-        Chat::direct_participants(&alone),
-        Some(vec![cy]),
-        "a conversation with oneself"
-    );
-    assert_eq!(
-        Chat::direct_participants(&Chat::direct_id(std::iter::empty::<MemberId>())),
-        None,
-        "an id that names nobody"
-    );
-    let dangling = format!("{}|", alone.as_str());
-    assert_eq!(
-        Chat::direct_participants(&dangling.as_str().into()),
-        None,
-        "a key that is no member"
-    );
-}
+tilo_test_env::scenario! {
+    /// The id of a direct conversation.
+    /// Each case was a test of its own, on a fixture of its own; a failure
+    /// names the cases that failed.
+    fn a_conversations_id_names_its_participants_people_or_agents;
 
-fn an_agent_and_a_person_converse_apart_from_the_pair_of_people() {
-    let ada = MemberId::person("ad".repeat(32));
-    let agent = MemberId::agent("ag".repeat(32));
-    assert_ne!(
-        Chat::direct_id([ada.clone(), agent]),
-        Chat::direct_id([ada, MemberId::person("ag".repeat(32))]),
-        "who someone is names the conversation"
-    );
-}
+    phase a_conversation_is_named_by_its_participants_once;
+    // The conversation two people have is named by the two of them, whichever
+    // order they are named in, once.
+    {
+        let ada = MemberId::person("ad".repeat(32));
+        let bob = MemberId::person("b0".repeat(32));
+        let one = Chat::direct_id([ada.clone(), bob.clone()]);
+        let other = Chat::direct_id([bob.clone(), ada.clone(), ada.clone()]);
+        assert_eq!(one, other, "one conversation per pair, however named");
+        assert_eq!(
+            Chat::direct_participants(&one),
+            Some(vec![ada, bob]),
+            "the id names its participants back"
+        );
+        assert_eq!(Chat::direct_participants(&"c_general".into()), None);
+        // A conversation with oneself names one person; an id that names nobody,
+        // or holds a key that is no member, names no conversation.
+        let cy = MemberId::person("c1".repeat(32));
+        let alone = Chat::direct_id([cy.clone()]);
+        assert_eq!(
+            Chat::direct_participants(&alone),
+            Some(vec![cy]),
+            "a conversation with oneself"
+        );
+        assert_eq!(
+            Chat::direct_participants(&Chat::direct_id(std::iter::empty::<MemberId>())),
+            None,
+            "an id that names nobody"
+        );
+        let dangling = format!("{}|", alone.as_str());
+        assert_eq!(
+            Chat::direct_participants(&dangling.as_str().into()),
+            None,
+            "a key that is no member"
+        );
+    }
 
-/// The id of a direct conversation.
-/// Each case was a test of its own, on a fixture of its own; a failure
-/// names the cases that failed.
-#[test]
-fn a_conversations_id_names_its_participants_people_or_agents() {
-    crate::testing::cases!(
-        a_conversation_is_named_by_its_participants_once,
-        an_agent_and_a_person_converse_apart_from_the_pair_of_people,
-    );
+    phase an_agent_and_a_person_converse_apart_from_the_pair_of_people;
+    {
+        let ada = MemberId::person("ad".repeat(32));
+        let agent = MemberId::agent("ag".repeat(32));
+        assert_ne!(
+            Chat::direct_id([ada.clone(), agent]),
+            Chat::direct_id([ada, MemberId::person("ag".repeat(32))]),
+            "who someone is names the conversation"
+        );
+    }
 }
 
 /// Ada's and Bob's windows in one workspace, each having introduced themself,

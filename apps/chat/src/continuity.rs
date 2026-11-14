@@ -345,9 +345,10 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn call_projection_is_semantic_and_restoring_it_is_inert() {
-        // Phase: active_call_projection_is_semantic_and_contains_no_transport_or_capture_state.
+    tilo_test_env::scenario! {
+        fn call_projection_is_semantic_and_restoring_it_is_inert;
+
+        phase active_call_projection_is_semantic_and_contains_no_transport_or_capture_state;
         {
             let (mut app, doc) = app_and_doc();
             app.call.join("c_huddle");
@@ -377,7 +378,7 @@ mod tests {
             assert!(!projection.media.share_audio);
         }
 
-        // Phase: restore_is_inert_and_requires_a_real_synced_voice_channel.
+        phase restore_is_inert_and_requires_a_real_synced_voice_channel;
         {
             let (mut source, source_doc) = app_and_doc();
             service_live(&mut source);
@@ -444,13 +445,14 @@ mod tests {
         );
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
-    fn target_starts_media_only_after_fresh_capture_consent() {
-        // Phase: accept_needs_fresh_capture_and_media_ready_is_a_separate_edge.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one labelled phase per original scenario, each with its own fresh fixture"
+        )]
+        fn target_starts_media_only_after_fresh_capture_consent;
+
+        phase accept_needs_fresh_capture_and_media_ready_is_a_separate_edge;
         {
             let (mut app, doc) = app_and_doc();
             let projection = ChatCallContinuation {
@@ -495,7 +497,7 @@ mod tests {
             Widget::sync(&mut app, &doc, &ROOT);
         }
 
-        // Phase: shell_consent_drives_target_accept_then_media_ready.
+        phase shell_consent_drives_target_accept_then_media_ready;
         {
             let (mut app, doc) = app_and_doc();
             let offered = ChatCallContinuation {
