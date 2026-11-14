@@ -103,6 +103,23 @@ keeps none. A tab keeps its newest 1000 actions and the record its 32 most
 recently used tabs; what goes beyond leaves the record's state, counted as
 dropped, and stays in its history.
 
+**The window knows who an actor is for as long as it needs to.** The engine
+knows an actor by its name alone, so the tab's window keeps whom the action
+system admitted under each name, and from which device: for the sixty-four
+actors it admitted last, and for every actor whose page action is running,
+waiting its turn, or answered and not yet written into the record, however
+many were admitted after it. So a crowd that asks for a busy tab, most of it
+turned away and asking again the moment an action answers, costs the actors
+working in it nothing. What the engine sets down under a name the window no
+longer remembers is still set down as that actor's, and the entry says
+`device_unknown`: where the actor worked from is not known. Such an entry
+names no device and is not read as an actor on the device that runs the page.
+That is left for how a hold ended that the actor answered, when sixty-four
+others were admitted before the engine said so: the one entry the engine sets
+down under a name while no action of that actor is in the tab. What the actor
+did while the window knew it stays as it was set down, in the record and in
+its history, and its next action is admitted again, with its device.
+
 **What a person types is in the record.** Direct input is no action, and no
 answer carries it: the engine sets it down and says so, and the window
 writes it in its place among the actions, as the person's. It is one entry
@@ -233,7 +250,9 @@ from the page itself, and who set that value:
 - an actor's action, by actor and the action's place in the record, and
   by the device the actor worked from when that is not the device that
   runs the page (`device` and `device_name`, as the record keeps them with
-  that action);
+  that action), or `device_unknown` where the record says so of that action,
+  and where it keeps no such action and the window no longer remembers the
+  actor;
 - direct input into the page;
 - the page's own script;
 - nothing, for a field no one set since the page was first read.
@@ -256,8 +275,9 @@ own script, or no one), with a mark on a field that no longer holds what was
 set, on a required one left empty and on one the page refuses. An agent
 that worked from another of the person's devices is shown with that device,
 "ada on Studio laptop": by the name the device's certificate gives it, and
-by the first eight digits of its key where it gives none. The record under
-the forms shows it the same way. A secret is
+by the first eight digits of its key where it gives none. One whose device
+is not known is shown as that, "ada, device not known", never as an agent on
+this device. The record under the forms shows both the same way. A secret is
 said as set or not set. Under the forms stands the tab's record, in order,
 with who did each action; what a person typed stands there as typing, and
 what was written into a secret field as set, not shown. What the window held
@@ -459,6 +479,47 @@ share, when the first picture came and again twenty seconds on.
 | Two agents and a person | The person's typing is direct input; the review read tells the three apart |
 | Three devices, one tab | As two; each device's actor has its own read and is told of the others, and each viewer of the shared window has its own picture and seat |
 
+## Limits
+
+How many can work in one tab is bounded in five places. Each says what
+happens to the one beyond it.
+
+- **Connections to the desktop's agent door: sixteen at once.** One count
+  holds the login's own programs, the person's other devices and the doors
+  of its environments together. The next connection is refused at once and
+  told that the door is serving as many connections as it takes. It is not
+  queued; one that connects after another has closed is served. So sixteen
+  agents, on however many machines, is the most one desktop serves at a
+  time. A runtime that runs without the desktop serves sixty-four
+  connections on its own endpoint, and tells the next that there is no room,
+  that nothing it asked ran, and to connect again once one of them has
+  closed.
+- **Requests of one connection: sixteen work at once, sixty-four work or
+  wait.** A seventeenth waits for a turn and takes the first one freed, by
+  an answer or by its caller's cancel. One past sixty-four is refused at
+  once: it is told that it was not run and changed nothing, and to send it
+  again once one of the others has answered. Asking how a request stands,
+  and cancelling one, take no turn.
+- **Page actions in one tab: one runs and eight wait.** One more is turned
+  away at once, told what holds the tab and to ask again once the others
+  have answered. One that has waited thirty seconds is answered as never
+  run. Eight reads of the tab's record are with the engine at once, beside
+  these.
+- **Actors a window remembers: sixty-four**, beside every actor whose page
+  action runs or waits (see "What the tab guarantees").
+- **Devices that see the tab: no count.** A shared window has no limit of
+  viewers, and the workspace's live plane none of sessions it has admitted.
+  The plane's relay takes sixteen sessions through admission at a time and
+  closes one more as busy.
+
+What checks this: the runtime's tests reach its endpoint's sixty-four
+connections and a connection's sixteen and sixty-four requests through the
+endpoint's own accept loop on a socket, and make room as a client does, by
+an answer, a cancel and a closed connection. The Browser's tests fill a
+tab's eight waiting turns and drive a tab past sixty-four actors, while one
+of them waits and after one of them was forgotten, and read the record, its
+history, who set each field and the review screen.
+
 ## Not built yet
 
 - **A page's forms as actions: what is left.** The window reads its page's
@@ -553,10 +614,14 @@ down.
   the watching tile holds it, and, for the device relaying a plane, which
   devices it turned away and why, which is what the step reads when a page
   does not arrive or does not go on arriving.
-  And nothing has run more than three machines. The door
-  serves sixteen connections at once and refuses the next as busy; a tab
-  keeps track of sixty-four actors and forgets the oldest beyond that
-  without saying so, which no test reaches.
+  And nothing has run more than three machines. What bounds their number is
+  under "Limits". No test reaches the agent door's sixteen connections, and
+  what the door tells the one it refuses says neither how many it serves nor
+  when to connect again. A device the plane's relay closes as busy is not
+  told apart from one it refused. An actor that answers a hold is remembered
+  like any other, not held on to until the engine has said how the hold
+  ended, so that one entry is where a tab crowded by more than sixty-four
+  actors can still say `device_unknown`.
 - **Gestures in a frame: what is left.** Hover, drag and a drawn path on an
   element of a frame run in the frame's document, a point over a frame is
   answered with the frame's own element, and a find and a search look in the
