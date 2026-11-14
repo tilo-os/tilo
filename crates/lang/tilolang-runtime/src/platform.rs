@@ -2369,6 +2369,7 @@ impl Core {
         // Whether it applies to the item where the view offers it at all, and whether it can
         // run on it now, as the conditions its subject and place decide say: a menu leaves out
         // what cannot apply, and a control for what cannot run stands disabled with the reason.
+        // An action the person's standing denies them (a viewer's change) stands disabled too.
         let viewer = self.viewer_here();
         let mut applies = true;
         let mut available = true;
@@ -2379,6 +2380,13 @@ impl Core {
             applies = false;
             available = false;
             why = refused;
+        } else if !self.may_decide(&viewer, &action.id) {
+            available = false;
+            why = self.word_args(
+                "tilolang-ask-denied",
+                &[],
+                "That change is not allowed here.",
+            );
         } else if let (Some(refused), _) =
             self.decided(&action.id, &shown.args, &viewer, Decides::Requirement)?
         {

@@ -450,7 +450,14 @@ impl Apps {
             }
             Err(error) => return refused(error),
         };
+        // What the person may do in the app, as a launched app of it reads it: the instance's
+        // views offer and refuse by it.
+        let standing = tilo_app_launch::authority::standing(
+            &self.workspace_named(&hosted.workspace),
+            &hosted.app,
+        );
         hosts.hand_over(tilo_app_launch::tilolang_hosts::Instance {
+            standing,
             app: hosted.app,
             workspace: hosted.workspace,
             instance: hosted.instance,
@@ -588,17 +595,32 @@ impl Apps {
             return;
         };
         let revision = desktop.with_policy(|policy| policy.handle().revision());
-        {
+        let hosts = {
             let state = self.state.borrow();
-            if state.authority.is_empty() || state.authority_at == Some(revision) {
+            let hosted = state
+                .hosts
+                .as_ref()
+                .is_some_and(|hosts| !hosts.instances().is_empty());
+            if (state.authority.is_empty() && !hosted) || state.authority_at == Some(revision) {
                 return;
             }
-        }
+            state.hosts.clone()
+        };
         self.state.borrow_mut().authority_at = Some(revision);
-        for room in self.state.borrow().authority.workspaces() {
+        let mut rooms = self.state.borrow().authority.workspaces();
+        if let Some(hosts) = &hosts {
+            rooms.extend(hosts.instances().into_iter().map(|(room, ..)| room));
+            rooms.sort();
+            rooms.dedup();
+        }
+        for room in rooms {
             let workspace = self.workspace_named(&room);
             if let Err(error) = self.state.borrow().authority.refresh(&workspace) {
                 tracing::warn!(%room, %error, "the person's authority there was not published");
+            }
+            // The windows whose instances a tilolang host runs are told on its door.
+            if let Some(hosts) = &hosts {
+                hosts.policy_changed(&workspace);
             }
         }
     }

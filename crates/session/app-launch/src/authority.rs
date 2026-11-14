@@ -83,20 +83,9 @@ impl Authority {
     /// # Errors
     /// The projection cannot be written, or is one the launcher would refuse.
     pub fn publish(&self, workspace: &Workspace, app: &str) -> io::Result<Option<PathBuf>> {
-        let Some(policy) = workspace
-            .policy
-            .as_ref()
-            .filter(|_| workspace.is_workspace())
-        else {
+        let Some(projection) = projection(workspace, app) else {
             return Ok(None);
         };
-        if policy.workspace != workspace.id {
-            // A policy of another workspace decides nothing for this one: the
-            // app is admitted as the launcher would admit it alone.
-            return Ok(None);
-        }
-        let projection =
-            AppActionAuthorityProjection::project(policy, app, &workspace.person, false);
         projection
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -164,6 +153,28 @@ impl Authority {
         }
         Ok(())
     }
+}
+
+/// What `workspace`'s policy lets the person at this device do in `app`, narrowed to the grants
+/// that can decide one of its actions; `None` when the launch names no workspace or the session
+/// holds no policy for it.
+fn projection(workspace: &Workspace, app: &str) -> Option<AppActionAuthorityProjection> {
+    let policy = workspace
+        .policy
+        .as_ref()
+        .filter(|_| workspace.is_workspace())?;
+    // A policy of another workspace decides nothing for this one: the app is admitted as the
+    // launcher would admit it alone.
+    (policy.workspace == workspace.id)
+        .then(|| AppActionAuthorityProjection::project(policy, app, &workspace.person, false))
+}
+
+/// The person's standing in `workspace` as `app` sees it, the projection a launched app reads,
+/// for an app whose instance a tilolang host runs: what its views offer and refuse by. `None`
+/// where no projection would be published.
+#[must_use]
+pub fn standing(workspace: &Workspace, app: &str) -> Option<tilo_action_policy::Standing> {
+    projection(workspace, app).map(|projection| projection.standing())
 }
 
 /// Where an app's projection of `workspace` is published.

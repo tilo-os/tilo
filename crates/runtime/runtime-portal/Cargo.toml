@@ -29,6 +29,8 @@ serde.workspace = true
 serde_json.workspace = true
 # The person's formats, as the session hands them to an app host (`tilolang_host`).
 tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
+# The person's standing in a workspace, as the session hands it to an app host (`tilolang_host`).
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The install requests are length-prefixed frames like every other stream
 # protocol. Framing is plain `Read`/`Write`, so the messages read and write on
 # every target; only the client's transport is a Unix socket.

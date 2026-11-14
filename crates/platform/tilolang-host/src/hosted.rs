@@ -84,6 +84,11 @@ pub struct Spec {
     /// package's source language otherwise. Empty for a session that names none, whose host reads
     /// its own process's language.
     pub language: String,
+    /// What the person may do in the app as the session handed it with the launch
+    /// (`InstanceRequest::standing`): the views offer what it denies them disabled, and the
+    /// runtime refuses it before it reaches the broker. `None` where the session holds no policy
+    /// for the workspace: the broker alone decides.
+    pub standing: Option<tilo_action_policy::Standing>,
 }
 
 impl Spec {
@@ -103,6 +108,7 @@ impl Spec {
             person: person.into(),
             installed: BTreeMap::new(),
             language: String::new(),
+            standing: None,
         }
     }
 
@@ -110,6 +116,13 @@ impl Spec {
     #[must_use]
     pub fn in_language(mut self, language: impl Into<String>) -> Self {
         self.language = language.into();
+        self
+    }
+
+    /// [`Self::new`] for a person whose standing in the workspace is `standing`.
+    #[must_use]
+    pub fn standing(mut self, standing: tilo_action_policy::Standing) -> Self {
+        self.standing = Some(standing);
         self
     }
 }
@@ -801,6 +814,9 @@ pub struct Hosted {
     identity: Option<std::os::fd::OwnedFd>,
     /// The scope the instance's code runs in, its record's content store registered for it.
     scope: RecordScope,
+    /// What the person may do in the app now: the launch's, until the session says it changed
+    /// ([`Self::set_standing`]). The runtime reads it at each decision.
+    standing: Rc<RefCell<Option<tilo_action_policy::Standing>>>,
     /// The workspace's record of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalRecord,
@@ -832,29 +848,6 @@ impl RecordScope {
 }
 
 impl Hosted {
-    /// The instance `spec` of `bundle`, over the workspace record its connection `manager` joined,
-    /// kept in `kept`, sending its window patches over `window`.
-    pub fn open(
-        spec: Spec,
-        manager: collaboration::CollaborationManager,
-        bundle: Arc<Bundle>,
-        kept: &Kept,
-        window: Box<dyn Transport>,
-        phrases: &Rc<Phrases>,
-        formats: &Formats,
-        wake: Waker,
-    ) -> Result<Self, RecordError> {
-        let record = InstanceRecord::open(
-            manager,
-            &kept.documents,
-            spec.person.clone(),
-            bundle.meta.record_kind(),
-        )?;
-        Ok(Self::with_record(
-            spec, record, bundle, kept, window, phrases, formats, wake,
-        ))
-    }
-
     /// The instance `spec` of `bundle` over `record`, which it holds from now on.
     #[must_use]
     pub fn with_record(
@@ -918,6 +911,11 @@ impl Hosted {
         // The device that governs the workspace is its records' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
+        // What its runtime offers and invokes is decided by the person's standing as the session
+        // says it, read at each decision.
+        let standing = Rc::new(RefCell::new(spec.standing.clone()));
+        let read = Rc::clone(&standing);
+        instance.set_standing(Rc::new(move || read.borrow().clone()));
         let mut registry = ActionRegistry::with(tilolang_tilo::history::register);
         registry.connect_content(record.content().clone());
         drop(in_scope);
@@ -950,6 +948,7 @@ impl Hosted {
             identity: None,
             scope,
             personal,
+            standing,
         }
     }
 
@@ -1033,6 +1032,18 @@ impl Hosted {
     pub fn person_changed(&mut self) {
         let _code = self.scope.enter();
         self.instance.person_changed();
+    }
+
+    /// What the person may do in the app changed (a role given or taken back): the views offer and
+    /// the runtime invokes by `standing` from now on, and what they offer is drawn again. Whether
+    /// it changed.
+    pub fn set_standing(&mut self, standing: Option<tilo_action_policy::Standing>) -> bool {
+        if *self.standing.borrow() == standing {
+            return false;
+        }
+        *self.standing.borrow_mut() = standing;
+        self.person_changed();
+        true
     }
 
     /// The person chose `language` (`de-DE`) in Settings: the window reads its words in it where

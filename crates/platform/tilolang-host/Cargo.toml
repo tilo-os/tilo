@@ -46,6 +46,8 @@ tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 serde_json.workspace = true
+# What the person may do in an app, as the session hands it with each instance.
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The workspace's record of each person's own state, which every app of the workspace opens: its
 # id, its document, and the changes that arrive for it.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }

@@ -6,6 +6,7 @@
 use std::io;
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::Standing;
 use tilo_formats::RegionFormats;
 
 pub use crate::windows::Descriptor;
@@ -31,6 +32,20 @@ pub struct Locale {
     pub language: String,
 }
 
+/// The person's standing for one app, as the session hands it to a host whose instances of the
+/// app are already running.
+pub const STANDING_VERB: &[u8] = b"standing";
+
+/// What the person may do in one app of the host's workspace, said again when it changes
+/// ([`STANDING_VERB`]): a role given or taken back reaches the windows already open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppStanding {
+    pub app: String,
+    /// `None` once the session holds no policy for the workspace: the broker alone decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<Standing>,
+}
+
 pub const TASK_VERB: &[u8] = b"task";
 
 /// The verb the host says on its door when an instance ended (its window closed, or it never
@@ -49,7 +64,9 @@ pub enum FromHost {
     Exiting(String),
 }
 
-pub const MAX_MESSAGE: usize = 4096;
+/// The largest message on the door: a standing holds the workspace's policy as one app sees it,
+/// which the session bounds at 64 KiB.
+pub const MAX_MESSAGE: usize = 80 * 1024;
 
 pub const MAX_MODULE: u64 = 64 << 20;
 
@@ -101,6 +118,11 @@ pub struct InstanceRequest {
     /// that is not installed as an app keeps its records in the app's own.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub installed: std::collections::BTreeMap<String, String>,
+    /// What the person may do in the app, as the workspace's policy says it: the instance's views
+    /// offer what it denies them disabled, and refuse it before it reaches the broker. `None`
+    /// where the session holds no policy for the workspace; the broker decides either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<Standing>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,9 +161,10 @@ pub struct TaskFds {
 
 #[derive(Debug)]
 pub enum Handed {
-    Instance(InstanceRequest, InstanceFds),
+    Instance(Box<InstanceRequest>, InstanceFds),
     Task(TaskRequest, TaskFds),
     Locale(Locale),
+    Standing(AppStanding),
 }
 
 const APPS_MAGIC: &[u8; 8] = b"tlappsl1";
@@ -453,6 +476,29 @@ pub fn send_locale(door: &Descriptor, locale: &Locale) -> io::Result<()> {
     }
 }
 
+/// Say on the host behind `door` what the person may now do in one app: its instances of the app
+/// offer and refuse by it from now on.
+///
+/// # Errors
+/// The socket's error, a standing that does not encode or is over the door's limit, or
+/// [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_standing(door: &Descriptor, standing: &AppStanding) -> io::Result<()> {
+    let encoded = serde_json::to_vec(standing).map_err(io::Error::other)?;
+    if encoded.len() > MAX_MESSAGE {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        crate::door::send(door.as_fd(), &[STANDING_VERB, &encoded], &[])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
 /// Hand the host behind `door` the task `request`: its program connection and the apps its
 /// programs are compiled against.
 ///
@@ -477,23 +523,6 @@ pub fn send_task(door: &Descriptor, request: &TaskRequest, fds: &TaskFds) -> io:
     {
         let _ = (door, fds);
         Err(unsupported())
-    }
-}
-
-/// The next instance on `door` and its descriptors; `None` at end of file,
-/// when the session closed its end.
-///
-/// # Errors
-/// The socket's error; a message that is no instance request or does not
-/// carry exactly its four descriptors.
-pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest, InstanceFds)>> {
-    match receive(door)? {
-        None => Ok(None),
-        Some(Handed::Instance(request, fds)) => Ok(Some((request, fds))),
-        Some(Handed::Task(..) | Handed::Locale(..)) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the door carried something other than an instance",
-        )),
     }
 }
 
@@ -539,6 +568,14 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
             }
             return Ok(Some(Handed::Locale(locale)));
         }
+        if verb == STANDING_VERB {
+            let standing: AppStanding = serde_json::from_slice(request)
+                .map_err(|_| invalid("a standing that does not decode"))?;
+            if !fds.is_empty() {
+                return Err(invalid("a standing carrying a connection"));
+            }
+            return Ok(Some(Handed::Standing(standing)));
+        }
         if verb != INSTANCE_VERB {
             return Err(invalid("the door carried something other than an instance"));
         }
@@ -558,7 +595,7 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
             return Err(invalid("a module over the door's limit"));
         }
         Ok(Some(Handed::Instance(
-            request,
+            Box::new(request),
             InstanceFds {
                 broker,
                 identity,
@@ -617,7 +654,7 @@ pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
     {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
-        let mut buffer = [0_u8; MAX_MESSAGE];
+        let mut buffer = vec![0_u8; MAX_MESSAGE];
         let Some((length, _fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
@@ -647,6 +684,19 @@ pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
 #[allow(clippy::unwrap_used, reason = "test fixtures")]
 mod tests {
     use super::*;
+
+    /// The next instance on `door`: an instance or the door's end, nothing else.
+    fn receive_instance(door: &Descriptor) -> Option<(InstanceRequest, InstanceFds)> {
+        let handed = receive(door).unwrap()?;
+        assert!(
+            matches!(handed, Handed::Instance(..)),
+            "an instance arrives as one: {handed:?}"
+        );
+        let Handed::Instance(request, fds) = handed else {
+            return None;
+        };
+        Some((*request, fds))
+    }
 
     fn connection() -> Descriptor {
         let (ours, _theirs) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -679,6 +729,13 @@ mod tests {
                 record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
                 reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
                 installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+                standing: Some(Standing::person(
+                    tilo_action_policy::WorkspacePolicy::new(
+                        "7a110d00-0000-4000-8000-000000000001",
+                        "bob",
+                    ),
+                    "ada",
+                )),
             };
             let fds = InstanceFds {
                 broker: connection(),
@@ -688,7 +745,7 @@ mod tests {
                 origin: None,
             };
             send_instance(&shell, &request, &fds).unwrap();
-            let (received, received_fds) = receive_instance(&host).unwrap().unwrap();
+            let (received, received_fds) = receive_instance(&host).unwrap();
             assert_eq!(received, request);
             assert!(
                 received_fds.origin.is_none(),
@@ -699,11 +756,11 @@ mod tests {
                 ..fds
             };
             send_instance(&shell, &request, &fds).unwrap();
-            let (_, received_fds) = receive_instance(&host).unwrap().unwrap();
+            let (_, received_fds) = receive_instance(&host).unwrap();
             assert!(received_fds.origin.is_some());
             drop(shell);
             assert!(
-                receive_instance(&host).unwrap().is_none(),
+                receive_instance(&host).is_none(),
                 "closed door ends"
             );
         }
@@ -725,14 +782,37 @@ mod tests {
                     Handed::Locale(locale) => locale,
                     other => panic!("a locale message arrives as one: {other:?}"),
                 }),
-                Some(locale.clone()),
+                Some(locale),
                 "the person's clock, date style and language reach the host as they set them"
             );
-            // Said again while a host waits on an instance: it arrives as formats, never as one.
-            send_locale(&shell, &locale).unwrap();
-            assert!(
-                receive_instance(&host).is_err(),
-                "a host waiting on an instance does not take formats for one"
+        }
+
+        phase what_the_person_may_do_in_an_app_crosses_the_door_whole;
+        {
+            let (shell, host) = pair().unwrap();
+            // A workspace of many members: the policy is far over a page.
+            let mut policy = tilo_action_policy::WorkspacePolicy::new(
+                "7a110d00-0000-4000-8000-000000000001",
+                "bob",
+            );
+            for member in 0..400 {
+                policy
+                    .members
+                    .insert(format!("member-{member}"), tilo_action_policy::Role::Viewer);
+            }
+            let standing = AppStanding {
+                app: "so.tilo.lang.notes".into(),
+                standing: Some(Standing::person(policy, "member-7")),
+            };
+            assert!(serde_json::to_vec(&standing).unwrap().len() > 4096);
+            send_standing(&shell, &standing).unwrap();
+            assert_eq!(
+                receive(&host).unwrap().map(|handed| match handed {
+                    Handed::Standing(standing) => standing,
+                    other => panic!("a standing arrives as one: {other:?}"),
+                }),
+                Some(standing),
+                "the person's standing in the app reaches the host whole"
             );
         }
 
@@ -762,9 +842,9 @@ mod tests {
             let request = br#"{"app":"a","room":"r","instance":1,"person":"p","module_len":1}"#;
             let one = connection();
             crate::door::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
-            assert!(receive_instance(&host).is_err());
+            assert!(receive(&host).is_err());
             crate::door::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
-            assert!(receive_instance(&host).is_err());
+            assert!(receive(&host).is_err());
         }
 
         phase a_task_crosses_the_door_with_its_program_connection_and_apps;

@@ -656,3 +656,116 @@ impl super::Session {
             })
     }
 }
+
+/// What the person may do in the app, as the session hands it with the launch and says again when
+/// it changes: a viewer's window offers no change as if they could make it, and the instance
+/// refuses one before it reaches the workspace.
+mod standing {
+    use collaboration::RouteSpec;
+    use tilolang_host::hosted::Spec;
+    use ui::permissions::policy::{Role, Standing, WorkspacePolicy};
+
+    use super::super::{Session, TASKS, Window, find, task_in_record};
+
+    /// Ada's standing in `workspace`, whose owner is Bob, as `role`.
+    fn ada_as(workspace: &str, role: Role) -> Standing {
+        let mut policy = WorkspacePolicy::new(workspace, "bob");
+        policy.members.insert("ada".to_owned(), role);
+        Standing::person(policy, "ada")
+    }
+
+    /// Ada at a Tasks window of Bob's workspace, as `role`.
+    fn tasks_as(role: Role) -> (Session, String) {
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let workspace = route.cluster_id.to_string();
+        let spec = Spec::new(TASKS, workspace.clone(), 1, "ada")
+            .in_language("en-US")
+            .standing(ada_as(&workspace, role));
+        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+        let mut session = Session::brokered_as(&route, spec, chunks, None, Window::in_harness);
+        session.settle();
+        (session, workspace)
+    }
+
+    /// The window bar's New task button, as the window draws it.
+    fn new_task_button(session: &mut Session) -> tilo_ui_host::UiNode {
+        let view = session.hosted().view().expect("the window is connected");
+        let tree = view.root_tree().expect("the window has a tree");
+        find(&tree, &|node| {
+            node.kind == "ui.Button"
+                && node.props.get("label") == Some(&tilo_ui_host::Value::text("New task"))
+        })
+        .expect("the bar holds New task")
+        .clone()
+    }
+
+    /// Ada views Bob's workspace: New task stands disabled and says why, and invoked anyway it makes
+    /// nothing. Bob makes her an editor while her window is open: New task is offered at once, and
+    /// it makes the task.
+    #[test]
+    fn a_viewer_is_offered_no_change_and_one_made_an_editor_is_while_the_window_is_open() {
+        let _settled = ui::motion::testing::settled();
+        let (mut session, workspace) = tasks_as(Role::Viewer);
+        let button = new_task_button(&mut session);
+        assert_eq!(
+            button.props.get("enabled"),
+            Some(&tilo_ui_host::Value::Int(0)),
+            "a viewer's New task is disabled: {button:?}"
+        );
+        assert_eq!(
+            button.props.get("description"),
+            Some(&tilo_ui_host::Value::text(
+                "That change is not allowed here."
+            )),
+            "and it says why"
+        );
+        let new_task = session.identity_doing("Tasks", "new_task");
+        let answered = session.invoke_doing(
+            &new_task,
+            &serde_json::json!({ "title": "Water the plants" }),
+        );
+        assert!(
+            !matches!(
+                answered,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+            ),
+            "the instance refuses a viewer's change: {answered:?}"
+        );
+        assert!(
+            !task_in_record(&session, "Water the plants", false),
+            "and nothing is written"
+        );
+
+        // Bob makes Ada an editor; the session says so on the host's door.
+        assert!(
+            session
+                .host
+                .set_standing(TASKS, Some(&ada_as(&workspace, Role::Editor)))
+        );
+        session.settle();
+        let button = new_task_button(&mut session);
+        assert_ne!(
+            button.props.get("enabled"),
+            Some(&tilo_ui_host::Value::Int(0)),
+            "an editor's New task is offered in the window already open: {button:?}"
+        );
+        let answered = session.invoke_doing(
+            &new_task,
+            &serde_json::json!({ "title": "Water the plants" }),
+        );
+        assert!(
+            matches!(
+                answered,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+            ),
+            "an editor's change runs: {answered:?}"
+        );
+        assert!(task_in_record(&session, "Water the plants", false));
+        assert!(
+            !session
+                .host
+                .set_standing(TASKS, Some(&ada_as(&workspace, Role::Editor))),
+            "the same standing said again is nothing to do"
+        );
+    }
+}

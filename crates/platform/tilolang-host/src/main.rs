@@ -201,7 +201,7 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
             match receive(open) {
                 Ok(Some(Handed::Instance(request, fds))) => {
                     let (app, instance) = (request.app.clone(), request.instance);
-                    if let Err(error) = host.admit(request, fds) {
+                    if let Err(error) = host.admit(*request, fds) {
                         tracing::error!(app, %error, "an instance did not start");
                         if let Err(error) = send_ended(open, instance) {
                             tracing::warn!(%error, instance, "the session was not told an instance ended");
@@ -213,6 +213,13 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                     // writes its times and its words again, and its window shows them.
                     if host.set_locale(&locale) {
                         tracing::info!("the person's formats or language changed");
+                    }
+                }
+                Ok(Some(Handed::Standing(standing))) => {
+                    // A role was given or taken back: the app's windows offer what the person
+                    // may do now.
+                    if host.set_standing(&standing.app, standing.standing.as_ref()) {
+                        tracing::info!(app = standing.app, "what the person may do changed");
                     }
                 }
                 Ok(Some(Handed::Task(request, fds))) => {

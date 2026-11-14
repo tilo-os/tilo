@@ -18,7 +18,9 @@
 //!
 //! The person's region formats ride with the instance, and are said again on every host's door
 //! when they change them in Settings ([`Hosts::locale_changed`]): their windows' dates, clocks
-//! and weeks follow where they stand, without waiting for a restart.
+//! and weeks follow where they stand, without waiting for a restart. So does what the person may
+//! do in the app, said again on the doors of the workspace's hosts when its policy changes
+//! ([`Hosts::policy_changed`]): a viewer's window offers no change they cannot make.
 //!
 //! The author is the publisher whose key signed the package; a person's own build, signed with
 //! their own key, runs in a host of that person's. A host is started through the launch kind
@@ -30,7 +32,7 @@
 //! directory. The first time a host keeps that app's record in that workspace, it takes that copy
 //! over ([`adopt_window_copy`]), so nothing a person kept before is lost.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -191,8 +193,8 @@ struct HostKey {
 struct Host {
     /// The session's end of its door.
     door: Arc<OwnedFd>,
-    /// The windows whose instances it runs.
-    instances: HashSet<u64>,
+    /// The windows whose instances it runs, each with its app.
+    instances: HashMap<u64, String>,
     /// Which start of the host this is, so the end of an earlier one never retires a later one.
     generation: u64,
 }
@@ -216,6 +218,8 @@ pub struct Instance {
     pub origin: Option<OwnedFd>,
     /// What the window was asked to show.
     pub opens: crate::Opens,
+    /// What the person may do in the app ([`crate::authority::standing`]).
+    pub standing: Option<tilo_action_policy::Standing>,
 }
 
 /// How a host is started: the command for one on `runtime` and `app_runtime`, keeping `storage`.
@@ -284,7 +288,7 @@ impl Hosts {
             .running()
             .iter()
             .map(|(key, host)| {
-                let mut instances: Vec<u64> = host.instances.iter().copied().collect();
+                let mut instances: Vec<u64> = host.instances.keys().copied().collect();
                 instances.sort_unstable();
                 (key.workspace.clone(), key.author.clone(), instances)
             })
@@ -312,6 +316,38 @@ impl Hosts {
                     author = %key.author,
                     "a tilolang host was not told the person's formats or language changed"
                 );
+            }
+        }
+    }
+
+    /// Say on every host running in `workspace` what the person may now do in each app it runs,
+    /// from the workspace's policy as the session holds it now: a role given or taken back
+    /// enables or disables what the windows already open offer. A host started later is handed
+    /// it with each instance.
+    pub fn policy_changed(&self, workspace: &crate::workspace::Workspace) {
+        for (key, host) in self.running().iter() {
+            if key.workspace != workspace.id {
+                continue;
+            }
+            let apps: BTreeSet<&String> = host.instances.values().collect();
+            for app in apps {
+                let standing = runtime_portal::tilolang_host::AppStanding {
+                    app: app.clone(),
+                    standing: crate::authority::standing(workspace, app),
+                };
+                if let Err(error) =
+                    runtime_portal::tilolang_host::send_standing(&host.door, &standing)
+                {
+                    // Its follow thread reads the end of the door and forgets it: the next
+                    // instance starts another.
+                    tracing::warn!(
+                        %error,
+                        workspace = %key.workspace,
+                        author = %key.author,
+                        app,
+                        "a tilolang host was not told what the person may now do"
+                    );
+                }
             }
         }
     }
@@ -396,6 +432,7 @@ impl Hosts {
             } else {
                 std::collections::BTreeMap::new()
             },
+            standing: instance.standing,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,
@@ -465,7 +502,7 @@ impl Hosts {
         if let Some(host) = hosts.get_mut(key) {
             match runtime_portal::tilolang_host::send_instance(&host.door, request, fds) {
                 Ok(()) => {
-                    host.instances.insert(request.instance);
+                    host.instances.insert(request.instance, request.app.clone());
                     return Ok(false);
                 }
                 // The host is ending: start another.
@@ -477,7 +514,7 @@ impl Hosts {
         }
         let mut host = self.start(key)?;
         runtime_portal::tilolang_host::send_instance(&host.door, request, fds)?;
-        host.instances.insert(request.instance);
+        host.instances.insert(request.instance, request.app.clone());
         hosts.insert(key.clone(), host);
         Ok(true)
     }
@@ -544,7 +581,7 @@ impl Hosts {
             .spawn(move || hosts.follow(&key, generation, &followed, child, said))?;
         Ok(Host {
             door,
-            instances: HashSet::new(),
+            instances: HashMap::new(),
             generation,
         })
     }
@@ -753,31 +790,40 @@ fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<
 mod tests {
     use super::*;
 
+    const NOTES: &str = "so.tilo.lang.notes";
+
+    /// Hosts running in each workspace of `running`, behind its door, each with two windows of
+    /// Notes.
+    fn running(running: Vec<(&str, OwnedFd)>) -> Arc<Hosts> {
+        let hosts = Hosts::with(
+            std::env::temp_dir(),
+            Box::new(|_, _, _| Command::new("true")),
+            Box::new(|_| Err("no package store here".to_owned())),
+        );
+        for (workspace, door) in running {
+            let key = HostKey {
+                workspace: workspace.to_owned(),
+                author: "person-ada".to_owned(),
+                runtime: "tilolang@1".to_owned(),
+                app_runtime: "tilo@1".to_owned(),
+            };
+            let host = Host {
+                door: Arc::new(door),
+                instances: HashMap::from([(7, NOTES.to_owned()), (8, NOTES.to_owned())]),
+                generation: 1,
+            };
+            hosts.running().insert(key, host);
+        }
+        hosts
+    }
+
     /// Every host running says on its door what the person's formats now are, so the instances it
     /// runs write their weeks and times again; a host that is not running hears nothing.
     #[test]
     fn a_formats_change_is_said_on_the_door_of_every_host_running() {
         let (ours, theirs) = runtime_portal::tilolang_host::pair().unwrap();
         let (idle_ours, idle_theirs) = runtime_portal::tilolang_host::pair().unwrap();
-        let hosts = Hosts::with(
-            std::env::temp_dir(),
-            Box::new(|_, _, _| Command::new("true")),
-            Box::new(|_| Err("no package store here".to_owned())),
-        );
-        let key = |workspace: &str| HostKey {
-            workspace: workspace.to_owned(),
-            author: "person-ada".to_owned(),
-            runtime: "tilolang@1".to_owned(),
-            app_runtime: "tilo@1".to_owned(),
-        };
-        let host = |door: OwnedFd| Host {
-            door: Arc::new(door),
-            instances: HashSet::from([7]),
-            generation: 1,
-        };
-        hosts
-            .running()
-            .insert(key("7a110d00-0000-4000-8000-0000000000f1"), host(ours));
+        let hosts = running(vec![("7a110d00-0000-4000-8000-0000000000f1", ours)]);
 
         let before = ui::format::region::current();
         let sunday = ui::format::region::RegionFormats {
@@ -803,6 +849,53 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "a host that is not running is not told"
+        );
+    }
+
+    /// When the workspace's policy changes, every host running in it is told what the person may
+    /// now do in each app it runs, so the windows already open follow; a host of another
+    /// workspace hears nothing.
+    #[test]
+    fn a_policy_change_is_said_for_each_app_on_the_doors_of_the_workspaces_hosts() {
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000f2";
+        let (ours, theirs) = runtime_portal::tilolang_host::pair().unwrap();
+        let (other_ours, other_theirs) = runtime_portal::tilolang_host::pair().unwrap();
+        let hosts = running(vec![
+            (WORKSPACE, ours),
+            ("7a110d00-0000-4000-8000-0000000000f3", other_ours),
+        ]);
+
+        let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "bob");
+        policy
+            .members
+            .insert("ada".to_owned(), tilo_action_policy::Role::Viewer);
+        let workspace = crate::workspace::Workspace {
+            policy: Some(policy),
+            person: "ada".to_owned(),
+            ..crate::workspace::Workspace::new(WORKSPACE, std::env::temp_dir())
+        };
+        hosts.policy_changed(&workspace);
+        let handed = runtime_portal::tilolang_host::receive(&theirs).unwrap();
+        let Some(runtime_portal::tilolang_host::Handed::Standing(said)) = handed else {
+            panic!("the workspace's host is told the person's standing: {handed:?}");
+        };
+        assert_eq!(said.app, NOTES);
+        // What a launched Notes reads of the person's authority, as it reads back off the door.
+        let expected = crate::authority::standing(&workspace, NOTES).unwrap();
+        let expected = serde_json::from_slice(&serde_json::to_vec(&expected).unwrap()).unwrap();
+        assert_eq!(said.standing, Some(expected));
+        drop(hosts);
+        assert!(
+            runtime_portal::tilolang_host::receive(&theirs)
+                .unwrap()
+                .is_none(),
+            "said once for the app, however many of its windows are open"
+        );
+        assert!(
+            runtime_portal::tilolang_host::receive(&other_theirs)
+                .unwrap()
+                .is_none(),
+            "a host of another workspace is not told"
         );
     }
 

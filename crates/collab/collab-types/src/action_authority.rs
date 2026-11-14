@@ -137,6 +137,19 @@ impl AppActionAuthorityProjection {
         self.policy.node().app(&self.app_id)
     }
 
+    /// The person's standing in the workspace as this app sees it: what a window of the app
+    /// decides its offers and its own invocations by.
+    #[must_use]
+    pub fn standing(&self) -> tilo_action_policy::Standing {
+        let standing =
+            tilo_action_policy::Standing::person(self.policy.clone(), self.person.clone());
+        if self.foreign {
+            standing.on_foreign_device()
+        } else {
+            standing
+        }
+    }
+
     /// The person's authority, capped on a foreign device.
     #[must_use]
     pub fn authority(&self) -> Authority<'_> {

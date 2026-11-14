@@ -675,14 +675,10 @@ fn action_authority_context(
     person: &UserId,
 ) -> Result<PermissionContext, String> {
     let projection = read_action_authority_projection(source, workspace, app, person)?;
-    let mut standing = crate::permissions::Standing::person(projection.policy, person.0.clone());
-    if projection.foreign {
-        standing = standing.on_foreign_device();
-    }
     Ok(PermissionContext::new(
         crate::permissions::Acting::person(person.0.clone()),
         Vec::new(),
-        standing,
+        projection.standing(),
     ))
 }
 

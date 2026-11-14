@@ -345,6 +345,35 @@ impl TilolangHost {
         changed
     }
 
+    /// What the person may do in `app` changed: its instances, running or opening, offer and
+    /// invoke by `standing` from now on. Whether any of them changed.
+    pub fn set_standing(
+        &mut self,
+        app: &str,
+        standing: Option<&tilo_action_policy::Standing>,
+    ) -> bool {
+        let mut changed = false;
+        for running in self
+            .running
+            .iter_mut()
+            .filter(|running| running.hosted.spec().app == app)
+        {
+            changed |= running.hosted.set_standing(standing.cloned());
+        }
+        // An instance still opening runs with it from its first frame.
+        for opening in self.opening.iter_mut().filter(|opening| opening.app == app) {
+            match &mut opening.stage {
+                Stage::Module { request, .. } => request.standing = standing.cloned(),
+                Stage::Joining { spec, .. } | Stage::Reading { spec, .. } => {
+                    spec.standing = standing.cloned();
+                }
+                Stage::Moved => {}
+            }
+            changed = true;
+        }
+        changed
+    }
+
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
@@ -622,6 +651,7 @@ impl TilolangHost {
             spec: Spec {
                 installed: request.installed,
                 language: request.language,
+                standing: request.standing,
                 ..Spec::new(request.app, request.room, request.instance, request.person)
             },
             bundle: Arc::new(bundle),

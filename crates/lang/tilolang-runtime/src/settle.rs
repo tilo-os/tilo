@@ -501,8 +501,11 @@ impl Core {
     }
 
     /// Whether `who` may decide a suggestion of this action: the authority does not deny them.
-    /// An `ask` is the very decision they are making, so only a denial refuses.
+    /// An `ask` is the very decision they are making, so only a denial refuses. It is what a view
+    /// offers them too: an action their standing denies stands disabled. Their standing is theirs
+    /// alone, so a view that asked runs again when it changes.
     pub(crate) fn may_decide(&self, who: &Principal, action: &str) -> bool {
+        self.read_person();
         self.info_of(action)
             .is_none_or(|info| self.authority.decide(who, &[], &info) != Decision::Deny)
     }
