@@ -173,8 +173,7 @@ pub(crate) fn validate(file: &File) -> io::Result<()> {
 }
 
 pub(crate) fn validate_private(file: &File, metadata: &std::fs::Metadata) -> io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    if !crate::native::private::private_to_me(&metadata) {
+    if !crate::native::private::private_to_me(metadata) {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     validate(file)
@@ -214,7 +213,6 @@ fn empty(file: &File) -> io::Result<()> {
 }
 /// Only the private exclusive-mkdir custody may call this; never an adopted FD.
 pub(crate) fn normalize_fresh_empty(file: &File) -> io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     if !metadata.is_dir() || !crate::native::private::owned_by_me(&metadata) {
         return Err(io::ErrorKind::PermissionDenied.into());
