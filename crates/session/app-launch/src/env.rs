@@ -63,6 +63,10 @@ const FORWARDED: &[&str] = &[
     // How much an app (and the connector the system runs for one) logs, as the session's own
     // log says: a development session's log is all a connector without a window has.
     "RUST_LOG",
+    // The launcher's debug-only switch that keeps an app's own output in its data home
+    // (`launcher-debug-output.log`) instead of dropping it: what an app that ends with no window
+    // and no word otherwise leaves nowhere. Absent unless a developer's session sets it.
+    "TILO_LAUNCHER_DEBUG_STDERR",
     // A run promised the product's font catalog, and the catalog itself: a
     // package installed outside the build directory cannot find it beside its
     // own executable.
@@ -311,6 +315,29 @@ mod tests {
         assert!(
             !variables.contains_key("TILO_WORKSPACE_ID"),
             "a workspace is chosen per launch, never inherited"
+        );
+    }
+
+    /// A developer's session that asks the launcher to keep its apps' own output
+    /// (`TILO_LAUNCHER_DEBUG_STDERR`) hands that to every launcher it starts: an app that ends
+    /// with no window and no word says why in its data home. A session that does not ask hands
+    /// nothing.
+    #[test]
+    fn a_session_that_keeps_its_apps_output_tells_their_launchers() {
+        let keeping = SessionEnvironment::reading(|name| {
+            (name == "TILO_LAUNCHER_DEBUG_STDERR").then(|| "1".into())
+        });
+        assert_eq!(
+            keeping
+                .variables()
+                .get("TILO_LAUNCHER_DEBUG_STDERR")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert!(
+            !SessionEnvironment::reading(|_| None)
+                .variables()
+                .contains_key("TILO_LAUNCHER_DEBUG_STDERR")
         );
     }
 
