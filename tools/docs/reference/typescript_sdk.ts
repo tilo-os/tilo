@@ -39,7 +39,7 @@ const ALIASES: Record<string, string> = { ts: "typescript", js: "typescript", ba
 // so a new one cannot reach the page without a place to sit.
 const GROUPS: [string, string[]][] = [
   ["Client", ["Tilo", "TiloOptions", "Workspaces", "Keys", "SignIn", "urlFrom", "keyFrom"]],
-  ["Workspaces", ["Workspace", "WorkspaceInfo", "WorkspaceList"]],
+  ["Workspaces", ["Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport"]],
   ["Account", ["Usage", "WorkspaceUsage", "ApiInfo"]],
   ["Resources", [
     "Resource", "Step", "Surface", "resourceProxy", "kebab", "segments",
