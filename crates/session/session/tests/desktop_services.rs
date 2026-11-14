@@ -339,7 +339,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     session
         .invoke(
             tilo_session::NOTIFICATIONS_RESOURCE,
-            "open",
+            "open-notice",
             &Map::from_iter([("notification".to_owned(), Value::from(u64::from(second)))]),
         )
         .expect("open the notification");
