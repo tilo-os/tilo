@@ -54,13 +54,6 @@ const TURN: Duration = Duration::from_secs(2);
 /// of each other are admitted in one commit rather than one each. A change
 /// after a quiet spell is committed at once.
 const COMMIT_SPACING: Duration = Duration::from_millis(500);
-/// How long the state a frame taken in left changed waits to be written
-/// ([`GroupPeer::save_deferred`]). Sealing the state of a group of hundreds
-/// takes tens of milliseconds, and the Welcome that admits a page arrives as it
-/// enters: written at once, it would hold back the page's first frame, which is
-/// drawn well within this. A device's pump writes it as the device stops
-/// ([`crate::GovernancePump`]); one that dies before only asks again.
-const DEFERRED_SAVE: Duration = Duration::from_secs(2);
 /// Groups remembered as having a group this device takes no part in.
 const MAX_GROUPS_SEEN: usize = 1 << 16;
 /// How long a waiting device holds a Welcome whose tree names a device its
@@ -556,9 +549,6 @@ struct PeerEntry {
     /// A Welcome refused for a device this device's view of the membership
     /// did not name ([`WELCOME_WAIT`]).
     welcome: Option<HeldWelcome>,
-    /// Since when the peer holds a change it has not written
-    /// ([`DEFERRED_SAVE`]).
-    unsaved_since: Option<Instant>,
 }
 
 /// A Welcome a waiting device holds for its view of the membership.
@@ -1008,7 +998,6 @@ impl WorkspaceKeys {
             }
             self.publish(workspace, transport);
             self.ask(workspace, transport, now, wall);
-            self.save_deferred(workspace, now);
         }
         // Unopened groups are re-checked with the policy, and a failed
         // open when its backoff is due.
@@ -1020,45 +1009,6 @@ impl WorkspaceKeys {
         // A newly opened workspace brings its own expiries.
         if reconciled && epoch.is_some() {
             self.register_next_policy_change(wall);
-        }
-    }
-
-    /// Write every group's state a frame taken in left unwritten, now
-    /// rather than once it has waited [`DEFERRED_SAVE`]: the state carries the
-    /// keys a write seals under, and it is written before such a write leaves
-    /// this device ([`GroupPeer::save_deferred`]).
-    pub fn save_pending(&mut self) {
-        let Some(store) = &self.store else {
-            return;
-        };
-        for entry in self.peers.values_mut() {
-            if !entry.peer.has_unsaved() {
-                continue;
-            }
-            entry.unsaved_since = None;
-            if let Err(error) = entry.peer.save_deferred(&store.vault) {
-                tracing::warn!(%error, workspace = %entry.workspace, "group state could not be written");
-            }
-        }
-    }
-
-    /// Write what taking in a frame left unwritten in `group`'s state once
-    /// it has waited [`DEFERRED_SAVE`].
-    fn save_deferred(&mut self, workspace: WorkspaceId, now: Instant) {
-        let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
-            return;
-        };
-        if !entry.peer.has_unsaved() {
-            entry.unsaved_since = None;
-            return;
-        }
-        let since = *entry.unsaved_since.get_or_insert(now);
-        if now < since.checked_add(DEFERRED_SAVE).unwrap_or(since) {
-            return;
-        }
-        entry.unsaved_since = None;
-        if let Err(error) = entry.peer.save_deferred(&store.vault) {
-            tracing::warn!(%error, workspace = %entry.workspace, "group state could not be written");
         }
     }
 
@@ -1130,15 +1080,8 @@ impl WorkspaceKeys {
             .values()
             .filter_map(|entry| entry.welcome.as_ref().map(|held| held.until))
             .min();
-        let unsaved = self
-            .peers
-            .values()
-            .filter_map(|entry| entry.unsaved_since)
-            .filter_map(|since| since.checked_add(DEFERRED_SAVE))
-            .min();
         policy
             .into_iter()
-            .chain(unsaved)
             .chain(welcome)
             .chain(turn)
             .chain(asking)
@@ -1758,7 +1701,6 @@ impl WorkspaceKeys {
                 wanted: true,
                 held: Vec::new(),
                 welcome: None,
-                unsaved_since: None,
             },
         );
         self.register_gate(workspace, gate);
@@ -1983,12 +1925,6 @@ impl SharedKeys {
         self.run(|service| service.signing()).unwrap_or(false)
     }
 
-    /// See [`WorkspaceKeys::save_pending`]: the state a frame taken in
-    /// left unwritten, written before a write sealed under its keys leaves.
-    pub fn save_pending(&self) {
-        self.run(WorkspaceKeys::save_pending);
-    }
-
     /// Open `envelope`, a new sealed write to one of `workspace`'s groups, for
     /// the durable owner that holds the group's keys. Only under the
     /// group's current epoch, and only while this device reads the
@@ -2042,9 +1978,6 @@ impl SharedKeys {
         if metadata.epoch == keys.epoch() {
             return Ok((metadata, envelope.payload.clone()));
         }
-        // The state carrying the epoch's key is written before the write
-        // sealed under it goes out ([`WorkspaceKeys::save_pending`]).
-        self.save_pending();
         keys.seal_content(envelope.artifact, retention, &plaintext)
             .map_err(|error| error.to_string())
     }

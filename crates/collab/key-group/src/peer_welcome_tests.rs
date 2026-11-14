@@ -327,141 +327,42 @@ fn a_tree_the_committer_forged_cannot_follow_the_next_real_commit() {
     }
 }
 
-/// A join whose write was put off and lost (the page closed first) leaves
-/// the device waiting as it was: the Welcome taken again admits it, and
-/// without it the device asks again and is admitted with the workspace's
-/// history.
+/// A Welcome and another member's commit are written as they are taken in:
+/// the device seals its own writes under the keys they bring, so a device
+/// that stops right after comes back holding them.
 #[test]
-fn a_join_lost_before_it_was_written_is_asked_for_again() {
+fn a_join_and_a_commit_are_written_as_they_are_taken_in() {
     let Workspace {
         id, mut founder, ..
     } = workspace();
     let store = Arc::new(Store::default());
     let states = || Some(Arc::clone(&store) as Arc<dyn PeerStates>);
-    let (mut joiner, asked) = asking(id, JOINER, states());
-    founder.learn_request(asked).unwrap();
-    let allowed = devices(&[FOUNDER, HONEST, DISHONEST, JOINER]);
-    founder.reconcile_now(&allowed, &vault()).unwrap();
-    let (full, _) = copies(founder.outbox());
-    founder.published();
-    let written = store.read(id).unwrap();
-    assert!(matches!(
-        joiner.receive(full.clone(), &allowed, &vault()).unwrap(),
-        PeerEvent::Joined { .. }
-    ));
-    assert!(joiner.has_unsaved());
-    assert_eq!(
-        store.read(id).unwrap(),
-        written,
-        "the join is not written yet"
-    );
-    drop(joiner);
-
-    // The host still holds the frame: taken again, it admits the device.
-    let open = || {
+    let reopened = || {
         GroupPeer::open(states(), id, Box::new(key(JOINER)), &vault())
             .unwrap()
             .unwrap()
+            .access()
     };
-    let mut reopened = open();
-    assert_eq!(reopened.access(), Access::Waiting);
-    assert!(matches!(
-        reopened.receive(full, &allowed, &vault()).unwrap(),
-        PeerEvent::Joined { .. }
-    ));
-    reopened.save_deferred(&vault()).unwrap();
-    assert!(!reopened.has_unsaved());
-    assert_ne!(store.read(id).unwrap(), written);
-    assert_eq!(open().access(), Access::Ready { epoch: 2 });
-
-    // Lost again, and the host has gone on: the device asks again, with a
-    // fresh key as a device whose Welcome never came does, and is admitted.
-    store.write(id, written.as_deref().unwrap()).unwrap();
-    let mut reopened = open();
-    let asked = reopened
-        .access_request_now(2, true, &vault())
-        .unwrap()
-        .unwrap();
-    founder.learn_request(asked).unwrap();
-    founder.reconcile_now(&allowed, &vault()).unwrap();
-    let (full, _) = copies(founder.outbox());
-    assert!(matches!(
-        reopened.receive(full, &allowed, &vault()).unwrap(),
-        PeerEvent::Joined { epoch: 3 }
-    ));
-    let (first, _) = reopened.keyring().unwrap().epoch_range().unwrap();
-    assert!(
-        first <= 2,
-        "the epoch the lost join had is readable: {first}"
-    );
-}
-
-/// A commit whose write was put off and lost leaves the member where it
-/// was: the commit taken again moves it on, and a member that missed it
-/// starts over and asks again.
-#[test]
-fn a_commit_lost_before_it_was_written_is_found_again_or_asked_around() {
-    let Workspace {
-        id, mut founder, ..
-    } = workspace();
-    let store = Arc::new(Store::default());
-    let states = || Some(Arc::clone(&store) as Arc<dyn PeerStates>);
     let (mut member, asked) = asking(id, JOINER, states());
     founder.learn_request(asked).unwrap();
     let mut allowed = devices(&[FOUNDER, HONEST, DISHONEST, JOINER]);
     founder.reconcile_now(&allowed, &vault()).unwrap();
     let (full, _) = copies(founder.outbox());
     founder.published();
-    member.receive(full, &allowed, &vault()).unwrap();
-    member.save_deferred(&vault()).unwrap();
-    let written = store.read(id).unwrap();
+    assert!(matches!(
+        member.receive(full, &allowed, &vault()).unwrap(),
+        PeerEvent::Joined { epoch: 2 }
+    ));
+    assert_eq!(reopened(), Access::Ready { epoch: 2 });
 
     let (_, asked) = asking(id, LATER, None);
     founder.learn_request(asked).unwrap();
     allowed.insert(device(LATER));
     founder.reconcile_now(&allowed, &vault()).unwrap();
     let (_, commit) = copies(founder.outbox());
-    founder.published();
     assert_eq!(
-        member.receive(commit.clone(), &allowed, &vault()).unwrap(),
+        member.receive(commit, &allowed, &vault()).unwrap(),
         PeerEvent::Advanced { epoch: 3 }
     );
-    assert_eq!(
-        store.read(id).unwrap(),
-        written,
-        "the commit is not written yet"
-    );
-    drop(member);
-
-    let open = || {
-        GroupPeer::open(states(), id, Box::new(key(JOINER)), &vault())
-            .unwrap()
-            .unwrap()
-    };
-    let mut reopened = open();
-    assert_eq!(reopened.access(), Access::Ready { epoch: 2 });
-    assert_eq!(
-        reopened.receive(commit, &allowed, &vault()).unwrap(),
-        PeerEvent::Advanced { epoch: 3 }
-    );
-
-    // The host went on past it: the member starts over.
-    let mut reopened = open();
-    allowed.remove(&device(LATER));
-    founder.reconcile_now(&allowed, &vault()).unwrap();
-    let (_, beyond) = copies_or_only(founder.outbox());
-    assert_eq!(
-        reopened.receive(beyond, &allowed, &vault()).unwrap(),
-        PeerEvent::Desynchronised
-    );
-    assert_eq!(reopened.access(), Access::Waiting);
-}
-
-/// The commit of `frames` as members get it, when it carries no Welcome.
-fn copies_or_only(frames: &[MlsGovernanceFrame]) -> (MlsGovernanceFrame, MlsGovernanceFrame) {
-    if frames.iter().any(|frame| frame.join_material().is_some()) {
-        return copies(frames);
-    }
-    let frame = frames.first().unwrap().clone();
-    (frame.clone(), frame)
+    assert_eq!(reopened(), Access::Ready { epoch: 3 });
 }

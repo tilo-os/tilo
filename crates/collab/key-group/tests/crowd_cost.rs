@@ -73,8 +73,7 @@ struct Cost {
     commits: usize,
     /// Bytes of the commit every member already in receives.
     members_commit_bytes: usize,
-    /// Writes of a member's state as it follows the commit, the one put off
-    /// until after the page shows among them.
+    /// Writes of a member's state as it follows the commit.
     member_writes: usize,
 }
 
@@ -142,10 +141,6 @@ fn admission(members: u32, arriving: u32) -> Cost {
             .receive((*frame).clone(), &allowed, &vault())
             .unwrap();
     }
-    // Taking the commit in writes nothing; the write follows once the page
-    // shows.
-    assert_eq!(follower_states.writes(), follower_before);
-    follower.save_deferred(&vault()).unwrap();
     Cost {
         committer_writes,
         commits: members_copy.len(),

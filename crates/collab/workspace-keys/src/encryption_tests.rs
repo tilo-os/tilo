@@ -1069,93 +1069,51 @@ fn group_state_and_gates_survive_a_restart() {
     }
 }
 
-/// A device that stops before the join it took in was written (a page
-/// closed as it entered) holds the state it asked with when it comes back:
-/// it asks again and is admitted again. A join that was written stays.
+/// A key is on disk before it is handed out for sealing: a device that takes
+/// in its Welcome, or a commit that moves its group on, and dies the moment
+/// after it handed the key out (nothing written on the way out) comes back
+/// holding that key, so what it sealed under it opens again.
 #[test]
-fn a_join_lost_before_it_was_written_is_asked_for_again() {
+fn a_key_is_written_before_it_is_handed_out() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
     let policy = Policy::default();
     policy.allowed.lock().unwrap().insert(public(6));
     policy.allowed.lock().unwrap().insert(public(5));
-    let (owner_dir, tablet_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
     let mut now = Instant::now();
-    let step = |devices: &mut [&mut Device], now: &mut Instant| {
-        *now = now.checked_add(Duration::from_millis(250)).unwrap();
-        for device in devices.iter_mut() {
-            device.service.pump(&device.endpoint, *now, 1_000);
+    let mut owner = device(&workspace, workspace_id, 0, 5, &policy, dirs[0].path());
+    let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, dirs[1].path());
+    let mut phone = device(&workspace, workspace_id, 2, 7, &policy, dirs[2].path());
+    owner.service.access(workspace_id, now);
+    // The first epoch the tablet is handed, then the next after the phone is
+    // admitted: each read right after the pass that took its frame in.
+    for admit_phone in [false, true] {
+        let before = ready_epoch(&tablet.service.access(workspace_id, now));
+        if admit_phone {
+            policy.allowed.lock().unwrap().insert(public(7));
+            phone.service.access(workspace_id, now);
         }
-    };
-    let mut owner = device(&workspace, workspace_id, 0, 5, &policy, owner_dir.path());
-    {
-        let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
-        owner.service.access(workspace_id, now);
-        tablet.service.access(workspace_id, now);
-        for _ in 0..40 {
-            if ready_epoch(&tablet.service.access(workspace_id, now)).is_some() {
+        let mut handed = before;
+        for _ in 0..400 {
+            now = now.checked_add(Duration::from_millis(250)).unwrap();
+            for device in [&mut owner, &mut tablet, &mut phone] {
+                device.service.pump(&device.endpoint, now, 1_000);
+            }
+            handed = ready_epoch(&tablet.service.access(workspace_id, now));
+            if handed != before {
                 break;
             }
-            step(&mut [&mut owner, &mut tablet], &mut now);
         }
-        assert!(ready_epoch(&tablet.service.access(workspace_id, now)).is_some());
-        assert!(tablet.service.peers[&workspace_id].peer.has_unsaved());
+        assert_ne!(handed, before, "the tablet is handed a new key");
+        drop(tablet);
+        tablet = device(&workspace, workspace_id, 1, 6, &policy, dirs[1].path());
+        assert_eq!(
+            ready_epoch(&tablet.service.access(workspace_id, now)),
+            handed,
+            "the key handed out was written"
+        );
     }
-    let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
-    assert!(
-        ready_epoch(&tablet.service.access(workspace_id, now)).is_none(),
-        "the join was not written"
-    );
-    run(&mut [&mut owner, &mut tablet], &mut now, 120);
-    assert!(ready_epoch(&tablet.service.access(workspace_id, now)).is_some());
-    // Written once it waited: a restart now keeps it.
-    run(&mut [&mut owner, &mut tablet], &mut now, 3);
-    assert!(!tablet.service.peers[&workspace_id].peer.has_unsaved());
-    drop(tablet);
-    let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
-    assert!(ready_epoch(&tablet.service.access(workspace_id, now)).is_some());
-}
-
-/// A device writes under the keys a join brought before that join waits to
-/// be written: the state travels with the write it sealed, so a page that
-/// reloads just after writing keeps the admission it wrote under.
-#[test]
-fn a_write_under_a_fresh_join_leaves_its_state_written() {
-    let workspace = Arc::new(Workspace::default());
-    let workspace_id = WorkspaceId::new();
-    let policy = Policy::default();
-    policy.allowed.lock().unwrap().insert(public(6));
-    policy.allowed.lock().unwrap().insert(public(5));
-    let (owner_dir, tablet_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let mut now = Instant::now();
-    let step = |devices: &mut [&mut Device], now: &mut Instant| {
-        *now = now.checked_add(Duration::from_millis(250)).unwrap();
-        for device in devices.iter_mut() {
-            device.service.pump(&device.endpoint, *now, 1_000);
-        }
-    };
-    let mut owner = device(&workspace, workspace_id, 0, 5, &policy, owner_dir.path());
-    {
-        let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
-        owner.service.access(workspace_id, now);
-        tablet.service.access(workspace_id, now);
-        for _ in 0..40 {
-            if ready_epoch(&tablet.service.access(workspace_id, now)).is_some() {
-                break;
-            }
-            step(&mut [&mut owner, &mut tablet], &mut now);
-        }
-        assert!(ready_epoch(&tablet.service.access(workspace_id, now)).is_some());
-        assert!(tablet.service.peers[&workspace_id].peer.has_unsaved());
-        // A write sealed here leaves with the state written.
-        tablet.service.save_pending();
-        assert!(!tablet.service.peers[&workspace_id].peer.has_unsaved());
-    }
-    let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
-    assert!(
-        ready_epoch(&tablet.service.access(workspace_id, now)).is_some(),
-        "the join the write went out with was written"
-    );
 }
 
 /// Key loss: a laptop is lost with all its group state. Restoring the

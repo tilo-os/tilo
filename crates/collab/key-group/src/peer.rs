@@ -71,10 +71,9 @@
 //! State is written before anything it produced leaves the device: a frame
 //! reaches [`GroupPeer::outbox`] only once the state holding it is
 //! durable (in the host's store for a peer opened from one, or in the export a
-//! browser writes before it sends). A Welcome or another member's commit
-//! taken in produces nothing that leaves the device, so its state is written
-//! later ([`GroupPeer::save_deferred`]), off the path to the page's first
-//! frame: losing it only makes the device ask again.
+//! browser writes before it sends). A Welcome or another member's commit taken
+//! in is written before its keys can be read: the device seals its own writes
+//! under them, which no other device could open for it again.
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -250,9 +249,6 @@ pub struct GroupPeer {
     /// The `issued_at` of the last request minted here, so one minted again
     /// in the same second is still newer.
     issued: u64,
-    /// A change not yet written to `states`: one whose loss only makes this
-    /// device ask for the workspace again ([`Self::save_deferred`]).
-    unsaved: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -392,7 +388,7 @@ impl GroupPeer {
         vault: &VaultKey,
     ) -> Result<Self> {
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
-        let mut peer = Self {
+        let peer = Self {
             workspace,
             device,
             signer,
@@ -409,7 +405,6 @@ impl GroupPeer {
             orphaned: ContentKeyring::new(),
             states,
             issued: 0,
-            unsaved: false,
         };
         peer.save(vault)?;
         Ok(peer)
@@ -601,7 +596,6 @@ impl GroupPeer {
             orphaned: ContentKeyring::from_wire(file.orphaned)?,
             states: None,
             issued: file.issued,
-            unsaved: false,
         })
     }
 
@@ -1620,9 +1614,7 @@ impl GroupPeer {
         self.parent = Some(parent);
         self.advance(frame);
         self.settle_orphaned();
-        // Kept after the page shows ([`Self::save_deferred`]): a commit lost
-        // with it is found again, or the device asks again.
-        self.unsaved = true;
+        self.save(vault)?;
         Ok(PeerEvent::Advanced { epoch })
     }
 
@@ -1717,9 +1709,7 @@ impl GroupPeer {
                         }
                     }
                 }
-                // Kept after the page shows ([`Self::save_deferred`]): a
-                // join lost with it is asked for again.
-                self.unsaved = true;
+                self.save(vault)?;
                 Ok(PeerEvent::Joined { epoch })
             }
             Err(Error::WelcomeRefused(refusal)) => {
@@ -1780,42 +1770,12 @@ impl GroupPeer {
         Ok(frame)
     }
 
-    fn save(&mut self, vault: &VaultKey) -> Result<()> {
+    fn save(&self, vault: &VaultKey) -> Result<()> {
         let Some(states) = &self.states else {
             return Ok(());
         };
         let sealed = self.export_sealed(vault)?;
         states.write(self.workspace, &sealed)?;
-        self.unsaved = false;
-        Ok(())
-    }
-
-    /// Whether this peer holds a change [`Self::save_deferred`] has yet to
-    /// write.
-    #[must_use]
-    pub const fn has_unsaved(&self) -> bool {
-        self.unsaved && self.states.is_some()
-    }
-
-    /// Write the change taking in a Welcome or a commit left unwritten.
-    ///
-    /// Sealing a large group's state takes as long as joining it, and nothing
-    /// waits on it: the frame taken in produced nothing that leaves this
-    /// device, and every change that does is written before it leaves (the
-    /// module docs), this one with it. So the caller writes it once the
-    /// person sees the workspace's content, not before. A device that stops
-    /// first keeps the state it had before the frame: a waiting device waits
-    /// again and asks anew, and a member finds the frame it missed, or starts
-    /// over and asks again. Either way it is admitted with the workspace's
-    /// history.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the state cannot be sealed or written.
-    pub fn save_deferred(&mut self, vault: &VaultKey) -> Result<()> {
-        if self.has_unsaved() {
-            self.save(vault)?;
-        }
         Ok(())
     }
 }

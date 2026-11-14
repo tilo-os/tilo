@@ -79,7 +79,7 @@ impl GovernancePark {
 }
 
 /// A device's key service, settling on a thread of its own; stops when
-/// dropped, and writes the group state it has not written yet on the way out.
+/// dropped.
 #[cfg_attr(
     target_family = "wasm",
     allow(dead_code, reason = "a page drives the pump from its own loop")
@@ -87,23 +87,12 @@ impl GovernancePark {
 pub struct GovernancePump {
     park: Arc<GovernancePark>,
     stop: Arc<AtomicBool>,
-    #[cfg(not(target_family = "wasm"))]
-    access: Option<SharedKeys>,
 }
 
 impl Drop for GovernancePump {
     fn drop(&mut self) {
         #[cfg(not(target_family = "wasm"))]
-        {
-            self.stop.store(true, Ordering::Relaxed);
-            // A Welcome taken in shortly before the device stops carries the
-            // keys its own writes were sealed under: unwritten, the device
-            // (or a machine copied from its disk) could not open them again
-            // until a participant is reachable to admit it once more.
-            if let Some(access) = &self.access {
-                access.save_pending();
-            }
-        }
+        self.stop.store(true, Ordering::Relaxed);
         self.park.poke();
     }
 }
@@ -136,7 +125,6 @@ impl GovernancePump {
     ) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
-        let kept = access.clone();
         let woken = Arc::clone(&park);
         let wake = Arc::clone(&park);
         std::thread::Builder::new()
@@ -159,11 +147,7 @@ impl GovernancePump {
                     woken.wait(due);
                 }
             })?;
-        Ok(Self {
-            park,
-            stop,
-            access: kept,
-        })
+        Ok(Self { park, stop })
     }
 }
 
