@@ -1258,6 +1258,7 @@ mod tests {
                             "body": null,
                             "status": null,
                             "assignee": null,
+                            "url": null,
                         },
                     }),
                 ]
