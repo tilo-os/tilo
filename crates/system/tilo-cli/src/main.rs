@@ -1028,13 +1028,13 @@ fn acts_in_a_workspace(cmd: &Cmd) -> bool {
             | Cmd::Run { .. }
             | Cmd::Ls { .. }
             | Cmd::Read { .. }
-            | Cmd::Sdk { .. }
     )
 }
 
 /// `-w` when it was not given: the workspace this computer's `tilo login`
 /// entered, which is the one its device is in, said as it is used. A command
-/// that acts on no workspace never reads the login.
+/// that acts on no workspace never reads the login: `sdk` writes the apps the
+/// checkout commits unless `-w` names a workspace, so it does not either.
 fn workspace_or_entered(cli: &Cli) -> Result<Option<String>> {
     if cli.workspace.is_some() || !acts_in_a_workspace(&cli.cmd) {
         return Ok(cli.workspace.clone());
@@ -1821,6 +1821,20 @@ mod tests {
             entered_workspace_note("Studio"),
             "acting in the workspace \"Studio\" (-w <name or id> names another)"
         );
+    }
+
+    /// `sdk gen` writes the types of the apps the checkout commits unless `-w` names a
+    /// workspace, so it reads no login and needs no host.
+    #[test]
+    fn sdk_gen_needs_no_login() {
+        let command = Cmd::Sdk {
+            cmd: sdk::SdkCmd::Gen {
+                lang: sdk::Lang::Python,
+                out: None,
+                check: true,
+            },
+        };
+        assert!(!acts_in_a_workspace(&command));
     }
 
     /// A command that takes `-w` acts in the workspace this computer logged
