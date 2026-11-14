@@ -24,6 +24,11 @@
 //! pointer resting over the list, painted over the widgets as a window
 //! paints it ([`tilo_app::app::SurfaceDamage::painting_peers`]), does not
 //! stop the copies: its mark repaints where it is and where a copy took it.
+//!
+//! The windows checked on a GPU target are the rows of one table ([`cases`]),
+//! run by one test on the screens they share ([`Screen`]): a test process
+//! pays for its first GPU frame in seconds, and each row adds only its own
+//! window and frames.
 
 use tilo_app::advanced::{Scene, WindowEvent};
 use tilo_app::app::{AppSurface, SurfaceDamage};
@@ -98,6 +103,7 @@ fn task_row(row: &mut ViewCx<Checklist, Task>) -> Element {
 /// The window's surface: 800×600 logical pixels at `scale`, presented by a
 /// host that copies what a scroll keeps on screen when `copying`, with a
 /// collaborator's pointer resting at `peer` (logical pixels), if any.
+#[derive(Clone, Copy)]
 struct Surface {
     scale: f64,
     copying: bool,
@@ -137,7 +143,55 @@ struct Run {
 }
 
 /// The pixels `rects` cover, each counted once, in a window of `size`.
-fn covered(rects: &[Rect], size: PhysicalSize<u32>) -> f64 {
+///
+/// A frame's rectangles are few and a window is up to two million pixels,
+/// and this runs for every frame that copies: the cover is summed band by
+/// band between the rectangles' own edges, where every row is crossed by
+/// the same rectangles, rather than marked and counted pixel by pixel
+/// ([`marked`], which the table below holds it to).
+fn covered(rects: &[Rect], size: PhysicalSize<u32>) -> usize {
+    let window = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
+    // Each rectangle as the whole device pixels it touches inside the
+    // window: its columns, then its rows, far edges exclusive.
+    let spans: Vec<[usize; 4]> = rects
+        .iter()
+        .map(|rect| {
+            let rect = rect.intersect(window).expand();
+            [
+                rect.x0 as usize,
+                rect.x1 as usize,
+                rect.y0 as usize,
+                rect.y1 as usize,
+            ]
+        })
+        .collect();
+    let mut edges: Vec<usize> = spans.iter().flat_map(|span| [span[2], span[3]]).collect();
+    edges.sort_unstable();
+    edges.dedup();
+    let mut pixels = 0;
+    for band in edges.windows(2) {
+        let mut columns: Vec<(usize, usize)> = spans
+            .iter()
+            .filter(|span| span[2] <= band[0] && band[1] <= span[3])
+            .map(|span| (span[0], span[1]))
+            .collect();
+        columns.sort_unstable();
+        let (mut width, mut end) = (0, 0);
+        for (from, to) in columns {
+            let from = from.max(end);
+            if to > from {
+                width += to - from;
+                end = to;
+            }
+        }
+        pixels += width * (band[1] - band[0]);
+    }
+    pixels
+}
+
+/// What [`covered`] counts, by marking every pixel a rectangle touches and
+/// counting the marks.
+fn marked(rects: &[Rect], size: PhysicalSize<u32>) -> usize {
     let (width, height) = (size.width as usize, size.height as usize);
     let window = Rect::new(0.0, 0.0, width as f64, height as f64);
     let mut cells = vec![false; width * height];
@@ -147,17 +201,106 @@ fn covered(rects: &[Rect], size: PhysicalSize<u32>) -> f64 {
             cells[y * width + rect.x0 as usize..y * width + rect.x1 as usize].fill(true);
         }
     }
-    cells.iter().filter(|cell| **cell).count() as f64
+    cells.iter().filter(|cell| **cell).count()
 }
+
+#[test]
+fn rectangles_cover_each_pixel_they_share_once() {
+    let size = PhysicalSize::new(40, 30);
+    let rect = Rect::new;
+    let cases: [(&str, Vec<Rect>, usize); 13] = [
+        ("no rectangle", vec![], 0),
+        ("one", vec![rect(2.0, 3.0, 10.0, 8.0)], 40),
+        ("one of no area", vec![rect(2.0, 3.0, 2.0, 8.0)], 0),
+        (
+            "the same one twice",
+            vec![rect(2.0, 3.0, 10.0, 8.0), rect(2.0, 3.0, 10.0, 8.0)],
+            40,
+        ),
+        (
+            "two overlapping at a corner",
+            vec![rect(0.0, 0.0, 10.0, 10.0), rect(5.0, 5.0, 15.0, 15.0)],
+            175,
+        ),
+        (
+            "two apart in the same rows",
+            vec![rect(0.0, 0.0, 5.0, 10.0), rect(20.0, 0.0, 25.0, 10.0)],
+            100,
+        ),
+        (
+            "two sharing an edge",
+            vec![rect(0.0, 0.0, 10.0, 10.0), rect(10.0, 0.0, 20.0, 10.0)],
+            200,
+        ),
+        (
+            "one inside another",
+            vec![rect(0.0, 0.0, 20.0, 20.0), rect(5.0, 5.0, 10.0, 10.0)],
+            400,
+        ),
+        (
+            "a cross",
+            vec![rect(10.0, 0.0, 20.0, 30.0), rect(0.0, 10.0, 40.0, 20.0)],
+            600,
+        ),
+        (
+            "edges inside a pixel take the pixel",
+            vec![rect(1.5, 1.5, 3.2, 2.1)],
+            6,
+        ),
+        (
+            "two reaching past the window",
+            vec![rect(-10.0, -10.0, 5.0, 5.0), rect(35.0, 25.0, 100.0, 100.0)],
+            50,
+        ),
+        (
+            "one outside the window",
+            vec![rect(50.0, 40.0, 60.0, 50.0)],
+            0,
+        ),
+        (
+            "the window and a part of it",
+            vec![rect(0.0, 0.0, 40.0, 30.0), rect(3.0, 3.0, 9.0, 9.0)],
+            1200,
+        ),
+    ];
+    for (name, rects, pixels) in &cases {
+        assert_eq!(covered(rects, size), *pixels, "{name}");
+        assert_eq!(
+            marked(rects, size),
+            *pixels,
+            "{name}, marked pixel by pixel"
+        );
+    }
+}
+
+/// What a window's frames are presented and checked on: the target a host
+/// presents into, copies first and then damage, and a renderer that draws
+/// each checked frame whole.
+///
+/// Building a renderer costs as much as presenting several frames, so the
+/// windows of one size are presented on one pair, as the windows a person
+/// opens one after another are presented on one screen: every run begins
+/// by rendering its window whole, which replaces every pixel the run before
+/// it left in the target.
+struct Screen {
+    presented: OffscreenRenderer,
+    full: OffscreenRenderer,
+}
+
+/// The screens a test presents its windows on, by size in device pixels.
+type Screens = std::collections::HashMap<(u32, u32), Screen>;
 
 /// Scroll the live window `frames` frames of `step` logical pixels each
 /// (down for a positive step), the pointer resting over the list, and
-/// present every frame as a window does. Every `check_every` frames, and
-/// after the last, the presented pixels must equal a full render.
+/// present every frame on `screen` as a window does. Every seventh frame,
+/// and after the last, the presented pixels must equal a full render;
+/// `case` names the run where they do not.
 fn scroll(
     app: &mut tilo_app::App,
     surface: &Surface,
     theme: &Theme,
+    screen: &mut Screen,
+    case: &str,
     (step, frames): (f64, usize),
 ) -> Run {
     let size = surface.size();
@@ -189,9 +332,7 @@ fn scroll(
         app.surface_frame_with_damage(surface, &mut scene, &mut damage);
     }
     let _ = damage.take_copying();
-    let mut presented = OffscreenRenderer::try_new(size.width, size.height)
-        .expect("a scroll copy is checked on the GPU the toolkit renders with");
-    let mut full = OffscreenRenderer::new(size.width, size.height);
+    let Screen { presented, full } = screen;
     let _ = presented.render(&scene, background);
     let mut run = Run::default();
     for frame in 0..frames {
@@ -213,7 +354,7 @@ fn scroll(
         if let Some((copies, rects)) = damage.take_copying() {
             if !copies.is_empty() {
                 run.copied_frames += 1;
-                run.repainted += covered(&rects, size);
+                run.repainted += covered(&rects, size) as f64;
             }
             let _ =
                 presented.render_copies_and_damage_gpu_wait(&scene, background, &copies, &rects);
@@ -227,8 +368,8 @@ fn scroll(
             let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected);
             assert_eq!(
                 differing, 0,
-                "frame {frame} of a {step} px scroll at {}x presented {differing} pixels a \
-                 full render does not have ({run:?})",
+                "{case}: frame {frame} of a {step} px scroll at {}x presented {differing} \
+                 pixels a full render does not have ({run:?})",
                 surface.scale
             );
         }
@@ -245,175 +386,228 @@ const THEMES: [ThemeCase; 3] = [
     ("high contrast", Theme::high_contrast),
 ];
 
-#[test]
-fn scrolling_a_long_list_copies_what_stays_on_screen_and_matches_a_full_render() {
-    for (name, theme) in THEMES {
-        let run = drive_live_window::<Window, _>(|app| {
-            app.set_theme(theme());
-            app.init_layout();
-            let surface = Surface {
-                scale: 1.0,
-                copying: true,
-                peer: None,
-            };
-            let down = scroll(app, &surface, &theme(), (40.0, 30));
-            let up = scroll(app, &surface, &theme(), (-24.0, 15));
-            (down, up)
-        })
-        .unwrap();
-        let (down, up) = run;
-        eprintln!("{name}: down {down:?}, up {up:?}");
-        let window = 800.0 * 600.0;
-        for (direction, run) in [("down", &down), ("up", &up)] {
-            assert!(
-                run.copied_frames * 4 >= run.frames * 3,
-                "{name}: most frames scrolling {direction} copy ({run:?})"
-            );
-            let per_frame = run.repainted / run.copied_frames.max(1) as f64;
-            assert!(
-                per_frame < window * 0.3,
-                "{name}: a frame scrolling {direction} that copies repaints the exposed strip \
-                 and its surroundings, not the list ({per_frame} px, {run:?})"
-            );
-        }
-    }
+/// Which checklist a case's window shows.
+#[derive(Clone, Copy)]
+enum List {
+    /// [`Window`]'s 2,000 tasks.
+    Long,
+    /// [`ShortWindow`]'s 30.
+    Short,
 }
 
-/// The list scrolled down and back up with a collaborator's pointer
-/// resting over it, at `scale`, presented by a host that copies.
-fn scroll_beside_a_peer(theme: fn() -> Theme, scale: f64, peer: Option<(f64, f64)>) -> (Run, Run) {
-    drive_live_window::<Window, _>(|app| {
-        app.set_theme(theme());
+/// How many frames of a scroll must have copied.
+#[derive(Clone, Copy)]
+enum Copies {
+    /// At least three in four.
+    Most,
+    /// None.
+    None,
+    /// As many as did.
+    Any,
+}
+
+/// What each scroll of a case must have done, besides presenting what a
+/// full render shows.
+#[derive(Clone, Copy)]
+struct Expect {
+    copies: Copies,
+    /// No frame repainted the window whole.
+    never_whole: bool,
+    /// A frame that copied repainted, on average, less than three tenths of
+    /// the window: the exposed strip and its surroundings, not the list.
+    a_strip: bool,
+}
+
+/// One window, opened and scrolled.
+struct Case {
+    name: String,
+    list: List,
+    theme: fn() -> Theme,
+    /// How the window is presented. Where a collaborator's pointer rests
+    /// over it, the same window is scrolled again without one, and the mark
+    /// may cost a frame no more than a twentieth of the window.
+    surface: Surface,
+    /// The scrolls, in order: logical pixels a frame (down when positive),
+    /// and frames.
+    scrolls: &'static [(f64, usize)],
+    expect: Expect,
+}
+
+/// Every window this file scrolls on a GPU target.
+fn cases() -> Vec<Case> {
+    let copying = |scale: f64, peer: Option<(f64, f64)>| Surface {
+        scale,
+        copying: true,
+        peer,
+    };
+    let mut cases = Vec::new();
+    // A long list scrolled down and back up copies what stays on screen.
+    for (theme_name, theme) in THEMES {
+        cases.push(Case {
+            name: format!("{theme_name}: a long list"),
+            list: List::Long,
+            theme,
+            surface: copying(1.0, None),
+            scrolls: &[(40.0, 30), (-24.0, 15)],
+            expect: Expect {
+                copies: Copies::Most,
+                never_whole: false,
+                a_strip: true,
+            },
+        });
+    }
+    // A collaborator's pointer over the list does not stop the copies.
+    for (theme_name, theme) in THEMES {
+        for scale in [1.0, 2.0] {
+            cases.push(Case {
+                name: format!("{theme_name} {scale}x: a peer's pointer over the list"),
+                list: List::Long,
+                theme,
+                surface: copying(scale, Some((260.0, 300.0))),
+                scrolls: &[(40.0, 22), (-24.0, 15)],
+                expect: Expect {
+                    copies: Copies::Most,
+                    never_whole: true,
+                    a_strip: true,
+                },
+            });
+        }
+    }
+    // A step of half a device pixel cannot be copied; at 200 % the same
+    // half logical pixel is a whole device pixel, and copies.
+    for (scale, copies) in [(1.0, Copies::None), (2.0, Copies::Most)] {
+        cases.push(Case {
+            name: format!("dark {scale}x: a step of 40.5 logical pixels"),
+            list: List::Long,
+            theme: Theme::dark,
+            surface: copying(scale, None),
+            scrolls: &[(40.5, 12)],
+            expect: Expect {
+                copies,
+                never_whole: false,
+                a_strip: false,
+            },
+        });
+    }
+    cases.push(Case {
+        name: "light: scrolling past the end of a short list".into(),
+        list: List::Short,
+        theme: Theme::light,
+        surface: copying(1.0, None),
+        scrolls: &[(90.0, 30)],
+        expect: Expect {
+            copies: Copies::Any,
+            never_whole: true,
+            a_strip: false,
+        },
+    });
+    cases.push(Case {
+        name: "high contrast: a host that does not copy".into(),
+        list: List::Long,
+        theme: Theme::high_contrast,
+        surface: Surface {
+            scale: 1.0,
+            copying: false,
+            peer: None,
+        },
+        scrolls: &[(40.0, 30)],
+        expect: Expect {
+            copies: Copies::None,
+            never_whole: false,
+            a_strip: false,
+        },
+    });
+    cases
+}
+
+/// The case's window, opened in its theme and scrolled through each of its
+/// scrolls in turn with `peer`'s pointer resting over the list; what each
+/// scroll did.
+fn scrolled(case: &Case, peer: Option<(f64, f64)>, screens: &mut Screens) -> Vec<Run> {
+    let surface = Surface {
+        peer,
+        ..case.surface
+    };
+    let size = surface.size();
+    let screen = screens
+        .entry((size.width, size.height))
+        .or_insert_with(|| Screen {
+            presented: OffscreenRenderer::try_new(size.width, size.height)
+                .expect("a scroll copy is checked on the GPU the toolkit renders with"),
+            full: OffscreenRenderer::new(size.width, size.height),
+        });
+    let drive = |app: &mut tilo_app::App| {
+        app.set_theme((case.theme)());
         app.init_layout();
-        let surface = Surface {
-            scale,
-            copying: true,
-            peer,
-        };
-        let down = scroll(app, &surface, &theme(), (40.0, 22));
-        let up = scroll(app, &surface, &theme(), (-24.0, 15));
-        (down, up)
-    })
+        let theme = (case.theme)();
+        let mut runs = Vec::new();
+        for by in case.scrolls {
+            runs.push(scroll(app, &surface, &theme, screen, &case.name, *by));
+        }
+        runs
+    };
+    match case.list {
+        List::Long => drive_live_window::<Window, _>(drive),
+        List::Short => drive_live_window::<ShortWindow, _>(drive),
+    }
     .unwrap()
 }
 
+/// Every case presents what a full render shows ([`scroll`] holds each
+/// checked frame to it), and scrolls as its row says.
 #[test]
-fn a_collaborators_pointer_over_the_list_still_copies_and_matches() {
-    for (name, theme) in THEMES {
-        for scale in [1.0, 2.0] {
-            let (down, up) = scroll_beside_a_peer(theme, scale, Some((260.0, 300.0)));
-            let (alone, _) = scroll_beside_a_peer(theme, scale, None);
-            eprintln!("{name} {scale}x with a peer: down {down:?}, up {up:?}; alone {alone:?}");
-            let window = 800.0 * 600.0 * scale * scale;
-            for (direction, run) in [("down", &down), ("up", &up)] {
-                assert_eq!(run.whole, 0, "{name} {scale}x {direction}: {run:?}");
-                assert!(
+fn a_scrolled_window_presents_what_a_full_render_shows() {
+    let mut screens = Screens::new();
+    for case in cases() {
+        let name = &case.name;
+        let runs = scrolled(&case, case.surface.peer, &mut screens);
+        let alone = case
+            .surface
+            .peer
+            .map(|_| scrolled(&case, None, &mut screens));
+        eprintln!("{name}: {runs:?}; without the peer {alone:?}");
+        let scale = case.surface.scale;
+        let window = 800.0 * 600.0 * scale * scale;
+        for (run, (step, _)) in runs.iter().zip(case.scrolls) {
+            let direction = if *step > 0.0 { "down" } else { "up" };
+            if case.expect.never_whole {
+                assert_eq!(run.whole, 0, "{name}, scrolling {direction}: {run:?}");
+            }
+            match case.expect.copies {
+                Copies::Most => assert!(
                     run.copied_frames * 4 >= run.frames * 3,
-                    "{name} {scale}x: most frames scrolling {direction} beside a peer copy \
-                     ({run:?})"
-                );
+                    "{name}: most frames scrolling {direction} copy ({run:?})"
+                ),
+                Copies::None => assert_eq!(
+                    run.copied_frames, 0,
+                    "{name}: no frame scrolling {direction} copies ({run:?})"
+                ),
+                Copies::Any => {}
+            }
+            if case.expect.a_strip {
                 let per_frame = run.repainted / run.copied_frames.max(1) as f64;
                 assert!(
                     per_frame < window * 0.3,
-                    "{name} {scale}x: a frame scrolling {direction} beside a peer repaints the \
-                     exposed strip and the mark, not the list ({per_frame} px, {run:?})"
+                    "{name}: a frame scrolling {direction} that copies repaints the exposed \
+                     strip, its surroundings and a peer's mark, not the list ({per_frame} px, \
+                     {run:?})"
                 );
             }
-            // The mark costs its own pixels, where it is and where a copy
-            // took it, not the list's.
+        }
+        // The mark costs its own pixels, where it is and where a copy took
+        // it, not the list's.
+        if let Some(alone) = alone {
+            let (down, alone) = (&runs[0], &alone[0]);
             let with_peer = down.repainted / down.copied_frames.max(1) as f64;
             let without = alone.repainted / alone.copied_frames.max(1) as f64;
             assert!(
                 with_peer < without + window * 0.05,
-                "{name} {scale}x: the peer's mark costs {} px a frame ({with_peer} with, \
-                 {without} without)",
+                "{name}: the peer's mark costs {} px a frame ({with_peer} with, {without} \
+                 without)",
                 with_peer - without
             );
         }
     }
-}
-
-#[test]
-fn a_step_of_part_of_a_device_pixel_repaints_and_matches() {
-    let theme = Theme::dark;
-    let fractional = drive_live_window::<Window, _>(|app| {
-        app.set_theme(theme());
-        app.init_layout();
-        scroll(
-            app,
-            &Surface {
-                scale: 1.0,
-                copying: true,
-                peer: None,
-            },
-            &theme(),
-            (40.5, 12),
-        )
-    })
-    .unwrap();
-    assert_eq!(
-        fractional.copied_frames, 0,
-        "half a device pixel cannot be copied ({fractional:?})"
-    );
-    // At 200 % the same half logical pixel is a whole device pixel.
-    let doubled = drive_live_window::<Window, _>(|app| {
-        app.set_theme(theme());
-        app.init_layout();
-        scroll(
-            app,
-            &Surface {
-                scale: 2.0,
-                copying: true,
-                peer: None,
-            },
-            &theme(),
-            (40.5, 12),
-        )
-    })
-    .unwrap();
-    assert!(
-        doubled.copied_frames * 4 >= doubled.frames * 3,
-        "a whole device pixel step copies ({doubled:?})"
-    );
-}
-
-#[test]
-fn scrolling_past_the_end_stays_put_and_matches() {
-    let theme = Theme::light;
-    let run = drive_live_window::<ShortWindow, _>(|app| {
-        app.set_theme(theme());
-        app.init_layout();
-        scroll(
-            app,
-            &Surface {
-                scale: 1.0,
-                copying: true,
-                peer: None,
-            },
-            &theme(),
-            (90.0, 30),
-        )
-    })
-    .unwrap();
-    assert_eq!(run.whole, 0, "{run:?}");
-}
-
-#[test]
-fn a_host_that_does_not_copy_repaints_the_view_and_matches() {
-    let theme = Theme::high_contrast;
-    let run = drive_live_window::<Window, _>(|app| {
-        app.set_theme(theme());
-        app.init_layout();
-        let surface = Surface {
-            scale: 1.0,
-            copying: false,
-            peer: None,
-        };
-        scroll(app, &surface, &theme(), (40.0, 30))
-    })
-    .unwrap();
-    eprintln!("without copies: {run:?}");
-    assert_eq!(run.copied_frames, 0, "{run:?}");
 }
 
 /// What each step left the History bar saying.
