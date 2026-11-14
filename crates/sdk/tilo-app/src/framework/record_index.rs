@@ -49,7 +49,7 @@ pub const INDEX_FLAG: &str = "--index";
 /// version, in memory: the document itself is the app's to migrate.
 #[must_use]
 pub fn entries<A: ResourceApp>(doc: &Doc) -> Vec<IndexEntry> {
-    entries_of(kinds_of::<A>().iter(), doc)
+    entries_of(&kinds_of::<A>(), A::ID, doc)
 }
 
 /// What search finds in `doc`, a record of `app_id`, read by the kinds that
@@ -61,20 +61,20 @@ pub fn entries<A: ResourceApp>(doc: &Doc) -> Vec<IndexEntry> {
 /// Empty for an app this process has no definition of.
 #[must_use]
 pub fn hosted_entries(app_id: &str, doc: &Doc) -> Vec<IndexEntry> {
-    let kinds = super::hosted_kinds();
-    entries_of(
-        kinds.iter().filter(|kind| kind.app_id() == Some(app_id)),
-        doc,
-    )
+    entries_of(&super::hosted_kinds(), app_id, doc)
 }
 
-/// The entries `doc` holds as each of `kinds` reads it, each key once.
-fn entries_of<'a>(
-    kinds: impl Iterator<Item = &'a tilo_resource::ResourceKind>,
-    doc: &Doc,
-) -> Vec<IndexEntry> {
+/// The entries `doc` holds as each of `kinds` the app `app_id` hosts reads
+/// it, each key once. What its window publishes no `open` of its own for
+/// opens through the `open` of the app's own resource, the first kind it
+/// hosts.
+fn entries_of(kinds: &Kinds, app_id: &str, doc: &Doc) -> Vec<IndexEntry> {
+    let Some(root) = kinds.hosted_by(app_id) else {
+        return Vec::new();
+    };
+    let is_item = |id: &str| root.opens_as_item(id);
     let mut found = Vec::new();
-    for kind in kinds {
+    for kind in kinds.iter().filter(|kind| kind.app_id() == Some(app_id)) {
         let mut read = doc.clone();
         if kind.needs_migrate(&read) && kind.migrate(&mut read).is_err() {
             continue;
@@ -83,7 +83,11 @@ fn entries_of<'a>(
             // The document holds another kind: its own type answers for it.
             continue;
         };
-        found.extend(entries.iter().filter_map(super::root::index_entry));
+        found.extend(
+            entries
+                .iter()
+                .filter_map(|entry| super::root::index_entry(entry, root.kind(), &is_item)),
+        );
     }
     // One entry per key, found by what every entry of it says (a note by its
     // title and its paragraphs), then bounded as the index keeps it.

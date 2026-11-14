@@ -120,11 +120,7 @@ impl Inner {
         for (slot, entries) in &self.slots {
             let unlocked = self.unlocked(&slot.app);
             for entry in entries.values() {
-                let opens = entry
-                    .action
-                    .as_ref()
-                    .is_none_or(|action| action.action == "open");
-                if opens && (!entry.secret || unlocked) {
+                if entry.opens_its_resource() && (!entry.secret || unlocked) {
                     by_resource
                         .entry((slot.workspace.as_str(), entry.resource.as_str()))
                         .or_default()
@@ -350,7 +346,7 @@ impl AppContentIndex {
                     .values()
                     .filter(move |entry| !entry.secret || unlocked)
             })
-            .find(|entry| entry.resource == resource && entry.action.is_none())
+            .find(|entry| entry.resource == resource && entry.opens_its_resource())
             .map(|entry| entry.title.clone())
     }
 
@@ -366,7 +362,7 @@ impl AppContentIndex {
                 let unlocked = inner.unlocked(&slot.app);
                 entries
                     .values()
-                    .filter(move |entry| entry.action.is_none() && (!entry.secret || unlocked))
+                    .filter(move |entry| entry.opens_its_resource() && (!entry.secret || unlocked))
                     .map(|entry| (slot.app.clone(), entry.resource.clone()))
             })
             .collect();
@@ -389,7 +385,7 @@ impl AppContentIndex {
                 let unlocked = inner.unlocked(&slot.app);
                 entries
                     .values()
-                    .filter(move |entry| entry.action.is_none() && (!entry.secret || unlocked))
+                    .filter(move |entry| entry.opens_its_resource() && (!entry.secret || unlocked))
                     .map(|entry| {
                         (
                             slot.app.clone(),

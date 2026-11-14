@@ -62,6 +62,7 @@ pub struct ResourceKind {
     child: fn(&dyn Any, &Doc, &str) -> Option<tilo_actions::ResourceSpec>,
     content: fn(&dyn Any, &Doc, Option<&str>) -> Result<serde_json::Value, String>,
     reads_item: fn(&str) -> bool,
+    opens_as_item: fn(&str) -> bool,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
     migrate: fn(&mut Doc) -> Result<bool, ModelError>,
@@ -241,6 +242,20 @@ fn reads_item<R: Resource>(item: &str) -> bool {
     R::RECORD_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
 }
 
+/// Whether the published resource `id` is an item a window of `R` shows
+/// with an `open` of its own: an item of one of the record's collections, an
+/// item inside an item included, never a part beneath one (an issue's body,
+/// a channel's call) nor a derived place (`<kind>/derived/...`). The
+/// record's table says which; a resource without one counts
+/// `<kind>/<field>/<item>`.
+pub fn opens_as_item<R: Resource>(id: &str) -> bool {
+    match R::RECORD_TABLE {
+        Some(table) => crate::table::names_item(table, R::KIND, id),
+        None => crate::items::item_of_resource::<R>(id)
+            .is_some_and(|(_, item)| !item.as_str().contains('/')),
+    }
+}
+
 fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
     let action: R::Action = if action.type_id == R::ACTION_TYPE {
         tilo_actions::decode_json(&action.payload).ok()?
@@ -302,6 +317,7 @@ impl ResourceKind {
             child: child::<R>,
             content: content::<R>,
             reads_item: reads_item::<R>,
+            opens_as_item: opens_as_item::<R>,
             register: crate::group::register::<R>,
             initialize: R::initialize,
             migrate: crate::evolution::migrate::<R>,
@@ -344,6 +360,7 @@ impl ResourceKind {
             child: no_child,
             content: no_content,
             reads_item: no_item,
+            opens_as_item: no_item,
             register: no_register,
             initialize: no_initialize,
             migrate: no_migrate,
@@ -535,6 +552,13 @@ impl ResourceKind {
     #[must_use]
     pub fn reads_item(&self, item: &str) -> bool {
         (self.reads_item)(item)
+    }
+
+    /// Whether the resource `id` is an item this kind's window shows with an
+    /// `open` of its own ([`opens_as_item`]).
+    #[must_use]
+    pub fn opens_as_item(&self, id: &str) -> bool {
+        (self.opens_as_item)(id)
     }
 
     /// [`Self::publish`] from a state [`Self::read`] returned.

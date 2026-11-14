@@ -1549,6 +1549,25 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_default()
     }
 
+    /// Hand the window the presentation it kept (`payload` at `version`),
+    /// as a host reopening it does, at the moment the test picks: after an
+    /// `open` already arrived, say.
+    pub fn restore_kept_view(&mut self, version: u32, payload: &[u8]) -> Result<(), String> {
+        let local = ui_core::application_view::ApplicationLocalView {
+            app_id: A::ID.to_owned(),
+            version,
+            payload: payload.to_vec(),
+        };
+        let doc = ui_core::automerge::AutoCommit::new();
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                super::root::RootApp::restore_application_view(root, &local, &doc)
+            })
+            .ok_or_else(|| "the window has no resource root".to_owned())?
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
     /// The last action refused here ([`super::Dispatcher::refused`]): by
     /// the door, or by the workspace after this window applied it.
     pub fn refused(&mut self) -> Option<super::Refused> {

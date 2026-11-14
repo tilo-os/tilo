@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 
 use tilo_desktop::overlays::{POPOVER_HEIGHT, POPOVER_WIDTH, Slot};
+use tilo_desktop_search::providers::settings::SETTINGS_APP;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_session_core::surface::LayerPose;
 use ui::kurbo::{Point, Rect};
@@ -38,9 +39,6 @@ pub const SURFACE_NAMESPACE: &str = "tilo-quick-settings";
 /// anew: one that will not stay up leaves the device's controls to their keys rather than starting
 /// for ever.
 const TRIES: u32 = 3;
-
-/// The settings app, which quick settings opens.
-const SETTINGS_APP: &str = "so.tilo.settings";
 
 /// Where Settings installs the local speech models dictation needs: the page of the models the
 /// person's devices run themselves.
@@ -507,7 +505,7 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
     };
     if let Some(anchor) = anchor {
         let target = tilo_desktop_search::Target::Invoke(Box::new(
-            tilo_desktop_search::InvokeTarget::open(SETTINGS_APP, workspace.clone(), anchor),
+            tilo_desktop_search::providers::settings::opening(&workspace, &anchor),
         ));
         let opened = shared
             .search

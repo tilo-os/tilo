@@ -117,7 +117,6 @@ impl Shared {
                 tab: *tab,
                 label: title.clone(),
                 value: String::new(),
-                anchor: None,
                 at: now,
                 device: None,
             });

@@ -3,18 +3,16 @@
 //! on their other devices ("continue from the laptop").
 //!
 //! A place is each window's location as its app declared it to the window
-//! bar, with the view's anchor when the app gave one. The places are the
-//! session's own record ([`RecentPlaces`]), kept with the rest of what the
-//! session holds, never a file of the search's. A row with an anchor opens
-//! through the app's `open` at it, by address, the app launched first when
-//! it is closed; without one, the window it was in comes forward while it
-//! lasts, else the app opens.
+//! bar. The places are the session's own record ([`RecentPlaces`]), kept
+//! with the rest of what the session holds, never a file of the search's. A
+//! row brings the window it was in forward while it lasts, else the app
+//! opens.
 
 use serde::{Deserialize, Serialize};
 use ui::search::FieldWeight;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
-use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
+use crate::model::{Hit, LaunchPlace, Source, Target};
 
 /// How many places are kept: the newest, far more than are shown, so those
 /// of other workspaces leave each workspace its own.
@@ -36,9 +34,6 @@ pub struct Place {
     /// Its whole address, when the app gave one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub value: String,
-    /// The view's anchor, as the app's `open` takes it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<String>,
     /// When the window was last there, in seconds since the epoch.
     pub at: u64,
     /// The other device it was on, by name; `None` for this one.
@@ -48,11 +43,11 @@ pub struct Place {
 
 impl Place {
     fn names(&self) -> &str {
-        self.anchor
-            .as_deref()
-            .filter(|anchor| !anchor.is_empty())
-            .or_else(|| (!self.value.is_empty()).then_some(self.value.as_str()))
-            .unwrap_or(&self.label)
+        if self.value.is_empty() {
+            &self.label
+        } else {
+            &self.value
+        }
     }
 
     /// The same place again: its app, its workspace, its device and what it
@@ -104,7 +99,7 @@ pub fn continue_kind() -> ResourceKind {
 /// workspace when the search is widened.
 pub struct Continue {
     places: Vec<Place>,
-    /// The tabs still open, which a place without an anchor comes back to.
+    /// The tabs still open, which a place comes back to.
     open_tabs: Vec<u64>,
     /// The workspace search opened in: a place elsewhere says which
     /// workspace holds it, since rows of two workspaces otherwise read
@@ -176,11 +171,8 @@ impl Continue {
     }
 
     fn hit(&self, place: &Place, score: i32) -> Hit {
-        let target = match (&place.anchor, &place.device) {
-            (Some(anchor), _) if !anchor.is_empty() => Target::Invoke(Box::new(
-                InvokeTarget::open(&place.app, &place.workspace, anchor),
-            )),
-            (_, None) if self.open_tabs.contains(&place.tab) => Target::Window {
+        let target = match &place.device {
+            None if self.open_tabs.contains(&place.tab) => Target::Window {
                 tab: place.tab,
                 app: Some(place.app.clone()),
             },
@@ -294,14 +286,13 @@ impl Source for Continue {
 mod tests {
     use super::*;
 
-    fn place(label: &str, anchor: Option<&str>, at: u64) -> Place {
+    fn place(label: &str, at: u64) -> Place {
         Place {
             app: "so.tilo.notes".into(),
             workspace: "workspace".into(),
             tab: 4,
             label: label.into(),
             value: String::new(),
-            anchor: anchor.map(str::to_owned),
             at,
             device: None,
         }
@@ -313,13 +304,13 @@ mod tests {
         phase coming_back_to_a_place_moves_it_to_the_front_and_only_the_newest_stay;
         {
             let mut recent = RecentPlaces::default();
-            recent.record(place("Groceries", Some("n1"), 1));
-            recent.record(place("Ideas", Some("n2"), 2));
-            recent.record(place("Groceries", Some("n1"), 3));
+            recent.record(place("Groceries", 1));
+            recent.record(place("Ideas", 2));
+            recent.record(place("Groceries", 3));
             let labels: Vec<_> = recent.places().iter().map(|p| p.label.as_str()).collect();
             assert_eq!(labels, ["Groceries", "Ideas"]);
             for at in 0..100 {
-                recent.record(place(&format!("p{at}"), None, at));
+                recent.record(place(&format!("p{at}"), at));
             }
             assert_eq!(recent.places().len(), KEPT);
         }
@@ -330,13 +321,13 @@ mod tests {
         // in the window bar, and a row saying "Notes" is not where anybody was.
         {
             let mut recent = RecentPlaces::default();
-            recent.record(place("Notes", None, 3));
+            recent.record(place("Notes", 3));
             // An app run without its list says its id's words in its empty
             // window: "File Explorer" is the app the lists call "Files".
-            let mut files = place("File Explorer", None, 4);
+            let mut files = place("File Explorer", 4);
             files.app = "so.tilo.file-explorer".into();
             recent.record(files);
-            recent.record(place("Groceries", Some("n1"), 2));
+            recent.record(place("Groceries", 2));
             let shown = Continue::new(&recent, "workspace", vec![4], 10, |_| "Notes".into());
             let listed = shown.query("");
             let titles: Vec<&str> = listed.iter().map(|hit| hit.title.as_str()).collect();
@@ -354,18 +345,17 @@ mod tests {
             );
         }
 
-        phase a_place_reopens_at_its_anchor_else_its_window_else_its_app;
+        phase a_place_reopens_its_window_else_its_app;
         {
             let mut recent = RecentPlaces::default();
-            recent.record(place("Groceries", Some("n1"), 1));
-            recent.record(place("Inbox", None, 2));
-            let mut away = place("Draft", None, 3);
+            recent.record(place("Inbox", 2));
+            let mut away = place("Draft", 3);
             away.device = Some("Laptop".into());
             away.tab = 9;
             recent.record(away);
             let shown = Continue::new(&recent, "workspace", vec![4], 4, |_| "Notes".into());
             let hits = shown.query("");
-            assert_eq!(hits.len(), 3);
+            assert_eq!(hits.len(), 2);
             assert_eq!(
                 hits[0].target,
                 Target::Launch {
@@ -386,11 +376,7 @@ mod tests {
                     app: Some("so.tilo.notes".into())
                 }
             );
-            let Target::Invoke(open) = &hits[2].target else {
-                panic!("an anchored place opens by address");
-            };
-            assert_eq!(open.address.resource, "n1");
-            assert_eq!(shown.query("grocer").len(), 1);
+            assert_eq!(shown.query("inbox").len(), 1);
             assert!(
                 Continue::new(&recent, "other", Vec::new(), 4, |_| String::new())
                     .query("")

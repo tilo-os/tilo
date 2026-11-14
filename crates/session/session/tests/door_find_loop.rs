@@ -90,6 +90,7 @@ fn slow_hit() -> Hit {
             "so.tilo.reports",
             "",
             "tl:so.tilo.reports:quarterlyreport",
+            "tl:so.tilo.reports:quarterlyreport",
         ))),
     }
 }

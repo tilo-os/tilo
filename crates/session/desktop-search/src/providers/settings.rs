@@ -23,6 +23,8 @@ use crate::model::{Hit, InvokeTarget, Source, Target};
 
 /// Settings, by its package id.
 pub const SETTINGS_APP: &str = "so.tilo.settings";
+/// The resource Settings' window publishes, whose `open` shows a page.
+const SETTINGS_ROOT: &str = "settings.root";
 /// The anchor of a page of Settings, by its slug.
 const PAGE_ANCHOR: &str = "settings.section:";
 /// The anchor of one setting, by its id.
@@ -238,11 +240,7 @@ impl Settings {
             facts: row.facts.clone(),
             score,
             icon: page_icon(row.slug),
-            target: Target::Invoke(Box::new(InvokeTarget::open(
-                SETTINGS_APP,
-                &self.workspace,
-                &row.anchor,
-            ))),
+            target: Target::Invoke(Box::new(opening(&self.workspace, &row.anchor))),
         }
     }
 
@@ -253,6 +251,14 @@ impl Settings {
         let row = self.rows.iter().find(|row| row.id == id)?;
         Some(self.hit(row, ui::search::system::MAX_PROVIDER_SCORE))
     }
+}
+
+/// Settings' `open` in `workspace`, showing `anchor`: a page, a setting.
+/// The pages are no resources of their own: Settings publishes its `open`
+/// on its window's resource.
+#[must_use]
+pub fn opening(workspace: &str, anchor: &str) -> InvokeTarget {
+    InvokeTarget::open(SETTINGS_APP, workspace, SETTINGS_ROOT, anchor)
 }
 
 impl Source for Settings {
@@ -334,9 +340,10 @@ mod tests {
                 assert_eq!(
                     opens(page),
                     (
-                        "settings.section:network".to_owned(),
+                        "settings.root".to_owned(),
                         "settings.section:network".to_owned()
-                    )
+                    ),
+                    "the page is no resource of its own: Settings' `open` shows it"
                 );
                 assert_eq!(page.icon, Some(ui::icons::Icon::Wifi));
             }
@@ -352,7 +359,13 @@ mod tests {
                 .max_by_key(|hit| hit.score)
                 .expect("the layout is found");
             assert_eq!(best.id, "setting:keyboard.layout");
-            assert_eq!(opens(best).0, "settings.setting:keyboard.layout");
+            assert_eq!(
+                opens(best),
+                (
+                    "settings.root".to_owned(),
+                    "settings.setting:keyboard.layout".to_owned()
+                )
+            );
             assert!(
                 settings
                     .query("wifi")

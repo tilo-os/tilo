@@ -274,28 +274,18 @@ pub struct InvokeTarget {
 }
 
 impl InvokeTarget {
-    /// `app`'s `open` at `anchor`, in `workspace`: the item an anchor names, the
-    /// app launched first when it is closed.
+    /// The `open` of `resource`, which `app` publishes in `workspace`, showing
+    /// `anchor`: the resource itself, or an item it holds, which publishes no
+    /// `open` of its own. The app is launched first when it is closed.
     #[must_use]
     pub fn open(
         app: impl Into<String>,
         workspace: impl Into<String>,
+        resource: impl Into<String>,
         anchor: impl Into<String>,
     ) -> Self {
-        let anchor = anchor.into();
-        let mut arguments = serde_json::Map::new();
-        arguments.insert(
-            OPEN_ANCHOR.into(),
-            serde_json::Value::String(anchor.clone()),
-        );
-        Self {
-            app: app.into(),
-            workspace: workspace.into(),
-            address: ActionAddress::new(anchor, OPEN_ACTION),
-            arguments,
-            descriptor: None,
-            place: LaunchPlace::Focus,
-        }
+        Self::action(app, workspace, resource, OPEN_ACTION)
+            .with_argument(OPEN_ANCHOR, anchor.into())
     }
 
     /// The action `action` of resource `resource` that `app` publishes in
@@ -326,9 +316,9 @@ impl InvokeTarget {
 }
 
 /// What running `entry`, which `app` publishes to the search index in `workspace`, invokes: the
-/// entry's own action, else the app's `open` at the entry's resource. An `open` of another resource
-/// (the record holding the entry's item) is told the entry's resource as the item to show, which
-/// no window of the app may show yet.
+/// entry's own action, else the app's `open` of the entry's resource. An `open` of another resource
+/// (the one holding the entry's item) is told the entry's resource as the item to show, which no
+/// window of the app may show yet.
 #[must_use]
 pub fn entry_opening(
     app: &str,
@@ -337,11 +327,10 @@ pub fn entry_opening(
 ) -> InvokeTarget {
     match &entry.action {
         Some(action) if action.action == OPEN_ACTION && action.resource != entry.resource => {
-            InvokeTarget::action(app, workspace, &action.resource, &action.action)
-                .with_argument(OPEN_ANCHOR, entry.resource.clone())
+            InvokeTarget::open(app, workspace, &action.resource, &entry.resource)
         }
         Some(action) => InvokeTarget::action(app, workspace, &action.resource, &action.action),
-        None => InvokeTarget::open(app, workspace, &entry.resource),
+        None => InvokeTarget::open(app, workspace, &entry.resource, &entry.resource),
     }
 }
 
@@ -1254,6 +1243,7 @@ mod tests {
             Target::Invoke(Box::new(InvokeTarget::open(
                 "so.tilo.notes",
                 "workspace",
+                "notes.root",
                 anchor,
             ))),
         )
@@ -2119,6 +2109,7 @@ mod tests {
                             Target::Invoke(Box::new(InvokeTarget::open(
                                 "so.tilo.notes",
                                 "workspace",
+                                "notes.root",
                                 &anchor,
                             ))),
                         );

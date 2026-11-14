@@ -2358,7 +2358,6 @@ mod tests {
             tab: 4,
             label: label.into(),
             value: String::new(),
-            anchor: Some(format!("n:{label}")),
             at: 1,
             device: None,
         }

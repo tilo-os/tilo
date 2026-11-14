@@ -1336,7 +1336,6 @@ mod tests {
                 tab: 9,
                 label: "Home".into(),
                 value: String::new(),
-                anchor: None,
                 at: 3,
                 device: None,
             });

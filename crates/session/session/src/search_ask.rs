@@ -17,7 +17,7 @@ use agent_provider_config::protocol::{
     Content, Message, ModelRequest, Role, StreamEvent, ToolChoice,
 };
 use tilo_desktop_search::answers::question;
-use tilo_desktop_search::model::{Hit, InvokeTarget, Source, Target};
+use tilo_desktop_search::model::{Hit, Source, Target};
 use tilo_desktop_search::providers::ask_kind;
 use ui::search::SearchPreview;
 use ui::search::system::MAX_PROVIDER_SCORE;
@@ -25,9 +25,6 @@ use ui::search::system::MAX_PROVIDER_SCORE;
 /// The package a question asks as: what the person's AI settings can choose a model for, and what
 /// the gateway authorizes for a plain completion. Activity describes the history as the same app.
 pub(crate) const PACKAGE: &str = "so.tilo.activity";
-
-/// The app that sets a provider up.
-const SETTINGS_APP: &str = "so.tilo.settings";
 
 /// The Settings page providers are set up on, as the row asks it to open.
 const PROVIDERS_ANCHOR: &str = "settings.section:agent_models";
@@ -208,9 +205,8 @@ impl Ask {
             facts: Vec::new(),
             score: MAX_PROVIDER_SCORE,
             icon: Some(ui::icons::Icon::Sparkles),
-            target: Target::Invoke(Box::new(InvokeTarget::open(
-                SETTINGS_APP,
-                self.workspace.clone(),
+            target: Target::Invoke(Box::new(tilo_desktop_search::providers::settings::opening(
+                &self.workspace,
                 PROVIDERS_ANCHOR,
             ))),
         }
@@ -392,7 +388,10 @@ mod tests {
             let Target::Invoke(open) = &rows[0].target else {
                 panic!("the setup row opens the page that sets one up");
             };
-            assert_eq!(open.app, SETTINGS_APP);
+            assert_eq!(
+                open.app,
+                tilo_desktop_search::providers::settings::SETTINGS_APP
+            );
             assert_eq!(open.workspace, "workspace");
             assert_eq!(
                 open.arguments.get("anchor").and_then(|a| a.as_str()),

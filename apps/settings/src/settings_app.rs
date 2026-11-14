@@ -24,6 +24,9 @@ pub struct SettingsApp {
     linked: ui::linked_accounts::LinkedAccounts,
     sections: crate::sections::Sections,
     sidebar_selection: ui::LocalState<Option<Category>>,
+    /// Whether a page was asked for since the window opened: shown or not,
+    /// it wins over the page the window kept from last time.
+    page_asked: std::cell::Cell<bool>,
     setting_request: ui::LocalState<Option<&'static settings_store::index::Setting>>,
     staged: RefCell<Option<crate::scenarios::Staged>>,
     account_root: crate::accounts::AccountRoot,
@@ -75,6 +78,7 @@ impl SettingsApp {
             linked: ui::linked_accounts::LinkedAccounts::default(),
             sections: crate::sections::Sections::default(),
             sidebar_selection: ui::LocalState::new(None),
+            page_asked: std::cell::Cell::new(false),
             setting_request: ui::LocalState::new(None),
             staged: RefCell::new(None),
             account_root,
@@ -186,6 +190,7 @@ impl SettingsApp {
     }
 
     pub fn request_pane(&self, category: Category) {
+        self.page_asked.set(true);
         self.sidebar_selection.set(Some(category));
     }
 
@@ -193,7 +198,7 @@ impl SettingsApp {
         let (category, setting) = setting_and_pane(setting)
             .ok_or_else(|| format!("Settings has no setting `{setting}`"))?;
         self.setting_request.set(Some(setting));
-        self.sidebar_selection.set(Some(category));
+        self.request_pane(category);
         Ok(())
     }
 
@@ -215,9 +220,10 @@ impl SettingsApp {
         Some(requested)
     }
 
-    /// Whether a pane is asked for that the window has not shown yet.
-    pub(crate) fn pane_requested(&self) -> bool {
-        self.sidebar_selection.with(Option::is_some)
+    /// Whether a page was asked for since the window opened, shown already
+    /// or not.
+    pub(crate) fn page_asked(&self) -> bool {
+        self.page_asked.get()
     }
 
     pub(crate) fn take_requested_setting(&self) -> Option<&'static settings_store::index::Setting> {

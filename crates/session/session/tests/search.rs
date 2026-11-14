@@ -189,12 +189,7 @@ fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
     let (target, arguments) = host.invoked.borrow()[0].clone();
     assert_eq!(
         target,
-        application_action_target(
-            &workspace,
-            SETTINGS_APP,
-            "settings.setting:appearance.style",
-            "open"
-        )
+        application_action_target(&workspace, SETTINGS_APP, "settings.root", "open")
     );
     assert_eq!(arguments["anchor"], "settings.setting:appearance.style");
 }
@@ -896,12 +891,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let (target, arguments) = host.invoked.borrow()[1].clone();
     assert_eq!(
         target,
-        application_action_target(
-            &workspace,
-            SETTINGS_APP,
-            "settings.setting:keyboard.layout",
-            "open"
-        ),
+        application_action_target(&workspace, SETTINGS_APP, "settings.root", "open"),
         "the setting opens in Settings by its address"
     );
     assert_eq!(arguments["anchor"], "settings.setting:keyboard.layout");

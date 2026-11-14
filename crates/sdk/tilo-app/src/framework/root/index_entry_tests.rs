@@ -1,20 +1,30 @@
 use super::*;
-use ui_core::search::index_publication::IndexWeight;
+use ui_core::search::index_publication::{IndexAction, IndexWeight};
 
 tilo_test_env::scenario! {
     fn an_index_entry_is_kept_by_what_it_opens;
 
-    phase an_anchored_entry_is_kept_by_its_resource_with_its_short_fields;
+    phase an_anchored_entry_is_kept_by_its_resource_and_opens_through_the_open_of_what_holds_it;
     {
         let entry = SearchEntry::new("Groceries", "milk, eggs")
             .anchored("note:7")
             .subtitled("Notes")
             .field("errands", tilo_resource::SearchWeight::Metadata)
             .field("hidden", tilo_resource::SearchWeight::Unranked);
-        let indexed = index_entry(&entry).expect("an anchored entry opens");
+        let published = index_entry(&entry, "notes.notebook", &|_| true).expect("an item opens");
+        assert_eq!(published.action, None, "a published item opens by its own `open`");
+        let indexed =
+            index_entry(&entry, "notes.notebook", &|_| false).expect("an anchored entry opens");
         assert_eq!(indexed.key, "note:7");
         assert_eq!(indexed.resource, "note:7");
-        assert_eq!(indexed.action, None);
+        // The anchor is no published resource: the notebook's `open` shows it.
+        assert_eq!(
+            indexed.action,
+            Some(IndexAction {
+                resource: "notes.notebook".into(),
+                action: "open".into(),
+            })
+        );
         assert_eq!(indexed.subtitle.as_deref(), Some("Notes"));
         assert_eq!(
             indexed.fields,
@@ -33,7 +43,7 @@ tilo_test_env::scenario! {
             .anchored("passwords.item:gh")
             .field("github.com", tilo_resource::SearchWeight::Identity)
             .secret_bearing();
-        let indexed = index_entry(&entry).expect("kept");
+        let indexed = index_entry(&entry, "passwords.vault", &|_| false).expect("kept");
         assert!(indexed.secret);
         assert_eq!(
             indexed.fields,
@@ -45,13 +55,13 @@ tilo_test_env::scenario! {
     {
         let entry = SearchEntry::new("Marker", "")
             .invoking(tilo_actions::ActionAddress::new("timeline", "seek"));
-        let indexed = index_entry(&entry).expect("an action opens it");
+        let indexed = index_entry(&entry, "timeline.root", &|_| false).expect("an action opens it");
         assert_eq!(indexed.resource, "timeline");
         assert_eq!(indexed.key, "timeline\u{1f}seek");
         assert_eq!(
             indexed.action.map(|action| action.action).as_deref(),
             Some("seek")
         );
-        assert!(index_entry(&SearchEntry::new("Loose", "")).is_none());
+        assert!(index_entry(&SearchEntry::new("Loose", ""), "loose.root", &|_| false).is_none());
     }
 }

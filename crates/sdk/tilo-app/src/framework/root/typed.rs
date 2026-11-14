@@ -65,16 +65,7 @@ impl ResourceType {
             record_table: R::RECORD_TABLE,
             local_operations: R::local_operations,
             item_of: |id| tilo_resource::items::item_of_resource::<R>(id).is_some(),
-            // An item of one of the record's collections, an item inside an
-            // item included: never a part beneath one (an issue's body, a
-            // channel's call) nor a derived place (`<kind>/derived/...`).
-            // The record's table says which; a resource without one counts
-            // `<kind>/<field>/<item>`.
-            opens_as_item: |id| match R::RECORD_TABLE {
-                Some(table) => tilo_resource::table::names_item(table, R::KIND, id),
-                None => tilo_resource::items::item_of_resource::<R>(id)
-                    .is_some_and(|(_, item)| !item.as_str().contains('/')),
-            },
+            opens_as_item: tilo_resource::kind::opens_as_item::<R>,
             items: tilo_resource::items::for_each_item_child::<R>,
             item_id: tilo_resource::items::item_child_id::<R>,
         }

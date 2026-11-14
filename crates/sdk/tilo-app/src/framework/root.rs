@@ -2140,7 +2140,13 @@ impl RootSearch for ResourceRoot {
                 entries.extend(surface.search_entries());
             }
         });
-        ui_core::search::index_publication::merged_by_key(entries.iter().filter_map(index_entry))
+        let opens = self.dispatch.resource_id();
+        let is_item = self.resource.opens_as_item;
+        ui_core::search::index_publication::merged_by_key(
+            entries
+                .iter()
+                .filter_map(|entry| index_entry(entry, opens, &is_item)),
+        )
     }
 
     /// A picked hit opens the app at its anchor: the views registered with

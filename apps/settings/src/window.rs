@@ -470,9 +470,9 @@ fn upkeep(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> Upkeep {
                     .ok()
                     .and_then(Category::from_slug)
                     .ok_or_else(|| "not a Settings page".to_owned())?;
-                // A link the window was opened with is already asked for
-                // and wins.
-                if !restored.app.pane_requested() {
+                // A page asked for (a link the window was opened with, an
+                // `open`) wins, even once it is shown.
+                if !restored.app.page_asked() {
                     restored.select(page);
                 }
                 Ok(())
@@ -777,6 +777,24 @@ mod tests {
             .into_iter()
             .map(sidebar_rows)
             .fold(own, usize::saturating_add)
+    }
+
+    /// Search's "About" opens Settings on About: the page the window kept
+    /// from last time, handed over after the `open` was shown, keeps it.
+    #[test]
+    fn a_page_opened_wins_over_the_page_the_window_kept() {
+        let mut app = mounted(Category::opening(), (1200, 700));
+        app.call(
+            "open",
+            serde_json::json!({ "anchor": "settings.section:about" }),
+        )
+        .expect("the page opens");
+        app.settle();
+        assert_eq!(selected(&mut app), Category::About);
+        app.restore_kept_view(1, Category::Appearance.slug().as_bytes())
+            .expect("the kept page is read");
+        app.settle();
+        assert_eq!(selected(&mut app), Category::About, "the open wins");
     }
 
     #[test]

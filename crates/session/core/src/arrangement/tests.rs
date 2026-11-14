@@ -38,7 +38,7 @@ fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {
         facts: Vec::new(),
         score: 0,
         icon: None,
-        target: Target::Invoke(Box::new(InvokeTarget::open("test", "", resource))),
+        target: Target::Invoke(Box::new(InvokeTarget::open("test", "", resource, resource))),
     }
 }
 

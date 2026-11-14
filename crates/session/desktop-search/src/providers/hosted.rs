@@ -84,7 +84,12 @@ impl HostSearch {
                 descriptor: None,
                 place: LaunchPlace::Focus,
             },
-            None => InvokeTarget::open(app.clone(), self.workspace.clone(), found.resource.clone()),
+            None => InvokeTarget::open(
+                app.clone(),
+                self.workspace.clone(),
+                found.resource.clone(),
+                found.resource.clone(),
+            ),
         };
         let rank = i32::try_from(rank).unwrap_or(MAX_PROVIDER_SCORE);
         Some(Hit {

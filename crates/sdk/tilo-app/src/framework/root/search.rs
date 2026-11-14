@@ -107,24 +107,39 @@ impl IndexedEntries {
 /// resource a hit opens, with its short fields. A prose body stays in the
 /// app, and a secret-bearing entry carries only its title, secondary line
 /// and fields (what the app chose to show of it, never a secret value).
-/// `None` for an entry a hit cannot open from outside the app.
+/// An entry invokes its own action, else its anchor's `open` where the
+/// window publishes one there (`is_item`), else the `open` of `opens`, the
+/// resource holding the anchor, told the anchor. `None` for an entry a hit
+/// cannot open from outside the app.
 pub(crate) fn index_entry(
     entry: &SearchEntry,
+    opens: &str,
+    is_item: &dyn Fn(&str) -> bool,
 ) -> Option<ui_core::search::index_publication::IndexEntry> {
     use tilo_resource::SearchWeight;
     use ui_core::search::index_publication::{IndexAction, IndexEntry, IndexWeight};
-    let action = entry.action.as_ref().map(|address| IndexAction {
-        resource: address.resource.clone(),
-        action: address.action.clone(),
-    });
-    let resource = entry
-        .anchor
-        .clone()
-        .or_else(|| action.as_ref().map(|action| action.resource.clone()))?;
-    let key = match &action {
-        Some(action) => format!("{}\u{1f}{}", action.resource, action.action),
-        None => resource.clone(),
+    let (key, resource, action) = match (&entry.action, &entry.anchor) {
+        (Some(address), anchor) => (
+            format!("{}\u{1f}{}", address.resource, address.action),
+            anchor.clone().unwrap_or_else(|| address.resource.clone()),
+            Some(address.clone()),
+        ),
+        (None, Some(anchor)) => (
+            anchor.clone(),
+            anchor.clone(),
+            (!is_item(anchor)).then(|| {
+                tilo_actions::ActionAddress::new(
+                    opens,
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                )
+            }),
+        ),
+        (None, None) => return None,
     };
+    let action = action.map(|address| IndexAction {
+        resource: address.resource,
+        action: address.action,
+    });
     let mut fields = Vec::new();
     if !entry.secret && !entry.text.trim().is_empty() {
         fields.push((entry.text.clone(), IndexWeight::Body));

@@ -222,6 +222,16 @@ pub fn merged_by_key(entries: impl IntoIterator<Item = IndexEntry>) -> Vec<Index
 }
 
 impl IndexEntry {
+    /// Whether a hit opens the entry's resource: through the `open` it
+    /// names (of the resource itself, or of the one holding it), or its
+    /// resource's own when it names no action.
+    #[must_use]
+    pub fn opens_its_resource(&self) -> bool {
+        self.action
+            .as_ref()
+            .is_none_or(|action| action.action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
+    }
+
     /// The entry within this module's bounds: texts cut, fields capped,
     /// empty fields dropped. `None` for an entry with nothing to find it by
     /// or nothing to open.

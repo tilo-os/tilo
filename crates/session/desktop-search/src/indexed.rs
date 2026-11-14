@@ -420,8 +420,7 @@ impl IndexedContent {
         Hit {
             row: drawn.or_else(|| {
                 entry
-                    .action
-                    .is_none()
+                    .opens_its_resource()
                     .then(|| ui::search::SearchRow::item_of(slot.app.clone(), &entry.resource))
                     .flatten()
             }),

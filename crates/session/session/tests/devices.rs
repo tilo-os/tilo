@@ -760,12 +760,10 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
         host.invoked
             .borrow()
             .first()
-            .map(|(target, _)| target.clone()),
-        Some(application_action_target(
-            &workspace,
-            "so.tilo.settings",
-            "settings.section:devices_sync",
-            "open"
+            .map(|(target, arguments)| (target.clone(), arguments["anchor"].clone())),
+        Some((
+            application_action_target(&workspace, "so.tilo.settings", "settings.root", "open"),
+            serde_json::json!("settings.section:devices_sync")
         )),
         "a device without a screen is managed on the devices page"
     );
@@ -800,7 +798,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
         host.invoked
             .borrow()
             .iter()
-            .any(|(target, _)| format!("{target:?}").contains("settings.section:displays")),
+            .any(|(_, arguments)| arguments["anchor"] == "settings.section:displays"),
         "a device that shows opens the displays page"
     );
 }
