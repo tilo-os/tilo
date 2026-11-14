@@ -1561,11 +1561,15 @@ restart() {
 # workspace root, made once. Who is an owner is the workspace's own governance
 # from then on.
 make_secrets() {
+  # Each secret is made once: a file kept from an earlier run was made
+  # read-only then, and is not written over.
   if [[ ! -s $state/secrets/workspace-root-lounge ]]; then
     od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$state/secrets/workspace-root-lounge"
-    printf 'local-fake-discord-secret' > "$state/secrets/discord-client-secret"
-    chmod 0400 "$state/secrets"/*
   fi
+  if [[ ! -s $state/secrets/discord-client-secret ]]; then
+    printf 'local-fake-discord-secret' > "$state/secrets/discord-client-secret"
+  fi
+  chmod 0400 "$state/secrets"/*
   if [[ ! -s $state/secrets/resend-key ]]; then
     chmod u+w "$state/secrets"
     printf 're_local_mail_sink' > "$state/secrets/resend-key"
