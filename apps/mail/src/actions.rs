@@ -79,9 +79,10 @@ pub enum MailEffect {
     /// Adds an email account to the person's accounts, as another mail
     /// program kept it: its servers and the other names and addresses it
     /// sends as. No password travels here: the account signs in with the one
-    /// the person's vault holds for it, or asks for it. Asked of the person
-    /// first whenever anyone acts for them.
-    #[effect(attended, returns, audience = "agents")]
+    /// the person's vault holds for it, or asks for it. It lets Mail sign in
+    /// with a credential, so the person confirms it in their tab first
+    /// whenever anyone acts for them.
+    #[effect(privileged, returns, audience = "agents")]
     AddAccount {
         #[param("The name shown for it")]
         display_name: String,

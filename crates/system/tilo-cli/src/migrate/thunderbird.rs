@@ -292,9 +292,9 @@ fn land_account(
 /// tab, so it has to be open there.
 pub fn mail_not_open(error: anyhow::Error, email: &str) -> anyhow::Error {
     if format!("{error:#}").contains("no action") {
-        return anyhow!(
+        return error.context(format!(
             "{email} is added to the person's accounts by Mail in their tab, and Mail is not open there: ask them to open Mail, then start this again"
-        );
+        ));
     }
     error
 }
