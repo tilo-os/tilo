@@ -444,6 +444,7 @@ pub(super) fn account(listed: &MailAccount) -> crate::account::Account {
         auth: crate::model::AuthMethod::Password,
         import_pending: false,
         password: String::new(),
+        identities: Vec::new(),
     });
     account.id.clone_from(&listed.id);
     account

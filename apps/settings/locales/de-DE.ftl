@@ -864,6 +864,8 @@ accounts-status-syncing = Synchronisiert
 accounts-status-healthy = Aktuell
 accounts-status-offline = Offline
 accounts-status-reauth = Erneut anmelden
+# Die weiteren Namen und Adressen, mit denen ein E-Mail-Konto sendet.
+accounts-mail-sends-as = Sendet auch als { $identities }
 accounts-status-error = Aufmerksamkeit nötig
 accounts-status-never = Noch nicht geprüft
 accounts-best-effort = Inoffiziell

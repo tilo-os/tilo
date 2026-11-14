@@ -135,7 +135,8 @@ pub enum AccountsEffect {
     },
     /// Add an email account with its password. The password is sealed by
     /// the session's account custody and never shown or read back; Mail,
-    /// which keeps email accounts, is released it to sign in.
+    /// which keeps email accounts, is released it to sign in. Without a
+    /// password the account waits for the person to sign it in.
     #[effect(job, returns)]
     AddEmailAccount {
         #[param("The name shown for it")]
@@ -152,8 +153,13 @@ pub enum AccountsEffect {
         smtp_host: String,
         #[param("The SMTP server's port")]
         smtp_port: u16,
-        #[param(secret, "The account's password or app password")]
-        password: String,
+        #[param(
+            secret,
+            "The account's password or app password; it waits to be signed in without"
+        )]
+        password: Option<String>,
+        #[param("Other names and addresses it sends as, each `Name <address>`")]
+        identities: Option<Vec<String>>,
     },
     /// Edit an account's details.
     #[effect(view, row)]
@@ -2193,6 +2199,17 @@ impl AccountsPane {
         tags.push((status, status_tone));
 
         let mut details = vec![view.summary.clone()];
+        if view.kind == AccountKind::Mail
+            && let Some(account) = self.account_root.store().get(&id)
+        {
+            let identities = accounts::email::sender_identities_of(&account.config);
+            if !identities.is_empty() {
+                details.push(t_args(
+                    "accounts-mail-sends-as",
+                    &[("identities", identities.join(", ").into())],
+                ));
+            }
+        }
         let files = self.files_button(view, &mut details);
         let mut entries: Vec<AccountEntry> = Vec::new();
         if !self.is_sample {

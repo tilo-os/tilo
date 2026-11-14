@@ -272,6 +272,7 @@ async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, St
         // sign-in its person completes in Settings.
         import_pending: adding.password.is_empty(),
         password: String::new(),
+        identities: Vec::new(),
     };
     if let Some((_, problem)) = config.validate().first() {
         return Err(problem.clone());

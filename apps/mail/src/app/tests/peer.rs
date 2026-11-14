@@ -138,7 +138,8 @@ fn peers() -> Peers {
             imap_port: imap.port,
             smtp_host: "127.0.0.1".into(),
             smtp_port: smtp.port,
-            password: "app-password".into(),
+            password: Some("app-password".into()),
+            identities: None,
         })
         .expect("Settings adds the account");
     let accounts = settings

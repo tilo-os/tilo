@@ -3,8 +3,89 @@
 //! the session's account custody, [`crate::custody`]).
 
 use super::{AccountConfig, AccountStore, EngineRequest, MailApp, MessageId};
+use crate::actions::MailEffect;
+use crate::state::Command;
+
+/// Mail's `add-account`: check the account and have the window add it to
+/// the person's accounts, unless they have it. Its servers and identities,
+/// never a password.
+pub(super) fn ask_to_add(
+    shared: &crate::state::Shared,
+    effect: MailEffect,
+) -> Result<ui::framework::Effected, String> {
+    let MailEffect::AddAccount {
+        display_name,
+        email,
+        username,
+        imap_host,
+        imap_port,
+        smtp_host,
+        smtp_port,
+        identities,
+    } = effect
+    else {
+        return Err("Not an account to add".into());
+    };
+    let config = AccountConfig {
+        display_name,
+        username: username.unwrap_or_else(|| email.clone()),
+        email,
+        imap_host,
+        imap_port,
+        imap_tls: true,
+        smtp_host,
+        smtp_port,
+        smtp_tls: true,
+        identities: accounts::email::sender_identities(identities.unwrap_or_default())?,
+        ..AccountConfig::default()
+    };
+    if let Some((_, problem)) = config.validate().first() {
+        return Err(problem.clone());
+    }
+    let email = config.email.clone();
+    if shared
+        .borrow()
+        .accounts
+        .accounts
+        .iter()
+        .any(|account| account.id.eq_ignore_ascii_case(&email))
+    {
+        return Err(format!("{email} is among the accounts already"));
+    }
+    shared
+        .borrow_mut()
+        .push_command(Command::AddAccount(Box::new(config)));
+    Ok(ui::framework::Effected::value(
+        serde_json::json!({ "account": email }),
+    ))
+}
 
 impl MailApp {
+    /// Add the email account `config` to the person's accounts, unless they
+    /// have it.
+    pub(super) fn add_account(&self, config: AccountConfig) {
+        let mut accounts = self.shared.borrow().accounts.clone();
+        if accounts
+            .accounts
+            .iter()
+            .any(|account| account.id.eq_ignore_ascii_case(&config.email))
+        {
+            return;
+        }
+        accounts.upsert(crate::account::Account::new(config));
+        if let Err(error) = self.persist_accounts(&accounts) {
+            self.shared.borrow_mut().status =
+                Some(crate::state::Notice::error(crate::i18n::CATALOG.t_args(
+                    "mail-status-account-not-saved",
+                    &[("error", ui::i18n::ArgValue::Text(error.to_string()))],
+                )));
+            return;
+        }
+        let mut state = self.shared.borrow_mut();
+        state.accounts = accounts;
+        state.dirty = true;
+    }
+
     pub(super) fn adopt_person_accounts(&mut self) {
         let root = self.state().accounts_persist.root();
         let Some((record, seen)) = &mut self.person_accounts else {

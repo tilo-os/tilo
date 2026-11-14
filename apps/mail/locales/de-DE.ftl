@@ -267,6 +267,7 @@ mail-save-attachment = Anhang speichern
 mail-effects-compose = Nachricht verfassen
 mail-effects-contact-recipients = Empfänger wählen
 mail-effects-account-settings = Kontoeinstellungen
+mail-effects-add-account = Konto hinzufügen
 mail-effects-prepare-contact-draft = Entwurf an einen Kontakt
 mail-effects-refresh = Ordner aktualisieren
 mail-effects-prepare-calendar-invitation = Kalendereinladung vorbereiten

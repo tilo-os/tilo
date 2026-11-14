@@ -193,6 +193,10 @@ struct PendingEngineRequest {
     account: String,
 }
 
+/// What the mailbox was hydrated at: the document's heads and pending
+/// changes, the mailbox's search revision and how much content had arrived.
+type HydratedAt = (Vec<ui::automerge::ChangeHash>, usize, u64, u64);
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (shell layout flags and engine-request bookkeeping); grouping them would need a real design pass"
@@ -249,7 +253,10 @@ pub struct MailApp {
     connect_requested: bool,
     background_poll_deadline: Cell<Option<ui::time::Instant>>,
     waker: Arc<std::sync::Mutex<Option<ui::WakeHandle>>>,
-    hydrated_at: RefCell<Option<(Vec<ui::automerge::ChangeHash>, usize, u64)>>,
+    hydrated_at: RefCell<Option<HydratedAt>>,
+    /// The held messages kept whole that the mailbox shows whole: the rest
+    /// are shown again as their originals arrive.
+    held_whole: RefCell<std::collections::HashSet<MessageId>>,
     compose_attachment_rx: Option<OpenFileChannel>,
     compose_attachment_contents: Option<ui::portal::ContentsChannel>,
     opens: std::rc::Rc<std::cell::RefCell<Vec<crate::actions::MailTarget>>>,
@@ -623,6 +630,7 @@ impl MailApp {
             background_poll_deadline: Cell::new(None),
             waker: Arc::default(),
             hydrated_at: RefCell::new(None),
+            held_whole: RefCell::new(std::collections::HashSet::new()),
             compose_attachment_rx: None,
             compose_attachment_contents: None,
             opens: std::rc::Rc::default(),
@@ -1313,6 +1321,7 @@ impl MailApp {
                 }
                 Command::OpenAllInboxes => self.shared.borrow_mut().open_all_inboxes(),
                 Command::AccountSettings => self.open_account_settings(),
+                Command::AddAccount(config) => self.add_account(*config),
                 Command::Compose => {
                     self.shared.borrow_mut().push_intent(Intent::Compose);
                 }
@@ -2859,7 +2868,7 @@ impl MailApp {
         self.adopt_person_accounts();
     }
 
-    fn persist_accounts(&self, updated: &AccountStore) -> std::io::Result<()> {
+    pub(super) fn persist_accounts(&self, updated: &AccountStore) -> std::io::Result<()> {
         let Some((record, _)) = &self.person_accounts else {
             return self.state().accounts_persist.persist(updated);
         };
@@ -2977,10 +2986,12 @@ impl MailApp {
 
     fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
         use ui::automerge::transaction::Transactable as _;
+        // Content arriving can bring the original of a message kept whole.
         let at = (
             doc.doc().committed_heads(),
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
+            ui::collaboration::record_content::arrivals(),
         );
         if self.hydrated_at.borrow().as_ref() == Some(&at) {
             return;
@@ -2992,6 +3003,7 @@ impl MailApp {
             doc.doc().committed_heads(),
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
+            ui::collaboration::record_content::arrivals(),
         );
         *self.hydrated_at.borrow_mut() = Some(settled);
     }
@@ -3000,7 +3012,12 @@ impl MailApp {
         let mail = read_mail(doc.doc()).unwrap_or_default();
         {
             let mut st = self.shared.borrow_mut();
-            mail.show_held(&mut st.mailbox);
+            let store = ui::tilo_resource::content::current();
+            mail.show_held(
+                &mut st.mailbox,
+                store.as_ref(),
+                &mut self.held_whole.borrow_mut(),
+            );
             mail.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
@@ -4374,6 +4391,7 @@ impl Mailroom {
                     .push_command(Command::AccountSettings);
                 Ok(done)
             }
+            add @ MailEffect::AddAccount { .. } => person_accounts::ask_to_add(&self.shared, add),
             MailEffect::PrepareContactDraft {
                 person,
                 label,

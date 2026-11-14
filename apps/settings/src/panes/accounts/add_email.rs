@@ -1,7 +1,8 @@
 //! Adding an email account with its secret, the published `add-email-account`
 //! effect: the secret goes to the session's account custody first (outside a
 //! session, to an explicit root's own vault), then the account joins the
-//! person's accounts.
+//! person's accounts, with the other names and addresses it sends as. An
+//! account given no secret joins waiting for the person to sign it in.
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 
@@ -19,6 +20,7 @@ pub(super) struct AddingEmail {
     sealing: Sealing,
     root: AccountRoot,
     config: accounts::email::AccountConfig,
+    identities: Vec<String>,
     reply: Option<ui::framework::EffectReply>,
 }
 
@@ -40,7 +42,8 @@ impl AddingEmail {
     }
 
     pub(super) fn finish(mut self, sealed: Result<(), String>) {
-        let result = sealed.and_then(|()| self.root.save_email_account(&self.config));
+        let result =
+            sealed.and_then(|()| self.root.save_email_account(&self.config, &self.identities));
         if let Some(reply) = self.reply.take() {
             reply.finish(result.map(|()| ui::tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({ "account": self.config.email })),
@@ -64,11 +67,13 @@ pub(super) fn answer(
         smtp_host,
         smtp_port,
         password,
+        identities,
     } = effect
     else {
         return Err("Not an email account to add".into());
     };
     let config = accounts::email::AccountConfig {
+        identities: Vec::new(),
         display_name,
         username: username.unwrap_or_else(|| email.clone()),
         email,
@@ -79,11 +84,12 @@ pub(super) fn answer(
         smtp_port,
         smtp_tls: true,
         auth: accounts::email::AuthMethod::Password,
-        import_pending: false,
+        import_pending: password.is_none(),
         password: String::new(),
     };
+    let identities = accounts::email::sender_identities(identities.unwrap_or_default())?;
     let area = super::area(app).ok_or_else(crate::area::missing)?;
-    area.add_email_account(app.account_root().clone(), config, password, cx)
+    area.add_email_account(app.account_root().clone(), config, password, identities, cx)
 }
 
 impl AccountsArea {
@@ -95,21 +101,45 @@ impl AccountsArea {
         &self,
         root: AccountRoot,
         config: accounts::email::AccountConfig,
-        password: String,
+        password: Option<String>,
+        identities: Vec<String>,
         cx: &mut EffectCx<Settings>,
     ) -> EffectAnswer {
         let invalid = config.validate();
         if let Some((_, problem)) = invalid.first() {
             return Err(problem.clone());
         }
-        if password.is_empty() {
+        if password.as_ref().is_some_and(String::is_empty) {
             return Err("An email account needs its password".into());
         }
         if self.adding.borrow().is_some() {
             return Err("An email account is already being added".into());
         }
-        let password = zeroize::Zeroizing::new(password);
-        let sealing = if let Some(custody) = &self.custody {
+        let sealing = if let Some(password) = password.map(zeroize::Zeroizing::new) {
+            self.seal(&root, &config, password)?
+        } else {
+            // It waits for the person to sign it in: nothing to seal.
+            Sealing::Done
+        };
+        *self.adding.borrow_mut() = Some(AddingEmail {
+            sealing,
+            root,
+            config,
+            identities,
+            reply: Some(cx.reply()),
+        });
+        Ok(Effected::Pending)
+    }
+
+    /// Seal `password` for the account `config`: in the session's custody,
+    /// or, outside a session, in the explicit root's own vault.
+    fn seal(
+        &self,
+        root: &AccountRoot,
+        config: &accounts::email::AccountConfig,
+        password: zeroize::Zeroizing<String>,
+    ) -> Result<Sealing, String> {
+        Ok(if let Some(custody) = &self.custody {
             Sealing::Custody(custody.request(
                 ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::StoreAccountSecret {
                     account: config.email.clone(),
@@ -127,14 +157,7 @@ impl AccountsArea {
                 "This device's account custody is unavailable, so the account's password cannot be kept"
                     .into(),
             );
-        };
-        *self.adding.borrow_mut() = Some(AddingEmail {
-            sealing,
-            root,
-            config,
-            reply: Some(cx.reply()),
-        });
-        Ok(Effected::Pending)
+        })
     }
 
     pub(super) fn poll_adding(&self) {

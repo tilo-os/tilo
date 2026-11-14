@@ -270,6 +270,7 @@ mail-save-attachment = Save attachment
 mail-effects-compose = Compose message
 mail-effects-contact-recipients = Choose a recipient
 mail-effects-account-settings = Account settings
+mail-effects-add-account = Add account
 mail-effects-prepare-contact-draft = Draft to a contact
 mail-effects-refresh = Refresh folder
 mail-effects-prepare-calendar-invitation = Prepare calendar invitation

@@ -38,7 +38,8 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
             imap_port: imap.port,
             smtp_host: "127.0.0.1".into(),
             smtp_port: smtp.port,
-            password: "app-password".into(),
+            password: Some("app-password".into()),
+            identities: None,
         })
         .expect("Settings adds the account");
     assert_eq!(added.value.unwrap()["account"], ME);

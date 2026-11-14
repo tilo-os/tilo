@@ -65,6 +65,11 @@ pub struct AccountConfig {
     /// until the person explicitly finishes this account's secure sign-in.
     #[serde(default)]
     pub import_pending: bool,
+    /// The other names and addresses it sends as, beside its own, each
+    /// `Name <address>` ([`sender_identities`]), as the mail program it came
+    /// from had them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identities: Vec<String>,
     /// Held only in memory: the secret lives in the [`crate::SecretVault`] and
     /// is injected at connect time, never written to the account store —
     /// hence `serde(skip)`.
@@ -92,9 +97,60 @@ impl Default for AccountConfig {
             username: String::new(),
             auth: AuthMethod::Password,
             import_pending: false,
+            identities: Vec::new(),
             password: String::new(),
         }
     }
+}
+
+/// The key of an email account's settings that keeps the other names and
+/// addresses it sends as ([`AccountConfig::identities`]).
+pub const IDENTITIES_KEY: &str = "identities";
+
+/// The most sender identities one account keeps.
+pub const MAX_IDENTITIES: usize = 64;
+
+/// `identities` (each `Name <address>` or an address) as an account keeps
+/// them: trimmed, without blanks or repeats.
+///
+/// # Errors
+/// More than [`MAX_IDENTITIES`], or one that names no address.
+pub fn sender_identities(identities: Vec<String>) -> Result<Vec<String>, String> {
+    let mut kept: Vec<String> = Vec::new();
+    for identity in identities {
+        let identity = identity.trim().to_owned();
+        if identity.is_empty() || kept.contains(&identity) {
+            continue;
+        }
+        let address = identity
+            .rsplit_once('<')
+            .map_or(identity.as_str(), |(_, address)| {
+                address.trim_end_matches('>')
+            });
+        if !address.contains('@') || identity.chars().count() > 320 {
+            return Err(format!("{identity:?} names no address it sends as"));
+        }
+        kept.push(identity);
+    }
+    if kept.len() > MAX_IDENTITIES {
+        return Err(format!(
+            "an account sends as at most {MAX_IDENTITIES} names and addresses"
+        ));
+    }
+    Ok(kept)
+}
+
+/// The other names and addresses the account with `settings` sends as.
+#[must_use]
+pub fn sender_identities_of(settings: &serde_json::Value) -> Vec<String> {
+    settings
+        .get(IDENTITIES_KEY)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 impl AccountConfig {

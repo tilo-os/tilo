@@ -151,6 +151,7 @@ impl People {
 
 fn owner_config() -> AccountConfig {
     AccountConfig {
+        identities: Vec::new(),
         display_name: OWNER_NAME.into(),
         email: OWNER_EMAIL.into(),
         imap_host: "imap.rivera.example".into(),
@@ -391,6 +392,7 @@ me anything in your first weeks.",
 
 pub fn sample_account_store() -> AccountStore {
     let work = AccountConfig {
+        identities: Vec::new(),
         display_name: OWNER_NAME.into(),
         email: "sam@northwind.example".into(),
         imap_host: "imap.northwind.example".into(),

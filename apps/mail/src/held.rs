@@ -6,11 +6,17 @@
 //! and undoes like every other mailbox edit. Each message's folder, read and starred state and
 //! labels are its ordinary [`MessageState`]; it has no server copy, so nothing is queued for a
 //! server and nothing is ever sent from here.
+//!
+//! Mail moved in from another mail program keeps the message as it was sent
+//! ([`HeldMessage::original`], its MIME bytes in the record's content), so its
+//! HTML, attachments and headers are what the window shows, read through the
+//! same parser fetched mail goes through; the text fields stay the message's
+//! words for whoever reads the record without its content.
 
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, ActionCx, Id, JsonSchema, Model, Refusal, Set};
+use ui::tilo_resource::{self, ActionCx, Bytes, Id, JsonSchema, Model, Refusal, Set};
 
 use crate::actions::bounded_text;
 use crate::model::{Addr, Folder, Message, MessageId, normalize_subject};
@@ -54,6 +60,9 @@ pub struct HeldMessage {
     /// The conversation it belongs to: the `Message-ID` of the
     /// conversation's first message, or a key its author gave
     pub conversation: String,
+    /// The message as it was sent, MIME whole: its HTML, attachments and
+    /// headers. None for one delivered as text
+    pub original: Option<Bytes>,
 }
 
 impl HeldMessage {
@@ -104,6 +113,62 @@ impl HeldMessage {
         } else {
             words
         }
+    }
+
+    /// The message as it was sent, parsed as fetched mail is, with its
+    /// HTML and attachments, in `state`'s folder: `None` while its original
+    /// is not in `store`, or for one delivered as text.
+    fn shown_whole(
+        &self,
+        id: MessageId,
+        state: &MessageState,
+        store: &tilo_content::ContentStore,
+    ) -> Option<Message> {
+        let bytes = self.original.as_ref()?.read(store)?;
+        let mut message = crate::transport::parse_eml(&bytes, self.minutes, state.folder)?;
+        message.id = id;
+        message.timestamp_min = self.minutes;
+        message.read = state.read;
+        message.starred = state.starred;
+        message.folder = state.folder;
+        message.labels = state.labels.iter().cloned().collect();
+        message.account = String::new();
+        message.server = None;
+        if message.rfc_message_id.is_none() {
+            message.rfc_message_id = Some(self.message_id.clone());
+        }
+        Some(message)
+    }
+
+    /// Its attachments, as its original names them: each file's name, type
+    /// and size. Empty for one delivered as text, or while its original is
+    /// not here.
+    fn attachments(&self) -> Vec<serde_json::Value> {
+        let Some(store) = tilo_resource::content::current() else {
+            return Vec::new();
+        };
+        let Some(bytes) = self
+            .original
+            .as_ref()
+            .and_then(|original| original.read(&store))
+        else {
+            return Vec::new();
+        };
+        crate::transport::parse_eml(&bytes, self.minutes, Folder::Inbox)
+            .map(|message| {
+                message
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        serde_json::json!({
+                            "name": attachment.filename,
+                            "media_type": attachment.mime,
+                            "size": attachment.size,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The message as the window's mailbox shows one, in `state`'s folder.
@@ -163,6 +228,15 @@ pub struct Delivery {
     /// the one it answers, else one with the same subject, else starts one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// Its own `Message-ID`, when it has one: it is kept under the id mail
+    /// fetched with that `Message-ID` is, so it never lands twice
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// The message as it was sent (RFC 5322, MIME), inline or as a content
+    /// reference: kept whole, so its HTML, attachments and headers are what
+    /// the mailbox shows
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<Bytes>,
 }
 
 /// The id a held message is kept under: derived from what it says, so
@@ -264,7 +338,26 @@ impl Mail {
             Some(date) => minutes_of(date)?,
             None => cx.now_ms().div_euclid(60_000),
         };
-        let id = derived_id(&[&from, &to, &cc, &subject, &body, &minutes.to_string()]);
+        let own_id = delivery
+            .message_id
+            .as_deref()
+            .map(bare_key)
+            .filter(|key| !key.is_empty());
+        let id = own_id.as_deref().map_or_else(
+            || derived_id(&[&from, &to, &cc, &subject, &body, &minutes.to_string()]),
+            crate::transport::stable_message_id,
+        );
+        let original = delivery
+            .original
+            .clone()
+            .filter(|original| !original.is_empty());
+        if original.as_ref().is_some_and(|original| {
+            original.len() > u64::try_from(crate::copies::MAX_COPY_BYTES).unwrap_or(u64::MAX)
+        }) {
+            return Err(Refusal::new(
+                "the message is larger than a mailbox keeps whole (16 MiB)",
+            ));
+        }
         let key = Id::from_raw(id.to_string());
         if self.held.contains(&key) || self.messages.contains(&key) {
             return Err(Refusal::new(format!(
@@ -280,7 +373,7 @@ impl Mail {
             _ => None,
         };
         let (subject_label, from_label) = (subject.clone(), from.clone());
-        let message_id = format!("{id}@mail.tilo.local");
+        let message_id = own_id.unwrap_or_else(|| format!("{id}@mail.tilo.local"));
         let conversation = delivery
             .conversation
             .as_deref()
@@ -301,6 +394,7 @@ impl Mail {
                 minutes,
                 in_reply_to: answered.map(|held| held.message_id),
                 conversation,
+                original,
             },
         );
         self.messages.push(
@@ -473,6 +567,8 @@ impl Mail {
             "in_reply_to": held.in_reply_to,
             "conversation": held.conversation,
             "body": held.body,
+            "kept_whole": held.original.is_some(),
+            "attachments": held.attachments(),
         })
     }
 
@@ -582,8 +678,15 @@ impl Mail {
 
     /// Show the held mail in the window's mailbox, beside what its servers
     /// hold. Only what the mailbox lacks is added, so an unchanged mailbox
-    /// keeps its revision; their flags are applied after, as for any mail.
-    pub(crate) fn show_held(&self, mailbox: &mut crate::model::Mailbox) {
+    /// keeps its revision; their flags are applied after, as for any mail. A
+    /// message kept whole is shown whole once its original is in `store`
+    /// (shown as text until then); `whole` names those shown so.
+    pub(crate) fn show_held(
+        &self,
+        mailbox: &mut crate::model::Mailbox,
+        store: Option<&tilo_content::ContentStore>,
+        whole: &mut std::collections::HashSet<MessageId>,
+    ) {
         for (id, held) in self.held.iter() {
             let (Ok(message_id), Some(state)) = (
                 id.as_str().parse::<MessageId>(),
@@ -591,7 +694,17 @@ impl Mail {
             ) else {
                 continue;
             };
-            if mailbox.get(message_id).is_none() {
+            let shown = mailbox.get(message_id).is_some();
+            if held.original.is_some()
+                && !whole.contains(&message_id)
+                && let Some(message) =
+                    store.and_then(|store| held.shown_whole(message_id, state, store))
+            {
+                whole.insert(message_id);
+                mailbox.insert(message);
+                continue;
+            }
+            if !shown {
                 mailbox.insert(held.shown(message_id, state));
             }
         }
@@ -812,6 +925,14 @@ fn eml(held: &HeldMessage) -> Result<Vec<u8>, String> {
             .into_iter()
             .map(|addr| mail_builder::headers::address::Address::new_address(addr.name, addr.email))
             .collect()
+    }
+    // A message kept whole exports as it was sent.
+    if let Some(original) = held
+        .original
+        .as_ref()
+        .and_then(|original| original.read(&tilo_resource::content::current()?))
+    {
+        return Ok(original);
     }
     let sender = held.sender();
     let mut builder = mail_builder::MessageBuilder::new()

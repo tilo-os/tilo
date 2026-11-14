@@ -809,6 +809,7 @@ fn config(
                     )
                 });
             AccountConfig {
+                identities: Vec::new(),
                 display_name: inventory.display_name.clone(),
                 email: inventory.email.clone().unwrap_or_default(),
                 imap_host,

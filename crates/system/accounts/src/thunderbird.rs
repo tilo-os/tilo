@@ -162,6 +162,7 @@ impl Candidate {
             return Err(DiscoveryError::Unsupported);
         }
         let config = AccountConfig {
+            identities: Vec::new(),
             display_name: self.display_name.clone(),
             email: self.email.clone(),
             imap_host: self.incoming.host.clone(),

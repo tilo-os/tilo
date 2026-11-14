@@ -235,6 +235,8 @@ pub enum Command {
     OpenFolder(usize, Folder),
     OpenAllInboxes,
     AccountSettings,
+    /// Add an email account to the person's accounts (`add-account`).
+    AddAccount(Box<AccountConfig>),
     Compose,
     CloseCompose,
     DiscardCompose,

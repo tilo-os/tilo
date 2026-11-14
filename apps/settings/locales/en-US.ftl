@@ -864,6 +864,8 @@ accounts-status-syncing = Syncing
 accounts-status-healthy = Up to date
 accounts-status-offline = Offline
 accounts-status-reauth = Sign in again
+# The other names and addresses a mail account sends as, beside its own.
+accounts-mail-sends-as = Also sends as { $identities }
 accounts-status-error = Needs attention
 accounts-status-never = Not checked yet
 accounts-best-effort = Unofficial

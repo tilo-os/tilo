@@ -268,15 +268,20 @@ impl AccountRoot {
     /// keyed by its address, and keep this device's file their projection.
     /// Its secret is sealed apart ([`Self::seal_password`] or the session's
     /// custody), never here.
+    /// Save the email account `config`, with the other names and addresses
+    /// it sends as (`identities`, each `Name <address>`).
     pub fn save_email_account(
         &self,
         config: &accounts::email::AccountConfig,
+        identities: &[String],
     ) -> Result<(), String> {
         let mut account = accounts::Account::new(
             accounts::AccountId::from(config.email.clone()),
             accounts::email::TYPE_ID,
         );
         config.label().clone_into(&mut account.display_name);
+        let mut config = config.clone();
+        identities.clone_into(&mut config.identities);
         account.config = config.to_value().map_err(|error| error.to_string())?;
         let mut store = self.store();
         store.upsert(account);
