@@ -938,6 +938,19 @@ impl Workspaces {
     /// workspace's other records open all the same, and the operator's
     /// `--refound` is still there for it.
     pub(super) async fn refound_earlier_records(&self, workspace: &str) {
+        // Those records open with the keys the release's channels kept, which
+        // the workspace's group holds once this host, which governs it,
+        // founded it: opened here, and waited for.
+        let device = match self.workspace(workspace).await {
+            Ok(governed) => governed.lock().await.device.clone(),
+            Err(_) => None,
+        };
+        if let Some(device) = device
+            && let Some(Err(error)) = device.group_keys(workspace, true).await
+        {
+            tracing::error!(%workspace, %error, "the workspace's group has no keys here: its earlier records are not founded again");
+            return;
+        }
         for (app, record) in self.records(workspace).await.unwrap_or_default() {
             if let Err(error) = self.refound_record(workspace, &app, &record).await {
                 tracing::error!(%workspace, %app, %record, %error, "a record an earlier release wrote was not founded again");

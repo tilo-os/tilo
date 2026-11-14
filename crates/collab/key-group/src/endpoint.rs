@@ -56,7 +56,7 @@ const RECORD_CONTENT_DOMAIN: &[u8] = b"tilo-record-content-v1";
 pub struct ContentKeys {
     workspace: WorkspaceId,
     epoch: u64,
-    keyring: ContentKeyring,
+    pub(crate) keyring: ContentKeyring,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -87,6 +87,13 @@ impl ContentKeys {
 
     pub fn holds_epoch(&self, epoch: u64) -> bool {
         self.keyring.get(epoch).is_some()
+    }
+
+    /// Whether a key of the epoch `metadata` names is held: one of the
+    /// workspace's epochs, or one of a channel a 0.1 release kept
+    /// ([`crate::released`]).
+    pub fn holds_key_for(&self, metadata: &EncryptionMetadata) -> bool {
+        self.keyring.holds_key_for(metadata)
     }
 
     /// Seal an op payload for `artifact` under the current epoch's key.
@@ -142,7 +149,9 @@ impl ContentKeys {
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        if metadata.epoch != self.epoch {
+        // What a 0.1 release sealed is history: never a new write, though a
+        // device removed since holds its keys.
+        if metadata.epoch != self.epoch || metadata.released_channel.is_some() {
             return Err(Error::InvalidState(
                 "payload is not sealed under the workspace's current epoch".into(),
             ));

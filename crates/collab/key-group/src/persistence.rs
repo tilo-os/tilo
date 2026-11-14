@@ -333,6 +333,39 @@ impl MemberRecordWire {
     }
 }
 
+/// Record the 0.1 releases bound a device's place in one channel's group to.
+const RELEASED_MEMBER_RECORD: &[u8] = b"channel-crypto/device-member";
+
+/// The content keys a device's place in one channel's group held, sealed
+/// by a 0.1 release ([`crate::released`]): the record's layout is this
+/// build's, under the label those releases bound it to, and a channel id
+/// where this build keeps a workspace's (both one UUID). A device that was
+/// waiting or removed holds none.
+pub(crate) fn released_member_keys(sealed: &[u8], key: &VaultKey) -> Result<ContentKeyring> {
+    if u64::try_from(sealed.len()).unwrap_or(u64::MAX) > MAX_SEALED_STATE {
+        return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
+    }
+    let plaintext = tilo_seal::envelope::open(
+        &key.0,
+        Context::new(Label::GroupMlsState, RELEASED_MEMBER_RECORD),
+        sealed,
+    )
+    .map_err(|_| Error::StateCrypto("state authentication failed"))?;
+    let mut file: MemberFile = postcard::from_bytes(&plaintext)
+        .map_err(|error| Error::Serialization(error.to_string()))?;
+    let keys = match &mut file.record {
+        MemberRecordWire::Joined(state)
+            if file.version == MEMBER_RECORD_VERSION && state.version == STATE_VERSION =>
+        {
+            ContentKeyring::from_wire(std::mem::take(&mut state.content_keys))
+        }
+        MemberRecordWire::Joined(_) => Err(Error::OtherFormat),
+        MemberRecordWire::Waiting { .. } | MemberRecordWire::Removed => Ok(ContentKeyring::new()),
+    };
+    file.record.zeroize_secret_material();
+    keys
+}
+
 impl MemberRecord {
     /// This record sealed under `key`.
     pub(crate) fn seal(&self, key: &VaultKey) -> Result<Vec<u8>> {

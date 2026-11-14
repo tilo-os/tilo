@@ -319,7 +319,7 @@ impl RouteKeys {
                 false,
             ),
             Keys::Content { keys, .. } => {
-                if !keys.holds_epoch(metadata.epoch) {
+                if !keys.holds_key_for(&metadata) {
                     return Err(Unopened::Later);
                 }
                 opened(

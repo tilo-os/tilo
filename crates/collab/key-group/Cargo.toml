@@ -48,6 +48,8 @@ thiserror.workspace = true
 blake3.workspace = true
 serde.workspace = true
 postcard.workspace = true
+# The channel a 0.1 release sealed an op for, read from the state it kept.
+uuid.workspace = true
 zeroize.workspace = true
 # Content keys, key-history bundles and persisted state are sealed through
 # the shared construction.

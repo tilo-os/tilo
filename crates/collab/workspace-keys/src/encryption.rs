@@ -320,6 +320,14 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn holds_key_state(&self) -> Result<bool, String> {
         Ok(false)
     }
+    /// The sealed state a 0.1 release kept for each of `workspace`'s
+    /// channels, when this store holds any: those releases gave every
+    /// channel a group of its own, whose keys what they sealed still needs
+    /// ([`key_group::released`]), each with where it is kept. A store no
+    /// release wrote answers none.
+    fn released(&self, _workspace: WorkspaceId) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
     /// Forget everything kept of `workspace`'s group: it was deleted.
     ///
     /// # Errors
@@ -384,6 +392,34 @@ impl KeyStorage for KeyDir {
                 workspace
             })
             .collect()
+    }
+
+    /// A 0.1 release kept `<workspace>/channels/<channel>.peer` here. The
+    /// files stay where it left them.
+    fn released(&self, workspace: WorkspaceId) -> Vec<(String, Vec<u8>)> {
+        let dir = self.state.join(workspace.to_string()).join("channels");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => {
+                tracing::warn!(dir = %dir.display(), %error, "a release's channel state cannot be listed");
+                return Vec::new();
+            }
+        };
+        let mut kept = Vec::new();
+        for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+            if path.extension().and_then(|ext| ext.to_str()) != Some("peer") {
+                continue;
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) => kept.push((path.display().to_string(), bytes)),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "a release's channel state cannot be read");
+                }
+            }
+        }
+        kept.sort_by(|(a, _), (b, _)| a.cmp(b));
+        kept
     }
 
     fn holds_key_state(&self) -> Result<bool, String> {
@@ -1636,7 +1672,8 @@ impl WorkspaceKeys {
         Ok(true)
     }
 
-    fn insert_peer(&mut self, workspace: WorkspaceId, peer: GroupPeer, now: Instant) {
+    fn insert_peer(&mut self, workspace: WorkspaceId, mut peer: GroupPeer, now: Instant) {
+        self.adopt_released(workspace, &mut peer);
         let gate = peer.gate();
         let found_at = now
             .checked_add(found_after(&peer.device(), workspace))
@@ -1665,6 +1702,34 @@ impl WorkspaceKeys {
             },
         );
         self.register_gate(workspace, gate);
+    }
+
+    /// Hand `peer` the content keys a 0.1 release kept for `workspace`'s
+    /// channels, so its group hands them to every member and what was
+    /// sealed then stays readable. Keys the peer holds already change
+    /// nothing, so this runs on every start; a file that does not open is
+    /// said and left as it is.
+    fn adopt_released(&self, workspace: WorkspaceId, peer: &mut GroupPeer) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        for (kept, sealed) in store.state.released(workspace) {
+            let adopted = key_group::released::released_channel_keys(&sealed, &store.vault)
+                .and_then(|(channel, keys)| {
+                    Ok((channel, keys.len(), peer.adopt(&keys, &store.vault)?))
+                });
+            match adopted {
+                Ok((channel, epochs, true)) => tracing::info!(
+                    %workspace, %channel, epochs,
+                    "the keys a release kept for a channel are handed to the workspace's group"
+                ),
+                Ok((_, _, false)) => {}
+                Err(error) => tracing::error!(
+                    %workspace, path = %kept, %error,
+                    "a release's channel state does not open: what it sealed stays unreadable"
+                ),
+            }
+        }
     }
 
     fn register_gate(&mut self, workspace: WorkspaceId, gate: key_group::SealGate) {

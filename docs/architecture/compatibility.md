@@ -187,6 +187,17 @@ who may have written it.
   a stored layout either keeps it passing or adds the step that does. Moving
   the live relay to a new release adds a directory there and moves the two
   checks to it.
+- **What a 0.1 release sealed stays readable.** Those releases gave every
+  channel of a workspace an encryption group of its own; this build keys one
+  group by the workspace. A sealed op they wrote names its channel in its
+  encryption metadata and opens only under that channel's key for its epoch.
+  The host reads the content keys of each channel's state it kept
+  (`<channels>/<workspace>/channels/<channel>.peer`, left where it is) and
+  hands them to the workspace's new group as history, which reaches every
+  member it admits; those keys sit above every epoch the new group reaches,
+  open only what was sealed then, and never seal. The governing host founds
+  the new group, since those releases named no founder, and writes each
+  record again as a whole checkpoint under it.
 - **Directories named by an old id move once.** The 0.1 releases named a
   workspace's relay store and link store by a number derived from its id;
   this build names them by the id. Opening such a store moves it to the id

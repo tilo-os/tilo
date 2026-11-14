@@ -405,7 +405,7 @@ impl TreePublisher {
                 let Some(keys) = &self.keys else {
                     return Open::Later;
                 };
-                if !keys.holds_epoch(metadata.epoch) {
+                if !keys.holds_key_for(metadata) {
                     // Sealed under an epoch this device's keys have moved past: newer keys open it.
                     return Open::Later;
                 }

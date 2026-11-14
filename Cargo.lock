@@ -8443,6 +8443,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-files",
  "tilo-seal",
+ "uuid",
  "workspace-hack",
  "zeroize",
 ]

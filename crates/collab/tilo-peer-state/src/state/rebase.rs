@@ -67,6 +67,20 @@ impl StatePeer {
             doc.delete(automerge::ROOT, key.as_str())
                 .map_err(|error| error.to_string())?;
         }
+        // A 0.1 release gave each channel a group of its own and named no
+        // device to found the workspace's one group: the device that governs
+        // the workspace founds it, so its records have keys again.
+        if automerge::ReadDoc::get(&doc, automerge::ROOT, super::seed::FOUNDER)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            doc.put(
+                automerge::ROOT,
+                super::seed::FOUNDER,
+                hex::encode(device.device_public_key),
+            )
+            .map_err(|error| error.to_string())?;
+        }
         doc.commit();
         tracing::info!(
             workspace = %workspace,
