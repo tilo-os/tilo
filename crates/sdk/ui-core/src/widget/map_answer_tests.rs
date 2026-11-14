@@ -415,3 +415,92 @@ fn a_short_pair_asked_at_the_foot_is_centred() {
         both.area_of("tasks"),
     );
 }
+
+/// A turn's steps unfold where they are: pressing the quiet line under an answer that hugs its
+/// words grows the place by the steps it lists. The canvas measures the place in a copy of the
+/// window's tree before it stands it, and the row's body must open in the window's own tree too,
+/// not only in the copy, or the line turns open over nothing.
+#[test]
+fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
+    let _frame = crate::motion::pin_frame();
+    let _settled = crate::motion::testing::settled();
+    // The row as a view describes it (Chat's turn): its steps are its body's views.
+    let row = <crate::widget::DisclosureRow as crate::component::Described>::from_props(
+        "steps",
+        crate::widget::DisclosureRowProps {
+            title: "Looked up Notes and 5 more steps".into(),
+            body: (0..6)
+                .map(|index| -> Element {
+                    Box::new(crate::widget::Text::new(&format!(
+                        "Looked up Notes {index}"
+                    )))
+                })
+                .collect(),
+            dense: true,
+            ..crate::widget::DisclosureRowProps::default()
+        },
+    );
+    let card = crate::widget::arrange::Stack::stack()
+        .gap(crate::tokens::Rhythm::Related)
+        .push(Box::new(crate::widget::Text::new("Two notes changed.")))
+        .push(Box::new(row));
+    let body: Element =
+        Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(card)));
+    let band = crate::widget::canvas_place::PLACE_BAND;
+    let place: Element = Box::new(
+        <crate::widget::canvas_place::CanvasPlace as crate::component::Described>::from_props(
+            "turn",
+            crate::widget::canvas_place::PlaceProps {
+                name: Some("what changed?".into()),
+                body: Some(body),
+                ..crate::widget::canvas_place::PlaceProps::default()
+            },
+        ),
+    );
+    let map = Map::new().pin(
+        "turn",
+        PinPlace {
+            band,
+            ..grown(100.0, 80.0, 420.0, 400.0)
+        },
+        place,
+    );
+    let mut host =
+        crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
+    host.relayout();
+    host.recompose().expect("a frame settles");
+    let laid = |host: &mut crate::headless::FrameHarness| {
+        host.root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Map>())
+            .expect("the map")
+            .laid
+            .borrow()["turn"]
+    };
+    let folded = laid(&mut host);
+    // The person presses the steps' line, the card's last, and the frames the press asks for run
+    // as the live window runs them: laid out where something moved, never built again whole.
+    host.send(&crate::synthetic_input::cursor_moved(
+        folded.x0 + 30.0,
+        folded.y1 - 10.0,
+    ));
+    for state in [ElementState::Pressed, ElementState::Released] {
+        host.send(&crate::synthetic_input::mouse_input(
+            state,
+            winit::event::MouseButton::Left,
+        ));
+    }
+    for _ in 0..4 {
+        host.idle();
+    }
+    let open = laid(&mut host);
+    assert_eq!(
+        host.with_widget_mut(|row: &mut crate::widget::DisclosureRow| row.is_open()),
+        Some(true),
+        "the press opened the steps' line"
+    );
+    assert!(
+        open.height() > folded.height() + 6.0 * 14.0,
+        "the place grows by the six steps it unfolds: {folded:?} -> {open:?}"
+    );
+}

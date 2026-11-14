@@ -831,21 +831,27 @@ impl Widget for DisclosureRow {
 
     /// Each frame of the reveal is laid out at its height, and the body
     /// shut away once the row has closed, without building the row again.
+    ///
+    /// What it sets is read from the tree it is handed, never from what the
+    /// row last laid out: a region measures its children in a copy of the
+    /// window's tree first (`ManualContext::measure_child`), and the row,
+    /// told the reveal there, must still lay it out in the window's own.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        if !self.reveal_unlaid() {
-            return false;
-        }
         self.laid_reveal = self.reveal_layout();
         let (height, shut) = self.laid_reveal;
+        let mut changed = false;
         if let Ok(style) = taffy.style(node) {
-            let mut style = style.clone();
-            style.size.height = taffy::Dimension::length(height);
-            let _ = taffy.set_style(node, style);
+            let height = taffy::Dimension::length(height);
+            if style.size.height != height {
+                let mut style = style.clone();
+                style.size.height = height;
+                changed |= taffy.set_style(node, style).is_ok();
+            }
         }
         let body = taffy
             .children(node)
@@ -862,10 +868,10 @@ impl Widget for DisclosureRow {
             if style.display != display {
                 let mut style = style.clone();
                 style.display = display;
-                let _ = taffy.set_style(body, style);
+                changed |= taffy.set_style(body, style).is_ok();
             }
         }
-        true
+        changed
     }
 
     /// The reveal's next height is solved again; the body's own needs are

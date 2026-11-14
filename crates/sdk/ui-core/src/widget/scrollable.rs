@@ -1416,21 +1416,28 @@ impl Widget for Scrollable {
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        let mut changed = self.height_limit_dirty;
-        if changed {
+        // A limit changed since the view was built is set in every tree the view is laid out in
+        // (a region measures it in a copy first): the flag is spent once a layout applied it, and
+        // each tree is told it only where its own style does not hold it yet.
+        let mut changed = false;
+        if self.height_limit_dirty {
             let Ok(mut style) = taffy.style(node).cloned() else {
                 return false;
             };
-            style.max_size.height = self.max_height.map_or(Dimension::auto(), Dimension::length);
-            style.size.height = match self.fixed_height {
+            let max = self.max_height.map_or(Dimension::auto(), Dimension::length);
+            let size = match self.fixed_height {
                 Some(px) => Dimension::length(px),
                 None if self.fill_parent_height => Dimension::length(0.0),
                 None => Dimension::auto(),
             };
-            if taffy.set_style(node, style).is_err() {
-                return false;
+            if style.max_size.height != max || style.size.height != size {
+                style.max_size.height = max;
+                style.size.height = size;
+                if taffy.set_style(node, style).is_err() {
+                    return false;
+                }
+                changed = true;
             }
-            self.height_limit_dirty = false;
         }
         let Ok(layout) = taffy.layout(node).copied() else {
             return changed;
@@ -1441,6 +1448,8 @@ impl Widget for Scrollable {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.scroll_unplaced = false;
+        // The window's own tree holds the limit now ([`Self::adjust_layout_style`]).
+        self.height_limit_dirty = false;
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
         self.cursor_initialized = false;

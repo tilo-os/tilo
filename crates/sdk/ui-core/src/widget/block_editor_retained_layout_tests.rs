@@ -924,6 +924,83 @@ fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_
     assert_damage_pixels(&before, &fixture, true);
 }
 
+/// Blocks are placed at the heights they take at the width they stand at, whatever measured
+/// them since: a region measures what it holds again in a copy of the window's tree (wider by
+/// a scroll bar's lane, at a min-content width, at widths on the way to its size) while the
+/// window's own solve keeps the size it cached for the editor. Placing them at the tallest
+/// height a line took at any width (a paragraph one word per line) stood an answer's list
+/// under its first paragraph, far below where its card is drawn.
+#[test]
+fn blocks_measured_first_in_another_tree_are_placed_at_the_width_they_stand_at() {
+    let width = 480.0;
+    let blocks = vec![
+        Block::paragraph("Nothing is due this week; every dated task is already overdue:"),
+        Block::paragraph("A first line that is long enough to wrap once at a narrow width."),
+    ];
+    let mut fixture = RetainedEditor::with_compact_blocks(width, 1.0, blocks);
+    fixture.frame();
+    // The answer arrives: a paragraph and a list.
+    let mut shown: Vec<BlockContent> = vec![BlockContent::paragraph(
+        "lead",
+        "Nothing is due this week; every dated task is already overdue:",
+    )];
+    for index in 0..6 {
+        shown.push(BlockContent::paragraph(
+            format!("item-{index}"),
+            format!("Overdue task {index}, due on the last day of June"),
+        ));
+    }
+    assert!(fixture.editor.present_blocks(&shown));
+    fixture.frame();
+    // Measured again in a copy of the tree, as a region measures what it holds: at the wider
+    // box a view has without its scroll bar's lane, at no width as a min-content contribution,
+    // and at widths on the way to its size. The window's own tree keeps the size it solved.
+    let mut leaf: Box<dyn Widget> = Box::new(BlockStackLeaf {
+        editor: std::ptr::from_mut(fixture.editor.as_mut()),
+    });
+    for probe in [width + 16.0, 400.0, 300.0, 0.0, width + 16.0] {
+        let _ = leaf.measure(
+            Size {
+                width: Some(probe),
+                height: None,
+            },
+            Size {
+                width: taffy::AvailableSpace::Definite(probe),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut fixture.text,
+        );
+    }
+    drop(leaf);
+    fixture.frame();
+    let placed: Vec<f64> = fixture
+        .editor
+        .blocks
+        .iter()
+        .map(|block| block.line.get_rect().height())
+        .collect();
+    // The same document laid out fresh at the same width: what each block takes there.
+    let mut fresh = RetainedEditor::with_compact_blocks(
+        width,
+        1.0,
+        shown
+            .iter()
+            .map(|content| Block::paragraph(&content.text))
+            .collect(),
+    );
+    fresh.frame();
+    let wanted: Vec<f64> = fresh
+        .editor
+        .blocks
+        .iter()
+        .map(|block| block.line.get_rect().height())
+        .collect();
+    assert_eq!(
+        placed, wanted,
+        "each block stands at the height it takes at {width} px"
+    );
+}
+
 #[test]
 fn handles_hang_in_their_own_gutter_outside_the_text_column() {
     for scale in [1.0, 2.0] {
