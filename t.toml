@@ -6012,6 +6012,16 @@ requires = ["arch=any"]
 on = ["dispatch"]
 
 [[check]]
+name = "release-tilo-sh"
+# tilo.sh in one dispatch: the Lounge relay, the web entry and the API published from this one
+# commit, once the live relay's state comes through an upgrade, every browser flow passes and a
+# fresh stack admits a page. It prints the three digests; pinning them in the infra repo rolls it out.
+run = "python3 -I -c 'import json,sys\nfor name,path in [(\"lounge\",\"/target/publish/lounge/release/receipt.json\"),(\"web-entry\",\"/target/publish/web-entry/receipt.json\"),(\"api\",\"/target/publish/api/receipt.json\")]:\n    print(name, json.load(open(path))[\"image\"])'"
+needs = ["publish-lounge", "publish-web-entry", "publish-api", "relay-upgrade", "e2e", "tilo-sh-admits-a-page"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[check]]
 name = "publish-api"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
