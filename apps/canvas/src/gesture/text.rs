@@ -246,91 +246,97 @@ impl TextSession {
 mod tests {
     use super::*;
 
-    #[test]
-    fn typing_makes_one_draw_and_retyping_one_edit() {
-        let mut session =
-            TextSession::new("t-1".into(), (10.0, 50.0), 32.0, "#000000".into(), None);
-        for key in ["H", "i", "!"] {
+    tilo_test_env::scenario! {
+        /// Text typed in place: keys, a composition, and the action it commits.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_text_session_types_composes_and_commits;
+
+        phase typing_makes_one_draw_and_retyping_one_edit;
+        {
+            let mut session =
+                TextSession::new("t-1".into(), (10.0, 50.0), 32.0, "#000000".into(), None);
+            for key in ["H", "i", "!"] {
+                session.key(
+                    &Key::Character(key.into()),
+                    Some(key),
+                    ModifiersState::empty(),
+                );
+            }
             session.key(
-                &Key::Character(key.into()),
-                Some(key),
+                &Key::Named(NamedKey::Backspace),
+                None,
                 ModifiersState::empty(),
             );
+            session.key(&Key::Named(NamedKey::Enter), None, ModifiersState::empty());
+            session.key(
+                &Key::Character("x".into()),
+                Some("x"),
+                ModifiersState::empty(),
+            );
+            assert_eq!(session.text(), "Hi\nx");
+            assert_eq!(
+                session.key(&Key::Named(NamedKey::Escape), None, ModifiersState::empty()),
+                Typed::Done
+            );
+            let art = Artwork::default();
+            let Some(draw) = (session.commit(&art)).and_then(|invoke| {
+                crate::actions::read_as::<crate::actions::Draw>(&invoke, Artwork::DRAW.id)
+            }) else {
+                panic!("a draw")
+            };
+            assert_eq!(draw.marks[0].id.as_deref(), Some("t-1"));
+
+            let empty = TextSession::new("t-2".into(), (0.0, 0.0), 10.0, "#000000".into(), None);
+            assert!(empty.commit(&art).is_none(), "nothing typed draws nothing");
         }
-        session.key(
-            &Key::Named(NamedKey::Backspace),
-            None,
-            ModifiersState::empty(),
-        );
-        session.key(&Key::Named(NamedKey::Enter), None, ModifiersState::empty());
-        session.key(
-            &Key::Character("x".into()),
-            Some("x"),
-            ModifiersState::empty(),
-        );
-        assert_eq!(session.text(), "Hi\nx");
-        assert_eq!(
-            session.key(&Key::Named(NamedKey::Escape), None, ModifiersState::empty()),
-            Typed::Done
-        );
-        let art = Artwork::default();
-        let Some(draw) = (session.commit(&art)).and_then(|invoke| {
-            crate::actions::read_as::<crate::actions::Draw>(&invoke, Artwork::DRAW.id)
-        }) else {
-            panic!("a draw")
-        };
-        assert_eq!(draw.marks[0].id.as_deref(), Some("t-1"));
 
-        let empty = TextSession::new("t-2".into(), (0.0, 0.0), 10.0, "#000000".into(), None);
-        assert!(empty.commit(&art).is_none(), "nothing typed draws nothing");
-    }
+        phase composition_shows_until_committed_and_clusters_delete_whole;
+        {
+            let mut session = TextSession::new("t-1".into(), (0.0, 0.0), 12.0, "#000000".into(), None);
+            let none = ModifiersState::empty();
+            session.key(&Key::Character("a".into()), Some("a"), none);
+            session.ime(&Ime::Preedit("かな".into(), Some((3, 3))));
+            assert_eq!(session.text(), "a", "a composition is not typed yet");
+            assert_eq!(session.shown_text(), "aかな");
+            assert!(matches!(
+                session.shown_shape(),
+                Shape::Text { ref text, .. } if text == "aかな"
+            ));
+            assert_eq!(session.caret.display_caret(session.text()), "aか".len());
+            session.ime(&Ime::Commit("仮名".into()));
+            assert_eq!(session.text(), "a仮名");
+            assert_eq!(session.shown_text(), "a仮名");
 
-    #[test]
-    fn composition_shows_until_committed_and_clusters_delete_whole() {
-        let mut session = TextSession::new("t-1".into(), (0.0, 0.0), 12.0, "#000000".into(), None);
-        let none = ModifiersState::empty();
-        session.key(&Key::Character("a".into()), Some("a"), none);
-        session.ime(&Ime::Preedit("かな".into(), Some((3, 3))));
-        assert_eq!(session.text(), "a", "a composition is not typed yet");
-        assert_eq!(session.shown_text(), "aかな");
-        assert!(matches!(
-            session.shown_shape(),
-            Shape::Text { ref text, .. } if text == "aかな"
-        ));
-        assert_eq!(session.caret.display_caret(session.text()), "aか".len());
-        session.ime(&Ime::Commit("仮名".into()));
-        assert_eq!(session.text(), "a仮名");
-        assert_eq!(session.shown_text(), "a仮名");
+            for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
+                session.ime(&Ime::Commit(typed.into()));
+            }
+            assert_eq!(session.text(), "a仮名e\u{301}👍🏽🇩🇪");
+            let backspace = Key::Named(NamedKey::Backspace);
+            session.key(&backspace, None, none);
+            assert_eq!(session.text(), "a仮名e\u{301}👍🏽");
+            session.key(&backspace, None, none);
+            session.key(&backspace, None, none);
+            assert_eq!(session.text(), "a仮名");
 
-        for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
-            session.ime(&Ime::Commit(typed.into()));
+            session.key(
+                &Key::Named(NamedKey::ArrowLeft),
+                None,
+                ModifiersState::SHIFT,
+            );
+            session.key(
+                &Key::Named(NamedKey::ArrowLeft),
+                None,
+                ModifiersState::SHIFT,
+            );
+            session.ime(&Ime::Preedit("x".into(), None));
+            session.ime(&Ime::Disabled);
+            assert_eq!(
+                session.shown_text(),
+                "a仮名",
+                "an abandoned composition leaves nothing"
+            );
+            session.ime(&Ime::Commit("x".into()));
+            assert_eq!(session.text(), "ax");
         }
-        assert_eq!(session.text(), "a仮名e\u{301}👍🏽🇩🇪");
-        let backspace = Key::Named(NamedKey::Backspace);
-        session.key(&backspace, None, none);
-        assert_eq!(session.text(), "a仮名e\u{301}👍🏽");
-        session.key(&backspace, None, none);
-        session.key(&backspace, None, none);
-        assert_eq!(session.text(), "a仮名");
-
-        session.key(
-            &Key::Named(NamedKey::ArrowLeft),
-            None,
-            ModifiersState::SHIFT,
-        );
-        session.key(
-            &Key::Named(NamedKey::ArrowLeft),
-            None,
-            ModifiersState::SHIFT,
-        );
-        session.ime(&Ime::Preedit("x".into(), None));
-        session.ime(&Ime::Disabled);
-        assert_eq!(
-            session.shown_text(),
-            "a仮名",
-            "an abandoned composition leaves nothing"
-        );
-        session.ime(&Ime::Commit("x".into()));
-        assert_eq!(session.text(), "ax");
     }
 }

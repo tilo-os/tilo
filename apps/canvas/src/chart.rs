@@ -530,45 +530,51 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_rect_with_a_negative_side_reaches_back_from_its_corner() {
-        let art = draw(vec![rect(Some("bar"), 120.0, -360.0)]).unwrap();
-        assert_eq!(rect_of(&art, "bar"), [90.0, 80.0, 120.0, 360.0]);
-    }
+    tilo_test_env::scenario! {
+        /// The sides of a drawn rect or ellipse, through the artwork's draw action.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_drawn_shape_reaches_back_from_its_corner_and_is_refused_under_one_unit;
 
-    #[test]
-    fn a_shape_under_one_unit_is_refused_naming_the_mark_and_the_side() {
-        let named = draw(vec![
-            rect(Some("ok"), 10.0, 10.0),
-            rect(Some("bar-south"), 40.0, 0.0),
-        ])
-        .unwrap_err();
-        assert!(
-            named.contains(
-                "mark `bar-south` (item 1): the shape is under one unit across: height is 0;"
-            ),
-            "{named}"
-        );
-        let fractions = draw(vec![rect(None, 0.38, 0.5)]).unwrap_err();
-        assert!(
-            fractions.contains(
-                "mark item 0: the shape is under one unit across: width is 0.38 and height is 0.5;"
-            ),
-            "{fractions}"
-        );
-        let ellipse = draw(vec![NewMark {
-            id: Some("sun".into()),
-            ..NewMark::new(Shape::Ellipse {
-                cx: 50.0,
-                cy: 50.0,
-                rx: 20.0,
-                ry: 0.2,
-            })
-        }])
-        .unwrap_err();
-        assert!(
-            ellipse.contains("ry is 0.2") && ellipse.contains("each radius at least 0.5"),
-            "{ellipse}"
-        );
+        phase a_rect_with_a_negative_side_reaches_back_from_its_corner;
+        {
+            let art = draw(vec![rect(Some("bar"), 120.0, -360.0)]).unwrap();
+            assert_eq!(rect_of(&art, "bar"), [90.0, 80.0, 120.0, 360.0]);
+        }
+
+        phase a_shape_under_one_unit_is_refused_naming_the_mark_and_the_side;
+        {
+            let named = draw(vec![
+                rect(Some("ok"), 10.0, 10.0),
+                rect(Some("bar-south"), 40.0, 0.0),
+            ])
+            .unwrap_err();
+            assert!(
+                named.contains(
+                    "mark `bar-south` (item 1): the shape is under one unit across: height is 0;"
+                ),
+                "{named}"
+            );
+            let fractions = draw(vec![rect(None, 0.38, 0.5)]).unwrap_err();
+            assert!(
+                fractions.contains(
+                    "mark item 0: the shape is under one unit across: width is 0.38 and height is 0.5;"
+                ),
+                "{fractions}"
+            );
+            let ellipse = draw(vec![NewMark {
+                id: Some("sun".into()),
+                ..NewMark::new(Shape::Ellipse {
+                    cx: 50.0,
+                    cy: 50.0,
+                    rx: 20.0,
+                    ry: 0.2,
+                })
+            }])
+            .unwrap_err();
+            assert!(
+                ellipse.contains("ry is 0.2") && ellipse.contains("each radius at least 0.5"),
+                "{ellipse}"
+            );
+        }
     }
 }

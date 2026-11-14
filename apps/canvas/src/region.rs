@@ -623,70 +623,76 @@ mod tests {
         Region::of_rect(Rect::new(x, y, x + side, y + side))
     }
 
-    #[test]
-    fn regions_combine_exactly() {
-        let a = square(0.0, 0.0, 10.0);
-        let b = square(5.0, 5.0, 10.0);
-        let close = |region: Region, area: f64| {
-            assert!((region.area() - area).abs() < 1e-6, "{}", region.area());
-        };
-        close(a.combine(&b, Op::Union), 175.0);
-        close(a.combine(&b, Op::Subtract), 75.0);
-        close(a.combine(&b, Op::Intersect), 25.0);
-        close(a.combine(&b, Op::Exclude), 150.0);
-        close(a.inverted(Rect::new(0.0, 0.0, 20.0, 20.0)), 300.0);
-        let hole = square(0.0, 0.0, 30.0).combine(&square(10.0, 10.0, 10.0), Op::Subtract);
-        assert!(!hole.contains(Point::new(15.0, 15.0)));
-        assert!(hole.contains(Point::new(5.0, 5.0)));
-    }
+    tilo_test_env::scenario! {
+        /// A region's exact geometry.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_region_combines_grows_traces_and_marks_its_cells;
 
-    #[test]
-    fn a_region_grows_and_shrinks() {
-        let a = square(0.0, 0.0, 10.0);
-        let grown = a.grown(2.0).bounds().unwrap_or_default();
-        assert!((grown.x0 + 2.0).abs() < 0.05 && (grown.x1 - 12.0).abs() < 0.05);
-        let shrunk = a.grown(-2.0);
-        assert!((shrunk.area() - 36.0).abs() < 0.1, "{}", shrunk.area());
-    }
+        phase regions_combine_exactly;
+        {
+            let a = square(0.0, 0.0, 10.0);
+            let b = square(5.0, 5.0, 10.0);
+            let close = |region: Region, area: f64| {
+                assert!((region.area() - area).abs() < 1e-6, "{}", region.area());
+            };
+            close(a.combine(&b, Op::Union), 175.0);
+            close(a.combine(&b, Op::Subtract), 75.0);
+            close(a.combine(&b, Op::Intersect), 25.0);
+            close(a.combine(&b, Op::Exclude), 150.0);
+            close(a.inverted(Rect::new(0.0, 0.0, 20.0, 20.0)), 300.0);
+            let hole = square(0.0, 0.0, 30.0).combine(&square(10.0, 10.0, 10.0), Op::Subtract);
+            assert!(!hole.contains(Point::new(15.0, 15.0)));
+            assert!(hole.contains(Point::new(5.0, 5.0)));
+        }
 
-    #[test]
-    fn coverage_traces_to_its_outline() {
-        // A disc of radius 20 cells, its edge cells partly covered.
-        let (width, height) = (60, 60);
-        let cells: Vec<f32> = (0..width * height)
-            .map(|index| {
-                let (x, y) = (
-                    f64_of_usize(index % width) + 0.5,
-                    f64_of_usize(index / width) + 0.5,
-                );
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a coverage of 0 to 1 fits an f32"
-                )]
-                let cover = (20.5 - (x - 30.0).hypot(y - 30.0)).clamp(0.0, 1.0) as f32;
-                cover
-            })
-            .collect();
-        let coverage = Coverage {
-            width,
-            height,
-            cells: &cells,
-        };
-        let region = coverage.traced(Affine::scale(2.0));
-        let area = region.area();
-        let disc = std::f64::consts::PI * 40.0 * 40.0;
-        assert!((area - disc).abs() / disc < 0.01, "{area} against {disc}");
-        assert!(region.corners() < 200, "{} corners", region.corners());
-        assert!(region.contains(Point::new(60.0, 60.0)));
-    }
+        phase a_region_grows_and_shrinks;
+        {
+            let a = square(0.0, 0.0, 10.0);
+            let grown = a.grown(2.0).bounds().unwrap_or_default();
+            assert!((grown.x0 + 2.0).abs() < 0.05 && (grown.x1 - 12.0).abs() < 0.05);
+            let shrunk = a.grown(-2.0);
+            assert!((shrunk.area() - 36.0).abs() < 0.1, "{}", shrunk.area());
+        }
 
-    #[test]
-    fn a_region_marks_the_cells_inside_it() {
-        let ring = square(0.0, 0.0, 10.0).combine(&square(3.0, 3.0, 4.0), Op::Subtract);
-        let cells = ring.cells(Affine::IDENTITY, 12, 12);
-        assert!(cells[0] && cells[9 * 12 + 9]);
-        assert!(!cells[5 * 12 + 5], "the hole");
-        assert!(!cells[11], "outside");
-        assert_eq!(cells.iter().filter(|cell| **cell).count(), 100 - 16);
+        phase coverage_traces_to_its_outline;
+        {
+            // A disc of radius 20 cells, its edge cells partly covered.
+            let (width, height) = (60, 60);
+            let cells: Vec<f32> = (0..width * height)
+                .map(|index| {
+                    let (x, y) = (
+                        f64_of_usize(index % width) + 0.5,
+                        f64_of_usize(index / width) + 0.5,
+                    );
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "a coverage of 0 to 1 fits an f32"
+                    )]
+                    let cover = (20.5 - (x - 30.0).hypot(y - 30.0)).clamp(0.0, 1.0) as f32;
+                    cover
+                })
+                .collect();
+            let coverage = Coverage {
+                width,
+                height,
+                cells: &cells,
+            };
+            let region = coverage.traced(Affine::scale(2.0));
+            let area = region.area();
+            let disc = std::f64::consts::PI * 40.0 * 40.0;
+            assert!((area - disc).abs() / disc < 0.01, "{area} against {disc}");
+            assert!(region.corners() < 200, "{} corners", region.corners());
+            assert!(region.contains(Point::new(60.0, 60.0)));
+        }
+
+        phase a_region_marks_the_cells_inside_it;
+        {
+            let ring = square(0.0, 0.0, 10.0).combine(&square(3.0, 3.0, 4.0), Op::Subtract);
+            let cells = ring.cells(Affine::IDENTITY, 12, 12);
+            assert!(cells[0] && cells[9 * 12 + 9]);
+            assert!(!cells[5 * 12 + 5], "the hole");
+            assert!(!cells[11], "outside");
+            assert_eq!(cells.iter().filter(|cell| **cell).count(), 100 - 16);
+        }
     }
 }

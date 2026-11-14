@@ -250,54 +250,60 @@ pub fn selection_path(art: &Artwork, to_screen: Affine) -> Option<BezPath> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_lasso_is_dragged_or_clicked_out() {
-        let mut gesture = AreaGesture::default();
-        gesture.press(Point::new(0.0, 0.0), None);
-        for at in [(50.0, 0.0), (50.0, 50.0), (0.0, 50.0)] {
-            gesture.drag_to(Point::new(at.0, at.1), 2.0);
-        }
-        let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
-            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
-        }) else {
-            panic!("a dragged lasso selects");
-        };
-        assert_eq!(select.points.as_ref().map(Vec::len), Some(4));
+    tilo_test_env::scenario! {
+        /// The area gesture, by lasso and by box.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn an_area_gesture_selects_with_a_lasso_or_a_box;
 
-        for at in [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0)] {
-            gesture.press(Point::new(at.0, at.1), None);
-            assert!(gesture.release(4.0, None).is_none());
-        }
-        assert_eq!(gesture.polygon.len(), 3);
-        // Clicking its first point closes it, adding to the selection.
-        gesture.press(Point::new(1.0, 1.0), None);
-        let Some(select) = (gesture.release(4.0, mode(true, false))).and_then(|invoke| {
-            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
-        }) else {
-            panic!("closing the lasso selects");
-        };
-        assert_eq!(select.mode.as_deref(), Some("add"));
-        assert_eq!(select.points.as_ref().map(Vec::len), Some(3));
-        assert!(!gesture.active());
-    }
+        phase a_lasso_is_dragged_or_clicked_out;
+        {
+            let mut gesture = AreaGesture::default();
+            gesture.press(Point::new(0.0, 0.0), None);
+            for at in [(50.0, 0.0), (50.0, 50.0), (0.0, 50.0)] {
+                gesture.drag_to(Point::new(at.0, at.1), 2.0);
+            }
+            let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
+                crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+            }) else {
+                panic!("a dragged lasso selects");
+            };
+            assert_eq!(select.points.as_ref().map(Vec::len), Some(4));
 
-    #[test]
-    fn a_box_selects_and_a_click_selects_nothing() {
-        let mut gesture = AreaGesture::default();
-        gesture.press(Point::new(10.0, 10.0), Some(true));
-        gesture.drag_to(Point::new(110.0, 60.0), 1.0);
-        let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
-            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
-        }) else {
-            panic!("a box selects");
-        };
-        assert_eq!(select.ellipse, Some([10.0, 10.0, 100.0, 50.0]));
-        gesture.press(Point::new(10.0, 10.0), Some(false));
-        let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
-            crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
-        }) else {
-            panic!("a click selects nothing");
-        };
-        assert_eq!(select.mode.as_deref(), Some("none"));
+            for at in [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0)] {
+                gesture.press(Point::new(at.0, at.1), None);
+                assert!(gesture.release(4.0, None).is_none());
+            }
+            assert_eq!(gesture.polygon.len(), 3);
+            // Clicking its first point closes it, adding to the selection.
+            gesture.press(Point::new(1.0, 1.0), None);
+            let Some(select) = (gesture.release(4.0, mode(true, false))).and_then(|invoke| {
+                crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+            }) else {
+                panic!("closing the lasso selects");
+            };
+            assert_eq!(select.mode.as_deref(), Some("add"));
+            assert_eq!(select.points.as_ref().map(Vec::len), Some(3));
+            assert!(!gesture.active());
+        }
+
+        phase a_box_selects_and_a_click_selects_nothing;
+        {
+            let mut gesture = AreaGesture::default();
+            gesture.press(Point::new(10.0, 10.0), Some(true));
+            gesture.drag_to(Point::new(110.0, 60.0), 1.0);
+            let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
+                crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+            }) else {
+                panic!("a box selects");
+            };
+            assert_eq!(select.ellipse, Some([10.0, 10.0, 100.0, 50.0]));
+            gesture.press(Point::new(10.0, 10.0), Some(false));
+            let Some(select) = (gesture.release(4.0, None)).and_then(|invoke| {
+                crate::actions::read_as::<crate::selection::Select>(&invoke, Artwork::SELECT.id)
+            }) else {
+                panic!("a click selects nothing");
+            };
+            assert_eq!(select.mode.as_deref(), Some("none"));
+        }
     }
 }

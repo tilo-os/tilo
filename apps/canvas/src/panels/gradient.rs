@@ -569,28 +569,34 @@ fn direction_and_stops(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_linear_gradient_runs_edge_to_edge_at_its_angle() {
-        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
-        let stops = vec![(0.0, "#000000".to_owned()), (1.0, "#ffffff".to_owned())];
-        let across_x = across(Kind::Linear, area, 0.0, stops.clone());
-        let near =
-            |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
-        assert!(near(across_x.from, [0.0, 50.0]), "{:?}", across_x.from);
-        assert!(near(across_x.to, [200.0, 50.0]), "{:?}", across_x.to);
-        let down = across(Kind::Linear, area, 90.0, stops.clone());
-        assert!((down.from[1] - 0.0).abs() < 1e-9 && (down.to[1] - 100.0).abs() < 1e-9);
-        assert!((angle(&down) - 90.0).abs() < 1e-9);
-        let radial = across(Kind::Radial, area, 0.0, stops);
-        assert_eq!(radial.kind, "radial");
-        assert!(near(radial.from, [100.0, 50.0]), "{:?}", radial.from);
-        assert!(near(radial.to, [200.0, 50.0]), "{:?}", radial.to);
-    }
+    tilo_test_env::scenario! {
+        /// The gradient the panel lays across a mark, and the colour of a stop added to it.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_gradient_runs_across_its_area_and_a_new_stop_takes_its_colour;
 
-    #[test]
-    fn a_stop_added_between_two_takes_the_colour_there() {
-        let stops = vec![(0.0, "#000000".to_owned()), (1.0, "#ffffff".to_owned())];
-        assert_eq!(colour_at(&stops, 0.5), "#808080");
-        assert_eq!(colour_at(&stops, 0.0), "#000000");
+        phase a_linear_gradient_runs_edge_to_edge_at_its_angle;
+        {
+            let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let stops = vec![(0.0, "#000000".to_owned()), (1.0, "#ffffff".to_owned())];
+            let across_x = across(Kind::Linear, area, 0.0, stops.clone());
+            let near =
+                |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+            assert!(near(across_x.from, [0.0, 50.0]), "{:?}", across_x.from);
+            assert!(near(across_x.to, [200.0, 50.0]), "{:?}", across_x.to);
+            let down = across(Kind::Linear, area, 90.0, stops.clone());
+            assert!((down.from[1] - 0.0).abs() < 1e-9 && (down.to[1] - 100.0).abs() < 1e-9);
+            assert!((angle(&down) - 90.0).abs() < 1e-9);
+            let radial = across(Kind::Radial, area, 0.0, stops);
+            assert_eq!(radial.kind, "radial");
+            assert!(near(radial.from, [100.0, 50.0]), "{:?}", radial.from);
+            assert!(near(radial.to, [200.0, 50.0]), "{:?}", radial.to);
+        }
+
+        phase a_stop_added_between_two_takes_the_colour_there;
+        {
+            let stops = vec![(0.0, "#000000".to_owned()), (1.0, "#ffffff".to_owned())];
+            assert_eq!(colour_at(&stops, 0.5), "#808080");
+            assert_eq!(colour_at(&stops, 0.0), "#000000");
+        }
     }
 }

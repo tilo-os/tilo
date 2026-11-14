@@ -606,47 +606,53 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_whole_picture_fills_its_frame() {
-        let map = placement([0.0, 0.0, 1.0, 1.0]).picture_to_local((800, 600));
-        let corner = map * ui::vello::kurbo::Point::new(800.0, 600.0);
-        assert!((corner.x - 410.0).abs() < 1e-9 && (corner.y - 320.0).abs() < 1e-9);
-    }
+    tilo_test_env::scenario! {
+        /// Where a placed picture's pixels land: whole, cropped and straightened.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_placement_maps_the_picture_into_its_frame;
 
-    #[test]
-    fn a_crop_keeps_the_picture_where_it_was() {
-        let whole = placement([0.0, 0.0, 1.0, 1.0]);
-        let cropped = whole.recropped(Rect::new(110.0, 20.0, 410.0, 220.0));
-        assert!((cropped.crop[0] - 0.25).abs() < 1e-9);
-        assert!((cropped.crop[3] - 2.0 / 3.0).abs() < 1e-9);
-        let size = (800, 600);
-        let pixel = ui::vello::kurbo::Point::new(400.0, 100.0);
-        let before = whole.picture_to_local(size) * pixel;
-        let after = cropped.picture_to_local(size) * pixel;
-        assert!(before.distance(after) < 1e-6);
-    }
+        phase the_whole_picture_fills_its_frame;
+        {
+            let map = placement([0.0, 0.0, 1.0, 1.0]).picture_to_local((800, 600));
+            let corner = map * ui::vello::kurbo::Point::new(800.0, 600.0);
+            assert!((corner.x - 410.0).abs() < 1e-9 && (corner.y - 320.0).abs() < 1e-9);
+        }
 
-    #[test]
-    fn a_crop_stops_at_the_picture_edge() {
-        let whole = placement([0.0, 0.0, 1.0, 1.0]);
-        let grown = whole.recropped(Rect::new(-90.0, 20.0, 410.0, 320.0));
-        assert!(grown.crop[0].abs() < 1e-12);
-        assert!((grown.frame.x0 - 10.0).abs() < 1e-9);
-    }
+        phase a_crop_keeps_the_picture_where_it_was;
+        {
+            let whole = placement([0.0, 0.0, 1.0, 1.0]);
+            let cropped = whole.recropped(Rect::new(110.0, 20.0, 410.0, 220.0));
+            assert!((cropped.crop[0] - 0.25).abs() < 1e-9);
+            assert!((cropped.crop[3] - 2.0 / 3.0).abs() < 1e-9);
+            let size = (800, 600);
+            let pixel = ui::vello::kurbo::Point::new(400.0, 100.0);
+            let before = whole.picture_to_local(size) * pixel;
+            let after = cropped.picture_to_local(size) * pixel;
+            assert!(before.distance(after) < 1e-6);
+        }
 
-    #[test]
-    fn a_straightened_picture_covers_its_frame() {
-        let mut turned = placement([0.0, 0.0, 1.0, 1.0]);
-        turned.straighten = 10.0;
-        let map = turned.picture_to_local((800, 600)).inverse();
-        for corner in [
-            turned.frame.origin(),
-            ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y1),
-            ui::vello::kurbo::Point::new(turned.frame.x0, turned.frame.y1),
-            ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y0),
-        ] {
-            let at = map * corner;
-            assert!(at.x >= -1e-6 && at.y >= -1e-6 && at.x <= 800.0 + 1e-6 && at.y <= 600.0 + 1e-6);
+        phase a_crop_stops_at_the_picture_edge;
+        {
+            let whole = placement([0.0, 0.0, 1.0, 1.0]);
+            let grown = whole.recropped(Rect::new(-90.0, 20.0, 410.0, 320.0));
+            assert!(grown.crop[0].abs() < 1e-12);
+            assert!((grown.frame.x0 - 10.0).abs() < 1e-9);
+        }
+
+        phase a_straightened_picture_covers_its_frame;
+        {
+            let mut turned = placement([0.0, 0.0, 1.0, 1.0]);
+            turned.straighten = 10.0;
+            let map = turned.picture_to_local((800, 600)).inverse();
+            for corner in [
+                turned.frame.origin(),
+                ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y1),
+                ui::vello::kurbo::Point::new(turned.frame.x0, turned.frame.y1),
+                ui::vello::kurbo::Point::new(turned.frame.x1, turned.frame.y0),
+            ] {
+                let at = map * corner;
+                assert!(at.x >= -1e-6 && at.y >= -1e-6 && at.x <= 800.0 + 1e-6 && at.y <= 600.0 + 1e-6);
+            }
         }
     }
 
@@ -684,64 +690,70 @@ mod tests {
         }
     }
 
-    /// The canvas draws no pixel itself: a picture it has not decoded yet
-    /// shows as a placeholder, and the picture arrives from the decoder.
-    #[test]
-    fn a_picture_decodes_off_the_frame_and_shows_when_it_lands() {
-        let content = tilo_content::ContentStore::memory();
-        let address = stored(&content);
-        let mut pictures = Pictures::default();
-        pictures.read_from(content);
-        pictures.patient = false;
+    tilo_test_env::scenario! {
+        /// The decoder a canvas hands its pictures to.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_picture_is_decoded_off_the_frame;
 
-        assert!(
-            pictures
-                .shown(&address, 1.0, &Treatment::default())
-                .is_none(),
-            "the pass that asks for the pixels draws a placeholder"
-        );
-        assert!(
-            pictures.decoding(),
-            "a decoder is working on it for the frames after"
-        );
+        phase a_picture_decodes_off_the_frame_and_shows_when_it_lands;
+        // The canvas draws no pixel itself: a picture it has not decoded yet
+        // shows as a placeholder, and the picture arrives from the decoder.
+        {
+            let content = tilo_content::ContentStore::memory();
+            let address = stored(&content);
+            let mut pictures = Pictures::default();
+            pictures.read_from(content);
+            pictures.patient = false;
 
-        let shown = |pictures: &mut Pictures| {
-            pictures
-                .shown(&address, 1.0, &Treatment::default())
-                .map(|(image, _)| (image.width, image.height))
-        };
-        until(|| shown(&mut pictures).is_some());
-        assert_eq!(shown(&mut pictures), Some((6, 4)));
-        assert!(!pictures.decoding());
-    }
+            assert!(
+                pictures
+                    .shown(&address, 1.0, &Treatment::default())
+                    .is_none(),
+                "the pass that asks for the pixels draws a placeholder"
+            );
+            assert!(
+                pictures.decoding(),
+                "a decoder is working on it for the frames after"
+            );
 
-    /// An answer that must show a picture itself asks whether it is here,
-    /// and the decode that answers it runs off the frame either way.
-    #[test]
-    fn a_picture_an_answer_must_see_is_decoded_before_it_answers() {
-        let content = tilo_content::ContentStore::memory();
-        let address = stored(&content);
-        let mut pictures = Pictures::default();
-        pictures.read_from(content);
-        let mut art = crate::model::Artwork::default();
-        art.marks.push(crate::model::Mark {
-            id: "photo".into(),
-            shape: Shape::Image {
-                x: 0.0,
-                y: 0.0,
-                width: 6.0,
-                height: 4.0,
-                src: address.clone(),
-                crop: None,
-                straighten: None,
-            },
-            ..crate::model::Mark::default()
-        });
+            let shown = |pictures: &mut Pictures| {
+                pictures
+                    .shown(&address, 1.0, &Treatment::default())
+                    .map(|(image, _)| (image.width, image.height))
+            };
+            until(|| shown(&mut pictures).is_some());
+            assert_eq!(shown(&mut pictures), Some((6, 4)));
+            assert!(!pictures.decoding());
+        }
 
-        until(|| pictures.ready(&art));
-        assert_eq!(
-            pictures.full(&address).map(|i| (i.width, i.height)),
-            Some((6, 4))
-        );
+        phase a_picture_an_answer_must_see_is_decoded_before_it_answers;
+        // An answer that must show a picture itself asks whether it is here,
+        // and the decode that answers it runs off the frame either way.
+        {
+            let content = tilo_content::ContentStore::memory();
+            let address = stored(&content);
+            let mut pictures = Pictures::default();
+            pictures.read_from(content);
+            let mut art = crate::model::Artwork::default();
+            art.marks.push(crate::model::Mark {
+                id: "photo".into(),
+                shape: Shape::Image {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 6.0,
+                    height: 4.0,
+                    src: address.clone(),
+                    crop: None,
+                    straighten: None,
+                },
+                ..crate::model::Mark::default()
+            });
+
+            until(|| pictures.ready(&art));
+            assert_eq!(
+                pictures.full(&address).map(|i| (i.width, i.height)),
+                Some((6, 4))
+            );
+        }
     }
 }

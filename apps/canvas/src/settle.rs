@@ -280,47 +280,53 @@ mod tests {
         painter().paint(marks).to_vec()
     }
 
-    /// A live view keeps the last finished picture while the next one is
-    /// simulated in the background; a `look` waits for the exact one.
-    #[test]
-    fn a_live_view_shows_the_last_picture_until_the_next_is_painted() {
-        let first = [stroke("a", 12.0, "#8a3c1e")];
-        let both = [stroke("a", 12.0, "#8a3c1e"), stroke("b", 30.0, "#2a5c8e")];
-        let mut settle = Settle::new(painter());
-        assert_eq!(pixels(settle.show(&ask(&first, None), true)), fresh(&first));
+    tilo_test_env::scenario! {
+        /// What a settling layer shows while its next picture is painted.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn the_last_picture_or_preview_shows_until_the_next_is_painted;
 
-        let shown = settle.show(&ask(&both, None), false);
-        assert_eq!(pixels(shown), fresh(&first), "the window did not wait");
-        assert!(settle.running() || settle.key == Some(ask(&both, None).key));
+        phase a_live_view_shows_the_last_picture_until_the_next_is_painted;
+        // A live view keeps the last finished picture while the next one is
+        // simulated in the background; a `look` waits for the exact one.
+        {
+            let first = [stroke("a", 12.0, "#8a3c1e")];
+            let both = [stroke("a", 12.0, "#8a3c1e"), stroke("b", 30.0, "#2a5c8e")];
+            let mut settle = Settle::new(painter());
+            assert_eq!(pixels(settle.show(&ask(&first, None), true)), fresh(&first));
 
-        assert_eq!(pixels(settle.show(&ask(&both, None), true)), fresh(&both));
-        assert!(!settle.running());
-    }
+            let shown = settle.show(&ask(&both, None), false);
+            assert_eq!(pixels(shown), fresh(&first), "the window did not wait");
+            assert!(settle.running() || settle.key == Some(ask(&both, None).key));
 
-    /// A stroke just laid shows as it was previewed until its picture is
-    /// painted, so it never blinks out; laid as previewed, the picture is
-    /// the preview.
-    #[test]
-    fn a_stroke_just_laid_shows_as_its_preview_until_it_is_painted() {
-        let first = [stroke("a", 12.0, "#8a3c1e")];
-        let wet = stroke("b", 30.0, "#2a5c8e");
-        let both = [first[0].clone(), wet.clone()];
-        let mut settle = Settle::new(painter());
-        let preview = pixels(settle.show(&ask(&first, Some(&wet)), true));
-        assert_eq!(preview, fresh(&both), "the preview is the stroke as laid");
+            assert_eq!(pixels(settle.show(&ask(&both, None), true)), fresh(&both));
+            assert!(!settle.running());
+        }
 
-        // A picture of the layer alone, as a thumbnail draws it, does not
-        // end the preview the window is showing.
-        assert_eq!(pixels(settle.show(&ask(&first, None), true)), fresh(&first));
-        assert_eq!(
-            pixels(settle.show(&ask(&first, Some(&wet)), false)),
-            preview
-        );
-        assert!(!settle.running(), "nothing new to paint");
+        phase a_stroke_just_laid_shows_as_its_preview_until_it_is_painted;
+        // A stroke just laid shows as it was previewed until its picture is
+        // painted, so it never blinks out; laid as previewed, the picture is
+        // the preview.
+        {
+            let first = [stroke("a", 12.0, "#8a3c1e")];
+            let wet = stroke("b", 30.0, "#2a5c8e");
+            let both = [first[0].clone(), wet.clone()];
+            let mut settle = Settle::new(painter());
+            let preview = pixels(settle.show(&ask(&first, Some(&wet)), true));
+            assert_eq!(preview, fresh(&both), "the preview is the stroke as laid");
 
-        // Laid: the preview shows until the layer's picture is painted.
-        assert_eq!(pixels(settle.show(&ask(&both, None), false)), preview);
-        assert_eq!(pixels(settle.show(&ask(&both, None), true)), fresh(&both));
-        assert!(settle.preview.is_none(), "the preview ends once painted");
+            // A picture of the layer alone, as a thumbnail draws it, does not
+            // end the preview the window is showing.
+            assert_eq!(pixels(settle.show(&ask(&first, None), true)), fresh(&first));
+            assert_eq!(
+                pixels(settle.show(&ask(&first, Some(&wet)), false)),
+                preview
+            );
+            assert!(!settle.running(), "nothing new to paint");
+
+            // Laid: the preview shows until the layer's picture is painted.
+            assert_eq!(pixels(settle.show(&ask(&both, None), false)), preview);
+            assert_eq!(pixels(settle.show(&ask(&both, None), true)), fresh(&both));
+            assert!(settle.preview.is_none(), "the preview ends once painted");
+        }
     }
 }

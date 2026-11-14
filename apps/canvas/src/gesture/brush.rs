@@ -110,74 +110,80 @@ impl BrushDraft {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_fast_sweep_thins_and_a_slow_one_swells() {
-        let mut slow = BrushDraft::new(Point::ZERO, None);
-        let mut fast = BrushDraft::new(Point::ZERO, None);
-        for step in 1..=20 {
-            let at = Point::new(f64::from(step) * 10.0, 0.0);
-            slow.push(at, f64::from(step) * 0.1, 1.0, None);
-            fast.push(at, f64::from(step) * 0.002, 1.0, None);
-        }
-        let middle = |draft: &BrushDraft| draft.points[draft.points.len() / 2][2];
-        assert!(middle(&slow) > 0.8, "{}", middle(&slow));
-        assert!(middle(&fast) < 0.6, "{}", middle(&fast));
-        let points = slow.finish();
-        assert!(points[0][2] < 0.5);
-        let last = points.last().unwrap();
-        assert!((last[0] - 200.0).abs() < 1e-9 && last[2] < 0.5);
-    }
+    tilo_test_env::scenario! {
+        /// The points a brush draft keeps of a stroke in progress.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_brush_draft_follows_speed_pressure_and_a_steadied_hand;
 
-    #[test]
-    fn a_pen_presses_as_hard_as_it_says_whatever_the_speed() {
-        let mut draft = BrushDraft::new(Point::ZERO, Some(0.0));
-        for step in 1..=30 {
-            let pressure = f64::from(step) / 30.0;
-            // Fast, which would thin a mouse's line.
-            draft.push(
-                Point::new(f64::from(step) * 10.0, 0.0),
-                f64::from(step) * 0.002,
-                1.0,
-                Some(pressure),
+        phase a_fast_sweep_thins_and_a_slow_one_swells;
+        {
+            let mut slow = BrushDraft::new(Point::ZERO, None);
+            let mut fast = BrushDraft::new(Point::ZERO, None);
+            for step in 1..=20 {
+                let at = Point::new(f64::from(step) * 10.0, 0.0);
+                slow.push(at, f64::from(step) * 0.1, 1.0, None);
+                fast.push(at, f64::from(step) * 0.002, 1.0, None);
+            }
+            let middle = |draft: &BrushDraft| draft.points[draft.points.len() / 2][2];
+            assert!(middle(&slow) > 0.8, "{}", middle(&slow));
+            assert!(middle(&fast) < 0.6, "{}", middle(&fast));
+            let points = slow.finish();
+            assert!(points[0][2] < 0.5);
+            let last = points.last().unwrap();
+            assert!((last[0] - 200.0).abs() < 1e-9 && last[2] < 0.5);
+        }
+
+        phase a_pen_presses_as_hard_as_it_says_whatever_the_speed;
+        {
+            let mut draft = BrushDraft::new(Point::ZERO, Some(0.0));
+            for step in 1..=30 {
+                let pressure = f64::from(step) / 30.0;
+                // Fast, which would thin a mouse's line.
+                draft.push(
+                    Point::new(f64::from(step) * 10.0, 0.0),
+                    f64::from(step) * 0.002,
+                    1.0,
+                    Some(pressure),
+                );
+            }
+            let points = draft.finish();
+            assert!(
+                points[0][2] < 0.15,
+                "lands as light as the pen: {}",
+                points[0][2]
+            );
+            let last = points.last().unwrap();
+            assert!(
+                last[2] > 0.9,
+                "lifts as hard as the pen pressed: {}",
+                last[2]
+            );
+            assert!(
+                points
+                    .windows(2)
+                    .all(|pair| pair[1][2] >= pair[0][2] - 1e-9)
             );
         }
-        let points = draft.finish();
-        assert!(
-            points[0][2] < 0.15,
-            "lands as light as the pen: {}",
-            points[0][2]
-        );
-        let last = points.last().unwrap();
-        assert!(
-            last[2] > 0.9,
-            "lifts as hard as the pen pressed: {}",
-            last[2]
-        );
-        assert!(
-            points
-                .windows(2)
-                .all(|pair| pair[1][2] >= pair[0][2] - 1e-9)
-        );
-    }
 
-    #[test]
-    fn jitter_is_steadied() {
-        let mut draft = BrushDraft::new(Point::ZERO, None);
-        for step in 1..=40 {
-            let wobble = if step % 2 == 0 { 6.0 } else { -6.0 };
-            draft.push(
-                Point::new(f64::from(step) * 5.0, wobble),
-                f64::from(step) * 0.05,
-                1.0,
-                None,
-            );
+        phase jitter_is_steadied;
+        {
+            let mut draft = BrushDraft::new(Point::ZERO, None);
+            for step in 1..=40 {
+                let wobble = if step % 2 == 0 { 6.0 } else { -6.0 };
+                draft.push(
+                    Point::new(f64::from(step) * 5.0, wobble),
+                    f64::from(step) * 0.05,
+                    1.0,
+                    None,
+                );
+            }
+            let worst = draft
+                .points
+                .iter()
+                .skip(4)
+                .map(|[_, y, _]| y.abs())
+                .fold(0.0, f64::max);
+            assert!(worst < 5.0, "{worst}");
         }
-        let worst = draft
-            .points
-            .iter()
-            .skip(4)
-            .map(|[_, y, _]| y.abs())
-            .fold(0.0, f64::max);
-        assert!(worst < 5.0, "{worst}");
     }
 }

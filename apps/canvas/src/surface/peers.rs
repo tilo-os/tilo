@@ -186,42 +186,59 @@ mod tests {
         Artwork::from_doc(&doc).unwrap()
     }
 
-    #[test]
-    fn a_joined_view_starts_empty_and_is_announced_once() {
-        let now = Instant::now();
-        let mut views = PeerViews::default();
-        let task = participant("agent-task:one");
-        assert!(views.join(&task, now));
-        assert!(!views.join(&task, now), "joining twice changes nothing");
-        assert_eq!(views.view(&task), Some(&PeerView::default()));
-        views.leave(&task);
-        assert!(views.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// The views participants hold of an artwork.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_peer_view_is_joined_selects_and_keeps_its_bounds;
 
-    #[test]
-    fn a_view_selects_the_marks_at_its_range() {
-        let art = art();
-        let expected: Vec<&str> = art
-            .marks
-            .iter()
-            .skip(1)
-            .take(2)
-            .map(|mark| mark.id.as_str())
-            .collect();
-        let view = PeerView::new(1, 3, art.marks.len());
-        assert_eq!(view.picked(&art).collect::<Vec<_>>(), expected);
-        // A range past the artwork's marks selects only what is there.
-        let over = PeerView::new(1, usize::MAX, art.marks.len());
-        assert_eq!(over.picked(&art).count(), art.marks.len() - 1);
-    }
+        phase a_joined_view_starts_empty_and_is_announced_once;
+        {
+            let now = Instant::now();
+            let mut views = PeerViews::default();
+            let task = participant("agent-task:one");
+            assert!(views.join(&task, now));
+            assert!(!views.join(&task, now), "joining twice changes nothing");
+            assert_eq!(views.view(&task), Some(&PeerView::default()));
+            views.leave(&task);
+            assert!(views.is_empty());
+        }
 
-    #[test]
-    fn a_view_that_was_never_joined_is_not_presence() {
-        let now = Instant::now();
-        let mut views = PeerViews::default();
-        let stray = participant("agent-task:stray");
-        assert!(!views.set(&stray, PeerView::new(0, 1, 4), now));
-        assert!(views.is_empty(), "nothing is created for it");
+        phase a_view_selects_the_marks_at_its_range;
+        {
+            let art = art();
+            let expected: Vec<&str> = art
+                .marks
+                .iter()
+                .skip(1)
+                .take(2)
+                .map(|mark| mark.id.as_str())
+                .collect();
+            let view = PeerView::new(1, 3, art.marks.len());
+            assert_eq!(view.picked(&art).collect::<Vec<_>>(), expected);
+            // A range past the artwork's marks selects only what is there.
+            let over = PeerView::new(1, usize::MAX, art.marks.len());
+            assert_eq!(over.picked(&art).count(), art.marks.len() - 1);
+        }
+
+        phase a_view_that_was_never_joined_is_not_presence;
+        {
+            let now = Instant::now();
+            let mut views = PeerViews::default();
+            let stray = participant("agent-task:stray");
+            assert!(!views.set(&stray, PeerView::new(0, 1, 4), now));
+            assert!(views.is_empty(), "nothing is created for it");
+        }
+
+        phase a_long_label_is_cut_to_its_bound;
+        {
+            let now = Instant::now();
+            let mut views = PeerViews::default();
+            let task = participant("agent-task:one");
+            views.join(&task, now);
+            views.set_label(&task, &"é".repeat(MAX_PEER_LABEL_BYTES));
+            let (_, _, label) = views.iter().next().unwrap();
+            assert!(label.unwrap().len() <= MAX_PEER_LABEL_BYTES);
+        }
     }
 
     #[test]
@@ -249,16 +266,5 @@ mod tests {
             ))),
             "the views joined most recently survive"
         );
-    }
-
-    #[test]
-    fn a_long_label_is_cut_to_its_bound() {
-        let now = Instant::now();
-        let mut views = PeerViews::default();
-        let task = participant("agent-task:one");
-        views.join(&task, now);
-        views.set_label(&task, &"é".repeat(MAX_PEER_LABEL_BYTES));
-        let (_, _, label) = views.iter().next().unwrap();
-        assert!(label.unwrap().len() <= MAX_PEER_LABEL_BYTES);
     }
 }

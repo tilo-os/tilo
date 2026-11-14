@@ -1237,78 +1237,297 @@ mod tests {
         .expect("laid")
     }
 
-    #[test]
-    fn presets_round_trip_by_name_and_round_is_stored_as_none() {
-        for preset in Preset::ALL {
-            assert_eq!(Preset::parse(preset.name()), Some(preset));
+    tilo_test_env::scenario! {
+        /// What each brush preset lays for one stroke.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_preset_lays_its_own_line;
+
+        phase presets_round_trip_by_name_and_round_is_stored_as_none;
+        {
+            for preset in Preset::ALL {
+                assert_eq!(Preset::parse(preset.name()), Some(preset));
+            }
+            assert_eq!(stored("round"), None);
+            assert_eq!(stored(""), None);
+            assert_eq!(stored("pencil").as_deref(), Some("pencil"));
+            assert!(problem(Some("crayon"), &BTreeMap::new(), true).is_some());
+            let medium = BTreeMap::from([("load".to_owned(), 0.3)]);
+            assert!(problem(Some("pen"), &medium, true).is_some());
+            assert!(problem(Some("pen"), &medium, false).is_none());
         }
-        assert_eq!(stored("round"), None);
-        assert_eq!(stored(""), None);
-        assert_eq!(stored("pencil").as_deref(), Some("pencil"));
-        assert!(problem(Some("crayon"), &BTreeMap::new(), true).is_some());
-        let medium = BTreeMap::from([("load".to_owned(), 0.3)]);
-        assert!(problem(Some("pen"), &medium, true).is_some());
-        assert!(problem(Some("pen"), &medium, false).is_none());
+
+        phase pencil_pressure_sets_darkness_not_width;
+        {
+            let light = laid("pencil", 0.2);
+            let firm = laid("pencil", 1.0);
+            assert!(darkness(&firm) > darkness(&light) * 2.5);
+            assert!(light.height.abs_diff(firm.height) <= 2);
+        }
+
+        phase pen_pressure_sets_width;
+        {
+            let thin = silhouette(&[(line(0.1), 8.0)], &style("pen"));
+            let wide = silhouette(&[(line(1.0), 8.0)], &style("pen"));
+            assert!(wide.bounding_box().height() > thin.bounding_box().height() * 1.8);
+        }
+
+        phase the_same_stroke_lays_the_same_pixels;
+        {
+            assert_eq!(laid("charcoal", 0.7).pixels, laid("charcoal", 0.7).pixels);
+        }
+
+        phase a_calligraphy_nib_is_thick_across_its_angle_and_thin_along_it;
+        {
+            let across = Style {
+                angle: Some(90.0),
+                ..style("calligraphy")
+            };
+            let along = Style {
+                angle: Some(0.0),
+                ..style("calligraphy")
+            };
+            let thick = silhouette(&[(line(1.0), 10.0)], &across)
+                .bounding_box()
+                .height();
+            let thin = silhouette(&[(line(1.0), 10.0)], &along)
+                .bounding_box()
+                .height();
+            assert!(thick > thin * 3.0, "{thick} vs {thin}");
+        }
+
+        phase every_preset_grows_forks_and_dabs;
+        {
+            let mark = |brush: &str, forks: Option<u32>, dabs: Option<u32>| Mark {
+                id: "tree".into(),
+                layer: "l".into(),
+                order: "a".into(),
+                name: String::new(),
+                shape: Shape::Stroke {
+                    points: vec![vec![100.0, 200.0], vec![100.0, 100.0]],
+                    size: 8.0,
+                    forks,
+                    spread: None,
+                    dabs,
+                    scatter: Some(30.0),
+                    dab_length: None,
+                    hatch: None,
+                },
+                style: style(brush),
+                transform: None,
+                group: String::new(),
+                clip: String::new(),
+                area: String::new(),
+            };
+            for preset in ["pen", "marker", "calligraphy"] {
+                let plain = silhouette(&pieces(&mark(preset, None, None)), &style(preset));
+                let tree = silhouette(&pieces(&mark(preset, Some(3), None)), &style(preset));
+                let leaves = silhouette(&pieces(&mark(preset, None, Some(40))), &style(preset));
+                assert!(
+                    tree.bounding_box().width() > plain.bounding_box().width() * 2.0,
+                    "{preset} forks"
+                );
+                assert!(
+                    leaves.bounding_box().width() > plain.bounding_box().width() * 2.0,
+                    "{preset} dabs"
+                );
+            }
+            for preset in ["pencil", "airbrush", "charcoal"] {
+                let laid = |forks| {
+                    let mark = mark(preset, forks, None);
+                    dab(&DabInput {
+                        pieces: &pieces(&mark),
+                        style: &mark.style,
+                        scale: 1.0,
+                        rgb: [20, 20, 20],
+                        tooth: &flat,
+                        to_artwork: ui::vello::kurbo::Affine::IDENTITY,
+                    })
+                    .expect("laid")
+                };
+                assert!(laid(Some(3)).width > laid(None).width * 2, "{preset} forks");
+            }
+        }
     }
 
-    #[test]
-    fn pencil_pressure_sets_darkness_not_width() {
-        let light = laid("pencil", 0.2);
-        let firm = laid("pencil", 1.0);
-        assert!(darkness(&firm) > darkness(&light) * 2.5);
-        assert!(light.height.abs_diff(firm.height) <= 2);
-    }
+    tilo_test_env::scenario! {
+        /// The centreline a hand's points become: smoothing, corners and ends.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn a_hand_drawn_line_is_smoothed_and_keeps_its_corners;
 
-    #[test]
-    fn pen_pressure_sets_width() {
-        let thin = silhouette(&[(line(0.1), 8.0)], &style("pen"));
-        let wide = silhouette(&[(line(1.0), 8.0)], &style("pen"));
-        assert!(wide.bounding_box().height() > thin.bounding_box().height() * 1.8);
-    }
+        phase smoothing_and_simplifying_keep_the_ends;
+        {
+            let wobbly: Vec<Vec<f64>> = (0..40)
+                .map(|step| {
+                    let y = if step % 2 == 0 { 3.0 } else { -3.0 };
+                    vec![f64::from(step) * 5.0, y, 1.0]
+                })
+                .collect();
+            let smooth = smoothed(&wobbly, 1.0, 4.0);
+            assert_eq!(smooth.first(), Some(&vec![0.0, 3.0, 1.0]));
+            assert!(
+                smooth
+                    .iter()
+                    .filter(|point| (30.0..170.0).contains(&point[0]))
+                    .all(|point| point[1].abs() < 1.2)
+            );
+            let fewer = simplified(&smooth, 1.5);
+            assert!(fewer.len() < 12, "{}", fewer.len());
+            assert_eq!(fewer.last(), smooth.last());
+        }
 
-    #[test]
-    fn the_same_stroke_lays_the_same_pixels() {
-        assert_eq!(laid("charcoal", 0.7).pixels, laid("charcoal", 0.7).pixels);
-    }
+        phase a_square_or_triangle_in_one_stroke_keeps_its_corners;
+        {
+            let pen = Dynamics::of(Preset::Pen, &BTreeMap::new());
+            let square = [
+                (0.0, 0.0),
+                (300.0, 0.0),
+                (300.0, 300.0),
+                (0.0, 300.0),
+                (0.0, 0.0),
+            ];
+            let triangle = [(0.0, 280.0), (150.0, 0.0), (300.0, 280.0), (0.0, 280.0)];
+            for shape in [&square[..], &triangle[..]] {
+                let points: Vec<Vec<f64>> = shape.iter().map(|(x, y)| vec![*x, *y, 1.0]).collect();
+                assert_eq!(corners(&points, pen.smoothing, 8.0).len(), shape.len() - 2);
+                let line = path_points(&centreline(&points, 8.0, pen.smoothing));
+                for corner in &shape[1..shape.len() - 1] {
+                    let near = nearest(&line, *corner);
+                    assert!(near < 0.3, "corner {corner:?} missed by {near}");
+                }
+                // The sides run straight between the corners: none bulges.
+                for at in &line {
+                    let off = shape
+                        .windows(2)
+                        .map(|pair| {
+                            use ui::vello::kurbo::ParamCurveNearest as _;
+                            let side = ui::vello::kurbo::Line::new(pair[0], pair[1]);
+                            side.nearest(*at, 1e-9).distance_sq.sqrt()
+                        })
+                        .fold(f64::MAX, f64::min);
+                    assert!(off < 0.3, "{at:?} is {off} off the shape");
+                }
+            }
+        }
 
-    #[test]
-    fn a_calligraphy_nib_is_thick_across_its_angle_and_thin_along_it() {
-        let across = Style {
-            angle: Some(90.0),
-            ..style("calligraphy")
-        };
-        let along = Style {
-            angle: Some(0.0),
-            ..style("calligraphy")
-        };
-        let thick = silhouette(&[(line(1.0), 10.0)], &across)
-            .bounding_box()
-            .height();
-        let thin = silhouette(&[(line(1.0), 10.0)], &along)
-            .bounding_box()
-            .height();
-        assert!(thick > thin * 3.0, "{thick} vs {thin}");
-    }
-
-    #[test]
-    fn smoothing_and_simplifying_keep_the_ends() {
-        let wobbly: Vec<Vec<f64>> = (0..40)
-            .map(|step| {
-                let y = if step % 2 == 0 { 3.0 } else { -3.0 };
-                vec![f64::from(step) * 5.0, y, 1.0]
-            })
-            .collect();
-        let smooth = smoothed(&wobbly, 1.0, 4.0);
-        assert_eq!(smooth.first(), Some(&vec![0.0, 3.0, 1.0]));
-        assert!(
-            smooth
+        phase a_shaky_hands_square_keeps_its_corners_and_loses_its_shake;
+        {
+            // A square 250 across drawn by hand: a point every 3 units, each
+            // up to a unit off the line.
+            let mut points = Vec::new();
+            let corners_at = [
+                (0.0, 0.0),
+                (250.0, 0.0),
+                (250.0, 250.0),
+                (0.0, 250.0),
+                (0.0, 0.0),
+            ];
+            let mut step = 0;
+            for pair in corners_at.windows(2) {
+                let ((ax, ay), (bx, by)) = (pair[0], pair[1]);
+                for along in 0..84 {
+                    let t = f64::from(along) / 84.0;
+                    step += 1;
+                    points.push(vec![
+                        ax + (bx - ax) * t + wobble(step, 1.0),
+                        ay + (by - ay) * t + wobble(step * 3, 1.0),
+                        1.0,
+                    ]);
+                }
+            }
+            points.push(vec![0.0, 0.0, 1.0]);
+            let found = corners(&points, 0.6, 8.0);
+            assert_eq!(found.len(), 3);
+            let line = path_points(&centreline(&points, 8.0, 0.6));
+            for (corner, index) in corners_at[1..4].iter().zip(&found) {
+                // The line turns exactly on the point the hand turned at, which
+                // is within its shake of the true corner.
+                let turned = &points[*index];
+                assert!(nearest(&line, (turned[0], turned[1])) < 1e-3);
+                let near = nearest(&line, *corner);
+                assert!(near < 2.0, "corner {corner:?} missed by {near}");
+            }
+            for at in line
                 .iter()
-                .filter(|point| (30.0..170.0).contains(&point[0]))
-                .all(|point| point[1].abs() < 1.2)
-        );
-        let fewer = simplified(&smooth, 1.5);
-        assert!(fewer.len() < 12, "{}", fewer.len());
-        assert_eq!(fewer.last(), smooth.last());
+                .filter(|at| at.y < 50.0 && (60.0..190.0).contains(&at.x))
+            {
+                assert!(at.y.abs() < 0.6, "{at:?} still shakes");
+            }
+        }
+
+        phase a_gentle_noisy_curve_has_no_corners_and_is_smoothed;
+        {
+            // A third of a circle 150 round, a point every 2 units, each up to a
+            // unit off it.
+            let points: Vec<Vec<f64>> = (0..=157_u32)
+                .map(|step| {
+                    let angle = f64::from(step) * 2.0 / 150.0;
+                    let radius = 150.0 + wobble(step, 1.0);
+                    vec![radius * angle.cos(), radius * angle.sin(), 1.0]
+                })
+                .collect();
+            assert!(corners(&points, 0.6, 8.0).is_empty());
+            let smooth = smoothed(&points, 0.6, 8.0);
+            let middle = &smooth[smooth.len() / 5..smooth.len() * 4 / 5];
+            for point in middle {
+                let radius = point[0].hypot(point[1]);
+                assert!((radius - 150.0).abs() < 0.5, "radius {radius}");
+            }
+        }
+
+        phase smoothing_keeps_a_tight_curve_its_size;
+        {
+            // Most of a circle 12 units round, a point every 15 degrees.
+            let arc: Vec<Vec<f64>> = (0..=20)
+                .map(|step| {
+                    let angle = f64::from(step) * 15_f64.to_radians();
+                    vec![100.0 + 12.0 * angle.cos(), 100.0 + 12.0 * angle.sin(), 1.0]
+                })
+                .collect();
+            let smooth = smoothed(&arc, 1.0, 4.0);
+            let middle = &smooth[smooth.len() / 4..smooth.len() * 3 / 4];
+            for point in middle {
+                let radius = (point[0] - 100.0).hypot(point[1] - 100.0);
+                assert!((radius - 12.0).abs() < 0.36, "radius {radius}");
+            }
+        }
+
+        phase a_hook_at_the_lift_does_not_turn_the_lines_end;
+        {
+            // A pen line whose last point steps back a little across it, as a
+            // hand's lift often does.
+            let mut points = line(0.8);
+            points.push(vec![199.7, 50.6, 0.35]);
+            let dynamics = Dynamics::of(Preset::Pen, &BTreeMap::new());
+            let laid = lay(&points, 8.0, Preset::Pen, &dynamics);
+            for (nx, ny) in normals(&laid.samples, &laid.half) {
+                assert!(ny.abs() > 0.94 && nx.abs() < 0.35, "normal ({nx}, {ny})");
+            }
+            // Its outline stays as tall as the line, no notch or spike at the end.
+            let outline = silhouette(&[(points, 8.0)], &style("pen"));
+            let bounds = outline.bounding_box();
+            assert!(
+                bounds.max_x() < 205.0 && bounds.height() < 9.0,
+                "{bounds:?}"
+            );
+        }
+
+        phase the_editor_shows_the_curve_the_brush_follows;
+        {
+            // Three points: the line bows through the middle one, it does not
+            // run straight to it.
+            let points = vec![vec![0.0, 0.0], vec![50.0, 30.0], vec![100.0, 0.0]];
+            let curve = centreline(&points, 2.0, 0.0);
+            let at_quarter = curve
+                .elements()
+                .iter()
+                .filter_map(ui::vello::kurbo::PathEl::end_point)
+                .min_by(|a, b| (a.x - 25.0).abs().total_cmp(&(b.x - 25.0).abs()))
+                .unwrap();
+            // A straight segment would be at y 15 there; the spline is higher.
+            assert!(at_quarter.y > 18.0, "{at_quarter:?}");
+            let pen = silhouette(&[(points, 2.0)], &style("pen")).bounding_box();
+            assert!((pen.max_y() - curve.bounding_box().max_y()).abs() < 1.6);
+        }
     }
     /// The points a path runs through.
     fn path_points(path: &BezPath) -> Vec<Point> {
@@ -1332,212 +1551,5 @@ mod tests {
     /// A little deterministic wobble in `-amount..=amount`.
     fn wobble(step: u32, amount: f64) -> f64 {
         f64::from(step.wrapping_mul(7919) % 13) / 6.0 * amount - amount
-    }
-
-    #[test]
-    fn a_square_or_triangle_in_one_stroke_keeps_its_corners() {
-        let pen = Dynamics::of(Preset::Pen, &BTreeMap::new());
-        let square = [
-            (0.0, 0.0),
-            (300.0, 0.0),
-            (300.0, 300.0),
-            (0.0, 300.0),
-            (0.0, 0.0),
-        ];
-        let triangle = [(0.0, 280.0), (150.0, 0.0), (300.0, 280.0), (0.0, 280.0)];
-        for shape in [&square[..], &triangle[..]] {
-            let points: Vec<Vec<f64>> = shape.iter().map(|(x, y)| vec![*x, *y, 1.0]).collect();
-            assert_eq!(corners(&points, pen.smoothing, 8.0).len(), shape.len() - 2);
-            let line = path_points(&centreline(&points, 8.0, pen.smoothing));
-            for corner in &shape[1..shape.len() - 1] {
-                let near = nearest(&line, *corner);
-                assert!(near < 0.3, "corner {corner:?} missed by {near}");
-            }
-            // The sides run straight between the corners: none bulges.
-            for at in &line {
-                let off = shape
-                    .windows(2)
-                    .map(|pair| {
-                        use ui::vello::kurbo::ParamCurveNearest as _;
-                        let side = ui::vello::kurbo::Line::new(pair[0], pair[1]);
-                        side.nearest(*at, 1e-9).distance_sq.sqrt()
-                    })
-                    .fold(f64::MAX, f64::min);
-                assert!(off < 0.3, "{at:?} is {off} off the shape");
-            }
-        }
-    }
-
-    #[test]
-    fn a_shaky_hands_square_keeps_its_corners_and_loses_its_shake() {
-        // A square 250 across drawn by hand: a point every 3 units, each
-        // up to a unit off the line.
-        let mut points = Vec::new();
-        let corners_at = [
-            (0.0, 0.0),
-            (250.0, 0.0),
-            (250.0, 250.0),
-            (0.0, 250.0),
-            (0.0, 0.0),
-        ];
-        let mut step = 0;
-        for pair in corners_at.windows(2) {
-            let ((ax, ay), (bx, by)) = (pair[0], pair[1]);
-            for along in 0..84 {
-                let t = f64::from(along) / 84.0;
-                step += 1;
-                points.push(vec![
-                    ax + (bx - ax) * t + wobble(step, 1.0),
-                    ay + (by - ay) * t + wobble(step * 3, 1.0),
-                    1.0,
-                ]);
-            }
-        }
-        points.push(vec![0.0, 0.0, 1.0]);
-        let found = corners(&points, 0.6, 8.0);
-        assert_eq!(found.len(), 3);
-        let line = path_points(&centreline(&points, 8.0, 0.6));
-        for (corner, index) in corners_at[1..4].iter().zip(&found) {
-            // The line turns exactly on the point the hand turned at, which
-            // is within its shake of the true corner.
-            let turned = &points[*index];
-            assert!(nearest(&line, (turned[0], turned[1])) < 1e-3);
-            let near = nearest(&line, *corner);
-            assert!(near < 2.0, "corner {corner:?} missed by {near}");
-        }
-        for at in line
-            .iter()
-            .filter(|at| at.y < 50.0 && (60.0..190.0).contains(&at.x))
-        {
-            assert!(at.y.abs() < 0.6, "{at:?} still shakes");
-        }
-    }
-
-    #[test]
-    fn a_gentle_noisy_curve_has_no_corners_and_is_smoothed() {
-        // A third of a circle 150 round, a point every 2 units, each up to a
-        // unit off it.
-        let points: Vec<Vec<f64>> = (0..=157_u32)
-            .map(|step| {
-                let angle = f64::from(step) * 2.0 / 150.0;
-                let radius = 150.0 + wobble(step, 1.0);
-                vec![radius * angle.cos(), radius * angle.sin(), 1.0]
-            })
-            .collect();
-        assert!(corners(&points, 0.6, 8.0).is_empty());
-        let smooth = smoothed(&points, 0.6, 8.0);
-        let middle = &smooth[smooth.len() / 5..smooth.len() * 4 / 5];
-        for point in middle {
-            let radius = point[0].hypot(point[1]);
-            assert!((radius - 150.0).abs() < 0.5, "radius {radius}");
-        }
-    }
-
-    #[test]
-    fn smoothing_keeps_a_tight_curve_its_size() {
-        // Most of a circle 12 units round, a point every 15 degrees.
-        let arc: Vec<Vec<f64>> = (0..=20)
-            .map(|step| {
-                let angle = f64::from(step) * 15_f64.to_radians();
-                vec![100.0 + 12.0 * angle.cos(), 100.0 + 12.0 * angle.sin(), 1.0]
-            })
-            .collect();
-        let smooth = smoothed(&arc, 1.0, 4.0);
-        let middle = &smooth[smooth.len() / 4..smooth.len() * 3 / 4];
-        for point in middle {
-            let radius = (point[0] - 100.0).hypot(point[1] - 100.0);
-            assert!((radius - 12.0).abs() < 0.36, "radius {radius}");
-        }
-    }
-
-    #[test]
-    fn a_hook_at_the_lift_does_not_turn_the_lines_end() {
-        // A pen line whose last point steps back a little across it, as a
-        // hand's lift often does.
-        let mut points = line(0.8);
-        points.push(vec![199.7, 50.6, 0.35]);
-        let dynamics = Dynamics::of(Preset::Pen, &BTreeMap::new());
-        let laid = lay(&points, 8.0, Preset::Pen, &dynamics);
-        for (nx, ny) in normals(&laid.samples, &laid.half) {
-            assert!(ny.abs() > 0.94 && nx.abs() < 0.35, "normal ({nx}, {ny})");
-        }
-        // Its outline stays as tall as the line, no notch or spike at the end.
-        let outline = silhouette(&[(points, 8.0)], &style("pen"));
-        let bounds = outline.bounding_box();
-        assert!(
-            bounds.max_x() < 205.0 && bounds.height() < 9.0,
-            "{bounds:?}"
-        );
-    }
-
-    #[test]
-    fn the_editor_shows_the_curve_the_brush_follows() {
-        // Three points: the line bows through the middle one, it does not
-        // run straight to it.
-        let points = vec![vec![0.0, 0.0], vec![50.0, 30.0], vec![100.0, 0.0]];
-        let curve = centreline(&points, 2.0, 0.0);
-        let at_quarter = curve
-            .elements()
-            .iter()
-            .filter_map(ui::vello::kurbo::PathEl::end_point)
-            .min_by(|a, b| (a.x - 25.0).abs().total_cmp(&(b.x - 25.0).abs()))
-            .unwrap();
-        // A straight segment would be at y 15 there; the spline is higher.
-        assert!(at_quarter.y > 18.0, "{at_quarter:?}");
-        let pen = silhouette(&[(points, 2.0)], &style("pen")).bounding_box();
-        assert!((pen.max_y() - curve.bounding_box().max_y()).abs() < 1.6);
-    }
-
-    #[test]
-    fn every_preset_grows_forks_and_dabs() {
-        let mark = |brush: &str, forks: Option<u32>, dabs: Option<u32>| Mark {
-            id: "tree".into(),
-            layer: "l".into(),
-            order: "a".into(),
-            name: String::new(),
-            shape: Shape::Stroke {
-                points: vec![vec![100.0, 200.0], vec![100.0, 100.0]],
-                size: 8.0,
-                forks,
-                spread: None,
-                dabs,
-                scatter: Some(30.0),
-                dab_length: None,
-                hatch: None,
-            },
-            style: style(brush),
-            transform: None,
-            group: String::new(),
-            clip: String::new(),
-            area: String::new(),
-        };
-        for preset in ["pen", "marker", "calligraphy"] {
-            let plain = silhouette(&pieces(&mark(preset, None, None)), &style(preset));
-            let tree = silhouette(&pieces(&mark(preset, Some(3), None)), &style(preset));
-            let leaves = silhouette(&pieces(&mark(preset, None, Some(40))), &style(preset));
-            assert!(
-                tree.bounding_box().width() > plain.bounding_box().width() * 2.0,
-                "{preset} forks"
-            );
-            assert!(
-                leaves.bounding_box().width() > plain.bounding_box().width() * 2.0,
-                "{preset} dabs"
-            );
-        }
-        for preset in ["pencil", "airbrush", "charcoal"] {
-            let laid = |forks| {
-                let mark = mark(preset, forks, None);
-                dab(&DabInput {
-                    pieces: &pieces(&mark),
-                    style: &mark.style,
-                    scale: 1.0,
-                    rgb: [20, 20, 20],
-                    tooth: &flat,
-                    to_artwork: ui::vello::kurbo::Affine::IDENTITY,
-                })
-                .expect("laid")
-            };
-            assert!(laid(Some(3)).width > laid(None).width * 2, "{preset} forks");
-        }
     }
 }

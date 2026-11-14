@@ -580,24 +580,30 @@ impl Tiles {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_closer_view_simulates_a_finer_level_and_a_far_one_draws_a_halving() {
-        assert_eq!(level(1.0, 1.0), None);
-        assert_eq!(level(1.0, 1.2), None);
-        assert_eq!(level(1.0, 2.0), Some(2.0));
-        assert_eq!(level(1.0, 3.5), Some(4.0));
-        assert_eq!(level(1.0, 100.0), Some(8.0));
-        assert_eq!(mip(1.0, 1.0), 0);
-        assert_eq!(mip(1.0, 0.4), 1);
-        assert_eq!(mip(1.0, 0.2), 2);
-    }
+    tilo_test_env::scenario! {
+        /// The level of detail a view draws at, and the halving a far view draws.
+        /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+        fn detail_is_a_finer_level_up_close_and_a_halving_far_away;
 
-    #[test]
-    fn a_halving_keeps_colour_where_paint_meets_bare_ground() {
-        // Red paint beside transparency halves to red at half alpha, not to
-        // a darkened red.
-        let image = image_of(vec![255, 0, 0, 255, 0, 0, 0, 0], 2, 1);
-        let half = halve(&image);
-        assert_eq!(half.data.data(), &[255, 0, 0, 128]);
+        phase a_closer_view_simulates_a_finer_level_and_a_far_one_draws_a_halving;
+        {
+            assert_eq!(level(1.0, 1.0), None);
+            assert_eq!(level(1.0, 1.2), None);
+            assert_eq!(level(1.0, 2.0), Some(2.0));
+            assert_eq!(level(1.0, 3.5), Some(4.0));
+            assert_eq!(level(1.0, 100.0), Some(8.0));
+            assert_eq!(mip(1.0, 1.0), 0);
+            assert_eq!(mip(1.0, 0.4), 1);
+            assert_eq!(mip(1.0, 0.2), 2);
+        }
+
+        phase a_halving_keeps_colour_where_paint_meets_bare_ground;
+        {
+            // Red paint beside transparency halves to red at half alpha, not to
+            // a darkened red.
+            let image = image_of(vec![255, 0, 0, 255, 0, 0, 0, 0], 2, 1);
+            let half = halve(&image);
+            assert_eq!(half.data.data(), &[255, 0, 0, 128]);
+        }
     }
 }
