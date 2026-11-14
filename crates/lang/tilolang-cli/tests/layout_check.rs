@@ -124,9 +124,11 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // phone's screen.
             | Kind::ChevronOffLine
             | Kind::IndentedBody
-            // Its lists group no rows under headings of their own, so none heads its rows.
+            // Its lists group no rows under headings of their own, so none heads its rows, and
+            // none floats a way back over them.
             | Kind::RepeatedGroupTitle
             | Kind::HuggingRow
+            | Kind::ClippedPill
             | Kind::RepeatedDayFact => "(no view)",
         };
         assert_eq!(

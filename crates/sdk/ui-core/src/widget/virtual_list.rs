@@ -399,7 +399,9 @@ pub struct VirtualList<M: ListModel> {
     jump_hovered: bool,
     jump_pressed: bool,
     pill_height: f64,
-    pill_width: f64,
+    /// The pill's width for each way back ([`crate::widget::conversation::Jump::slot`]): the words
+    /// measured at the face they are drawn in, so a narrow list shows them whole.
+    pill_widths: [f64; crate::widget::conversation::JUMPS],
     names_item: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<M::Key>>>>,
     groups: Groups,
     tail_title: Option<String>,
@@ -553,7 +555,7 @@ impl<M: ListModel> VirtualList<M> {
             jump_hovered: false,
             jump_pressed: false,
             pill_height: 0.0,
-            pill_width: 0.0,
+            pill_widths: [0.0; crate::widget::conversation::JUMPS],
             names_item: std::cell::RefCell::new(None),
             groups: Groups::default(),
             tail_title: None,
@@ -1569,13 +1571,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.settle_lead();
         self.pill_height =
             crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);
-        self.pill_width = f64::from(
-            theme
-                .tokens
-                .typography
-                .size(crate::tokens::TextRole::Caption),
-        ) * 24.0
-            + f64::from(theme.tokens.spacing.s4) * 6.0;
+        // A pill floats over the rows it covers, so its width is the one its words need: measured
+        // here, where the face's theme is known, so a list laid out and never drawn offers the
+        // words whole.
+        self.pill_widths = crate::text_render::with_layout_renderer(theme, |text| {
+            crate::widget::conversation::Jump::ALL.map(|jump| jump.width(text, theme))
+        });
         self.motion = self.feel.over(theme.motion());
         self.groups.theme(theme, self.interaction);
         if let Some(edges) = self.edges.as_mut() {
@@ -2326,6 +2327,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         Some(crate::widget::LayoutInfo::List(crate::widget::ListLayout {
             heads_rows: groups::group_of(&self.model, 0, self.tail_title.as_deref()).is_some(),
             lead: crate::num::f32_of_f64(self.viewport.edges().0),
+            pill: self.pill_layout(),
         }))
     }
 

@@ -1943,8 +1943,9 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
-    LayoutInfo, LayoutOrigin, ListLayout, ManualConflict, ManualLayout, PageLayout, RowLayout,
-    ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarStanding, TextLayout,
+    LayoutInfo, LayoutOrigin, ListLayout, ListPillLayout, ManualConflict, ManualLayout, PageLayout,
+    RowLayout, ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarStanding,
+    TextLayout,
 };
 mod embedded;
 pub use embedded::Embedded;

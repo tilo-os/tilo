@@ -945,9 +945,35 @@ impl Walk<'_> {
         self.header_only(node, keys, own);
         self.rounded_on_edge(node, keys, own);
         self.repeated_day_fact(node, keys);
+        self.clipped_pill(node, keys);
         if under_page.is_some() {
             self.nested_scroller(node, keys, own);
         }
+    }
+
+    /// A pill a list floats over its rows that cuts the words it offers: the way back reads as
+    /// half a sentence, where the pill covers what it stands on and so may take the width its
+    /// words need.
+    fn clipped_pill(&mut self, node: &InspectionNode, keys: &[String]) {
+        let Some(ui::widget::LayoutInfo::List(list)) = &node.layout else {
+            return;
+        };
+        let Some(pill) = list.pill else {
+            return;
+        };
+        if f64::from(pill.needs) <= f64::from(pill.has) + EPSILON {
+            return;
+        }
+        self.out.push(Problem {
+            kind: Kind::ClippedPill,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+            detail: format!(
+                "the way back over the list needs {:.0} px for its words and stands {:.0} wide",
+                pill.needs, pill.has
+            ),
+        });
     }
 
     fn visit(

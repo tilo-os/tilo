@@ -2532,6 +2532,7 @@ fn a_list_that_heads_its_rows_starts_its_first_band_on_the_content_gutter() {
         list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
             heads_rows,
             lead: ui::num::f32_of_f64(lead),
+            pill: None,
         }));
         let mut access = AccessNode::new(Role::List);
         access.children = vec![
@@ -2849,5 +2850,34 @@ fn a_lone_group_heading_repeating_the_titles_words_is_caught() {
         repeated(&grouped_list_of("Today", 3, "Today", 3, 1)),
         0,
         "a title counting every row says something else than the two left"
+    );
+}
+
+/// A pill that floats over a list takes the width its words need: one cut to less says half a
+/// sentence, where it covers the rows under it and has the window to stand in.
+#[test]
+fn a_pill_floating_over_a_list_is_caught_when_it_cuts_its_words() {
+    let pill = |needs: f32, has: f32| {
+        let mut list = node_of("VirtualList", "transcript", [0.0, 40.0, 320.0, 500.0]);
+        list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
+            heads_rows: false,
+            lead: 8.0,
+            pill: Some(ui::widget::ListPillLayout { needs, has }),
+        }));
+        list
+    };
+    let clipped = |root: &InspectionNode| {
+        inspect(root, (320, 568), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::ClippedPill)
+            .collect::<Vec<_>>()
+    };
+    let caught = clipped(&pill(134.0, 154.0));
+    assert!(caught.is_empty(), "a pill wider than its words: {caught:?}");
+    assert!(
+        clipped(&pill(171.0, 154.0))
+            .iter()
+            .any(|problem| problem.detail.contains("171") && problem.detail.contains("154")),
+        "a pill that keeps half the width its words need"
     );
 }

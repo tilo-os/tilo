@@ -101,13 +101,20 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
+    /// Where the pill stands in `area`: against the trailing edge, a gutter in, half a control's
+    /// height above the foot, and as wide as the words it says.
+    ///
+    /// The pill floats over the rows it covers, so it never trades its words for a share of the
+    /// width: a way back cut to "Jump to first unre…" names nothing at the window it is for. Only
+    /// the box it stands in can bound it, and the words a way back is written in fit that at every
+    /// width a window opens at.
     pub(super) fn pill_rect_for(
         &self,
         area: Rect,
     ) -> Option<(crate::widget::conversation::Jump, Rect)> {
         let jump = self.jump()?;
         let gutter = self.gutter.max(self.bleed);
-        let width = (area.width() * 0.5).min(self.pill_width);
+        let width = self.pill_width(jump).min(area.width());
         let height = self.pill_height;
         let rect = Rect::new(
             (area.x1 - gutter - width).max(area.x0),
@@ -118,6 +125,11 @@ impl<M: ListModel> VirtualList<M> {
         Some((jump, rect))
     }
 
+    /// The width the pill says `jump` in: the words measured at the face they are drawn in.
+    pub(super) fn pill_width(&self, jump: crate::widget::conversation::Jump) -> f64 {
+        self.pill_widths[jump.slot()]
+    }
+
     pub(super) fn pill_rect(&self) -> Option<Rect> {
         self.pill_rect_for(self.rect).map(|(_, rect)| rect)
     }
@@ -125,6 +137,16 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;
         Some(crate::widget::conversation::JumpFace::new(jump, rect).hovered(self.jump_hovered))
+    }
+
+    /// The way back the list offers over its rows, and whether the pill has room for its words:
+    /// what a layout check reads to see a floating pill shows what it says.
+    pub(super) fn pill_layout(&self) -> Option<crate::widget::ListPillLayout> {
+        let (jump, rect) = self.pill_rect_for(self.rect)?;
+        Some(crate::widget::ListPillLayout {
+            needs: crate::num::f32_of_f64(self.pill_width(jump)),
+            has: crate::num::f32_of_f64(rect.width()),
+        })
     }
 
     pub(super) fn end_slack(&self) -> f64 {

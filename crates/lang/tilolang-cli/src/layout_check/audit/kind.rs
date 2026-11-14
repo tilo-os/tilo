@@ -195,6 +195,9 @@ pub enum Kind {
     /// first row where the list leaves that heading out — standing against the box over the list,
     /// with less than a column's content gutter above it: where a page's first block stands.
     HuggingRow,
+    /// A pill a list floats over its rows cutting the words it offers: the way back reads as half a
+    /// sentence, where a pill floats over what it covers and takes the width its words need.
+    ClippedPill,
 }
 
 impl Kind {
@@ -258,6 +261,7 @@ impl Kind {
             Self::RepeatedGroupTitle => "repeated-group-title",
             Self::RepeatedDayFact => "repeated-day-fact",
             Self::HuggingRow => "hugging-row",
+            Self::ClippedPill => "clipped-pill",
         }
     }
 }

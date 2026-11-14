@@ -2118,6 +2118,45 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
     assert_eq!(reading.jump(), None);
 }
 
+/// A pill a list floats over its rows takes the width its words need, never a share of the list:
+/// a phone's window shows the way back whole where half its width would cut it to an ellipsis.
+#[test]
+fn the_way_back_is_as_wide_as_its_words_need() {
+    use crate::widget::conversation::Jump;
+    let mut list = VirtualList::from_items(
+        (0..300_u32).collect(),
+        40.0,
+        |item| *item,
+        |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+    )
+    .unwrap()
+    .with_viewport_height(200.0)
+    .following_end()
+    .unread_from(Some("250".to_owned()));
+    list.set_key_presenting(|id: &str| id.parse::<u32>().ok());
+    let _ = lay_out(&mut list, 200.0);
+    let theme = Theme::dark();
+    let needs =
+        crate::text_render::with_layout_renderer(&theme, |text| Jump::Unread.width(text, &theme));
+    let rect = list
+        .pill_rect()
+        .expect("the pill shows over rows read away from");
+    assert!(
+        (rect.width() - needs).abs() < 0.5,
+        "the pill says its words in {} px of the {needs} they need",
+        rect.width()
+    );
+    assert!(
+        rect.width() > 100.0,
+        "a share of the window no longer bounds it: {} wide",
+        rect.width()
+    );
+    assert!(
+        rect.x0 >= 0.0 && rect.x1 <= 200.0,
+        "the pill stands inside the list: {rect:?}"
+    );
+}
+
 fn page_column() -> VirtualList<VecListModel<u32, u32>> {
     use crate::tokens::Rhythm;
     use crate::widget::Text;

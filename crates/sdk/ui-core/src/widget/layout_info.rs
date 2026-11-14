@@ -151,12 +151,24 @@ pub struct TextLayout {
     pub document: bool,
 }
 
-/// A list as its last layout left it: whether its first row names a group, and the room the
-/// list keeps over the first band it draws.
+/// A list as its last layout left it: whether its first row names a group, the room the list keeps
+/// over the first band it draws, and the pill it floats over its rows to take a reader back.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ListLayout {
     pub heads_rows: bool,
     pub lead: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pill: Option<ListPillLayout>,
+}
+
+/// The pill a list floats over its rows: a way back that covers what it stands on, so it is as wide
+/// as the words it says.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct ListPillLayout {
+    /// The width the words need, the face's own room around them included.
+    pub needs: f32,
+    /// The width the pill stands.
+    pub has: f32,
 }
 
 /// Concrete layout policies.
