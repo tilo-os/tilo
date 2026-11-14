@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {MAX_DROPPED_FILE, MAX_DROPPED_FILES} from './host-core.mjs';
-import {chooseFiles, dropRoute, droppedEntries, walkDropped} from './upload-files.mjs';
+import {chooseFiles, dropLabel, dropRoute, droppedEntries, walkDropped} from './upload-files.mjs';
 
 /** A file as a drop hands it over. */
 const file = (name, size = 1) => ({name, size});
@@ -51,17 +51,31 @@ test('a browser that offers no entries hands its files over as they are', async 
   assert.deepEqual(files.map(({path}) => path), ['a.txt', 'b.txt']);
 });
 
-test('a few plain files on a window go to it; anything else goes into the workspace', () => {
+test('a drop is copied into the workspace where something takes it, and a window that takes bytes gets them', () => {
   const few = [{file: file('picture.png')}, {file: file('caption.txt')}];
-  assert.equal(dropRoute({files: few, folder: false, onWindow: true}), 'window', 'a picture into a note');
-  assert.equal(dropRoute({files: few, folder: false, onWindow: false}), 'upload', 'the desk itself takes uploads');
-  assert.equal(dropRoute({files: few, folder: true, onWindow: true}), 'upload', 'a folder goes up, wherever it lands');
-  assert.equal(dropRoute({files: [{file: file('film.mov', MAX_DROPPED_FILE + 1)}], folder: false, onWindow: true}), 'upload',
-    'a file too large for a window goes up');
-  assert.equal(dropRoute({files: [{file: file('film.mov', MAX_DROPPED_FILE)}], folder: false, onWindow: true}), 'window');
+  const note = {kind: 'window', takes: true, hands: true, app: 'Notes'};
+  const photos = {kind: 'window', takes: true, hands: false, app: 'Photos'};
+  const strip = {kind: 'strip'};
+  assert.equal(dropRoute({target: note, files: few, folder: false}), 'hand', 'a picture into a note');
+  assert.equal(dropRoute({target: photos, files: few, folder: false}), 'copy', 'Photos opens what was copied');
+  assert.equal(dropRoute({target: strip, files: few, folder: false}), 'copy', 'the desk opens it where it fell');
+  assert.equal(dropRoute({target: note, files: few, folder: true}), 'copy', 'a folder is copied, wherever it lands');
+  assert.equal(dropRoute({target: note, files: [{file: file('film.mov', MAX_DROPPED_FILE + 1)}], folder: false}), 'copy',
+    'a file too large for a window is copied');
   const many = Array.from({length: MAX_DROPPED_FILES + 1}, (_, at) => ({file: file(`f${at}.txt`)}));
-  assert.equal(dropRoute({files: many, folder: false, onWindow: true}), 'upload', 'more than a drop hands a window go up');
-  assert.equal(dropRoute({files: many.slice(1), folder: false, onWindow: true}), 'window');
+  assert.equal(dropRoute({target: note, files: many, folder: false}), 'copy');
+  assert.equal(dropRoute({target: note, files: many.slice(1), folder: false}), 'hand');
+  assert.equal(dropRoute({target: {kind: 'window', takes: false, app: 'Calculator'}, files: few, folder: false}), 'refused');
+  assert.equal(dropRoute({target: {kind: 'refused', why: 'no'}, files: few, folder: false}), 'refused');
+});
+
+test('the place under the pointer says what a drop there does', () => {
+  assert.equal(dropLabel({kind: 'strip'}), 'Open here');
+  assert.equal(dropLabel({kind: 'window', takes: true, app: 'Photos'}), 'Open in Photos');
+  assert.equal(dropLabel({kind: 'window', takes: false, app: 'Calculator'}), "Calculator doesn't open files");
+  assert.equal(dropLabel({kind: 'window', takes: false, app: null}), "This window doesn't open files");
+  assert.equal(dropLabel({kind: 'refused', why: 'You can view this workspace, but not add files to it'}),
+    'You can view this workspace, but not add files to it');
 });
 
 test('the chooser asks for files, or a folder whose files keep their paths', async () => {

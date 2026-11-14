@@ -62,6 +62,9 @@ mod console_hold;
 mod browser;
 #[cfg(any(target_arch = "wasm32", test))]
 mod content_open;
+// Where files dropped on the page go: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod dropped_files;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]

@@ -5,6 +5,7 @@ import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
 import {UPLOAD_ACTIONS,UPLOAD_FOLDER,chooseFiles,dropRoute,droppedEntries,walkDropped} from './upload-files.mjs';
+import {createDropFeedback} from './drop-feedback.mjs';
 import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines,wheelPointerMove} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
@@ -430,11 +431,15 @@ export async function mountDesktop(target,options={}) {
     onError:error=>report({catalogueError:String(error)})});
   const fontMountValid=()=>!closed&&!crashed&&registry.current(token)&&id!==undefined&&runtimeReady;
   fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes,fontLoader.digestOf(bytes)??''),failed:()=>runtime.font_failed(id)});
-  // Files going up into the workspace (`[{file, path}]`): one job the desk
-  // shows; a refusal the desk says itself.
+  // What the page shows of files dragged over the desk and dropped on it.
+  const dropFeedback=createDropFeedback({canvas});
+  // Files chosen with the desk menu (`[{file, path}]`), copied into the
+  // workspace: how far it is shows at the foot of the page; a refusal the
+  // desk says itself.
   function upload(files){
     if(!active()||!files?.length)return;
-    try{runtime.desktop_upload(id,files);report({lastInput:'upload',upload:`${files.length} files`});}
+    const rect=canvas.getBoundingClientRect();
+    try{runtime.desktop_upload(id,files,dropFeedback.progress(rect.left+rect.width/2,rect.bottom-24));report({lastInput:'upload',upload:`${files.length} files`});}
     catch(error){report({upload:'refused',error:String(error?.message??error)});}
   }
   function update(raw){
@@ -745,25 +750,51 @@ export async function mountDesktop(target,options={}) {
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
-    // Files dropped on the page: a few plain files on a window go to that
-    // window with their bytes (a page's files have no path to open), and
-    // everything else goes up into the workspace (`upload-files.mjs`). The
-    // desktop says whether a window is under the pointer.
-    on(canvas,'dragover',event=>{if(!active()||!draggingFiles(event.dataTransfer))return;event.preventDefault();event.dataTransfer.dropEffect='copy';});
-    on(canvas,'drop',event=>{
+    // Files dragged over the page: the desk says where they would go, at
+    // most once a frame, and the page outlines it with what a drop there
+    // does. Dropped, they are copied into the workspace's files and opened
+    // where they fell (`upload-files.mjs`); a window that takes a few plain
+    // files' bytes itself is handed them too.
+    const canvasPoint=event=>{const rect=canvas.getBoundingClientRect();return [(event.clientX-rect.left)*(canvas.width/(rect.width||1)),(event.clientY-rect.top)*(canvas.height/(rect.height||1))];};
+    let dragAt=null,dragFrame=0;
+    const dropTarget=(x,y)=>{try{return runtime.drop_target(id,x,y);}catch{return null;}};
+    const showDragTarget=()=>{dragFrame=0;if(!dragAt||!active())return;const [x,y]=dragAt.point;dropFeedback.over(dropTarget(x,y),dragAt.clientX,dragAt.clientY);};
+    // On the whole surface, before anything in it: files dragged over the
+    // hidden text field a window's caret holds are the desk's, never text
+    // for that field.
+    on(surface,'dragover',event=>{
+      if(!active()||!draggingFiles(event.dataTransfer))return;event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='copy';
+      if(config.app)return;
+      dragAt={point:canvasPoint(event),clientX:event.clientX,clientY:event.clientY};
+      if(!dragFrame)dragFrame=requestAnimationFrame(showDragTarget);
+    },{capture:true});
+    const endDrag=()=>{dragAt=null;if(dragFrame)cancelAnimationFrame(dragFrame);dragFrame=0;dropFeedback.leave();};
+    on(surface,'dragleave',event=>{if(!event.relatedTarget||!surface.contains(event.relatedTarget))endDrag();},{capture:true});
+    on(document,'dragend',endDrag);
+    on(surface,'drop',event=>{
       if(!active()||!draggingFiles(event.dataTransfer))return;
-      event.preventDefault();
-      const rect=canvas.getBoundingClientRect();
-      const x=(event.clientX-rect.left)*(canvas.width/(rect.width||1)),y=(event.clientY-rect.top)*(canvas.height/(rect.height||1));
-      walkDropped(droppedEntries(event.dataTransfer)).then(({files,folder})=>{
+      event.preventDefault();event.stopPropagation();endDrag();
+      const [x,y]=canvasPoint(event),{clientX,clientY}=event;
+      const target=config.app?null:dropTarget(x,y);
+      const taken=droppedEntries(event.dataTransfer);
+      // A mount that is one app hands it the files as they are.
+      const hand=files=>droppedFiles({files:files.map(({file})=>file)}).then(read=>new Promise(next=>requestAnimationFrame(()=>next(read)))).then(read=>{
+        if(!active())return;
+        const handed=runtime.drop_files(id,read,x,y);
+        report({lastInput:'drop',drop:`${handed} of ${read.length} files handed over`});
+      });
+      walkDropped(taken).then(({files,folder})=>{
         if(!files.length||!active())return;
-        if(!config.app&&dropRoute({files,folder,onWindow:runtime.drop_on_window(id,x,y)})==='upload'){upload(files);return;}
-        return droppedFiles({files:files.map(({file})=>file)}).then(read=>{
-          const handed=runtime.drop_files(id,read,x,y);
-          report({lastInput:'drop',drop:`${handed} of ${read.length} files handed over`});
-        });
+        if(config.app)return hand(files);
+        const route=dropRoute({target,files,folder});
+        const shown=dropFeedback.progress(clientX,clientY);
+        if(route==='refused'){shown({phase:'failed',done:0,total:0,text:target?.why??`${target?.app??'This window'} doesn't open files`});report({lastInput:'drop',drop:'refused'});return;}
+        try{runtime.desktop_drop(id,files,x,y,shown);}
+        catch(error){shown({phase:'failed',done:0,total:0,text:String(error?.message??error)});report({drop:'refused',error:String(error?.message??error)});return;}
+        report({lastInput:'drop',drop:`${files.length} files copied into the workspace`});
+        if(route==='hand')return hand(files);
       }).catch(error=>report({drop:'failed',error:String(error)}));
-    });
+    },{capture:true});
     // A key forwarded into the surface is the runtime's alone: it must not
     // bubble back up to this page's own listeners, where the desktop's chord
     // would see the same press a second time and toggle the search shut.

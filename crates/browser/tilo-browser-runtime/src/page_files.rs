@@ -67,17 +67,30 @@ impl WorkspaceFiles {
         Held::of(Arc::clone(&self.source) as Arc<dyn tilo_desktop_search::Source + Send + Sync>)
     }
 
+    /// The records the page keeps of the workspace, which the tree is one of.
+    pub(crate) fn records(&self) -> &WorkspaceRecords {
+        &self.records
+    }
+
+    /// The content the workspace's files are kept in on this page.
+    pub(crate) fn content(&self) -> &tilo_content::ContentStore {
+        &self.content
+    }
+
+    /// The workspace's tree record, opened: on its way while the workspace's hosts have not
+    /// sent it or said they hold none ([`ui::record::RecordOpenError::Arriving`]).
+    pub(crate) fn tree_record(&self) -> Result<StoredRecord, ui::record::RecordOpenError> {
+        self.records.open_record_at(
+            FILES_APP,
+            &collab_types::person_record_id(TREE_KIND),
+            TREE_KIND,
+            &|_doc: &mut AutoCommit| Ok(()),
+        )
+    }
+
     /// The workspace's tree, as the record holds it now.
     fn tree(&self) -> Option<(StoredRecord, Tree)> {
-        let record = self
-            .records
-            .open_record_at(
-                FILES_APP,
-                &collab_types::person_record_id(TREE_KIND),
-                TREE_KIND,
-                &|_doc: &mut AutoCommit| Ok(()),
-            )
-            .ok()?;
+        let record = self.tree_record().ok()?;
         let tree = record.read(|doc| {
             <fs_protocol::tree::FilesTree as tilo_resource::Resource>::read(doc).ok()
         })??;

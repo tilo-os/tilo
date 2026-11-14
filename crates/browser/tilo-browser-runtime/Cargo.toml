@@ -52,6 +52,9 @@ tilo-relay-session = { version = "0.1.0", path = "../../hosting/tilo-relay-sessi
 # is still here when the draft is sent — and asked of the workspace when
 # missing.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, features = ["dir"] }
+# The content format the workspace's files are kept in: a file dropped on the
+# page is kept as its manifest and chunks (src/dropped_files.rs).
+fs-content = { version = "0.1.0", path = "../../system/fs-content" }
 # The one link grammar, exported to the page as parseLink/formatLink.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
@@ -199,6 +202,11 @@ neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
 # The device list's keys as text, as the page's own module writes them.
 hex.workspace = true
+# The workspace's file tree a drop on the page writes into, and the content
+# format its files are kept in (src/dropped_files.rs).
+fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
+fs-content = { version = "0.1.0", path = "../../system/fs-content" }
+tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
 
 # The person's settings the page keeps, and Settings' window changing them
 # (src/kept_settings.rs).

@@ -1,24 +1,34 @@
-// A person putting a folder into their workspace from the page of the local
-// tilo.sh, in their own headless Chromium: a fresh profile opens the site and
-// lands in the Lounge (or, with --follow LINK, in the workspace an
-// invitation names). Then the folder FOLDER goes up twice:
+// A person putting files and folders into their workspace from the page of
+// the local tilo.sh, in their own Chromium: a fresh profile opens the site and
+// lands in the Lounge (or, with --follow LINK, in the workspace an invitation
+// names). Real files from FOLDER are then dragged in as a person's file
+// manager drags them (the DevTools protocol's own drag, carrying the files'
+// paths), each drop's place outlined while they hover:
 //
-//   1. dropped on the desk: a drop of the folder's real files, carrying the
-//      folder itself as a person's file manager hands it over, onto the desk
-//      at a point no window covers;
-//   2. chosen in the desk's menu: "Upload a folder…" from the desk's search,
-//      and the folder given to the browser's own chooser.
+//   1. onto an empty place of the strip: one file of each kind, which open
+//      side by side there (a PDF, a picture, a markdown file, and one no app
+//      opens);
+//   2. a folder onto an empty place of the strip;
+//   3. a picture onto the open Photos window, which imports it;
+//   4. a picture onto the open Notes window, which takes it itself;
+//   5. onto a window whose app opens no files (Calculator, opened from the
+//      desk's search), which says so where it fell;
+//   6. a large file no app opens onto an empty place of the strip, kept a
+//      chunk at a time;
+//   7. the folder again, chosen in the desk's menu ("Upload a folder…").
 //
-// Each time it waits for the upload's job on the desk to end, keeps a
-// picture of the desk while it runs and once it ended, and reads what the
-// job says came of it.
+// Each keeps a picture of the hover and of the end, and reads what the page
+// said at the drop's place.
 //
-// usage: node upload.mjs SITE RELAY OUT_DIR FOLDER [--follow LINK] [--timeout SECONDS]
+// usage: node upload.mjs SITE RELAY OUT_DIR FOLDER [--follow LINK]
 //
-// Prints one JSON line: {room, files, bytes, drop: {ms, outcome}, picker: {ms,
-// outcome}}. Exits non-zero, saying what never happened, when a step did not.
-import {mkdirSync, readdirSync, statSync, writeFileSync} from 'node:fs';
-import {join, relative, resolve} from 'node:path';
+// FOLDER holds the files dropped: `plan.pdf`, `photo.png`, `notes.md`,
+// `data.json`, `second.png`, `big.bin` (tens of megabytes) and a folder
+// `docs`. Prints one JSON line: what
+// each step's page said. Exits non-zero, saying what never happened, when a
+// step did not.
+import {mkdirSync, writeFileSync} from 'node:fs';
+import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
 const [site, relay, out, folderArg, ...rest] = process.argv.slice(2);
@@ -27,35 +37,18 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !relay || !out || !folderArg) {
-  console.error('usage: node upload.mjs SITE RELAY OUT_DIR FOLDER [--follow LINK] [--timeout SECONDS]');
+  console.error('usage: node upload.mjs SITE RELAY OUT_DIR FOLDER [--follow LINK]');
   process.exit(2);
 }
 const folder = resolve(folderArg);
 const follow = option('--follow');
-const timeoutMs = Number(option('--timeout') ?? 900) * 1000;
 mkdirSync(out, {recursive: true});
+const file = name => join(folder, name);
+const report = {site, relay, folder, steps: {}};
 
-// Every file under the folder, with its path from the folder's own place
-// (`docs/2026/plan.md` for a folder `docs`), as the page names them.
-const walk = dir => readdirSync(dir, {withFileTypes: true}).flatMap(entry => {
-  const path = join(dir, entry.name);
-  return entry.isDirectory() ? walk(path) : entry.isFile() ? [path] : [];
-});
-const files = walk(folder).sort();
-const base = resolve(folder, '..');
-const named = files.map(path => relative(base, path));
-const report = {site, relay, folder, files: files.length, bytes: files.reduce((sum, path) => sum + statSync(path).size, 0)};
-
-// The stack is plain HTTP on this machine: no certificate to accept, as for
-// any person's browser. The GPU drawing path on a software device, and no
-// sandbox where this runs as root.
-const browser = await launch({args: [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-]});
+const browser = await launch({args: ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
 const tab = await browser.tab();
-await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false})
+await tab.send('Emulation.setDeviceMetricsOverride', {width: 1600, height: 900, deviceScaleFactor: 1, mobile: false})
   .catch(() => {});
 
 const text = () => tab.evaluate(`(document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 600)`)
@@ -87,9 +80,6 @@ const until = async (expression, what, timeout = 180_000) => {
   }
 };
 
-// Arrive, and be in a workspace: by the invitation where one is given (a
-// workspace that takes people by invitation shows a newcomer only its door
-// until they follow one), else as a visitor of the site's Lounge.
 const pressJoin = `(() => {
   const join = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
   if (!join || join.disabled) return false;
@@ -102,142 +92,122 @@ await until(`['done', 'stopped'].includes(document.documentElement.dataset.arriv
 if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
   await finish(1, `the page stopped arriving: ${await text()}`);
 }
-const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')`;
-report.room = JSON.parse(await until(`(() => {
-  const kept = ${memberships}[${JSON.stringify(new URL(relay).origin)}];
-  return kept?.room ? JSON.stringify(kept) : '';
-})()`, 'joining the workspace')).room;
 await until('Boolean(globalThis.tiloMount?.canvas)', 'the desk mounting');
-// The desk offers its upload rows once the workspace says this person may
-// change its records.
-console.error(`ok: in the workspace; ${files.length} files (${report.bytes} bytes) to put up from ${folder}`);
+await sleep(3000);
+console.error('ok: in the workspace');
 
-// The names the desk's semantic tree shows now: the job's rows are among them.
-const names = `(() => {
-  const found = [];
-  const walk = node => { if (!node) return; if (node.name) found.push(node.name); if (node.value) found.push(String(node.value));
-    (node.children || []).forEach(walk); if (node.semantics) walk(node.semantics); };
-  walk(globalThis.tiloMount?.state()?.semantics?.root);
-  return found;
-})()`;
-// The rows titled `title` the desk shows: for each, whether it still runs (it
-// offers Stop) and what its end line says.
-const rowsOf = async title => {
-  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-  const shown = await tab.evaluate(`JSON.stringify(${names})`).then(JSON.parse).catch(() => []);
-  return shown.flatMap((said, at) => {
-    if (said !== title) return [];
-    const row = shown.slice(at + 1, at + 6);
-    const next = row.findIndex(other => other === title);
-    const own = next < 0 ? row : row.slice(0, next);
-    return [{running: own.includes('Stop'),
-      outcome: own.find(line => /files? in |kept as is|not uploaded|Stopped|did not finish/i.test(line)) ?? null}];
-  });
-};
-// Wait for one more upload job titled `title` than the `before` the desk
-// showed to end: what its row says it came to.
-const jobEnded = async (title, name, before) => {
-  const began = Date.now();
-  let shotRunning = false;
-  for (;;) {
-    const rows = await rowsOf(title);
-    if (rows.some(row => row.running) && !shotRunning) {
-      await shot(`${name}-running`);
-      shotRunning = true;
-    }
-    const ended = rows.length > before && rows.every(row => !row.running)
-      && rows.map(row => row.outcome).filter(Boolean).at(-1);
-    if (ended) {
-      await sleep(500);
-      await shot(`${name}-ended`);
-      return {ms: Date.now() - began, outcome: ended};
-    }
-    if (Date.now() - began > timeoutMs) await finish(1, `the ${name} upload never ended; the desk shows rows ${JSON.stringify(rows)}: ${await text()}`);
-    await sleep(500);
-  }
-};
-const title = files.length === 1 ? `Uploading ${named[0]}` : `Uploading ${files.length} files`;
-
-// The folder's real files, in the page: given to a file input of the page's
-// own, as the browser hands a person's files over, then read back as Files.
-const doc = await tab.send('DOM.getDocument', {depth: 0});
-await tab.evaluate(`(() => { const input = document.createElement('input'); input.type = 'file'; input.multiple = true;
-  input.id = 'upload-check-files'; input.style.display = 'none'; document.body.append(input); return true; })()`);
-const holder = await tab.send('DOM.querySelector', {nodeId: doc.result.root.nodeId, selector: '#upload-check-files'});
-const set = await tab.send('DOM.setFileInputFiles', {files, nodeId: holder.result.nodeId});
-if (set.error) await finish(1, `the browser took none of the folder's files: ${set.error.message}`);
-
-const droppedBefore = (await rowsOf(title)).length;
-// 1. The drop: the folder, as a file manager drops it, onto the desk where no
-// window stands (the desktop says where windows are).
-const dropped = await tab.evaluate(`(() => {
-  const files = [...document.getElementById('upload-check-files').files];
-  const paths = ${JSON.stringify(named)};
-  // A folder entry tree over the real files, as a browser's file system
-  // entries answer a dropped folder.
-  const folder = name => ({name, isFile: false, isDirectory: true, children: new Map(),
-    createReader() { let given = false; return {readEntries: done => { const all = given ? [] : [...this.children.values()]; given = true; setTimeout(() => done(all)); }}; }});
-  const top = new Map();
-  files.forEach((file, index) => {
-    const parts = paths[index].split('/');
-    let at = top;
-    for (const part of parts.slice(0, -1)) {
-      if (!at.has(part)) at.set(part, folder(part));
-      at = at.get(part).children;
-    }
-    at.set(file.name, {name: file.name, isFile: true, isDirectory: false, file: done => setTimeout(() => done(file))});
-  });
-  const items = [...top.values()].map(entry => ({kind: 'file', webkitGetAsEntry: () => entry, getAsFile: () => null}));
-  const canvas = globalThis.tiloMount.canvas;
-  const rect = canvas.getBoundingClientRect();
-  // The desk's background: the strip's foot left of centre, below the windows' bars.
-  const clientX = rect.left + rect.width * 0.25, clientY = rect.top + rect.height * 0.85;
-  const data = {types: ['Files'], items, files: [], dropEffect: 'none'};
-  for (const type of ['dragenter', 'dragover', 'drop']) {
-    const event = new Event(type, {bubbles: true, cancelable: true});
-    Object.defineProperties(event, {dataTransfer: {value: data}, clientX: {value: clientX}, clientY: {value: clientY}});
-    canvas.dispatchEvent(event);
-  }
-  return JSON.stringify({clientX, clientY, files: files.length});
-})()`).then(JSON.parse);
-console.error(`ok: dropped ${dropped.files} files at (${dropped.clientX}, ${dropped.clientY})`);
-report.drop = await jobEnded(title, 'drop', droppedBefore);
-console.error(`ok: the drop's upload ended in ${report.drop.ms} ms: ${report.drop.outcome}`);
-
-// 2. The desk's menu: "Upload a folder…", found in the desk's search, and the
-// folder given to the chooser it opens.
-const pickedBefore = (await rowsOf(title)).length;
-// The browser's chooser is answered here, as a person picking the folder:
-// headless Chromium opens no dialog, and says one was asked for instead.
-await tab.send('Page.enable', {});
-await tab.send('Page.setInterceptFileChooserDialog', {enabled: true});
-let chooserOpened = null;
-const opened = new Promise(resolve => {
-  const off = browser.on(message => {
-    if (message.method !== 'Page.fileChooserOpened') return;
-    off();
-    resolve(message.params);
-  });
+// The canvas's place on the page.
+const canvas = JSON.parse(await tab.evaluate(`JSON.stringify(globalThis.tiloMount.canvas.getBoundingClientRect())`));
+const drag = (type, x, y, files) => tab.send('Input.dispatchDragEvent', {
+  type, x, y, data: {items: [], files, dragOperationsMask: 1},
 });
-opened.then(params => { chooserOpened = params; });
+// What the page shows while files hover at (x, y): the outlined place's kind
+// and what its note says.
+const hovering = async (x, y, files) => {
+  // What an earlier point said is not what this one says.
+  await tab.evaluate(`document.querySelectorAll('.tilo-drop-target, .tilo-drop-note').forEach(shown => { shown.hidden = true; })`);
+  await drag('dragOver', x, y, files);
+  await sleep(120);
+  return JSON.parse(await tab.evaluate(`JSON.stringify({
+    kind: document.querySelector('.tilo-drop-target')?.hidden === false ? document.querySelector('.tilo-drop-target').dataset.kind : null,
+    note: document.querySelector('.tilo-drop-note')?.hidden === false ? document.querySelector('.tilo-drop-note').textContent : null,
+  })`));
+};
+// A point of the desk where hovering `files` says `wanted` (a note's words, or
+// a place's kind): scanned across the desk.
+const find = async (files, wanted) => {
+  await drag('dragEnter', canvas.left + 10, canvas.top + 10, files);
+  for (let y = 0.3; y <= 0.9; y += 0.15) {
+    for (let x = 0.03; x <= 0.97; x += 0.03) {
+      const at = [canvas.left + canvas.width * x, canvas.top + canvas.height * y];
+      const seen = await hovering(...at, files);
+      if (wanted(seen)) return {at, seen};
+    }
+  }
+  // The gaps between a full strip's windows are a few pixels wide.
+  for (let x = canvas.left + 2; x < canvas.left + canvas.width; x += 3) {
+    const at = [x, canvas.top + canvas.height * 0.6];
+    const seen = await hovering(...at, files);
+    if (wanted(seen)) return {at, seen};
+  }
+  return null;
+};
+// What the page showed of earlier drops, marked: a finished one leaves on its own.
+const markShown = () => tab.evaluate(`document.querySelectorAll('.tilo-drop-progress').forEach(box => { box.dataset.seen = ''; })`);
+// Drop `files` at a point `wanted` finds, keeping pictures of the hover and
+// of what the page says at the drop's end.
+const dropStep = async (name, files, wanted) => {
+  const found = await find(files, wanted);
+  if (!found) {
+    await drag('dragCancel', 0, 0, files).catch(() => {});
+    await finish(1, `no place of the desk said what step ${name} looks for`);
+  }
+  await shot(`${name}-hover`);
+  await markShown();
+  const dropped = Date.now();
+  await drag('drop', ...found.at, files);
+  const ended = await until(`(() => {
+    const shown = [...document.querySelectorAll('.tilo-drop-progress:not([data-seen])')];
+    const end = shown.find(box => ['done', 'failed'].includes(box.dataset.phase));
+    return end ? JSON.stringify({phase: end.dataset.phase, said: end.innerText.trim()}) : '';
+  })()`, `the end of step ${name}`, 120_000).then(JSON.parse);
+  await sleep(2500);
+  await shot(`${name}-end`);
+  report.steps[name] = {hover: found.seen, ...ended, ms: Date.now() - dropped};
+  console.error(`ok: ${name}: hovered ${JSON.stringify(found.seen)}, then ${ended.phase}: ${ended.said}`);
+  return ended;
+};
+
 const key = async (key, code, modifiers = 0, text = '') => {
   await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key, code, modifiers, text});
   await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key, code, modifiers});
 };
+// Open `app` from the desk's search, as a person does.
+const openApp = async app => {
+  await key('k', 'KeyK', 2);
+  await sleep(800);
+  for (const char of app) await tab.send('Input.insertText', {text: char});
+  await sleep(1200);
+  await key('Enter', 'Enter', 0, '\r');
+  await sleep(3000);
+};
+const strip = seen => seen.kind === 'strip';
+await dropStep('1-files-on-strip', ['plan.pdf', 'photo.png', 'notes.md', 'data.json'].map(file), strip);
+await dropStep('2-folder-on-strip', [file('docs')], strip);
+await dropStep('3-picture-on-photos', [file('second.png')], seen => seen.note === 'Open in Photos');
+await dropStep('4-picture-on-notes', [file('second.png')], seen => seen.note === 'Open in Notes');
+await openApp('Calculator');
+await dropStep('5-on-a-window-that-opens-no-files', [file('data.json')], seen => / doesn't open files$/.test(seen.note ?? ''));
+
+// The large file: each step reports how long the page took from the drop to
+// its end.
+await dropStep('6-large-file-on-strip', [file('big.bin')], strip);
+
+// 7. The desk's menu: "Upload a folder…", found in the desk's search, and the
+// folder given to the chooser it opens.
+await tab.send('Page.enable', {});
+await tab.send('Page.setInterceptFileChooserDialog', {enabled: true});
+let chooserOpened = null;
+browser.on(message => {
+  if (message.method === 'Page.fileChooserOpened') chooserOpened = message.params;
+});
+await markShown();
 await key('k', 'KeyK', 2);
 await sleep(800);
 for (const char of 'Upload a folder') await tab.send('Input.insertText', {text: char});
-// Enter takes the row the search offers first, once it offers this one.
-await until(`(() => { globalThis.tiloMount?.requestSemantics?.(); return ${names}.includes('Upload a folder…'); })()`,
-  'the desk\'s search offering "Upload a folder…"', 30_000);
+await sleep(1200);
 await key('Enter', 'Enter', 0, '\r');
 const deadline = Date.now() + 30_000;
 while (!chooserOpened && Date.now() < deadline) await sleep(250);
 if (!chooserOpened) await finish(1, `the desk menu opening the folder chooser never happened: ${await text()}`);
-if (chooserOpened.mode !== 'selectMultiple') await finish(1, `the chooser takes one file, not a folder: ${JSON.stringify(chooserOpened)}`);
-const chose = await tab.send('DOM.setFileInputFiles', {files: [folder], backendNodeId: chooserOpened.backendNodeId});
+const chose = await tab.send('DOM.setFileInputFiles', {files: [file('docs')], backendNodeId: chooserOpened.backendNodeId});
 if (chose.error) await finish(1, `the chooser took no folder: ${chose.error.message}`);
-report.picker = await jobEnded(title, 'picker', pickedBefore);
-console.error(`ok: the chosen folder's upload ended in ${report.picker.ms} ms: ${report.picker.outcome}`);
+report.steps['7-menu-upload'] = await until(`(() => {
+  const end = [...document.querySelectorAll('.tilo-drop-progress:not([data-seen])')].find(box => ['done', 'failed'].includes(box.dataset.phase));
+  return end ? JSON.stringify({phase: end.dataset.phase, said: end.innerText.trim()}) : '';
+})()`, 'the end of the menu upload', 120_000).then(JSON.parse);
+await sleep(1000);
+await shot('7-menu-upload-end');
+console.error(`ok: menu upload: ${JSON.stringify(report.steps['7-menu-upload'])}`);
 
 await finish(0);

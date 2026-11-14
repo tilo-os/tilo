@@ -357,6 +357,9 @@ pub(crate) struct Shared {
     /// The content, by hash, each tab opened with its app is to open: what
     /// another window handed over (a capture, a recording).
     opened_content: Rc<RefCell<HashMap<TabId, String>>>,
+    /// The names of files the page asked windows to open, by their content's hash: a file
+    /// dropped on the desk opens under the name it had, not as its hash.
+    pub content_names: Rc<RefCell<HashMap<String, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
     /// The agent run that opened each window an agent opened, by tab, as the
@@ -974,7 +977,9 @@ impl Tiles {
         // content, where that window keeps it.
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
         if let Some(hash) = handed {
-            let (file, _) = crate::content_open::opened_file(&hash, &self.inputs.content)?;
+            let name = self.shared.content_names.borrow().get(&hash).cloned();
+            let (file, _) =
+                crate::content_open::opened_file(&hash, &self.inputs.content, name.as_deref())?;
             context.provide_open_file(file);
         }
         context.provide_workspace_records(crate::workspace_records::in_page(

@@ -1,22 +1,9 @@
-//! Files and folders a person puts into the workspace from the page: dropped on the desk, or
-//! chosen with the desk menu's "Upload files…" and "Upload a folder…".
-//!
-//! Each file goes up through the page's session to the workspace's host, a piece at a time read
-//! from where the browser keeps it ([`tilo_session_core::remote::upload`]), and lands in the app
-//! that opens what it is, by the workspace's own `open` of that app: what the CLI and an agent
-//! do too. The record it landed in is shown on the workspace's shared desk the way an agent's
-//! work is ([`upload::show_request`]), so everyone in the workspace sees each file arrive, beside
-//! what they were doing rather than over it. One system job says how far it got, names the
-//! file going up, can be stopped, and ends saying what landed where and what did not.
+//! Files and folders a person puts into the workspace from the page with the desk menu's
+//! "Upload files…" and "Upload a folder…": copied into the workspace's file tree as a drop on the
+//! desk is ([`super::drops`]), from where the browser keeps them, a piece at a time.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::future::Future;
-use std::pin::Pin;
 
-use tilo_actions::remote::Caller;
-use tilo_session_core::remote::SessionActions;
-use tilo_session_core::remote::upload::{self, Landed, Source, UploadError};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
 
@@ -97,17 +84,20 @@ async fn read(blob: &JsValue, from: u64, to: u64) -> Result<Vec<u8>, String> {
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
-impl Source for Picked {
-    fn size(&self) -> u64 {
+impl Picked {
+    /// Its length in bytes.
+    pub(super) fn size(&self) -> u64 {
         self.size
     }
 
-    fn read(
-        &self,
-        from: u64,
-        to: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + '_>> {
-        Box::pin(read(&self.blob, from, to))
+    /// Its path in what was dropped or chosen.
+    pub(super) fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Its bytes `from..to`, read now.
+    pub(super) async fn read(&self, from: u64, to: u64) -> Result<Vec<u8>, String> {
+        read(&self.blob, from, to).await
     }
 }
 
@@ -152,7 +142,7 @@ pub(super) struct Offered {
 impl Desktop {
     /// Whether this page's person may put files into the workspace: a page in a workspace, whose
     /// person may change its records there.
-    fn may_upload(&self) -> bool {
+    pub(super) fn may_upload(&self) -> bool {
         self.shared.peer.is_some()
             && self
                 .shared
@@ -188,202 +178,22 @@ impl Desktop {
         withdrew
     }
 
-    /// Put `files` into the workspace and land each in the app that opens it, as one job the
-    /// person can follow and stop.
+    /// Copy `files` into the workspace's file tree, telling `progress` how it goes.
     ///
     /// # Errors
     ///
     /// A page in no workspace, or a person who may not change its records.
-    pub(super) fn upload(&self, files: Vec<Picked>) -> Result<(), String> {
+    pub(super) fn upload(
+        &self,
+        files: Vec<Picked>,
+        progress: js_sys::Function,
+    ) -> Result<(), String> {
         if !self.may_upload() {
             // Said where the files were dropped, not only to the page.
             let why = "You can't put files into this workspace";
             self.handle.acknowledge(why);
             return Err(why.into());
         }
-        let workspace = self.shared.workspace.clone();
-        let door = self
-            .shared
-            .peer
-            .zip(crate::peer::workspace_id(&workspace).ok())
-            .and_then(|(peer, id)| crate::peer_sync::actions_of(peer, id))
-            .ok_or_else(|| "This page holds no session with the workspace's host".to_owned())?;
-        if files.is_empty() {
-            return Ok(());
-        }
-        let caller = self.caller();
-        let shared = self.shared.clone();
-        wasm_bindgen_futures::spawn_local(run(door, caller, workspace, files, move || {
-            shared.wake();
-        }));
-        Ok(())
+        self.add_files(files, progress)
     }
-}
-
-/// How the job names `files` going up.
-fn title(files: &[Picked]) -> String {
-    match files {
-        [one] => format!("Uploading {}", one.path),
-        all => format!("Uploading {} files", all.len()),
-    }
-}
-
-/// How a file went.
-enum Went {
-    /// It landed in the app `app` (its package).
-    Landed { app: String },
-    /// No app opens what it is: it is kept as content of the workspace.
-    Kept,
-    /// It did not go up, and why.
-    Failed(String),
-}
-
-async fn run(
-    door: SessionActions,
-    caller: Caller,
-    workspace: String,
-    files: Vec<Picked>,
-    wake: impl Fn(),
-) {
-    let total: u64 = files.iter().map(|file| file.size).sum();
-    let job = ui::jobs::start(
-        ui::jobs::Spec::new(title(&files))
-            .unit(ui::jobs::Unit::Bytes)
-            .stoppable(|| {}),
-    );
-    job.progress(0, total);
-    let mut went: Vec<(String, Went)> = Vec::new();
-    let mut base = 0_u64;
-    for file in &files {
-        if job.is_stopped() {
-            break;
-        }
-        job.phase(file.path.clone());
-        wake();
-        let outcome = one(
-            &door,
-            &caller,
-            &workspace,
-            file,
-            (base, total),
-            (&job, &wake),
-        )
-        .await;
-        base = base.saturating_add(file.size);
-        job.progress(base, total);
-        match outcome {
-            Err(UploadError::Stopped) => break,
-            Err(error) => went.push((file.path.clone(), Went::Failed(error.to_string()))),
-            Ok(outcome) => went.push((file.path.clone(), outcome)),
-        }
-    }
-    let told = outcome_line(&went, files.len());
-    if job.is_stopped() {
-        job.stopped();
-    } else if went.iter().all(|(_, went)| matches!(went, Went::Failed(_))) {
-        job.failed(told);
-    } else {
-        job.done(told);
-    }
-    wake();
-}
-
-/// Put `file` up and land it: how it went. `base` of `total` bytes went up before it.
-async fn one(
-    door: &SessionActions,
-    caller: &Caller,
-    workspace: &str,
-    file: &Picked,
-    (base, total): (u64, u64),
-    (job, wake): (&ui::jobs::Running, &dyn Fn()),
-) -> Result<Went, UploadError> {
-    let head = read(&file.blob, 0, file.size.min(upload::HEAD_BYTES as u64))
-        .await
-        .map_err(UploadError::Read)?;
-    let content = upload::put(
-        door,
-        file,
-        &mut |at| {
-            job.progress(base.saturating_add(at), total);
-            wake();
-        },
-        &|| job.is_stopped(),
-    )
-    .await?;
-    let Some(request) = upload::landing_request(workspace, &head, &file.path, &content) else {
-        return Ok(Went::Kept);
-    };
-    let app = request
-        .target
-        .address
-        .resource
-        .trim_start_matches(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-        .to_owned();
-    let answer = upload::settled(door, caller, request)
-        .await
-        .map_err(|why| {
-            UploadError::Refused(tilo_actions::remote::ActionHostError::Refused { reason: why })
-        })?;
-    // On the workspace's desk, beside what everyone is doing: a window nobody has to make room
-    // for, which they see arrive.
-    if let Some(landed) = answer.as_ref().and_then(Landed::of)
-        && let Err(why) =
-            upload::settled(door, caller, upload::show_request(workspace, &landed)).await
-    {
-        tracing::warn!(
-            "the uploaded {} landed but is not on the desk: {why}",
-            file.path
-        );
-    }
-    Ok(Went::Landed { app })
-}
-
-/// What the job says at its end: what landed where, what is kept as it is, and what did not go
-/// up and why.
-fn outcome_line(went: &[(String, Went)], asked: usize) -> String {
-    let mut by_app: BTreeMap<String, usize> = BTreeMap::new();
-    let mut kept = 0_usize;
-    let mut failed: Vec<String> = Vec::new();
-    for (path, went) in went {
-        match went {
-            Went::Landed { app } => {
-                let name = crate::desktop::known_application(app)
-                    .map_or_else(|| app.clone(), str::to_owned);
-                let count = by_app.entry(name).or_default();
-                *count = count.saturating_add(1);
-            }
-            Went::Kept => kept = kept.saturating_add(1),
-            Went::Failed(why) => failed.push(format!("{path} ({why})")),
-        }
-    }
-    let files = |count: usize| {
-        if count == 1 {
-            "1 file".to_owned()
-        } else {
-            format!("{count} files")
-        }
-    };
-    let mut parts: Vec<String> = by_app
-        .iter()
-        .map(|(app, count)| format!("{} in {app}", files(*count)))
-        .collect();
-    if kept > 0 {
-        parts.push(format!("{} kept as is, as no app opens them", files(kept)));
-    }
-    let skipped = asked.saturating_sub(went.len());
-    if skipped > 0 {
-        parts.push(format!("{} not uploaded", files(skipped)));
-    }
-    if !failed.is_empty() {
-        parts.push(format!("not uploaded: {}", failed.join(", ")));
-    }
-    let mut line = parts.join("; ");
-    if let Some(first) = line.get(..1) {
-        line = format!(
-            "{}{}",
-            first.to_uppercase(),
-            line.get(1..).unwrap_or_default()
-        );
-    }
-    line
 }

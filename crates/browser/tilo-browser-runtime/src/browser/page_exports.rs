@@ -204,48 +204,133 @@ pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsVal
     })
 }
 
-/// Whether a drop at physical `(x, y)` of the canvas lands on a window the desk shows, which
-/// takes it as [`drop_files`] hands it: anywhere else on a desk (its background, between
-/// windows) the files are put into the workspace instead ([`desktop_upload`]). A mount that is
-/// one app, not a desk, is all window.
+/// The point of the desk at physical `(x, y)` of the canvas, in the surface's coordinates, and
+/// what one of those is in the canvas's pixels.
+fn desk_point(m: &super::Mount, x: f64, y: f64) -> (ui::kurbo::Point, f64) {
+    let (mapped_x, mapped_y) = m.viewport.map_pointer(x, y);
+    let dpr = m.viewport.applied().dpr.max(f64::MIN_POSITIVE);
+    let (scale, _) = m.viewport.map_pointer(1.0, 1.0);
+    (
+        ui::kurbo::Point::new(mapped_x / dpr, mapped_y / dpr),
+        dpr / scale.max(f64::MIN_POSITIVE),
+    )
+}
+
+/// The desk's size in the surface's coordinates.
+fn desk_size(m: &super::Mount) -> (f64, f64) {
+    let applied = m.viewport.applied();
+    let dpr = applied.dpr.max(f64::MIN_POSITIVE);
+    (
+        f64::from(applied.width) / dpr,
+        f64::from(applied.height) / dpr,
+    )
+}
+
+/// Where files dragged over physical `(x, y)` of the canvas would go: `{kind: "window", app,
+/// takes, x, y, width, height}` (the window under the pointer, and whether its app opens files),
+/// `{kind: "strip", x, y, width, height}` (the place between the strip's windows a window opens
+/// at, drawn as a bar there), or `{kind: "refused", why}`. Places are in the canvas's pixels. A
+/// mount that is one app, not a desk, is all window.
 ///
 /// # Errors
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
-pub fn drop_on_window(id: u64, x: f64, y: f64) -> Result<bool, JsValue> {
+pub fn drop_target(id: u64, x: f64, y: f64) -> Result<JsValue, JsValue> {
     with_mount_quietly(id, |m| {
-        let Some(desktop) = m.desktop.as_ref() else {
-            return Ok(true);
+        let answer = js_sys::Object::new();
+        let set = |key: &str, value: JsValue| {
+            let _ = js_sys::Reflect::set(&answer, &key.into(), &value);
         };
-        let (x, y) = m.viewport.map_pointer(x, y);
-        let dpr = m.viewport.applied().dpr.max(f64::MIN_POSITIVE);
-        let point = ui::kurbo::Point::new(x / dpr, y / dpr);
-        Ok(desktop
-            .handle
-            .float_covers()
-            .into_iter()
-            .chain(desktop.handle.shown_tabs())
-            .any(|(_, rect)| rect.contains(point)))
+        let Some(desktop) = m.desktop.as_ref() else {
+            set("kind", "window".into());
+            set("takes", true.into());
+            return Ok(answer.into());
+        };
+        let (point, px) = desk_point(m, x, y);
+        let size = desk_size(m);
+        let place = |rect: ui::kurbo::Rect| {
+            set("x", (rect.x0 * px).into());
+            set("y", (rect.y0 * px).into());
+            set("width", (rect.width() * px).into());
+            set("height", (rect.height() * px).into());
+        };
+        match desktop.drop_target(point, size) {
+            super::drops::DropTarget::Window { rect, app, .. } => {
+                set("kind", "window".into());
+                let takes = app.as_deref().is_some_and(super::drops::takes_files);
+                set("takes", takes.into());
+                set(
+                    "hands",
+                    app.as_deref().is_some_and(super::drops::hands_files).into(),
+                );
+                let name = app.as_deref().and_then(crate::desktop::known_application);
+                set("app", name.map_or(JsValue::NULL, JsValue::from_str));
+                place(rect);
+            }
+            super::drops::DropTarget::Strip { area, .. } => {
+                set("kind", "strip".into());
+                place(area);
+            }
+            super::drops::DropTarget::Refused(why) => {
+                set("kind", "refused".into());
+                set("why", why.into());
+            }
+        }
+        Ok(answer.into())
     })
 }
 
-/// Put `files` (`[{file, path}]`: a `File` or `Blob` the browser keeps, and its path in what was
-/// dropped or chosen) into the desktop's workspace, each landed in the app that opens it, as one
-/// job the person follows on the desk. The bytes are read a piece at a time as they go up.
+/// Copy `files` (`[{file, path}]`: a `File` or `Blob` the browser keeps, and its path in what was
+/// dropped) dropped at physical `(x, y)` of the canvas into the workspace's file tree, and open
+/// them where they fell ([`drop_target`]). `progress` is called with `{phase, done, total, text}`
+/// as the copy goes: `phase` is `"copying"`, then `"done"` or `"failed"`, and `text` what to show
+/// at the drop's place.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount; where nothing takes files, why.
+#[wasm_bindgen]
+pub fn desktop_drop(
+    id: u64,
+    files: &JsValue,
+    x: f64,
+    y: f64,
+    progress: js_sys::Function,
+) -> Result<(), JsValue> {
+    let files = super::uploads::Picked::all(files);
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let (point, _) = desk_point(m, x, y);
+        let target = desktop.drop_target(point, desk_size(m));
+        desktop
+            .drop_files(files, &target, progress)
+            .map_err(error)?;
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// Put `files` (`[{file, path}]`, as [`desktop_drop`] takes them) chosen with the desk menu's
+/// uploads into the workspace's file tree, telling `progress` how it goes as [`desktop_drop`]
+/// does.
 ///
 /// # Errors
 ///
 /// Rejects a closed or single-application mount, a page in no workspace, and a person who may
 /// not change the workspace's records.
 #[wasm_bindgen]
-pub fn desktop_upload(id: u64, files: &JsValue) -> Result<(), JsValue> {
+pub fn desktop_upload(id: u64, files: &JsValue, progress: js_sys::Function) -> Result<(), JsValue> {
     let files = super::uploads::Picked::all(files);
     with_mount(id, |m| {
         m.desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?
-            .upload(files)
+            .upload(files, progress)
             .map_err(error)?;
         m.pending = true;
         m.window.request_redraw();

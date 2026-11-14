@@ -628,6 +628,9 @@ pub(crate) struct Desktop {
     told_runs: RefCell<std::collections::BTreeSet<String>>,
     /// The page's own rows on the desk, and whether the upload rows stand with them.
     offered: uploads::Offered,
+    /// The workspace's files, as the page copies dropped and uploaded files into them; `None`
+    /// for a page in no workspace.
+    files: Option<Rc<crate::page_files::WorkspaceFiles>>,
 }
 
 impl Desktop {
@@ -1442,7 +1445,7 @@ fn present_desktop(
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
-        files,
+        files: files.clone(),
         checkout: None,
         images: Rc::clone(&shared.images),
         image_owners: Rc::clone(&shared.image_owners),
@@ -1474,6 +1477,7 @@ fn present_desktop(
             finishing: RefCell::default(),
             told_runs: RefCell::default(),
             offered: uploads::Offered::default(),
+            files,
         }),
         waiting: None,
     })
@@ -3298,6 +3302,7 @@ mod desktop_exports;
 mod dom;
 mod prepare;
 pub(crate) use dom::draw_dom_frame;
+mod drops;
 mod fonts;
 mod frame_loop;
 mod here_exports;

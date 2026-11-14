@@ -3,13 +3,14 @@
  *
  * A drop is read for what it holds: every file of every folder in it, each
  * with its path from the dropped folder's own place (`docs/2026/plan.md`),
- * as the command line names them. The desktop decides what is under the
- * pointer (`drop_on_window`); a small drop of plain files onto a window
- * goes to that window as before, and everything else goes up into the
- * workspace (`desktop_upload`): a drop on the desk itself, a folder, a file
- * too large for a window to take, or more files than one drop hands a
- * window. The desk menu's "Upload files…" and "Upload a folder…" choose
- * them with the browser's own chooser.
+ * as the command line names them. The desktop says what is under the
+ * pointer (`drop_target`): a window whose app opens files, the place between
+ * the strip's windows a window would open at, or why nothing there takes
+ * files. What is dropped is copied into the workspace's file tree and opened
+ * there (`desktop_drop`); a window that takes a file's bytes itself (a note
+ * taking a picture) is handed them too. The desk menu's "Upload files…" and
+ * "Upload a folder…" choose them with the browser's own chooser and copy them
+ * in the same way (`desktop_upload`).
  */
 import {MAX_DROPPED_FILE, MAX_DROPPED_FILES} from './host-core.mjs';
 
@@ -67,12 +68,24 @@ export async function walkDropped(taken) {
   return {files, folder};
 }
 
-/** Where a drop goes: `'window'`, the window under the pointer taking the
- * files as it always has, or `'upload'`, into the workspace. `onWindow` is
- * the desktop's word on whether a window is under the pointer. */
-export function dropRoute({files, folder, onWindow}) {
-  if (folder || !onWindow || files.length > MAX_DROPPED_FILES) return 'upload';
-  return files.some(({file}) => file.size > MAX_DROPPED_FILE) ? 'upload' : 'window';
+/** What a drop does, the desktop having said what is under the pointer
+ * (`target`, as `drop_target` answers): `'refused'` where nothing takes
+ * files, `'copy'` into the workspace (opened where it fell), or `'hand'`:
+ * copied, and its bytes handed to the window it fell on, which takes them
+ * itself, as long as it is a few plain files a window can take. */
+export function dropRoute({target, files, folder}) {
+  if (!target || target.kind === 'refused' || (target.kind === 'window' && !target.takes)) return 'refused';
+  const few = !folder && files.length <= MAX_DROPPED_FILES && files.every(({file}) => file.size <= MAX_DROPPED_FILE);
+  return target.kind === 'window' && target.hands && few ? 'hand' : 'copy';
+}
+
+/** What the place under the pointer says while files are dragged over it. */
+export function dropLabel(target) {
+  if (!target) return '';
+  if (target.kind === 'refused') return target.why;
+  if (target.kind === 'strip') return 'Open here';
+  if (target.takes) return target.app ? `Open in ${target.app}` : 'Open here';
+  return `${target.app ?? 'This window'} doesn't open files`;
 }
 
 /** Ask the person for files with the browser's chooser (a folder and
