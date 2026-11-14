@@ -37,6 +37,252 @@ pub fn step(step: &TaskStep) -> String {
     t_args(key, &[("what", ui::i18n::ArgValue::from(bounded(subject)))])
 }
 
+/// One step of a run once it is done, said to the person: what it did, and to
+/// what. The record of a turn's steps says what happened; [`step`] says what is
+/// under way.
+#[must_use]
+pub fn step_done(step: &TaskStep) -> String {
+    let (key, subject) = match step {
+        TaskStep::Searching(what) => ("agent-step-searched", what),
+        TaskStep::Reading(what) | TaskStep::Exploring(what) => ("agent-step-read", what),
+        TaskStep::Editing(what) => return did("Edit", &bounded(what)),
+    };
+    t_args(key, &[("what", ui::i18n::ArgValue::from(bounded(subject)))])
+}
+
+/// A program that read and changed nothing, said as done: it looked up what its
+/// answer names, by the kind of the first thing it named ("Looked up your
+/// tasks"), or looked things up when it named nothing.
+#[must_use]
+pub fn looked_up(kind: Option<&str>) -> String {
+    match kind.map(said::things).filter(|things| !things.is_empty()) {
+        Some(things) => t_args(
+            "agent-step-looked-up",
+            &[("what", ui::i18n::ArgValue::from(things))],
+        ),
+        None => t("agent-step-program"),
+    }
+}
+
+/// What an action did, in the person's words: its label (an app's, "Show a
+/// resource on the canvas") said as done, with `subject`, the title of what it
+/// acted on, in the place the label leaves for it ("Showed All inboxes on the
+/// canvas", "Moved Buy milk to Done", "Looked up your tasks"). Said in the
+/// person's language: where that is not English, an app's label is said as it
+/// is, with what it acted on beside it.
+#[must_use]
+pub fn did(label: &str, subject: &str) -> String {
+    let (label, subject) = (label.trim(), bounded(subject));
+    let english = ui::i18n::I18nManager::current_locale().starts_with("en");
+    if english {
+        return said::done(label, &subject);
+    }
+    if subject.is_empty() || label.contains(subject.as_str()) {
+        return label.to_owned();
+    }
+    t_args(
+        "agent-step-on",
+        &[
+            ("action", ui::i18n::ArgValue::from(label)),
+            ("subject", ui::i18n::ArgValue::from(subject)),
+        ],
+    )
+}
+
+/// English verb phrases said as done: the grammar [`did`] says an app's label in.
+mod said {
+    /// Words after a verb that belong to it ("Look up"): the subject follows them.
+    const PARTICLES: &[&str] = &[
+        "up", "down", "out", "back", "away", "off", "over", "forward",
+    ];
+    /// Words a label's own phrase goes on with after its object ("Move to Done", "Mark as
+    /// read"): the subject stands before them.
+    const LINKS: &[&str] = &[
+        "to", "into", "onto", "as", "from", "with", "beside", "in", "on",
+    ];
+
+    /// `label` said as done with `subject` in it.
+    pub(super) fn done(label: &str, subject: &str) -> String {
+        // The label's own clause: what follows a comma or a bracket explains it.
+        let clause = label
+            .split([',', '('])
+            .next()
+            .unwrap_or(label)
+            .trim()
+            .trim_end_matches('\u{2026}')
+            .trim();
+        let mut words = clause.split_whitespace();
+        let Some(verb) = words.next() else {
+            return subject.to_owned();
+        };
+        let rest: Vec<&str> = words.collect();
+        // A label already saying what is under way, or one naming a thing rather than doing
+        // one, is said as it is.
+        // An action's id where it has no label ("move_card") is no words to say as done.
+        if verb.to_lowercase().ends_with("ing") || !verb.chars().all(char::is_alphabetic) {
+            return label.to_owned();
+        }
+        if verb.eq_ignore_ascii_case("new") {
+            // "New note": what it made.
+            return join(&[&cased("made", verb), "a new"], &rest);
+        }
+        let past = past(verb);
+        let particles = rest
+            .iter()
+            .take_while(|word| PARTICLES.contains(&word.to_lowercase().as_str()))
+            .count();
+        let (particles, after) = rest.split_at(particles);
+        let mut head: Vec<&str> = vec![&past];
+        head.extend_from_slice(particles);
+        if subject.is_empty() || clause.contains(subject) {
+            return join(&head, after);
+        }
+        match after {
+            // "Close a place": the subject is the place it acted on.
+            [article, _object, more @ ..] if is_article(article) => {
+                head.push(subject);
+                join(&head, more)
+            }
+            // "Show", "Look up", "Move to Done": the subject follows the verb.
+            [] => {
+                head.push(subject);
+                join(&head, &[])
+            }
+            [link, ..] if LINKS.contains(&link.to_lowercase().as_str()) => {
+                head.push(subject);
+                join(&head, after)
+            }
+            // The label names its own object ("Turn Wi-Fi on or off"): it says what it did.
+            _ => join(&head, after),
+        }
+    }
+
+    fn is_article(word: &str) -> bool {
+        matches!(word.to_lowercase().as_str(), "a" | "an")
+    }
+
+    fn join(head: &[&str], rest: &[&str]) -> String {
+        head.iter()
+            .chain(rest)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// `word` in the case `like` is written in: capitalised when it is.
+    fn cased(word: &str, like: &str) -> String {
+        if like.chars().next().is_some_and(char::is_uppercase) {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        } else {
+            word.to_owned()
+        }
+    }
+
+    /// The verb `verb` in the past tense, in its case.
+    pub(super) fn past(verb: &str) -> String {
+        let lower = verb.to_lowercase();
+        let said = IRREGULAR
+            .iter()
+            .find(|(present, _)| *present == lower)
+            .map_or_else(|| regular(&lower), |(_, past)| (*past).to_owned());
+        cased(&said, verb)
+    }
+
+    /// Verbs whose past tense is not the regular one.
+    const IRREGULAR: &[(&str, &str)] = &[
+        ("bring", "brought"),
+        ("build", "built"),
+        ("buy", "bought"),
+        ("choose", "chose"),
+        ("cut", "cut"),
+        ("do", "did"),
+        ("draw", "drew"),
+        ("find", "found"),
+        ("forget", "forgot"),
+        ("get", "got"),
+        ("give", "gave"),
+        ("go", "went"),
+        ("hide", "hid"),
+        ("hold", "held"),
+        ("keep", "kept"),
+        ("know", "knew"),
+        ("lay", "laid"),
+        ("leave", "left"),
+        ("let", "let"),
+        ("make", "made"),
+        ("pay", "paid"),
+        ("put", "put"),
+        ("read", "read"),
+        ("redo", "redid"),
+        ("reset", "reset"),
+        ("run", "ran"),
+        ("say", "said"),
+        ("see", "saw"),
+        ("send", "sent"),
+        ("set", "set"),
+        ("shut", "shut"),
+        ("sit", "sat"),
+        ("split", "split"),
+        ("stand", "stood"),
+        ("submit", "submitted"),
+        ("take", "took"),
+        ("tell", "told"),
+        ("think", "thought"),
+        ("undo", "undid"),
+        ("unpin", "unpinned"),
+        ("write", "wrote"),
+    ];
+
+    /// The regular past tense: `-d` after an `e`, `-ied` for a `y` after a consonant, the last
+    /// consonant doubled after one short vowel in one syllable ("pin", "stop"), else `-ed`.
+    fn regular(verb: &str) -> String {
+        let vowel = |c: char| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u');
+        let chars: Vec<char> = verb.chars().collect();
+        match chars.as_slice() {
+            [.., 'e'] => format!("{verb}d"),
+            [.., before, 'y'] if !vowel(*before) => {
+                format!("{}ied", verb.strip_suffix('y').unwrap_or(verb))
+            }
+            [.., before, middle, last]
+                if !vowel(*before)
+                    && vowel(*middle)
+                    && !vowel(*last)
+                    && !matches!(last, 'w' | 'x' | 'y')
+                    && chars.iter().filter(|c| vowel(**c)).count() == 1 =>
+            {
+                format!("{verb}{last}ed")
+            }
+            _ => format!("{verb}ed"),
+        }
+    }
+
+    /// The things a kind names, as a person says them: its own name, plural and lower case
+    /// (`tasks.Task` is "tasks", `mail.Mailbox` "mailboxes").
+    pub(super) fn things(kind: &str) -> String {
+        let name = kind
+            .rsplit(['.', ':'])
+            .next()
+            .unwrap_or(kind)
+            .trim()
+            .to_lowercase();
+        if name.is_empty() {
+            return name;
+        }
+        let chars: Vec<char> = name.chars().collect();
+        let vowel = |c: char| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u');
+        match chars.as_slice() {
+            [.., before, 'y'] if !vowel(*before) => {
+                format!("{}ies", name.strip_suffix('y').unwrap_or(&name))
+            }
+            [.., 's' | 'x' | 'z'] | [.., 'c' | 's', 'h'] => format!("{name}es"),
+            _ => format!("{name}s"),
+        }
+    }
+}
+
 /// The most characters of a query or an address a step's note carries: enough
 /// to say what the step is about, short enough to read as one line.
 const MOST_SUBJECT_CHARS: usize = 80;
@@ -96,6 +342,10 @@ mod tests {
             "agent-step-editing",
             "agent-step-exploring",
             "agent-step-program",
+            "agent-step-looked-up",
+            "agent-step-on",
+            "agent-step-searched",
+            "agent-step-read",
             "agent-run-needs-decision",
             "agent-run-directions-require-review",
             "agent-run-cancelled-before-planning",
@@ -158,6 +408,66 @@ mod tests {
         assert_eq!(
             step(&TaskStep::Searching("borrow checker".into())),
             "Sucht im Web nach „borrow checker“…"
+        );
+    }
+
+    /// A step line says what happened, in the person's words: any action's label said as done,
+    /// with the title of what it acted on where the label leaves room for it — never the
+    /// action's label as it is, and never the same line whatever it acted on.
+    #[test]
+    fn a_step_says_what_it_did_to_what() {
+        ui::i18n::I18nManager::init("en-US");
+        for (label, subject, said) in [
+            (
+                "Show a resource on the canvas, as one of its views",
+                "All inboxes",
+                "Showed All inboxes on the canvas",
+            ),
+            ("Show", "All inboxes", "Showed All inboxes"),
+            ("Look up", "your tasks", "Looked up your tasks"),
+            ("Close a place", "Q3 plan", "Closed Q3 plan"),
+            (
+                "Pin a place, so an agent's arrangement leaves it alone",
+                "Notes",
+                "Pinned Notes",
+            ),
+            ("Move to Done", "Buy milk", "Moved Buy milk to Done"),
+            (
+                "Mark as read",
+                "Dinner on Friday?",
+                "Marked Dinner on Friday? as read",
+            ),
+            ("Reply", "Mia", "Replied Mia"),
+            ("Turn Wi-Fi on or off", "Network", "Turned Wi-Fi on or off"),
+            ("Open Mail (opens so.tilo.lang.mail)", "Mail", "Opened Mail"),
+            ("Find tasks", "", "Found tasks"),
+            ("New note", "Groceries", "Made a new note"),
+            ("Undo", "", "Undid"),
+            ("move_card", "Write the notes", "move_card"),
+            (
+                "Searching the web for “x”…",
+                "",
+                "Searching the web for “x”…",
+            ),
+        ] {
+            assert_eq!(did(label, subject), said, "{label} on {subject}");
+        }
+        assert_eq!(
+            looked_up(Some("tl.so.tilo.lang.tasks.Task")),
+            "Looked up your tasks"
+        );
+        assert_eq!(looked_up(Some("mail.Mailbox")), "Looked up your mailboxes");
+        assert_eq!(looked_up(Some("notes.Entry")), "Looked up your entries");
+        assert_eq!(looked_up(None), "Looked things up");
+        assert_eq!(
+            step_done(&TaskStep::Searching("borrow checker".into())),
+            "Searched the web for “borrow checker”"
+        );
+        // Another language says the app's label as it is, with what it acted on beside it.
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(
+            did("Anzeigen", "Alle Posteingänge"),
+            "Anzeigen: Alle Posteingänge"
         );
     }
 

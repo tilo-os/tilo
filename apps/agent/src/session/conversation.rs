@@ -188,12 +188,12 @@ impl Session {
     }
 
     /// Add one dispatched operation to the reply's step list: where it acted,
-    /// what it was, and what came of it.
+    /// what it did in the person's words (its label said as done, with the
+    /// title of what it acted on: "Showed All inboxes"), and what came of it.
     pub(super) fn record_action(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
-        resource: &str,
-        label: &str,
+        action: &TaskAction,
         settled: Result<&super::StepOutcome, &TaskActionStop>,
     ) -> Result<()> {
         let (outcome, why) = match settled {
@@ -201,7 +201,41 @@ impl Session {
             Err(TaskActionStop::Failed(why)) => ("refused", Some(why.as_str())),
             Err(TaskActionStop::Cancelled(why)) => ("refused", why.as_deref()),
         };
-        self.push_step(run, resource, label, outcome, why)
+        let subject = self.subject_of(action, settled.ok());
+        let said = crate::i18n::did(&action.label, &subject);
+        self.push_step(run, &action.resource_kind, &said, outcome, why)
+    }
+
+    /// The title of what `action` acted on, as the person knows it: what the
+    /// action answered it acted on (a place says the title it stands by), else
+    /// the resource an argument names, by its title, else the resource the
+    /// action is on.
+    fn subject_of(&mut self, action: &TaskAction, done: Option<&super::StepOutcome>) -> String {
+        if let Some(title) = done
+            .and_then(|done| done.output.value.as_ref())
+            .and_then(|value| value.get("title"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+        {
+            return title.to_owned();
+        }
+        let catalogue = self.task_catalogue();
+        // The resource it shows or acts on first, then any other the arguments name: a `place`
+        // names the conversation it stands beside too, which is not what it acted on.
+        let named = action.arguments.get("resource").into_iter().chain(
+            action
+                .arguments
+                .iter()
+                .filter(|(name, _)| !matches!(name.as_str(), "resource" | "beside"))
+                .map(|(_, value)| value),
+        );
+        named
+            .filter_map(Value::as_str)
+            .find_map(|named| catalogue.about(named.trim()))
+            .map(|facts| facts.label.trim().to_owned())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| action.resource_label.trim().to_owned())
     }
 
     /// Add one `tilo` program the run ran to the reply's step list.
@@ -211,12 +245,17 @@ impl Session {
         step: &ui::tilo_reference::ProgramStep,
     ) -> Result<()> {
         use ui::tilo_reference::StepOutcome;
+        // What it did, in the person's words: the first change it made, said as done with the
+        // title of what it changed; else what it proposes; else that it looked up what its answer
+        // names ("Looked up your tasks").
         let label = step
             .changes
             .first()
-            .map(|row| row.action.clone())
+            .map(|row| crate::i18n::did(&row.action, &row.resource.reference.label))
             .or_else(|| step.previews.first().map(|row| row.action.clone()))
-            .unwrap_or_else(|| crate::i18n::t("agent-step-program"));
+            .unwrap_or_else(|| {
+                crate::i18n::looked_up(step.refs.first().map(|at| at.reference.kind.as_str()))
+            });
         let resource = step
             .changes
             .first()
@@ -242,16 +281,18 @@ impl Session {
         call: &crate::tools::web::Call,
         report: &crate::tools::InvokeReport,
     ) -> Result<()> {
-        // The same vocabulary the person is told the step in, so the record
-        // and the note say the same thing.
+        // The same vocabulary the person is told the step in, said as done: the
+        // record says what happened, the note what is under way.
         let (resource, label) = match call {
             crate::tools::web::Call::Search { query, .. } => (
                 "web.search",
-                crate::i18n::step(&tilo_actions::task_step::TaskStep::Searching(query.clone())),
+                crate::i18n::step_done(&tilo_actions::task_step::TaskStep::Searching(
+                    query.clone(),
+                )),
             ),
             crate::tools::web::Call::Page { url, .. } => (
                 "web.page",
-                crate::i18n::step(&tilo_actions::task_step::TaskStep::Reading(url.clone())),
+                crate::i18n::step_done(&tilo_actions::task_step::TaskStep::Reading(url.clone())),
             ),
         };
         let (outcome, why) = if report.succeeded {

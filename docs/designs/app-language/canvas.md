@@ -93,7 +93,12 @@ sharp at the screen's real size.
 - **Places** are `ui.MapPin`s holding the resource's view with no `ui.WindowFrame`; the handle
   is a shell view shown on hover and selection.
 - **The arrangement** records each place's resource, view, point and size (`ArrangementPlace`);
-  placing never moves what is there (`free_place_near`, `free_place_next_to`).
+  placing never moves what is there (`free_place_near`, `free_place_next_to`). What is found at
+  a click stands with its top-left at the click, narrowed (to a window's least width) to the free
+  room to its right before the next place or the view's edge (`free_width_at`); only when not
+  even that fits does it take the nearest free spot. A place put with no size of its own, at a
+  click or by the agent beside its turn, hugs what it shows (`CanvasPlace::hugs`); a rectangle's
+  room keeps its size.
 
 ## 7. The bar it is held to
 

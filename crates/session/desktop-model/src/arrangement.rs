@@ -569,6 +569,33 @@ impl Arrangement {
         )
     }
 
+    /// How wide a window `height` tall stands with its top-left at `at` (a click) in the free
+    /// room to its right: `want`, narrowed to stand [`CANVAS_GAP`] clear of the next place to its
+    /// right, never under [`WINDOW_MIN_WIDTH`]. `None` when not even that fits there (a place
+    /// stands at the point, or too close to its right): the caller takes the nearest free spot
+    /// ([`Self::free_place_near`]). Nothing placed moves.
+    #[must_use]
+    pub fn free_width_at(&self, at: (i32, i32), want: u32, height: u32) -> Option<u32> {
+        let want = want.max(WINDOW_MIN_WIDTH);
+        let gap = i64::from(CANVAS_GAP);
+        let probe = CanvasPlace::new(at.0, at.1, want, height);
+        let mut width = i64::from(want);
+        for other in self.places.values() {
+            if !probe.crowds_on_canvas(other) {
+                continue;
+            }
+            // Crowding it at its full width, it stands on the place's line: the room up to the
+            // place's leading edge, less the gap, is all it may take.
+            let room = i64::from(other.x)
+                .saturating_sub(gap)
+                .saturating_sub(i64::from(at.0));
+            width = width.min(room);
+        }
+        u32::try_from(width)
+            .ok()
+            .filter(|width| *width >= WINDOW_MIN_WIDTH)
+    }
+
     /// The free place beside `subject` (a window, a selection) for a window
     /// of `width` × `height`: to its trailing side when there is room
     /// there, else the nearest free space.
@@ -1272,6 +1299,44 @@ mod tests {
                 "{place:?} clear of {other:?}"
             );
         }
+    }
+
+    /// A window put at a click left of a place stands at the click, narrowed to the room before
+    /// that place; free room keeps its width; a click with not even a window's least width free
+    /// to its right has none, and a place below the click's reach is no obstacle.
+    #[test]
+    fn a_window_at_a_click_is_as_wide_as_the_free_room_to_its_right() {
+        let inbox = CanvasPlace::new(900, 0, 1000, 1200);
+        let arrangement = canvas(&[(1, inbox)]);
+        assert_eq!(
+            arrangement.free_width_at((300, 600), 720, 520),
+            Some(900 - 24 - 300),
+            "narrowed to the room before the inbox"
+        );
+        let width = arrangement
+            .free_width_at((300, 600), 720, 520)
+            .expect("room");
+        assert!(!CanvasPlace::new(300, 600, width, 520).crowds_on_canvas(&inbox));
+        assert_eq!(
+            arrangement.free_width_at((-1000, 600), 720, 520),
+            Some(720),
+            "room for all of it"
+        );
+        assert_eq!(
+            arrangement.free_width_at((800, 600), 720, 520),
+            None,
+            "less than a window's least width before the inbox"
+        );
+        assert_eq!(
+            arrangement.free_width_at((1000, 600), 720, 520),
+            None,
+            "inside the inbox"
+        );
+        assert_eq!(
+            arrangement.free_width_at((300, 1400), 720, 520),
+            Some(720),
+            "below the inbox, clear of it"
+        );
     }
 
     /// The places standing in `arrangement`, for saying one crowds none.

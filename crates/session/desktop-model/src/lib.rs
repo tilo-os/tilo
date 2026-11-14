@@ -44,7 +44,7 @@ pub mod workspace;
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
 pub use arrangement::{
     Arrangement, ArrangementKind, CANVAS_BAND, CANVAS_GAP, CANVAS_ROW_GAP, CanvasPlace,
-    FloatCorner, FloatPlace,
+    FloatCorner, FloatPlace, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 pub use bots::WorkspaceBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};

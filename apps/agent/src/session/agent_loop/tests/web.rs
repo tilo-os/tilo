@@ -142,14 +142,11 @@ fn a_search_and_a_read_are_steps_of_the_run() {
     assert_eq!(steps[0]["resource"], "web.search");
     assert_eq!(
         steps[0]["label"],
-        "Searching the web for \u{201c}Ada Lovelace first algorithm\u{201d}\u{2026}"
+        "Searched the web for \u{201c}Ada Lovelace first algorithm\u{201d}"
     );
     assert_eq!(steps[0]["outcome"], "applied");
     assert_eq!(steps[1]["resource"], "web.page");
-    assert_eq!(
-        steps[1]["label"],
-        format!("Reading {}\u{2026}", server.at("/ada"))
-    );
+    assert_eq!(steps[1]["label"], format!("Read {}", server.at("/ada")));
     assert_eq!(steps[1]["outcome"], "applied");
 }
 

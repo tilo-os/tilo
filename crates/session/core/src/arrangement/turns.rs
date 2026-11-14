@@ -239,6 +239,7 @@ impl Arrangement {
             width,
             height,
             float: None,
+            hugs: false,
         };
         self.ask(asked, action, busy)?;
         self.opened_as

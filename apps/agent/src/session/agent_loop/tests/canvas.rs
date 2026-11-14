@@ -116,7 +116,7 @@ fn session_actions() -> Vec<ExportedAction> {
     let mut session = vec![
         arrangement(
             "place",
-            "Put a resource on the canvas as one of its views",
+            "Show a resource on the canvas, as one of its views",
             vec![
                 ActionParam::required("resource", ParamType::Resource, "The resource it shows"),
                 text("view"),

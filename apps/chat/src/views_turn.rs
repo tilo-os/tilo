@@ -202,17 +202,17 @@ pub(super) fn prose(key: &str, markdown: &str) -> Node {
     ui::BlockEditorBuilder::new(key).value(rich).into()
 }
 
-/// What the agent is doing now, in one line: the step it dispatched last, as its app names it,
-/// still going; what the run said is under way when it took no step yet; else that it is
-/// thinking.
+/// What the agent is doing now, in one line beside its spinner: the step it took last, as the
+/// agent said it ("Looked up your tasks"); what the run said is under way when it took no step
+/// yet; else that it is thinking.
 pub(super) fn live_line(work: &super::Work) -> String {
     if let Some(step) = work
         .steps
         .last()
-        .map(|step| step.trim().trim_end_matches('\u{2026}'))
+        .map(|step| step.trim())
         .filter(|step| !step.is_empty())
     {
-        return format!("{step}\u{2026}");
+        return step.to_owned();
     }
     let detail = work.detail.trim();
     if detail.is_empty() {

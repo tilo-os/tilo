@@ -95,8 +95,63 @@ fn a_turns_reply_reads_its_markdown_as_text() {
     );
 }
 
-/// While the agent works, the turn says what it is doing now, from the step it took last,
-/// and never a count of steps or "Writing…".
+/// A reply that names several things as a Markdown list reads as a bulleted list, item by item,
+/// whether or not a blank line stands before it, as models write it.
+#[test]
+fn a_turns_list_reads_as_a_bulleted_list() {
+    for text in [
+        "Eleven are overdue:\n- Book a haircut — 29 Jun\n- Call the landlord — 30 Jun",
+        "Eleven are overdue:\n\n- Book a haircut — 29 Jun\n- Call the landlord — 30 Jun",
+    ] {
+        let turn = turn_answered(Message {
+            id: "r1".to_owned(),
+            author: "agent:assistant".to_owned(),
+            text: text.to_owned(),
+            work: Some(Work {
+                state: "done".to_owned(),
+                ..Work::default()
+            }),
+            ..Message::default()
+        });
+        let channel = Channel::default();
+        let tree = super::turn(&turn, &view_cx(&channel));
+        passes(&tree);
+        let kinds: Vec<(String, String)> = rich_blocks(&tree);
+        assert_eq!(
+            kinds,
+            [
+                ("paragraph".to_owned(), "Eleven are overdue:".to_owned()),
+                ("list_item".to_owned(), "Book a haircut — 29 Jun".to_owned()),
+                (
+                    "list_item".to_owned(),
+                    "Call the landlord — 30 Jun".to_owned()
+                ),
+            ],
+            "{text:?} reads as a line and a bulleted list"
+        );
+    }
+}
+
+/// Every rich block a tree shows, by its kind and its text.
+fn rich_blocks(node: &Node) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for value in node.props.values() {
+        if let Value::Rich(rich) = value {
+            out.extend(
+                rich.blocks
+                    .iter()
+                    .map(|block| (block.kind.clone(), block.text.clone())),
+            );
+        }
+    }
+    for child in &node.children {
+        out.extend(rich_blocks(child));
+    }
+    out
+}
+
+/// While the agent works, the turn says what it is doing now, from the step it took last as
+/// the agent said it, and never a count of steps or "Writing…".
 #[test]
 fn a_working_turn_says_what_it_is_doing_now() {
     let turn = turn_answered(Message {
@@ -104,7 +159,7 @@ fn a_working_turn_says_what_it_is_doing_now() {
         author: "agent:assistant".to_owned(),
         work: Some(Work {
             state: "doing".to_owned(),
-            steps: vec!["Open Tasks".to_owned(), "Read your tasks".to_owned()],
+            steps: vec!["Opened Tasks".to_owned(), "Looked up your tasks".to_owned()],
             ..Work::default()
         }),
         ..Message::default()
@@ -114,8 +169,8 @@ fn a_working_turn_says_what_it_is_doing_now() {
     passes(&tree);
     let said = texts(&tree);
     assert!(
-        said.iter().any(|text| text == "Read your tasks\u{2026}"),
-        "the live line is the step under way: {said:?}"
+        said.iter().any(|text| text == "Looked up your tasks"),
+        "the live line is the step it took last, as the agent said it: {said:?}"
     );
     assert!(
         !said

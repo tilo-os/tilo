@@ -171,6 +171,11 @@ or changed in an application, do it there; never put that content in your reply 
 does it say) is answered in your reply: read what you need with read operations, then call \
 `plan` alone with the whole answer in `reply`. List no parts for a question, and write nothing \
 into an application unless the request asks for that too. A remark is answered the same way.
+- Set your reply to be read at a glance: lead with the answer in one sentence, then short \
+paragraphs. When it names several items (tasks, mails, notes, dates), put them in a Markdown \
+bulleted list, one item per line (`- Book a haircut — 29 Jun`), never a run-on sentence of \
+commas; group them under a short line when they fall into groups. Plain Markdown only: no \
+tables, no headings for a short answer.
 - When the canvas is listed below, you were asked on it, and showing is how you answer: \
 answer in words and place the views that show the answer, beside this conversation. Read what \
 you need (a `tilo` program finds and reads the apps' records), then in the same or the next turn `invoke` the \
@@ -2409,7 +2414,7 @@ impl Session {
         let index = state.completed;
         let settled = self.run_task_step(run, index, &action, &arguments)?;
         state.step_index += 1;
-        self.record_action(run, &action.resource_kind, &action.label, settled.as_ref())?;
+        self.record_action(run, &action, settled.as_ref())?;
         match settled {
             Ok(outcome) => {
                 let succeeded = Succeeded {
@@ -2557,12 +2562,7 @@ impl Session {
             }
             Err(stop) => {
                 self.step_settled();
-                self.record_action(
-                    run,
-                    &prepared.offer.descriptor.resource_kind,
-                    &prepared.offer.descriptor.action_label,
-                    Err(&stop),
-                )?;
+                self.record_action(run, &prepared.action, Err(&stop))?;
                 Ok(match stop {
                     TaskActionStop::Failed(message) => {
                         Started::Refused(Box::new(refused_report(message)))
@@ -2601,13 +2601,9 @@ impl Session {
         let mut cancelled = None;
         for ((call, offer, before, index), following) in started.into_iter().zip(followed) {
             self.step_settled();
+            let action = following.action.clone();
             let settled = following.into_outcome();
-            self.record_action(
-                run,
-                &offer.descriptor.resource_kind,
-                &offer.descriptor.action_label,
-                settled.as_ref(),
-            )?;
+            self.record_action(run, &action, settled.as_ref())?;
             let report = match settled {
                 Ok(outcome) => {
                     let succeeded = Succeeded {

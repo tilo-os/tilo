@@ -96,7 +96,8 @@ fn a_run_records_its_turn_in_the_conversation() {
             "{work}"
         );
         assert!(
-            work.get("did").is_none_or(|did| did == "Append paragraph"),
+            work.get("did")
+                .is_none_or(|did| did == "Appended paragraph"),
             "{work}"
         );
     }
@@ -105,7 +106,10 @@ fn a_run_records_its_turn_in_the_conversation() {
     assert_eq!(last["say"], "Wrote it.", "the reply's words, once");
     let steps = last["work"]["trace"].as_array().unwrap();
     assert_eq!(steps.len(), 1, "one step: {steps:?}");
-    assert_eq!(steps[0]["label"], "Append paragraph");
+    assert_eq!(
+        steps[0]["label"], "Appended paragraph",
+        "what it did, said as done"
+    );
     assert_eq!(steps[0]["resource"], "word-processor.document");
     assert_eq!(steps[0]["outcome"], "applied");
 }

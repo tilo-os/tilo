@@ -31,6 +31,9 @@ use crate::desk::Desk;
 mod readings;
 pub use readings::*;
 mod beside;
+mod sizing;
+use sizing::canvas_size;
+use sizing::width_in_view;
 mod queries;
 use queries::{query_resource, query_state_from_outcome, query_target, settle};
 
@@ -184,6 +187,11 @@ pub enum ArrangementAction {
         /// window it already was. Left out, the place stands on the canvas as it always did.
         #[serde(default)]
         float: Option<FloatPlace>,
+        /// `height` is the most it takes: what it shows hugs what it holds up to it
+        /// (`CanvasPlace::hugs`, canvas.md §7) — a place put with no size of its own, by a click
+        /// or by an agent beside its turn. A height of zero or less hugs up to a window's too.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hugs: bool,
     },
     /// Text typed on the canvas: the top result of the system's `find` stands there as its primary
     /// view (or `view` ). The session resolves it into a [`Place`] when the search answers, so
@@ -920,6 +928,7 @@ impl Arrangement {
                 width: size.map_or(DEFAULT_WIDTH, |(width, _)| width),
                 height: size.map_or(DEFAULT_HEIGHT, |(_, height)| height),
                 float: None,
+                hugs: false,
             };
             self.ask(asked, action, busy)?;
             return Ok(Some(surface.place));
@@ -940,12 +949,9 @@ impl Arrangement {
             return Err(format!("nothing matches {text:?}"));
         };
         // What the text finds stands where the person pointed: at the point at its own size, or
-        // laid out to the rectangle they dragged (canvas.md §1). A click names no height: the
-        // place is as tall as what it shows, up to a window's (`place_at`). A second place of a
-        // note is the person's to make.
-        // At a click its width is its own, as far as the room to the edge of what the person sees
-        // allows: it stands at the point, in view (canvas.md §7, "Everything stays in view").
-        let (width, height) = size.unwrap_or_else(|| (width_in_view(at.0, DEFAULT_WIDTH, seen), 0));
+        // laid out to the rectangle they dragged (canvas.md §1). A second place of a note is the
+        // person's to make.
+        let (width, height, hugs) = self.found_size(at, size, seen);
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -964,6 +970,7 @@ impl Arrangement {
             width,
             height,
             float: None,
+            hugs,
         };
         self.ask(asked, action, busy)?;
         Ok(Some(surface.place))
@@ -1161,6 +1168,7 @@ impl Arrangement {
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
             float: None,
+            hugs: false,
         };
         self.ask(asked, action, Busy::default())?;
         Ok(Some(surface.place))
@@ -1234,6 +1242,7 @@ impl Arrangement {
                 width: room.width,
                 height: room.height,
                 float: None,
+                hugs: false,
             };
             self.ask(asked, action, Busy::default())?;
             return Ok(Some(surface.place));
@@ -1290,6 +1299,9 @@ impl Arrangement {
             width,
             height,
             float: None,
+            // It names no size of its own: it hugs what it shows, up to the room beside the turn,
+            // as a thing found at a click does (canvas.md §7, "Places hug what they show").
+            hugs: true,
         };
         self.ask(asked, action, Busy::default())?;
         Ok(Some(surface.place))
@@ -1638,6 +1650,7 @@ fn change(
             width,
             height,
             float,
+            hugs,
         } => place_at(
             tree,
             catalog,
@@ -1653,6 +1666,7 @@ fn change(
                 width: *width,
                 height: *height,
                 float: *float,
+                hugs: *hugs,
             },
         ),
         ArrangementAction::Float { place, float } => float_place(tree, *place, *float),
@@ -1966,6 +1980,7 @@ struct Placed<'a> {
     width: i64,
     height: i64,
     float: Option<FloatPlace>,
+    hugs: bool,
 }
 
 /// Stand `asked` on the canvas as one of its published views: a window of the
@@ -2082,7 +2097,7 @@ fn place_at(
     // closer together than a frame is wide, stand clear of each other. The
     // frame it stands in is the size it asks for, so the free space is that
     // size.
-    let (width, height, hugs) = canvas_size(asked.width, asked.height);
+    let (width, height, hugs) = canvas_size(asked.width, asked.height, asked.hugs);
     let place = workspace.arrangement.free_place_near(
         (clamp_coord(asked.x), clamp_coord(asked.y)),
         width,
@@ -2093,40 +2108,6 @@ fn place_at(
     workspace.arrangement.places.insert(asked.strip, place);
     workspace.arrangement.kind = ArrangementKind::Canvas;
     Ok(true)
-}
-
-/// How wide a thing standing at canvas x `x` with no rectangle of its own stands: `want`, or the
-/// room from `x` to the trailing edge of what the person sees (`seen`) when that is narrower and
-/// still at least [`LEAST_IN_VIEW`] wide. Narrower room than that leaves it `want` wide, and the
-/// canvas pans to show it.
-pub(super) fn width_in_view(x: i64, want: i64, seen: Option<CanvasRect>) -> i64 {
-    let Some(seen) = seen else {
-        return want;
-    };
-    let room = seen
-        .x
-        .saturating_add(seen.width)
-        .saturating_sub(x)
-        .saturating_sub(i64::from(tilo_desktop_model::CANVAS_GAP));
-    if room >= LEAST_IN_VIEW {
-        want.min(room)
-    } else {
-        want
-    }
-}
-
-/// The narrowest a thing placed at a click is made to stand inside what the person sees: a list's
-/// row still reads at it.
-const LEAST_IN_VIEW: i64 = 360;
-
-/// The size a place asked for at `width` by `height` takes on the canvas, and whether it hugs what
-/// it shows. A place asked for with no height (a thing found where the person clicked) takes a
-/// window's height as the most it takes, and what it shows hugs what it holds up to it
-/// (`CanvasPlace::hugs`, canvas.md §7): the free space it is given is that most.
-fn canvas_size(width: i64, height: i64) -> (u32, u32, bool) {
-    let hugs = height <= 0;
-    let height = if hugs { DEFAULT_HEIGHT } else { height };
-    (clamp_side(width), clamp_side(height), hugs)
 }
 
 /// The place `place` shows the resource `resource` through `view` (empty for its primary one),
@@ -2655,13 +2636,16 @@ impl Door {
             Some(actor) => actor.to_owned(),
             None => self.person(),
         };
+        // What a `place` or a `show` names no view of stands as content, through the view its app
+        // declares for a place of it, wherever it ends up standing: beside a turn it was aimed at
+        // too.
+        self.place_as_content(&mut action);
         if self.kept_turn(&asked, arguments, &action)? {
-            return Ok(completed());
+            return Ok(self.shown(&action));
         }
         if address.action == "place" {
-            self.place_as_content(&mut action);
             if self.placed_beside(&asked, arguments, &action)? {
-                return Ok(completed());
+                return Ok(self.shown(&action));
             }
             self.place_at_surface(arguments, &mut action)?;
         }
@@ -2725,7 +2709,7 @@ impl Door {
                     code: "nowhere_to_open".to_owned(),
                     reason: why,
                 })?;
-            return Ok(completed());
+            return Ok(self.shown(&action));
         }
         // A query's Retry asks its app again, from the text it holds: the query goes back to
         // searching, and the app's own search action runs the text once more through `ask_origin`
@@ -2744,10 +2728,51 @@ impl Door {
         }
         self.arrangement
             .borrow_mut()
-            .ask(&asked, action, busy)
+            .ask(&asked, action.clone(), busy)
             .map(drop)
             .map_err(tilo_actions::DoorError::Failed)?;
-        Ok(completed())
+        Ok(self.shown(&action))
+    }
+
+    /// What an arranging action that shows a resource answers once it ran: the title of the place
+    /// showing it, as every surface captions it ("All inboxes", canvas.md §7 "Captions name the
+    /// thing"), so whoever asked says what it showed by that name (an agent's step line). Any
+    /// other action, or one whose place does not stand yet (it waits for the person's gesture),
+    /// answers nothing.
+    fn shown(&self, action: &ArrangementAction) -> ui::host_operation::ResourceOperationStart {
+        let (own, resource) = match action {
+            ArrangementAction::Place {
+                place, resource, ..
+            } => (Some(*place), resource),
+            ArrangementAction::Open { resource, .. } | ArrangementAction::Show { resource, .. } => {
+                (None, resource)
+            }
+            _ => return completed(),
+        };
+        let arrangement = self.arrangement.borrow();
+        let places = arrangement.reading().places;
+        let title = own
+            .into_iter()
+            .chain(arrangement.anchor_of(resource))
+            .find_map(|place| {
+                let key = place.to_string();
+                places.iter().find(|held| held.key == key)
+            })
+            .map(|held| {
+                if held.title.trim().is_empty() {
+                    held.name.trim().to_owned()
+                } else {
+                    held.title.trim().to_owned()
+                }
+            })
+            .filter(|title| !title.is_empty());
+        let Some(title) = title else {
+            return completed();
+        };
+        ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({ "title": title })),
+            resources: Vec::new(),
+        })
     }
 
     /// Search for the text a place found by text names, and stand what it finds beside where the
@@ -2806,13 +2831,15 @@ impl Door {
         self.invoke_by(Some(actor), address, arguments)
     }
 
-    /// A `place` that names no view stands its resource as content, through the view its app
+    /// A `place` or a `show` that names no view stands its resource as content, through the view its app
     /// declares for a place of it (`place view`), never through the app's whole window: an agent,
     /// the REPL and a reference's activation place the thing, as text typed on the canvas does
     /// (canvas.md §7, "The thing, never the app"). The app's window is `open-app`'s, or the view a
     /// caller names.
     fn place_as_content(&self, action: &mut ArrangementAction) {
-        let ArrangementAction::Place { resource, view, .. } = action else {
+        let (ArrangementAction::Place { resource, view, .. }
+        | ArrangementAction::Show { resource, view, .. }) = action
+        else {
             return;
         };
         if !view.trim().is_empty() {

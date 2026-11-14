@@ -296,6 +296,54 @@ fn what_is_found_at_a_click_stands_at_the_point() {
     );
 }
 
+/// A click left of a place that stands already places what is found at the click (`canvas.md`
+/// §1): "my notes" said left of the inbox stands with its top-left where the person clicked,
+/// narrowed to the free room before the inbox, never below or beside the inbox instead.
+#[test]
+fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(&mut session, (x + w * 0.45, y + h * 0.1), "my mails");
+    let inbox = wait_for(&mut session, "the inbox placed", |session| {
+        canvas_box(session, "so.tilo.lang.mail")
+    });
+    let at = (x + w * 0.05, y + h * 0.3);
+    point_and_say(&mut session, at, "my notes");
+    let notes = wait_for(&mut session, "the notes placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.notes"))
+    });
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let (px, py, _, _) = wait_for(&mut session, "the notes on screen", |session| {
+        place_on_screen(session, &notes)
+    });
+    assert!(
+        near(px, at.0) && near(py, at.1),
+        "the notes' top-left is where the person clicked: {:?} for {at:?}",
+        (px, py)
+    );
+    let (nx, _, nw, _) = canvas_box(&session, "so.tilo.lang.notes").expect("the notes' box");
+    let gap = i64::from(tilo_desktop_model::CANVAS_GAP);
+    assert!(
+        nw < 720,
+        "narrowed from its own width to the room before the inbox: {nw}"
+    );
+    assert_eq!(
+        nx + nw + gap,
+        inbox.0,
+        "as wide as the free room up to the inbox, a gap clear of it: notes at {nx} wide {nw}, inbox {inbox:?}"
+    );
+    assert!(
+        nw >= i64::from(tilo_desktop_model::WINDOW_MIN_WIDTH),
+        "never under a window's least width: {nw}"
+    );
+}
+
 /// What is found at a click is named for what it is and hugs what it shows (`canvas.md` §7): "my
 /// mails" stands captioned as the inbox's own view is called, never by the account or the first
 /// record its app's root goes by, and "my notes" as the notes; each list stands as tall as its
@@ -544,6 +592,17 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
         (ty, th),
         ty + rect_h
     );
+    // The rectangle's room keeps its size: what fills it does not hug.
+    let filled = places(&session)
+        .into_iter()
+        .find(|place| place.record.contains("so.tilo.lang.notes"))
+        .expect("the notes' place");
+    let strip =
+        crate::common::strip(&session, crate::common::number(&filled.strip)).expect("its strip");
+    assert!(
+        !strip.canvas_hugs,
+        "what fills the rectangle keeps the rectangle's size: {strip:?}"
+    );
 }
 
 /// A turn's place is the turn: an agent's step aimed at it — a `place` into the turn's strip, a
@@ -633,6 +692,23 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     assert!(
         still.record.starts_with("chat.workspace.turns:") && still.shown_as == "turn",
         "the turn's place still shows the turn: {still:?}"
+    );
+    // The `show` named no view: the mail stands as the thing, its inbox's list, never Mail's
+    // whole window with its sidebar of accounts (canvas.md §7, "The thing, never the app").
+    let inbox = places(&session)
+        .into_iter()
+        .find(|place| place.record.contains("so.tilo.lang.mail"))
+        .expect("the inbox's place");
+    assert_eq!(
+        inbox.title, "All inboxes",
+        "the inbox's own view: {inbox:?}"
+    );
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    assert!(
+        !session.shell_says(MAIL_SIDEBAR),
+        "no sidebar of the mail window around the inbox"
     );
 }
 
@@ -1201,6 +1277,21 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     assert!(
         inside(beside),
         "what the agent stood beside the turn is in view: {beside:?}"
+    );
+    // Put with no size of its own, it hugs what it shows up to the room beside the turn, as a
+    // thing found at a click does (`canvas.md` §7, "Places hug what they show").
+    let strip =
+        crate::common::strip(&session, crate::common::number(&placed.strip)).expect("its strip");
+    assert!(
+        strip.canvas_hugs,
+        "the agent's place beside its turn hugs what it shows: {strip:?}"
+    );
+    #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
+    let most = strip.canvas_height as f64;
+    assert!(
+        beside.3 <= most + 0.5,
+        "it stands no taller than its room: {} of {most}",
+        beside.3
     );
     let shown = place_on_screen(&session, &turn).expect("the turn");
     assert!(inside(shown), "and the turn still is: {shown:?}");

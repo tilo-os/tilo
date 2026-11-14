@@ -59,11 +59,11 @@ fn retry_query_action() -> ActionSpec {
     )
 }
 
-/// Put a resource on the canvas as one of its views.
+/// Show a resource on the canvas, as one of its views.
 fn place_action() -> ActionSpec {
     action(
         "place",
-        "Put a resource on the canvas as one of its views",
+        "Show a resource on the canvas, as one of its views",
         vec![
             // A workspace's id is its own, across all of u64: text, as the arrangement record
             // names it, where an integer stops at i64. Each left out is the surface in front's:
@@ -144,6 +144,8 @@ fn place_action() -> ActionSpec {
                 width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
                 height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
                 float,
+                // Named no height, it hugs what it shows up to a window's (canvas.md §7).
+                hugs: args.integer("height").is_none(),
             }
         },
     )

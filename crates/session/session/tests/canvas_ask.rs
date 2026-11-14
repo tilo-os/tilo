@@ -182,7 +182,29 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
         serde_json::json!({"resource": inbox_id, "x": 240, "y": 160}),
     );
     let beside = serde_json::json!({"resource": notes_id, "beside": inbox_id});
-    let notes = placed_as_agent(&mut session, notes_id, beside.clone());
+    let answered = session
+        .invoke_with_actor(AGENT, "shell:arrangement", "place", &beside)
+        .unwrap_or_else(|error| panic!("the place runs: {error}"));
+    let notes = crate::common::wait_for(&mut session, "the notes placed", |session| {
+        crate::common::places(session)
+            .into_iter()
+            .find(|place| place.record == notes_id)
+    });
+    // The place answers what it showed by the title it stands by, so the agent's step line names
+    // it in the person's words ("Showed Notes on the canvas").
+    let ui::host_operation::ResourceOperationStart::Completed(output) = answered else {
+        panic!("a place completes at once: {answered:?}");
+    };
+    assert_eq!(
+        output
+            .value
+            .as_ref()
+            .and_then(|value| value.get("title"))
+            .and_then(serde_json::Value::as_str),
+        Some(notes.title.as_str()),
+        "the place says the title it stands by: {output:?}"
+    );
+    assert!(!notes.title.is_empty(), "the notes' place has a title");
 
     let (x, y, workspace) = canvas_point(&session, &notes);
     let (anchor_x, anchor_y, anchor_in) = canvas_point(&session, &inbox);

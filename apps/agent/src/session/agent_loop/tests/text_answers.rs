@@ -156,3 +156,37 @@ fn the_requested_output_budget_is_the_models_declared_limit() {
         "the model's own declared output limit is what the agent asks for"
     );
 }
+
+/// An answer naming several things is set to be read (canvas.md §7, "An answer reads like an
+/// answer"): the turn's prompt asks for short paragraphs and a bulleted list, and a reply written
+/// so keeps its lines, list and all, as the words the conversation records.
+#[test]
+fn an_answer_naming_several_things_is_a_list() {
+    let reply = "Nothing is due this week. Eleven tasks are overdue:\n\n\
+                 - Book a haircut — 29 Jun\n\
+                 - Call the landlord about the boiler — 30 Jun\n\
+                 - Reply to Mia about Sunday lunch — 1 Jul";
+    let mut f = fixture(
+        "which of my tasks are due this week?",
+        World {
+            chat: Some("asked".into()),
+            ..World::default()
+        },
+        vec![said_turn(reply)],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap();
+    let asked = bodies[0].to_string();
+    assert!(
+        asked.contains("bulleted list") && asked.contains("short paragraphs"),
+        "the turn's prompt asks for an answer set to be read: {asked}"
+    );
+    drop(bodies);
+    let recorded = recorded(&f.sent.borrow(), "record-work");
+    let last = recorded.last().expect("the turn was recorded");
+    assert_eq!(
+        last["say"],
+        serde_json::json!(reply),
+        "the list is kept line by line"
+    );
+}
