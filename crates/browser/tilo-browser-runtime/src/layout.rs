@@ -256,7 +256,7 @@ mod tests {
     struct Page {
         handle: DesktopHandle,
         layout: Rc<LayoutDocument>,
-        page_layout: PageLayout,
+        actions: PageLayout,
     }
 
     impl Page {
@@ -291,11 +291,11 @@ mod tests {
                 &[],
                 None,
             );
-            let page_layout = PageLayout::new(code, "ada", handle.clone(), Rc::clone(&layout));
+            let actions = PageLayout::new(code, "ada", handle.clone(), Rc::clone(&layout));
             Self {
                 handle,
                 layout,
-                page_layout,
+                actions,
             }
         }
 
@@ -318,7 +318,7 @@ mod tests {
             action: &str,
             arguments: &serde_json::Map<String, serde_json::Value>,
         ) -> serde_json::Value {
-            self.page_layout
+            self.actions
                 .invoke(&ActionAddress::new(resource, action), arguments)
                 .expect("the page layout carries the action out")
         }
@@ -379,7 +379,7 @@ mod tests {
         // script and an agent can arrange it by action.
         {
             let page = Page::new(&PAGE_LAYOUT);
-            let resources = page.page_layout.resources();
+            let resources = page.actions.resources();
             let layout = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == RESOURCE)
@@ -448,7 +448,7 @@ mod tests {
             let page = Page::new(&LATE);
             let place = page.window();
             assert!(
-                page.page_layout.resources().is_empty(),
+                page.actions.resources().is_empty(),
                 "nothing is published before the code is in"
             );
             let accepted = page.invoke(
@@ -464,7 +464,7 @@ mod tests {
             assert!(!page.floating(place), "the float waits for the code");
 
             LATE.install(builtin_page_layout());
-            assert!(page.page_layout.is_in());
+            assert!(page.actions.is_in());
             assert!(page.floating(place), "the float ran as the code arrived");
             assert_eq!(
                 page.layout.last_step("ada"),
@@ -472,7 +472,7 @@ mod tests {
                 "the float is the person's own step"
             );
             assert!(
-                !page.page_layout.resources().is_empty(),
+                !page.actions.resources().is_empty(),
                 "the layout publishes its resources once its code is in"
             );
         }
