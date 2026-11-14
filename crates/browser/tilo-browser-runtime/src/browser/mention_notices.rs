@@ -115,7 +115,7 @@ impl Desktop {
     fn open(&self, target: tilo_actions::remote::RemoteActionTarget) {
         // An app's `open` shows the item its anchor names: the resource the
         // desktop asked for is that anchor (a Settings page, say), as the
-        // desk's own open passes it.
+        // shell's own open passes it.
         let argument = if target.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
             && !target.address.resource.is_empty()
         {
