@@ -805,6 +805,23 @@ fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
         place.name, "Text Editor",
         "a window with no title of its own is its app alone"
     );
+
+    // A window that titles itself with its app's own name under another spelling — the slug an
+    // app reports before its content names a place — is the app alone, never the name joined to
+    // its slug.
+    let slug = open_window_called(&mut session, "org.example.TextEditor", "text editor");
+    step(&mut session);
+    let reading = session.arrangement().borrow().reading();
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.key == slug.to_string())
+        .expect("the slug-titled window reads out");
+    assert_eq!(
+        place.name, "Text Editor",
+        "a window naming its app says its name once: {}",
+        place.name
+    );
 }
 
 // Moving a place to another row through the published action is a place the reading then shows in

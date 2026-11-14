@@ -26,11 +26,17 @@ pub fn app_name(app_id: &str) -> String {
 /// already the app's name is not said twice.
 #[must_use]
 pub fn window_name(app_id: &str, title: &str) -> String {
-    let app = app_name(app_id);
-    if is_apps_own_name(app_id, title) {
-        return app;
+    window_name_of(app_id, &app_name(app_id), title)
+}
+
+/// [`window_name`] for a host that names the app itself — a session reading
+/// the device's app lists, whose name for it the registry need not know.
+#[must_use]
+pub fn window_name_of(app_id: &str, app: &str, title: &str) -> String {
+    if is_name_of(app_id, app, title) {
+        return app.to_owned();
     }
-    ui::window_name::named(&app, title)
+    ui::window_name::named(app, title)
 }
 
 /// Whether `said` is a name of the app rather than a place in it: the name
@@ -40,11 +46,27 @@ pub fn window_name(app_id: &str, title: &str) -> String {
 /// its own empty window).
 #[must_use]
 pub fn is_apps_own_name(app_id: &str, said: &str) -> bool {
+    is_name_of(app_id, &app_name(app_id), said)
+}
+
+/// Whether `said` is the app `app_id` under any spelling, where a device
+/// names the app `app`: the name it is listed under, the registry's name,
+/// the id written as words, the id itself, or the id's last part (`chat`,
+/// `file-explorer`), which is the slug a launch or a client announces. A
+/// host that resolves names itself (a session reading the device's app
+/// lists) asks this, so a window that names its app — `chat`, `Chat` or
+/// `so.tilo.chat` — is never said twice and never shows an id.
+#[must_use]
+pub fn is_name_of(app_id: &str, app: &str, said: &str) -> bool {
+    let id = package_id(app_id);
+    let last = id.rsplit('.').next().unwrap_or(id);
     let said = ui::search::fold_search_text(said.trim());
     !said.is_empty()
-        && (said == ui::search::fold_search_text(&app_name(app_id))
+        && (said == ui::search::fold_search_text(app.trim())
+            || said == ui::search::fold_search_text(&app_name(app_id))
             || said == ui::search::fold_search_text(&humanized(app_id))
-            || said == ui::search::fold_search_text(package_id(app_id)))
+            || said == ui::search::fold_search_text(last)
+            || said == ui::search::fold_search_text(id))
 }
 
 /// The program an id names, where the id is the path of one: a process with
@@ -112,6 +134,7 @@ mod tests {
             // no place: an app run without its list falls back to the id's words.
             assert!(is_apps_own_name("so.tilo.file-explorer", "Files"));
             assert!(is_apps_own_name("so.tilo.file-explorer", "file explorer"));
+            assert!(is_apps_own_name("so.tilo.file-explorer", "file-explorer"));
             assert!(is_apps_own_name(
                 "host:so.tilo.file-explorer.desktop",
                 "File Explorer"
@@ -129,6 +152,25 @@ mod tests {
             assert_eq!(
                 window_name("so.tilo.file-explorer", "File Explorer"),
                 "Files"
+            );
+        }
+
+        phase a_name_a_device_lists_is_the_apps_own_too;
+        {
+            // A session names an app the device lists it under, which the
+            // registry need not know: the window saying that name is the app
+            // alone, never the name joined to the app's other spelling.
+            assert!(is_name_of("so.tilo.file-explorer", "Dateien", "dateien"));
+            assert!(is_name_of("so.tilo.chat", "Chat", "chat"));
+            assert!(is_name_of("so.tilo.chat", "Chat", "so.tilo.chat"));
+            assert!(!is_name_of("so.tilo.chat", "Chat", "design"));
+            assert_eq!(
+                window_name_of("so.tilo.file-explorer", "Dateien", "dateien"),
+                "Dateien"
+            );
+            assert_eq!(
+                window_name_of("so.tilo.file-explorer", "Dateien", "Downloads"),
+                "Downloads — Dateien"
             );
         }
 

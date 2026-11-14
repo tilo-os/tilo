@@ -70,10 +70,11 @@ fn entry_name(desktop_id: Option<&str>) -> Option<String> {
 
 /// What the window showing `app_id` and calling itself `title` is called: the window's own title
 /// and the app it shows ("Groceries — Notes"). A window with no title of its own is the app alone,
-/// and a title that is already the app's name is not said twice.
+/// and a title that is already the app's name — however it spells it, an id or a slug included —
+/// is not said twice.
 #[cfg(target_os = "linux")]
 pub(crate) fn window_name(app_id: &str, title: &str) -> String {
-    ui::window_name::named(&app_name(app_id), title)
+    tilo_desktop_search::names::window_name_of(app_id, &app_name(app_id), title)
 }
 
 /// The app's name as this device's app lists last read it: the installed package's name in the
@@ -205,6 +206,30 @@ mod tests {
             window_name("so.tilo.notes", "Notes"),
             "Notes",
             "the app's name is not said twice"
+        );
+    }
+
+    /// A window whose own title is its app's name under another spelling — the slug the launch
+    /// names (`chat`) or the id the client announces (`so.tilo.chat`) — is the app alone, never
+    /// the app's name joined to a slug or an id.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_window_naming_its_app_is_the_app_alone_never_a_slug_or_id() {
+        for said in ["chat", "Chat", "CHAT", "so.tilo.chat", " so.tilo.chat "] {
+            assert_eq!(window_name("so.tilo.chat", said), "Chat", "{said:?}");
+        }
+        assert_eq!(
+            window_name("so.tilo.file-explorer", "file-explorer"),
+            "Files"
+        );
+        assert_eq!(
+            window_name("org.example.Terminal", "org.example.Terminal"),
+            "Terminal"
+        );
+        assert_eq!(
+            window_name("so.tilo.chat", "design"),
+            "design — Chat",
+            "a window naming a place in its app still says what it shows"
         );
     }
 }
