@@ -285,6 +285,10 @@ struct GovernedWorkspace {
     /// ([`Workspaces::join_soon`]).
     #[cfg(any(feature = "agents", feature = "web"))]
     asking: std::collections::BTreeSet<(String, String)>,
+    /// The workspace's document started over from a base at an admission, and
+    /// what the relay retains of it from before is still to be archived,
+    /// ahead of the base's publication ([`Workspaces::settle`]).
+    rebased: bool,
     /// Whether something the workspace published since its document last
     /// started over overwrote or deleted a value ([`withdraws`]): a shared
     /// window closed, a member removed, a name changed. A newcomer replayed
@@ -420,6 +424,7 @@ impl GovernedWorkspace {
             keeping: false,
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
+            rebased: false,
             since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         };
@@ -517,6 +522,7 @@ impl GovernedWorkspace {
             keeping: false,
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
+            rebased: false,
             since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         })
@@ -667,6 +673,7 @@ impl GovernedWorkspace {
             || (self.since_base == SinceBase::Withdrew
                 && !member_roots(&candidate, now).is_subset(&member_roots(replica, now)));
         let mut since_base = self.since_base;
+        let mut rebased = false;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
@@ -683,7 +690,7 @@ impl GovernedWorkspace {
                     .collect::<std::collections::BTreeSet<_>>();
             // The workspace's document starts over from a base holding its
             // state as it stands, with none of the history that led there.
-            candidate.rebase_workspace()?;
+            rebased = candidate.rebase_workspace()?;
             since_base = SinceBase::Added;
             record.outgoing = candidate
                 .publication_mut()
@@ -726,6 +733,7 @@ impl GovernedWorkspace {
             return Err(error);
         }
         *replica = candidate;
+        self.rebased |= rebased;
         self.since_base = since_base;
         crate::timing::event(
             "workspace.governance_commit",
@@ -2750,6 +2758,11 @@ impl Workspaces {
         crate::timing::event("workspace.settle.standings", standing, 0);
         let publishing = crate::timing::start();
         let publisher = Arc::clone(&workspace.publisher);
+        if workspace.rebased {
+            publisher.flushed().await;
+            self.archive_workspace_history(workspace).await?;
+            workspace.rebased = false;
+        }
         let epoch = publisher.reconcile(&mut workspace.record.published);
         let workspace_id = workspace.workspace_id();
         let (publications, unreadable) = workspace.unpublished(&host.records);
@@ -2821,6 +2834,30 @@ impl Workspaces {
             sink.settled(&name, workspace.peer().clone());
         }
         let _ = self.inner.changes.send(name);
+    }
+
+    /// Archive what the relay retains of `workspace`'s document, once every
+    /// governance change published before is retained: the workspace starts over
+    /// from the base its next publication carries, and the history before it is
+    /// no newcomer's to read.
+    async fn archive_workspace_history(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
+        let host = &self.inner.host;
+        let workspace_id = workspace.workspace_id();
+        let identity = workspace.workspace().to_owned();
+        host.records.settled(workspace_id).await;
+        let Some((channel, _)) =
+            neighbour_wire::retention(&workspace.peer().workspace_message(), true)
+        else {
+            return Err("the workspace's document has no retention channel".into());
+        };
+        let hosted = host.workspaces.lock().await.get(&workspace_id).cloned();
+        let workspace = hosted.ok_or("the workspace is not hosted here")?;
+        let archived =
+            crate::compaction::owner_run(&workspace, move |store| store.archive_channel(&channel))
+                .await?;
+        drop(workspace);
+        tracing::info!(workspace = %identity, archived, "the workspace's history before an admission is archived");
+        Ok(())
     }
 
     fn revocations(&self) -> RevocationList {

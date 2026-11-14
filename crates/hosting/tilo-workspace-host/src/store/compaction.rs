@@ -275,7 +275,6 @@ impl WorkspaceStore {
 /// replay, under the retained directory, beside the `v2` replay reads.
 pub(crate) const ARCHIVE_DIR: &str = "archive-v1";
 
-#[cfg(feature = "agents")]
 impl WorkspaceStore {
     /// Take every entry of `channel` out of what any replay reads, and keep
     /// it in a new archive under [`ARCHIVE_DIR`]: a workspace's document started
