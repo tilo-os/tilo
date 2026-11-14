@@ -1020,7 +1020,17 @@ impl Task {
         attempt: u32,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> bool {
-        let sleep = n0_future::time::sleep(self.offline(attempt));
+        // The backoff ends when the clock the status names reaches the deadline, not when a
+        // timer started here does.
+        let due = tilo_clock::now()
+            .checked_add(self.offline(attempt))
+            .unwrap_or_else(tilo_clock::now);
+        #[allow(
+            clippy::useless_conversion,
+            reason = "on the page the clock and the timer are one type; on the host the timer's \
+                      instant wraps the clock's"
+        )]
+        let sleep = n0_future::time::sleep_until(due.into());
         tokio::pin!(sleep);
         loop {
             tokio::select! {
