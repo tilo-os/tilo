@@ -930,40 +930,26 @@ fn the_new_environment_sheet_is_as_tall_as_its_one_field() {
     );
 }
 
-tilo_test_env::scenario! {
-    fn the_window_keeps_values_beside_their_keys_and_flips_its_sidebar;
-
-    phase a_wide_window_keeps_each_value_beside_its_key;
-    {
-        let mut app = TestApp::<ApiTesterShell>::capture_at(None, (2560, 1440)).unwrap();
-        app.settle();
-        let targets = app.harness().targets();
-        let field = |suffix: &str| {
-            targets
-                .iter()
-                .find(|(id, _)| id.starts_with("api.kv.Params.") && id.ends_with(suffix))
-                .map_or_else(
-                    || panic!("the blank parameter row's {suffix} field"),
-                    |(_, rect)| *rect,
-                )
-        };
-        let (key, value) = (field(".key"), field(".value"));
-        let readable = f64::from(Theme::dark().tokens.metrics.readable_width);
-        assert!(
-            value.x0 - key.x0 <= readable / 3.0 + 1.0,
-            "the value {value:?} starts within a third of the readable measure of its key {key:?}"
-        );
-    }
-
-    phase the_window_bars_sidebar_button_flips_the_sidebar;
-    // The bar's sidebar button flips the sidebar on every click, in a wide window and in a
-    // narrow one.
-    {
-        ui::framework::testing::check_window_sidebar_button(
-            ui::framework::testing::TestApp::<ApiTesterShell>::new,
-        )
-        .unwrap_or_else(|error| panic!("{error}"));
-    }
+#[test]
+fn a_wide_window_keeps_each_value_beside_its_key() {
+    let mut app = TestApp::<ApiTesterShell>::capture_at(None, (2560, 1440)).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    let field = |suffix: &str| {
+        targets
+            .iter()
+            .find(|(id, _)| id.starts_with("api.kv.Params.") && id.ends_with(suffix))
+            .map_or_else(
+                || panic!("the blank parameter row's {suffix} field"),
+                |(_, rect)| *rect,
+            )
+    };
+    let (key, value) = (field(".key"), field(".value"));
+    let readable = f64::from(Theme::dark().tokens.metrics.readable_width);
+    assert!(
+        value.x0 - key.x0 <= readable / 3.0 + 1.0,
+        "the value {value:?} starts within a third of the readable measure of its key {key:?}"
+    );
 }
 
 tilo_test_env::scenario! {
@@ -1509,4 +1495,14 @@ fn the_requests_name_and_commands_are_in_the_window_bar() {
         );
     })
     .unwrap();
+}
+
+/// The bar's sidebar button flips the sidebar on every click, in a wide window and in a
+/// narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<ApiTesterShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }
