@@ -7,58 +7,18 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
+use crate::support::desk_tree;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::overlays::{POPOVER_MARGIN, POPOVER_WIDTH, Target};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-};
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopNotifications, DesktopSurface};
 use ui::headless::FrameHarness;
 use ui::kurbo::Rect;
 
 const DISPLAY: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-
-fn desk_tree() -> Layout {
-    let tabs = vec![Tab {
-        id: 20,
-        title: "Notes".into(),
-        tile: TileContent::LocalApp {
-            app_id: "so.tilo.notes".into(),
-            label: "Notes".into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }];
-    let group = WindowGroup {
-        id: 3,
-        active_tab: tabs[0].id,
-        tabs,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    };
-    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
-    workspace.strips = vec![Strip {
-        id: StripId(2),
-        name: "Main".into(),
-        window_groups: vec![group],
-    }];
-    let mut tree = Layout {
-        active: workspace.id(),
-        workspaces: vec![workspace],
-        ..Default::default()
-    };
-    tree.active_strip
-        .insert(WorkspaceId::from_u128(1), StripId(2));
-    tree.active_group.insert(StripId(2), 3);
-    tree
-}
 
 /// The chrome over a desk, with the stack the session shares with it.
 fn chrome() -> (FrameHarness, Overlays) {

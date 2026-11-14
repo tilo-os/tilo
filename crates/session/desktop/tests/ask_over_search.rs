@@ -18,57 +18,14 @@ use tilo_desktop::chrome::{
 };
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::Layout;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::headless::FrameHarness;
 
+use crate::support::desk_tree;
 use ui::synthetic_input::{char_key, key_press};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
-
-fn desk_tree() -> Layout {
-    let tabs = vec![window(20, "Notes", "so.tilo.notes")];
-    let group = WindowGroup {
-        id: 3,
-        active_tab: tabs[0].id,
-        tabs,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    };
-    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
-    workspace.strips = vec![Strip {
-        id: StripId(2),
-        name: "Main".into(),
-        window_groups: vec![group],
-    }];
-    let mut tree = Layout {
-        active: workspace.id(),
-        workspaces: vec![workspace],
-        ..Default::default()
-    };
-    tree.active_strip
-        .insert(WorkspaceId::from_u128(1), StripId(2));
-    tree.active_group.insert(StripId(2), 3);
-    tree
-}
 
 /// A host with an ask waiting on the person's avatar, which arrives when a test says so, and which
 /// answers the bar's intents about it as a page does.

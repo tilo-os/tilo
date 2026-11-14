@@ -10,56 +10,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::support::desk_tree;
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use tilo_session_core::surface::SurfaceHost as _;
 use tilo_surface_host::{Placement, WidgetHost};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
-
-fn desk_tree() -> Layout {
-    let tabs = vec![Tab {
-        id: 20,
-        title: "Notes".into(),
-        tile: TileContent::LocalApp {
-            app_id: "so.tilo.notes".into(),
-            label: "Notes".into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }];
-    let group = WindowGroup {
-        id: 3,
-        active_tab: tabs[0].id,
-        tabs,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    };
-    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
-    workspace.strips = vec![Strip {
-        id: StripId(2),
-        name: "Main".into(),
-        window_groups: vec![group],
-    }];
-    let mut tree = Layout {
-        active: workspace.id(),
-        workspaces: vec![workspace],
-        ..Default::default()
-    };
-    tree.active_strip
-        .insert(WorkspaceId::from_u128(1), StripId(2));
-    tree.active_group.insert(StripId(2), 3);
-    tree
-}
 
 /// The chrome over the desk at `scale` : built after `_compositor` opened its backend, as the
 /// session builds its surfaces after its compositor. A host built before the backend is open draws

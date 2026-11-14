@@ -41,6 +41,7 @@ mod retained_popover;
 mod search_overlay;
 #[path = "shortcuts.rs"]
 mod shortcuts;
+mod support;
 #[path = "top_bar_reveal.rs"]
 mod top_bar_reveal;
 #[path = "typing_sync.rs"]
