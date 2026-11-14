@@ -173,10 +173,10 @@ fn undo_of_a_small_step_costs_the_step_not_the_record() {
         step: None,
     };
     // Reading the text once: what an undo that walked the record would cost at least.
-    let reading = std::time::Instant::now();
+    let reading = tilo_clock::now();
     assert!(doc.text(&body).unwrap().len() > MEBIBYTE);
     let read = reading.elapsed();
-    let undoing = std::time::Instant::now();
+    let undoing = tilo_clock::now();
     let cost = tilo_automerge::heap::allocated_by(|| {
         undo.apply_registered(&mut doc, |_| {}, &Words)
             .expect("undo");
