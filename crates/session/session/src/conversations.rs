@@ -590,7 +590,7 @@ impl Conversations {
         &self,
         question: &str,
     ) -> Option<(
-        tilo_session_core::arrangement::Asked,
+        tilo_session_core::layout::Asked,
         Vec<tilo_actions::ResourceSpec>,
     )> {
         let (channel, text) = {
@@ -608,7 +608,7 @@ impl Conversations {
             .borrow_mut()
             .insert(question.to_owned(), (channel.clone(), text.clone()));
         Some((
-            tilo_session_core::arrangement::Asked {
+            tilo_session_core::layout::Asked {
                 conversation: format!("{}/channels/{channel}", chat::Chat::KIND),
                 message: question.to_owned(),
                 turn: turn_address(question),
@@ -736,7 +736,7 @@ fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
     let mut spec =
         tilo_actions::ResourceSpec::new(turn_address(question), chat::views::TURN_KIND, label)
             .with_view(tilo_actions::ResourceViewSpec::new(
-                tilo_session_core::arrangement::TURN_VIEW,
+                tilo_session_core::layout::TURN_VIEW,
                 label.to_owned(),
                 "open",
             ))
@@ -793,8 +793,8 @@ pub(crate) struct TurnSummonses {
     turns_at: Vec<(u64, u64, u64)>,
     /// The one send: what a conversation's composer sends goes through it to Chat.
     sends: crate::send_to::Sends,
-    /// The shell's arrangement: where a turn's whole conversation is opened beside it.
-    arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
+    /// The layout: where a turn's whole conversation is opened beside it.
+    layout: Rc<RefCell<tilo_session_core::layout::Layout>>,
 }
 
 /// What the summonses a [session's summonses](TurnSummonses) publishes depend on: each open
@@ -807,14 +807,14 @@ impl TurnSummonses {
     pub(crate) fn new(
         conversations: Rc<Conversations>,
         sends: crate::send_to::Sends,
-        arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
+        layout: Rc<RefCell<tilo_session_core::layout::Layout>>,
     ) -> Self {
         Self {
             conversations,
             summonses: std::cell::RefCell::new(None),
             turns_at: Vec::new(),
             sends,
-            arrangement,
+            layout,
         }
     }
 }
@@ -949,7 +949,7 @@ impl tilo_service::Service for TurnSummonses {
             } else {
                 actor
             };
-            self.arrangement
+            self.layout
                 .borrow_mut()
                 .open_conversation_of(&asked, resource)
                 .map_err(|why| tilo_actions::DoorError::Unavailable {

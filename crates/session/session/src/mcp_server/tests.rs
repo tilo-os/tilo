@@ -6,7 +6,7 @@ use super::*;
 fn a_turns_open_and_place_stand_beside_its_conversation() {
     let conversation = "chat.workspace/channels/c1";
     let address = |action: &str| {
-        tilo_actions::ActionAddress::new(tilo_session_core::arrangement::RESOURCE, action)
+        tilo_actions::ActionAddress::new(tilo_session_core::layout::RESOURCE, action)
     };
     let resource = serde_json::json!({"resource": "tl:so.tilo.lang.tasks:root-t"});
     let resource = resource.as_object().expect("an object");

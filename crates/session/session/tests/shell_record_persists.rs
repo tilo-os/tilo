@@ -94,7 +94,7 @@ fn note(session: &Session, title: &str) -> String {
     find(&session.resources(), title).unwrap_or_else(|| panic!("the seeded note {title:?}"))
 }
 
-/// Place `resource` on the canvas of the workspace in front, through the arrangement's published
+/// Place `resource` on the canvas of the workspace in front, through the layout's published
 /// `place`, as an agent puts it there.
 fn place(session: &mut Session, resource: &str) -> u64 {
     let (workspace, row, strip, place) = {
@@ -122,15 +122,15 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     .expect("arguments")
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     place
 }
 
 /// Where the canvas stands the resource `record` (by its published id): its point and size, once the
-/// arrangement holds a place for it.
+/// layout holds a place for it.
 fn placed(session: &Session, record: &str) -> Option<(i64, i64, i64, i64)> {
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     let place = reading.places.iter().find(|place| place.record == record)?;
     let strip = reading
         .strips
@@ -164,7 +164,7 @@ fn the_shell_choices_survive_the_session_ending() {
         crate::common::until(&mut session, "the shell's parts", |session| {
             crate::common::on_screen(session, "Notifications").is_some()
         });
-        // The desktop style, as the switch's own action chooses it: a view of the arrangement the
+        // The desktop style, as the switch's own action chooses it: a view of the layout the
         // shell ships (`so.tilo.shell:desktop`).
         let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
         repl.opened(&mut session);

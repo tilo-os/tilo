@@ -510,7 +510,7 @@ impl Session {
                 sends.posted(sent)
             }));
         }
-        doors.add(Rc::new(RefCell::new(layout::Door::new(
+        doors.add(Rc::new(RefCell::new(layout::LayoutActions::new(
             Rc::clone(&layout),
             Rc::new(move || underway.get()),
             find.clone(),

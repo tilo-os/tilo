@@ -50,7 +50,7 @@ fn near(a: f64, b: f64) -> bool {
 /// (the widest box named so — its handle's label is named the same).
 fn place_on_screen(
     session: &Session,
-    place: &tilo_session_core::arrangement::PlaceReading,
+    place: &tilo_session_core::layout::PlaceReading,
 ) -> Option<(f64, f64, f64, f64)> {
     // A place on the canvas is named on its handle by its own title, a window by its name.
     [&place.title, &place.name]
@@ -459,7 +459,7 @@ fn canvas_box(session: &Session, needle: &str) -> Option<(i64, i64, i64, i64)> {
 /// steps in it fill — is the production path.
 fn chat_holds(session: &Session, conversation: &str, question: &str) {
     let turn = format!("chat.workspace.turns:{question}");
-    let asked = tilo_session_core::arrangement::Asked {
+    let asked = tilo_session_core::layout::Asked {
         conversation: conversation.to_owned(),
         message: question.to_owned(),
         turn: turn.clone(),
@@ -486,12 +486,12 @@ fn chat_holds(session: &Session, conversation: &str, question: &str) {
     whole.app_id = Some("chat".to_owned());
     let published = vec![published, whole];
     assert!(
-        session.arrangement().borrow().awaits_turns(),
+        session.layout().borrow().awaits_turns(),
         "the ask waits for Chat to hold it"
     );
-    let stood = session.arrangement().borrow_mut().stand_asked(
+    let stood = session.layout().borrow_mut().stand_asked(
         &|_| Some((asked.clone(), published.clone())),
-        tilo_session_core::arrangement::Busy::default(),
+        tilo_session_core::layout::Busy::default(),
     );
     assert_eq!(stood, 1, "the ask waited for its turn");
 }
@@ -890,7 +890,7 @@ fn inbox_in(
     from: (f64, f64),
     to: (f64, f64),
 ) -> (
-    tilo_session_core::arrangement::PlaceReading,
+    tilo_session_core::layout::PlaceReading,
     (f64, f64, f64, f64),
 ) {
     frame_and_say(session, from, to, "my mails");
@@ -1011,7 +1011,7 @@ fn dragging_a_places_corner_sizes_it() {
         on_screen(&session, CANVAS),
         on_screen(&session, CANVAS_CARET),
         crate::common::strip(&session, crate::common::number(&inbox.strip)),
-        session.arrangement().borrow_mut().last_step(),
+        session.layout().borrow_mut().last_step(),
         session.shell_refusals()
     );
     let (_, _, nw, nh) = place_on_screen(&session, &inbox).expect("the inbox");
@@ -1175,14 +1175,14 @@ fn the_empty_canvas_says_once_what_it_is_for() {
     );
     // The canvas empty again: the place closed, as its handle's close does.
     session
-        .arrangement()
+        .layout()
         .borrow_mut()
         .ask(
             PERSON,
-            tilo_session_core::arrangement::ArrangementAction::Close {
+            tilo_session_core::layout::LayoutAction::Close {
                 place: crate::common::number(&inbox.key),
             },
-            tilo_session_core::arrangement::Busy::default(),
+            tilo_session_core::layout::Busy::default(),
         )
         .unwrap_or_else(|error| panic!("the inbox closes: {error}"));
     until(&mut session, "the canvas empty", |session| {
@@ -1385,7 +1385,7 @@ fn the_whole_conversation_is_reached_from_the_turns_handle() {
     // What the turn's own `conversation` action runs, as its handle's menu offers it (the action
     // itself is the conversations service's, which this test's stand-in for Chat bypasses).
     session
-        .arrangement()
+        .layout()
         .borrow_mut()
         .open_conversation_of(PERSON, &turn.record)
         .unwrap_or_else(|error| panic!("the turn opens its conversation: {error}"));
@@ -1507,12 +1507,12 @@ fn placing_mails_root_without_a_view_stands_the_message_list() {
 /// `questions` names for it: [`chat_holds`] for several asks at once.
 fn chat_holds_each(session: &Session, conversation: &str, questions: &[&str]) {
     let next = std::cell::Cell::new(0_usize);
-    let stood = session.arrangement().borrow_mut().stand_asked(
+    let stood = session.layout().borrow_mut().stand_asked(
         &|_| {
             let question = questions.get(next.get())?;
             next.set(next.get() + 1);
             let turn = format!("chat.workspace.turns:{question}");
-            let asked = tilo_session_core::arrangement::Asked {
+            let asked = tilo_session_core::layout::Asked {
                 conversation: conversation.to_owned(),
                 message: (*question).to_owned(),
                 turn: turn.clone(),
@@ -1528,7 +1528,7 @@ fn chat_holds_each(session: &Session, conversation: &str, questions: &[&str]) {
             published.app_id = Some("chat".to_owned());
             Some((asked, vec![published]))
         },
-        tilo_session_core::arrangement::Busy::default(),
+        tilo_session_core::layout::Busy::default(),
     );
     assert_eq!(stood, questions.len(), "each ask waited for its turn");
 }
@@ -1636,7 +1636,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
     // Chat answered the ask's send with the message it posted; Chat's process is not part of this
     // session, so this stands in for that answer, as `chat_holds` stands in for its record.
     session
-        .arrangement()
+        .layout()
         .borrow()
         .know_posted(std::rc::Rc::new(|_| Some("q7".to_owned())));
     let notes = root_of(&session, "so.tilo.lang.notes");

@@ -605,6 +605,7 @@ d-dpqvjh2f = Launcher
 d-tst43bqy = Fensterzeile
 
 d-outvdzmi = Layouts
+    .w-chromepreset = Rahmenvorgabe
 
 d-5q3okayl = Layoutkarte
     .w-in-use = In Gebrauch
