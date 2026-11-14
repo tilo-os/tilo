@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
+use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
@@ -35,6 +36,9 @@ const POLL: Wait = Wait::from_millis(100);
 const ENTRY_POLL: Wait = Wait::from_millis(5);
 /// How long a workspace's host has to answer an operation of its own.
 const ANSWERING: u32 = 20_000;
+/// How long an operation of the host's own that was still running past
+/// [`ANSWERING`] is followed before it is given up on.
+const FINISHING: Wait = Wait::from_secs(120);
 
 /// A device of a person, in the workspaces its session is in.
 #[derive(Clone)]
@@ -469,10 +473,11 @@ impl Device {
         arguments: Map<String, Value>,
         caller: &str,
     ) -> Result<Value, HostRefusal> {
-        let receipt = self
-            .actions(workspace_id)
+        let actions = self.actions(workspace_id);
+        let caller = Caller::local_person(caller);
+        let receipt = actions
             .invoke(
-                &Caller::local_person(caller),
+                &caller,
                 InvokeRequest {
                     on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
@@ -488,13 +493,37 @@ impl Device {
             .await
             .ok_or_else(|| HostRefusal::unanswered("the host did not answer"))?
             .map_err(|error| HostRefusal::of(&error))?;
+        let unfinished = || HostRefusal::unanswered("the host did not finish what was asked of it");
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Failed { error } => Err(HostRefusal::failed(&error.message)),
             ReceiptStatus::Rejected { error } => Err(HostRefusal::of(&error)),
-            ReceiptStatus::Cancelled { .. } | ReceiptStatus::Accepted => Err(
-                HostRefusal::unanswered("the host did not finish what was asked of it"),
-            ),
+            ReceiptStatus::Cancelled { .. } => Err(unfinished()),
+            // Still running when the wait for its answer ran out (a host
+            // making hundreds of workspaces at once): followed until it ends.
+            ReceiptStatus::Accepted => {
+                let now = tilo_clock::now();
+                let until = now.checked_add(FINISHING).unwrap_or(now);
+                let settled = tilo_actions::remote::settle_with(
+                    &actions,
+                    &caller,
+                    receipt.invocation,
+                    None,
+                    until,
+                )
+                .await
+                .flatten()
+                .ok_or_else(unfinished)?;
+                match settled.update {
+                    InvocationUpdate::Succeeded { output, .. } => {
+                        Ok(output.value.unwrap_or_default())
+                    }
+                    InvocationUpdate::Failed { error, .. } => {
+                        Err(HostRefusal::failed(&error.message))
+                    }
+                    _ => Err(unfinished()),
+                }
+            }
         }
     }
 

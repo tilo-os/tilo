@@ -1634,6 +1634,61 @@ impl HostWorkspaceActions {
     }
 }
 
+/// The state of an invocation that answered `value`.
+fn succeeded(invocation: InvocationId, value: serde_json::Value) -> InvocationState {
+    InvocationState::new(
+        invocation,
+        InvocationUpdate::Succeeded {
+            invocation,
+            output: ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            },
+        },
+    )
+}
+
+/// Answer that `invocation` runs, record it so, and record how it ends once
+/// `work` does: the caller follows it there.
+fn still_running(
+    host: &HostWorkspaceActions,
+    invocation: InvocationId,
+    work: tokio::task::JoinHandle<Result<serde_json::Value, ActionHostError>>,
+) -> InvocationReceipt {
+    let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
+    let receipt = accepted.receipt();
+    host.ledger().complete(&invocation, accepted);
+    let host = host.clone();
+    host.shared.runtime.clone().spawn(async move {
+        let state = match work.await {
+            Ok(Ok(value)) => succeeded(invocation, value),
+            Ok(Err(error)) => failed(invocation, &error.to_string()),
+            Err(stopped) => failed(
+                invocation,
+                &format!("the host's operation stopped: {stopped}"),
+            ),
+        };
+        host.ledger().complete(&invocation, state);
+    });
+    receipt
+}
+
+/// The state of an invocation that ended in `message`.
+fn failed(invocation: InvocationId, message: &str) -> InvocationState {
+    InvocationState::new(
+        invocation,
+        InvocationUpdate::Failed {
+            invocation,
+            error: tilo_actions::ActionFailure {
+                code: "refused".into(),
+                message: message.to_owned(),
+                details: None,
+                retryable: false,
+            },
+        },
+    )
+}
+
 /// [`HostRoomActions`] for the workspace one workspace carries, or (with no
 /// workspace) for the host's own operations asked of it directly.
 #[derive(Clone)]
@@ -1704,31 +1759,47 @@ impl ActionHost for InWorkspace {
             self.workspace_id,
             self.certificate.clone(),
         );
+        // How long the caller waits for the answer in its receipt; past it the
+        // receipt says the invocation runs, and the caller follows it. A burst
+        // of slow operations (a backend making hundreds of workspaces at once)
+        // is answered as each finishes, never left unanswered past the
+        // caller's deadline while it still runs.
+        let wait = request.wait_ms.map(|wait_ms| {
+            std::time::Duration::from_millis(u64::from(wait_ms))
+                .min(tilo_actions::remote::MAX_REMOTE_WAIT)
+        });
+        let runtime = self.host.shared.runtime.clone();
         self.host.spawn(async move {
-            let ran = workspaces
-                .invoke(workspace_id, &caller, certificate.as_ref(), &request)
-                .await;
+            let mut work = runtime.spawn(async move {
+                workspaces
+                    .invoke(workspace_id, &caller, certificate.as_ref(), &request)
+                    .await
+            });
+            let ran = match wait {
+                Some(wait) => match tokio::time::timeout(wait, &mut work).await {
+                    Ok(ran) => ran,
+                    Err(_) => return Ok(still_running(&host, invocation, work)),
+                },
+                None => work.await,
+            };
             match ran {
-                Ok(value) => {
-                    let state = InvocationState::new(
-                        invocation,
-                        InvocationUpdate::Succeeded {
-                            invocation,
-                            output: ActionOutput {
-                                value: Some(value),
-                                resources: Vec::new(),
-                            },
-                        },
-                    );
+                Ok(Ok(value)) => {
+                    let state = succeeded(invocation, value);
                     let receipt = state.receipt();
                     host.ledger().complete(&invocation, state);
                     Ok(receipt)
                 }
                 // Refused before anything changed, or answered from the
                 // workspace's request records on a retry: nothing to remember.
-                Err(error) => {
+                Ok(Err(error)) => {
                     host.ledger().abandon(&invocation);
                     Err(error)
+                }
+                Err(stopped) => {
+                    host.ledger().abandon(&invocation);
+                    Err(ActionHostError::Unavailable {
+                        reason: format!("the host's operation stopped: {stopped}"),
+                    })
                 }
             }
         })
