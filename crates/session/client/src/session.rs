@@ -53,7 +53,7 @@ use agent_run::AgentRunCompletion;
 use connect::Dial;
 pub use connect::{SessionMemberHost, member_host};
 #[cfg(test)]
-use connect::{connect, link_error};
+use connect::{connect, connect_backoff, link_error, transient};
 use entry::{Refusal, refusal};
 use governance::HostGovernance;
 use tilo_relay_protocol::WorkspaceId;

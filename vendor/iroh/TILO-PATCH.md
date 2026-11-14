@@ -129,6 +129,24 @@ out right behind the handshake's answer instead of a round trip later. A
 relay that denies the client ends the connection's stream with that error,
 and the actor dials again as it does for a lost connection.
 
+## A connection burst is not answered by dropping datagrams (`src/socket/transports/relay.rs`, `src/socket/transports/relay/actor.rs`)
+
+The relay actor read each relay message and put its datagrams on the
+endpoint's receive queue with `try_send`, logging `Dropping received relay
+packet: no available capacity` when the queue was full. The queue held 512
+batches, sized for steady traffic: a burst of new connections reaching the
+endpoint at once (each QUIC handshake's Initial and its retransmissions),
+such as many sessions starting together, fills it faster than the endpoint
+drains it. A dropped handshake packet is not harmless: the connection loses
+a round trip at best, and a client that gives up on it starts over. The
+queue is now 1024 batches, and a full queue makes the actor wait for room
+(`handle_relay_msg`) instead of dropping. Waiting pauses this relay
+connection's reads, which is safe: the receive queue's consumer is the
+endpoint's own receive path, never this actor, so it always catches up, and
+the relay's TCP stream carries the pause to the server as backpressure.
+When the queue is gone (the endpoint is closing), the actor shuts the relay
+connection down like any other.
+
 ## Upstream
 
 Prepared for an upstream issue/PR against `n0-computer/iroh` (not opened):
@@ -163,3 +181,13 @@ Prepared for an upstream issue/PR against `n0-computer/iroh` (not opened):
 > `ActiveRelayActor` answers `CheckConnection` for a stream without a local
 > address with `LocalAddrMissing`, and a `wasm_browser` stream never has one.
 > Proposed: ping such a connection like one whose address is still local.
+>
+> **A burst of new connections loses handshake datagrams.** The relay actor
+> moves received datagrams onto the socket's receive queue with `try_send`
+> and logs `Dropping received relay packet: no available capacity` when it
+> is full. The queue (512) is sized for steady traffic; when many connections
+> start at once, the queue fills and a dropped Initial costs a handshake a
+> round trip or the whole attempt. Proposed: a larger queue (1024), and when
+> it is full, await capacity on the send instead of dropping. The consumer
+> is the endpoint's own receive path, so the wait always ends; a relay read
+> paused this way applies backpressure to the relay server.

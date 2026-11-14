@@ -194,9 +194,12 @@ impl Task {
     /// The session is offline after its `attempt`th failed one in a row:
     /// how long it waits before the next, which its status says.
     pub(super) fn offline(&self, attempt: u32) -> Duration {
-        let delay = MAX_BACKOFF.min(Duration::from_millis(
+        let base = MAX_BACKOFF.min(Duration::from_millis(
             250u64.saturating_mul(1u64 << attempt.min(7)),
         ));
+        // Jitter each wait so devices that were refused together do not all
+        // come back in the same instant, only to be refused together again.
+        let delay = MAX_BACKOFF.min(base.mul_f64(0.75 + 0.5 * rand::random::<f64>()));
         let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
         self.reports.change(|status| {
             status.phase = TransportPhase::Offline;

@@ -51,7 +51,11 @@ impl RelayTransport {
     pub(crate) fn new(config: RelayActorConfig, cancel_token: CancellationToken) -> Self {
         let (relay_datagram_send_tx, relay_datagram_send_rx) = mpsc::channel(256);
 
-        let (relay_datagram_recv_tx, relay_datagram_recv_rx) = mpsc::channel(512);
+        // TILO PATCH: sized for a burst of new connections reaching this
+        // endpoint at once, whose handshake datagrams arrive in a batch; the
+        // actor waits for room when even this fills (see `handle_relay_msg`
+        // in `relay/actor.rs`) instead of dropping a datagram.
+        let (relay_datagram_recv_tx, relay_datagram_recv_rx) = mpsc::channel(1024);
 
         let (actor_sender, actor_receiver) = mpsc::channel(256);
 

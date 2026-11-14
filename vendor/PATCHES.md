@@ -11,6 +11,18 @@ on for its relay actor. A page entering a workspace reaches its host a round
 trip sooner. `vendor/iroh-relay/TILO-PATCH.md` has the details and an
 upstream-ready description. Remove it once upstream releases the change.
 
+## iroh relay receive queue under a connection burst
+
+In `vendor/iroh`, the relay actor no longer drops datagrams when the
+endpoint's receive queue is full (`Dropping received relay packet: no
+available capacity`): it waits for room, and the queue is 1024 batches
+instead of 512. A burst of sessions starting at once sends their handshake
+packets through that queue; a dropped one costs the handshake a round trip
+or the attempt. The consumer of the queue is the endpoint's own receive
+path, so the wait ends and the paused relay read becomes backpressure on
+the relay server. See `vendor/iroh/TILO-PATCH.md` for the details and an
+upstream-ready description.
+
 ## Rig Chat tool-name fragments
 
 `rig-core` 0.44.0 is the checksum-verified MIT registry runtime crate. Its

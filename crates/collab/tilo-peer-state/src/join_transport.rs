@@ -340,19 +340,26 @@ mod server {
         }
     }
 
-    /// Run one `what` exchange under a slot of `exchanges` and `timeout`,
-    /// refusing it outright when every slot is taken.
+    /// Run one `what` exchange under a slot of `exchanges` and `timeout`:
+    /// a burst queues for a slot, and only an exchange that cannot get one
+    /// before the timeout fails.
     pub async fn bounded_accept<E: std::fmt::Display>(
         exchanges: &Arc<tokio::sync::Semaphore>,
         timeout: std::time::Duration,
         what: &str,
         exchange: impl Future<Output = Result<(), E>>,
     ) -> Result<(), AcceptError> {
-        let _permit = exchanges.clone().try_acquire_owned().map_err(|_| {
-            AcceptError::from_err(std::io::Error::other(format!(
-                "{what} concurrency limit reached"
-            )))
-        })?;
+        let _permit = tokio::time::timeout(timeout, exchanges.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                AcceptError::from_err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("{what} waited out the queue for a slot"),
+                ))
+            })?
+            .map_err(|_| {
+                AcceptError::from_err(std::io::Error::other(format!("{what} queue closed")))
+            })?;
         tokio::time::timeout(timeout, exchange)
             .await
             .map_err(|_| {

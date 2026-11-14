@@ -95,6 +95,35 @@ async fn transport_refusal_remains_generic_unavailable() {
 }
 
 #[test]
+fn only_an_unanswered_dial_is_tried_again() {
+    // The host was not reached, or closed a handshake it may take next time.
+    assert!(transient(&LinkError::Unavailable("timed out".into())));
+    assert!(transient(&LinkError::Refused("the stream ended".into())));
+    // Answers another attempt cannot change.
+    assert!(!transient(&LinkError::Sign("locked".into())));
+    assert!(!transient(&LinkError::Malformed("bad ack".into())));
+    assert!(!transient(&LinkError::HostChanged));
+    assert!(!transient(&LinkError::PeerVersion { theirs: 0 }));
+}
+
+#[test]
+fn retry_waits_double_with_jitter_and_stay_capped() {
+    // The base wait of each attempt, before jitter: doubling, then capped.
+    for (index, expected_ms) in [500u64, 1000, 2000, 4000, 5000, 5000].iter().enumerate() {
+        let attempt = u32::try_from(index).unwrap().saturating_add(1);
+        let base = std::time::Duration::from_millis(*expected_ms);
+        for _ in 0..32 {
+            let delay = connect_backoff(attempt);
+            assert!(
+                delay >= base.mul_f64(0.75) && delay <= base.mul_f64(1.25),
+                "attempt {attempt} waited {delay:?}, expected around {base:?}",
+            );
+            assert!(delay <= std::time::Duration::from_secs(5));
+        }
+    }
+}
+
+#[test]
 fn every_client_error_has_a_deliberate_link_class() {
     use tilo_relay_protocol::auth::AuthError;
     use tilo_relay_session::ClientError;

@@ -28,6 +28,11 @@ use tilo_relay_protocol::entering::{ENTERING_DEADLINE, Entered, Entry, MAX_ENTER
 /// 64 MiB limit would let a few hundred idle peers pin the host's memory.
 const MAX_HANDSHAKE_FRAME_BYTES: usize = 64 * 1024;
 /// One deadline covers reading the hello, writing the ack and verifying ack2.
+///
+/// A handshake that finds every budget slot taken waits for one inside this
+/// deadline instead of being refused: a burst of devices arriving at once
+/// queues for its turn, and only one that cannot start before the deadline
+/// ends up timing out.
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 /// One shared budget across endpoints, not one allowance per endpoint.
 const MAX_PENDING_HANDSHAKES: usize = 256;
@@ -63,8 +68,9 @@ pub enum EndpointTrust<'a> {
 /// Why a server handshake failed.
 #[derive(Debug, Error)]
 pub enum HandshakeError {
-    /// The stream failed, a frame exceeded the endpoint's limit, the pending
-    /// budget was exhausted (`WouldBlock`) or the deadline elapsed (`TimedOut`).
+    /// The stream failed, a frame exceeded the endpoint's limit, the
+    /// pre-authentication queue was closed or the deadline elapsed
+    /// (`TimedOut`).
     #[error("{stage}: {source}")]
     Io {
         /// The step that failed.
@@ -235,15 +241,19 @@ impl LiveIdentity {
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
-        let permit = PENDING_HANDSHAKES.try_acquire().map_err(|_| busy())?;
         let max_frame = max_frame.min(MAX_HANDSHAKE_FRAME_BYTES);
         let mut hello = n0_future::time::timeout(HANDSHAKE_DEADLINE, async {
+            // A burst past the budget waits for a slot rather than being
+            // refused; the deadline bounds how long it may wait.
+            let _permit = PENDING_HANDSHAKES
+                .acquire()
+                .await
+                .map_err(|_| queue_closed())?;
             decode_hello(&read("read hello", recv, max_frame).await?, send).await
         })
         .await
         .map_err(|_| timed_out())??;
         let Some(entry) = hello.entering.take() else {
-            drop(permit);
             return self
                 .authenticate_hello(trust, &hello, recv, send, max_frame)
                 .await
@@ -253,26 +263,20 @@ impl LiveIdentity {
         let (Some(doorway), Some(binding)) = (doorway, binding) else {
             return Err(HandshakeError::NotEntering);
         };
-        let entry = ENTERING.try_acquire().map_err(|_| busy())?;
-        let entered = n0_future::time::timeout(
-            ENTERING_DEADLINE,
-            enter(self, hello, &binding, send, doorway),
-        )
+        let entered = n0_future::time::timeout(ENTERING_DEADLINE, async {
+            let _entry = ENTERING.acquire().await.map_err(|_| queue_closed())?;
+            enter(self, hello, &binding, send, doorway).await
+        })
         .await
         .map_err(|_| timed_out())?;
-        drop(entry);
-        drop(permit);
         entered.map(|(peer, entered)| (peer, Some(entered)))
     }
 }
 
-fn busy() -> HandshakeError {
+fn queue_closed() -> HandshakeError {
     HandshakeError::Io {
         stage: "handshake",
-        source: std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "too many connections awaiting authentication",
-        ),
+        source: std::io::Error::other("the handshake queue closed"),
     }
 }
 
@@ -348,15 +352,12 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    let permit = budget.try_acquire().map_err(|_| HandshakeError::Io {
-        stage: "handshake",
-        source: std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "too many connections awaiting authentication",
-        ),
-    })?;
     let max_frame = max_frame.min(MAX_HANDSHAKE_FRAME_BYTES);
-    let result = n0_future::time::timeout(HANDSHAKE_DEADLINE, async {
+    n0_future::time::timeout(HANDSHAKE_DEADLINE, async {
+        // A burst past the budget queues for a slot instead of being refused;
+        // the deadline bounds the wait and the exchange together. Errors,
+        // timeouts and cancellation release the slot too, through RAII.
+        let _permit = budget.acquire().await.map_err(|_| queue_closed())?;
         let received;
         let hello = if let Some(hello) = hello {
             hello
@@ -385,11 +386,7 @@ where
     .map_err(|_| HandshakeError::Io {
         stage: "handshake",
         source: std::io::Error::new(std::io::ErrorKind::TimedOut, "handshake timed out"),
-    })?;
-    // Authenticated sessions no longer occupy the pre-authentication budget.
-    // Errors, timeouts and cancellation release it too through RAII.
-    drop(permit);
-    result
+    })?
 }
 
 async fn read<R: AsyncRead + Unpin + Send>(
@@ -670,88 +667,128 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn pending_budget_is_shared_and_released_on_cancellation_and_success() {
+    async fn pending_budget_queues_a_burst_and_releases_on_cancellation_and_success() {
         let identity = identity("host").unwrap();
         let hello = hello(&identity);
         // Local budgets isolate this test from unrelated relay tests.
         let budget = Semaphore::new(MAX_PENDING_HANDSHAKES);
-        let mut streams: Vec<_> = (0..MAX_PENDING_HANDSHAKES)
-            .map(|_| {
-                let (server, client) = tokio::io::duplex(4096);
-                let (recv, send) = split(server);
-                (recv, send, client)
-            })
+        let mut held: Vec<_> = (0..MAX_PENDING_HANDSHAKES)
+            .map(|_| budget.try_acquire().unwrap())
             .collect();
-        let mut pending: Vec<_> = streams
-            .iter_mut()
-            .enumerate()
-            .map(|(index, (recv, send, _))| {
-                Box::pin(authenticate_bounded(
-                    &identity,
-                    trust(),
-                    (index % 2 == 0).then_some(&hello),
-                    recv,
-                    send,
-                    MAX_FRAME_BYTES,
-                    &budget,
-                ))
-            })
-            .collect();
-        for handshake in &mut pending {
-            poll_pending(handshake.as_mut()).await;
-        }
         assert_eq!(budget.available_permits(), 0);
 
+        // A handshake arriving while every slot is taken waits for one: it
+        // neither fails nor starts reading until a slot frees.
         let (server, mut client) = tokio::io::duplex(4096);
         let (mut recv, mut send) = split(server);
-        for supplied in [false, true] {
-            assert_io(
-                &authenticate_bounded(
-                    &identity,
-                    trust(),
-                    supplied.then_some(&hello),
-                    &mut recv,
-                    &mut send,
-                    MAX_FRAME_BYTES,
-                    &budget,
-                )
-                .await
-                .unwrap_err(),
-                "handshake",
-                std::io::ErrorKind::WouldBlock,
-            );
-        }
-        // Cancelling one waiting exchange makes workspace immediately.
-        drop(pending.pop().unwrap());
+        write_frame(&mut client, &postcard::to_allocvec(&hello).unwrap())
+            .await
+            .unwrap();
+        let mut queued = Box::pin(authenticate_bounded(
+            &identity,
+            trust(),
+            None,
+            &mut recv,
+            &mut send,
+            MAX_FRAME_BYTES,
+            &budget,
+        ));
+        poll_pending(queued.as_mut()).await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        poll_pending(queued.as_mut()).await;
+        assert_eq!(budget.available_permits(), 0);
+
+        // Cancelling one held exchange hands its slot to the queue, which
+        // then completes its handshake.
+        drop(held.pop().unwrap());
+        let (result, ()) = tokio::join!(queued, async {
+            answer_challenge(&identity, &mut client).await.unwrap();
+        });
+        assert_eq!(
+            result.unwrap().device_public_key,
+            identity.cert.device_public_key
+        );
+        // A completed handshake frees its slot too.
         assert_eq!(budget.available_permits(), 1);
-        for supplied in [false, true] {
-            let (result, ()) = tokio::join!(
-                authenticate_bounded(
-                    &identity,
-                    trust(),
-                    supplied.then_some(&hello),
-                    &mut recv,
-                    &mut send,
-                    MAX_FRAME_BYTES,
-                    &budget,
-                ),
-                async {
-                    if !supplied {
-                        write_frame(&mut client, &postcard::to_allocvec(&hello).unwrap())
-                            .await
-                            .unwrap();
-                    }
-                    answer_challenge(&identity, &mut client).await.unwrap();
-                },
-            );
-            assert_eq!(
-                result.unwrap().device_public_key,
-                identity.cert.device_public_key
-            );
-            assert_eq!(budget.available_permits(), 1);
-        }
-        drop(pending);
+        drop(held);
         assert_eq!(budget.available_permits(), MAX_PENDING_HANDSHAKES);
+    }
+
+    #[tokio::test]
+    async fn a_burst_past_the_budget_queues_and_every_handshake_completes() {
+        let identity = identity("host").unwrap();
+        let hello_bytes = postcard::to_allocvec(&hello(&identity)).unwrap();
+        let budget = Arc::new(Semaphore::new(1));
+        // The first handshake holds the only slot, waiting for its client.
+        let (server, mut holding) = tokio::io::duplex(4096);
+        let (mut hold_recv, mut hold_send) = split(server);
+        let (hold_identity, hold_budget) = (identity.clone(), Arc::clone(&budget));
+        let holding_task = tokio::spawn(async move {
+            authenticate_bounded(
+                &hold_identity,
+                trust(),
+                None,
+                &mut hold_recv,
+                &mut hold_send,
+                MAX_FRAME_BYTES,
+                &hold_budget,
+            )
+            .await
+        });
+        // Wait until it holds the slot.
+        for _ in 0..1000 {
+            tokio::task::yield_now().await;
+            if budget.available_permits() == 0 {
+                break;
+            }
+        }
+        assert_eq!(budget.available_permits(), 0);
+        // A second handshake finds the slot taken and queues for it.
+        let (server, mut queued_client) = tokio::io::duplex(4096);
+        let (mut queued_recv, mut queued_send) = split(server);
+        write_frame(&mut queued_client, &hello_bytes).await.unwrap();
+        let (queued_identity, queued_budget) = (identity.clone(), Arc::clone(&budget));
+        let queued_task = tokio::spawn(async move {
+            authenticate_bounded(
+                &queued_identity,
+                trust(),
+                None,
+                &mut queued_recv,
+                &mut queued_send,
+                MAX_FRAME_BYTES,
+                &queued_budget,
+            )
+            .await
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!holding_task.is_finished());
+        assert!(
+            !queued_task.is_finished(),
+            "a burst queues for a slot, it does not fail"
+        );
+        assert_eq!(budget.available_permits(), 0);
+        // Completing the first handshake frees the slot, and the queued one
+        // completes in its turn.
+        write_frame(&mut holding, &hello_bytes).await.unwrap();
+        let (first, ()) = tokio::join!(holding_task, async {
+            answer_challenge(&identity, &mut holding).await.unwrap();
+        });
+        assert_eq!(
+            first.unwrap().unwrap().device_public_key,
+            identity.cert.device_public_key
+        );
+        let (second, ()) = tokio::join!(queued_task, async {
+            answer_challenge(&identity, &mut queued_client)
+                .await
+                .unwrap();
+        });
+        assert_eq!(
+            second.unwrap().unwrap().device_public_key,
+            identity.cert.device_public_key
+        );
+        assert_eq!(budget.available_permits(), 1);
     }
 
     #[tokio::test(start_paused = true)]

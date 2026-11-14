@@ -12,6 +12,7 @@
 //! proves itself with the relay handshake on each link that needs it.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_client::Carrier;
@@ -24,6 +25,21 @@ use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
 /// short enough that a leaked page key is bounded by the page's device.
 #[cfg(not(target_arch = "wasm32"))]
 const DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+/// Attempts one connect makes before its host's answer is surfaced.
+///
+/// A burst of devices arriving at once (or a host still finishing its
+/// handshake for the device before) can close or time out a handshake that
+/// works a moment later. The dial and the handshake are idempotent — a
+/// repeated entry is answered again — so it is tried a few times before the
+/// session's own backoff takes over.
+const CONNECT_ATTEMPTS: u32 = 3;
+
+/// The first wait between those attempts; each doubles up to
+/// [`CONNECT_BACKOFF_MAX`], and each is jittered so a burst does not retry
+/// in lockstep.
+const CONNECT_BACKOFF: Duration = Duration::from_millis(500);
+const CONNECT_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 /// The dialer a session reaches its host through, and this device's
 /// statement that its endpoint speaks for it, kept for reconnects.
@@ -67,9 +83,31 @@ impl Dial {
 
 impl Task {
     /// The session to the host, dialled from the endpoint this session keeps.
+    ///
+    /// A dial or handshake that fails without a final answer is tried a few
+    /// times with jittered, doubling waits before its error reaches the
+    /// session loop, which then backs off and retries on its own.
     pub(super) async fn connect(&mut self) -> Result<RelayClient, LinkError> {
         let access = self.entry_access().await;
-        connect_entering(&self.config, access, self.signer.as_ref(), &mut self.dial).await
+        let mut attempt: u32 = 0;
+        loop {
+            let error = match connect_entering(
+                &self.config,
+                access.clone(),
+                self.signer.as_ref(),
+                &mut self.dial,
+            )
+            .await
+            {
+                Ok(client) => return Ok(client),
+                Err(error) => error,
+            };
+            attempt = attempt.saturating_add(1);
+            if attempt >= CONNECT_ATTEMPTS || !transient(&error) {
+                return Err(error);
+            }
+            n0_future::time::sleep(connect_backoff(attempt)).await;
+        }
     }
 
     /// Ask the host `approval` from the endpoint this session dials it from,
@@ -208,6 +246,23 @@ async fn sign_delegation(
         .map_err(|error| LinkError::Sign(error.to_string()))?;
     *slot = Some(encoded.clone());
     Ok(encoded)
+}
+
+/// Whether the same dial can work a moment later: the host was not reached,
+/// or it ended a handshake without giving a reason to act on. A refusal it
+/// explained, a host that changed, this device's own signing and a version
+/// mismatch stay as they are.
+pub(super) fn transient(error: &LinkError) -> bool {
+    matches!(error, LinkError::Unavailable(_) | LinkError::Refused(_))
+}
+
+/// The wait before attempt `attempt` (1 for the first retry): doubling from
+/// [`CONNECT_BACKOFF`] up to [`CONNECT_BACKOFF_MAX`], jittered by up to a
+/// quarter either way.
+pub(super) fn connect_backoff(attempt: u32) -> std::time::Duration {
+    let base = CONNECT_BACKOFF_MAX
+        .min(CONNECT_BACKOFF.saturating_mul(1u32 << attempt.saturating_sub(1).min(5)));
+    CONNECT_BACKOFF_MAX.min(base.mul_f64(0.75 + 0.5 * rand::random::<f64>()))
 }
 
 /// How a failed dial reads to the session loop: reachability

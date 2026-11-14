@@ -658,7 +658,9 @@ impl ActiveRelayActor {
                     };
                     match msg {
                         Ok(msg) => {
-                            self.handle_relay_msg(msg, &mut state);
+                            if !self.handle_relay_msg(msg, &mut state).await {
+                                break Ok(());
+                            }
                             // reset the ping timer, we have just received a message
                             ping_interval.reset();
                         },
@@ -681,7 +683,21 @@ impl ActiveRelayActor {
         res.map_err(|err| state.map_err(err))
     }
 
-    fn handle_relay_msg(&mut self, msg: RelayToClientMsg, state: &mut ConnectedRelayState) {
+    /// Handle one message from the relay server.
+    ///
+    /// TILO PATCH: this waits for the socket's receive queue instead of
+    /// dropping a datagram when it is full. A burst of new connections (each
+    /// handshake's Initial arrives this way) fills the queue faster than the
+    /// endpoint drains it; a dropped Initial or handshake packet fails a
+    /// connection that then has to start over. Waiting pauses the relay read
+    /// here, which is safe: the receive queue's consumer is the endpoint's
+    /// own receive path, never this actor, so it always catches up. Returns
+    /// `false` once that queue is gone, when the endpoint is shutting down.
+    async fn handle_relay_msg(
+        &mut self,
+        msg: RelayToClientMsg,
+        state: &mut ConnectedRelayState,
+    ) -> bool {
         match msg {
             RelayToClientMsg::Datagrams {
                 remote_endpoint_id,
@@ -700,12 +716,18 @@ impl ActiveRelayActor {
                     state.endpoints_present.insert(remote_endpoint_id);
                 }
 
-                if let Err(err) = self.relay_datagrams_recv.try_send(RelayRecvDatagram {
-                    url: self.url.clone(),
-                    src: remote_endpoint_id,
-                    datagrams,
-                }) {
-                    warn!("Dropping received relay packet: {err:#}");
+                if self
+                    .relay_datagrams_recv
+                    .send(RelayRecvDatagram {
+                        url: self.url.clone(),
+                        src: remote_endpoint_id,
+                        datagrams,
+                    })
+                    .await
+                    .is_err()
+                {
+                    trace!("Receive queue closed, shutdown");
+                    return false;
                 }
             }
             RelayToClientMsg::EndpointGone(endpoint_id) => {
@@ -741,6 +763,7 @@ impl ActiveRelayActor {
                 "got unknown RelayToClientMsg but iroh is released in sync with iroh-relay"
             ),
         }
+        true
     }
 
     /// Run the actor main loop while sending to the relay server.
@@ -801,7 +824,11 @@ impl ActiveRelayActor {
                         break Err(e!(RunError::StreamClosedServer));
                     };
                     match msg {
-                        Ok(msg) => self.handle_relay_msg(msg, state),
+                        Ok(msg) => {
+                            if !self.handle_relay_msg(msg, state).await {
+                                break Ok(());
+                            }
+                        }
                         Err(err) => break Err(e!(RunError::ClientStreamRead, err)),
                     }
                 }
