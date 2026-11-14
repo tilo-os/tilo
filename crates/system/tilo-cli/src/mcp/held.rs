@@ -94,7 +94,7 @@ fn socket_dir(device_dir: &Path) -> Result<PathBuf, String> {
 
 /// A connection to the device's holder when one listens, starting none.
 pub(crate) fn connect(place: &Place) -> Option<UnixStream> {
-    UnixStream::connect(&place.socket).ok()
+    tilo_files::native::socket::connect(&place.socket).ok()
 }
 
 /// Start the device's holder, the peer, unless one listens already: what
@@ -123,7 +123,7 @@ fn reach_starting(
         .unwrap_or_else(Instant::now);
     let mut started: Option<std::process::Child> = None;
     loop {
-        match UnixStream::connect(&place.socket) {
+        match tilo_files::native::socket::connect(&place.socket) {
             Ok(stream) => return Ok(stream),
             Err(error) if Instant::now() >= deadline => {
                 return Err(format!(
@@ -306,7 +306,11 @@ async fn serve_held<E: Enter>(
     use std::os::unix::fs::PermissionsExt as _;
     // A socket left by a holder that ended without removing it.
     let _ = std::fs::remove_file(&place.socket);
-    let listener = tokio::net::UnixListener::bind(&place.socket)
+    let listener = tilo_files::native::socket::bind(&place.socket)
+        .and_then(|listener| {
+            listener.set_nonblocking(true)?;
+            tokio::net::UnixListener::from_std(listener)
+        })
         .with_context(|| format!("listen at {}", place.socket.display()))?;
     std::fs::set_permissions(&place.socket, std::fs::Permissions::from_mode(0o600))?;
     let linger = match holding {
