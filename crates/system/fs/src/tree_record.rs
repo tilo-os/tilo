@@ -36,6 +36,12 @@ use crate::namespace::Namespace;
 /// endpoint.
 pub use fs_protocol::tree::FILES_APP;
 
+/// The record a workspace's tree is, as the device that publishes it names it.
+#[must_use]
+pub fn record() -> String {
+    collab_types::person_record_id(fs_protocol::tree::TREE_KIND)
+}
+
 /// How long the writer waits before dialing the session again after its connection ended: the session
 /// may restart under a daemon that outlives it.
 const RECONNECT: Duration = Duration::from_secs(2);
@@ -207,7 +213,7 @@ impl TreePublisher {
         credentials: &PeerCredentials,
         identity: &Path,
     ) -> Result<Self> {
-        let record = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
+        let record = record();
         let channel = runtime_collab::route::channel_key::format(FILES_APP, cluster, &record);
         let presentation = CertifiedJoinIdentity {
             workspace_id: cluster.to_owned(),
@@ -675,6 +681,6 @@ impl TreePublisher {
 
     /// The record this device publishes.
     fn record() -> String {
-        collab_types::person_record_id(fs_protocol::tree::TREE_KIND)
+        crate::tree_record::record()
     }
 }

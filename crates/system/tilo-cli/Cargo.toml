@@ -34,9 +34,6 @@ chrono = { workspace = true, features = ["std"] }
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
-# What an uploaded file is, from its own bytes: which app opens it, so
-# `tilo files put` lands it in that app's record.
-tilo-content-types = { path = "../content-types" }
 rustix = { workspace = true, features = ["fs", "std", "process"] }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the

@@ -1191,6 +1191,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The app `name` means: a running one by its id or last part, else an
     /// installed one the workspace offers to open.
     async fn app_ref(&self, name: &str) -> Result<AppRef, String> {
+        // Files is every workspace's own folder, served by the framework
+        // rather than installed into it: `files#open` reaches it wherever the
+        // workspace is, and puts a file into its tree.
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "files" | "file-explorer" | "so.tilo.file-explorer"
+        ) {
+            return Ok(AppRef::Installed {
+                app_id: tilo_fs::tree_record::FILES_APP.to_owned(),
+                opens: true,
+            });
+        }
         let (name, instance) = match name.rsplit_once('@') {
             Some((app, instance)) if !instance.trim().is_empty() => {
                 (app.trim(), Some(instance.trim()))

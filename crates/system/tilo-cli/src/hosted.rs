@@ -151,23 +151,26 @@ pub enum WorkspacesCmd {
 
 #[derive(Subcommand)]
 pub enum FilesCmd {
-    /// Upload files, or whole folders, into a workspace: each file lands in
-    /// the app that opens it and prints that record's path, or prints the
-    /// reference of bytes no app opens.
+    /// Upload files, or whole folders, into a workspace's file tree: each
+    /// file is written where the workspace keeps its files, and prints its
+    /// path there.
     #[command(
         after_help = "A folder goes up whole, keeping its structure: `tilo files put notes/` \
-                      keeps `notes/2026/plan.md` called `2026/plan.md`. Each file lands in the app \
-                      that opens its bytes: a PDF in PDF Viewer, a picture in Photos, any text \
-                      file (a note, JSON, a shell script) in Notes. A file larger than one \
-                      request carries goes up in pieces, and a connection that fails resumes \
-                      where it stopped. `--store` puts the bytes only, with no record."
+                      keeps `notes/2026/plan.md` called `notes/2026/plan.md`, and `--to docs` \
+                      puts it at `docs/notes/2026/plan.md`. A file larger than one request \
+                      carries goes up in pieces, and a connection that fails resumes where it \
+                      stopped; putting it again over a file of the same name replaces that \
+                      file's content. `--store` puts the bytes only, with no file."
     )]
     Put {
         /// The files and folders to upload, by their paths here.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
+        /// The folder in the workspace to put them in, default its root.
+        #[arg(long)]
+        to: Option<String>,
         /// Put the bytes only: print each `tilo.content:` reference, and
-        /// import nothing.
+        /// write no file.
         #[arg(long)]
         store: bool,
     },
@@ -638,8 +641,16 @@ pub fn files(reach: Reach<'_>, workspace: &str, cmd: FilesCmd) -> ExitCode {
         let client = Client::open(reach)?;
         let workspace = workspace_id(&client, workspace).await?;
         match cmd {
-            FilesCmd::Put { paths, store } => {
-                put_files(&client, &workspace, &paths, store, reach.json).await
+            FilesCmd::Put { paths, to, store } => {
+                put_files(
+                    &client,
+                    &workspace,
+                    &paths,
+                    to.as_deref(),
+                    store,
+                    reach.json,
+                )
+                .await
             }
             FilesCmd::Get { content, output } => {
                 get_content(&client, &workspace, &content, output.as_deref(), reach.json).await
@@ -655,12 +666,13 @@ struct Uploading {
     name: String,
 }
 
-/// Upload `paths` into `workspace`, each file landing in the app that opens
-/// its type, and print where each one landed.
+/// Upload `paths` into `workspace`'s file tree, in the folder `to` when one
+/// is named, and print where each file is there.
 async fn put_files(
     client: &Client,
     workspace: &str,
     paths: &[PathBuf],
+    to: Option<&str>,
     store: bool,
     json: bool,
 ) -> Result<ExitCode> {
@@ -688,13 +700,13 @@ async fn put_files(
     let mut rows = Vec::new();
     let mut failures = Vec::new();
     for (file, content) in &uploaded {
-        let landed = if store {
+        let placed = if store {
             Ok(None)
         } else {
-            land(client, workspace, file, content).await
+            put_in_tree(client, workspace, file, to, content).await
         };
-        let record = match landed {
-            Ok(record) => record,
+        let path = match placed {
+            Ok(path) => path,
             Err(why) => {
                 failures.push(format!("{}: {why:#}", file.name));
                 None
@@ -703,7 +715,7 @@ async fn put_files(
         rows.push(json!({
             "name": file.name,
             "content": content,
-            "record": record.as_deref(),
+            "path": path.as_deref(),
         }));
     }
     if json {
@@ -714,12 +726,11 @@ async fn put_files(
     } else {
         for row in &rows {
             let name = text(row, "name");
-            match (row.get("record").and_then(Value::as_str), store) {
-                (Some(record), _) => println!("{record}  {name}"),
+            match (row.get("path").and_then(Value::as_str), store) {
+                (Some(path), _) => println!("{path}  {name}"),
                 (None, true) => println!("{}  {name}", text(row, "content")),
                 (None, false) => println!(
-                    "{}  {name}  (no app opens its bytes: they are in the workspace under that \
-                     reference)",
+                    "{}  {name}  (no file was written: its bytes are in the workspace)",
                     text(row, "content")
                 ),
             }
@@ -727,7 +738,7 @@ async fn put_files(
     }
     if !failures.is_empty() {
         bail!(
-            "{} of the {} files are in the workspace but no record holds them:\n  {}",
+            "{} of the {} files went up but are not in the workspace's files:\n  {}",
             failures.len(),
             rows.len(),
             failures.join("\n  ")
@@ -786,56 +797,56 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
     Ok(found)
 }
 
-/// Land `file` in the app that opens its type, and answer the record it
-/// landed in.
+/// Write `file` into `workspace`'s file tree, in the folder `to` when one is
+/// named, and answer its path there.
 ///
-/// The app is the one the file's own bytes name ([`tilo_content_types::landing`]),
-/// and the file is opened in it as the workspace opens any file
-/// (`<app>#open content=…`): an app that keeps one document per record
-/// opens a record of its own for it, and one that keeps many files in a
-/// record takes it into the one it keeps. The record it answers is the one
-/// the person opens, and the one search finds, as `<app>@<record>`.
-async fn land(
+/// The file's content is opened in Files (`files#open`), which is the
+/// workspace's folder: the bytes go where the workspace keeps its files, and
+/// the node names them, so every member's folder shows the file.
+async fn put_in_tree(
     client: &Client,
     workspace: &str,
     file: &Uploading,
+    to: Option<&str>,
     content: &str,
 ) -> Result<Option<String>> {
-    let head = read_head(&file.path)?;
-    let Some(landing) = tilo_content_types::landing(&head, &file.name) else {
-        return Ok(None);
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(to) = to.map(str::trim).filter(|to| !to.is_empty()) {
+        parts.push(to.trim_matches('/'));
+    }
+    let folder = parent_of(&file.name);
+    if !folder.is_empty() {
+        parts.push(&folder);
+    }
+    let dir = parts.join("/");
+    let name = file_base(&file.name);
+    let args = if dir.is_empty() {
+        json!({"content": content, "name": name})
+    } else {
+        json!({"content": content, "name": name, "dir": dir})
     };
     let title = format!("Upload {}", file.name);
-    let args = json!({"content": content, "name": file.name});
     let answer = client
-        .act(workspace, landing.app, "open", &args, &title)
+        .act(workspace, "files", "open", &args, &title)
         .await?;
-    let provider = answer
-        .pointer("/result/provider")
+    let path = answer
+        .pointer("/result/path")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("{} opened no record: {answer}", landing.app))?;
-    Ok(Some(format!("{}@{provider}", landing.app)))
+        .ok_or_else(|| anyhow!("Files did not say where the file is: {answer}"))?;
+    Ok(Some(path.to_owned()))
 }
 
-/// The first bytes of the file at `path`: what it takes to tell what it is.
-fn read_head(path: &Path) -> Result<Vec<u8>> {
-    use std::io::Read as _;
-    let mut file =
-        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut head = vec![0_u8; tilo_content_types::HEAD_BYTES];
-    let mut read = 0;
-    while let Some(room) = head.get_mut(read..) {
-        if room.is_empty() {
-            break;
-        }
-        match file.read(room) {
-            Ok(0) => break,
-            Ok(bytes) => read = read.saturating_add(bytes),
-            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-        }
-    }
-    head.truncate(read);
-    Ok(head)
+/// The folder part of an uploaded file's name in the workspace
+/// (`notes/2026` of `notes/2026/plan.md`), empty for one at the root.
+fn parent_of(name: &str) -> String {
+    name.rsplit_once('/')
+        .map(|(folder, _)| folder.to_owned())
+        .unwrap_or_default()
+}
+
+/// The last part of an uploaded file's name (`plan.md`).
+fn file_base(name: &str) -> String {
+    name.rsplit('/').next().unwrap_or(name).to_owned()
 }
 
 /// An upload's progress, as a person at a terminal sees it: the file's name,
@@ -1341,8 +1352,8 @@ mod tests {
             ),
             ("POST", route) if route.ends_with("/actions/open") => json_reply(
                 200,
-                json!({"status": "ok", "path": "pdf-viewer#open", "run": "run-1",
-                    "result": {"provider": "record-1"}}),
+                json!({"status": "ok", "path": "files#open", "run": "run-1",
+                    "result": {"path": "passport.png", "content": "tilo.content:abc"}}),
             ),
             ("GET", route) if route.contains("/content/") => {
                 Some(test_http::Reply::status(200).body(b"hello".to_vec()))
@@ -1433,6 +1444,7 @@ mod tests {
                 "applicant-jane-doe",
                 FilesCmd::Put {
                     paths: vec![file],
+                    to: None,
                     store: false,
                 },
             );
@@ -1449,15 +1461,19 @@ mod tests {
                 Some("application/octet-stream")
             );
             assert!(upload.header("idempotency-key").is_some());
-            // Its bytes are text, so it lands in Notes: the host opens a
-            // record for it with the reference the upload answered.
-            let landed = put.last().expect("the landing");
+            // The bytes are then written into the workspace's files: a Files
+            // open names the content and the name it takes, and answers the
+            // path it is at.
+            let placed = put
+                .iter()
+                .find(|request| request.target.ends_with("/actions/open"))
+                .expect("the file is put into the workspace");
             assert_eq!(
-                landed.target,
-                format!("/v1/workspaces/{WORKSPACE}/resources/notes/actions/open")
+                placed.target,
+                format!("/v1/workspaces/{WORKSPACE}/resources/files/actions/open")
             );
             assert_eq!(
-                serde_json::from_slice::<Value>(&landed.body).unwrap(),
+                serde_json::from_slice::<Value>(&placed.body).unwrap(),
                 json!({"content": "tilo.content:abc", "name": "passport.png"})
             );
 

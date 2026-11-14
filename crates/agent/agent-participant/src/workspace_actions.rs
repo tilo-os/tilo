@@ -48,6 +48,7 @@
 //! ([`WorkspaceRecordsLink::host_keys`]), for each record a request reads or
 //! acts on, fresh for every act.
 
+mod arguments;
 mod bounded;
 mod catalogue;
 mod catch_up;
@@ -67,6 +68,8 @@ mod reads;
 mod run_context;
 mod run_voice;
 mod terminal;
+mod tree_put;
+pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use link::{FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceRecordsLink};
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
@@ -100,7 +103,7 @@ use tilo_actions::remote::{
     provider_workspace,
 };
 use tilo_actions::{
-    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
+    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -834,7 +837,7 @@ impl WorkspaceState {
 
 /// What a request must have opened before it reads the workspace.
 #[derive(Clone, Copy, Debug)]
-enum Needs<'a> {
+pub(super) enum Needs<'a> {
     /// The workspace joined and nothing sealed: a new record of the workspace.
     Joined,
     /// The workspace listed: every record whose keys are on their way, waited for
@@ -1272,7 +1275,7 @@ fn settles(error: &ActionFailure) -> bool {
 }
 
 /// The outcome of an action whose change could not be committed.
-fn commit_failed(message: String, retryable: bool) -> Outcome {
+pub(super) fn commit_failed(message: String, retryable: bool) -> Outcome {
     Outcome::Failed(ActionFailure {
         code: "commit_failed".into(),
         message,
@@ -2368,7 +2371,8 @@ impl Worker {
                 target.address.action == APPLICATION_OPEN_ACTION
                     || target.address.action == APPLICATION_START_ACTION
             })
-            .filter(|app| self.catalogue.has(app))
+            // Files is the workspace's own folder, not an app this host runs.
+            .filter(|app| self.catalogue.has(app) || *app == tilo_fs::tree_record::FILES_APP)
             .map(str::to_owned)
     }
 
@@ -2869,19 +2873,6 @@ impl Worker {
             value: Some(serde_json::json!({ "url": url })),
             resources: Vec::new(),
         })
-    }
-}
-
-/// The arguments an invocation carries, as the door binds them.
-fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_json::Value> {
-    match argument {
-        InvokeArgument::None => serde_json::Map::new(),
-        InvokeArgument::Text(text) => {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(PROMPTED_PARAM.into(), text.clone().into());
-            arguments
-        }
-        InvokeArgument::Json(arguments) => arguments.clone(),
     }
 }
 

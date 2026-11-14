@@ -135,6 +135,9 @@ tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 # The content records reference: lent to a record's view, held in memory in
 # its worker, carried between the two by hash.
 tilo-content = { version = "0.1.0", path = "../../system/content" }
+# The workspace tree a put file becomes a node of, written as its mount writes it.
+tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
+fs-protocol = { path = "../../system/fs-protocol" }
 # What an uploaded file is, from its first bytes: the media type the store
 # keeps it under.
 tilo-content-types = { path = "../../system/content-types" }

@@ -88,14 +88,14 @@ mod member_own;
 #[path = "workspace_actions/member_roles.rs"]
 mod member_roles;
 #[cfg(test)]
-#[path = "workspace_actions/opened_files.rs"]
-mod opened_files;
-#[cfg(test)]
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;
 #[cfg(test)]
 #[path = "workspace_actions/public_records.rs"]
 mod public_records;
+#[cfg(test)]
+#[path = "workspace_actions/put_files.rs"]
+mod put_files;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]

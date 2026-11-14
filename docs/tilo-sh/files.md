@@ -1,7 +1,17 @@
 # Files
 
-A workspace keeps files the way it keeps everything else: through the apps, and by reference. Bytes go up
-once, the host names them by their hash, and an action takes that name.
+A workspace has one folder. It is the workspace's file tree, every member's Files window shows it, and a
+machine that logged in sees it as `~/<workspace>`. A file gets into a workspace by being written there.
+
+Bytes go up once, the host names them by their hash, and a file in the tree names that hash.
+
+```sh
+tilo files put passport.png -w jane-doe             # passport.png
+tilo files put ./contracts -w jane-doe --to docs   # docs/contracts/…, the folder kept
+```
+
+The upload puts the bytes in the workspace and writes the file into the tree, at the folder `--to` names,
+under the names they have here. The same name put again takes the new content, as a copy over a file does.
 
 ## Upload once, name it by its hash
 
@@ -22,6 +32,7 @@ the reference:
 
 | To | Action |
 | :--- | :--- |
+| Put a file in the workspace's folder | `files#open` with `content`, `name`, and `dir` for a folder |
 | Open a PDF in PDF Viewer | `pdf-viewer#import-pdf-content` with `content` and `name` |
 | Read a document in Writer | `word-processor#read-content` with `content` and `name` |
 | Put a picture in a note | Notes' `keep-image`, or `place-image` with a page |
@@ -100,24 +111,23 @@ echo "the letter is $(wc -c < letter.docx) bytes, a Word file: $([[ $(head -c 2 
 
 ## From a shell
 
-`tilo files put` uploads the bytes and lands each file in the app that opens them: a PDF in PDF Viewer,
-a Word document in Writer, a workbook in Sheets, a picture in Photos, and a markdown or plain-text
-file in Notes. Each line it prints is the record the
-file landed in, or, for bytes no app opens, the reference they are kept under:
+`tilo files put` uploads the bytes and writes each file into the workspace's folder. Each line it prints
+is the file's path there:
 
 ```sh
-tilo files put passport.png -w jane-doe                 # photos@6f1c…  passport.png
-tilo files put ./contracts -w jane-doe                  # a folder goes up whole, keeping its structure
-tilo files put config.json -w jane-doe --store          # the bytes only: prints tilo.content:…
+tilo files put passport.png -w jane-doe                          # passport.png
+tilo files put scan.pdf -w jane-doe --to forms                   # forms/scan.pdf
+tilo files put ./contracts -w jane-doe                           # a folder goes up whole, keeping its structure
+tilo files put config.json -w jane-doe --store                   # the bytes only: prints tilo.content:…
 tilo -w jane-doe do pdf-viewer#import-pdf-content \
-  content=tilo.content:… name=application.pdf           # an app that takes a reference, by hand
-tilo -w jane-doe do word-processor#export-content format=docx     # answers a reference
-tilo files get tilo.content:… -w jane-doe -o cover-letter.docx    # or straight to standard output
+  content=tilo.content:… name=application.pdf                    # an app that takes a reference, by hand
+tilo -w jane-doe do word-processor#export-content format=docx    # answers a reference
+tilo files get tilo.content:… -w jane-doe -o cover-letter.docx   # or straight to standard output
 ```
 
-`--store` imports nothing: the bytes are in the workspace, named by their hash, for an action you name
+`--store` writes no file: the bytes are in the workspace, named by their hash, for an action you name
 yourself. Folders keep their names from the folder you gave: `tilo files put notes/` uploads
-`notes/2026/plan.md` as `2026/plan.md`.
+`notes/2026/plan.md` as `notes/2026/plan.md`, and `--to docs` puts it at `docs/notes/2026/plan.md`.
 
 ## Who may
 

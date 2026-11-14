@@ -432,7 +432,7 @@ pub struct NamespaceChangeToken {
 fn hash_to_hex(h: &Hash) -> String {
     hex::encode(h.as_bytes())
 }
-fn hash_from_hex(s: &str) -> Option<Hash> {
+pub(crate) fn hash_from_hex(s: &str) -> Option<Hash> {
     let bytes = hex::decode(s).ok()?;
     let arr: [u8; 32] = bytes.try_into().ok()?;
     Some(Hash::from(arr))

@@ -1,6 +1,7 @@
 //! Opening an app on a file the workspace holds: `app.<app>#open` given the
 //! file's `content` (and its `name`), as a desktop opens a file in the app
-//! that opens its type.
+//! that opens its type. Opened in Files, the same call writes the file into
+//! the workspace's own folder instead ([`super::tree_put`]).
 //!
 //! An app that keeps one document per record (PDF Viewer, Writer, Slides,
 //! Sheets) opens a record of its own for the file, so a folder of PDFs is a
@@ -174,6 +175,11 @@ impl Worker {
         let landing = match &file {
             Some(file) => {
                 let app = self.asked_app(target).ok_or_else(super::unknown_action)?;
+                // A workspace has one folder, and Files is it: a file opened
+                // in it is written into the tree, not into an app's record.
+                if app == tilo_fs::tree_record::FILES_APP {
+                    return self.put_in_workspace(workspace_id, caller, request, named);
+                }
                 Some(self.landing_of(workspace_id, &app, file)?)
             }
             None => None,
