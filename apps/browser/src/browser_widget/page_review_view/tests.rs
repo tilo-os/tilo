@@ -52,6 +52,16 @@ fn eventually(app: &mut App, what: &str, mut holds: impl FnMut(&mut App) -> bool
     }
 }
 
+/// Run the window's frames with its clock reading `at`: what the window
+/// does on a timer by then, it does in these frames, and the test waits for
+/// none of it.
+fn frames_at(app: &mut App, at: ui::time::Instant) {
+    ui::time::testing::with_monotonic_time(at, || {
+        app.harness().relayout();
+        app.settle();
+    });
+}
+
 /// The action `id` the window publishes on its page.
 fn page_action(app: &mut App, id: &str) -> Option<ActionSpec> {
     fn find(resources: &[ResourceSpec], wanted: &str) -> Option<ResourceSpec> {
@@ -485,13 +495,21 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
     assert!(!arrival.contains("Changed"), "{arrival}");
 
     // The page's own script rewrites the answer. No action ran, so nothing
-    // tells the review: it finds out by reading the page.
+    // tells the review: it finds out by reading the page, once what it read
+    // is as old as it lets it get.
     let mut changed = by("agent:ada", 1);
     changed["changed"] = json!(true);
     page_holds(
         &engine,
         &[("Arrival", "date", "2027-02-10", changed)],
         std::slice::from_ref(&filled),
+    );
+    let reads = field_reads(&engine);
+    frames_at(&mut app, ui::time::now() + super::REREAD_EVERY);
+    assert_eq!(
+        field_reads(&engine),
+        reads + 1,
+        "the review reads the page again by itself, once"
     );
     eventually(&mut app, "the changed field is marked", |app| {
         row_says(app, "Arrival", &["Changed since it was set"])
@@ -785,7 +803,10 @@ fn the_review_follows_what_the_engine_tells_and_reads_on_no_timer() {
     let before = field_reads(&engine);
 
     // The page's own script rewrites the answer. Longer than a timer would
-    // take passes, and nothing is read: nothing said the page changed.
+    // take passes, and nothing is read: nothing said the page changed. The
+    // window's clock is moved there, through each moment an engine that
+    // tells nothing is read again at
+    // (`a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page`).
     let mut changed = by("agent:ada", 1);
     changed["changed"] = json!(true);
     page_holds(
@@ -793,10 +814,19 @@ fn the_review_follows_what_the_engine_tells_and_reads_on_no_timer() {
         &[("Arrival", "date", "2027-02-10", changed)],
         std::slice::from_ref(&filled),
     );
-    app.harness()
-        .wait_until(ui::time::Duration::from_millis(2500), |_| false);
-    app.settle();
-    assert_eq!(field_reads(&engine), before, "nothing is read on a timer");
+    let quiet = ui::time::now();
+    for passed in [
+        super::REREAD_EVERY,
+        2 * super::REREAD_EVERY,
+        ui::time::Duration::from_millis(2500),
+    ] {
+        frames_at(&mut app, quiet + passed);
+        assert_eq!(
+            field_reads(&engine),
+            before,
+            "nothing is read on a timer, {passed:?} on"
+        );
+    }
     assert!(row_says(&mut app, "Arrival", &["2027-02-03"]));
 
     // The engine tells of the field. It says which, never what it holds:
