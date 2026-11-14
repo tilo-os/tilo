@@ -2639,289 +2639,301 @@ type = "gui"
         .expect("manifest")
     }
 
-    #[test]
-    fn metadata_comes_from_the_manifest() {
-        let metadata =
-            AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
-        assert_eq!(metadata.application_id, "so.example.field_notes");
-        assert_eq!(metadata.label, "Field Notes");
-        assert_eq!(metadata.version_name, "1.2.3");
-        assert_eq!(metadata.version_code, 1_002_003);
-        assert_eq!(
-            metadata.permissions,
-            ["android.permission.POST_NOTIFICATIONS"]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_android_library_is_built_as_a_cdylib_for_each_abi;
 
-    #[test]
-    fn sandbox_grants_map_to_permissions() {
-        let granted = permissions(&manifest(
-            "host",
-            "location = \"via-host\"\ncamera = \"deny\"\nfile-chooser = \"via-host\"",
-        ));
-        assert_eq!(
-            granted,
-            [
-                "android.permission.ACCESS_COARSE_LOCATION",
-                "android.permission.ACCESS_FINE_LOCATION",
-                "android.permission.ACCESS_NETWORK_STATE",
-                "android.permission.INTERNET",
-                "android.permission.POST_NOTIFICATIONS",
-            ]
-        );
-    }
-
-    #[test]
-    fn version_codes_sort_with_versions_and_refuse_overflow() {
-        assert_eq!(version_code("0.1.0").unwrap(), 1_000);
-        assert_eq!(version_code("2.0.0-beta.1+build").unwrap(), 2_000_000);
-        assert!(version_code("1.2.999").unwrap() < version_code("1.3.0").unwrap());
-        assert!(version_code("1.1000.0").is_err());
-        assert!(version_code("2100.0.0").is_err());
-        assert!(version_code("1.2").is_err());
-    }
-
-    #[test]
-    fn application_ids_follow_android_rules() {
-        assert_eq!(
-            application_id("so.tilo.api-tester").unwrap(),
-            "so.tilo.api_tester"
-        );
-        assert!(application_id("calculator").is_err());
-        assert!(application_id("so.tilo.3d").is_err());
-        assert!(application_id("so..tilo").is_err());
-    }
-
-    #[test]
-    fn the_manifest_names_the_library_and_escapes_text() {
-        let mut metadata =
-            AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
-        metadata.label = "Notes & <Things>".to_owned();
-        let xml = android_manifest(&metadata, "field_notes", false);
-        assert!(xml.contains(r#"package="so.example.field_notes""#));
-        assert!(xml.contains(r#"android:versionCode="1002003""#));
-        assert!(xml.contains(r#"android:label="Notes &amp; &lt;Things&gt;""#));
-        assert!(xml.contains(r#"android:value="field_notes""#));
-        assert!(xml.contains(r#"android:debuggable="false""#));
-        assert!(xml.contains(r#"android:authorities="so.example.field_notes.tilo.files""#));
-        assert!(xml.contains("android.permission.POST_NOTIFICATIONS"));
-        assert!(!xml.contains("android.permission.INTERNET"));
-    }
-
-    #[test]
-    fn the_library_is_the_android_example_or_the_entry_library() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path();
-        std::fs::create_dir_all(app.join("src")).unwrap();
-        std::fs::write(app.join("Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
-        std::fs::write(app.join("src/lib.rs"), "pub struct App;\n").unwrap();
-        assert!(library_target(app, "calc").is_err());
-        std::fs::write(app.join("src/lib.rs"), "ui::dev_reload_entry!(App);\n").unwrap();
-        assert_eq!(library_target(app, "calc").unwrap(), LibraryTarget::Lib);
-        std::fs::write(
-            app.join("Cargo.toml"),
-            "[package]\nname = \"calc\"\n\n[[example]]\nname = \"calc-android\"\npath = \"src/android.rs\"\ncrate-type = [\"cdylib\"]\n",
-        )
-        .unwrap();
-        assert_eq!(
-            library_target(app, "calc").unwrap(),
-            LibraryTarget::Example("calc-android".to_owned())
-        );
-    }
-
-    #[test]
-    fn the_library_command_builds_a_cdylib_for_the_triple() {
-        let manifest = Path::new("/app/Cargo.toml");
-        let lib = library_cargo_args(
-            manifest,
-            &LibraryTarget::Lib,
-            "aarch64-linux-android",
-            "dev",
-            &[],
-            false,
-        );
-        let lib: Vec<_> = lib
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(&lib[..4], ["rustc", "--lib", "--crate-type", "cdylib"]);
-        assert!(
-            lib.windows(2)
-                .any(|pair| pair == ["--target", "aarch64-linux-android"])
-        );
-        assert!(lib.windows(2).any(|pair| pair == ["--profile", "dev"]));
-        assert!(!lib.iter().any(|arg| arg == "--features"));
-
-        let example = library_cargo_args(
-            manifest,
-            &LibraryTarget::Example("calc-android".to_owned()),
-            "x86_64-linux-android",
-            "release",
-            &["extra".to_owned()],
-            true,
-        );
-        let example: Vec<_> = example
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(&example[..3], ["build", "--example", "calc-android"]);
-        assert!(
-            example
-                .windows(2)
-                .any(|pair| pair == ["--features", "extra,android"])
-        );
-        assert!(example.iter().any(|arg| arg == "--no-default-features"));
-    }
-
-    #[test]
-    fn the_artifact_stream_names_the_shared_library() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = dir.path().join("Cargo.toml");
-        std::fs::write(&manifest, "").unwrap();
-        let manifest = manifest.canonicalize().unwrap();
-        let line = serde_json::json!({
-            "reason": "compiler-artifact",
-            "manifest_path": manifest,
-            "target": {"name": "calc", "kind": ["lib"]},
-            "filenames": ["/t/libcalc.rlib", "/t/libcalc.so"],
-        })
-        .to_string();
-        assert_eq!(
-            shared_library_artifact(&line, &manifest),
-            Some(PathBuf::from("/t/libcalc.so"))
-        );
-        assert_eq!(
-            shared_library_artifact(&line, Path::new("/elsewhere/Cargo.toml")),
-            None
-        );
-    }
-
-    #[test]
-    fn devices_are_read_from_adb() {
-        let (ready, other) = parse_devices(
-            "* daemon started successfully\nList of devices attached\nemulator-5554\tdevice\nR58M\tunauthorized\n\n",
-        );
-        assert_eq!(ready, ["emulator-5554"]);
-        assert_eq!(other, [("R58M".to_owned(), "unauthorized".to_owned())]);
-        assert_eq!(parse_devices("List of devices attached\n\n").0.len(), 0);
-    }
-
-    #[test]
-    fn abis_and_triples_agree() {
-        for arch in PackageArch::ALL {
-            assert_eq!(PackageArch::of_android_abi(arch.android_abi()), Some(arch));
-            assert!(
-                PackagePlatform::Android
-                    .triple(arch)
-                    .ends_with("-linux-android")
+        phase the_library_is_the_android_example_or_the_entry_library;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path();
+            std::fs::create_dir_all(app.join("src")).unwrap();
+            std::fs::write(app.join("Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
+            std::fs::write(app.join("src/lib.rs"), "pub struct App;\n").unwrap();
+            assert!(library_target(app, "calc").is_err());
+            std::fs::write(app.join("src/lib.rs"), "ui::dev_reload_entry!(App);\n").unwrap();
+            assert_eq!(library_target(app, "calc").unwrap(), LibraryTarget::Lib);
+            std::fs::write(
+                app.join("Cargo.toml"),
+                "[package]\nname = \"calc\"\n\n[[example]]\nname = \"calc-android\"\npath = \"src/android.rs\"\ncrate-type = [\"cdylib\"]\n",
+            )
+            .unwrap();
+            assert_eq!(
+                library_target(app, "calc").unwrap(),
+                LibraryTarget::Example("calc-android".to_owned())
             );
         }
-        assert_eq!(PackageArch::of_android_abi("armeabi-v7a"), None);
-    }
 
-    #[test]
-    fn the_default_icon_is_a_disc_in_the_ids_colour() {
-        let icon = default_icon("so.example.notes");
-        assert_eq!(icon.dimensions(), (192, 192));
-        assert_eq!(icon.get_pixel(0, 0)[3], 0);
-        assert_eq!(icon.get_pixel(96, 96)[3], 255);
-        assert_eq!(icon, default_icon("so.example.notes"));
-        let colours: BTreeSet<[u8; 4]> = ["so.a.notes", "so.a.books", "so.a.music", "so.a.maps"]
-            .iter()
-            .map(|id| default_icon(id).get_pixel(96, 96).0)
-            .collect();
-        assert!(colours.len() > 1, "ids share one colour: {colours:?}");
-    }
+        phase the_library_command_builds_a_cdylib_for_the_triple;
+        {
+            let manifest = Path::new("/app/Cargo.toml");
+            let lib = library_cargo_args(
+                manifest,
+                &LibraryTarget::Lib,
+                "aarch64-linux-android",
+                "dev",
+                &[],
+                false,
+            );
+            let lib: Vec<_> = lib
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(&lib[..4], ["rustc", "--lib", "--crate-type", "cdylib"]);
+            assert!(
+                lib.windows(2)
+                    .any(|pair| pair == ["--target", "aarch64-linux-android"])
+            );
+            assert!(lib.windows(2).any(|pair| pair == ["--profile", "dev"]));
+            assert!(!lib.iter().any(|arg| arg == "--features"));
 
-    #[test]
-    fn os_release_names_the_package_manager_family() {
-        let family = PackageManager::from_os_release;
-        assert_eq!(
-            family("NAME=\"Fedora Linux\"\nID=fedora\n"),
-            Some(PackageManager::Dnf)
-        );
-        assert_eq!(
-            family("ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n"),
-            Some(PackageManager::Dnf)
-        );
-        assert_eq!(
-            family("ID=ubuntu\nID_LIKE=debian\n"),
-            Some(PackageManager::Apt)
-        );
-        assert_eq!(
-            family("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"),
-            Some(PackageManager::Apt)
-        );
-        assert_eq!(family("ID=arch\n"), None);
-        assert_eq!(family(""), None);
-    }
-
-    #[test]
-    fn missing_system_tools_get_one_exact_install_command() {
-        let all = [SystemTool::Jdk, SystemTool::Zip, SystemTool::Unzip];
-        assert_eq!(
-            PackageManager::Dnf.install_command(&all),
-            "sudo dnf install -y java-21-openjdk-devel zip unzip"
-        );
-        assert_eq!(
-            PackageManager::Apt.install_command(&all),
-            "sudo apt-get install -y openjdk-17-jdk-headless zip unzip"
-        );
-        assert_eq!(
-            PackageManager::Brew.install_command(&all),
-            "brew install openjdk@21 zip unzip"
-        );
-        assert_eq!(
-            system_install_hint(Some(PackageManager::Apt), &[SystemTool::Zip]),
-            "`sudo apt-get install -y zip`"
-        );
-
-        let unknown = system_install_hint(None, &[SystemTool::Jdk]);
-        for command in [
-            "`sudo dnf install -y java-21-openjdk-devel`",
-            "`sudo apt-get install -y openjdk-17-jdk-headless`",
-            "`brew install openjdk@21`",
-        ] {
-            assert!(unknown.contains(command), "{unknown}");
+            let example = library_cargo_args(
+                manifest,
+                &LibraryTarget::Example("calc-android".to_owned()),
+                "x86_64-linux-android",
+                "release",
+                &["extra".to_owned()],
+                true,
+            );
+            let example: Vec<_> = example
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(&example[..3], ["build", "--example", "calc-android"]);
+            assert!(
+                example
+                    .windows(2)
+                    .any(|pair| pair == ["--features", "extra,android"])
+            );
+            assert!(example.iter().any(|arg| arg == "--no-default-features"));
         }
-        assert!(unknown.contains("$JAVA_HOME"), "{unknown}");
+
+        phase the_artifact_stream_names_the_shared_library;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = dir.path().join("Cargo.toml");
+            std::fs::write(&manifest, "").unwrap();
+            let manifest = manifest.canonicalize().unwrap();
+            let line = serde_json::json!({
+                "reason": "compiler-artifact",
+                "manifest_path": manifest,
+                "target": {"name": "calc", "kind": ["lib"]},
+                "filenames": ["/t/libcalc.rlib", "/t/libcalc.so"],
+            })
+            .to_string();
+            assert_eq!(
+                shared_library_artifact(&line, &manifest),
+                Some(PathBuf::from("/t/libcalc.so"))
+            );
+            assert_eq!(
+                shared_library_artifact(&line, Path::new("/elsewhere/Cargo.toml")),
+                None
+            );
+        }
+
+        phase abis_and_triples_agree;
+        {
+            for arch in PackageArch::ALL {
+                assert_eq!(PackageArch::of_android_abi(arch.android_abi()), Some(arch));
+                assert!(
+                    PackagePlatform::Android
+                        .triple(arch)
+                        .ends_with("-linux-android")
+                );
+            }
+            assert_eq!(PackageArch::of_android_abi("armeabi-v7a"), None);
+        }
     }
 
-    #[test]
-    fn the_doctor_report_ends_with_the_system_install_command() {
-        let check = |name: &'static str, found: bool| ToolCheck {
-            name,
-            found: found.then(|| format!("/usr/bin/{name}")),
-            fix: String::new(),
-            required: true,
-        };
-        let report = DoctorReport {
-            checks: vec![
-                check("javac", false),
-                check("zip", true),
-                check("unzip", false),
-            ],
-            system_missing: vec![SystemTool::Jdk, SystemTool::Unzip],
-            package_manager: Some(PackageManager::Dnf),
-        };
-        assert!(!report.is_ready());
-        assert!(
-            report.summary().contains(
-                "Install the system packages with `sudo dnf install -y java-21-openjdk-devel unzip`"
-            ),
-            "{}",
-            report.summary()
-        );
-        assert_eq!(
-            report.to_json()["system_install"].as_str(),
-            report.system_install().as_deref()
-        );
-        let ready = DoctorReport {
-            checks: vec![check("zip", true)],
-            system_missing: Vec::new(),
-            package_manager: None,
-        };
-        assert!(ready.system_install().is_none());
-        assert!(!ready.summary().contains("Install the system packages"));
+    tilo_test_env::scenario! {
+        fn android_metadata_and_manifest_come_from_the_app_manifest;
+
+        phase metadata_comes_from_the_manifest;
+        {
+            let metadata =
+                AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
+            assert_eq!(metadata.application_id, "so.example.field_notes");
+            assert_eq!(metadata.label, "Field Notes");
+            assert_eq!(metadata.version_name, "1.2.3");
+            assert_eq!(metadata.version_code, 1_002_003);
+            assert_eq!(
+                metadata.permissions,
+                ["android.permission.POST_NOTIFICATIONS"]
+            );
+        }
+
+        phase sandbox_grants_map_to_permissions;
+        {
+            let granted = permissions(&manifest(
+                "host",
+                "location = \"via-host\"\ncamera = \"deny\"\nfile-chooser = \"via-host\"",
+            ));
+            assert_eq!(
+                granted,
+                [
+                    "android.permission.ACCESS_COARSE_LOCATION",
+                    "android.permission.ACCESS_FINE_LOCATION",
+                    "android.permission.ACCESS_NETWORK_STATE",
+                    "android.permission.INTERNET",
+                    "android.permission.POST_NOTIFICATIONS",
+                ]
+            );
+        }
+
+        phase version_codes_sort_with_versions_and_refuse_overflow;
+        {
+            assert_eq!(version_code("0.1.0").unwrap(), 1_000);
+            assert_eq!(version_code("2.0.0-beta.1+build").unwrap(), 2_000_000);
+            assert!(version_code("1.2.999").unwrap() < version_code("1.3.0").unwrap());
+            assert!(version_code("1.1000.0").is_err());
+            assert!(version_code("2100.0.0").is_err());
+            assert!(version_code("1.2").is_err());
+        }
+
+        phase application_ids_follow_android_rules;
+        {
+            assert_eq!(
+                application_id("so.tilo.api-tester").unwrap(),
+                "so.tilo.api_tester"
+            );
+            assert!(application_id("calculator").is_err());
+            assert!(application_id("so.tilo.3d").is_err());
+            assert!(application_id("so..tilo").is_err());
+        }
+
+        phase the_manifest_names_the_library_and_escapes_text;
+        {
+            let mut metadata =
+                AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
+            metadata.label = "Notes & <Things>".to_owned();
+            let xml = android_manifest(&metadata, "field_notes", false);
+            assert!(xml.contains(r#"package="so.example.field_notes""#));
+            assert!(xml.contains(r#"android:versionCode="1002003""#));
+            assert!(xml.contains(r#"android:label="Notes &amp; &lt;Things&gt;""#));
+            assert!(xml.contains(r#"android:value="field_notes""#));
+            assert!(xml.contains(r#"android:debuggable="false""#));
+            assert!(xml.contains(r#"android:authorities="so.example.field_notes.tilo.files""#));
+            assert!(xml.contains("android.permission.POST_NOTIFICATIONS"));
+            assert!(!xml.contains("android.permission.INTERNET"));
+        }
+
+        phase the_default_icon_is_a_disc_in_the_ids_colour;
+        {
+            let icon = default_icon("so.example.notes");
+            assert_eq!(icon.dimensions(), (192, 192));
+            assert_eq!(icon.get_pixel(0, 0)[3], 0);
+            assert_eq!(icon.get_pixel(96, 96)[3], 255);
+            assert_eq!(icon, default_icon("so.example.notes"));
+            let colours: BTreeSet<[u8; 4]> = ["so.a.notes", "so.a.books", "so.a.music", "so.a.maps"]
+                .iter()
+                .map(|id| default_icon(id).get_pixel(96, 96).0)
+                .collect();
+            assert!(colours.len() > 1, "ids share one colour: {colours:?}");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn android_doctor_reads_devices_and_names_the_system_install;
+
+        phase devices_are_read_from_adb;
+        {
+            let (ready, other) = parse_devices(
+                "* daemon started successfully\nList of devices attached\nemulator-5554\tdevice\nR58M\tunauthorized\n\n",
+            );
+            assert_eq!(ready, ["emulator-5554"]);
+            assert_eq!(other, [("R58M".to_owned(), "unauthorized".to_owned())]);
+            assert_eq!(parse_devices("List of devices attached\n\n").0.len(), 0);
+        }
+
+        phase os_release_names_the_package_manager_family;
+        {
+            let family = PackageManager::from_os_release;
+            assert_eq!(
+                family("NAME=\"Fedora Linux\"\nID=fedora\n"),
+                Some(PackageManager::Dnf)
+            );
+            assert_eq!(
+                family("ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n"),
+                Some(PackageManager::Dnf)
+            );
+            assert_eq!(
+                family("ID=ubuntu\nID_LIKE=debian\n"),
+                Some(PackageManager::Apt)
+            );
+            assert_eq!(
+                family("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"),
+                Some(PackageManager::Apt)
+            );
+            assert_eq!(family("ID=arch\n"), None);
+            assert_eq!(family(""), None);
+        }
+
+        phase missing_system_tools_get_one_exact_install_command;
+        {
+            let all = [SystemTool::Jdk, SystemTool::Zip, SystemTool::Unzip];
+            assert_eq!(
+                PackageManager::Dnf.install_command(&all),
+                "sudo dnf install -y java-21-openjdk-devel zip unzip"
+            );
+            assert_eq!(
+                PackageManager::Apt.install_command(&all),
+                "sudo apt-get install -y openjdk-17-jdk-headless zip unzip"
+            );
+            assert_eq!(
+                PackageManager::Brew.install_command(&all),
+                "brew install openjdk@21 zip unzip"
+            );
+            assert_eq!(
+                system_install_hint(Some(PackageManager::Apt), &[SystemTool::Zip]),
+                "`sudo apt-get install -y zip`"
+            );
+
+            let unknown = system_install_hint(None, &[SystemTool::Jdk]);
+            for command in [
+                "`sudo dnf install -y java-21-openjdk-devel`",
+                "`sudo apt-get install -y openjdk-17-jdk-headless`",
+                "`brew install openjdk@21`",
+            ] {
+                assert!(unknown.contains(command), "{unknown}");
+            }
+            assert!(unknown.contains("$JAVA_HOME"), "{unknown}");
+        }
+
+        phase the_doctor_report_ends_with_the_system_install_command;
+        {
+            let check = |name: &'static str, found: bool| ToolCheck {
+                name,
+                found: found.then(|| format!("/usr/bin/{name}")),
+                fix: String::new(),
+                required: true,
+            };
+            let report = DoctorReport {
+                checks: vec![
+                    check("javac", false),
+                    check("zip", true),
+                    check("unzip", false),
+                ],
+                system_missing: vec![SystemTool::Jdk, SystemTool::Unzip],
+                package_manager: Some(PackageManager::Dnf),
+            };
+            assert!(!report.is_ready());
+            assert!(
+                report.summary().contains(
+                    "Install the system packages with `sudo dnf install -y java-21-openjdk-devel unzip`"
+                ),
+                "{}",
+                report.summary()
+            );
+            assert_eq!(
+                report.to_json()["system_install"].as_str(),
+                report.system_install().as_deref()
+            );
+            let ready = DoctorReport {
+                checks: vec![check("zip", true)],
+                system_missing: Vec::new(),
+                package_manager: None,
+            };
+            assert!(ready.system_install().is_none());
+            assert!(!ready.summary().contains("Install the system packages"));
+        }
     }
 }

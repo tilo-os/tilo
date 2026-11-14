@@ -890,59 +890,63 @@ mod tests {
 
     const MANIFEST: &str = "[package]\nid = \"so.tilo.demo\"\nversion = \"0.1.0\"\nkind = \"app\"\n\n[entrypoint]\nbin = \"bin/demo\"\ntype = \"gui\"\n";
 
-    #[test]
-    fn adding_a_capability_appends_the_table_once() {
-        let once = with_capability(MANIFEST, "files.save", false).unwrap();
-        assert!(
-            once.ends_with("[capabilities]\noptional = [\"files.save\"]\n"),
-            "{once}"
-        );
-        let twice = with_capability(&once, "network.http", true).unwrap();
-        assert_eq!(twice.matches("[capabilities]").count(), 1, "{twice}");
-        assert!(twice.contains("required = [\"network.http\"]\noptional = [\"files.save\"]\n"));
-        assert!(twice.starts_with(MANIFEST));
-    }
+    tilo_test_env::scenario! {
+        fn capabilities_are_added_listed_and_explained_per_target;
 
-    #[test]
-    fn a_capability_moves_between_the_lists_and_later_tables_survive() {
-        let source = format!(
-            "{MANIFEST}\n[capabilities]\noptional = [\"network.http\"]\n\n[providers]\nmime = []\n"
-        );
-        let moved = with_capability(&source, "network.http", true).unwrap();
-        assert!(
-            moved.contains(
-                "[capabilities]\nrequired = [\"network.http\"]\n\n[providers]\nmime = []\n"
-            ),
-            "{moved}"
-        );
-        assert!(!moved.contains("optional"));
-    }
-
-    #[test]
-    fn the_capability_table_lists_every_capability() {
-        let table = capability_table();
-        for capability in Capability::ALL {
-            assert!(table.contains(capability.name()));
+        phase adding_a_capability_appends_the_table_once;
+        {
+            let once = with_capability(MANIFEST, "files.save", false).unwrap();
+            assert!(
+                once.ends_with("[capabilities]\noptional = [\"files.save\"]\n"),
+                "{once}"
+            );
+            let twice = with_capability(&once, "network.http", true).unwrap();
+            assert_eq!(twice.matches("[capabilities]").count(), 1, "{twice}");
+            assert!(twice.contains("required = [\"network.http\"]\noptional = [\"files.save\"]\n"));
+            assert!(twice.starts_with(MANIFEST));
         }
-    }
 
-    #[test]
-    fn unsupported_required_capabilities_name_the_fix() {
-        let message = render_finding(
-            &Finding::RequiredUnsupported {
-                capability: Capability::Processes,
-                target: Target::Web,
-                reason: "A browser page cannot start programs.",
-            },
-            "tilo-app.toml",
-        );
-        assert!(message.starts_with(
-            "error[capability]: `processes` is required but not available on target `web`"
-        ));
-        assert!(
-            message.contains("platforms = [\"linux\", \"macos\"]"),
-            "{message}"
-        );
-        assert!(message.contains("move it to `optional`"));
+        phase a_capability_moves_between_the_lists_and_later_tables_survive;
+        {
+            let source = format!(
+                "{MANIFEST}\n[capabilities]\noptional = [\"network.http\"]\n\n[providers]\nmime = []\n"
+            );
+            let moved = with_capability(&source, "network.http", true).unwrap();
+            assert!(
+                moved.contains(
+                    "[capabilities]\nrequired = [\"network.http\"]\n\n[providers]\nmime = []\n"
+                ),
+                "{moved}"
+            );
+            assert!(!moved.contains("optional"));
+        }
+
+        phase the_capability_table_lists_every_capability;
+        {
+            let table = capability_table();
+            for capability in Capability::ALL {
+                assert!(table.contains(capability.name()));
+            }
+        }
+
+        phase unsupported_required_capabilities_name_the_fix;
+        {
+            let message = render_finding(
+                &Finding::RequiredUnsupported {
+                    capability: Capability::Processes,
+                    target: Target::Web,
+                    reason: "A browser page cannot start programs.",
+                },
+                "tilo-app.toml",
+            );
+            assert!(message.starts_with(
+                "error[capability]: `processes` is required but not available on target `web`"
+            ));
+            assert!(
+                message.contains("platforms = [\"linux\", \"macos\"]"),
+                "{message}"
+            );
+            assert!(message.contains("move it to `optional`"));
+        }
     }
 }

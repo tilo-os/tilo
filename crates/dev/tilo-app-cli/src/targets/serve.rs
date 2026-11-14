@@ -477,78 +477,82 @@ fn content_type(path: &Path) -> &'static str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn paths_cannot_leave_the_bundle() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<body></body>").unwrap();
-        std::fs::create_dir(dir.path().join("pkg")).unwrap();
-        std::fs::write(dir.path().join("pkg/a.js"), "").unwrap();
-        assert_eq!(
-            resolve(dir.path(), "/"),
-            Some(dir.path().join("index.html"))
-        );
-        assert_eq!(
-            resolve(dir.path(), "/pkg/a.js"),
-            Some(dir.path().join("pkg/a.js"))
-        );
-        assert_eq!(resolve(dir.path(), "/../etc/passwd"), None);
-        assert_eq!(resolve(dir.path(), "/pkg%2f..%2findex.html"), None);
-        assert_eq!(resolve(dir.path(), "/missing"), None);
-    }
+    tilo_test_env::scenario! {
+        fn the_dev_server_serves_the_bundle_and_pushes_reloads;
 
-    #[test]
-    fn index_html_subscribes_to_reloads() {
-        let body = inject_reload(b"<html><body><p>x</p></body></html>");
-        let text = String::from_utf8(body).unwrap();
-        assert!(text.contains("new EventSource('/__tilo/events')"));
-        assert!(text.ends_with("</script>\n</body></html>"));
-    }
+        phase paths_cannot_leave_the_bundle;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("index.html"), "<body></body>").unwrap();
+            std::fs::create_dir(dir.path().join("pkg")).unwrap();
+            std::fs::write(dir.path().join("pkg/a.js"), "").unwrap();
+            assert_eq!(
+                resolve(dir.path(), "/"),
+                Some(dir.path().join("index.html"))
+            );
+            assert_eq!(
+                resolve(dir.path(), "/pkg/a.js"),
+                Some(dir.path().join("pkg/a.js"))
+            );
+            assert_eq!(resolve(dir.path(), "/../etc/passwd"), None);
+            assert_eq!(resolve(dir.path(), "/pkg%2f..%2findex.html"), None);
+            assert_eq!(resolve(dir.path(), "/missing"), None);
+        }
 
-    #[test]
-    fn a_rebuild_reaches_every_subscriber() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<body></body>").unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = Arc::new(Server {
-            root: dir.path().to_path_buf(),
-            clients: Mutex::new(Vec::new()),
-            workspace: None,
-        });
-        let accepting = Arc::clone(&server);
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let _ = handle(&accepting, stream);
+        phase index_html_subscribes_to_reloads;
+        {
+            let body = inject_reload(b"<html><body><p>x</p></body></html>");
+            let text = String::from_utf8(body).unwrap();
+            assert!(text.contains("new EventSource('/__tilo/events')"));
+            assert!(text.ends_with("</script>\n</body></html>"));
+        }
+
+        phase a_rebuild_reaches_every_subscriber;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("index.html"), "<body></body>").unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = Arc::new(Server {
+                root: dir.path().to_path_buf(),
+                clients: Mutex::new(Vec::new()),
+                workspace: None,
+            });
+            let accepting = Arc::clone(&server);
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let _ = handle(&accepting, stream);
+                }
+            });
+            let mut page = TcpStream::connect(address).unwrap();
+            page.write_all(b"GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            let mut response = String::new();
+            std::io::Read::read_to_string(&mut page, &mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 200 OK"));
+            assert!(response.contains("EventSource"));
+
+            let events = TcpStream::connect(address).unwrap();
+            (&events)
+                .write_all(b"GET /__tilo/events HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            let mut reader = BufReader::new(events);
+            let mut line = String::new();
+            while !line.starts_with(": connected") {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
             }
-        });
-        let mut page = TcpStream::connect(address).unwrap();
-        page.write_all(b"GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n")
-            .unwrap();
-        let mut response = String::new();
-        std::io::Read::read_to_string(&mut page, &mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 200 OK"));
-        assert!(response.contains("EventSource"));
-
-        let events = TcpStream::connect(address).unwrap();
-        (&events)
-            .write_all(b"GET /__tilo/events HTTP/1.1\r\nHost: x\r\n\r\n")
-            .unwrap();
-        let mut reader = BufReader::new(events);
-        let mut line = String::new();
-        while !line.starts_with(": connected") {
-            line.clear();
-            reader.read_line(&mut line).unwrap();
+            tilo_test_env::wait_until("the event stream to register its client", || {
+                !server.clients.lock().unwrap().is_empty()
+            });
+            server.broadcast("reload", "{}");
+            let mut received = String::new();
+            while !received.contains("data: {}") {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                received.push_str(&line);
+            }
+            assert!(received.contains("event: reload"));
         }
-        tilo_test_env::wait_until("the event stream to register its client", || {
-            !server.clients.lock().unwrap().is_empty()
-        });
-        server.broadcast("reload", "{}");
-        let mut received = String::new();
-        while !received.contains("data: {}") {
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            received.push_str(&line);
-        }
-        assert!(received.contains("event: reload"));
     }
 }

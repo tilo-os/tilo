@@ -915,185 +915,84 @@ mod tests {
         }
     }
 
-    #[test]
-    fn files_json_matches_json_stringify() {
-        let files = [file("apps.json", 3), file("fonts/A \"b\".ttf", 10)];
-        assert_eq!(
-            files_json(&files).unwrap(),
-            format!(
-                "{{\"apps.json\":{{\"sha256\":\"{h}\",\"size\":3}},\"fonts/A \\\"b\\\".ttf\":{{\"sha256\":\"{h}\",\"size\":10}}}}",
-                h = "ab".repeat(32)
-            )
-        );
-    }
-
-    #[test]
-    fn assets_json_matches_pretty_json_stringify() {
-        let text = assets_json("d", &[file("a.mjs", 1)]).unwrap();
-        assert_eq!(
-            text,
-            format!(
-                "{{\n  \"digest\": \"d\",\n  \"files\": {{\n    \"a.mjs\": {{\n      \"sha256\": \"{}\",\n      \"size\": 1\n    }}\n  }}\n}}\n",
-                "ab".repeat(32)
-            )
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed["files"]["a.mjs"]["size"], 1);
-    }
-    #[test]
-    fn packaged_files_follow_clouds_order_and_selection() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        for path in [
-            "pkg/tilo_browser_runtime.js",
-            "fonts/B.ttf",
-            "fonts/LICENSES/a.txt",
-            "fonts.json",
-            "host.mjs",
-            "host.test.mjs",
-            "apps.json",
-            "index.html",
-            "locales/en-US.ftl",
-            "untrusted.html",
-            "build.json",
-        ] {
-            let path = root.join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, b"x").unwrap();
-        }
-        let names: Vec<String> = packaged_files(root)
-            .unwrap()
-            .into_iter()
-            .map(|file| file.name)
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "apps.json",
-                "fonts/B.ttf",
-                "fonts/LICENSES/a.txt",
-                "fonts.json",
-                "host.mjs",
-                "locales/en-US.ftl",
-                "pkg/tilo_browser_runtime.js"
-            ]
-        );
-    }
-
-    #[test]
-    fn the_registry_zip_is_build_json_the_manifest_and_the_version() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("so.tilo.hello");
-        let version = output.join("versions/abc");
-        std::fs::create_dir_all(version.join("pkg")).unwrap();
-        std::fs::write(output.join("build.json"), b"{}").unwrap();
-        std::fs::write(output.join("host.mjs"), b"entry").unwrap();
-        std::fs::write(version.join("host.mjs"), b"x").unwrap();
-        std::fs::write(version.join("assets.json"), b"{}").unwrap();
-        std::fs::write(version.join("pkg/a.wasm"), b"y").unwrap();
-        let manifest = dir.path().join("tilo-app.toml");
-        std::fs::write(&manifest, b"[package]").unwrap();
-        let archive = registry_zip_path(&output, "1.2.3");
-        assert_eq!(archive, dir.path().join("so.tilo.hello-1.2.3-web.zip"));
-        write_registry_zip(&archive, &output, &manifest, "abc").unwrap();
-        let first = std::fs::read(&archive).unwrap();
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(first.clone())).unwrap();
-        let mut names: Vec<String> = zip
-            .file_names()
-            .map(|name| name.unwrap().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            [
-                "build.json",
-                "tilo-app.toml",
-                "versions/abc/assets.json",
-                "versions/abc/host.mjs",
-                "versions/abc/pkg/a.wasm"
-            ]
-        );
-        assert!(
-            zip.by_name("host.mjs").is_err(),
-            "entry stubs are the host's"
-        );
-        write_registry_zip(&archive, &output, &manifest, "abc").unwrap();
-        assert_eq!(std::fs::read(&archive).unwrap(), first, "reproducible");
-    }
-
-    #[test]
-    fn compute_final_artifact_requires_private_bounded_memory() {
-        let valid = [0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 1, 18, 128, 32];
-        assert_eq!(
-            compute_memory(&valid, true).unwrap(),
-            serde_json::json!({"flags":1,"initial":18,"maximum":4096})
-        );
-        for bytes in [
-            &valid[..8],
-            &[0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 3, 18, 128, 32],
-            &[0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 1, 18, 129, 32],
-            &[0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 1, 18],
-        ] {
-            assert!(compute_memory(bytes, true).is_err());
-        }
-        assert!(compute_memory(&vec![0; 1024 * 1024 + 1], true).is_err());
-    }
     fn valid_header() -> &'static [u8] {
         b"\0asm\x01\0\0\0"
     }
 
-    #[test]
-    fn dev_allows_only_observed_bindgen_externref_initialization() {
-        let mut imports = vec![1];
-        for name in [
-            "./tilo_browser_compute_bg.js",
-            "__wbindgen_init_externref_table",
-        ] {
-            imports.push(u8::try_from(name.len()).unwrap());
-            imports.extend(name.as_bytes());
-        }
-        imports.extend([0, 0]);
-        let mut wasm = valid_header().to_vec();
-        wasm.extend([1, 4, 1, 96, 0, 0, 2, u8::try_from(imports.len()).unwrap()]);
-        wasm.extend(imports);
-        wasm.extend([5, 5, 1, 1, 18, 128, 32]);
-        assert!(compute_memory(&wasm, false).is_ok());
-        assert!(compute_memory(&wasm, true).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn the_compute_module_must_keep_private_bounded_memory;
 
-    #[test]
-    fn compute_inspector_rejects_malformed_sections_and_invalid_function_bodies() {
-        let memory = [5, 5, 1, 1, 18, 128, 32];
-        let types = [1, 4, 1, 96, 0, 0];
-        let functions = [3, 2, 1, 0];
-        let mut examples = Vec::new();
-        for extra in [&[255, 0][..], &[1, 1, 1][..], &types[..]] {
-            let mut bytes = valid_header().to_vec();
-            bytes.extend(memory);
-            bytes.extend(extra);
-            examples.push(bytes);
+        phase compute_final_artifact_requires_private_bounded_memory;
+        {
+            let valid = [0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 1, 18, 128, 32];
+            assert_eq!(
+                compute_memory(&valid, true).unwrap(),
+                serde_json::json!({"flags":1,"initial":18,"maximum":4096})
+            );
+            for bytes in [
+                &valid[..8],
+                &[0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 3, 18, 128, 32],
+                &[0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 1, 18, 129, 32],
+                &[0, 97, 115, 109, 1, 0, 0, 0, 5, 5, 1, 1, 18],
+            ] {
+                assert!(compute_memory(bytes, true).is_err());
+            }
+            assert!(compute_memory(&vec![0; 1024 * 1024 + 1], true).is_err());
         }
-        for code in [
-            &[10, 5, 1, 3, 0, 255, 11][..],
-            &[10, 6, 1, 4, 0, 65, 0, 11][..],
-            &[][..],
-        ] {
-            let mut bytes = valid_header().to_vec();
-            bytes.extend(types);
-            bytes.extend(functions);
-            bytes.extend(memory);
-            bytes.extend(code);
-            examples.push(bytes);
+
+        phase dev_allows_only_observed_bindgen_externref_initialization;
+        {
+            let mut imports = vec![1];
+            for name in [
+                "./tilo_browser_compute_bg.js",
+                "__wbindgen_init_externref_table",
+            ] {
+                imports.push(u8::try_from(name.len()).unwrap());
+                imports.extend(name.as_bytes());
+            }
+            imports.extend([0, 0]);
+            let mut wasm = valid_header().to_vec();
+            wasm.extend([1, 4, 1, 96, 0, 0, 2, u8::try_from(imports.len()).unwrap()]);
+            wasm.extend(imports);
+            wasm.extend([5, 5, 1, 1, 18, 128, 32]);
+            assert!(compute_memory(&wasm, false).is_ok());
+            assert!(compute_memory(&wasm, true).is_err());
         }
-        let accepted: Vec<_> = examples
-            .iter()
-            .enumerate()
-            .filter_map(|(index, bytes)| compute_memory(bytes, false).is_ok().then_some(index))
-            .collect();
-        assert!(
-            accepted.is_empty(),
-            "accepted malformed modules {accepted:?}"
-        );
+
+        phase compute_inspector_rejects_malformed_sections_and_invalid_function_bodies;
+        {
+            let memory = [5, 5, 1, 1, 18, 128, 32];
+            let types = [1, 4, 1, 96, 0, 0];
+            let functions = [3, 2, 1, 0];
+            let mut examples = Vec::new();
+            for extra in [&[255, 0][..], &[1, 1, 1][..], &types[..]] {
+                let mut bytes = valid_header().to_vec();
+                bytes.extend(memory);
+                bytes.extend(extra);
+                examples.push(bytes);
+            }
+            for code in [
+                &[10, 5, 1, 3, 0, 255, 11][..],
+                &[10, 6, 1, 4, 0, 65, 0, 11][..],
+                &[][..],
+            ] {
+                let mut bytes = valid_header().to_vec();
+                bytes.extend(types);
+                bytes.extend(functions);
+                bytes.extend(memory);
+                bytes.extend(code);
+                examples.push(bytes);
+            }
+            let accepted: Vec<_> = examples
+                .iter()
+                .enumerate()
+                .filter_map(|(index, bytes)| compute_memory(bytes, false).is_ok().then_some(index))
+                .collect();
+            assert!(
+                accepted.is_empty(),
+                "accepted malformed modules {accepted:?}"
+            );
+        }
     }
     fn packaging_project(root: &Path) -> Project {
         let manifest_path = root.join("tilo-app.toml");
@@ -1112,46 +1011,12 @@ mod tests {
             sdk_root: root.into(),
         }
     }
-    #[test]
-    fn a_bundle_is_built_in_the_profile_it_was_asked_for() {
-        assert_eq!(
-            bundle_profile(&TargetRequest::new(Target::Web)),
-            "quick",
-            "the development loop's light module"
-        );
-        assert_eq!(bundle_profile(&release_request(false)), "release");
-        assert_eq!(bundle_profile(&release_request(true)), "assert");
-    }
 
     fn release_request(assertions: bool) -> TargetRequest {
         let mut request = TargetRequest::new(Target::Web);
         request.release = true;
         request.assertions = assertions;
         request
-    }
-    #[test]
-    fn web_registers_the_reload_macros_existing_definition() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let project = packaging_project(root);
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
-        )
-        .unwrap();
-        std::fs::create_dir(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("src/lib.rs"),
-            "ui::dev_reload_entry!(ChatShell);\n",
-        )
-        .unwrap();
-        let entry = app_crate_source(&project).unwrap();
-        assert!(entry.contains("registry::register(app::definition())"));
-        assert!(!entry.contains("definition::<app::App>()"));
-        // The runtime is prepared before the app is registered: its CPU
-        // pool must take the page's one thread before any app code can.
-        let started = entry.find("tilo_browser_runtime::start();").unwrap();
-        assert!(started < entry.find("registry::register(").unwrap());
     }
 
     fn packaging_request(root: &Path) -> TargetPackageRequest {
@@ -1188,103 +1053,254 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn packaging_refuses_every_missing_compute_asset_before_publication() {
-        for missing in [
-            "compute-worker.mjs",
-            "compute-domains.mjs",
-            "compute-protocol.mjs",
-            "pkg/compute/tilo_browser_compute.js",
-            "pkg/compute/tilo_browser_compute_bg.wasm",
-        ] {
+    tilo_test_env::scenario! {
+        fn a_packaged_version_lists_hashes_and_archives_its_files;
+
+        phase files_json_matches_json_stringify;
+        {
+            let files = [file("apps.json", 3), file("fonts/A \"b\".ttf", 10)];
+            assert_eq!(
+                files_json(&files).unwrap(),
+                format!(
+                    "{{\"apps.json\":{{\"sha256\":\"{h}\",\"size\":3}},\"fonts/A \\\"b\\\".ttf\":{{\"sha256\":\"{h}\",\"size\":10}}}}",
+                    h = "ab".repeat(32)
+                )
+            );
+        }
+
+        phase assets_json_matches_pretty_json_stringify;
+        {
+            let text = assets_json("d", &[file("a.mjs", 1)]).unwrap();
+            assert_eq!(
+                text,
+                format!(
+                    "{{\n  \"digest\": \"d\",\n  \"files\": {{\n    \"a.mjs\": {{\n      \"sha256\": \"{}\",\n      \"size\": 1\n    }}\n  }}\n}}\n",
+                    "ab".repeat(32)
+                )
+            );
+            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed["files"]["a.mjs"]["size"], 1);
+        }
+
+        phase packaged_files_follow_clouds_order_and_selection;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            for path in [
+                "pkg/tilo_browser_runtime.js",
+                "fonts/B.ttf",
+                "fonts/LICENSES/a.txt",
+                "fonts.json",
+                "host.mjs",
+                "host.test.mjs",
+                "apps.json",
+                "index.html",
+                "locales/en-US.ftl",
+                "untrusted.html",
+                "build.json",
+            ] {
+                let path = root.join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"x").unwrap();
+            }
+            let names: Vec<String> = packaged_files(root)
+                .unwrap()
+                .into_iter()
+                .map(|file| file.name)
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "apps.json",
+                    "fonts/B.ttf",
+                    "fonts/LICENSES/a.txt",
+                    "fonts.json",
+                    "host.mjs",
+                    "locales/en-US.ftl",
+                    "pkg/tilo_browser_runtime.js"
+                ]
+            );
+        }
+
+        phase the_registry_zip_is_build_json_the_manifest_and_the_version;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let output = dir.path().join("so.tilo.hello");
+            let version = output.join("versions/abc");
+            std::fs::create_dir_all(version.join("pkg")).unwrap();
+            std::fs::write(output.join("build.json"), b"{}").unwrap();
+            std::fs::write(output.join("host.mjs"), b"entry").unwrap();
+            std::fs::write(version.join("host.mjs"), b"x").unwrap();
+            std::fs::write(version.join("assets.json"), b"{}").unwrap();
+            std::fs::write(version.join("pkg/a.wasm"), b"y").unwrap();
+            let manifest = dir.path().join("tilo-app.toml");
+            std::fs::write(&manifest, b"[package]").unwrap();
+            let archive = registry_zip_path(&output, "1.2.3");
+            assert_eq!(archive, dir.path().join("so.tilo.hello-1.2.3-web.zip"));
+            write_registry_zip(&archive, &output, &manifest, "abc").unwrap();
+            let first = std::fs::read(&archive).unwrap();
+            let mut zip = zip::ZipArchive::new(std::io::Cursor::new(first.clone())).unwrap();
+            let mut names: Vec<String> = zip
+                .file_names()
+                .map(|name| name.unwrap().into_owned())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                [
+                    "build.json",
+                    "tilo-app.toml",
+                    "versions/abc/assets.json",
+                    "versions/abc/host.mjs",
+                    "versions/abc/pkg/a.wasm"
+                ]
+            );
+            assert!(
+                zip.by_name("host.mjs").is_err(),
+                "entry stubs are the host's"
+            );
+            write_registry_zip(&archive, &output, &manifest, "abc").unwrap();
+            assert_eq!(std::fs::read(&archive).unwrap(), first, "reproducible");
+        }
+
+        phase packaging_refuses_every_missing_compute_asset_before_publication;
+        {
+            for missing in [
+                "compute-worker.mjs",
+                "compute-domains.mjs",
+                "compute-protocol.mjs",
+                "pkg/compute/tilo_browser_compute.js",
+                "pkg/compute/tilo_browser_compute_bg.wasm",
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let project = packaging_project(dir.path());
+                let bundle = dir.path().join("bundle");
+                worker_bundle(&bundle);
+                std::fs::remove_file(bundle.join(missing)).unwrap();
+                let result = package(&project, &bundle, &packaging_request(dir.path()));
+                assert!(result.is_err(), "shipped without {missing}");
+                assert!(!dir.path().join("dist").exists(), "no partial publication");
+            }
+        }
+
+        phase compute_assets_are_hash_bound_immutable_and_in_registry_archive;
+        {
             let dir = tempfile::tempdir().unwrap();
             let project = packaging_project(dir.path());
             let bundle = dir.path().join("bundle");
             worker_bundle(&bundle);
-            std::fs::remove_file(bundle.join(missing)).unwrap();
-            let result = package(&project, &bundle, &packaging_request(dir.path()));
-            assert!(result.is_err(), "shipped without {missing}");
-            assert!(!dir.path().join("dist").exists(), "no partial publication");
+            let request = packaging_request(dir.path());
+            let output = package(&project, &bundle, &request).unwrap();
+            let files = packaged_files(&bundle).unwrap();
+            let digest = hex_digest(files_json(&files).unwrap().as_bytes());
+            let version = output.join("versions").join(&digest);
+            let assets: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(version.join("assets.json")).unwrap()).unwrap();
+            assert_eq!(assets["digest"], digest);
+            let archive = registry_zip_path(&output, &project.manifest.package.version);
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive).unwrap()).unwrap();
+            for file in files.iter().filter(|file| file.name.contains("compute")) {
+                assert_eq!(assets["files"][&file.name]["sha256"], file.sha256);
+                assert_eq!(assets["files"][&file.name]["size"], file.size);
+                let mut entry = zip
+                    .by_name(&format!("versions/{digest}/{}", file.name))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+                assert_eq!(hex_digest(&bytes), file.sha256);
+            }
+            drop(zip);
+            let original = std::fs::read(&archive).unwrap();
+            package(&project, &bundle, &request).unwrap();
+            assert_eq!(std::fs::read(&archive).unwrap(), original);
+            std::fs::write(version.join("compute-worker.mjs"), b"corrupt").unwrap();
+            assert!(package(&project, &bundle, &request).is_err());
+            assert_eq!(
+                std::fs::read(version.join("compute-worker.mjs")).unwrap(),
+                b"corrupt"
+            );
+            std::fs::write(bundle.join("compute-worker.mjs"), b"changed").unwrap();
+            assert_ne!(
+                hex_digest(
+                    files_json(&packaged_files(&bundle).unwrap())
+                        .unwrap()
+                        .as_bytes()
+                ),
+                digest
+            );
         }
     }
 
-    #[test]
-    fn compute_assets_are_hash_bound_immutable_and_in_registry_archive() {
-        let dir = tempfile::tempdir().unwrap();
-        let project = packaging_project(dir.path());
-        let bundle = dir.path().join("bundle");
-        worker_bundle(&bundle);
-        let request = packaging_request(dir.path());
-        let output = package(&project, &bundle, &request).unwrap();
-        let files = packaged_files(&bundle).unwrap();
-        let digest = hex_digest(files_json(&files).unwrap().as_bytes());
-        let version = output.join("versions").join(&digest);
-        let assets: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(version.join("assets.json")).unwrap()).unwrap();
-        assert_eq!(assets["digest"], digest);
-        let archive = registry_zip_path(&output, &project.manifest.package.version);
-        let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive).unwrap()).unwrap();
-        for file in files.iter().filter(|file| file.name.contains("compute")) {
-            assert_eq!(assets["files"][&file.name]["sha256"], file.sha256);
-            assert_eq!(assets["files"][&file.name]["size"], file.size);
-            let mut entry = zip
-                .by_name(&format!("versions/{digest}/{}", file.name))
-                .unwrap();
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
-            assert_eq!(hex_digest(&bytes), file.sha256);
+    tilo_test_env::scenario! {
+        fn a_bundle_is_built_from_the_profile_and_sources_it_was_asked_for;
+
+        phase a_bundle_is_built_in_the_profile_it_was_asked_for;
+        {
+            assert_eq!(
+                bundle_profile(&TargetRequest::new(Target::Web)),
+                "quick",
+                "the development loop's light module"
+            );
+            assert_eq!(bundle_profile(&release_request(false)), "release");
+            assert_eq!(bundle_profile(&release_request(true)), "assert");
         }
-        drop(zip);
-        let original = std::fs::read(&archive).unwrap();
-        package(&project, &bundle, &request).unwrap();
-        assert_eq!(std::fs::read(&archive).unwrap(), original);
-        std::fs::write(version.join("compute-worker.mjs"), b"corrupt").unwrap();
-        assert!(package(&project, &bundle, &request).is_err());
-        assert_eq!(
-            std::fs::read(version.join("compute-worker.mjs")).unwrap(),
-            b"corrupt"
-        );
-        std::fs::write(bundle.join("compute-worker.mjs"), b"changed").unwrap();
-        assert_ne!(
-            hex_digest(
-                files_json(&packaged_files(&bundle).unwrap())
-                    .unwrap()
-                    .as_bytes()
-            ),
-            digest
-        );
-    }
 
-    #[test]
-    fn patch_paths_become_absolute() {
-        let patch: toml::Value = toml::from_str(
-            "[crates-io]\nwinit = { path = \"vendor/winit\" }\naccesskit = { git = \"ssh://x\", rev = \"1\" }\n",
-        )
-        .unwrap();
-        let absolute = absolutize_paths(&patch, Path::new("/sdk"));
-        assert_eq!(
-            absolute["crates-io"]["winit"]["path"].as_str(),
-            Some("/sdk/vendor/winit")
-        );
-        assert_eq!(
-            absolute["crates-io"]["accesskit"]["git"].as_str(),
-            Some("ssh://x")
-        );
-    }
+        phase web_registers_the_reload_macros_existing_definition;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let project = packaging_project(root);
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+            )
+            .unwrap();
+            std::fs::create_dir(root.join("src")).unwrap();
+            std::fs::write(
+                root.join("src/lib.rs"),
+                "ui::dev_reload_entry!(ChatShell);\n",
+            )
+            .unwrap();
+            let entry = app_crate_source(&project).unwrap();
+            assert!(entry.contains("registry::register(app::definition())"));
+            assert!(!entry.contains("definition::<app::App>()"));
+            // The runtime is prepared before the app is registered: its CPU
+            // pool must take the page's one thread before any app code can.
+            let started = entry.find("tilo_browser_runtime::start();").unwrap();
+            assert!(started < entry.find("registry::register(").unwrap());
+        }
 
-    #[test]
-    fn the_runtime_follows_the_sdk_source() {
-        let git: toml::Value =
-            toml::from_str("git = \"https://code.tilo.so/tilo/tilo.git\"\ntag = \"sdk-2026.09\"\n")
-                .unwrap();
-        let runtime = sibling_source(&git, Path::new("/unused"), "tilo-browser-runtime", RUNTIME);
-        assert_eq!(runtime["tag"].as_str(), Some("sdk-2026.09"));
-        assert_eq!(runtime["package"].as_str(), Some("tilo-browser-runtime"));
-        let path: toml::Value = toml::from_str("path = \"/sdk/crates/sdk/tilo-app\"\n").unwrap();
-        let runtime = sibling_source(&path, Path::new("/sdk"), "tilo-browser-runtime", RUNTIME);
-        assert_eq!(
-            runtime["path"].as_str(),
-            Some("/sdk/crates/browser/tilo-browser-runtime")
-        );
+        phase patch_paths_become_absolute;
+        {
+            let patch: toml::Value = toml::from_str(
+                "[crates-io]\nwinit = { path = \"vendor/winit\" }\naccesskit = { git = \"ssh://x\", rev = \"1\" }\n",
+            )
+            .unwrap();
+            let absolute = absolutize_paths(&patch, Path::new("/sdk"));
+            assert_eq!(
+                absolute["crates-io"]["winit"]["path"].as_str(),
+                Some("/sdk/vendor/winit")
+            );
+            assert_eq!(
+                absolute["crates-io"]["accesskit"]["git"].as_str(),
+                Some("ssh://x")
+            );
+        }
+
+        phase the_runtime_follows_the_sdk_source;
+        {
+            let git: toml::Value =
+                toml::from_str("git = \"https://code.tilo.so/tilo/tilo.git\"\ntag = \"sdk-2026.09\"\n")
+                    .unwrap();
+            let runtime = sibling_source(&git, Path::new("/unused"), "tilo-browser-runtime", RUNTIME);
+            assert_eq!(runtime["tag"].as_str(), Some("sdk-2026.09"));
+            assert_eq!(runtime["package"].as_str(), Some("tilo-browser-runtime"));
+            let path: toml::Value = toml::from_str("path = \"/sdk/crates/sdk/tilo-app\"\n").unwrap();
+            let runtime = sibling_source(&path, Path::new("/sdk"), "tilo-browser-runtime", RUNTIME);
+            assert_eq!(
+                runtime["path"].as_str(),
+                Some("/sdk/crates/browser/tilo-browser-runtime")
+            );
+        }
     }
 }

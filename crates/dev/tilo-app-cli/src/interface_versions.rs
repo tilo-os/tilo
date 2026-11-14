@@ -140,67 +140,71 @@ mod tests {
         .expect("manifest")
     }
 
-    #[test]
-    fn a_manifest_at_another_service_version_is_told_the_exact_fix() {
-        let tilo = ProvidedInterfaces::new([("runtime", 3), ("system", 1)], ["collab", "tilo-fs"]);
-        let fits = manifest("collab = \"optional@3\"\ntilo-fs = \"required@3\"");
-        assert!(mismatches(&fits, &tilo).is_empty());
-        let mut checks = Vec::new();
-        check_against(&fits, &tilo, &mut checks);
-        assert_eq!(checks[0].status, DoctorStatus::Pass);
+    tilo_test_env::scenario! {
+        fn service_versions_are_checked_against_the_interfaces_tilo_serves;
 
-        let behind =
-            manifest("collab = \"optional@2\"\nretired = \"optional@1\"\ntilo-fs = \"required@4\"");
-        let found = mismatches(&behind, &tilo);
-        assert_eq!(
-            found
-                .iter()
-                .map(|m| (m.service.as_str(), m.written.as_str(), m.served))
-                .collect::<Vec<_>>(),
-            [
-                ("collab", "optional@2", Some(3)),
-                ("retired", "optional@1", None),
-                ("tilo-fs", "required@4", Some(3)),
-            ]
-        );
-        assert!(
-            found[0]
-                .fix
-                .starts_with("set `collab = \"optional@3\"` under [sandbox.services]"),
-            "{}",
-            found[0].fix
-        );
-        assert!(
-            found[1].fix.contains("remove `retired`"),
-            "{}",
-            found[1].fix
-        );
-        assert!(
-            found[2].fix.starts_with("set `tilo-fs = \"required@3\"`"),
-            "{}",
-            found[2].fix
-        );
+        phase a_manifest_at_another_service_version_is_told_the_exact_fix;
+        {
+            let tilo = ProvidedInterfaces::new([("runtime", 3), ("system", 1)], ["collab", "tilo-fs"]);
+            let fits = manifest("collab = \"optional@3\"\ntilo-fs = \"required@3\"");
+            assert!(mismatches(&fits, &tilo).is_empty());
+            let mut checks = Vec::new();
+            check_against(&fits, &tilo, &mut checks);
+            assert_eq!(checks[0].status, DoctorStatus::Pass);
 
-        let mut checks = Vec::new();
-        check_against(&behind, &tilo, &mut checks);
-        assert_eq!(checks[0].status, DoctorStatus::Fail);
-        assert!(
-            checks[0].detail.contains(
-                "collab = \"optional@2\" (Tilo serves collab@3): set `collab = \"optional@3\"`"
-            ),
-            "{}",
-            checks[0].detail
-        );
-    }
-
-    #[test]
-    fn the_sdk_knows_the_interfaces_tilo_serves_now() {
-        let tilo = current();
-        for interface in ["runtime", "shell-ui", "system"] {
-            assert!(
-                tilo.version(interface).is_some(),
-                "the embedded declaration serves {interface}"
+            let behind =
+                manifest("collab = \"optional@2\"\nretired = \"optional@1\"\ntilo-fs = \"required@4\"");
+            let found = mismatches(&behind, &tilo);
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|m| (m.service.as_str(), m.written.as_str(), m.served))
+                    .collect::<Vec<_>>(),
+                [
+                    ("collab", "optional@2", Some(3)),
+                    ("retired", "optional@1", None),
+                    ("tilo-fs", "required@4", Some(3)),
+                ]
             );
+            assert!(
+                found[0]
+                    .fix
+                    .starts_with("set `collab = \"optional@3\"` under [sandbox.services]"),
+                "{}",
+                found[0].fix
+            );
+            assert!(
+                found[1].fix.contains("remove `retired`"),
+                "{}",
+                found[1].fix
+            );
+            assert!(
+                found[2].fix.starts_with("set `tilo-fs = \"required@3\"`"),
+                "{}",
+                found[2].fix
+            );
+
+            let mut checks = Vec::new();
+            check_against(&behind, &tilo, &mut checks);
+            assert_eq!(checks[0].status, DoctorStatus::Fail);
+            assert!(
+                checks[0].detail.contains(
+                    "collab = \"optional@2\" (Tilo serves collab@3): set `collab = \"optional@3\"`"
+                ),
+                "{}",
+                checks[0].detail
+            );
+        }
+
+        phase the_sdk_knows_the_interfaces_tilo_serves_now;
+        {
+            let tilo = current();
+            for interface in ["runtime", "shell-ui", "system"] {
+                assert!(
+                    tilo.version(interface).is_some(),
+                    "the embedded declaration serves {interface}"
+                );
+            }
         }
     }
 }

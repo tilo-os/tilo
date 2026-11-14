@@ -535,157 +535,165 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unsigned_assembly_preserves_inputs_and_refuses_overwrite() {
-        let root = tempfile::tempdir().unwrap();
-        let mut project = project("[capabilities]\noptional = [\"camera\"]\n");
-        project.bin = "cargo-package-fallback".into();
-        project.app_dir = root.path().join("project with spaces");
-        project.manifest_path = project.app_dir.join("tilo-app.toml");
-        std::fs::create_dir_all(project.app_dir.join("assets")).unwrap();
-        std::fs::write(&project.manifest_path, "manifest fixture").unwrap();
-        std::fs::write(project.app_dir.join("assets/AppIcon.icns"), b"icon").unwrap();
-        let binary = root.path().join("unsigned app input");
-        let daemon = root.path().join("unsigned helper input");
-        std::fs::write(&binary, b"app fixture, not executable").unwrap();
-        std::fs::write(&daemon, b"helper fixture, not executable").unwrap();
-        let output = root.path().join("new output");
-        let app =
-            super::super::assemble_macos_project(&project, &binary, &daemon, &output).unwrap();
-        assert_eq!(
-            std::fs::read(app.join("Contents/MacOS/hello")).unwrap(),
-            std::fs::read(&binary).unwrap()
-        );
-        assert_eq!(
-            std::fs::read(runtime_host(&app)).unwrap(),
-            std::fs::read(&daemon).unwrap()
-        );
-        assert_eq!(
-            std::fs::read(app.join("Contents/Resources/AppIcon.icns")).unwrap(),
-            b"icon"
-        );
-        let info = std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
-        assert!(info.contains("<string>13.0</string>"));
-        assert!(info.contains("<key>CFBundleExecutable</key>\n\t<string>hello</string>"));
-        assert!(!app.join("Contents/MacOS/cargo-package-fallback").exists());
-        assert!(info.contains("NSCameraUsageDescription"));
-        assert_eq!(
-            std::fs::read_to_string(entitlements_path(&app)).unwrap(),
-            entitlements_plist(&project, false)
-        );
-        assert!(super::super::assemble_macos_project(&project, &binary, &daemon, &output).is_err());
-        assert_eq!(
-            std::fs::read(&binary).unwrap(),
-            b"app fixture, not executable"
-        );
-        project.manifest.entrypoint.as_mut().unwrap().bin = PathBuf::from("bin/TILO-RUNTIME-MCP");
-        assert!(
-            super::super::assemble_macos_project(
-                &project,
-                &binary,
-                &daemon,
-                &root.path().join("collision")
-            )
-            .is_err()
-        );
+    tilo_test_env::scenario! {
+        fn an_unsigned_bundle_is_assembled_whole_or_not_at_all;
+
+        phase unsigned_assembly_preserves_inputs_and_refuses_overwrite;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut project = project("[capabilities]\noptional = [\"camera\"]\n");
+            project.bin = "cargo-package-fallback".into();
+            project.app_dir = root.path().join("project with spaces");
+            project.manifest_path = project.app_dir.join("tilo-app.toml");
+            std::fs::create_dir_all(project.app_dir.join("assets")).unwrap();
+            std::fs::write(&project.manifest_path, "manifest fixture").unwrap();
+            std::fs::write(project.app_dir.join("assets/AppIcon.icns"), b"icon").unwrap();
+            let binary = root.path().join("unsigned app input");
+            let daemon = root.path().join("unsigned helper input");
+            std::fs::write(&binary, b"app fixture, not executable").unwrap();
+            std::fs::write(&daemon, b"helper fixture, not executable").unwrap();
+            let output = root.path().join("new output");
+            let app =
+                super::super::assemble_macos_project(&project, &binary, &daemon, &output).unwrap();
+            assert_eq!(
+                std::fs::read(app.join("Contents/MacOS/hello")).unwrap(),
+                std::fs::read(&binary).unwrap()
+            );
+            assert_eq!(
+                std::fs::read(runtime_host(&app)).unwrap(),
+                std::fs::read(&daemon).unwrap()
+            );
+            assert_eq!(
+                std::fs::read(app.join("Contents/Resources/AppIcon.icns")).unwrap(),
+                b"icon"
+            );
+            let info = std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
+            assert!(info.contains("<string>13.0</string>"));
+            assert!(info.contains("<key>CFBundleExecutable</key>\n\t<string>hello</string>"));
+            assert!(!app.join("Contents/MacOS/cargo-package-fallback").exists());
+            assert!(info.contains("NSCameraUsageDescription"));
+            assert_eq!(
+                std::fs::read_to_string(entitlements_path(&app)).unwrap(),
+                entitlements_plist(&project, false)
+            );
+            assert!(super::super::assemble_macos_project(&project, &binary, &daemon, &output).is_err());
+            assert_eq!(
+                std::fs::read(&binary).unwrap(),
+                b"app fixture, not executable"
+            );
+            project.manifest.entrypoint.as_mut().unwrap().bin = PathBuf::from("bin/TILO-RUNTIME-MCP");
+            assert!(
+                super::super::assemble_macos_project(
+                    &project,
+                    &binary,
+                    &daemon,
+                    &root.path().join("collision")
+                )
+                .is_err()
+            );
+        }
+
+        phase unsigned_assembly_failure_cleans_only_its_temporary_directory;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut project = project("");
+            project.manifest_path = root.path().join("missing manifest");
+            let binary = root.path().join("input");
+            std::fs::write(&binary, b"fixture").unwrap();
+            let output = root.path().join("output");
+            assert!(super::super::assemble_macos_project(&project, &binary, &binary, &output).is_err());
+            assert!(!output.exists());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+            project.manifest.package.name = Some("../escape".into());
+            assert!(super::super::assemble_macos_project(&project, &binary, &binary, &output).is_err());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+
+        phase the_bundle_carries_the_runtime_daemon_beside_the_app;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut project = project("");
+            project.app_dir = root.path().join("app");
+            project.manifest_path = project.app_dir.join("tilo-app.toml");
+            std::fs::create_dir_all(&project.app_dir).unwrap();
+            std::fs::write(&project.manifest_path, "").unwrap();
+            let binary = root.path().join("hello");
+            let daemon = root.path().join("daemon");
+            std::fs::write(&binary, "app").unwrap();
+            std::fs::write(&daemon, "daemon").unwrap();
+            let app = assemble(&project, &binary, &daemon, &root.path().join("out")).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(executable(&app, &project)).unwrap(),
+                "app"
+            );
+            assert_eq!(
+                std::fs::read_to_string(executable(&app, &project).with_file_name(RUNTIME_HOST))
+                    .unwrap(),
+                "daemon",
+                "the SDK finds the daemon beside the executable"
+            );
+        }
     }
 
-    #[test]
-    fn unsigned_assembly_failure_cleans_only_its_temporary_directory() {
-        let root = tempfile::tempdir().unwrap();
-        let mut project = project("");
-        project.manifest_path = root.path().join("missing manifest");
-        let binary = root.path().join("input");
-        std::fs::write(&binary, b"fixture").unwrap();
-        let output = root.path().join("output");
-        assert!(super::super::assemble_macos_project(&project, &binary, &binary, &output).is_err());
-        assert!(!output.exists());
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
-        project.manifest.package.name = Some("../escape".into());
-        assert!(super::super::assemble_macos_project(&project, &binary, &binary, &output).is_err());
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
-    }
+    tilo_test_env::scenario! {
+        fn plists_and_the_descriptor_follow_the_manifest_and_codesign;
 
-    #[test]
-    fn info_plist_comes_from_the_manifest() {
-        let plist = info_plist(
-            &project("[capabilities]\noptional = [\"camera\", \"network.http\"]\n"),
-            false,
-        );
-        assert!(
-            plist.contains("<key>CFBundleIdentifier</key>\n\t<string>com.example.hello</string>")
-        );
-        assert!(plist.contains("<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>"));
-        assert!(plist.contains("<string>Hello &amp; Co</string>"));
-        assert!(plist.contains("<key>NSCameraUsageDescription</key>"));
-        assert!(plist.contains("public.app-category.productivity"));
-        assert!(!plist.contains("CFBundleIconFile"));
-    }
+        phase info_plist_comes_from_the_manifest;
+        {
+            let plist = info_plist(
+                &project("[capabilities]\noptional = [\"camera\", \"network.http\"]\n"),
+                false,
+            );
+            assert!(
+                plist.contains("<key>CFBundleIdentifier</key>\n\t<string>com.example.hello</string>")
+            );
+            assert!(plist.contains("<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>"));
+            assert!(plist.contains("<string>Hello &amp; Co</string>"));
+            assert!(plist.contains("<key>NSCameraUsageDescription</key>"));
+            assert!(plist.contains("public.app-category.productivity"));
+            assert!(!plist.contains("CFBundleIconFile"));
+        }
 
-    #[test]
-    fn the_bundle_carries_the_runtime_daemon_beside_the_app() {
-        let root = tempfile::tempdir().unwrap();
-        let mut project = project("");
-        project.app_dir = root.path().join("app");
-        project.manifest_path = project.app_dir.join("tilo-app.toml");
-        std::fs::create_dir_all(&project.app_dir).unwrap();
-        std::fs::write(&project.manifest_path, "").unwrap();
-        let binary = root.path().join("hello");
-        let daemon = root.path().join("daemon");
-        std::fs::write(&binary, "app").unwrap();
-        std::fs::write(&daemon, "daemon").unwrap();
-        let app = assemble(&project, &binary, &daemon, &root.path().join("out")).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(executable(&app, &project)).unwrap(),
-            "app"
-        );
-        assert_eq!(
-            std::fs::read_to_string(executable(&app, &project).with_file_name(RUNTIME_HOST))
-                .unwrap(),
-            "daemon",
-            "the SDK finds the daemon beside the executable"
-        );
-    }
+        phase the_descriptor_reads_codesigns_report;
+        {
+            let ad_hoc = "CDHash=EEFBAEBFAD82DD17d1399cf9a48918a68955dc6a\nSignature=adhoc\nTeamIdentifier=not set\n";
+            assert_eq!(
+                signature_facts(ad_hoc).unwrap(),
+                (
+                    "ad-hoc",
+                    None,
+                    "eefbaebfad82dd17d1399cf9a48918a68955dc6a".to_owned()
+                )
+            );
+            let developer = "Authority=Developer ID Application: Tilo (ABCDE12345)\nCDHash=0123456789abcdef0123456789abcdef01234567\nTeamIdentifier=ABCDE12345\n";
+            assert_eq!(
+                signature_facts(developer).unwrap().1.as_deref(),
+                Some("ABCDE12345")
+            );
+            assert!(signature_facts("Signature=adhoc\n").is_err());
+            assert_eq!(
+                descriptor_path(Path::new("/d/Hello-1.0-macos.zip")),
+                Path::new("/d/Hello-1.0-macos.zip.json")
+            );
+        }
 
-    #[test]
-    fn the_descriptor_reads_codesigns_report() {
-        let ad_hoc = "CDHash=EEFBAEBFAD82DD17d1399cf9a48918a68955dc6a\nSignature=adhoc\nTeamIdentifier=not set\n";
-        assert_eq!(
-            signature_facts(ad_hoc).unwrap(),
-            (
-                "ad-hoc",
-                None,
-                "eefbaebfad82dd17d1399cf9a48918a68955dc6a".to_owned()
-            )
-        );
-        let developer = "Authority=Developer ID Application: Tilo (ABCDE12345)\nCDHash=0123456789abcdef0123456789abcdef01234567\nTeamIdentifier=ABCDE12345\n";
-        assert_eq!(
-            signature_facts(developer).unwrap().1.as_deref(),
-            Some("ABCDE12345")
-        );
-        assert!(signature_facts("Signature=adhoc\n").is_err());
-        assert_eq!(
-            descriptor_path(Path::new("/d/Hello-1.0-macos.zip")),
-            Path::new("/d/Hello-1.0-macos.zip.json")
-        );
-    }
-
-    #[test]
-    fn entitlements_follow_the_capabilities() {
-        let none = entitlements_plist(&project(""), false);
-        assert!(none.contains("<dict>\n</dict>"), "{none}");
-        let some = entitlements_plist(
-            &project(
-                "[capabilities]\nrequired = [\"network.http\"]\noptional = [\"files.save\", \"files.open\"]\n",
-            ),
-            true,
-        );
-        assert!(some.contains("com.apple.security.network.client"));
-        assert_eq!(
-            some.matches("com.apple.security.files.user-selected.read-write")
-                .count(),
-            1
-        );
-        assert!(some.contains("com.apple.security.app-sandbox"));
+        phase entitlements_follow_the_capabilities;
+        {
+            let none = entitlements_plist(&project(""), false);
+            assert!(none.contains("<dict>\n</dict>"), "{none}");
+            let some = entitlements_plist(
+                &project(
+                    "[capabilities]\nrequired = [\"network.http\"]\noptional = [\"files.save\", \"files.open\"]\n",
+                ),
+                true,
+            );
+            assert!(some.contains("com.apple.security.network.client"));
+            assert_eq!(
+                some.matches("com.apple.security.files.user-selected.read-write")
+                    .count(),
+                1
+            );
+            assert!(some.contains("com.apple.security.app-sandbox"));
+        }
     }
 }

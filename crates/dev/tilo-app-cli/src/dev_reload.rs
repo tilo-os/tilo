@@ -773,120 +773,124 @@ impl DevLoop {
 mod tests {
     use super::*;
 
-    #[test]
-    fn dep_info_lists_every_input_rustc_read() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(temp.path().join("src")).unwrap();
-        std::fs::write(temp.path().join("src/lib.rs"), "").unwrap();
-        std::fs::write(temp.path().join("src/a b.rs"), "").unwrap();
-        let text = "/t/deps/libapp-1.so: src/lib.rs src/a\\ b.rs\n\n/t/deps/app-1.d: src/lib.rs src/a\\ b.rs\n\nsrc/lib.rs:\nsrc/a\\ b.rs:\n\n# env-dep:CARGO_PKG_NAME=app\n";
-        let sources = dep_info_sources(text, temp.path());
-        let root = temp.path().canonicalize().unwrap();
-        assert_eq!(
-            sources,
-            HashSet::from([root.join("src/lib.rs"), root.join("src/a b.rs")])
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_fast_rebuild_replays_the_recorded_rustc_command_for_edits_it_read;
 
-    #[test]
-    fn the_link_leaves_out_dependency_dylibs_but_not_its_output() {
-        let deps = PathBuf::from("/t/debug/deps");
-        let args: Vec<OsString> = [
-            "-m64",
-            "/t/debug/deps/app.app.cgu.0.rcgu.o",
-            "/t/debug/deps/libruntime_dylib.so",
-            "/sysroot/lib/libstd-1.so",
-            "-o",
-            "/t/debug/deps/libapp.so",
-            "-Wl,--gc-sections",
-        ]
-        .map(OsString::from)
-        .to_vec();
-        let kept: Vec<&str> = link_args_without_dylibs(&args, std::slice::from_ref(&deps))
-            .map(|arg| arg.to_str().unwrap())
-            .collect();
-        assert_eq!(
-            kept,
-            [
+        phase dep_info_lists_every_input_rustc_read;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(temp.path().join("src")).unwrap();
+            std::fs::write(temp.path().join("src/lib.rs"), "").unwrap();
+            std::fs::write(temp.path().join("src/a b.rs"), "").unwrap();
+            let text = "/t/deps/libapp-1.so: src/lib.rs src/a\\ b.rs\n\n/t/deps/app-1.d: src/lib.rs src/a\\ b.rs\n\nsrc/lib.rs:\nsrc/a\\ b.rs:\n\n# env-dep:CARGO_PKG_NAME=app\n";
+            let sources = dep_info_sources(text, temp.path());
+            let root = temp.path().canonicalize().unwrap();
+            assert_eq!(
+                sources,
+                HashSet::from([root.join("src/lib.rs"), root.join("src/a b.rs")])
+            );
+        }
+
+        phase the_link_leaves_out_dependency_dylibs_but_not_its_output;
+        {
+            let deps = PathBuf::from("/t/debug/deps");
+            let args: Vec<OsString> = [
                 "-m64",
                 "/t/debug/deps/app.app.cgu.0.rcgu.o",
+                "/t/debug/deps/libruntime_dylib.so",
                 "/sysroot/lib/libstd-1.so",
                 "-o",
                 "/t/debug/deps/libapp.so",
                 "-Wl,--gc-sections",
             ]
-        );
-    }
-
-    #[test]
-    fn only_edits_rustc_read_skip_cargo() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        for file in ["src/lib.rs", "src/new.rs", "Cargo.toml"] {
-            std::fs::write(root.join(file), "").unwrap();
+            .map(OsString::from)
+            .to_vec();
+            let kept: Vec<&str> = link_args_without_dylibs(&args, std::slice::from_ref(&deps))
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            assert_eq!(
+                kept,
+                [
+                    "-m64",
+                    "/t/debug/deps/app.app.cgu.0.rcgu.o",
+                    "/sysroot/lib/libstd-1.so",
+                    "-o",
+                    "/t/debug/deps/libapp.so",
+                    "-Wl,--gc-sections",
+                ]
+            );
         }
-        let fast = FastRebuild {
-            command: RustcCommand {
-                program: PathBuf::from("rustc"),
-                args: Vec::new(),
-                env: BTreeMap::new(),
-                cwd: root.clone(),
-            },
-            sources: HashSet::from([root.join("src/lib.rs")]),
-        };
-        assert!(fast.covers(&[&root.join("src/lib.rs")]));
-        assert!(
-            !fast.covers(&[]),
-            "nothing changed is not a reason to build"
-        );
-        assert!(!fast.covers(&[&root.join("src/lib.rs"), &root.join("Cargo.toml")]));
-        assert!(
-            !fast.covers(&[&root.join("src/new.rs")]),
-            "a new module needs Cargo"
-        );
-    }
 
-    #[test]
-    fn the_recorded_command_names_its_dep_info_and_library() {
-        let command = RustcCommand {
-            program: PathBuf::from("rustc"),
-            args: [
-                "--crate-name",
-                "notes",
-                "--crate-type",
-                "cdylib",
-                "--out-dir",
-                "/t/debug/deps",
-                "-C",
-                "extra-filename=-0123",
-                "-Cincremental=/t/inc",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
-            env: BTreeMap::new(),
-            cwd: PathBuf::from("/apps/notes"),
-        };
-        assert_eq!(
-            command.dep_info().unwrap(),
-            Path::new("/t/debug/deps/notes-0123.d")
-        );
-        assert_eq!(
-            command.library().unwrap(),
-            Path::new(&format!(
-                "/t/debug/deps/{}notes-0123{}",
-                std::env::consts::DLL_PREFIX,
-                std::env::consts::DLL_SUFFIX
-            ))
-        );
-        assert_eq!(command.codegen_option("incremental"), Some("/t/inc"));
-        assert!(is_reload_library(
-            &command.args.iter().map(OsString::from).collect::<Vec<_>>(),
-            "notes"
-        ));
-        assert!(!is_reload_library(
-            &command.args.iter().map(OsString::from).collect::<Vec<_>>(),
-            "other"
-        ));
+        phase only_edits_rustc_read_skip_cargo;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            for file in ["src/lib.rs", "src/new.rs", "Cargo.toml"] {
+                std::fs::write(root.join(file), "").unwrap();
+            }
+            let fast = FastRebuild {
+                command: RustcCommand {
+                    program: PathBuf::from("rustc"),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: root.clone(),
+                },
+                sources: HashSet::from([root.join("src/lib.rs")]),
+            };
+            assert!(fast.covers(&[&root.join("src/lib.rs")]));
+            assert!(
+                !fast.covers(&[]),
+                "nothing changed is not a reason to build"
+            );
+            assert!(!fast.covers(&[&root.join("src/lib.rs"), &root.join("Cargo.toml")]));
+            assert!(
+                !fast.covers(&[&root.join("src/new.rs")]),
+                "a new module needs Cargo"
+            );
+        }
+
+        phase the_recorded_command_names_its_dep_info_and_library;
+        {
+            let command = RustcCommand {
+                program: PathBuf::from("rustc"),
+                args: [
+                    "--crate-name",
+                    "notes",
+                    "--crate-type",
+                    "cdylib",
+                    "--out-dir",
+                    "/t/debug/deps",
+                    "-C",
+                    "extra-filename=-0123",
+                    "-Cincremental=/t/inc",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                env: BTreeMap::new(),
+                cwd: PathBuf::from("/apps/notes"),
+            };
+            assert_eq!(
+                command.dep_info().unwrap(),
+                Path::new("/t/debug/deps/notes-0123.d")
+            );
+            assert_eq!(
+                command.library().unwrap(),
+                Path::new(&format!(
+                    "/t/debug/deps/{}notes-0123{}",
+                    std::env::consts::DLL_PREFIX,
+                    std::env::consts::DLL_SUFFIX
+                ))
+            );
+            assert_eq!(command.codegen_option("incremental"), Some("/t/inc"));
+            assert!(is_reload_library(
+                &command.args.iter().map(OsString::from).collect::<Vec<_>>(),
+                "notes"
+            ));
+            assert!(!is_reload_library(
+                &command.args.iter().map(OsString::from).collect::<Vec<_>>(),
+                "other"
+            ));
+        }
     }
 }

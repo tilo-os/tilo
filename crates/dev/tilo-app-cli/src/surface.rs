@@ -1208,56 +1208,6 @@ mod tests {
     }
 
     #[test]
-    fn a_written_surface_reads_back_equal_and_passes() {
-        let temp = tempfile::tempdir().unwrap();
-        let now = report(&[resource(1, "String", &["rename"])]);
-        write(temp.path(), &now.resources).unwrap();
-        let committed = committed(temp.path()).unwrap().unwrap();
-        assert_eq!(committed.format, FORMAT);
-        let filed_now: Vec<Value> = now.resources.iter().map(filed).collect();
-        assert_eq!(committed.resources, filed_now);
-        // What the file leaves out is not drift.
-        assert!(committed.resources[0]["fields"][0].get("title").is_none());
-        let catalog: BTreeSet<String> = ["notes-rename", "notes-book-title"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        let found = findings(
-            "so.tilo.notes",
-            &now,
-            Some(&committed),
-            Some(&catalog),
-            Level::Error,
-        );
-        assert!(found.findings.is_empty(), "{}", found.render());
-    }
-
-    #[test]
-    fn a_written_surface_reads_as_what_receivers_decide_with() {
-        let mut book = resource(1, "String", &["rename"]);
-        book["fields"][1]["ops"] = serde_json::json!({"type": "object", "title": "Text ops"});
-        book["verbs"][0]["params"][0]["schema"]["description"] = "The new title".into();
-        let text = render(&[book.clone()]).unwrap();
-        assert!(!text.contains("title = \"Title\""), "{text}");
-        assert!(!text.contains("label = \"rename\""), "{text}");
-        assert!(!text.contains("The new title"), "{text}");
-        let value: Value =
-            serde_json::to_value(toml::from_str::<toml::Value>(&text).unwrap()).unwrap();
-        let surface: tilo_actions::surface::Surface =
-            serde_json::from_value(value["resources"][0].clone()).unwrap();
-        assert_eq!(surface.verbs[0].id, "rename");
-        assert!(surface.verbs[0].label.is_empty());
-        assert_eq!(surface.fields[0].stored, "value");
-        assert_eq!(surface.fields[1].stored, "collection");
-        assert!(surface.fields[2].readonly);
-        let ops = surface.fields[1].ops.clone().unwrap();
-        assert!(ops.as_str().unwrap().starts_with("sha256:"));
-        book["fields"][1]["ops"]["title"] = "Other ops".into();
-        assert_ne!(filed(&book)["fields"][1]["ops"], ops);
-        assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
-    }
-
-    #[test]
     fn an_actions_answer_reads_back_with_its_type() {
         let mut book = resource(1, "String", &["rename"]);
         book["verbs"][0]["returns"] = serde_json::json!({
@@ -1286,68 +1236,107 @@ mod tests {
         assert_eq!(surface.types[0].name, "Renamed");
     }
 
-    #[test]
-    fn a_file_written_before_read_actions_takes_them_when_written_again() {
-        let before = vec![normalized(&resource(1, "String", &["rename"]))];
-        let mut now = report(&[resource(1, "String", &["rename"])]);
-        let read = serde_json::json!({
-            "id": "read-form-fields",
-            "kind": "read",
-            "returns": {"type": {"named": "FormFields"}},
-        });
-        now.resources[0]["verbs"]
-            .as_array_mut()
-            .unwrap()
-            .push(read.clone());
-        let older = Committed {
-            format: 1,
-            resources: before,
-        };
-        let found = findings("so.tilo.notes", &now, Some(&older), None, Level::Warning);
-        assert!(found.findings.is_empty(), "{}", found.render());
+    tilo_test_env::scenario! {
+        fn a_written_surface_file_reads_back_as_what_was_written;
 
-        let temp = tempfile::tempdir().unwrap();
-        write(temp.path(), &now.resources).unwrap();
-        let committed = committed(temp.path()).unwrap().unwrap();
-        let found = findings(
-            "so.tilo.notes",
-            &now,
-            Some(&committed),
-            None,
-            Level::Warning,
-        );
-        assert!(found.findings.is_empty(), "{}", found.render());
+        phase a_written_surface_reads_back_equal_and_passes;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let now = report(&[resource(1, "String", &["rename"])]);
+            write(temp.path(), &now.resources).unwrap();
+            let committed = committed(temp.path()).unwrap().unwrap();
+            assert_eq!(committed.format, FORMAT);
+            let filed_now: Vec<Value> = now.resources.iter().map(filed).collect();
+            assert_eq!(committed.resources, filed_now);
+            // What the file leaves out is not drift.
+            assert!(committed.resources[0]["fields"][0].get("title").is_none());
+            let catalog: BTreeSet<String> = ["notes-rename", "notes-book-title"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            let found = findings(
+                "so.tilo.notes",
+                &now,
+                Some(&committed),
+                Some(&catalog),
+                Level::Error,
+            );
+            assert!(found.findings.is_empty(), "{}", found.render());
+        }
 
-        // A file that has them takes no other new verb.
-        let mut more = report(&[resource(1, "String", &["rename"])]);
-        more.resources[0]["verbs"].as_array_mut().unwrap().extend([
-            read,
-            serde_json::json!({"id": "retitle", "kind": "undoable"}),
-        ]);
-        let found = findings(
-            "so.tilo.notes",
-            &more,
-            Some(&committed),
-            None,
-            Level::Warning,
-        );
-        assert_eq!(rules(&found), [("surface", Level::Error)]);
-        assert!(found.findings[0].message.contains("retitle"));
-    }
+        phase a_written_surface_reads_as_what_receivers_decide_with;
+        {
+            let mut book = resource(1, "String", &["rename"]);
+            book["fields"][1]["ops"] = serde_json::json!({"type": "object", "title": "Text ops"});
+            book["verbs"][0]["params"][0]["schema"]["description"] = "The new title".into();
+            let text = render(&[book.clone()]).unwrap();
+            assert!(!text.contains("title = \"Title\""), "{text}");
+            assert!(!text.contains("label = \"rename\""), "{text}");
+            assert!(!text.contains("The new title"), "{text}");
+            let value: Value =
+                serde_json::to_value(toml::from_str::<toml::Value>(&text).unwrap()).unwrap();
+            let surface: tilo_actions::surface::Surface =
+                serde_json::from_value(value["resources"][0].clone()).unwrap();
+            assert_eq!(surface.verbs[0].id, "rename");
+            assert!(surface.verbs[0].label.is_empty());
+            assert_eq!(surface.fields[0].stored, "value");
+            assert_eq!(surface.fields[1].stored, "collection");
+            assert!(surface.fields[2].readonly);
+            let ops = surface.fields[1].ops.clone().unwrap();
+            assert!(ops.as_str().unwrap().starts_with("sha256:"));
+            book["fields"][1]["ops"]["title"] = "Other ops".into();
+            assert_ne!(filed(&book)["fields"][1]["ops"], ops);
+            assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
+        }
 
-    #[test]
-    fn a_record_that_stopped_being_the_persons_is_drift() {
-        let before = filed(&resource(1, "String", &["rename"]));
-        let mut now = before.clone();
-        now["person"] = Value::Bool(true);
-        assert_eq!(
-            differences("notes.book", &before, &now, FORMAT),
-            ["notes.book: person changed"]
-        );
-        assert_eq!(
-            differences("notes.book", &now, &before, FORMAT),
-            ["notes.book: person changed"]
-        );
+        phase a_file_written_before_read_actions_takes_them_when_written_again;
+        {
+            let before = vec![normalized(&resource(1, "String", &["rename"]))];
+            let mut now = report(&[resource(1, "String", &["rename"])]);
+            let read = serde_json::json!({
+                "id": "read-form-fields",
+                "kind": "read",
+                "returns": {"type": {"named": "FormFields"}},
+            });
+            now.resources[0]["verbs"]
+                .as_array_mut()
+                .unwrap()
+                .push(read.clone());
+            let older = Committed {
+                format: 1,
+                resources: before,
+            };
+            let found = findings("so.tilo.notes", &now, Some(&older), None, Level::Warning);
+            assert!(found.findings.is_empty(), "{}", found.render());
+
+            let temp = tempfile::tempdir().unwrap();
+            write(temp.path(), &now.resources).unwrap();
+            let committed = committed(temp.path()).unwrap().unwrap();
+            let found = findings(
+                "so.tilo.notes",
+                &now,
+                Some(&committed),
+                None,
+                Level::Warning,
+            );
+            assert!(found.findings.is_empty(), "{}", found.render());
+
+            // A file that has them takes no other new verb.
+            let mut more = report(&[resource(1, "String", &["rename"])]);
+            more.resources[0]["verbs"].as_array_mut().unwrap().extend([
+                read,
+                serde_json::json!({"id": "retitle", "kind": "undoable"}),
+            ]);
+            let found = findings(
+                "so.tilo.notes",
+                &more,
+                Some(&committed),
+                None,
+                Level::Warning,
+            );
+            assert_eq!(rules(&found), [("surface", Level::Error)]);
+            assert!(found.findings[0].message.contains("retitle"));
+        }
     }
 
     #[test]
@@ -1430,53 +1419,76 @@ mod tests {
         assert!(!found.passed());
     }
 
-    #[test]
-    fn the_report_is_read_from_what_the_binary_printed() {
-        let printed = "starting\n{\"resources\": [{\"kind\": \"notes.book\", \"verbs\": [], \"fields\": []}], \"unbound\": [\"x\"], \"effects\": [\"zoom-in\"], \"views\": [\"reader\"], \"reserved\": [\"open\", \"undo\"], \"view\": null}\n";
-        let parsed = parse_report(printed).unwrap();
-        assert_eq!(parsed.resources.len(), 1);
-        assert_eq!(parsed.unbound, ["x"]);
-        assert_eq!(parsed.effects, ["zoom-in"]);
-        assert_eq!(parsed.views, ["reader"]);
-        assert_eq!(parsed.reserved, ["open", "undo"]);
-        assert!(parsed.view.is_none());
+    tilo_test_env::scenario! {
+        fn a_changed_person_record_and_a_framework_id_are_findings;
+
+        phase a_record_that_stopped_being_the_persons_is_drift;
+        {
+            let before = filed(&resource(1, "String", &["rename"]));
+            let mut now = before.clone();
+            now["person"] = Value::Bool(true);
+            assert_eq!(
+                differences("notes.book", &before, &now, FORMAT),
+                ["notes.book: person changed"]
+            );
+            assert_eq!(
+                differences("notes.book", &now, &before, FORMAT),
+                ["notes.book: person changed"]
+            );
+        }
+
+        phase an_action_with_a_framework_id_is_refused;
+        {
+            let mut now = report(&[resource(1, "String", &["rename", "undo"])]);
+            now.effects = vec!["zoom-in".into(), "open".into()];
+            now.views = vec!["history".into(), "reader".into()];
+            now.reserved = ["open", "undo", "redo", "history", "field-edit"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            let found = findings("so.tilo.notes", &now, None, None, Level::Warning);
+            let refused: Vec<&str> = found
+                .findings
+                .iter()
+                .filter(|finding| finding.rule == "reserved-id")
+                .map(|finding| finding.message.as_str())
+                .collect();
+            assert_eq!(refused.len(), 3, "{refused:?}");
+            assert!(refused[0].starts_with("verb `undo`"));
+            assert!(refused[1].starts_with("effect `open`"));
+            assert!(refused[2].starts_with("view `history`"));
+            assert!(!found.passed());
+        }
     }
 
-    #[test]
-    fn an_action_with_a_framework_id_is_refused() {
-        let mut now = report(&[resource(1, "String", &["rename", "undo"])]);
-        now.effects = vec!["zoom-in".into(), "open".into()];
-        now.views = vec!["history".into(), "reader".into()];
-        now.reserved = ["open", "undo", "redo", "history", "field-edit"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        let found = findings("so.tilo.notes", &now, None, None, Level::Warning);
-        let refused: Vec<&str> = found
-            .findings
-            .iter()
-            .filter(|finding| finding.rule == "reserved-id")
-            .map(|finding| finding.message.as_str())
-            .collect();
-        assert_eq!(refused.len(), 3, "{refused:?}");
-        assert!(refused[0].starts_with("verb `undo`"));
-        assert!(refused[1].starts_with("effect `open`"));
-        assert!(refused[2].starts_with("view `history`"));
-        assert!(!found.passed());
-    }
+    tilo_test_env::scenario! {
+        fn a_surface_report_is_read_from_a_framework_apps_binary;
 
-    #[test]
-    fn only_framework_apps_report_a_surface() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(temp.path().join("src")).unwrap();
-        std::fs::write(temp.path().join("src/main.rs"), "ui::main!(demo::App);\n").unwrap();
-        assert!(is_framework_app(temp.path()));
-        std::fs::write(
-            temp.path().join("src/main.rs"),
-            "ui::main!(definition = demo::definition);\n",
-        )
-        .unwrap();
-        assert!(!is_framework_app(temp.path()));
+        phase the_report_is_read_from_what_the_binary_printed;
+        {
+            let printed = "starting\n{\"resources\": [{\"kind\": \"notes.book\", \"verbs\": [], \"fields\": []}], \"unbound\": [\"x\"], \"effects\": [\"zoom-in\"], \"views\": [\"reader\"], \"reserved\": [\"open\", \"undo\"], \"view\": null}\n";
+            let parsed = parse_report(printed).unwrap();
+            assert_eq!(parsed.resources.len(), 1);
+            assert_eq!(parsed.unbound, ["x"]);
+            assert_eq!(parsed.effects, ["zoom-in"]);
+            assert_eq!(parsed.views, ["reader"]);
+            assert_eq!(parsed.reserved, ["open", "undo"]);
+            assert!(parsed.view.is_none());
+        }
+
+        phase only_framework_apps_report_a_surface;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(temp.path().join("src")).unwrap();
+            std::fs::write(temp.path().join("src/main.rs"), "ui::main!(demo::App);\n").unwrap();
+            assert!(is_framework_app(temp.path()));
+            std::fs::write(
+                temp.path().join("src/main.rs"),
+                "ui::main!(definition = demo::definition);\n",
+            )
+            .unwrap();
+            assert!(!is_framework_app(temp.path()));
+        }
     }
 
     #[test]

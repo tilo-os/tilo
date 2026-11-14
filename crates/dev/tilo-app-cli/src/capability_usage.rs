@@ -274,58 +274,62 @@ fn in_use_group(tokens: &[TokenTree], index: usize, segments: &[&str]) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_table_names_only_tilo_caps_capabilities() {
-        for capability in table().unwrap().uses.keys() {
-            assert!(
-                tilo_caps::Capability::from_name(capability).is_some(),
-                "`{capability}` in app_capability_usage.toml is not a tilo-caps capability"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn capability_usage_is_read_from_the_table_and_an_apps_sources;
 
-    #[test]
-    fn paths_groups_methods_and_manifests_are_evidence() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path();
-        std::fs::create_dir_all(app.join("src")).unwrap();
-        std::fs::write(
-            app.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[features]\nsession = [\"ui/mpris\"]\n\n[dependencies]\nui = { package = \"tilo-app\", path = \"x\" }\ntilo-secrets = { path = \"y\" }\n\n[dev-dependencies]\ntilo-capture = { path = \"z\" }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            app.join("src/lib.rs"),
-            "use ui::{location, time};\n\
+        phase the_table_names_only_tilo_caps_capabilities;
+        {
+            for capability in table().unwrap().uses.keys() {
+                assert!(
+                    tilo_caps::Capability::from_name(capability).is_some(),
+                    "`{capability}` in app_capability_usage.toml is not a tilo-caps capability"
+                );
+            }
+        }
+
+        phase paths_groups_methods_and_manifests_are_evidence;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path();
+            std::fs::create_dir_all(app.join("src")).unwrap();
+            std::fs::write(
+                app.join("Cargo.toml"),
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[features]\nsession = [\"ui/mpris\"]\n\n[dependencies]\nui = { package = \"tilo-app\", path = \"x\" }\ntilo-secrets = { path = \"y\" }\n\n[dev-dependencies]\ntilo-capture = { path = \"z\" }\n",
+            )
+            .unwrap();
+            std::fs::write(
+                app.join("src/lib.rs"),
+                "use ui::{location, time};\n\
              pub fn open(files: &dyn Picker) { let _ = files.open_contents(); }\n\
              pub fn save() { let _ = ui::portal::PickRequest::save(\"a\", \"b\", \"c\"); }\n\
              pub fn read() { let _ = std::fs::read(\"x\"); }\n\
              #[cfg(test)]\nmod tests { fn t() { std::thread::spawn(|| {}); } }\n",
-        )
-        .unwrap();
-        let uses = used(app).unwrap();
-        let names: Vec<&str> = uses.keys().map(String::as_str).collect();
-        assert_eq!(
-            names,
-            [
-                "files.open",
-                "files.paths",
-                "files.save",
-                "location",
-                "media.session",
-                "secrets"
-            ]
-        );
-        assert_eq!(uses["location"][0].line, 1);
-        assert_eq!(uses["secrets"][0].path, PathBuf::from("Cargo.toml"));
+            )
+            .unwrap();
+            let uses = used(app).unwrap();
+            let names: Vec<&str> = uses.keys().map(String::as_str).collect();
+            assert_eq!(
+                names,
+                [
+                    "files.open",
+                    "files.paths",
+                    "files.save",
+                    "location",
+                    "media.session",
+                    "secrets"
+                ]
+            );
+            assert_eq!(uses["location"][0].line, 1);
+            assert_eq!(uses["secrets"][0].path, PathBuf::from("Cargo.toml"));
 
-        let missing =
-            undeclared(app, &["files.open", "files.paths", "files.save", "secrets"]).unwrap();
-        let missing: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(missing, ["location", "media.session"]);
-        let message = render("location", &uses["location"], "tilo-app.toml");
-        assert!(message.contains("error[capability]: the code uses `location`"));
-        assert!(message.contains("--> src/lib.rs:1: `ui::location`"));
-        assert!(message.contains("tilo-app add capability location"));
+            let missing =
+                undeclared(app, &["files.open", "files.paths", "files.save", "secrets"]).unwrap();
+            let missing: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(missing, ["location", "media.session"]);
+            let message = render("location", &uses["location"], "tilo-app.toml");
+            assert!(message.contains("error[capability]: the code uses `location`"));
+            assert!(message.contains("--> src/lib.rs:1: `ui::location`"));
+            assert!(message.contains("tilo-app add capability location"));
+        }
     }
 }
