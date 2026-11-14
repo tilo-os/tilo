@@ -505,11 +505,20 @@ fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() 
         std::slice::from_ref(&filled),
     );
     let reads = field_reads(&engine);
-    frames_at(&mut app, ui::time::now() + super::REREAD_EVERY);
+    let read_at = ui::time::now() + super::REREAD_EVERY;
+    frames_at(&mut app, read_at);
     assert_eq!(
         field_reads(&engine),
         reads + 1,
         "the review reads the page again by itself, once"
+    );
+    // And not again until what it read then is as old.
+    let inside = super::REREAD_EVERY - ui::time::Duration::from_millis(1);
+    frames_at(&mut app, read_at + inside);
+    assert_eq!(
+        field_reads(&engine),
+        reads + 1,
+        "nothing is read again before the next read is due"
     );
     eventually(&mut app, "the changed field is marked", |app| {
         row_says(app, "Arrival", &["Changed since it was set"])
