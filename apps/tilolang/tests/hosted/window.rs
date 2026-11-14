@@ -1159,6 +1159,10 @@ fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
     session.settle();
     assert_eq!(listed(&mut session), ["The Dispossessed"]);
     let undo = notice().expect("the window's bar offers to undo the removal");
+    assert_eq!(
+        undo.text, "Remove: Piranesi",
+        "the notice names the book it removed: {undo:?}"
+    );
     assert!(
         undo.actions.iter().any(|action| action.name == "Undo"),
         "the notice offers to take the removal back: {undo:?}"

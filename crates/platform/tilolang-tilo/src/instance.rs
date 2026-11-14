@@ -325,6 +325,14 @@ struct Pending {
     undo: HashMap<u64, Words>,
 }
 
+/// An action the window ran: what it was, what it returned, and the title of what it was run on,
+/// read before it ran, as a destructive one takes its subject away.
+struct Ran {
+    aref: ActionRef,
+    result: Value,
+    subject: Option<String>,
+}
+
 /// See the module docs.
 #[allow(
     clippy::struct_excessive_bools,
@@ -1516,7 +1524,7 @@ impl Instance {
     /// and send what followed it: what a press made, and what the window hears after a press.
     fn event(&mut self, message: ToApp) {
         let first = self.host().map(|host| host.next_ticket());
-        let mut ran: Option<(ActionRef, Value)> = None;
+        let mut ran: Option<Ran> = None;
         let pressed = matches!(message, ToApp::Fire { .. });
         let outcome = self.carry_out(message, &mut ran);
         if let Err(words) = outcome {
@@ -1530,8 +1538,8 @@ impl Instance {
             }
         }
         let tickets = self.commit_planned();
-        if let (Some((aref, result)), Some(first)) = (ran, first) {
-            self.after_action(&aref, &result, tickets.into_iter().filter(|t| *t >= first));
+        if let (Some(ran), Some(first)) = (ran, first) {
+            self.after_action(ran, tickets.into_iter().filter(|t| *t >= first));
         }
         self.follow_opens();
         if pressed {
@@ -1549,12 +1557,8 @@ impl Instance {
     }
 
     /// Carry out what the window told `self` of, answering what it could not do in words; `ran`
-    /// takes the action it applied and what that returned, when it ran one.
-    fn carry_out(
-        &mut self,
-        message: ToApp,
-        ran: &mut Option<(ActionRef, Value)>,
-    ) -> Result<(), Words> {
+    /// takes the action it applied, what that returned and what it was run on, when it ran one.
+    fn carry_out(&mut self, message: ToApp, ran: &mut Option<Ran>) -> Result<(), Words> {
         match message {
             ToApp::Back => {
                 self.close_detail();
@@ -1705,14 +1709,14 @@ impl Instance {
     }
 
     /// Fire the event `name` of the node `key` of the view of `lane`, carrying `value`; `ran`
-    /// takes the action it applied and what that returned, when it ran one.
+    /// takes the action it applied, what that returned and what it was run on, when it ran one.
     fn fire(
         &mut self,
         lane: Lane,
         key: &str,
         name: &str,
         value: Option<&ui::Value>,
-        ran: &mut Option<(ActionRef, Value)>,
+        ran: &mut Option<Ran>,
     ) -> Result<(), Words> {
         // Counted whatever comes of it: the window waits for every press it sent.
         self.fired = self.fired.saturating_add(1);
@@ -1738,10 +1742,19 @@ impl Instance {
             return Ok(());
         }
         let action = view.borrow().event_action(key, name);
+        // What the action is run on is read before it runs: a destructive one takes it away.
+        let subject = self
+            .host()
+            .zip(action.as_ref())
+            .and_then(|(host, action)| subject_title(&host, action));
         let fired = view.borrow().fire_with(key, name, value.as_ref());
         match fired {
             Ok(InvokeOutcome::Done(result)) => {
-                *ran = action.map(|action| (action, result));
+                *ran = action.map(|aref| Ran {
+                    aref,
+                    result,
+                    subject,
+                });
                 Ok(())
             }
             Ok(InvokeOutcome::Suggested(suggestion)) => {
@@ -1892,7 +1905,7 @@ impl Instance {
 
     /// The form `id` was submitted: run its action with what it holds, once. A refusal shows in
     /// the form, which stays open.
-    fn form_submit(&mut self, id: u64, ran: &mut Option<(ActionRef, Value)>) -> Result<(), Words> {
+    fn form_submit(&mut self, id: u64, ran: &mut Option<Ran>) -> Result<(), Words> {
         let Some(host) = self.host() else {
             return Ok(());
         };
@@ -1909,13 +1922,18 @@ impl Instance {
                 return Ok(());
             }
         };
+        let subject = subject_title(&host, &aref);
         let outcome = pending.view.borrow().invoke(&aref);
         match outcome {
             Ok(InvokeOutcome::Done(result)) => {
                 pending.forget();
                 self.form = None;
                 self.out.push(ToUi::Form(None));
-                *ran = Some((aref, result));
+                *ran = Some(Ran {
+                    aref,
+                    result,
+                    subject,
+                });
                 Ok(())
             }
             Ok(InvokeOutcome::Suggested(suggestion)) => {
@@ -2183,13 +2201,14 @@ impl Instance {
     }
 
     /// What follows an action a person ran from a control: a destructive one offers Undo once
-    /// its commits (`tickets`) are in; what a primary one made is shown.
-    fn after_action(
-        &mut self,
-        aref: &ActionRef,
-        result: &Value,
-        tickets: impl Iterator<Item = u64>,
-    ) {
+    /// its commits (`tickets`) are in, naming what it was run on; what a primary one made is
+    /// shown.
+    fn after_action(&mut self, ran: Ran, tickets: impl Iterator<Item = u64>) {
+        let Ran {
+            aref,
+            result,
+            subject,
+        } = ran;
         let Some(host) = self.host() else {
             return;
         };
@@ -2206,21 +2225,12 @@ impl Instance {
         match action.role.as_deref() {
             Some("destructive") => {
                 let label = crate::runtime::platform::label_of(&action);
-                // What it was run on: the item of a list (`delete(nb, n)`), or the resource.
-                let subject = aref.args.iter().rev().find_map(|arg| match arg {
-                    Value::Ref(subject) => Some(ResourceRef::clone(&subject.target)),
-                    _ => None,
-                });
-                let title = subject
-                    .map(|subject| title_of(&host, &subject))
-                    .unwrap_or_default();
-                let words = if title.is_empty() {
-                    Words::Plain(label)
-                } else {
-                    Words::Phrase {
+                let words = match subject {
+                    Some(title) => Words::Phrase {
                         id: "tilolang-did".to_owned(),
                         args: vec![("action".to_owned(), label), ("title".to_owned(), title)],
-                    }
+                    },
+                    None => Words::Plain(label),
                 };
                 if let Some(last) = tickets.max() {
                     self.pending.undo.insert(last, words);
@@ -2228,7 +2238,7 @@ impl Instance {
             }
             Some("primary") => {
                 // What a primary action made opens beside the list, as the person asked for it.
-                if let Value::Ref(made) = result {
+                if let Value::Ref(made) = &result {
                     self.pressed_opens
                         .push((self.last_fire, made.target.id_string()));
                 }
@@ -2864,6 +2874,17 @@ pub fn sentence(name: &str) -> String {
 #[must_use]
 pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
     host.runtime().title(resource).unwrap_or_default()
+}
+
+/// The title of what `aref` is run on — the item of a list (`remove(s, b)`), or the resource —
+/// when it has one. Read before the action runs: a destructive one takes its subject away.
+fn subject_title(host: &Host, aref: &ActionRef) -> Option<String> {
+    let subject = aref.args.iter().rev().find_map(|arg| match arg {
+        Value::Ref(subject) => Some(ResourceRef::clone(&subject.target)),
+        _ => None,
+    })?;
+    let title = title_of(host, &subject);
+    (!title.is_empty()).then_some(title)
 }
 
 /// The cases of the enum `id`: each case's name, what a control shows for it, and its icon's
