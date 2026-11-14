@@ -825,6 +825,36 @@ pub(crate) trait HostCore {
         .center()
     }
 
+    /// What the person's own press completes at the exported node: an action a widget left to the
+    /// pointer is a press where the node is drawn (else where its widget stands it), the left
+    /// button for an activation and the secondary one for a menu. `None` when the action is not
+    /// the pointer's to complete.
+    fn pointer_completion(
+        &self,
+        action: &crate::a11y::Action,
+        drawn: Option<accesskit::Rect>,
+        node: NodeId,
+        semantic_target: Option<&str>,
+        ordinal_path: &[usize],
+    ) -> Option<(vello::kurbo::Point, winit::event::MouseButton)> {
+        use crate::a11y::Action;
+        let button = match action {
+            Action::Activate | Action::ToggleCheck => winit::event::MouseButton::Left,
+            Action::ShowContextMenu => winit::event::MouseButton::Right,
+            _ => return None,
+        };
+        let point = drawn.map_or_else(
+            || self.exported_press_point(node, semantic_target, ordinal_path),
+            |drawn| {
+                vello::kurbo::Point::new(
+                    f64::midpoint(drawn.x0, drawn.x1),
+                    f64::midpoint(drawn.y0, drawn.y1),
+                )
+            },
+        );
+        Some((point, button))
+    }
+
     fn touch_claim_at(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
         self.tree().touch_claim_at(point)
     }

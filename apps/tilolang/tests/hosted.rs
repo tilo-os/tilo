@@ -321,8 +321,8 @@ impl Window {
     }
 
     /// Open the menu of the row or control named `name`, where it stands, as a tool or a screen
-    /// reader asks for it: a list that opens its rows' menus around them answers with the
-    /// person's own secondary click, as a window does.
+    /// reader asks for it: the window's own accessibility action, pressed where the node is
+    /// drawn.
     fn show_context_menu(&mut self, name: &str) {
         let node = self
             .a11y()
@@ -333,49 +333,12 @@ impl Window {
             })
             .unwrap_or_else(|| panic!("the window shows no {name:?} with a menu"))
             .0;
-        let Self::Live(app) = self else {
-            return self.right_click(name);
-        };
-        if let Some((x, y)) = app.dispatch_a11y_action(node, &ui::a11y::Action::ShowContextMenu) {
-            self.click_at(x, y);
-        }
-    }
-
-    /// The person's own secondary click on the row or control named `name`, where it stands: a
-    /// menu a view attaches to a row opens on it.
-    fn right_click(&mut self, name: &str) {
-        use ui::winit::event::{ElementState, MouseButton};
-        let node = self
-            .node_named(name)
-            .unwrap_or_else(|| panic!("the window shows no {name:?}"))
-            .1;
-        let rect = node.bounds().expect("what the person clicks is laid out");
-        let (x, y) = (
-            f64::midpoint(rect.x0, rect.x1),
-            f64::midpoint(rect.y0, rect.y1),
-        );
         match self {
-            Self::Harness(window) => {
-                window.send(&ui::synthetic_input::cursor_moved(x, y));
-                window.send(&ui::synthetic_input::mouse_input(
-                    ElementState::Pressed,
-                    MouseButton::Right,
-                ));
-                window.send(&ui::synthetic_input::mouse_input(
-                    ElementState::Released,
-                    MouseButton::Right,
-                ));
-            }
+            Self::Harness(window) => window
+                .perform_a11y_action(node, &ui::a11y::Action::ShowContextMenu)
+                .expect("the window opens the menu where the node stands"),
             Self::Live(app) => {
-                Self::live_input(app, ui::synthetic_input::cursor_moved(x, y));
-                Self::live_input(
-                    app,
-                    ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
-                );
-                Self::live_input(
-                    app,
-                    ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
-                );
+                app.dispatch_a11y_action(node, &ui::a11y::Action::ShowContextMenu);
             }
         }
     }

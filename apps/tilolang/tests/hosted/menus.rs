@@ -185,9 +185,10 @@ fn menu_commands(session: &mut Session) -> Vec<String> {
         .collect()
 }
 
-/// The commands of the menu of the row `title`, opened where the row stands.
+/// The commands of the menu of the row `title`, opened where the row stands, as a tool or a
+/// screen reader asks for it.
 pub(super) fn row_menu(session: &mut Session, title: &str) -> Vec<String> {
-    session.window.right_click(title);
+    session.window.show_context_menu(title);
     session.settle();
     menu_commands(session)
 }

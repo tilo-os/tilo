@@ -1362,64 +1362,32 @@ impl App {
             }
             return None;
         }
-        match action {
-            Action::Focus => {
-                if !ordinal_path.is_empty() {
-                    let _ = self.mutate_node(taffy_id, |widget| {
-                        widget.focus_synthetic_accessibility(&ordinal_path)
-                    });
-                }
-                self.set_focused_node(Some(taffy_id));
-                None
+        if matches!(action, Action::Focus) {
+            if !ordinal_path.is_empty() {
+                let _ = self.mutate_node(taffy_id, |widget| {
+                    widget.focus_synthetic_accessibility(&ordinal_path)
+                });
             }
-            Action::Activate | Action::ToggleCheck => {
-                // What the widget left to the pointer is pressed where its node is drawn: a
-                // control of its own, a row of a menu it opens, a child its painting ancestor
-                // routes to.
-                let c = self.drawn_press_point(
-                    drawn,
-                    taffy_id,
-                    semantic_target.as_deref(),
-                    &ordinal_path,
-                );
-                Some((c.x, c.y))
-            }
-            // A menu the node offers but no widget opens itself (one a menu
-            // area around a list opens) opens on a secondary click where the
-            // node stands, as a person's opens it.
-            Action::ShowContextMenu => {
-                let c = self.drawn_press_point(
-                    drawn,
-                    taffy_id,
-                    semantic_target.as_deref(),
-                    &ordinal_path,
-                );
-                self.dispatch_semantic_press(c.x, c.y, winit::event::MouseButton::Right);
-                None
-            }
-            _ => None,
+            self.set_focused_node(Some(taffy_id));
+            return None;
         }
-    }
-
-    /// Where the node `drawn` was last described is on screen, when the presentation gave it a
-    /// box; else where the widget `taffy_id` stands it (a routed child, a synthetic element,
-    /// the widget itself).
-    fn drawn_press_point(
-        &self,
-        drawn: Option<accesskit::Rect>,
-        taffy_id: taffy::NodeId,
-        semantic_target: Option<&str>,
-        ordinal_path: &[usize],
-    ) -> vello::kurbo::Point {
-        drawn.map_or_else(
-            || self.exported_press_point(taffy_id, semantic_target, ordinal_path),
-            |drawn| {
-                vello::kurbo::Point::new(
-                    f64::midpoint(drawn.x0, drawn.x1),
-                    f64::midpoint(drawn.y0, drawn.y1),
-                )
-            },
-        )
+        // What the widget left to the pointer is pressed where its node is drawn: a control of
+        // its own, a row of a menu it opens, a child its painting ancestor routes to.
+        let (c, button) = self.pointer_completion(
+            action,
+            drawn,
+            taffy_id,
+            semantic_target.as_deref(),
+            &ordinal_path,
+        )?;
+        // An activation is pressed by the caller, through the window's input path; a menu the
+        // node offers but no widget opens itself opens on a secondary click here, as a person's
+        // opens it.
+        if button == winit::event::MouseButton::Right {
+            self.dispatch_semantic_press(c.x, c.y, button);
+            return None;
+        }
+        Some((c.x, c.y))
     }
 
     /// Activate the control whose test id is `test_id`, as an assistive

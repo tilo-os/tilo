@@ -4888,9 +4888,10 @@ impl FrameHarness {
     /// deliberately takes the same route: resolve the id against the live tree,
     /// then hand the owning widget the action *plus the key path naming the
     /// element*, so a synthetic node is operated rather than the widget that
-    /// painted it. Without this a canvas app could be described in a headless
-    /// test but not driven by one, which caps how well it can be verified at
-    /// all.
+    /// painted it. An action the widget leaves to the pointer is pressed
+    /// where the node is drawn, through the same shared completion the window
+    /// uses. Without this a canvas app could be described in a headless test
+    /// but not driven by one, which caps how well it can be verified at all.
     ///
     /// # Errors
     ///
@@ -4952,6 +4953,13 @@ impl FrameHarness {
         if !key_path.is_empty() {
             self.set_focused(Some(taffy_id));
         }
+        // Where the node is drawn: the press an activation or a menu it leaves to the pointer
+        // makes lands there, as it does in the window.
+        let drawn = self
+            .a11y_nodes()
+            .into_iter()
+            .find(|(id, _)| *id == target)
+            .and_then(|(_, node)| node.bounds());
         // Who is acted on, as an identity that survives a rebuild the action
         // itself may cause.
         // SAFETY: the action below reaches this node through the same
@@ -4993,19 +5001,29 @@ impl FrameHarness {
             self.set_focused(Some(taffy_id));
         }
         if !handled {
-            // A painted empty state's action is pressed where it is drawn,
-            // below; any other target its widget did not handle is refused.
-            if semantic_target
-                .as_deref()
-                .is_some_and(|target| !crate::widget::empty_state::is_painted_target(target))
+            // What the widget left to the pointer — a control of its own, a row of a menu it
+            // opens, a painted empty state — is pressed where the node is drawn. Any other
+            // target its widget did not handle is refused.
+            let completion = self.pointer_completion(
+                action,
+                drawn,
+                taffy_id,
+                semantic_target.as_deref(),
+                &ordinal_path,
+            );
+            if completion.is_none()
+                && semantic_target
+                    .as_deref()
+                    .is_some_and(|target| !crate::widget::empty_state::is_painted_target(target))
                 && !matches!(action, crate::a11y::Action::Focus)
             {
                 return Err(format!(
                     "the current semantic target did not handle {action:?}"
                 ));
             }
-            match action {
-                crate::a11y::Action::Focus => {
+            match (completion, action) {
+                (Some((point, button)), _) => self.press_at(point, button),
+                (None, crate::a11y::Action::Focus) => {
                     if !ordinal_path.is_empty() {
                         let _ = self.mutate_node(taffy_id, |widget| {
                             widget.focus_synthetic_accessibility(&ordinal_path)
@@ -5013,18 +5031,7 @@ impl FrameHarness {
                     }
                     self.set_focused(Some(taffy_id));
                 }
-                // Fall back the way the App does: a click at the widget's
-                // centre. Widget-granular by nature — it cannot reach inside a
-                // canvas, which is why `perform_action` exists.
-                crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
-                    let c = self.exported_press_point(
-                        taffy_id,
-                        semantic_target.as_deref(),
-                        &ordinal_path,
-                    );
-                    self.click_at(c.x, c.y);
-                }
-                _ => return Err(format!("the current control did not handle {action:?}")),
+                (None, _) => return Err(format!("the current control did not handle {action:?}")),
             }
         }
         if framework {
@@ -7541,17 +7548,28 @@ impl FrameHarness {
         }));
     }
 
+    /// Move the pointer to logical `point` and press and release `button` there — the three
+    /// events a press produces, in order.
+    /// Quiet: a move, a press and a release through `send`, which judges each.
+    fn press_at(&mut self, point: Point, button: winit::event::MouseButton) {
+        self.pump_component_wakes();
+        let (x, y) = (point.x * self.input_scale, point.y * self.input_scale);
+        self.send(&crate::synthetic_input::cursor_moved(x, y));
+        self.send(&crate::synthetic_input::mouse_input(
+            winit::event::ElementState::Pressed,
+            button,
+        ));
+        self.send(&crate::synthetic_input::mouse_input(
+            winit::event::ElementState::Released,
+            button,
+        ));
+    }
+
     /// Move the pointer to `(x, y)` and press+release the left button — the three events a click
     /// produces, in order.
-    /// Quiet: a move, a press and a release through `send`, which judges each.
+    /// Quiet: that move, press and release through `send`, which judges each.
     pub fn click_at(&mut self, x: f64, y: f64) {
-        self.pump_component_wakes();
-        self.send(&crate::synthetic_input::cursor_moved(
-            x * self.input_scale,
-            y * self.input_scale,
-        ));
-        self.send(&crate::synthetic_input::mouse_press());
-        self.send(&crate::synthetic_input::mouse_release());
+        self.press_at(Point::new(x, y), winit::event::MouseButton::Left);
     }
 
     /// Two left clicks at `(x, y)` that count as one double-click however
