@@ -243,7 +243,11 @@ impl ReleasedHint {
             || WorkspaceId::parse(&self.room) != Some(join.grant().workspace_id)
             || self.host_device_certificate != hint.host
             || self.host_user_public_key != hint.host.user_public_key
-            || hex::decode(&self.endpoint_addr.id).ok().as_deref()
+            || tilo_failure::ignored!(
+                "an endpoint id that is not hex names no key, so it matches none",
+                hex::decode(&self.endpoint_addr.id).ok()
+            )
+            .as_deref()
                 != Some(hint.service_public_key.as_slice())
             || self.packet_relay_url.is_empty()
             || self.packet_relay_url.len() > 4096
