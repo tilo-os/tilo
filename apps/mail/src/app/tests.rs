@@ -7,6 +7,8 @@ mod compose;
 mod custody;
 #[cfg(feature = "live")]
 mod idle;
+#[cfg(feature = "live")]
+mod peer;
 mod presentation;
 mod shell;
 mod sync;
