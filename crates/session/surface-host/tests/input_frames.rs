@@ -1,6 +1,6 @@
 //! A window's host presents on its own frame clock: the events of one keystroke reach the tree
 //! and the tree runs one frame for them, the frame the display's clock draws, rather than one
-//! frame per event.
+//! frame per event. A drag that reaches the tree with no input of its own asks for a frame too.
 
 #![allow(
     clippy::unwrap_used,
@@ -158,4 +158,66 @@ fn a_keystroke_reaches_one_frame_of_the_hosts_clock() {
     );
     assert_eq!(host.revision(), drawn + 1, "one frame, not one per event");
     assert!(!host.prepare_frame(), "and the window rests after it");
+}
+
+/// A drop target shows where a drag would land however the drag reaches it: one carried here
+/// from another of the person's devices moves on the toolkit's drag bus with no input of the
+/// tree's, and the host still draws the line over the target, and takes it away again.
+#[test]
+fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
+    let _settled = ui::motion::testing::settled();
+    let target = ui::widget::DropTarget::new(
+        "window",
+        Box::new(Field::default()),
+        ui::component::Event::None,
+    );
+    let mut host = WidgetHost::new(
+        Box::new(target),
+        Placement {
+            origin: (0, 0),
+            size: (320, 240),
+            scale: 1.0,
+        },
+        true,
+    );
+    assert!(host.prepare_frame(), "the first frame draws the tree");
+    assert!(!host.prepare_frame(), "and the tree rests after it");
+    let drawn = host.revision();
+
+    // A window's record goes on over the target from elsewhere: nothing the tree was handed moved.
+    ui::widget::drag_bus::publish(ui::widget::drag_bus::InFlight {
+        source: "carried-here".into(),
+        payload: ui::dnd::DragPayload::Custom {
+            kind: ui::widget::RESOURCE_PAYLOAD.to_owned(),
+            blob: b"notes.page:one".to_vec(),
+        },
+        label: "Notes".into(),
+        pointer: ui::kurbo::Point::new(100.0, 20.0),
+        runs: Vec::new(),
+    });
+    assert!(host.wants_frame(), "the drag asks the tree for a frame");
+    assert!(
+        host.prepare_frame(),
+        "the frame draws the drop line over the target"
+    );
+    assert!(host.revision() > drawn);
+    assert!(
+        !host.prepare_frame(),
+        "and rests while the drag stands still"
+    );
+
+    // The drag goes on past the tree: the line goes with it.
+    ui::widget::drag_bus::moved(
+        ui::kurbo::Point::new(400.0, 20.0),
+        ("carried-here".to_owned(), ui::kurbo::Rect::ZERO),
+    );
+    assert!(
+        host.prepare_frame(),
+        "the frame takes the drop line away again"
+    );
+    ui::widget::drag_bus::end(None);
+    assert!(
+        !host.prepare_frame(),
+        "a drag ending away from the target changes nothing it shows"
+    );
 }

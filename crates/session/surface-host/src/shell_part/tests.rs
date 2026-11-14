@@ -1634,3 +1634,61 @@ fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
         "every well moved with the canvas on every frame: {frames:?}"
     );
 }
+
+/// A collection the shell mirrors keeps the session's order: a tab tabbed into another window
+/// goes after that window's own tab, so the mirror's places are taken out from the first one out
+/// of order and inserted again in the session's order, rather than left where they were inserted.
+/// An item is kept once its insert is written, so the next reading inserts it no more.
+#[test]
+fn the_mirror_follows_the_session_s_order_of_its_items() {
+    let root = ResourceRef::root("root-places", "places");
+    let ty = OriginType {
+        app: "so.tilo.session".to_owned(),
+        ty: "place".to_owned(),
+        kind: "session.place".to_owned(),
+        fields: BTreeMap::from([("key".to_owned(), "key".to_owned())]),
+    };
+    let mut mirror = Mirror::default();
+    let mut sync = |now: &[&str]| {
+        let now: Vec<String> = now.iter().map(|key| (*key).to_owned()).collect();
+        let writes = mirror.sync(
+            &now,
+            &root,
+            Some("places"),
+            Some(&ty),
+            Clone::clone,
+            |key| vec![("key", Value::Text(key.clone()))],
+        );
+        let mut made = Vec::new();
+        let changes: Vec<String> = writes
+            .iter()
+            .map(|write| match write {
+                OriginWrite::Insert { fields, .. } => {
+                    let Value::Text(key) = &fields[0].1 else {
+                        panic!("a key")
+                    };
+                    made.push(Some(root.item(key, "place")));
+                    format!("+{key}")
+                }
+                OriginWrite::Remove { item, .. } => {
+                    made.push(None);
+                    format!("-{}", item.item.clone().unwrap_or_default())
+                }
+                OriginWrite::Set { .. } => {
+                    made.push(None);
+                    "set".to_owned()
+                }
+            })
+            .collect();
+        mirror.made(Some(made));
+        changes
+    };
+    assert_eq!(sync(&["a", "b"]), ["+a", "+b"]);
+    assert_eq!(sync(&["a", "b", "c"]), ["+c"], "a new one goes last");
+    assert!(sync(&["a", "b", "c"]).is_empty(), "nothing moved");
+    // `a` moved behind `c`: everything from the first one out of order is inserted again.
+    assert_eq!(sync(&["b", "c", "a"]), ["-a", "-b", "-c", "+b", "+c", "+a"]);
+    assert!(sync(&["b", "c", "a"]).is_empty(), "the mirror is in order");
+    // A new one before the last: it and the one after it go in again.
+    assert_eq!(sync(&["b", "d", "c", "a"]), ["-c", "-a", "+d", "+c", "+a"]);
+}

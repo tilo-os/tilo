@@ -1786,6 +1786,13 @@ fn move_place(
     let id = tab.id;
     group.tabs.insert(at, tab);
     group.activate_tab(id);
+    // A place the person moved comes to the front with the window it went into, as one they
+    // open does.
+    if by_the_person {
+        let (slot, row, into) = (held.slot, target.id, group.id);
+        tree.active_strip.insert(slot, row);
+        tree.set_active_group(row, into);
+    }
     Ok(true)
 }
 

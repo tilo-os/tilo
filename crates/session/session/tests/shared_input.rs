@@ -39,6 +39,11 @@ fn copy(device: &Device, text: &str) {
     let mut cursor = Value::Null;
     let provider = loop {
         let page = device.ask(&json!({"op": "actions_enumerate", "cursor": cursor}));
+        // A listing that moved on under the walk is walked again from its start.
+        if page["err"]["code"] == json!("stale_cursor") {
+            cursor = Value::Null;
+            continue;
+        }
         let answer = &page["answer"];
         let found = answer["actions"]
             .as_array()
@@ -428,17 +433,19 @@ fn bar(device: &Device, title: &str) -> Option<(f64, f64)> {
     Some((x + 48.0, y - 20.0))
 }
 
-/// Whether the window titled `title` is the one in front on `device`.
-fn in_front(device: &Device, title: &str) -> bool {
+/// The row `device` lists for the window titled `title`.
+fn window_of(device: &Device, title: &str) -> Option<Value> {
     let windows = device.ask(&json!({"op": "windows"}));
     windows["answer"]["windows"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|window| {
-            (window["title"] == title || window["app_id"] == title)
-                && window["active"] == json!(true)
-        })
+        .as_array()?
+        .iter()
+        .find(|window| window["title"] == title || window["app_id"] == title)
+        .cloned()
+}
+
+/// Whether the window titled `title` is the one in front on `device`.
+fn in_front(device: &Device, title: &str) -> bool {
+    window_of(device, title).is_some_and(|window| window["active"] == json!(true))
 }
 
 fn button(device: &Device, pressed: bool) {
@@ -460,9 +467,6 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
     laptop.wait_for_window(CHAT);
     let _other = laptop.window("so.tilo.notes", "Stays behind");
     wait_shown(&site, &[&laptop, &phone], "Stays behind");
-    waited("the phone fronting the newer window", &[&phone], || {
-        in_front(&phone, "Stays behind")
-    });
     picture(&laptop, "drag-1-laptop-before");
     picture(&phone, "drag-1-phone-before");
 
@@ -504,21 +508,27 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
         shared(&laptop)["carrying"].is_null(),
         "the laptop carries nothing any more"
     );
-    // Over the phone's other window the button comes up: that window takes Chat as a tab, and
-    // shows it, as a drop of one window's bar on another's does on one device.
+    // Over the bar of the phone's other window the button comes up: that window takes Chat as a
+    // tab, and shows it, as a drop of one window's bar on another's does on one device. Both
+    // devices lay the workspace's desk out alike, so the laptop says where that bar stands.
+    let onto = bar(&laptop, "Stays behind").expect("the other window's bar");
+    let there = pointer(&phone);
     let parked = pointer(&laptop);
-    let over = 300.0;
     move_to(
         &laptop,
-        (
-            parked.0 + beside.toward.0 * over,
-            parked.1 + beside.toward.1 * over,
-        ),
+        (parked.0 + onto.0 - there.0, parked.1 + onto.1 - there.1),
     );
     picture(&phone, "drag-3-phone-carrying");
     button(&laptop, false);
     waited("the phone fronting Chat", &[&laptop, &phone], || {
         in_front(&phone, CHAT)
+    });
+    // Chat is the tab in front of Notes' window there, and its window fills that window's well.
+    waited("Chat filling the window it joined", &[&phone], || {
+        window_of(&phone, CHAT).is_some_and(|chat| {
+            window_of(&phone, "Stays behind").is_some_and(|notes| chat["group"] == notes["group"])
+                && chat["rect"][2].as_f64().unwrap_or(0.0) > 1000.0
+        })
     });
     picture(&laptop, "drag-4-laptop-after");
     picture(&phone, "drag-4-phone-after");

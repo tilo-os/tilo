@@ -404,5 +404,15 @@ fn dragging_a_windows_bar_onto_another_tabs_it_in() {
         Some(first),
         "the tab moved in is the window's shown one"
     );
+    // The window's bar shows both places as its tabs, in the record's order.
+    let (moved, kept) = crate::common::wait_for(&mut session, "the window's tabs", |session| {
+        let moved = on_screen(session, &first_name)?;
+        let kept = on_screen(session, &second_name)?;
+        (moved.3 < 100.0 && kept.3 < 100.0).then_some((moved, kept))
+    });
+    assert!(
+        kept.0 < moved.0,
+        "the window's own tab stands first, the one moved in after it: {kept:?} {moved:?}"
+    );
     keep(&mut session, "strips-bar-dragged-in");
 }

@@ -116,6 +116,10 @@ struct Held {
     based: Option<[u8; 32]>,
     /// What the record held when this device last wrote it.
     written: Option<Written>,
+    /// The person's view as this device shows it from the record alone, with nothing changed
+    /// here: a front tab that differs from it is the person's change here; one that differs from
+    /// the record only because this device does not hold the record's tab is not.
+    seen: Option<PersonView>,
     /// The view that changed since the last write, and did not move on: written on the look after
     /// the one that found it, so a drag or a burst of switches is one write when it is over.
     pending: Option<PersonView>,
@@ -760,22 +764,34 @@ impl SharedDesktops {
                 self.held(&key, |held| held.kept.clone()),
                 Some(doc),
             );
-            let view = PersonView::read(&doc);
+            let read = PersonView::read(&doc);
             // What this device wrote or read last is on the desk already, or changed since by the
-            // person here: only a view another of their devices wrote is news.
+            // person here: only a view another of their devices wrote is news. What the person
+            // changed here since stays over it: another device's view holds its own front tabs as
+            // it left them. The record holds what was read, so the change kept here differs from
+            // it and a look writes it.
             let news = self.held(&key, |held| {
-                held.written.as_ref() != Some(&Written::View(view.clone()))
+                held.written.as_ref() != Some(&Written::View(read.clone()))
             });
-            self.held(&key, |held| {
+            let here = PersonView::of(tree, slot);
+            let mut alone = tree.clone();
+            read.applied(&mut alone, slot);
+            let view = self.held(&key, |held| {
+                let view = match &held.seen {
+                    Some(seen) => read.over(&here, seen),
+                    None => read.clone(),
+                };
+                held.seen = Some(PersonView::of(&alone, slot));
                 held.read = true;
                 held.revision = Some(revision);
-                held.written = Some(Written::View(view.clone()));
+                held.written = Some(Written::View(read));
                 if held.undo.is_none() {
                     let mut from = doc.clone();
                     held.undo = Some(history(&mut from));
                 }
                 held.kept = Some(doc);
                 held.based = Some(revision);
+                view
             });
             if news {
                 changed |= view.applied(tree, slot);
@@ -1322,7 +1338,12 @@ impl SharedDesktops {
                 continue;
             }
             let key = (workspace_id, route.clone());
-            let view = PersonView::of(tree, workspace.slot);
+            // What the person changed here, over what the record holds.
+            let here = PersonView::of(tree, workspace.slot);
+            let view = self.held(&key, |held| match (&held.written, &held.seen) {
+                (Some(Written::View(read)), Some(seen)) => read.over(&here, seen),
+                _ => here.clone(),
+            });
             // An arranging action's change of the view is written at once, as a step of the
             // person's; any other change once it rests.
             let acted = self.held(&key, |held| {
@@ -1340,6 +1361,7 @@ impl SharedDesktops {
             };
             self.held(&key, |held| {
                 held.written = Some(Written::View(view.clone()));
+                held.seen = Some(here);
                 held.pending = None;
             });
             let Some(sealed) = self.sealed(engine, &key) else {

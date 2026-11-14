@@ -141,6 +141,41 @@ impl PersonView {
         changed
     }
 
+    /// This view, read from the record, laid over `here`, the device's own view, which showed
+    /// `written` before the person changed it here: what they changed, and what the record says
+    /// nothing of, stays; everything else takes the record's.
+    #[must_use]
+    pub fn over(&self, here: &Self, written: &Self) -> Self {
+        fn each<K: Ord + Copy, V: Clone + PartialEq>(
+            record: &BTreeMap<K, V>,
+            here: &BTreeMap<K, V>,
+            written: &BTreeMap<K, V>,
+        ) -> BTreeMap<K, V> {
+            let mut kept = record.clone();
+            for (key, value) in here {
+                if written.get(key) != Some(value) || !record.contains_key(key) {
+                    kept.insert(*key, value.clone());
+                }
+            }
+            kept
+        }
+        let mut maximized = self.maximized.clone();
+        maximized.extend(here.maximized.difference(&written.maximized));
+        maximized
+            .retain(|group| here.maximized.contains(group) || !written.maximized.contains(group));
+        Self {
+            front_strip: if here.front_strip == written.front_strip {
+                self.front_strip
+            } else {
+                here.front_strip
+            },
+            front_group: each(&self.front_group, &here.front_group, &written.front_group),
+            front_tab: each(&self.front_tab, &here.front_tab, &written.front_tab),
+            widths: each(&self.widths, &here.widths, &written.widths),
+            maximized,
+        }
+    }
+
     /// The view `doc` holds.
     #[must_use]
     pub fn read(doc: &AutoCommit) -> Self {
@@ -373,5 +408,29 @@ mod tests {
         let mut doc = AutoCommit::new();
         assert!(view.write(&mut doc).expect("the view is written"));
         assert_eq!(PersonView::read(&doc), view);
+    }
+
+    /// A tab the person brought to the front here, before this device wrote it, stays in front
+    /// when another device's view arrives; what this device did not change takes the record's.
+    #[test]
+    fn what_the_person_changed_here_stays_over_another_devices_view() {
+        let view = |tabs: &[(u64, u64)], strip: u64| PersonView {
+            front_strip: Some(StripId(strip)),
+            front_tab: tabs.iter().copied().collect(),
+            ..PersonView::default()
+        };
+        let written = view(&[(1, 10), (2, 20)], 7);
+        let here = view(&[(1, 11), (2, 20)], 7);
+        let record = view(&[(1, 10), (2, 21)], 8);
+        assert_eq!(
+            record.over(&here, &written),
+            view(&[(1, 11), (2, 21)], 8),
+            "the tab chosen here stays; the other device's choices and strip come in"
+        );
+        assert_eq!(
+            record.over(&written, &written),
+            record,
+            "nothing changed here"
+        );
     }
 }

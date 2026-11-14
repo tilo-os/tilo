@@ -462,31 +462,78 @@ impl SessionLink {
 }
 
 /// What the origin last wrote of an item kept by key (a workspace, a task).
-struct Kept<T> {
-    at: ResourceRef,
-    was: T,
+struct Kept {
+    /// Where the insert made it; `None` until the write that inserts it is applied.
+    at: Option<ResourceRef>,
+    /// The fields it was written with.
+    was: Vec<(String, Value)>,
+    /// When it was inserted, among every item the origin inserted: its collection holds its
+    /// items in that order.
+    seq: u64,
+}
+
+/// What the origin wrote into the shell's resources: the fields of a root and the items of its
+/// collections, by collection and key, and what the writes being applied insert and set.
+#[derive(Default)]
+struct Mirror {
+    kept: BTreeMap<(String, String), Kept>,
+    fields: BTreeMap<String, Value>,
+    inserting: Vec<(String, String)>,
+    setting: Vec<(String, Value)>,
+    inserted: u64,
+}
+
+impl Mirror {
+    /// The write that sets the fields of `root` that changed since they were last written.
+    fn set(
+        &mut self,
+        root: &ResourceRef,
+        now: impl IntoIterator<Item = (String, Value)>,
+    ) -> Option<OriginWrite> {
+        let fields: Vec<(String, Value)> = now
+            .into_iter()
+            .filter(|(id, value)| {
+                self.fields.get(&format!("{}#{id}", root.id_string())) != Some(value)
+            })
+            .collect();
+        self.setting.extend(
+            fields
+                .iter()
+                .map(|(id, value)| (format!("{}#{id}", root.id_string()), value.clone())),
+        );
+        (!fields.is_empty()).then(|| OriginWrite::Set {
+            target: root.clone(),
+            fields,
+        })
+    }
+
+    /// What became of the writes just applied: where each insert made its item (one entry per
+    /// write, `None` for every write but an insert), or `None` when nothing was written.
+    fn made(&mut self, made: Option<Vec<Option<ResourceRef>>>) {
+        let setting = std::mem::take(&mut self.setting);
+        if made.is_some() {
+            self.fields.extend(setting);
+        }
+        let mut made = made.into_iter().flatten().flatten();
+        for item in std::mem::take(&mut self.inserting) {
+            match made.next() {
+                Some(at) => {
+                    if let Some(kept) = self.kept.get_mut(&item) {
+                        kept.at = Some(at);
+                    }
+                }
+                None => {
+                    self.kept.remove(&item);
+                }
+            }
+        }
+    }
 }
 
 /// The session as the origin of a shell's `session.*` resources. See the module docs.
 pub struct SessionOrigin {
     link: Rc<SessionLink>,
-    written: Option<DeskReading>,
-    workspaces: BTreeMap<String, Kept<WorkspaceReading>>,
-    people: BTreeMap<String, Kept<PersonReading>>,
-    windows: BTreeMap<String, Kept<WindowReading>>,
-    agents: BTreeMap<String, Kept<AgentReading>>,
-    rooms: BTreeMap<String, Kept<RoomReading>>,
-    notices: BTreeMap<String, Kept<NoticeReading>>,
-    notice_actions: BTreeMap<String, Kept<NoticeActionReading>>,
-    styles: BTreeMap<String, Kept<DeskStyleReading>>,
-    arrangement_workspaces: BTreeMap<String, Kept<ArrangementWorkspaceReading>>,
-    arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
-    arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
-    arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
-    arrangement_queries: BTreeMap<String, Kept<ArrangementQueryReading>>,
-    arrangement_refs: BTreeMap<String, Kept<ArrangementRefReading>>,
-    tray: BTreeMap<String, Kept<TrayReading>>,
-    apps: BTreeMap<String, Kept<AppReading>>,
+    mirror: Mirror,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -498,23 +545,7 @@ impl SessionOrigin {
         Self {
             loaded: BTreeMap::new(),
             link,
-            written: None,
-            workspaces: BTreeMap::new(),
-            people: BTreeMap::new(),
-            windows: BTreeMap::new(),
-            agents: BTreeMap::new(),
-            rooms: BTreeMap::new(),
-            notices: BTreeMap::new(),
-            notice_actions: BTreeMap::new(),
-            styles: BTreeMap::new(),
-            arrangement_workspaces: BTreeMap::new(),
-            arrangement_rows: BTreeMap::new(),
-            arrangement_strips: BTreeMap::new(),
-            arrangement_places: BTreeMap::new(),
-            arrangement_queries: BTreeMap::new(),
-            arrangement_refs: BTreeMap::new(),
-            tray: BTreeMap::new(),
-            apps: BTreeMap::new(),
+            mirror: Mirror::default(),
         }
     }
 
@@ -537,373 +568,308 @@ impl SessionOrigin {
         };
         let desk = kind("desk")?;
         let field = |ty: &OriginType, name: &str| ty.field(name).map(str::to_owned);
-        let was = self.written.clone().unwrap_or_default();
-        let mut fields = Vec::new();
-        let mut set = |name: &str, now: Value, changed: bool| {
-            if (changed || self.written.is_none())
-                && let Some(id) = field(desk, name)
-            {
-                fields.push((id, now));
-            }
-        };
-        set(
-            "person",
-            text(&reading.person),
-            reading.person != was.person,
-        );
-        set("clock", text(&reading.clock), reading.clock != was.clock);
-        set(
-            "weekday",
-            text(&reading.weekday),
-            reading.weekday != was.weekday,
-        );
-        set("date", text(&reading.date), reading.date != was.date);
-        set(
-            "quiet",
-            Value::Bool(reading.quiet),
-            reading.quiet != was.quiet,
-        );
-        set(
-            "workspace",
-            text(&reading.workspace),
-            reading.workspace != was.workspace,
-        );
-        set("strip", text(&reading.strip), reading.strip != was.strip);
-        // What the screen says of the edges a bar or dock that shows only sometimes follows.
-        // They are the desk's, derived with the rest of it: the session makes them again every
-        // start, so they are never the person's record and never need committing.
-        set(
-            "bar_reached",
-            Value::Bool(reading.bar_reached),
-            reading.bar_reached != was.bar_reached,
-        );
-        set(
-            "bar_covered",
-            Value::Bool(reading.bar_covered),
-            reading.bar_covered != was.bar_covered,
-        );
-        set(
-            "dock_reached",
-            Value::Bool(reading.dock_reached),
-            reading.dock_reached != was.dock_reached,
-        );
-        set(
-            "dock_covered",
-            Value::Bool(reading.dock_covered),
-            reading.dock_covered != was.dock_covered,
-        );
-        set("here", text(&reading.here), reading.here != was.here);
-        // The switcher's panel: whether it shows yet (a flick draws nothing), and which
-        // windows its walk crosses.
-        set(
-            "switcher_revealed",
-            Value::Bool(reading.switcher_revealed),
-            reading.switcher_revealed != was.switcher_revealed,
-        );
-        set(
-            "switcher_scope",
-            text(&reading.switcher_scope),
-            reading.switcher_scope != was.switcher_scope,
-        );
-        set(
-            "spotlight",
-            text(&reading.spotlight),
-            reading.spotlight != was.spotlight,
-        );
-        set(
-            "banner",
-            text(&reading.banner),
-            reading.banner != was.banner,
-        );
-        // The timer Clocks runs: its name and what it reads. Empty names mean no timer, so
-        // the clock shows the time alone; paused and stopwatch say how to read it.
         let timer = reading.timer.clone().unwrap_or_default();
-        set(
-            "timer",
-            text(&reading.timer_name()),
-            reading.timer != was.timer,
-        );
-        set(
-            "timer_left",
-            text(&reading.timer_left()),
-            reading.timer != was.timer,
-        );
-        set(
-            "timer_paused",
-            Value::Bool(timer.paused),
-            reading.timer != was.timer,
-        );
-        set(
-            "timer_stopwatch",
-            Value::Bool(timer.stopwatch),
-            reading.timer != was.timer,
-        );
-        // The ask on the person's avatar: its words, and whether it stands open.
         let ask = reading.ask.clone().unwrap_or_default();
-        set("ask", text(&ask.question), reading.ask != was.ask);
-        set("ask_detail", text(&ask.detail), reading.ask != was.ask);
-        set("ask_answer", text(&ask.answer), reading.ask != was.ask);
-        set("ask_open", Value::Bool(ask.open), reading.ask != was.ask);
-        let mut writes = Vec::new();
-        if !fields.is_empty() {
-            writes.push(OriginWrite::Set {
-                target: root.clone(),
-                fields,
-            });
-        }
+        let fields = [
+            ("person", text(&reading.person)),
+            ("clock", text(&reading.clock)),
+            ("weekday", text(&reading.weekday)),
+            ("date", text(&reading.date)),
+            ("quiet", Value::Bool(reading.quiet)),
+            ("workspace", text(&reading.workspace)),
+            ("strip", text(&reading.strip)),
+            // What the screen says of the edges a bar or dock that shows only sometimes follows.
+            // They are the desk's, derived with the rest of it: the session makes them again every
+            // start, so they are never the person's record and never need committing.
+            ("bar_reached", Value::Bool(reading.bar_reached)),
+            ("bar_covered", Value::Bool(reading.bar_covered)),
+            ("dock_reached", Value::Bool(reading.dock_reached)),
+            ("dock_covered", Value::Bool(reading.dock_covered)),
+            ("here", text(&reading.here)),
+            // The switcher's panel: whether it shows yet (a flick draws nothing), and which
+            // windows its walk crosses.
+            ("switcher_revealed", Value::Bool(reading.switcher_revealed)),
+            ("switcher_scope", text(&reading.switcher_scope)),
+            ("spotlight", text(&reading.spotlight)),
+            ("banner", text(&reading.banner)),
+            // The timer Clocks runs: its name and what it reads. Empty names mean no timer, so
+            // the clock shows the time alone; paused and stopwatch say how to read it.
+            ("timer", text(&reading.timer_name())),
+            ("timer_left", text(&reading.timer_left())),
+            ("timer_paused", Value::Bool(timer.paused)),
+            ("timer_stopwatch", Value::Bool(timer.stopwatch)),
+            // The ask on the person's avatar: its words, and whether it stands open.
+            ("ask", text(&ask.question)),
+            ("ask_detail", text(&ask.detail)),
+            ("ask_answer", text(&ask.answer)),
+            ("ask_open", Value::Bool(ask.open)),
+        ];
+        let named = fields
+            .into_iter()
+            .filter_map(|(name, now)| Some((field(desk, name)?, now)));
+        let mut writes: Vec<OriginWrite> = self.mirror.set(root, named).into_iter().collect();
         // The running applications' tray items: each's key and the app's own words for it.
-        let tray = reading.tray.clone();
-        if let (Ok(ty), Some(collection)) = (kind("tray_item"), field(desk, "tray")) {
-            writes.extend(sync_items(
-                &mut self.tray,
-                &tray,
-                root,
-                &collection,
-                ty,
-                |item| item.key.clone(),
-                |item| {
-                    vec![
-                        ("key", text(&item.key)),
-                        ("title", text(&item.title)),
-                        ("menu", Value::Bool(item.menu)),
-                    ]
-                },
-            ));
-        }
+        writes.extend(self.mirror.sync(
+            &reading.tray,
+            root,
+            field(desk, "tray").as_deref(),
+            kind("tray_item").ok(),
+            |item| item.key.clone(),
+            |item| {
+                vec![
+                    ("key", text(&item.key)),
+                    ("title", text(&item.title)),
+                    ("menu", Value::Bool(item.menu)),
+                ]
+            },
+        ));
         // The installed applications: what the launcher lists and opens.
-        if let (Ok(ty), Some(collection)) = (kind("application"), field(desk, "apps")) {
-            writes.extend(sync_items(
-                &mut self.apps,
-                &reading.apps,
-                root,
-                &collection,
-                ty,
-                |app| app.key.clone(),
-                |app| {
-                    vec![
-                        ("key", text(&app.key)),
-                        ("name", text(&app.name)),
-                        ("icon", text(&app.icon)),
-                        ("category", text(&app.category)),
-                        ("description", text(&app.description)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("workspace"), field(desk, "workspaces")) {
-            writes.extend(sync_items(
-                &mut self.workspaces,
-                &reading.workspaces,
-                root,
-                &collection,
-                ty,
-                |w| w.key.clone(),
-                |w| {
-                    vec![
-                        ("key", text(&w.key)),
-                        ("name", text(&w.name)),
-                        ("current", Value::Bool(w.current)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("person"), field(desk, "people")) {
-            writes.extend(sync_items(
-                &mut self.people,
-                &reading.people,
-                root,
-                &collection,
-                ty,
-                |p| p.key.clone(),
-                |p| vec![("key", text(&p.key)), ("name", text(&p.name))],
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("window"), field(desk, "windows")) {
-            writes.extend(sync_items(
-                &mut self.windows,
-                &reading.windows,
-                root,
-                &collection,
-                ty,
-                |w| w.key.clone(),
-                |w| {
-                    vec![
-                        ("key", text(&w.key)),
-                        ("title", text(&w.title)),
-                        ("origin_app", text(&w.origin_app)),
-                        ("app_key", text(&w.app_key)),
-                        ("icon", text(&w.icon)),
-                        ("strip", text(&w.strip)),
-                        ("strip_key", text(&w.strip_key)),
-                        ("workspace", text(&w.workspace)),
-                        ("workspace_key", text(&w.workspace_key)),
-                        ("group_key", text(&w.group_key)),
-                        ("tab_index", Value::Int(w.tab_index)),
-                        ("share", Value::Float(w.share)),
-                        ("local", Value::Bool(w.local)),
-                        ("device", text(&w.device)),
-                        ("device_name", text(&w.device_name)),
-                        ("place", Value::Int(w.place)),
-                        ("recency", Value::Int(w.recency)),
-                        ("focused", Value::Bool(w.focused)),
-                        ("preview", text(&w.preview)),
-                        ("not_responding", Value::Bool(w.not_responding)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("agent"), field(desk, "agents")) {
-            writes.extend(sync_items(
-                &mut self.agents,
-                &reading.agents,
-                root,
-                &collection,
-                ty,
-                |a| a.key.clone(),
-                |a| {
-                    vec![
-                        ("key", text(&a.key)),
-                        ("name", text(&a.name)),
-                        ("state", text(&a.state)),
-                        ("doing", text(&a.doing)),
-                        ("mark", text(&a.mark)),
-                        ("unseen", Value::Int(a.unseen)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("room"), field(desk, "rooms")) {
-            writes.extend(sync_items(
-                &mut self.rooms,
-                &reading.rooms,
-                root,
-                &collection,
-                ty,
-                |r| r.key.clone(),
-                |r| {
-                    vec![
-                        ("key", text(&r.key)),
-                        ("name", text(&r.name)),
-                        ("current", Value::Bool(r.current)),
-                        ("members", text(&r.members)),
-                        ("present", Value::Int(r.present)),
-                        ("activity", text(&r.activity)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("notice"), field(desk, "notices")) {
-            writes.extend(sync_items(
-                &mut self.notices,
-                &reading.notices,
-                root,
-                &collection,
-                ty,
-                |n| n.key.clone(),
-                |n| {
-                    vec![
-                        ("key", text(&n.key)),
-                        ("title", text(&n.title)),
-                        ("body", text(&n.body)),
-                        ("origin_app", text(&n.origin_app)),
-                        ("kind", text(&n.kind)),
-                        ("seen", Value::Bool(n.seen)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("notice_action"), field(desk, "notice_actions")) {
-            writes.extend(sync_items(
-                &mut self.notice_actions,
-                &reading.notice_actions,
-                root,
-                &collection,
-                ty,
-                |a| format!("{}:{}", a.notice, a.key),
-                |a| {
-                    vec![
-                        ("notice", text(&a.notice)),
-                        ("key", text(&a.key)),
-                        ("label", text(&a.label)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("desk_style"), field(desk, "styles")) {
-            writes.extend(sync_items(
-                &mut self.styles,
-                &reading.styles,
-                root,
-                &collection,
-                ty,
-                |s| s.style.clone(),
-                |s| {
-                    vec![
-                        ("key", text(&s.style)),
-                        ("style", text(&s.style)),
-                        ("package", text(&s.package)),
-                        ("name", text(&s.name)),
-                        ("line", text(&s.line)),
-                        ("loads", Value::Bool(s.loads)),
-                        ("reason", text(&s.reason)),
-                    ]
-                },
-            ));
-        }
+        writes.extend(self.mirror.sync(
+            &reading.apps,
+            root,
+            field(desk, "apps").as_deref(),
+            kind("application").ok(),
+            |app| app.key.clone(),
+            |app| {
+                vec![
+                    ("key", text(&app.key)),
+                    ("name", text(&app.name)),
+                    ("icon", text(&app.icon)),
+                    ("category", text(&app.category)),
+                    ("description", text(&app.description)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.workspaces,
+            root,
+            field(desk, "workspaces").as_deref(),
+            kind("workspace").ok(),
+            |w| w.key.clone(),
+            |w| {
+                vec![
+                    ("key", text(&w.key)),
+                    ("name", text(&w.name)),
+                    ("current", Value::Bool(w.current)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.people,
+            root,
+            field(desk, "people").as_deref(),
+            kind("person").ok(),
+            |p| p.key.clone(),
+            |p| vec![("key", text(&p.key)), ("name", text(&p.name))],
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.windows,
+            root,
+            field(desk, "windows").as_deref(),
+            kind("window").ok(),
+            |w| w.key.clone(),
+            |w| {
+                vec![
+                    ("key", text(&w.key)),
+                    ("title", text(&w.title)),
+                    ("origin_app", text(&w.origin_app)),
+                    ("app_key", text(&w.app_key)),
+                    ("icon", text(&w.icon)),
+                    ("strip", text(&w.strip)),
+                    ("strip_key", text(&w.strip_key)),
+                    ("workspace", text(&w.workspace)),
+                    ("workspace_key", text(&w.workspace_key)),
+                    ("group_key", text(&w.group_key)),
+                    ("tab_index", Value::Int(w.tab_index)),
+                    ("share", Value::Float(w.share)),
+                    ("local", Value::Bool(w.local)),
+                    ("device", text(&w.device)),
+                    ("device_name", text(&w.device_name)),
+                    ("place", Value::Int(w.place)),
+                    ("recency", Value::Int(w.recency)),
+                    ("focused", Value::Bool(w.focused)),
+                    ("preview", text(&w.preview)),
+                    ("not_responding", Value::Bool(w.not_responding)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.agents,
+            root,
+            field(desk, "agents").as_deref(),
+            kind("agent").ok(),
+            |a| a.key.clone(),
+            |a| {
+                vec![
+                    ("key", text(&a.key)),
+                    ("name", text(&a.name)),
+                    ("state", text(&a.state)),
+                    ("doing", text(&a.doing)),
+                    ("mark", text(&a.mark)),
+                    ("unseen", Value::Int(a.unseen)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.rooms,
+            root,
+            field(desk, "rooms").as_deref(),
+            kind("room").ok(),
+            |r| r.key.clone(),
+            |r| {
+                vec![
+                    ("key", text(&r.key)),
+                    ("name", text(&r.name)),
+                    ("current", Value::Bool(r.current)),
+                    ("members", text(&r.members)),
+                    ("present", Value::Int(r.present)),
+                    ("activity", text(&r.activity)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.notices,
+            root,
+            field(desk, "notices").as_deref(),
+            kind("notice").ok(),
+            |n| n.key.clone(),
+            |n| {
+                vec![
+                    ("key", text(&n.key)),
+                    ("title", text(&n.title)),
+                    ("body", text(&n.body)),
+                    ("origin_app", text(&n.origin_app)),
+                    ("kind", text(&n.kind)),
+                    ("seen", Value::Bool(n.seen)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.notice_actions,
+            root,
+            field(desk, "notice_actions").as_deref(),
+            kind("notice_action").ok(),
+            |a| format!("{}:{}", a.notice, a.key),
+            |a| {
+                vec![
+                    ("notice", text(&a.notice)),
+                    ("key", text(&a.key)),
+                    ("label", text(&a.label)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &reading.styles,
+            root,
+            field(desk, "styles").as_deref(),
+            kind("desk_style").ok(),
+            |s| s.style.clone(),
+            |s| {
+                vec![
+                    ("key", text(&s.style)),
+                    ("style", text(&s.style)),
+                    ("package", text(&s.package)),
+                    ("name", text(&s.name)),
+                    ("line", text(&s.line)),
+                    ("loads", Value::Bool(s.loads)),
+                    ("reason", text(&s.reason)),
+                ]
+            },
+        ));
         Ok(writes)
     }
 }
 
-/// The writes that bring the items of `collection` on `root` from `kept` to `now`, by key:
-/// new ones inserted (at the place the writes return, filled in by the caller), gone ones
-/// removed, changed ones set. Items keep the order they were inserted in.
-fn sync_items<T: Clone + PartialEq>(
-    kept: &mut BTreeMap<String, Kept<T>>,
-    now: &[T],
-    root: &ResourceRef,
-    collection: &str,
-    ty: &OriginType,
-    key: impl Fn(&T) -> String,
-    fields: impl Fn(&T) -> Vec<(&'static str, Value)>,
-) -> Vec<OriginWrite> {
-    let named = |item: &T| -> Vec<(String, Value)> {
-        fields(item)
-            .into_iter()
-            .filter_map(|(name, value)| Some((ty.field(name)?.to_owned(), value)))
-            .collect()
-    };
-    let mut writes = Vec::new();
-    let keys: BTreeSet<String> = now.iter().map(&key).collect();
-    kept.retain(|k, item| {
-        let stays = keys.contains(k);
-        if !stays {
-            writes.push(OriginWrite::Remove {
-                owner: root.clone(),
-                field: collection.to_owned(),
-                item: item.at.clone(),
-            });
-        }
-        stays
-    });
-    for item in now {
-        match kept.get_mut(&key(item)) {
-            Some(was) if was.was == *item => {}
-            Some(was) => {
-                writes.push(OriginWrite::Set {
-                    target: was.at.clone(),
-                    fields: named(item),
-                });
-                was.was = item.clone();
+impl Mirror {
+    /// The writes that bring the items of `collection` on `root` from what was written to `now`,
+    /// by key: new ones inserted (where, [`Self::made`] keeps), gone ones removed, changed ones
+    /// set. A collection holds its items in the order they were inserted and has no move, so
+    /// where `now` orders them otherwise (a place moved to the end of another strip, a tab ranked
+    /// anew) the items from the first one out of order on are taken out and inserted again.
+    fn sync<T>(
+        &mut self,
+        now: &[T],
+        root: &ResourceRef,
+        collection: Option<&str>,
+        ty: Option<&OriginType>,
+        key: impl Fn(&T) -> String,
+        fields: impl Fn(&T) -> Vec<(&'static str, Value)>,
+    ) -> Vec<OriginWrite> {
+        // A shell whose package declares no such collection is written none of it.
+        let (Some(collection), Some(ty)) = (collection, ty) else {
+            return Vec::new();
+        };
+        let named = |item: &T| -> Vec<(String, Value)> {
+            fields(item)
+                .into_iter()
+                .filter_map(|(name, value)| Some((ty.field(name)?.to_owned(), value)))
+                .collect()
+        };
+        let here = format!("{}#{collection}", root.id_string());
+        let keys: Vec<String> = now.iter().map(&key).collect();
+        let mut held: Vec<(u64, String)> = self
+            .kept
+            .iter()
+            .filter(|((owner, _), _)| *owner == here)
+            .map(|((_, key), item)| (item.seq, key.clone()))
+            .collect();
+        held.sort_unstable();
+        let ordered = keys
+            .iter()
+            .zip(&held)
+            .take_while(|(now, (_, held))| *now == held)
+            .count();
+        // Gone, or out of order: taken out, to be inserted again where it stands now.
+        let mut writes = Vec::new();
+        for (_, gone) in held {
+            let stays = keys.iter().take(ordered).any(|key| *key == gone);
+            if stays {
+                continue;
             }
-            None => writes.push(OriginWrite::Insert {
-                owner: root.clone(),
-                field: collection.to_owned(),
-                ty: ty.ty.clone(),
-                fields: named(item),
-            }),
+            if let Some(Kept { at: Some(item), .. }) = self.kept.remove(&(here.clone(), gone)) {
+                writes.push(OriginWrite::Remove {
+                    owner: root.clone(),
+                    field: collection.to_owned(),
+                    item,
+                });
+            }
         }
+        for (item, key) in now.iter().zip(keys) {
+            let fields = named(item);
+            let at = (here.clone(), key);
+            match self.kept.get_mut(&at) {
+                Some(kept) if kept.was == fields => {}
+                Some(kept) => {
+                    if let Some(target) = kept.at.clone() {
+                        writes.push(OriginWrite::Set {
+                            target,
+                            fields: fields.clone(),
+                        });
+                    }
+                    kept.was = fields;
+                }
+                None => {
+                    writes.push(OriginWrite::Insert {
+                        owner: root.clone(),
+                        field: collection.to_owned(),
+                        ty: ty.ty.clone(),
+                        fields: fields.clone(),
+                    });
+                    self.inserted = self.inserted.wrapping_add(1);
+                    self.kept.insert(
+                        at.clone(),
+                        Kept {
+                            at: None,
+                            was: fields,
+                            seq: self.inserted,
+                        },
+                    );
+                    self.inserting.push(at);
+                }
+            }
+        }
+        writes
     }
-    writes
 }
 
 /// The field `name` as a text value.
@@ -947,31 +913,31 @@ impl SessionOrigin {
                 }
             }
         };
-        let (writes, inserted) = self.arrangement_writes(&reading, &root, &types);
+        let writes = self.arrangement_writes(&reading, &root, &types);
         match cx
             .host
             .runtime()
             .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
         {
             Ok(made) => {
-                self.keep_inserted_arrangement(&reading, &types, inserted, made);
+                self.mirror.made(Some(made));
                 true
             }
             Err(error) => {
+                self.mirror.made(None);
                 tracing::error!(%error, "the person's arrangement could not be written");
                 false
             }
         }
     }
 
-    /// The writes that bring the shell's arrangement root from what was written to `reading`,
-    /// and the items they insert, by type and key.
+    /// The writes that bring the shell's arrangement root from what was written to `reading`.
     fn arrangement_writes(
         &mut self,
         reading: &ArrangementReading,
         root: &ResourceRef,
         types: &[OriginType],
-    ) -> (Vec<OriginWrite>, Vec<(String, String)>) {
+    ) -> Vec<OriginWrite> {
         let find = |name: &str| {
             types
                 .iter()
@@ -979,269 +945,45 @@ impl SessionOrigin {
         };
         let mut writes = Vec::new();
         let Some(ty) = find("arrangement") else {
-            return (writes, Vec::new());
+            return writes;
         };
-        if let (Some(field), Some(item)) = (ty.field("workspaces"), find("arrangement_workspace")) {
-            writes.extend(sync_items(
-                &mut self.arrangement_workspaces,
-                &reading.workspaces,
-                root,
-                field,
-                item,
-                |w| w.key.clone(),
-                readings::workspace_fields,
-            ));
+        // Each collection of the root, from the reading's items of its kind.
+        macro_rules! sync {
+            ($items:expr, $field:literal, $kind:literal, $fields:ident) => {
+                writes.extend(self.mirror.sync(
+                    &$items,
+                    root,
+                    ty.field($field),
+                    find($kind),
+                    |item| item.key.clone(),
+                    readings::$fields,
+                ));
+            };
         }
-        if let (Some(field), Some(item)) = (ty.field("rows"), find("arrangement_row")) {
-            writes.extend(sync_items(
-                &mut self.arrangement_rows,
-                &reading.rows,
-                root,
-                field,
-                item,
-                |r| r.key.clone(),
-                readings::row_fields,
-            ));
-        }
-        if let (Some(field), Some(item)) = (ty.field("strips"), find("arrangement_strip")) {
-            writes.extend(sync_items(
-                &mut self.arrangement_strips,
-                &reading.strips,
-                root,
-                field,
-                item,
-                |s| s.key.clone(),
-                readings::strip_fields,
-            ));
-        }
-        if let (Some(field), Some(item)) = (ty.field("places"), find("arrangement_place")) {
-            writes.extend(sync_items(
-                &mut self.arrangement_places,
-                &reading.places,
-                root,
-                field,
-                item,
-                |p| p.key.clone(),
-                readings::place_fields,
-            ));
-        }
-        if let (Some(field), Some(item)) = (ty.field("queries"), find("arrangement_query")) {
-            // The refs each query found live in their own collection, keyed by their `key`
-            // (as `<query>/<number>`), so a query's rows are the refs that name it.
-            let query = |q: &ArrangementQueryReading| q.key.clone();
-            writes.extend(sync_items(
-                &mut self.arrangement_queries,
-                &reading.queries,
-                root,
-                field,
-                item,
-                query,
-                readings::query_fields,
-            ));
-        }
-        if let (Some(field), Some(item)) = (ty.field("refs"), find("arrangement_ref")) {
-            let refs: Vec<ArrangementRefReading> = reading
-                .queries
-                .iter()
-                .flat_map(|query| query.matches.iter().cloned())
-                .collect();
-            writes.extend(sync_items(
-                &mut self.arrangement_refs,
-                &refs,
-                root,
-                field,
-                item,
-                |r| r.key.clone(),
-                readings::ref_fields,
-            ));
-        }
-        // The keys of the items the writes insert, in their order: what the origin must find
-        // where they were made.
-        let inserted = writes
+        sync!(
+            reading.workspaces,
+            "workspaces",
+            "arrangement_workspace",
+            workspace_fields
+        );
+        sync!(reading.rows, "rows", "arrangement_row", row_fields);
+        sync!(reading.strips, "strips", "arrangement_strip", strip_fields);
+        sync!(reading.places, "places", "arrangement_place", place_fields);
+        // The refs each query found live in their own collection, keyed by their `key`
+        // (as `<query>/<number>`), so a query's rows are the refs that name it.
+        sync!(
+            reading.queries,
+            "queries",
+            "arrangement_query",
+            query_fields
+        );
+        let refs: Vec<ArrangementRefReading> = reading
+            .queries
             .iter()
-            .filter_map(|write| match write {
-                OriginWrite::Insert { ty, fields, .. } => {
-                    let key = types
-                        .iter()
-                        .find(|t| t.ty == *ty)
-                        .and_then(|t| t.field("key"))
-                        .and_then(|id| fields.iter().find(|(f, _)| f == id))
-                        .and_then(|(_, v)| match v {
-                            Value::Text(key) => Some(key.clone()),
-                            _ => None,
-                        });
-                    Some((ty.clone(), key.unwrap_or_default()))
-                }
-                _ => None,
-            })
+            .flat_map(|query| query.matches.iter().cloned())
             .collect();
-        (writes, inserted)
-    }
-
-    /// Keep where the arrangement items a write inserted were made, by type and key.
-    fn keep_inserted_arrangement(
-        &mut self,
-        reading: &ArrangementReading,
-        types: &[OriginType],
-        inserted: Vec<(String, String)>,
-        made: Vec<Option<ResourceRef>>,
-    ) {
-        let mut made = made.into_iter().flatten();
-        for (ty, key) in inserted {
-            let Some(at) = made.next() else { break };
-            let is = |name: &str| {
-                types
-                    .iter()
-                    .any(|t| t.ty == ty && t.kind == format!("{ORIGIN}.{name}"))
-            };
-            if is("arrangement_workspace")
-                && let Some(was) = reading.workspaces.iter().find(|w| w.key == key)
-            {
-                self.arrangement_workspaces.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("arrangement_row")
-                && let Some(was) = reading.rows.iter().find(|r| r.key == key)
-            {
-                self.arrangement_rows.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("arrangement_strip")
-                && let Some(was) = reading.strips.iter().find(|s| s.key == key)
-            {
-                self.arrangement_strips.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("arrangement_place")
-                && let Some(was) = reading.places.iter().find(|p| p.key == key)
-            {
-                self.arrangement_places.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            }
-        }
-    }
-}
-
-impl SessionOrigin {
-    /// Keep where the items a write inserted (`inserted`, by type and key) were made
-    /// (`made`, in the writes' order), so the next reading sets or removes them there.
-    fn keep_inserted(
-        &mut self,
-        reading: &DeskReading,
-        types: &[OriginType],
-        inserted: Vec<(String, String)>,
-        made: Vec<Option<ResourceRef>>,
-    ) {
-        let mut made = made.into_iter().flatten();
-        for (ty, key) in inserted {
-            let Some(at) = made.next() else { break };
-            let is = |name: &str| {
-                types
-                    .iter()
-                    .any(|t| t.ty == ty && t.kind == format!("{ORIGIN}.{name}"))
-            };
-            if is("workspace")
-                && let Some(was) = reading.workspaces.iter().find(|w| w.key == key)
-            {
-                self.workspaces.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("person")
-                && let Some(was) = reading.people.iter().find(|p| p.key == key)
-            {
-                self.people.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("window")
-                && let Some(was) = reading.windows.iter().find(|w| w.key == key)
-            {
-                self.windows.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("agent")
-                && let Some(was) = reading.agents.iter().find(|a| a.key == key)
-            {
-                self.agents.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("room")
-                && let Some(was) = reading.rooms.iter().find(|r| r.key == key)
-            {
-                self.rooms.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("notice")
-                && let Some(was) = reading.notices.iter().find(|n| n.key == key)
-            {
-                self.notices.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("notice_action")
-                && let Some(was) = reading
-                    .notice_actions
-                    .iter()
-                    .find(|a| format!("{}:{}", a.notice, a.key) == key)
-            {
-                self.notice_actions.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("desk_style")
-                && let Some(was) = reading.styles.iter().find(|s| s.style == key)
-            {
-                self.styles.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            }
-        }
+        sync!(refs, "refs", "arrangement_ref", ref_fields);
+        writes
     }
 }
 
@@ -1302,35 +1044,17 @@ impl Origin for SessionOrigin {
                 return polled;
             }
         };
-        let inserted: Vec<(String, String)> = writes
-            .iter()
-            .filter_map(|write| match write {
-                OriginWrite::Insert { ty, fields, .. } => {
-                    let key = types
-                        .iter()
-                        .find(|t| t.ty == *ty)
-                        .and_then(|t| t.field("key"))
-                        .and_then(|id| fields.iter().find(|(f, _)| f == id))
-                        .and_then(|(_, v)| match v {
-                            Value::Text(key) => Some(key.clone()),
-                            _ => None,
-                        })?;
-                    Some((ty.clone(), key))
-                }
-                _ => None,
-            })
-            .collect();
         match cx
             .host
             .runtime()
             .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
         {
             Ok(made) => {
-                self.keep_inserted(&reading, &types, inserted, made);
-                self.written = Some(reading);
+                self.mirror.made(Some(made));
                 polled.wrote = true;
             }
             Err(error) => {
+                self.mirror.made(None);
                 // Nothing was written: the next reading tries again from what was.
                 tracing::error!(%error, "the session's desk could not be written");
             }

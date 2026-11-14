@@ -220,6 +220,9 @@ pub struct WidgetHost {
     /// host to ask (a command queued on the desk's handle): the frame that
     /// answers it.
     asked: Rc<std::cell::Cell<bool>>,
+    /// The toolkit's drag bus as the tree last ran with it ([`ui::widget::drag_bus::revision`]):
+    /// a drag that moved since, with no input of this tree's, asks for its next pass too.
+    drag_seen: u64,
     /// The display's grid: what the tree moves through is drawn once per
     /// display frame, so the screens show as many frames as they run at.
     cadence: Cadence,
@@ -282,6 +285,7 @@ impl WidgetHost {
             previews: None,
             name: None,
             asked: Rc::new(std::cell::Cell::new(false)),
+            drag_seen: ui::widget::drag_bus::revision(),
             cadence: Cadence::new(),
             dismissed: None,
         }
@@ -450,7 +454,7 @@ impl WidgetHost {
     /// draw every frame while one is shown. A tree fed only through these (a tilolang view's
     /// patches arrive as a relayout) asks this before [`SurfaceHost::prepare_frame`].
     pub fn wants_frame(&mut self) -> bool {
-        if self.owed != Owed::Nothing || self.asked.replace(false) {
+        if self.owed != Owed::Nothing || self.asked() {
             return true;
         }
         self.host.frame_schedule().queued_work
@@ -517,7 +521,7 @@ impl WidgetHost {
     /// another's drawing asks for no frame at all.
     pub fn advance(&mut self) -> bool {
         let queued = self.host.frame_schedule().queued_work;
-        let asked = self.asked.replace(false);
+        let asked = self.take_asked();
         if !asked && !queued && self.owed == Owed::Nothing {
             return false;
         }
@@ -578,6 +582,20 @@ impl WidgetHost {
     /// shell asks before taking the keys from the window in front.
     pub fn takes_keys(&self) -> bool {
         self.host.focused().is_some()
+    }
+
+    /// Whether something outside the tree asked for its next pass: the flag [`Self::asking`]
+    /// hands out, or a drag on the toolkit's drag bus that moved since the tree last ran, which
+    /// the drop targets it shows read.
+    fn asked(&self) -> bool {
+        self.asked.get() || ui::widget::drag_bus::revision() != self.drag_seen
+    }
+
+    /// [`Self::asked`], answered by the pass about to run.
+    fn take_asked(&mut self) -> bool {
+        let drag = ui::widget::drag_bus::revision();
+        let moved = std::mem::replace(&mut self.drag_seen, drag) != drag;
+        self.asked.replace(false) | moved
     }
 
     fn input(&mut self, event: &WindowEvent) {
@@ -1011,7 +1029,7 @@ impl SurfaceHost for WidgetHost {
     /// earliest deadline the tree sets.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         let schedule = self.host.frame_schedule();
-        if self.owed != Owed::Nothing {
+        if self.owed != Owed::Nothing || self.asked() {
             return Some(Instant::now());
         }
         if schedule.needs_animation_frame {
@@ -1031,7 +1049,7 @@ impl SurfaceHost for WidgetHost {
         if self.host.set_keyboard_held(self.wants_keyboard()) {
             self.owe();
         }
-        if self.asked.replace(false) {
+        if self.take_asked() {
             // What asked for this pass is outside the tree and needs the tree
             // to have taken it: a widget that reads something the host holds
             // (the overlays the chrome draws, a model an action wrote) hears of

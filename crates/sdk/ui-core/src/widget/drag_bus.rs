@@ -26,11 +26,26 @@ thread_local! {
     static IN_FLIGHT: RefCell<Option<InFlight>> = const { RefCell::new(None) };
     static LANDED: RefCell<Option<Landed>> = const { RefCell::new(None) };
     static CARRIED_AWAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Something in flight came, moved, went or landed.
+fn changed() {
+    REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+}
+
+/// Moves with every change to what is in flight or landed: a tree that shows where a drag would
+/// land runs again when this moved, even when no input of its own came with the change (a drag
+/// carried here from another of the person's devices, or one another tree on this thread holds).
+#[must_use]
+pub fn revision() -> u64 {
+    REVISION.with(std::cell::Cell::get)
 }
 
 /// `run` lifted an item: everything else in the window may take it now.
 pub fn publish(in_flight: InFlight) {
     IN_FLIGHT.with(|slot| *slot.borrow_mut() = Some(in_flight));
+    changed();
 }
 
 /// The pointer moved while something is in flight: what every run needs to show where it
@@ -43,6 +58,7 @@ pub fn moved(pointer: Point, run: (String, Rect)) {
                 Some(entry) => entry.1 = run.1,
                 None => in_flight.runs.push(run),
             }
+            changed();
         }
     });
 }
@@ -59,6 +75,7 @@ pub fn end(landed: Option<Landed>) {
     let landed = landed.filter(|_| !CARRIED_AWAY.with(std::cell::Cell::take));
     IN_FLIGHT.with(|slot| *slot.borrow_mut() = None);
     LANDED.with(|slot| *slot.borrow_mut() = landed);
+    changed();
 }
 
 /// What is in flight went on somewhere else (to another of the person's devices): nothing here
@@ -66,6 +83,7 @@ pub fn end(landed: Option<Landed>) {
 pub fn carry_away() {
     if IN_FLIGHT.with(|slot| slot.borrow_mut().take()).is_some() {
         CARRIED_AWAY.with(|carried| carried.set(true));
+        changed();
     }
 }
 
