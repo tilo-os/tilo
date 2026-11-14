@@ -633,19 +633,23 @@ pub(crate) mod tests {
         assert_eq!(copy.outcome(), Some(false), "an abandoned copy failed");
     }
 
-    #[test]
-    fn the_in_process_clipboard_conforms() {
-        conformance::check_local(&InProcessClipboard::default());
-    }
+    tilo_test_env::scenario! {
+        fn the_in_process_and_system_clipboards_conform;
 
-    #[test]
-    fn the_system_clipboard_conforms_with_or_without_a_system_clipboard() {
-        let _system = SYSTEM.lock();
-        let system = system();
-        conformance::check_system(&*system);
-        assert!(std::ptr::addr_eq(
-            std::sync::Arc::as_ptr(&system),
-            std::sync::Arc::as_ptr(&self::system())
-        ));
+        phase the_in_process_clipboard_conforms;
+        {
+            conformance::check_local(&InProcessClipboard::default());
+        }
+
+        phase the_system_clipboard_conforms_with_or_without_a_system_clipboard;
+        {
+            let _system = SYSTEM.lock();
+            let system = system();
+            conformance::check_system(&*system);
+            assert!(std::ptr::addr_eq(
+                std::sync::Arc::as_ptr(&system),
+                std::sync::Arc::as_ptr(&self::system())
+            ));
+        }
     }
 }

@@ -489,33 +489,37 @@ mod system {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_primary_selection_never_replaces_an_explicit_copy() {
-        let _system = crate::tests::SYSTEM.lock();
-        let clipboard = NativeClipboard::default();
-        clipboard.set_text(ClipboardTarget::Clipboard, "explicit copy");
-        clipboard.set_text(ClipboardTarget::Primary, "selected text");
-        assert_eq!(
-            clipboard.text(ClipboardTarget::Primary).as_deref(),
-            Some("selected text")
-        );
-        if !cfg!(target_os = "linux") {
+    tilo_test_env::scenario! {
+        fn a_native_copy_is_pasted_back_and_a_selection_does_not_replace_it;
+
+        phase a_primary_selection_never_replaces_an_explicit_copy;
+        {
+            let _system = crate::tests::SYSTEM.lock();
+            let clipboard = NativeClipboard::default();
+            clipboard.set_text(ClipboardTarget::Clipboard, "explicit copy");
+            clipboard.set_text(ClipboardTarget::Primary, "selected text");
+            assert_eq!(
+                clipboard.text(ClipboardTarget::Primary).as_deref(),
+                Some("selected text")
+            );
+            if !cfg!(target_os = "linux") {
+                assert_eq!(
+                    clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                    Some("explicit copy")
+                );
+            }
+        }
+
+        phase native_clipboard_round_trips_with_or_without_a_system_clipboard;
+        {
+            let _system = crate::tests::SYSTEM.lock();
+            let clipboard = NativeClipboard::default();
+            let payload = "https://example.com/feed.xml";
+            clipboard.set_text(ClipboardTarget::Clipboard, payload);
             assert_eq!(
                 clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-                Some("explicit copy")
+                Some(payload)
             );
         }
-    }
-
-    #[test]
-    fn native_clipboard_round_trips_with_or_without_a_system_clipboard() {
-        let _system = crate::tests::SYSTEM.lock();
-        let clipboard = NativeClipboard::default();
-        let payload = "https://example.com/feed.xml";
-        clipboard.set_text(ClipboardTarget::Clipboard, payload);
-        assert_eq!(
-            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-            Some(payload)
-        );
     }
 }

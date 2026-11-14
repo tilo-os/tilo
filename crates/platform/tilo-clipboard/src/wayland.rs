@@ -2156,206 +2156,214 @@ impl Drop for WaylandClipboard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn rich_cache_refuses_old_generations_and_never_waits_for_its_lock() {
-        let cache = RichClipboard::new();
-        let offer = crate::RichTextOffer {
-            html: "<b>文🙂</b>".into(),
-            plain: Some("文🙂".into()),
-        };
-        let first = cache.generation();
-        cache.publish(first, offer.clone());
-        assert_eq!(cache.read(), Some(offer.clone()));
+    tilo_test_env::scenario! {
+        fn rich_text_is_cached_by_generation_and_piped_as_bounded_utf8;
+
+        phase rich_cache_refuses_old_generations_and_never_waits_for_its_lock;
         {
-            let _held = cache.offer.lock().expect("cache lock");
+            let cache = RichClipboard::new();
+            let offer = crate::RichTextOffer {
+                html: "<b>文🙂</b>".into(),
+                plain: Some("文🙂".into()),
+            };
+            let first = cache.generation();
+            cache.publish(first, offer.clone());
+            assert_eq!(cache.read(), Some(offer.clone()));
+            {
+                let _held = cache.offer.lock().expect("cache lock");
+                assert!(cache.read().is_none());
+            }
+            cache.invalidate();
+            cache.publish(first, offer.clone());
+            assert!(cache.read().is_none());
+            cache.publish(cache.generation(), offer.clone());
+            assert_eq!(cache.read(), Some(offer));
+            cache.invalidate();
             assert!(cache.read().is_none());
         }
-        cache.invalidate();
-        cache.publish(first, offer.clone());
-        assert!(cache.read().is_none());
-        cache.publish(cache.generation(), offer.clone());
-        assert_eq!(cache.read(), Some(offer));
-        cache.invalidate();
-        assert!(cache.read().is_none());
+
+        phase rich_pipe_preserves_utf8_and_refuses_invalid_or_oversized_payloads;
+        {
+            use image_worker_impl::{RichPart, RichPipe, RichRead};
+            for (bytes, accepted) in [
+                ("Ä😀\n".as_bytes().to_vec(), true),
+                (vec![b'a'; crate::MAX_CLIPBOARD_HTML_BYTES], true),
+                (vec![b'a'; crate::MAX_CLIPBOARD_HTML_BYTES + 1], false),
+                (vec![0xff, 0xfe], false),
+            ] {
+                let mut reader = RichPipe::new(RichPart::Html);
+                let mut input = std::io::Cursor::new(&bytes);
+                let mut finished = false;
+                for _ in 0..20 {
+                    if let RichRead::Finished(value) = reader.read(&mut input) {
+                        assert_eq!(value.is_some(), accepted);
+                        if let Some(value) = value {
+                            assert_eq!(value.as_bytes(), bytes);
+                        }
+                        finished = true;
+                        break;
+                    }
+                }
+                assert!(finished, "bounded fixture must finish without a busy loop");
+            }
+        }
+
+        phase rich_pipe_bounds_callback_bytes_and_interrupted_syscalls;
+        {
+            use image_worker_impl::{RichPart, RichPipe, RichRead};
+            struct Interrupted(usize);
+            impl std::io::Read for Interrupted {
+                fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                    self.0 = self.0.saturating_add(1);
+                    Err(std::io::ErrorKind::Interrupted.into())
+                }
+            }
+            let mut reader = RichPipe::new(RichPart::Plain);
+            let mut input = std::io::Cursor::new(vec![b'p'; 100_000]);
+            assert!(matches!(reader.read(&mut input), RichRead::Pending));
+            assert_eq!(input.position(), 65_536);
+            let RichRead::Finished(value) = reader.read(&mut input) else {
+                panic!("remaining bytes and EOF");
+            };
+            assert_eq!(value.unwrap().len(), 100_000);
+
+            let mut interrupted = Interrupted(0);
+            assert!(matches!(
+                RichPipe::new(RichPart::Html).read(&mut interrupted),
+                RichRead::Pending
+            ));
+            assert_eq!(interrupted.0, 8, "signals cannot monopolize the event loop");
+        }
+
+        phase rich_pipe_retains_partial_utf8_across_readiness_callbacks;
+        {
+            use image_worker_impl::{RichPart, RichPipe, RichRead};
+            use std::io::Write as _;
+            let (mut source, mut sink) = std::os::unix::net::UnixStream::pair().unwrap();
+            sink.set_nonblocking(true).unwrap();
+            let mut reader = RichPipe::new(RichPart::Html);
+            source.write_all(&[0xf0, 0x9f]).unwrap();
+            assert!(matches!(reader.read(&mut sink), RichRead::Pending));
+            source.write_all(&[0x98, 0x80]).unwrap();
+            drop(source);
+            let RichRead::Finished(value) = reader.read(&mut sink) else {
+                panic!("closed producer must complete");
+            };
+            assert_eq!(value.as_deref(), Some("😀"));
+        }
     }
 
-    #[test]
-    fn clipboard_images_encode_as_bounded_lossless_png() {
-        {
-            let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
-            let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
-            let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
-                .expect("complete PNG")
-                .into_rgba8();
-            assert_eq!(decoded.dimensions(), (2, 1));
-            assert_eq!(decoded.as_raw().as_slice(), rgba);
-        }
-        {
-            assert!(encode_png(0, 1, &[]).is_none());
-            assert!(encode_png(1, 1, &[]).is_none());
-            assert!(encode_png(usize::MAX, 1, &[0; 4]).is_none());
-            assert!(encode_png(MAX_CLIPBOARD_IMAGE_INPUT_BYTES / 4 + 1, 1, &[0; 4]).is_none());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn clipboard_images_and_transfers_are_bounded;
 
-    #[test]
-    fn clipboard_transfers_are_single_flight_bounded_and_mime_exact() {
+        phase clipboard_images_encode_as_bounded_lossless_png;
         {
-            use std::sync::atomic::AtomicBool;
-
-            let clipboard = AtomicBool::new(false);
-            let primary = AtomicBool::new(false);
-            assert!(begin_external_refresh(&clipboard));
-            assert!(!begin_external_refresh(&clipboard));
-            assert!(begin_external_refresh(&primary));
-            clipboard.store(false, std::sync::atomic::Ordering::Release);
-            assert!(begin_external_refresh(&clipboard));
+            {
+                let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
+                let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
+                let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+                    .expect("complete PNG")
+                    .into_rgba8();
+                assert_eq!(decoded.dimensions(), (2, 1));
+                assert_eq!(decoded.as_raw().as_slice(), rgba);
+            }
+            {
+                assert!(encode_png(0, 1, &[]).is_none());
+                assert!(encode_png(1, 1, &[]).is_none());
+                assert!(encode_png(usize::MAX, 1, &[0; 4]).is_none());
+                assert!(encode_png(MAX_CLIPBOARD_IMAGE_INPUT_BYTES / 4 + 1, 1, &[0; 4]).is_none());
+            }
         }
-        {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
-            let owner = std::thread::spawn(move || {
-                // Answer only once the reader is waiting, so the budget is what
-                // bounds the wait rather than the answer already being queued.
-                request_rx.recv().unwrap();
-                let _ = tx.send(Some("fresh".to_string()));
-            });
-            request_tx.send(()).unwrap();
-            assert_eq!(
-                recv_bounded(&rx, tilo_test_env::hang_bound()),
-                Some(Some("fresh".to_string()))
-            );
-            owner.join().unwrap();
 
-            let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
-            assert_eq!(
-                recv_bounded(&rx, std::time::Duration::from_millis(1)),
-                None,
-                "a slow external owner must not make paste return an unrelated cached value"
-            );
-        }
+        phase clipboard_transfers_are_single_flight_bounded_and_mime_exact;
         {
-            let (sender, commands) =
-                smithay_client_toolkit::reexports::calloop::channel::channel::<ClipboardCommand>();
-            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let worker_stopped = Arc::clone(&stopped);
-            let worker = std::thread::spawn(move || {
-                loop {
-                    match commands.try_recv() {
-                        Ok(ClipboardCommand::Exit)
-                        | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                        Ok(_) | Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            std::thread::yield_now();
+            {
+                use std::sync::atomic::AtomicBool;
+
+                let clipboard = AtomicBool::new(false);
+                let primary = AtomicBool::new(false);
+                assert!(begin_external_refresh(&clipboard));
+                assert!(!begin_external_refresh(&clipboard));
+                assert!(begin_external_refresh(&primary));
+                clipboard.store(false, std::sync::atomic::Ordering::Release);
+                assert!(begin_external_refresh(&clipboard));
+            }
+            {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
+                let owner = std::thread::spawn(move || {
+                    // Answer only once the reader is waiting, so the budget is what
+                    // bounds the wait rather than the answer already being queued.
+                    request_rx.recv().unwrap();
+                    let _ = tx.send(Some("fresh".to_string()));
+                });
+                request_tx.send(()).unwrap();
+                assert_eq!(
+                    recv_bounded(&rx, tilo_test_env::hang_bound()),
+                    Some(Some("fresh".to_string()))
+                );
+                owner.join().unwrap();
+
+                let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+                assert_eq!(
+                    recv_bounded(&rx, std::time::Duration::from_millis(1)),
+                    None,
+                    "a slow external owner must not make paste return an unrelated cached value"
+                );
+            }
+            {
+                let (sender, commands) =
+                    smithay_client_toolkit::reexports::calloop::channel::channel::<ClipboardCommand>();
+                let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let worker_stopped = Arc::clone(&stopped);
+                let worker = std::thread::spawn(move || {
+                    loop {
+                        match commands.try_recv() {
+                            Ok(ClipboardCommand::Exit)
+                            | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                            Ok(_) | Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                std::thread::yield_now();
+                            }
                         }
                     }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                worker_stopped.store(true, std::sync::atomic::Ordering::Release);
-            });
-            let publication = PublicationClipboard {
-                sender,
-                thread: std::sync::Mutex::new(Some(worker)),
-                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            };
-            publication.shut_down();
-            assert!(
-                stopped.load(std::sync::atomic::Ordering::Acquire),
-                "shutting down returned while the worker could still use the display"
-            );
-        }
-        {
-            use image_worker_impl::SourcePayload;
-
-            let payload = SourcePayload {
-                image: Some(Arc::from([1u8, 2, 3].as_slice())),
-                text: Some(Arc::from(b"caption".as_slice())),
-                html: None,
-                secret: false,
-            };
-            assert_eq!(
-                payload.bytes_for_mime("image/png").as_deref(),
-                Some(&[1, 2, 3][..])
-            );
-            assert_eq!(
-                payload.bytes_for_mime("text/plain").as_deref(),
-                Some(&b"caption"[..])
-            );
-            assert!(payload.bytes_for_mime("application/octet-stream").is_none());
-            assert!(
-                payload.bytes_for_mime(crate::SECRET_MIME).is_none(),
-                "only a secret copy answers for the secret markers"
-            );
-        }
-    }
-
-    #[test]
-    fn rich_pipe_preserves_utf8_and_refuses_invalid_or_oversized_payloads() {
-        use image_worker_impl::{RichPart, RichPipe, RichRead};
-        for (bytes, accepted) in [
-            ("Ä😀\n".as_bytes().to_vec(), true),
-            (vec![b'a'; crate::MAX_CLIPBOARD_HTML_BYTES], true),
-            (vec![b'a'; crate::MAX_CLIPBOARD_HTML_BYTES + 1], false),
-            (vec![0xff, 0xfe], false),
-        ] {
-            let mut reader = RichPipe::new(RichPart::Html);
-            let mut input = std::io::Cursor::new(&bytes);
-            let mut finished = false;
-            for _ in 0..20 {
-                if let RichRead::Finished(value) = reader.read(&mut input) {
-                    assert_eq!(value.is_some(), accepted);
-                    if let Some(value) = value {
-                        assert_eq!(value.as_bytes(), bytes);
-                    }
-                    finished = true;
-                    break;
-                }
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    worker_stopped.store(true, std::sync::atomic::Ordering::Release);
+                });
+                let publication = PublicationClipboard {
+                    sender,
+                    thread: std::sync::Mutex::new(Some(worker)),
+                    alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                };
+                publication.shut_down();
+                assert!(
+                    stopped.load(std::sync::atomic::Ordering::Acquire),
+                    "shutting down returned while the worker could still use the display"
+                );
             }
-            assert!(finished, "bounded fixture must finish without a busy loop");
-        }
-    }
+            {
+                use image_worker_impl::SourcePayload;
 
-    #[test]
-    fn rich_pipe_bounds_callback_bytes_and_interrupted_syscalls() {
-        use image_worker_impl::{RichPart, RichPipe, RichRead};
-        struct Interrupted(usize);
-        impl std::io::Read for Interrupted {
-            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-                self.0 = self.0.saturating_add(1);
-                Err(std::io::ErrorKind::Interrupted.into())
+                let payload = SourcePayload {
+                    image: Some(Arc::from([1u8, 2, 3].as_slice())),
+                    text: Some(Arc::from(b"caption".as_slice())),
+                    html: None,
+                    secret: false,
+                };
+                assert_eq!(
+                    payload.bytes_for_mime("image/png").as_deref(),
+                    Some(&[1, 2, 3][..])
+                );
+                assert_eq!(
+                    payload.bytes_for_mime("text/plain").as_deref(),
+                    Some(&b"caption"[..])
+                );
+                assert!(payload.bytes_for_mime("application/octet-stream").is_none());
+                assert!(
+                    payload.bytes_for_mime(crate::SECRET_MIME).is_none(),
+                    "only a secret copy answers for the secret markers"
+                );
             }
         }
-        let mut reader = RichPipe::new(RichPart::Plain);
-        let mut input = std::io::Cursor::new(vec![b'p'; 100_000]);
-        assert!(matches!(reader.read(&mut input), RichRead::Pending));
-        assert_eq!(input.position(), 65_536);
-        let RichRead::Finished(value) = reader.read(&mut input) else {
-            panic!("remaining bytes and EOF");
-        };
-        assert_eq!(value.unwrap().len(), 100_000);
-
-        let mut interrupted = Interrupted(0);
-        assert!(matches!(
-            RichPipe::new(RichPart::Html).read(&mut interrupted),
-            RichRead::Pending
-        ));
-        assert_eq!(interrupted.0, 8, "signals cannot monopolize the event loop");
-    }
-
-    #[test]
-    fn rich_pipe_retains_partial_utf8_across_readiness_callbacks() {
-        use image_worker_impl::{RichPart, RichPipe, RichRead};
-        use std::io::Write as _;
-        let (mut source, mut sink) = std::os::unix::net::UnixStream::pair().unwrap();
-        sink.set_nonblocking(true).unwrap();
-        let mut reader = RichPipe::new(RichPart::Html);
-        source.write_all(&[0xf0, 0x9f]).unwrap();
-        assert!(matches!(reader.read(&mut sink), RichRead::Pending));
-        source.write_all(&[0x98, 0x80]).unwrap();
-        drop(source);
-        let RichRead::Finished(value) = reader.read(&mut sink) else {
-            panic!("closed producer must complete");
-        };
-        assert_eq!(value.as_deref(), Some("😀"));
     }
 }
 

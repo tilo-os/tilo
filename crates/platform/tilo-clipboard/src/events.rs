@@ -218,204 +218,212 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_pasted_picture_is_read_once_inside_its_event() {
-        let image = crate::ClipboardImage {
-            mime: "image/png",
-            bytes: vec![1, 2, 3],
-        };
-        let fake = Rc::new(Fake {
-            image: Some(image.clone()),
-            ..Fake::default()
-        });
-        assert_eq!(read_image(), None);
-        during(fake, || {
-            assert_eq!(read_image(), Some(image));
-            assert_eq!(read_image(), None, "a picture is pasted once");
-            assert_eq!(read(), None, "and is no text");
-        });
-        assert_eq!(read_image(), None);
-    }
+    tilo_test_env::scenario! {
+        fn an_events_transfer_is_written_and_read_once_and_only_inside_it;
 
-    #[test]
-    fn an_event_is_written_and_read_once_and_nothing_outlives_it() {
-        let fake = Rc::new(Fake {
-            text: Some("pasted".into()),
-            ..Fake::default()
-        });
-        assert_eq!(write("x"), None);
-        during(fake.clone(), || {
-            assert!(in_event());
-            assert_eq!(read().as_deref(), Some("pasted"));
-            assert_eq!(read(), None, "a paste is read once");
-            assert_eq!(write("first"), Some(true));
-            assert_eq!(write("second"), Some(true));
-            assert!(copied());
-        });
-        assert!(!in_event());
-        assert!(!copied());
-        assert_eq!(*fake.offered.borrow(), ["first"]);
-        assert_eq!(fake.reads.get(), 1);
-    }
-
-    #[test]
-    fn a_rich_copy_writes_its_html_and_its_words_to_the_event_once() {
-        let fake = Rc::new(Fake::default());
-        assert_eq!(write_rich("<b>x</b>", "x"), None);
-        during(fake.clone(), || {
-            assert_eq!(write_rich("<b>first</b>", "first"), Some(true));
-            assert_eq!(write("second"), Some(true));
-            assert!(copied());
-        });
-        assert_eq!(*fake.offered_html.borrow(), ["<b>first</b>"]);
-        assert_eq!(*fake.offered.borrow(), ["first"]);
-    }
-
-    #[test]
-    fn a_refused_write_is_not_copied_and_scopes_nest() {
-        let refusing = Rc::new(Fake {
-            refuse: true,
-            ..Fake::default()
-        });
-        let outer = Rc::new(Fake::default());
-        during(outer.clone(), || {
-            during(refusing.clone(), || {
-                assert_eq!(write("secret"), Some(false));
-                assert!(!copied());
-            });
-            assert_eq!(write("outer"), Some(true));
-        });
-        assert_eq!(*outer.offered.borrow(), ["outer"]);
-    }
-
-    #[test]
-    fn input_reports_are_scoped() {
-        assert!(input_report().is_none());
-        let heard = Rc::new(RefCell::new(Vec::new()));
-        let sink = heard.clone();
-        during_input(Rc::new(move |r| sink.borrow_mut().push(r)), || {
-            input_report().unwrap()(CopyReport::Copied);
-        });
-        assert!(input_report().is_none());
-        assert_eq!(*heard.borrow(), [CopyReport::Copied]);
-    }
-
-    #[test]
-    fn rich_offer_captures_fallback_and_consumes_the_event_once() {
-        let offer = crate::RichTextOffer {
-            html: "<b>Ä😀</b>".into(),
-            plain: Some("paired Ä😀\n".into()),
-        };
-        let fake = Rc::new(Fake {
-            rich: Some(offer.clone()),
-            text: Some("must not reread".into()),
-            ..Fake::default()
-        });
-        assert_eq!(read_rich(), None);
-        during(fake.clone(), || {
-            assert_eq!(read_rich(), Some(offer));
-            assert_eq!(read(), None);
-            assert_eq!(read_rich(), None);
-        });
-        assert_eq!(read_rich(), None);
-        assert_eq!(fake.rich_reads.get(), 1);
-        assert_eq!(fake.reads.get(), 0);
-    }
-
-    #[test]
-    fn refused_rich_offers_leave_plain_available_without_repeated_probes() {
-        for rich in [
-            None,
-            Some(crate::RichTextOffer {
-                html: String::new(),
-                plain: None,
-            }),
-            Some(crate::RichTextOffer {
-                html: "a".repeat(crate::MAX_CLIPBOARD_HTML_BYTES + 1),
-                plain: None,
-            }),
-            Some(crate::RichTextOffer {
-                html: "<p>small</p>".into(),
-                plain: Some("a".repeat(crate::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES + 1)),
-            }),
-        ] {
+        phase a_pasted_picture_is_read_once_inside_its_event;
+        {
+            let image = crate::ClipboardImage {
+                mime: "image/png",
+                bytes: vec![1, 2, 3],
+            };
             let fake = Rc::new(Fake {
-                rich,
-                text: Some("ordinary text".into()),
+                image: Some(image.clone()),
                 ..Fake::default()
             });
-            during(fake.clone(), || {
-                assert_eq!(read_rich(), None);
-                assert_eq!(read_rich(), None);
-                assert_eq!(read().as_deref(), Some("ordinary text"));
-                assert_eq!(read(), None);
+            assert_eq!(read_image(), None);
+            during(fake, || {
+                assert_eq!(read_image(), Some(image));
+                assert_eq!(read_image(), None, "a picture is pasted once");
+                assert_eq!(read(), None, "and is no text");
             });
-            assert_eq!(fake.rich_reads.get(), 1);
+            assert_eq!(read_image(), None);
+        }
+
+        phase an_event_is_written_and_read_once_and_nothing_outlives_it;
+        {
+            let fake = Rc::new(Fake {
+                text: Some("pasted".into()),
+                ..Fake::default()
+            });
+            assert_eq!(write("x"), None);
+            during(fake.clone(), || {
+                assert!(in_event());
+                assert_eq!(read().as_deref(), Some("pasted"));
+                assert_eq!(read(), None, "a paste is read once");
+                assert_eq!(write("first"), Some(true));
+                assert_eq!(write("second"), Some(true));
+                assert!(copied());
+            });
+            assert!(!in_event());
+            assert!(!copied());
+            assert_eq!(*fake.offered.borrow(), ["first"]);
             assert_eq!(fake.reads.get(), 1);
+        }
+
+        phase a_rich_copy_writes_its_html_and_its_words_to_the_event_once;
+        {
+            let fake = Rc::new(Fake::default());
+            assert_eq!(write_rich("<b>x</b>", "x"), None);
+            during(fake.clone(), || {
+                assert_eq!(write_rich("<b>first</b>", "first"), Some(true));
+                assert_eq!(write("second"), Some(true));
+                assert!(copied());
+            });
+            assert_eq!(*fake.offered_html.borrow(), ["<b>first</b>"]);
+            assert_eq!(*fake.offered.borrow(), ["first"]);
+        }
+
+        phase a_refused_write_is_not_copied_and_scopes_nest;
+        {
+            let refusing = Rc::new(Fake {
+                refuse: true,
+                ..Fake::default()
+            });
+            let outer = Rc::new(Fake::default());
+            during(outer.clone(), || {
+                during(refusing.clone(), || {
+                    assert_eq!(write("secret"), Some(false));
+                    assert!(!copied());
+                });
+                assert_eq!(write("outer"), Some(true));
+            });
+            assert_eq!(*outer.offered.borrow(), ["outer"]);
+        }
+
+        phase input_reports_are_scoped;
+        {
+            assert!(input_report().is_none());
+            let heard = Rc::new(RefCell::new(Vec::new()));
+            let sink = heard.clone();
+            during_input(Rc::new(move |r| sink.borrow_mut().push(r)), || {
+                input_report().unwrap()(CopyReport::Copied);
+            });
+            assert!(input_report().is_none());
+            assert_eq!(*heard.borrow(), [CopyReport::Copied]);
         }
     }
 
-    #[test]
-    fn plain_first_prevents_a_later_rich_read() {
-        let fake = Rc::new(Fake {
-            rich: Some(crate::RichTextOffer {
-                html: "<b>secret</b>".into(),
-                plain: None,
-            }),
-            text: Some("plain".into()),
-            ..Fake::default()
-        });
-        during(fake.clone(), || {
-            assert_eq!(read().as_deref(), Some("plain"));
-            assert_eq!(read_rich(), None);
-        });
-        assert_eq!(fake.rich_reads.get(), 0);
-    }
+    tilo_test_env::scenario! {
+        fn a_rich_offer_is_probed_once_and_falls_back_to_plain;
 
-    #[test]
-    fn nested_rich_scopes_restore_outer_payload_and_consumption() {
-        let outer = Rc::new(Fake {
-            rich: Some(crate::RichTextOffer {
-                html: "outer".into(),
-                plain: None,
-            }),
-            ..Fake::default()
-        });
-        let inner = Rc::new(Fake {
-            rich: Some(crate::RichTextOffer {
-                html: "inner".into(),
-                plain: Some("paired".into()),
-            }),
-            ..Fake::default()
-        });
-        during(outer.clone(), || {
-            during(inner.clone(), || {
-                assert_eq!(read_rich(), inner.rich);
-            });
-            assert_eq!(read_rich(), outer.rich);
-            during(inner.clone(), || {
-                assert_eq!(read_rich(), inner.rich);
+        phase rich_offer_captures_fallback_and_consumes_the_event_once;
+        {
+            let offer = crate::RichTextOffer {
+                html: "<b>Ä😀</b>".into(),
+                plain: Some("paired Ä😀\n".into()),
+            };
+            let fake = Rc::new(Fake {
+                rich: Some(offer.clone()),
+                text: Some("must not reread".into()),
+                ..Fake::default()
             });
             assert_eq!(read_rich(), None);
-            assert_eq!(read(), None);
-        });
-        assert_eq!(read_rich(), None);
-        assert_eq!(outer.rich_reads.get(), 1);
-        assert_eq!(inner.rich_reads.get(), 2);
-    }
+            during(fake.clone(), || {
+                assert_eq!(read_rich(), Some(offer));
+                assert_eq!(read(), None);
+                assert_eq!(read_rich(), None);
+            });
+            assert_eq!(read_rich(), None);
+            assert_eq!(fake.rich_reads.get(), 1);
+            assert_eq!(fake.reads.get(), 0);
+        }
 
-    #[test]
-    fn rich_limits_count_utf8_bytes_and_diagnostics_omit_payloads() {
-        let mut offer = crate::RichTextOffer {
-            html: "😀".repeat(crate::MAX_CLIPBOARD_HTML_BYTES / 4),
-            plain: Some("p".repeat(crate::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES)),
-        };
-        assert!(offer.is_valid());
-        offer.html.push('x');
-        assert!(!offer.is_valid());
-        let diagnostic = format!("{offer:?}");
-        assert!(!diagnostic.contains('😀'));
-        assert!(diagnostic.contains("html_bytes"));
-        assert!(diagnostic.len() < 100);
+        phase refused_rich_offers_leave_plain_available_without_repeated_probes;
+        {
+            for rich in [
+                None,
+                Some(crate::RichTextOffer {
+                    html: String::new(),
+                    plain: None,
+                }),
+                Some(crate::RichTextOffer {
+                    html: "a".repeat(crate::MAX_CLIPBOARD_HTML_BYTES + 1),
+                    plain: None,
+                }),
+                Some(crate::RichTextOffer {
+                    html: "<p>small</p>".into(),
+                    plain: Some("a".repeat(crate::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES + 1)),
+                }),
+            ] {
+                let fake = Rc::new(Fake {
+                    rich,
+                    text: Some("ordinary text".into()),
+                    ..Fake::default()
+                });
+                during(fake.clone(), || {
+                    assert_eq!(read_rich(), None);
+                    assert_eq!(read_rich(), None);
+                    assert_eq!(read().as_deref(), Some("ordinary text"));
+                    assert_eq!(read(), None);
+                });
+                assert_eq!(fake.rich_reads.get(), 1);
+                assert_eq!(fake.reads.get(), 1);
+            }
+        }
+
+        phase plain_first_prevents_a_later_rich_read;
+        {
+            let fake = Rc::new(Fake {
+                rich: Some(crate::RichTextOffer {
+                    html: "<b>secret</b>".into(),
+                    plain: None,
+                }),
+                text: Some("plain".into()),
+                ..Fake::default()
+            });
+            during(fake.clone(), || {
+                assert_eq!(read().as_deref(), Some("plain"));
+                assert_eq!(read_rich(), None);
+            });
+            assert_eq!(fake.rich_reads.get(), 0);
+        }
+
+        phase nested_rich_scopes_restore_outer_payload_and_consumption;
+        {
+            let outer = Rc::new(Fake {
+                rich: Some(crate::RichTextOffer {
+                    html: "outer".into(),
+                    plain: None,
+                }),
+                ..Fake::default()
+            });
+            let inner = Rc::new(Fake {
+                rich: Some(crate::RichTextOffer {
+                    html: "inner".into(),
+                    plain: Some("paired".into()),
+                }),
+                ..Fake::default()
+            });
+            during(outer.clone(), || {
+                during(inner.clone(), || {
+                    assert_eq!(read_rich(), inner.rich);
+                });
+                assert_eq!(read_rich(), outer.rich);
+                during(inner.clone(), || {
+                    assert_eq!(read_rich(), inner.rich);
+                });
+                assert_eq!(read_rich(), None);
+                assert_eq!(read(), None);
+            });
+            assert_eq!(read_rich(), None);
+            assert_eq!(outer.rich_reads.get(), 1);
+            assert_eq!(inner.rich_reads.get(), 2);
+        }
+
+        phase rich_limits_count_utf8_bytes_and_diagnostics_omit_payloads;
+        {
+            let mut offer = crate::RichTextOffer {
+                html: "😀".repeat(crate::MAX_CLIPBOARD_HTML_BYTES / 4),
+                plain: Some("p".repeat(crate::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES)),
+            };
+            assert!(offer.is_valid());
+            offer.html.push('x');
+            assert!(!offer.is_valid());
+            let diagnostic = format!("{offer:?}");
+            assert!(!diagnostic.contains('😀'));
+            assert!(diagnostic.contains("html_bytes"));
+            assert!(diagnostic.len() < 100);
+        }
     }
 }
