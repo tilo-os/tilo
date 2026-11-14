@@ -937,9 +937,8 @@ impl Host {
         Self::open(
             Opening {
                 record: Some(record),
-                index_dir: None,
                 device,
-                wake: None,
+                ..Opening::default()
             },
             viewer,
             standing,

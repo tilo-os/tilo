@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
-use automerge::transaction::Transactable as _;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
@@ -500,18 +499,15 @@ impl InstanceRecord {
     /// only ([`Self::doc`]): to look at, as a test does. A frame reads through [`Self::read`].
     #[must_use]
     pub fn chunks(&self) -> Chunks {
-        let mut whole = self.read(Chunks::whole);
-        let open: Vec<ChunkNo> = whole
-            .docs()
-            .filter(|(_, doc)| doc.pending_ops() > 0)
-            .map(|(chunk, _)| chunk)
-            .collect();
-        for chunk in open {
-            if let Some(doc) = whole.mirror_mut(chunk) {
+        let mut copy = Chunks::of(self.doc());
+        self.read(|chunks| {
+            for (chunk, doc) in chunks.all().filter(|(chunk, _)| *chunk != FIRST) {
+                let mut doc = doc.clone();
                 doc.rollback();
+                copy.insert(chunk, doc);
             }
-        }
-        whole
+        });
+        copy
     }
 
     /// A copy of the chunk `chunk`, its committed changes only ([`Self::doc`]).

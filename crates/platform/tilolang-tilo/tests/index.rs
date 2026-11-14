@@ -1191,8 +1191,7 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
         Opening {
             record: Some(doc),
             index_dir: Some(dir.to_owned()),
-            device: None,
-            wake: None,
+            ..Opening::default()
         },
         Principal::new("ada"),
         || None,
@@ -1238,10 +1237,8 @@ tilo_test_env::scenario! {
 
         let host = Host::open(
             Opening {
-                record: None,
                 index_dir: Some(dir.path().to_owned()),
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new("ada"),
             || None,
@@ -1287,8 +1284,7 @@ tilo_test_env::scenario! {
             Opening {
                 record: Some(&ada.doc),
                 index_dir: Some(dir.path().to_owned()),
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new("ada"),
             || None,
@@ -1322,8 +1318,7 @@ tilo_test_env::scenario! {
                 Opening {
                     record: chunks.first(),
                     index_dir: Some(dir.path().to_owned()),
-                    device: None,
-                    wake: None,
+                    ..Opening::default()
                 },
                 Principal::new("ada"),
                 || None,
@@ -1374,9 +1369,7 @@ tilo_test_env::scenario! {
         let behind = Host::open(
             Opening {
                 record: chunks.first(),
-                index_dir: None,
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new("ada"),
             || None,
@@ -1416,10 +1409,9 @@ tilo_test_env::scenario! {
         let host = Host::open(
             Opening {
                 record: Some(&ada.doc),
-                index_dir: None,
-                device: None,
                 // What a window has before the app's package loads.
                 wake: Some(Arc::new(|| {})),
+                ..Opening::default()
             },
             Principal::new("ada"),
             || None,
@@ -1457,8 +1449,7 @@ tilo_test_env::scenario! {
             Opening {
                 record: Some(&ada.doc),
                 index_dir: Some(dir.path().to_owned()),
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new("ada"),
             || None,
@@ -1532,9 +1523,8 @@ fn a_window_opened_with_a_waker_reads_its_index_off_the_frame() {
     let host = Host::open(
         Opening {
             record: Some(&ada.doc),
-            index_dir: None,
-            device: None,
             wake: Some(wake),
+            ..Opening::default()
         },
         Principal::new("ada"),
         || None,

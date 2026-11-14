@@ -1106,9 +1106,7 @@ fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
         let host = Host::open(
             Opening {
                 record: Some(record),
-                index_dir: None,
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new("ada"),
             || None,

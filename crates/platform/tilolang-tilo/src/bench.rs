@@ -724,8 +724,7 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
             Opening {
                 record: Some(doc),
                 index_dir: Some(dir.path().to_owned()),
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new(VIEWER),
             || None,
@@ -862,8 +861,7 @@ impl Workspace {
             Opening {
                 record: Some(&doc),
                 index_dir: index.as_ref().map(|dir| dir.path().to_owned()),
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new(VIEWER),
             || None,
@@ -1795,10 +1793,8 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
         let loading = Rc::new(RefCell::new(Loading::start(saved.to_vec())));
         let host = Host::open(
             Opening {
-                record: None,
                 index_dir: Some(index.path().to_owned()),
-                device: None,
-                wake: None,
+                ..Opening::default()
             },
             Principal::new(VIEWER),
             || None,

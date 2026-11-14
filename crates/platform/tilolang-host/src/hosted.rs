@@ -2513,10 +2513,7 @@ impl Applier {
         // origin applies is written there, and read there at once.
         let host = Host::open(
             tilolang_tilo::host::Opening {
-                record: None,
-                index_dir: None,
-                device: None,
-                wake: None,
+                ..tilolang_tilo::host::Opening::default()
             },
             tilolang_tilo::runtime::Principal::new(spec.person.clone()),
             || None,

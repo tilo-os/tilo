@@ -97,8 +97,7 @@ pub(crate) fn built_over(ada: &Replica) -> Host {
         Opening {
             record: Some(&ada.doc),
             index_dir: Some(dir),
-            device: None,
-            wake: None,
+            ..Opening::default()
         },
         Principal::new("phone"),
         || None,

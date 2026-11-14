@@ -73,8 +73,7 @@ fn keep_index(
         tilolang_tilo::host::Opening {
             record: Some(doc),
             index_dir: Some(tilolang_tilo::index::workspace_dir(&base, "personal")),
-            device: None,
-            wake: None,
+            ..tilolang_tilo::host::Opening::default()
         },
         tilolang_tilo::runtime::Principal::new("seed"),
         tilolang_tilo::authority::holding_nothing("seed"),

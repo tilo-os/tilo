@@ -508,10 +508,8 @@ tilo_test_env::scenario! {
         drop(r);
         let host = Host::open(
             tilolang_tilo::host::Opening {
-                record: None,
                 index_dir: Some(dir.clone()),
-                device: None,
-                wake: None,
+                ..tilolang_tilo::host::Opening::default()
             },
             Principal::new("ada"),
             || None,
@@ -825,8 +823,7 @@ fn kept_index(doc: &AutoCommit, lock: &str, dir: &std::path::Path) -> Host {
         tilolang_tilo::host::Opening {
             record: Some(doc),
             index_dir: Some(dir.to_owned()),
-            device: None,
-            wake: None,
+            ..tilolang_tilo::host::Opening::default()
         },
         Principal::new("ada"),
         || None,

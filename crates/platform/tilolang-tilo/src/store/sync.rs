@@ -67,7 +67,7 @@ impl TiloStore {
             }
             if have
                 .iter()
-                .all(|head| theirs.get_change_by_hash(head).is_some())
+                .all(|head| theirs.get_change_meta_by_hash(head).is_some())
             {
                 theirs.get_changes(&have)
             } else {

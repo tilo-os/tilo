@@ -379,17 +379,6 @@ impl Chunks {
         }
     }
 
-    /// The set with every chunk its holder has as one the store reads: what a look at the
-    /// whole record reads.
-    #[must_use]
-    pub fn whole(&self) -> Self {
-        let mut whole = self.clone();
-        for (chunk, doc) in std::mem::take(&mut whole.parked) {
-            whole.more.insert(chunk, doc);
-        }
-        whole
-    }
-
     /// Take the chunk `chunk` the store reads out of the set.
     pub fn take_attached(&mut self, chunk: ChunkNo) -> Option<Doc> {
         let doc = if chunk == FIRST {
