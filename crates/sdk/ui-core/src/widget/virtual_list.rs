@@ -51,6 +51,8 @@ use shown::ListShown;
 #[path = "virtual_list_tree.rs"]
 mod tree;
 pub use tree::{TREE_INDENT, TreeMarks, TreeMove, TreeRow};
+#[path = "virtual_list_html_tree.rs"]
+mod html_tree;
 #[path = "virtual_list_menu.rs"]
 mod menu;
 use menu::RowMenus;
@@ -1460,6 +1462,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .collect();
         if !chosen.is_empty() {
             cx.choose_children(&chosen);
+        }
+        if self.tree.is_some() {
+            let theme = cx.theme().clone();
+            let rows = std::mem::take(&mut cx.composed.children);
+            cx.composed.children = self.tree_html_rows(rows, &theme);
         }
     }
 

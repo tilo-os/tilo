@@ -204,6 +204,28 @@ impl<M: ListModel> VirtualList<M> {
             children = node.children;
         }
         children.splice(0..0, field);
+        // A tree row holding others offers the disclosure its chevron stands for: a control of
+        // its own, where the chevron is drawn, so a reader or a page folds the notes under the
+        // row without opening the row itself.
+        if let Some(marks) = &self.tree
+            && marks.is_branch(&row.key)
+            && let Some(encode) = &self.semantic_key
+        {
+            let folded = marks.is_folded(&row.key);
+            let name = widget_text(if folded {
+                "tree-branch-expand"
+            } else {
+                "tree-branch-collapse"
+            });
+            let mut disclosure = AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_state(AccessState::new().expanded(!folded))
+                .with_action_target(format!("fold:{}", encode(&row.key)));
+            if let Some(rect) = self.disclosure_rect(&row.key) {
+                disclosure = disclosure.with_bounds(rect);
+            }
+            children.push(disclosure);
+        }
         if !children.is_empty() {
             item = item.with_children(children);
         }
@@ -246,6 +268,29 @@ impl<M: ListModel> VirtualList<M> {
                     self.scroll_to_index(index);
                     true
                 }),
+                _ => false,
+            };
+        }
+        // A tree row's disclosure, standing where the painted chevron is: pressing it folds the
+        // row's notes away or shows them again, where a press on the row itself opens the item
+        // it stands for.
+        if let Some(encoded) = target.strip_prefix("fold:") {
+            let Some(key) = self.key_for_name(encoded) else {
+                return false;
+            };
+            if self.tree.is_none() {
+                return false;
+            }
+            return match action {
+                Action::Activate => {
+                    let folded = self
+                        .tree
+                        .as_ref()
+                        .is_some_and(|marks| marks.is_folded(&key));
+                    self.fold_row(&key, !folded)
+                }
+                Action::Expand => self.fold_row(&key, false),
+                Action::Collapse => self.fold_row(&key, true),
                 _ => false,
             };
         }

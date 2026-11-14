@@ -8,7 +8,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::framework_support::{add_note, notes, open, root_order, send as dispatch, surface};
+use crate::framework_support::{
+    add_note, apply, notes, open, root_order, send as dispatch, shown, surface,
+};
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -212,4 +214,30 @@ fn sidebar_context_menu_deletes_and_deep_copies_pages() {
             pages.iter().map(|p| p.title.as_str()).collect::<Vec<_>>()
         );
     }
+}
+
+/// Moving a note under another is one undo away from the place it left: a drag or a published
+/// Move note that put it in the wrong place is a mistake a person can take back.
+#[test]
+fn moving_a_note_under_another_is_one_undo() {
+    let mut app = notes();
+    let handbook = add_note(&mut app, "Handbook", "How we work.");
+    let expenses = add_note(&mut app, "Expenses", "");
+    apply(
+        &mut app,
+        &notes::actions::move_page_action(expenses, Some(handbook), None),
+    );
+    let workspace = shown(&app);
+    assert_eq!(
+        workspace.get(expenses).and_then(|page| page.parent),
+        Some(handbook),
+        "the note stands under the one it was moved into"
+    );
+    assert!(app.undo(), "the move undoes");
+    let workspace = shown(&app);
+    assert_eq!(
+        workspace.get(expenses).and_then(|page| page.parent),
+        None,
+        "and the note is back at the top level"
+    );
 }

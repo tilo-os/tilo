@@ -1396,3 +1396,133 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
         .expect("the box is operated");
     assert!(done.with(|checked| *checked), "the tick reaches the box");
 }
+
+/// A list of rows that are list rows, standing as a tree: 0 holds 1, which holds 2.
+fn listed_tree() -> VirtualList<Nested> {
+    use crate::widget::ListRow;
+
+    let model = Nested {
+        keys: vec![0, 1, 2],
+        parents: HashMap::from([(1, 0), (2, 1)]),
+        groups: HashMap::new(),
+    };
+    VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(ListRow::new(format!("note-{key}"), format!("Note {key}"))) as Element
+    })
+    .with_viewport_height(200.0)
+    .with_tree(Rc::new(TreeMarks::default()))
+    .with_semantic_key(|key| format!("row:{key}"))
+}
+
+fn composed_at<'a>(
+    node: &'a crate::composition::Composed,
+    widget: &str,
+) -> Vec<&'a crate::composition::Composed> {
+    let mut found: Vec<&crate::composition::Composed> = node
+        .children
+        .iter()
+        .flat_map(|child| composed_at(child, widget))
+        .collect();
+    if node.widget == widget {
+        found.insert(0, node);
+    }
+    found
+}
+
+fn composed_named<'a>(
+    node: &'a crate::composition::Composed,
+    text: &str,
+) -> Option<&'a crate::composition::Composed> {
+    if matches!(&node.own, Some(crate::composition::Own::Text(look)) if look.text == text) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| composed_named(child, text))
+}
+
+fn holds(node: &crate::composition::Composed, path: &str) -> bool {
+    node.children
+        .iter()
+        .any(|child| child.path == path || holds(child, path))
+}
+
+/// The rows of a tree compose as elements: a row stands inside the element of the row it is
+/// under, and a row holding others carries the disclosure its chevron stands for. Pressing the
+/// disclosure folds the rows away, through the list's own action.
+#[test]
+fn a_tree_composes_as_nested_elements_with_a_disclosure() {
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+
+    let mut harness = FrameHarness::for_root(
+        crate::State::new(),
+        listed_tree(),
+        (400, 500),
+        Theme::dark(),
+    );
+    harness.relayout();
+    let composition = harness.composition();
+    let note = |name: &str| {
+        composed_named(&composition.root, name)
+            .unwrap_or_else(|| panic!("the row saying {name:?} composes"))
+    };
+    let first = note("Note 0");
+    let second = note("Note 1");
+    let third = note("Note 2");
+    assert_eq!(first.tag, Some("li"), "a row is a list item");
+    assert!(
+        holds(first, &second.path),
+        "the row under it stands inside its own element: {first:?} then {second:?}"
+    );
+    assert!(holds(second, &third.path), "and the next level in");
+    assert!(
+        !holds(second, &first.path),
+        "a parent does not stand inside its child"
+    );
+
+    // The branch says what pressing its chevron does, where the chevron is painted.
+    let disclosure = composed_at(first, "RowDisclosure")
+        .into_iter()
+        .next()
+        .expect("a row holding others shows its disclosure");
+    assert_eq!(disclosure.tag, Some("button"));
+    let node = disclosure
+        .semantics
+        .as_ref()
+        .expect("a reader hears the disclosure");
+    assert_eq!(node.role, crate::a11y::Role::Button);
+    assert_eq!(node.name.as_deref(), Some("Collapse"));
+    assert!(
+        disclosure.rect[2] > 0.0 && disclosure.rect[1] >= first.rect[1],
+        "it stands on the row: {disclosure:?} in {first:?}"
+    );
+
+    let mut edits = AutoCommit::new();
+    assert!(Widget::perform_semantic_action(
+        &mut *harness.root_mut::<VirtualList<Nested>>(),
+        "fold:row:0",
+        &Action::Activate,
+        &mut crate::widget::Edits::lend(&mut edits),
+        &automerge::ObjId::Root,
+    ));
+    harness.relayout();
+    let composition = harness.composition();
+    assert!(
+        composed_named(&composition.root, "Note 1").is_none(),
+        "the folded row's notes leave the page"
+    );
+    let first = composed_named(&composition.root, "Note 0").expect("the branch stays");
+    let disclosure = composed_at(first, "RowDisclosure")
+        .into_iter()
+        .next()
+        .expect("a folded branch keeps its disclosure");
+    assert_eq!(
+        disclosure
+            .semantics
+            .as_ref()
+            .and_then(|node| node.name.as_deref()),
+        Some("Expand"),
+        "and says what pressing it does now"
+    );
+}

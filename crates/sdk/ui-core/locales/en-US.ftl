@@ -383,6 +383,9 @@ widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
 tree-rename-field = Rename
+# A tree row's disclosure: what pressing the chevron does to the rows under it.
+tree-branch-expand = Expand
+tree-branch-collapse = Collapse
 
 # The show/hide control inside every password field.
 text-input-show-password = Show password

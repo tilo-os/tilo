@@ -351,9 +351,48 @@ fn a_header_row_reports_what_it_settled_on() {
     assert_eq!(row.column, "content");
     let title = part_rect(&h, Part::Title(Column::Content));
     assert!((f64::from(row.title_has) - title.width()).abs() < 0.5);
+    // The content column's row keeps its title to what it says: the status message it paints
+    // starts where the title ends.
     assert!(f64::from(row.title_needs) >= f64::from(row.title_has));
     assert!(f64::from(row.free_beside_title) >= 0.0);
     assert!(row.primary_shown, "the row keeps its primary action");
+}
+
+/// A title's box reaches the actions that follow it, not just the width its words measure: a
+/// box the size of the measure itself cuts the last glyph where the renderer shaping the words
+/// rounds wider than the measure that sized the box, so a short column name reads as
+/// "Not…" beside room standing empty.
+#[test]
+fn a_titles_box_reaches_the_actions_that_follow_it() {
+    let theme = Theme::dark();
+    let m = Metrics::resolve(&theme);
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Notes", vec![icon("new", Icon::Plus, "New note")]);
+    let mut h = harness(shell, 280, 700, theme.clone());
+    settle(&mut h, 280, 700);
+    let title = part_rect(&h, Part::Title(Column::Sidebar));
+    let action = part_rect(&h, Part::Action(Column::Sidebar, 0));
+    let mut text = TextRenderer::new();
+    let (needs, _) = crate::chrome::header_row::measure_title(&mut text, &theme, "Notes", None);
+    assert!(
+        title.width() > needs + 1.0,
+        "the title has more than the width of its words: {title:?} for {needs:.1}"
+    );
+    assert!(
+        (title.x1 + m.gap - action.x0).abs() < 0.5,
+        "the title's box ends one gap before its action: {title:?}, {action:?}"
+    );
+    let room = crate::num::f32_of_f64(title.width());
+    assert!(
+        text.elide_to_width_style(
+            "Notes",
+            room,
+            &crate::chrome::header_row::title_style(&theme)
+        ) == "Notes",
+        "no renderer elides the whole name in a box that wide"
+    );
 }
 
 /// Labelled buttons collapse to their icons when the row is short; then

@@ -322,18 +322,25 @@ fn place_header(
     let mut x = (trail - total).max(start.min(trail));
     let actions_x0 = if total > 0.0 { x } else { trail };
     // The title was given what the actions must leave it, and the row often keeps fewer of them
-    // than that: the room between the title and the first control is the title's, up to what it
-    // says, where no leading fill stands there to take it.
-    if let Some((index, width, tw, th)) = title {
+    // than that: the room between the title and the first control is the title's where no
+    // leading fill stands there to take it. It takes all of that room, not just the width its
+    // words measure: a box sized to the measure itself cuts the last glyph as soon as the
+    // renderer that paints the words shapes them a hair wider than the measure that sized the
+    // box. The column a status message stands beside is the exception: the message starts where
+    // the title ends, so that title keeps to what it says and leaves the row's room to the message.
+    if let Some((index, width, tw, th)) = title
+        && width > 0.0
+        && index_of(Part::Leading(column)).is_none()
+        && column != g.status_column()
+    {
         let end = if total > 0.0 { actions_x0 - gap } else { trail };
-        let room = (end - lead).max(0.0);
-        let wanted = tw.min(room).clamp(0.0, avail);
-        if index_of(Part::Leading(column)).is_none() && wanted > width && wanted + 0.5 >= least {
+        let room = (end - lead).clamp(0.0, avail);
+        if room > width + 0.5 {
             if let Some(slot) = placed.get_mut(index) {
-                *slot = Some(centred(lead, wanted, th));
+                *slot = Some(centred(lead, room, th));
             }
-            start = lead + wanted + gap;
-            title = Some((index, wanted, tw, th));
+            start = lead + room + gap;
+            title = Some((index, room, tw, th));
         }
     }
     for (k, (index, _, h)) in items.iter().enumerate() {
