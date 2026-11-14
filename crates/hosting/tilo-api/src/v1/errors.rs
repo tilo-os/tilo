@@ -68,13 +68,18 @@ impl ApiError {
         refused
     }
 
-    /// The JSON body.
+    /// The JSON body, its message and steps naming this surface's routes
+    /// rather than an MCP client's tools.
     #[must_use]
     pub fn json(&self) -> Value {
-        serde_json::to_value(super::answers::Error {
-            error: (*self.body).clone(),
-        })
-        .unwrap_or_default()
+        let mut body = (*self.body).clone();
+        body.message = super::names::said(&body.message, super::names::Surface::Rest);
+        body.next_steps = body
+            .next_steps
+            .iter()
+            .map(|step| super::names::said(step, super::names::Surface::Rest))
+            .collect();
+        serde_json::to_value(super::answers::Error { error: body }).unwrap_or_default()
     }
 }
 

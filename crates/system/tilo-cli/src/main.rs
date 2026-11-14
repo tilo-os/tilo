@@ -2088,7 +2088,10 @@ mod tests {
             // workspace, and reaches hosted workspaces with a key.
             assert_eq!(
                 listed(nothing),
-                ["keys", "members", "account", "files", "run", "sdk", "login"]
+                [
+                    "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
+                    "login"
+                ]
             );
             let bare = command_here(nothing).render_help().to_string();
             assert!(bare.contains("tilo keys create"), "{bare}");

@@ -1788,10 +1788,14 @@ fn a_refused_action_says_why_and_what_it_takes() {
         )
         .await;
         assert!(failed, "{text}");
+        // Not the app's whole list: what may have been meant, then where
+        // the actions are.
         assert!(
-            text.contains("has no action explode; its actions: rename, delete, slow"),
+            text.contains("has no action explode")
+                && text.contains("tilo_ls notes/Todo lists them"),
             "{text}"
         );
+        assert!(!text.contains("delete, slow"), "no wall of names: {text}");
         let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes/Todo"})).await;
         assert!(failed && text.contains("name the action"), "{text}");
     });
@@ -2086,17 +2090,6 @@ fn a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read() 
             "{text}"
         );
     });
-}
-
-#[test]
-fn bound_ids_decode_to_the_apps_own_name_and_nothing_else_does() {
-    assert_eq!(
-        bound_key(&bound("a", TODO_BODY)).as_deref(),
-        Some(TODO_BODY)
-    );
-    assert_eq!(bound_key("notes.notebook"), None);
-    assert_eq!(bound_key("tilo-ui-bound:v1:a:b:zz"), None);
-    assert_eq!(bound_key("tilo-ui-bound:v1:a:b:abc"), None);
 }
 
 #[test]
@@ -2998,3 +2991,7 @@ fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
 }
 #[path = "mcp_status_tests.rs"]
 mod status;
+
+#[cfg(test)]
+#[path = "mcp_agent_address_tests.rs"]
+mod address_tests;

@@ -384,148 +384,11 @@ fn bound_key(id: &str) -> Option<String> {
         .filter(|key| !key.is_empty() && !key.chars().any(char::is_control))
 }
 
-/// One resource of an app's directory, as an agent names it.
-#[derive(Clone, Debug)]
-struct Node {
-    /// The broker's id: never shown, only sent back.
-    id: String,
-    kind: String,
-    label: String,
-    /// The app's own stable name for it: its semantic key, else the logical
-    /// id inside a bound id, else the id.
-    key: String,
-    parent: String,
-    container: bool,
-    actions: Vec<ActionDescriptor>,
-}
+mod mcp_agent_node;
+mod mcp_agent_paths;
 
-impl Node {
-    /// The part of the key that tells two resources of one kind apart
-    /// (`notes.page:3fa2…` → `3fa2…`).
-    fn token(&self) -> &str {
-        self.key
-            .rsplit([':', '/'])
-            .find(|part| !part.is_empty())
-            .unwrap_or(&self.key)
-    }
-
-    /// Whether `other`'s key names this one's distinguishing part.
-    fn owns(&self, other: &Node) -> bool {
-        let token = self.token();
-        token.len() >= 8 && other.key != self.key && other.key.contains(token)
-    }
-
-    /// Whether `other` is this resource's own and not one of its children.
-    fn beside(&self, other: &Node) -> bool {
-        self.owns(other) && !other.key.starts_with(&self.key)
-    }
-
-    /// Whether this resource is one of `other`'s: it sits under the other's id.
-    fn within(&self, other: &Node) -> bool {
-        matches!(self.id.strip_prefix(other.id.as_str()), Some(rest) if rest.starts_with('/'))
-    }
-
-    /// How well `name` names this node: 0 its label, 1 its key (whole or last
-    /// part), 2 its kind, 3 the start of either; `None` when it does not.
-    fn answers_to(&self, name: &str) -> Option<u8> {
-        let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
-        let tail = |text: &str| {
-            text.rsplit(['.', ':', '/'])
-                .next()
-                .is_some_and(|tail| tail.eq_ignore_ascii_case(name))
-        };
-        if same(&self.label) {
-            return Some(0);
-        }
-        let key_tail = self.key.rsplit('/').next().unwrap_or_default();
-        if same(&self.key) || same(&self.id) || same(key_tail) || same(self.token()) {
-            return Some(1);
-        }
-        if same(&self.kind) || tail(&self.kind) {
-            return Some(2);
-        }
-        let lower = name.to_lowercase();
-        let starts = |text: &str| text.to_lowercase().starts_with(&lower);
-        (lower.chars().count() >= 3
-            && (starts(&self.label) || (lower.len() >= 6 && starts(self.token()))))
-        .then_some(3)
-    }
-
-    /// The name that goes in a path: its label when it tells it apart from
-    /// `siblings`, else its key's last part (`body`), else its key.
-    fn name(&self, siblings: &[Node]) -> String {
-        // Neither what belongs to this resource nor what it is a part of
-        // competes with it: a note titled like its notebook keeps its title.
-        let apart = |name: &str| {
-            !name.trim().is_empty()
-                && siblings
-                    .iter()
-                    .filter(|other| other.id != self.id)
-                    .filter(|other| !self.owns(other) && !self.within(other))
-                    .all(|other| other.answers_to(name).is_none_or(|rank| rank > 0))
-        };
-        let label = self.label.trim();
-        if apart(label) {
-            return path_name(label);
-        }
-        let tail = self.key.rsplit('/').next().unwrap_or_default();
-        if tail != self.key && apart(tail) {
-            return path_name(tail);
-        }
-        path_name(&self.key)
-    }
-}
-
-/// The resources and actions one directory listing holds under `parent`.
-#[derive(Clone, Default)]
-struct Level {
-    /// Actions of the parent itself.
-    own: Vec<ActionDescriptor>,
-    children: Vec<Node>,
-    /// The directory revision it was read at.
-    revision: String,
-}
-
-fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {
-    let mut level = Level::default();
-    let mut at: HashMap<&str, usize> = HashMap::new();
-    for row in rows {
-        if !parent.is_empty() && row.resource.id == parent {
-            if let Some(action) = &row.action {
-                level.own.push(action.clone());
-            }
-            continue;
-        }
-        let key = row
-            .action
-            .as_ref()
-            .and_then(|action| action.semantic_identity.as_ref())
-            .map(|identity| identity.key.clone())
-            .or_else(|| bound_key(&row.resource.id));
-        let index = *at.entry(row.resource.id.as_str()).or_insert_with(|| {
-            level.children.push(Node {
-                id: row.resource.id.clone(),
-                kind: row.resource.kind.clone(),
-                label: row.resource.label.clone(),
-                key: key.clone().unwrap_or_else(|| row.resource.id.clone()),
-                parent: row.parent_resource.clone(),
-                container: false,
-                actions: Vec::new(),
-            });
-            level.children.len().saturating_sub(1)
-        });
-        if let Some(node) = level.children.get_mut(index) {
-            node.container |= row.has_children;
-            if let Some(key) = key.filter(|_| node.key == node.id) {
-                node.key = key;
-            }
-            if let Some(action) = &row.action {
-                node.actions.push(action.clone());
-            }
-        }
-    }
-    level
-}
+use mcp_agent_node::{Level, Node, level_of};
+use mcp_agent_paths::{CLOSE_MATCHES, close_matches, kind_address};
 
 /// Whether `segment`, a segment of a path, is written the way a program types a type
 /// (`tasks.Task`): a package's alias, a dot, and a name that begins with a capital letter.
@@ -623,12 +486,17 @@ fn pick_action<'a>(
     }
     let mut ids: Vec<String> = actions.iter().map(id).collect();
     ids.dedup();
+    // What the caller may have meant, not everything there is: an app with
+    // ninety actions is not told as one wall of names.
+    let close = close_matches(name, &ids, CLOSE_MATCHES);
     Err(if ids.is_empty() {
         format!("{at} has no actions")
+    } else if close.is_empty() {
+        format!("{at} has no action {name}")
     } else {
         format!(
-            "{at} has no action {name}; its actions: {}",
-            list_names(&ids)
+            "{at} has no action {name}; close matches: {}",
+            close.join(", ")
         )
     })
 }
@@ -689,16 +557,18 @@ fn pick_action_anywhere<'a>(
     }
     match found.as_slice() {
         [(key, only)] => Ok((Some(key.clone()), only)),
+        // A person is told the few that may be meant, not every action of an
+        // app that happens to share a word with the one asked for.
         many => Err(format!(
             "{name} names {} actions in {}: {}; name one with the resource it is on",
             many.len(),
             resolved.path,
             many.iter()
-                .take(NAMES_LISTED)
+                .take(CLOSE_MATCHES)
                 .map(|(key, action)| format!("{}/{}#{}", resolved.path, key, action.address.action))
                 .chain(
-                    (many.len() > NAMES_LISTED)
-                        .then(|| format!("… +{}", many.len().saturating_sub(NAMES_LISTED)))
+                    (many.len() > CLOSE_MATCHES)
+                        .then(|| format!("… +{}", many.len().saturating_sub(CLOSE_MATCHES)))
                 )
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -1721,7 +1591,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         parsed: &ParsedPath,
         forms: Option<&ProgramForms>,
     ) -> Result<Result<Resolved, String>, String> {
-        match self.app_ref(&parsed.app).await? {
+        let reference = match self.app_ref(&parsed.app).await {
+            Ok(reference) => reference,
+            Err(why) => match self.kind_app(&parsed.app).await {
+                Some((app_id, provider, _)) => {
+                    return Ok(Ok(self
+                        .resolve_in(parsed, app_id, provider, true, forms)
+                        .await?));
+                }
+                None => return Err(why),
+            },
+        };
+        match reference {
             AppRef::Running {
                 app_id,
                 provider,
@@ -1799,6 +1680,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Resolved, String> {
         let app = parsed.app.to_lowercase();
         let mut levels = Levels::new();
+        // What an action answered is a path the next call takes as it is:
+        // `tasks.tracker/issues/7` names one resource whole, where its parts
+        // named one at a time would name every kind that shares a word.
+        if kind_address(&parsed.app).is_some() {
+            let address = if parsed.segments.is_empty() {
+                parsed.app.clone()
+            } else {
+                format!("{}/{}", parsed.app, parsed.segments.join("/"))
+            };
+            if let Some(found) = self
+                .by_address(&app_id, &provider, &address, &mut levels)
+                .await?
+            {
+                return Ok(found);
+            }
+        }
         let mut chain: Vec<Node> = Vec::new();
         // What each resource on the path was named among, and the revision
         // the last of them was found at.
@@ -2578,6 +2475,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
+    /// The app a kind names (`tasks.tracker` is the Tasks app's tracker), as
+    /// the app id and the provider serving it: a kind begins with the app it
+    /// belongs to. `None` when the name is no kind or its app does not run.
+    async fn kind_app(&self, name: &str) -> Option<(String, String, bool)> {
+        let app = kind_address(name)?;
+        let AppRef::Running {
+            app_id,
+            provider,
+            pinned,
+        } = self.app_ref(app).await.ok()?
+        else {
+            return None;
+        };
+        Some((app_id, provider, pinned))
+    }
+
     /// The app `parsed` names and the provider its `action` runs in, and
     /// whether the path pinned it; `None` for starting the app itself
     /// ([`Self::launch`]). One of an installed app's own actions
@@ -2589,7 +2502,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         action: &str,
         wait_ms: Option<u64>,
     ) -> Result<Option<(String, String, bool)>, String> {
-        match self.app_ref(&parsed.app).await? {
+        let reference = match self.app_ref(&parsed.app).await {
+            Ok(reference) => reference,
+            // An action's answer names the resource it made by its kind
+            // (`tasks.tracker/issues/7`), which is a path the next command
+            // takes as it is.
+            Err(why) => match self.kind_app(&parsed.app).await {
+                Some((app_id, provider, pinned)) => {
+                    return Ok(Some((app_id, provider, pinned)));
+                }
+                None => return Err(why),
+            },
+        };
+        match reference {
             AppRef::Installed { opens: false, .. } => {
                 Err(Self::not_running_note(&parsed.app, false))
             }
