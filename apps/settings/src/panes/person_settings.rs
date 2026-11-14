@@ -387,12 +387,19 @@ impl AccountsModel {
             };
             let details = vec![
                 status,
-                format!(
-                    "{}:{} → {}:{}",
-                    account.incoming_host,
-                    account.incoming_port,
-                    account.outgoing_host,
-                    account.outgoing_port
+                translated(
+                    "settings-web-accounts-incoming-address",
+                    &[
+                        ("host", account.incoming_host.clone().into()),
+                        ("port", account.incoming_port.to_string().into()),
+                    ],
+                ),
+                translated(
+                    "settings-web-accounts-outgoing-address",
+                    &[
+                        ("host", account.outgoing_host.clone().into()),
+                        ("port", account.outgoing_port.to_string().into()),
+                    ],
                 ),
             ];
             let remove = cx.actions().bind_effect_invocation(
