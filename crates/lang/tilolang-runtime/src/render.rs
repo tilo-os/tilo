@@ -803,12 +803,10 @@ impl Core {
     ) -> Result<UiNode, RuntimeError> {
         let key = fragment.key.clone();
         match call {
-            Ok(call) => {
-                // The call runs after all: a failure that stood for it here is over, and the
-                // host is told the view is back (`shell.md` §6).
-                self.failed_views.borrow_mut().cleared(&key);
-                Self::foreign_view(cx, fragment, call, walk, boundaries)
-            }
+            // The call's failure is over when its boundary renders it and the view runs
+            // ([`Self::render_boundary_waiting`]): resolving its name says nothing about that, as
+            // a view that traps here traps again.
+            Ok(call) => Self::foreign_view(cx, fragment, call, walk, boundaries),
             // A call of an app whose package this runtime does not hold: the session publishes
             // it, and until it comes the call waits where it stands, so the rest of the view
             // draws. A call that failed for anything else is the caller's to report.
