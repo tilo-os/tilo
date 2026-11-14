@@ -235,66 +235,111 @@ fn clock_style() -> ui::text_render::TextStyle {
         .with_line_height(1.0)
 }
 
-tilo_test_env::scenario! {
-    /// What the lock screen paints: the clock's figures and the footer's connection.
-    fn the_clock_and_the_footer_paint_what_the_session_read;
-
-    phase the_clock_sets_each_character_one_figure_advance_from_the_last;
-    {
-        let (mut app, _seat, _asked) = locked(screen());
-        let clock = place(&mut app, "10:42");
-        let frame = app.harness().frame_output();
-        let scale = f64::from(frame.device_size.0) / f64::from(frame.logical_size.0);
-        let encoding = frame.scene.encoding();
-        let run = encoding
-            .resources
-            .glyph_runs
-            .iter()
-            .find(|run| {
-                (f64::from(run.font_size) - f64::from(tilo_sheets::lock::CLOCK_SIZE) * scale).abs()
-                    < 0.5
-            })
-            .expect("the clock is drawn at its own size");
-        let xs: Vec<f64> = encoding.resources.glyphs[run.glyphs.clone()]
-            .iter()
-            .map(|glyph| f64::from(glyph.x))
-            .collect();
-        assert_eq!(
-            xs.len(),
-            "10:42".chars().count(),
-            "the time is one run of its characters"
-        );
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a display scale is small and exact enough in f32"
-        )]
-        let text_scale = scale as f32;
-        let theme = ui::Theme::light().with_text_scale(text_scale);
-        let figure = f64::from(ui::text_render::with_layout_renderer(&theme, |text| {
-            text.measure_style("0", None, &clock_style()).0
-        }));
-        for pair in xs.windows(2) {
-            let step = pair[1] - pair[0];
-            assert!(
-                step <= figure + 0.5,
-                "characters {step} px apart, wider than the font's {figure} px figure advance: {xs:?}"
-            );
-        }
-        let span = xs[xs.len() - 1] - xs[0] + figure;
+#[test]
+fn the_clock_sets_each_character_one_figure_advance_from_the_last() {
+    let (mut app, _seat, _asked) = locked(screen());
+    let clock = place(&mut app, "10:42");
+    let frame = app.harness().frame_output();
+    let scale = f64::from(frame.device_size.0) / f64::from(frame.logical_size.0);
+    let encoding = frame.scene.encoding();
+    let run = encoding
+        .resources
+        .glyph_runs
+        .iter()
+        .find(|run| {
+            (f64::from(run.font_size) - f64::from(tilo_sheets::lock::CLOCK_SIZE) * scale).abs()
+                < 0.5
+        })
+        .expect("the clock is drawn at its own size");
+    let xs: Vec<f64> = encoding.resources.glyphs[run.glyphs.clone()]
+        .iter()
+        .map(|glyph| f64::from(glyph.x))
+        .collect();
+    assert_eq!(
+        xs.len(),
+        "10:42".chars().count(),
+        "the time is one run of its characters"
+    );
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a display scale is small and exact enough in f32"
+    )]
+    let text_scale = scale as f32;
+    let theme = ui::Theme::light().with_text_scale(text_scale);
+    let figure = f64::from(ui::text_render::with_layout_renderer(&theme, |text| {
+        text.measure_style("0", None, &clock_style()).0
+    }));
+    for pair in xs.windows(2) {
+        let step = pair[1] - pair[0];
         assert!(
-            span <= clock.width().mul_add(scale, 1.0),
-            "the clock paints {span} px wide in a room {} px wide",
-            clock.width() * scale
-        );
-        assert!(
-            (xs[1] - xs[0] - (xs[4] - xs[3])).abs() < 0.05,
-            "each digit keeps one advance, whichever digit it is: {xs:?}"
-        );
-        assert!(
-            xs[3] - xs[2] < xs[1] - xs[0],
-            "the colon is narrower than a figure: {xs:?}"
+            step <= figure + 0.5,
+            "characters {step} px apart, wider than the font's {figure} px figure advance: {xs:?}"
         );
     }
+    let span = xs[xs.len() - 1] - xs[0] + figure;
+    assert!(
+        span <= clock.width().mul_add(scale, 1.0),
+        "the clock paints {span} px wide in a room {} px wide",
+        clock.width() * scale
+    );
+    assert!(
+        (xs[1] - xs[0] - (xs[4] - xs[3])).abs() < 0.05,
+        "each digit keeps one advance, whichever digit it is: {xs:?}"
+    );
+    assert!(
+        xs[3] - xs[2] < xs[1] - xs[0],
+        "the colon is narrower than a figure: {xs:?}"
+    );
+}
+
+/// A locked session's screen whose footer has `link` for its connection.
+fn with_link(link: Option<ui::widget::LinkStatus>) -> Shown {
+    Shown {
+        status: Status {
+            link,
+            ..screen().status
+        },
+        ..screen()
+    }
+}
+
+/// The frame the screen paints for `shown`: what two runs compare.
+fn painted(shown: Shown) -> ui::vello::Scene {
+    let (mut app, _seat, _asked) = locked(shown);
+    app.harness().frame_output().scene.clone()
+}
+
+/// A connection of `kind` called `name`.
+fn connection(kind: ui::widget::LinkKind, name: Option<&str>) -> ui::widget::LinkStatus {
+    ui::widget::LinkStatus {
+        kind,
+        name: name.map(str::to_owned),
+        signal: 4,
+    }
+}
+
+/// Whether two painted screens draw the same shapes and letters, both at
+/// rest: the sheet arrives growing and fading, so only a settled screen draws
+/// the same shapes twice, and the ink alone is what a footer's glyph changes.
+fn same_shapes(left: &ui::vello::Scene, right: &ui::vello::Scene) -> bool {
+    let (a, b) = (left.encoding(), right.encoding());
+    a.path_tags == b.path_tags
+        && a.path_data == b.path_data
+        && a.resources.glyphs.len() == b.resources.glyphs.len()
+        && a.resources
+            .glyphs
+            .iter()
+            .zip(&b.resources.glyphs)
+            .all(|(left, right)| {
+                left.x.to_bits() == right.x.to_bits()
+                    && left.y.to_bits() == right.y.to_bits()
+                    && left.id == right.id
+            })
+}
+
+tilo_test_env::scenario! {
+    /// What the lock screen's footer paints for the connection: its glyph and its name.
+    fn the_footer_paints_the_connection_the_session_read;
 
     phase the_footer_draws_the_glyph_of_the_connection_the_session_read;
     // The footer draws the glyph of the connection the session read: a cable's
@@ -351,51 +396,6 @@ tilo_test_env::scenario! {
             "a named connection writes its name where an unnamed one stops at the glyph"
         );
     }
-}
-
-/// A locked session's screen whose footer has `link` for its connection.
-fn with_link(link: Option<ui::widget::LinkStatus>) -> Shown {
-    Shown {
-        status: Status {
-            link,
-            ..screen().status
-        },
-        ..screen()
-    }
-}
-
-/// The frame the screen paints for `shown`: what two runs compare.
-fn painted(shown: Shown) -> ui::vello::Scene {
-    let (mut app, _seat, _asked) = locked(shown);
-    app.harness().frame_output().scene.clone()
-}
-
-/// A connection of `kind` called `name`.
-fn connection(kind: ui::widget::LinkKind, name: Option<&str>) -> ui::widget::LinkStatus {
-    ui::widget::LinkStatus {
-        kind,
-        name: name.map(str::to_owned),
-        signal: 4,
-    }
-}
-
-/// Whether two painted screens draw the same shapes and letters, both at
-/// rest: the sheet arrives growing and fading, so only a settled screen draws
-/// the same shapes twice, and the ink alone is what a footer's glyph changes.
-fn same_shapes(left: &ui::vello::Scene, right: &ui::vello::Scene) -> bool {
-    let (a, b) = (left.encoding(), right.encoding());
-    a.path_tags == b.path_tags
-        && a.path_data == b.path_data
-        && a.resources.glyphs.len() == b.resources.glyphs.len()
-        && a.resources
-            .glyphs
-            .iter()
-            .zip(&b.resources.glyphs)
-            .all(|(left, right)| {
-                left.x.to_bits() == right.x.to_bits()
-                    && left.y.to_bits() == right.y.to_bits()
-                    && left.id == right.id
-            })
 }
 
 tilo_test_env::scenario! {

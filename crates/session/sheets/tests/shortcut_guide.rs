@@ -66,102 +66,97 @@ fn seated(guide: Guide) -> (HeadlessApp<ShortcutGuideApp>, GuideSeat) {
     (app, seat)
 }
 
-tilo_test_env::scenario! {
-    /// The shortcut guide: what it shows for each input, and what a key or a press asks the shell.
-    fn the_shortcut_guide_shows_each_input_and_asks_the_shell;
+#[test]
+fn every_input_has_its_guide() {
+    let mut app = staged("keyboard");
+    assert!(says(&mut app, "Windows"));
+    assert!(says(&mut app, "Close window"), "the essentials are listed");
+    let mut app = staged("controller");
+    assert!(says(&mut app, "This guide"));
+    let mut app = staged("touch");
+    assert!(
+        app.harness().a11y_nodes().len() > 8,
+        "the gestures are listed"
+    );
+}
 
-    phase every_input_has_its_guide;
-    {
-        let mut app = staged("keyboard");
-        assert!(says(&mut app, "Windows"));
-        assert!(says(&mut app, "Close window"), "the essentials are listed");
-        let mut app = staged("controller");
-        assert!(says(&mut app, "This guide"));
-        let mut app = staged("touch");
+#[test]
+fn pressing_a_key_asks_the_shell_for_its_new_chord() {
+    let (mut app, seat) = seated(guide());
+    app.harness()
+        .perform_named("guide-key-focus-next-window", &A11yAction::Activate)
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        seat.take_asked(),
+        [GuideEffect::Listen {
+            action: "focus-next-window".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn a_changed_pair_can_go_back_to_its_defaults() {
+    let (mut app, seat) = seated(guide());
+    app.harness()
+        .perform_named("guide-reset-focus-previous-window", &A11yAction::Activate)
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        seat.take_asked(),
+        [GuideEffect::Reset {
+            first: "focus-previous-window".to_owned(),
+            second: "focus-next-window".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn listening_says_which_shortcut_takes_the_next_chord() {
+    let (mut app, seat) = seated(guide());
+    seat.show(Guide {
+        listening: Some("focus-next-window".to_owned()),
+        ..guide()
+    });
+    app.settle();
+    assert!(says(&mut app, "Next window"));
+}
+
+#[test]
+fn escape_closes_the_guide() {
+    let (mut app, seat) = seated(guide());
+    app.harness().key("Escape");
+    app.settle();
+    assert_eq!(seat.take_asked(), [GuideEffect::Done]);
+    assert!(!seat.presentation().is_open());
+}
+
+#[test]
+fn an_agent_closes_the_guide_through_the_same_door() {
+    let (mut app, seat) = seated(guide());
+    app.effect(&GuideEffect::Done).unwrap();
+    app.settle();
+    assert_eq!(seat.take_asked(), [GuideEffect::Done]);
+}
+
+#[test]
+fn every_scenario_renders() {
+    for scenario in ["keyboard", "listening", "controller", "touch"] {
+        let mut app = staged(scenario);
         assert!(
-            app.harness().a11y_nodes().len() > 8,
-            "the gestures are listed"
+            says(&mut app, "Done") || says(&mut app, "Close"),
+            "{scenario}"
         );
     }
+}
 
-    phase pressing_a_key_asks_the_shell_for_its_new_chord;
-    {
-        let (mut app, seat) = seated(guide());
-        app.harness()
-            .perform_named("guide-key-focus-next-window", &A11yAction::Activate)
-            .unwrap();
-        app.settle();
-        assert_eq!(
-            seat.take_asked(),
-            [GuideEffect::Listen {
-                action: "focus-next-window".to_owned()
-            }]
-        );
-    }
-
-    phase a_changed_pair_can_go_back_to_its_defaults;
-    {
-        let (mut app, seat) = seated(guide());
-        app.harness()
-            .perform_named("guide-reset-focus-previous-window", &A11yAction::Activate)
-            .unwrap();
-        app.settle();
-        assert_eq!(
-            seat.take_asked(),
-            [GuideEffect::Reset {
-                first: "focus-previous-window".to_owned(),
-                second: "focus-next-window".to_owned(),
-            }]
-        );
-    }
-
-    phase listening_says_which_shortcut_takes_the_next_chord;
-    {
-        let (mut app, seat) = seated(guide());
-        seat.show(Guide {
-            listening: Some("focus-next-window".to_owned()),
-            ..guide()
-        });
-        app.settle();
-        assert!(says(&mut app, "Next window"));
-    }
-
-    phase escape_closes_the_guide;
-    {
-        let (mut app, seat) = seated(guide());
-        app.harness().key("Escape");
-        app.settle();
-        assert_eq!(seat.take_asked(), [GuideEffect::Done]);
-        assert!(!seat.presentation().is_open());
-    }
-
-    phase an_agent_closes_the_guide_through_the_same_door;
-    {
-        let (mut app, seat) = seated(guide());
-        app.effect(&GuideEffect::Done).unwrap();
-        app.settle();
-        assert_eq!(seat.take_asked(), [GuideEffect::Done]);
-    }
-
-    phase every_scenario_renders;
-    {
-        for scenario in ["keyboard", "listening", "controller", "touch"] {
-            let mut app = staged(scenario);
-            assert!(
-                says(&mut app, "Done") || says(&mut app, "Close"),
-                "{scenario}"
-            );
-        }
-    }
-
-    phase a_listening_key_says_what_to_press_with_escape_as_its_own_hint;
-    {
-        let mut app = staged("listening");
-        assert!(says(&mut app, "Press a new shortcut for “Next window”"));
-        assert!(says(&mut app, "Cancel"), "Escape's hint is named");
-        assert!(
-            !says(&mut app, "·") && !says(&mut app, "Esc cancels"),
-            "the way out is a key hint, not a glyph-joined sentence"
-        );
-    }
+#[test]
+fn a_listening_key_says_what_to_press_with_escape_as_its_own_hint() {
+    let mut app = staged("listening");
+    assert!(says(&mut app, "Press a new shortcut for “Next window”"));
+    assert!(says(&mut app, "Cancel"), "Escape's hint is named");
+    assert!(
+        !says(&mut app, "·") && !says(&mut app, "Esc cancels"),
+        "the way out is a key hint, not a glyph-joined sentence"
+    );
 }

@@ -1027,111 +1027,88 @@ mod tests {
         fn clear_note(&self) {}
     }
 
-    tilo_test_env::scenario! {
-        /// `view`: what the sheet shows of the invitations it is given.
-        fn the_view_names_its_workspace_and_lists_each_link_once;
-
-        phase the_sheet_says_which_workspace_its_links_go_into;
-        {
-            assert_eq!(
-                view(&Into(None)).title,
-                word("invite-title"),
-                "a sheet opened for nothing in particular says only what it is for"
-            );
-            assert_eq!(
-                view(&Into(Some("Design"))).title,
-                words("invite-title-workspace", &[("workspace", "Design")]),
-                "a sheet opened for a workspace names it, so the scope is never a guess"
-            );
-        }
-
-        phase the_link_shown_is_not_listed_again_under_it;
-        {
-            let keys = |shown: Option<Created>| -> Vec<String> {
-                view(&Listing(shown))
-                    .pending
-                    .into_iter()
-                    .map(|pending| pending.key)
-                    .collect()
-            };
-            assert_eq!(keys(None), [INVITE, "another invitation"]);
-            assert_eq!(keys(Some(made_link())), ["another invitation"]);
-        }
+    #[test]
+    fn the_sheet_says_which_workspace_its_links_go_into() {
+        assert_eq!(
+            view(&Into(None)).title,
+            word("invite-title"),
+            "a sheet opened for nothing in particular says only what it is for"
+        );
+        assert_eq!(
+            view(&Into(Some("Design"))).title,
+            words("invite-title-workspace", &[("workspace", "Design")]),
+            "a sheet opened for a workspace names it, so the scope is never a guess"
+        );
     }
 
-    tilo_test_env::scenario! {
-        /// `Making`: the link one opening of the sheet made, from asking the site to taking it back.
-        fn a_link_in_the_making_is_shown_once_its_site_keeps_it;
+    #[test]
+    fn a_link_waits_for_its_site_and_then_shows_the_short_one() {
+        let mut making = Making::default();
+        making.shelving(made_link());
+        assert!(making.making(), "the site has not answered yet");
+        assert!(
+            making.made().is_none(),
+            "a link is handed over once it is the one the site keeps"
+        );
 
-        phase a_link_waits_for_its_site_and_then_shows_the_short_one;
-        {
-            let mut making = Making::default();
-            making.shelving(made_link());
-            assert!(making.making(), "the site has not answered yet");
-            assert!(
-                making.made().is_none(),
-                "a link is handed over once it is the one the site keeps"
-            );
+        // An answer for another opening's link changes nothing.
+        making.shelved("another invitation", Ok("https://elsewhere/i/x".to_owned()));
+        assert!(making.making(), "still waiting for its own site");
 
-            // An answer for another opening's link changes nothing.
-            making.shelved("another invitation", Ok("https://elsewhere/i/x".to_owned()));
-            assert!(making.making(), "still waiting for its own site");
+        making.shelved(INVITE, Ok(SHORT.to_owned()));
+        assert!(!making.making());
+        let shown = making.made().unwrap();
+        assert_eq!(shown.link, SHORT);
+        assert_eq!(shown.link_label, word("invite-link-label"));
+        assert_eq!(shown.alt, word("invite-code-alt"));
+    }
 
-            making.shelved(INVITE, Ok(SHORT.to_owned()));
-            assert!(!making.making());
-            let shown = making.made().unwrap();
-            assert_eq!(shown.link, SHORT);
-            assert_eq!(shown.link_label, word("invite-link-label"));
-            assert_eq!(shown.alt, word("invite-code-alt"));
-        }
+    #[test]
+    fn a_site_that_keeps_nothing_shows_no_link_and_says_why() {
+        let mut making = Making::default();
+        making.shelving(made_link());
+        making.shelved(INVITE, Err("the site is down".to_owned()));
+        assert!(!making.making());
+        assert!(
+            making.made().is_none(),
+            "the invitation's own text is never handed over"
+        );
+        let note = making.note().unwrap();
+        assert!(note.bad);
+        assert!(note.text.contains("the site is down"), "{}", note.text);
+    }
 
-        phase a_site_that_keeps_nothing_shows_no_link_and_says_why;
-        {
-            let mut making = Making::default();
-            making.shelving(made_link());
-            making.shelved(INVITE, Err("the site is down".to_owned()));
-            assert!(!making.making());
-            assert!(
-                making.made().is_none(),
-                "the invitation's own text is never handed over"
-            );
-            let note = making.note().unwrap();
-            assert!(note.bad);
-            assert!(note.text.contains("the site is down"), "{}", note.text);
-        }
+    #[test]
+    fn a_link_taken_back_leaves_nothing_of_this_opening_behind() {
+        let mut making = Making::default();
+        making.shelving(made_link());
+        making.shelved(INVITE, Ok(SHORT.to_owned()));
+        assert!(making.made().is_some());
 
-        phase a_link_taken_back_leaves_nothing_of_this_opening_behind;
-        {
-            let mut making = Making::default();
-            making.shelving(made_link());
-            making.shelved(INVITE, Ok(SHORT.to_owned()));
-            assert!(making.made().is_some());
+        making.revoked("another invitation");
+        assert!(making.made().is_some(), "another link is not this one");
 
-            making.revoked("another invitation");
-            assert!(making.made().is_some(), "another link is not this one");
+        making.revoked(INVITE);
+        assert!(making.made().is_none());
+        assert!(!making.making());
 
-            making.revoked(INVITE);
-            assert!(making.made().is_none());
-            assert!(!making.making());
+        // A link still on its way to the site is taken back the same way.
+        making.shelving(made_link());
+        making.revoked(INVITE);
+        assert!(!making.making());
+        assert!(making.made().is_none());
+    }
 
-            // A link still on its way to the site is taken back the same way.
-            making.shelving(made_link());
-            making.revoked(INVITE);
-            assert!(!making.making());
-            assert!(making.made().is_none());
-        }
-
-        phase opening_the_sheet_again_forgets_the_link_of_the_earlier_opening;
-        {
-            let mut making = Making::default();
-            making.shelving(made_link());
-            making.shelved(INVITE, Ok(SHORT.to_owned()));
-            making.say("Copied".to_owned(), false);
-            making.opening();
-            assert!(making.made().is_none());
-            assert!(making.note().is_none());
-            assert!(!making.making());
-        }
+    #[test]
+    fn opening_the_sheet_again_forgets_the_link_of_the_earlier_opening() {
+        let mut making = Making::default();
+        making.shelving(made_link());
+        making.shelved(INVITE, Ok(SHORT.to_owned()));
+        making.say("Copied".to_owned(), false);
+        making.opening();
+        assert!(making.made().is_none());
+        assert!(making.note().is_none());
+        assert!(!making.making());
     }
 
     /// Links that list themselves and the one this opening made.
@@ -1154,6 +1131,19 @@ mod tests {
         fn revoke(&self, _invite: &str) {}
         fn copy(&self, _link: &str) {}
         fn clear_note(&self) {}
+    }
+
+    #[test]
+    fn the_link_shown_is_not_listed_again_under_it() {
+        let keys = |shown: Option<Created>| -> Vec<String> {
+            view(&Listing(shown))
+                .pending
+                .into_iter()
+                .map(|pending| pending.key)
+                .collect()
+        };
+        assert_eq!(keys(None), [INVITE, "another invitation"]);
+        assert_eq!(keys(Some(made_link())), ["another invitation"]);
     }
 
     #[test]
