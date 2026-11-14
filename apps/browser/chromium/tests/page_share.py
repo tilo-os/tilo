@@ -20,6 +20,11 @@ that changes reaches what was handed over while the change is new, and a page
 nothing changes costs no frame, watched or not: the probe turns the app's loop as
 its runner does, a frame for each wake of the engine, and counts.
 
+What a page costs its engine is held to counts, which no busy machine changes: a
+page is handed over, or said to be too large, of one capture of its layout, and
+an engine that takes longer over a capture than the app waits before it looks
+again is asked for no second one, and its answer is taken when it comes.
+
 What arrives is also compared with what the engine laid out, item by item, on
 pages of the kinds people share: a styled article, a table, a form with every
 common control, text in both directions with an emoji, and a page zoomed in.
@@ -89,6 +94,10 @@ LARGE_WITHIN_MS = 20000
 STILL_MS = 4000
 # How soon a change the page makes to itself is in what was handed over.
 PROMPT_MS = 1000
+# An engine slower over a capture than the app waits before it looks again, twice
+# over: the app looks after three seconds and again six seconds later
+# (`REQUEST_TIMEOUT` of the toolkit's paint source).
+SLOW_CAPTURE_MS = 10000
 
 
 def png(width, height, seed):
@@ -494,6 +503,21 @@ class PageShare(unittest.TestCase):
         self.assertLessEqual(result["largest_payload"], result["largest_carried"],
                              "every payload fits what the app's channel to its session carries")
 
+    def of_one_capture(self, result, what):
+        """What the page cost its engine until it was whole, or said to be too large: one
+        capture of its layout, answered, and one more at most for each picture the engine
+        painted meanwhile, which is a change of the page. A page nothing changes costs
+        exactly one, however long the engine took over it."""
+        captures = result["captures"]
+        print(f"  {what}: {captures['asked']} captures asked and {captures['answered']} "
+              f"answered, taking {captures['took_ms']} ms, beside {captures['asks']} smaller "
+              f"asks, while the engine painted {captures['pictures']} pictures", flush=True)
+        self.assertGreaterEqual(captures["answered"], 1,
+                                f"{what}: the engine answered no capture: {captures}")
+        self.assertLessEqual(captures["asked"], 1 + captures["pictures"],
+                             f"{what}: the page was captured more than once and did not "
+                             f"change: {captures}")
+
     def test_a_page_asked_for_is_handed_over_whole_within_seconds(self):
         self.handed_over(self.probe(), "a window watched once its page loaded")
 
@@ -523,6 +547,7 @@ class PageShare(unittest.TestCase):
                          f"{what}: the page handed over names images that never came: {result}")
         self.assertEqual(result["images"], page.get("images"),
                          f"{what}: not every image of the page was handed over: {result}")
+        self.of_one_capture(result, what)
         return result
 
     def test_a_long_article_is_handed_over_with_its_photographs(self):
@@ -551,6 +576,29 @@ class PageShare(unittest.TestCase):
         self.assertIsNotNone(result["too_large"],
                              f"the app said nothing of a page it cannot hand over: {result}")
         self.assertGreater(result["too_large"], result["largest_carried"], result)
+        self.of_one_capture(result, "a table of 5000 rows")
+
+    def test_a_capture_slower_than_the_app_waits_for_is_taken_and_asked_for_once(self):
+        """An engine that takes ten seconds over a capture, on a busy machine or of a very
+        large page, is not asked for the capture again while it is at work on it, and what
+        it answers is the page: handed over whole, of one capture."""
+        result = self.probe("--slow-capture-ms", str(SLOW_CAPTURE_MS), within=LARGE_WITHIN_MS)
+        self.handed_over(result, "a page of a slow engine", within=LARGE_WITHIN_MS)
+        self.of_one_capture(result, "a page of a slow engine")
+        self.assertGreaterEqual(result["captures"]["slowest_ms"], SLOW_CAPTURE_MS, result)
+
+    def test_the_engine_answers_what_it_is_asked_in_order(self):
+        """What tells an engine still at work on a capture from one that lost the request:
+        something small asked behind a capture of a large page is answered behind it."""
+        result = self.probe("--order", path="/table", size=LARGE, within=LARGE_WITHIN_MS,
+                            expect=("Shipments",))
+        order = result["order"]
+        print(f"  asked for a capture and, behind it, something small: the engine answered "
+              f"the {order['first']} first, the capture after {order['capture_ms']} ms and "
+              f"the small ask after {order['small_ms']} ms", flush=True)
+        self.assertIsNotNone(order["capture_ms"], order)
+        self.assertIsNotNone(order["small_ms"], order)
+        self.assertEqual(order["first"], "capture", order)
 
     def test_a_picture_larger_than_the_workspace_carries_leaves_its_page_without_it(self):
         """The page arrives, with its text; the one picture of five megabytes does not,

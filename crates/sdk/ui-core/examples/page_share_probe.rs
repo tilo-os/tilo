@@ -21,6 +21,16 @@
 //! the view said it wanted a frame. And always: how large the page is whatever the share carried
 //! of it, its whole frame and every image it names, read from the engine.
 //!
+//! What the page cost its engine is counted too, so that it can be held to numbers no busy
+//! machine changes (`captures`, until the page was whole or said to be too large, and
+//! `captures_in_all`): how many captures of its layout the engine was asked for and how many it
+//! answered, how long each took, how many smaller asks went beside them, and how many pictures
+//! the engine painted meanwhile, each of which may ask for one capture more. `--slow-capture-ms
+//! N` runs the engine as one whose captures take that long: a capture's answer reaches the app
+//! no sooner than `N` milliseconds after it was asked, and what the engine answers behind it
+//! waits for it, as an engine answers in the order it is asked. `--order` asks the engine itself
+//! for a capture and, straight behind it, for something small, and says which it answered first.
+//!
 //! What arrived is also printed item by item where asked (`--items`): every run of text with
 //! the box it is drawn in, its family list, the class of face a device without those families
 //! sets it in, its size, weight and colour, and every fill, border and vector drawing, each
@@ -34,7 +44,7 @@
 //!
 //! `page-share-probe HOST PROFILE URL WIDTH HEIGHT [--watched-before-load] [--within-ms N]
 //! [--expect TEXT]... [--has TEXT]... [--changes N] [--still-ms N] [--items] [--focus]
-//! [--zoom LEVEL] [--settle-ms N] [--snapshot PATH]`, run by
+//! [--zoom LEVEL] [--settle-ms N] [--snapshot PATH] [--slow-capture-ms N] [--order]`, run by
 //! `apps/browser/chromium/tests/page_share.py` on pages of its own.
 #![allow(
     clippy::unwrap_used,
@@ -42,22 +52,22 @@
     clippy::indexing_slicing,
     reason = "explicit probe executable: a malformed invocation or an engine that does not start ends it at once; it is not a production application"
 )]
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use cosmic_text::{FontSystem, fontdb};
 use tilo_ui::Widget;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::time::Duration;
+use tilo_ui::time::{Duration, Instant};
 use tilo_ui::webview::chromium::ChromiumEngine;
 use tilo_ui::webview::paint::stream::wire::{Payload, Receiver};
 use tilo_ui::webview::paint::stream::{BlobRef, Item};
 use tilo_ui::webview::paint::{self, PaintEngine};
-use tilo_ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
+use tilo_ui::webview::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};
 use tilo_ui::widget::{DrawChild, WebView};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -68,6 +78,206 @@ use vello::kurbo::{Affine, Rect};
 )]
 fn pause() {
     std::thread::sleep(Duration::from_millis(10));
+}
+
+/// What wakes the app's loop.
+type Waker = Arc<dyn Fn() + Send + Sync>;
+
+/// What a page cost its engine so far.
+#[derive(Default)]
+struct Counts {
+    /// When each capture the engine has not answered was asked, by its request.
+    asked_at: HashMap<u32, Instant>,
+    /// Captures of the page's layout the engine was asked for.
+    asked: usize,
+    /// Captures whose answer reached the app.
+    answered: usize,
+    /// How long each answered capture took, in milliseconds, in the order they were answered.
+    took: Vec<u128>,
+    /// What the engine was asked beside its captures: what fields show and what class of face
+    /// it sets a family list in.
+    asks: usize,
+    /// Pictures the engine painted since the share was watched: each is a change of the page
+    /// that may ask for one capture more.
+    pictures: usize,
+    /// Where the newest picture seen is.
+    picture: usize,
+    /// The engine's answers that wait, in its order, each with when it is let through.
+    held: VecDeque<(Instant, WebViewEvent)>,
+}
+
+impl Counts {
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "asked": self.asked,
+            "answered": self.answered,
+            "took_ms": self.took,
+            "slowest_ms": self.took.iter().max(),
+            "asks": self.asks,
+            "pictures": self.pictures,
+        })
+    }
+}
+
+/// The engine as the share's capture reaches it, with what the page costs it counted, and
+/// where asked answering as an engine does whose captures take `slow`.
+struct Counted {
+    native: SharedEngine,
+    slow: Duration,
+    waker: Mutex<Option<Waker>>,
+    counts: Mutex<Counts>,
+}
+
+impl Counted {
+    fn over(native: SharedEngine, slow: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            native,
+            slow,
+            waker: Mutex::new(None),
+            counts: Mutex::new(Counts::default()),
+        })
+    }
+
+    fn counts(&self) -> std::sync::MutexGuard<'_, Counts> {
+        self.counts.lock().expect("the counts")
+    }
+
+    /// The share is watched from here: the pictures painted before it ask for no capture.
+    fn watched(&self) {
+        let picture = self.picture();
+        let mut counts = self.counts();
+        counts.pictures = 0;
+        counts.picture = picture;
+    }
+
+    /// Where the engine's newest picture is.
+    fn picture(&self) -> usize {
+        self.native
+            .frames()
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|frame| Arc::as_ptr(&frame.rgba) as usize))
+            .unwrap_or(0)
+    }
+
+    /// Wake the app's loop when an answer held until `due` is let through.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "standalone probe: a held answer wakes the loop as the engine's own thread would, with no UI event loop to ask for the wake"
+    )]
+    fn wake_at(&self, due: Instant) {
+        let Some(waker) = self.waker.lock().expect("the waker").clone() else {
+            return;
+        };
+        let wait = due.saturating_duration_since(tilo_ui::time::now());
+        std::thread::spawn(move || {
+            std::thread::sleep(wait);
+            waker();
+        });
+    }
+}
+
+impl tilo_ui::webview::WebViewEngine for Counted {
+    fn set_visible(&self, visible: bool) {
+        self.native.set_visible(visible);
+    }
+    fn set_modifiers(&self, modifiers: KeyModifiers) {
+        self.native.set_modifiers(modifiers);
+    }
+    fn send(&self, command: WebViewCommand) {
+        {
+            let mut counts = self.counts();
+            match &command {
+                WebViewCommand::PaintCapture { request_id } => {
+                    counts.asked = counts.asked.saturating_add(1);
+                    counts.asked_at.insert(*request_id, tilo_ui::time::now());
+                }
+                WebViewCommand::PaintShown { .. } => {
+                    counts.asks = counts.asks.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+        self.native.send(command);
+    }
+    fn frames(&self) -> FrameSlot {
+        // Seen as often as the share's capture looks for a new picture, so none it sees is
+        // missed here.
+        let picture = self.picture();
+        let mut counts = self.counts();
+        if picture != counts.picture {
+            counts.picture = picture;
+            counts.pictures = counts.pictures.saturating_add(1);
+        }
+        drop(counts);
+        self.native.frames()
+    }
+    fn drain_events(&self) -> Vec<WebViewEvent> {
+        let now = tilo_ui::time::now();
+        let mut out = Vec::new();
+        let mut wake = None;
+        let mut counts = self.counts();
+        let let_through = |counts: &mut Counts, out: &mut Vec<WebViewEvent>| {
+            while counts.held.front().is_some_and(|(due, _)| *due <= now) {
+                let Some((_, event)) = counts.held.pop_front() else {
+                    break;
+                };
+                if let WebViewEvent::PaintSnapshot { request_id, .. } = &event
+                    && let Some(asked) = counts.asked_at.remove(request_id)
+                {
+                    counts.answered = counts.answered.saturating_add(1);
+                    counts
+                        .took
+                        .push(now.saturating_duration_since(asked).as_millis());
+                }
+                out.push(event);
+            }
+        };
+        for event in self.native.drain_events() {
+            if !matches!(
+                event,
+                WebViewEvent::PaintSnapshot { .. }
+                    | WebViewEvent::PaintShown { .. }
+                    | WebViewEvent::PaintResource { .. }
+            ) {
+                out.push(event);
+                continue;
+            }
+            // No answer overtakes one the engine gave before it.
+            let mut due = counts.held.back().map_or(now, |(due, _)| *due);
+            if let WebViewEvent::PaintSnapshot { request_id, .. } = &event
+                && let Some(asked) = counts.asked_at.get(request_id)
+                && let Some(slow) = asked.checked_add(self.slow)
+            {
+                due = due.max(slow);
+            }
+            if due > now {
+                wake = Some(due);
+            }
+            counts.held.push_back((due, event));
+            let_through(&mut counts, &mut out);
+        }
+        let_through(&mut counts, &mut out);
+        drop(counts);
+        if let Some(due) = wake {
+            self.wake_at(due);
+        }
+        out
+    }
+    fn request_close(&self) -> bool {
+        self.native.request_close()
+    }
+    fn drain_download_events(&self) -> Vec<WebViewEvent> {
+        self.native.drain_download_events()
+    }
+    fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
+        let waker: Waker = Arc::from(waker);
+        *self.waker.lock().expect("the waker") = Some(Arc::clone(&waker));
+        self.native.set_waker(Box::new(move || waker()));
+    }
+    fn wrapped(&self) -> Option<&SharedEngine> {
+        Some(&self.native)
+    }
 }
 
 /// What the share's outbox handed over, held as the device showing the window holds it.
@@ -152,6 +362,10 @@ impl Handed {
 /// What the probe was asked: the engine and its profile, the page and the size of its window,
 /// whether the share is watched before the page loads, how long the page may take, and the text
 /// the page handed over must carry.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is one switch of the probe's command line, on or off"
+)]
 struct Asked {
     host: String,
     profile: String,
@@ -176,6 +390,10 @@ struct Asked {
     settle: Duration,
     /// Where to write the engine's layout snapshot of the page.
     snapshot: Option<String>,
+    /// How long the engine takes over a capture at the least.
+    slow_capture: Duration,
+    /// Whether to ask the engine which of two asks it answers first.
+    order: bool,
 }
 
 impl Asked {
@@ -204,6 +422,8 @@ impl Asked {
             zoom: None,
             settle: Duration::ZERO,
             snapshot: None,
+            slow_capture: Duration::ZERO,
+            order: false,
         };
         let mut rest = args[5..].iter();
         while let Some(arg) = rest.next() {
@@ -248,6 +468,14 @@ impl Asked {
                     );
                 }
                 "--snapshot" => asked.snapshot = Some(rest.next().expect("a path").clone()),
+                "--slow-capture-ms" => {
+                    asked.slow_capture = Duration::from_millis(
+                        rest.next()
+                            .and_then(|ms| ms.parse().ok())
+                            .expect("milliseconds"),
+                    );
+                }
+                "--order" => asked.order = true,
                 other => assert!(other.is_empty(), "unknown argument {other}"),
             }
         }
@@ -454,6 +682,19 @@ impl Loop<'_> {
         cost
     }
 
+    /// What a page nothing changes costs over `time`, watched and then once nobody watches;
+    /// nothing where no time was asked for. What was still loading is let come first.
+    fn still(&mut self, time: Duration) -> (Option<Cost>, Option<Cost>) {
+        if time.is_zero() {
+            return (None, None);
+        }
+        self.run(Duration::from_millis(2500));
+        let watched = self.run(time);
+        paint::set_share_watched(false);
+        self.run(Duration::from_millis(500));
+        (Some(watched), Some(self.run(time)))
+    }
+
     /// How long each of the page's next `count` changes took to reach what was handed over, in
     /// milliseconds: the page stamps a change as `tick N @MILLISECONDS` on the clock, and a change
     /// has arrived when the held page carries its stamp. Gives up after `limit`.
@@ -590,6 +831,57 @@ fn items(handed: &Handed) -> Vec<serde_json::Value> {
     out
 }
 
+/// Which of two asks the engine answers first: a capture of the page's layout and, straight
+/// behind it, the class of face it sets one family in, which costs it next to nothing. An
+/// engine that answers in the order it is asked says the capture first however long the page
+/// takes it, which is what tells an engine still at work on a capture from one that lost the
+/// request. Asked of the engine itself once nothing else is.
+fn order(native: &SharedEngine) -> serde_json::Value {
+    const CAPTURE: u32 = 0x7fff_ffe0;
+    const SMALL: u32 = 0x7fff_ffe1;
+    let since = tilo_ui::time::now();
+    native.send(WebViewCommand::PaintCapture {
+        request_id: CAPTURE,
+    });
+    native.send(WebViewCommand::PaintShown {
+        request_id: SMALL,
+        nodes: Vec::new(),
+        families: vec!["serif".to_owned()],
+    });
+    let deadline = since
+        .checked_add(Duration::from_secs(60))
+        .expect("a bounded wait");
+    let (mut capture_ms, mut small_ms, mut first) = (None, None, None);
+    while (capture_ms.is_none() || small_ms.is_none()) && tilo_ui::time::now() < deadline {
+        for event in native.drain_events() {
+            let waited = tilo_ui::time::now()
+                .saturating_duration_since(since)
+                .as_millis();
+            match event {
+                WebViewEvent::PaintSnapshot {
+                    request_id: CAPTURE,
+                    ..
+                } => {
+                    capture_ms.get_or_insert(waited);
+                    first.get_or_insert("capture");
+                }
+                WebViewEvent::PaintShown {
+                    request_id: SMALL, ..
+                }
+                | WebViewEvent::PaintSnapshot {
+                    request_id: SMALL, ..
+                } => {
+                    small_ms.get_or_insert(waited);
+                    first.get_or_insert("small");
+                }
+                _ => {}
+            }
+        }
+        pause();
+    }
+    serde_json::json!({"first": first, "capture_ms": capture_ms, "small_ms": small_ms})
+}
+
 /// The engine's own layout snapshot of the page, asked of the engine itself once nothing else
 /// is: the share's capture keeps its snapshots to itself. `None` when the engine hands none
 /// over within ten seconds.
@@ -621,8 +913,9 @@ fn main() {
     let native: SharedEngine =
         ChromiumEngine::with_host(Path::new(&asked.host), Path::new(&asked.profile))
             .expect("the engine host");
+    let counted = Counted::over(native.clone(), asked.slow_capture);
     // As Browser's windows run it: drawn from its pixels, captured only while watched.
-    let engine: SharedEngine = PaintEngine::streaming(native.clone());
+    let engine: SharedEngine = PaintEngine::streaming(counted.clone());
     let wakes = Arc::new(AtomicUsize::new(0));
     engine.set_waker(Box::new({
         let wakes = Arc::clone(&wakes);
@@ -634,6 +927,7 @@ fn main() {
     let mut window = Window::showing(&engine, asked.viewport);
     let mut handed = Handed::default();
     if asked.watched_before_load {
+        counted.watched();
         paint::set_share_watched(true);
     }
     load(&mut window, &engine, &asked.url, &mut handed);
@@ -645,6 +939,7 @@ fn main() {
     }
     // A desk asks for the window's page: the session tells the app.
     if !asked.watched_before_load {
+        counted.watched();
         paint::set_share_watched(true);
     }
     let mut turning = Loop {
@@ -655,6 +950,7 @@ fn main() {
         served: wakes.load(Ordering::Relaxed),
     };
     let (complete_ms, frames) = watch(&mut turning, &asked);
+    let captures = counted.counts().json();
     if !asked.settle.is_zero() {
         turning.run(asked.settle);
     }
@@ -663,16 +959,7 @@ fn main() {
     } else {
         Vec::new()
     };
-    // A page nothing changes: first let what was still loading come, then count.
-    let (watched, unwatched) = if asked.still.is_zero() {
-        (None, None)
-    } else {
-        turning.run(Duration::from_millis(2500));
-        let watched = turning.run(asked.still);
-        paint::set_share_watched(false);
-        turning.run(Duration::from_millis(500));
-        (Some(watched), Some(turning.run(asked.still)))
-    };
+    let (watched, unwatched) = turning.still(asked.still);
     let images_missing = handed.images_missing();
     paint::set_share_watched(true);
     let size = page_size(&engine);
@@ -687,6 +974,8 @@ fn main() {
         let said = snapshot(&native).expect("the engine's layout snapshot of the page");
         std::fs::write(path, said).expect("the snapshot's file");
     }
+    let captures_in_all = counted.counts().json();
+    let order = asked.order.then(|| order(&native));
     println!(
         "{}",
         serde_json::json!({
@@ -705,6 +994,9 @@ fn main() {
             "image_bytes": handed.images.values().sum::<usize>(),
             "images_missing": images_missing,
             "too_large": handed.too_large,
+            "captures": captures,
+            "captures_in_all": captures_in_all,
+            "order": order,
             "page": size,
             "change_ms": change_ms,
             "still_watched": watched.as_ref().map(Cost::json),
@@ -715,5 +1007,6 @@ fn main() {
     );
     drop(window);
     drop(engine);
+    drop(counted);
     drop(native);
 }
