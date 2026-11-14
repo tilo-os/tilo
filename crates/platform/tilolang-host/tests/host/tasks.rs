@@ -205,19 +205,150 @@ fn the_moment_picked_answers_the_reminder(
     );
 }
 
-/// The palette runs an action whose arguments it does not give: "New task" takes a title whose
-/// default is empty, so the task is made on the press and reads as its type names an untitled one,
-/// and "Remind me…" asks its moment in a form, the person picking it in one press
-/// (forms-and-diagrams.md §1).
-#[test]
-fn the_palette_makes_a_task_and_asks_the_form_for_a_moment() {
-    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-    assert_eq!(app, TASKS);
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
-    settle(&mut host, &mut window);
-    let task = a_task_added_from_the_palette(&mut host, &mut window);
-    a_reminder_asks_when(&mut host, &mut window);
-    the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
+tilo_test_env::scenario! {
+    fn tasks_in_a_hosted_window_are_made_found_and_offered_at_the_door;
+
+    phase the_palette_makes_a_task_and_asks_the_form_for_a_moment;
+    // The palette runs an action whose arguments it does not give: "New task" takes a title whose
+    // default is empty, so the task is made on the press and reads as its type names an untitled one,
+    // and "Remind me…" asks its moment in a form, the person picking it in one press
+    // (forms-and-diagrams.md §1).
+    {
+        let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+        assert_eq!(app, TASKS);
+        let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
+        settle(&mut host, &mut window);
+        let task = a_task_added_from_the_palette(&mut host, &mut window);
+        a_reminder_asks_when(&mut host, &mut window);
+        the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
+    }
+
+    phase a_task_no_window_shows_opens_from_search_through_its_record;
+    // A task's entry in the session's search index opens it in a window that shows none of its
+    // items: the window stands on Today, so the Inbox task is published by no window, and the entry
+    // names the `open` of the record that holds it, which every window showing the record publishes
+    // and which a person choosing it in the palette runs as it is. Told the task, it takes the window
+    // to the place that holds it — the Inbox, for one with no day — and opens the task there.
+    {
+        let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+        let (mut host, mut window, sent, inbox, _route) = running_app("ada", &app, bundle);
+        settle(&mut host, &mut window);
+        add_to_inbox(&mut host, &mut window, "Book the ferry");
+        let task = tasks_of(host.instances().next().expect("the instance runs"))
+            .first()
+            .cloned()
+            .expect("the entry made a task");
+        let Value::Ref(made) = &task else {
+            panic!("a task is a resource: {task:?}")
+        };
+        choose_place(&mut host, &mut window, "Today");
+        assert_eq!(
+            shown_title(&window).as_deref(),
+            Some("Today"),
+            "the window stands on Today"
+        );
+        let hosted = host.instances().next().expect("the instance runs");
+        let published = tilolang_tilo::instance::wire::resource(&made.target).id;
+        let path = published
+            .strip_prefix(&format!("tl:{app}:"))
+            .unwrap_or(&published);
+        let entry = tilolang_tilo::search::index_entry_at(
+            &hosted.instance().host().expect("the runtime"),
+            &hosted.bundle().meta,
+            path,
+        )
+        .unwrap_or_else(|| panic!("the task is found by its name: {published}"));
+        let open = entry.action.expect("a hit opens what it names");
+        let published_open = |resource: &str| {
+            hosted
+                .published()
+                .iter()
+                .find(|action| action.address.resource == resource && action.address.action == "open")
+                .cloned()
+        };
+        assert!(
+            published_open(&entry.resource).is_none(),
+            "the window on Today publishes nothing of the Inbox task"
+        );
+        let record = published_open(&open.resource).unwrap_or_else(|| {
+            panic!(
+                "the hit names an `open` the window publishes: {}",
+                open.resource
+            )
+        });
+        assert_eq!(
+            record.prompt_param(),
+            None,
+            "chosen as it is, the record's `open` asks for nothing"
+        );
+        let arguments = serde_json::json!({ "anchor": entry.resource }).to_string();
+        inbox.borrow_mut().push_back(CollabEvent::Invocation {
+            id: 42,
+            invocation: tilo_actions::InvocationId::new(),
+            resource: open.resource,
+            action: open.action,
+            argument: Some(format!(
+                "{}{arguments}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX
+            )),
+            actor: "ada".to_owned(),
+            context: None,
+        });
+        settle(&mut host, &mut window);
+        assert!(
+            matches!(
+                answered(&sent, 42),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ),
+            "{:?}",
+            answered(&sent, 42)
+        );
+        assert_eq!(
+            shown_title(&window).as_deref(),
+            Some("Inbox"),
+            "the task has no day: the window shows it in the Inbox"
+        );
+        assert_eq!(
+            window.in_place.as_ref().map(|shown| shown.id.as_str()),
+            Some(path),
+            "the window shows the task as its page"
+        );
+    }
+
+    phase a_fresh_tasks_offers_its_lists_actions_at_the_door_by_name;
+    // An agent at the door of a Tasks no one has written in yet finds the list's actions by name:
+    // `new_task` on the list, which the directory publishes at the app's top level.
+    {
+        let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+        let directory = Rc::new(RefCell::new(Directory::default()));
+        let (mut host, mut window, _sent, _inbox, _route) =
+            running_with("ada", &app, bundle, Rc::clone(&directory));
+        settle(&mut host, &mut window);
+        let found = page(
+            &mut host,
+            &mut window,
+            &directory,
+            ActionDirectoryQuery {
+                needle: "new task".into(),
+                ..query()
+            },
+        );
+        let list = found
+            .rows
+            .iter()
+            .find(|row| row.action.as_deref() == Some("new_task"))
+            .unwrap_or_else(|| panic!("new_task is offered by name: {:?}", found.rows));
+        assert!(
+            list.resource.starts_with(&format!("tl:{app}:root-")),
+            "{list:?}"
+        );
+        let top = page(&mut host, &mut window, &directory, query());
+        assert!(
+            top.rows.iter().any(|row| row.resource == list.resource),
+            "the list is at the app's top level: {:?}",
+            top.rows
+        );
+    }
 }
 
 /// The title the window's shell heads what it shows with: the place, the page.
@@ -281,98 +412,6 @@ fn add_to_inbox(host: &mut TilolangHost, window: &mut Window, title: &str) {
         value: Some(patch::Value::text(title)),
     }]);
     settle(host, window);
-}
-
-/// A task's entry in the session's search index opens it in a window that shows none of its
-/// items: the window stands on Today, so the Inbox task is published by no window, and the entry
-/// names the `open` of the record that holds it, which every window showing the record publishes
-/// and which a person choosing it in the palette runs as it is. Told the task, it takes the window
-/// to the place that holds it — the Inbox, for one with no day — and opens the task there.
-#[test]
-fn a_task_no_window_shows_opens_from_search_through_its_record() {
-    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-    let (mut host, mut window, sent, inbox, _route) = running_app("ada", &app, bundle);
-    settle(&mut host, &mut window);
-    add_to_inbox(&mut host, &mut window, "Book the ferry");
-    let task = tasks_of(host.instances().next().expect("the instance runs"))
-        .first()
-        .cloned()
-        .expect("the entry made a task");
-    let Value::Ref(made) = &task else {
-        panic!("a task is a resource: {task:?}")
-    };
-    choose_place(&mut host, &mut window, "Today");
-    assert_eq!(
-        shown_title(&window).as_deref(),
-        Some("Today"),
-        "the window stands on Today"
-    );
-    let hosted = host.instances().next().expect("the instance runs");
-    let published = tilolang_tilo::instance::wire::resource(&made.target).id;
-    let path = published
-        .strip_prefix(&format!("tl:{app}:"))
-        .unwrap_or(&published);
-    let entry = tilolang_tilo::search::index_entry_at(
-        &hosted.instance().host().expect("the runtime"),
-        &hosted.bundle().meta,
-        path,
-    )
-    .unwrap_or_else(|| panic!("the task is found by its name: {published}"));
-    let open = entry.action.expect("a hit opens what it names");
-    let published_open = |resource: &str| {
-        hosted
-            .published()
-            .iter()
-            .find(|action| action.address.resource == resource && action.address.action == "open")
-            .cloned()
-    };
-    assert!(
-        published_open(&entry.resource).is_none(),
-        "the window on Today publishes nothing of the Inbox task"
-    );
-    let record = published_open(&open.resource).unwrap_or_else(|| {
-        panic!(
-            "the hit names an `open` the window publishes: {}",
-            open.resource
-        )
-    });
-    assert_eq!(
-        record.prompt_param(),
-        None,
-        "chosen as it is, the record's `open` asks for nothing"
-    );
-    let arguments = serde_json::json!({ "anchor": entry.resource }).to_string();
-    inbox.borrow_mut().push_back(CollabEvent::Invocation {
-        id: 42,
-        invocation: tilo_actions::InvocationId::new(),
-        resource: open.resource,
-        action: open.action,
-        argument: Some(format!(
-            "{}{arguments}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX
-        )),
-        actor: "ada".to_owned(),
-        context: None,
-    });
-    settle(&mut host, &mut window);
-    assert!(
-        matches!(
-            answered(&sent, 42),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ),
-        "{:?}",
-        answered(&sent, 42)
-    );
-    assert_eq!(
-        shown_title(&window).as_deref(),
-        Some("Inbox"),
-        "the task has no day: the window shows it in the Inbox"
-    );
-    assert_eq!(
-        window.in_place.as_ref().map(|shown| shown.id.as_str()),
-        Some(path),
-        "the window shows the task as its page"
-    );
 }
 
 /// The day the task `task` is due, as its record holds it.
@@ -803,40 +842,5 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
     assert!(
         today.instance().host().unwrap().root_of(TASKS).is_err(),
         "Today's record holds no root of Tasks"
-    );
-}
-
-/// An agent at the door of a Tasks no one has written in yet finds the list's actions by name:
-/// `new_task` on the list, which the directory publishes at the app's top level.
-#[test]
-fn a_fresh_tasks_offers_its_lists_actions_at_the_door_by_name() {
-    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-    let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, _sent, _inbox, _route) =
-        running_with("ada", &app, bundle, Rc::clone(&directory));
-    settle(&mut host, &mut window);
-    let found = page(
-        &mut host,
-        &mut window,
-        &directory,
-        ActionDirectoryQuery {
-            needle: "new task".into(),
-            ..query()
-        },
-    );
-    let list = found
-        .rows
-        .iter()
-        .find(|row| row.action.as_deref() == Some("new_task"))
-        .unwrap_or_else(|| panic!("new_task is offered by name: {:?}", found.rows));
-    assert!(
-        list.resource.starts_with(&format!("tl:{app}:root-")),
-        "{list:?}"
-    );
-    let top = page(&mut host, &mut window, &directory, query());
-    assert!(
-        top.rows.iter().any(|row| row.resource == list.resource),
-        "the list is at the app's top level: {:?}",
-        top.rows
     );
 }

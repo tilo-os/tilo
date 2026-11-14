@@ -773,49 +773,53 @@ mod tests {
         serde_json::from_str(&line).expect("a JSON answer")
     }
 
-    #[test]
-    fn a_line_that_is_not_json_is_answered_failed() {
-        let (task, mut reader, mut door) = task();
-        door.write_all(b"{not json\n").expect("sent");
-        assert!(task.serve(), "the task goes on");
-        let answer = answer(&mut reader);
-        assert_eq!(answer["answer"]["state"], "failed");
-        let detail = answer["answer"]["detail"].as_str().unwrap_or_default();
-        assert!(detail.contains("not JSON"), "{detail}");
-    }
+    tilo_test_env::scenario! {
+        fn a_line_message_or_reply_the_task_cannot_read_is_failed_with_why;
 
-    #[test]
-    fn a_message_that_is_not_a_program_is_answered_failed() {
-        let (task, mut reader, mut door) = task();
-        door.write_all(b"{\"walk\": {}}\n").expect("sent");
-        assert!(task.serve());
-        assert_eq!(answer(&mut reader)["answer"]["state"], "failed");
-        door.write_all(b"{\"run\": {\"confirm\": true}}\n")
-            .expect("sent");
-        assert!(task.serve());
-        let answer = answer(&mut reader);
-        assert_eq!(answer["answer"]["state"], "failed");
-        assert!(
-            answer["answer"]["detail"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("without its source")
-        );
-    }
+        phase a_line_that_is_not_json_is_answered_failed;
+        {
+            let (task, mut reader, mut door) = task();
+            door.write_all(b"{not json\n").expect("sent");
+            assert!(task.serve(), "the task goes on");
+            let answer = answer(&mut reader);
+            assert_eq!(answer["answer"]["state"], "failed");
+            let detail = answer["answer"]["detail"].as_str().unwrap_or_default();
+            assert!(detail.contains("not JSON"), "{detail}");
+        }
 
-    #[test]
-    fn an_unreadable_reply_fails_the_request_with_why() {
-        let (task, mut reader, mut door) = task();
-        let asking = std::thread::spawn(move || {
-            let mut asked = String::new();
-            reader.read_line(&mut asked).expect("asked");
-            door.write_all(b"garbage\n").expect("sent");
-            (reader, door)
-        });
-        let read = task.line.record("app", "");
-        let _ends = asking.join().expect("the door");
-        let why = read.expect_err("an unreadable reply fails the read");
-        assert!(why.contains("not JSON"), "{why}");
+        phase a_message_that_is_not_a_program_is_answered_failed;
+        {
+            let (task, mut reader, mut door) = task();
+            door.write_all(b"{\"walk\": {}}\n").expect("sent");
+            assert!(task.serve());
+            assert_eq!(answer(&mut reader)["answer"]["state"], "failed");
+            door.write_all(b"{\"run\": {\"confirm\": true}}\n")
+                .expect("sent");
+            assert!(task.serve());
+            let answer = answer(&mut reader);
+            assert_eq!(answer["answer"]["state"], "failed");
+            assert!(
+                answer["answer"]["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("without its source")
+            );
+        }
+
+        phase an_unreadable_reply_fails_the_request_with_why;
+        {
+            let (task, mut reader, mut door) = task();
+            let asking = std::thread::spawn(move || {
+                let mut asked = String::new();
+                reader.read_line(&mut asked).expect("asked");
+                door.write_all(b"garbage\n").expect("sent");
+                (reader, door)
+            });
+            let read = task.line.record("app", "");
+            let _ends = asking.join().expect("the door");
+            let why = read.expect_err("an unreadable reply fails the read");
+            assert!(why.contains("not JSON"), "{why}");
+        }
     }
 
     /// The native app `app` named `title`, read from `surface` as its committed `surface.toml`
@@ -993,310 +997,413 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_program_reads_a_native_apps_record_fields_through_the_app() {
-        let (task, _reader, door) = task_with(&[tasks()]);
-        let calls = scripted(
-            &door,
-            Reads {
-                app: "so.tilo.tasks",
-                record: "tasks.tracker",
-                reading: &["bound:tasks.tracker/issues/one"],
-                rows: vec![row("tasks.tracker/issues/one", "Ship the reads")],
-                items: vec![(
-                    "tasks.tracker/issues/one",
-                    json!({
-                        "number": 7,
-                        "title": "Ship the reads",
-                        "body": "One read path.",
-                        "assignee": "person:ada",
-                        "labels": ["review", "urgent"],
-                    }),
-                )],
-            }
-            .door(),
-        );
-        let answer = ran(
-            &task,
-            "for i in find(tasks.Issue) {\n    print(i.title)\n    print(i.assignee)\n    \
-             print(i.labels.len())\n    print(i.number)\n}",
-        );
-        assert_eq!(answer["state"], "done", "{answer:#}");
-        // Each field as the app's surface types it: text, the text an option holds, a set's
-        // members, a count.
-        assert_eq!(
-            answer["output"],
-            json!(["Ship the reads", "person:ada", "2", "7"]),
-            "{answer:#}"
-        );
-        closed(&door);
-        let calls = calls.join().expect("the door");
-        // The app listed its directory and what its record published holds; reading the
-        // resource the program asked about, it listed the directory again to address that
-        // resource, asked whether it reads itself, and read through its own `read`, once.
-        assert_eq!(
-            calls,
-            [
-                json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
-                json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
-                json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
-                json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
-                json!({
-                    "reads": {
-                        "app": "so.tilo.tasks",
-                        "resource": "bound:tasks.tracker/issues/one",
-                    },
-                }),
-                json!({
-                    "invoke": {
-                        "app": "so.tilo.tasks",
-                        "resource": "bound:tasks.tracker/issues/one",
-                        "action": "read",
-                        "arguments": {"item": null, "version": null},
-                    },
-                }),
-            ],
-            "{calls:#?}"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_program_reads_native_apps_through_what_they_publish;
 
-    #[test]
-    fn a_program_filters_a_native_apps_resources_by_their_fields() {
-        let (task, _reader, door) = task_with(&[tasks()]);
-        let calls = scripted(
-            &door,
-            Reads {
-                app: "so.tilo.tasks",
-                record: "tasks.tracker",
-                reading: &[
-                    "bound:tasks.tracker/issues/one",
-                    "bound:tasks.tracker/issues/two",
-                ],
-                rows: vec![
-                    row("tasks.tracker/issues/one", "Ship the reads"),
-                    row("tasks.tracker/issues/two", "Review Ada's portfolio"),
-                ],
-                items: vec![
-                    (
+        phase a_program_reads_a_native_apps_record_fields_through_the_app;
+        {
+            let (task, _reader, door) = task_with(&[tasks()]);
+            let calls = scripted(
+                &door,
+                Reads {
+                    app: "so.tilo.tasks",
+                    record: "tasks.tracker",
+                    reading: &["bound:tasks.tracker/issues/one"],
+                    rows: vec![row("tasks.tracker/issues/one", "Ship the reads")],
+                    items: vec![(
                         "tasks.tracker/issues/one",
-                        json!({"title": "Ship the reads", "assignee": "person:ada"}),
-                    ),
-                    (
-                        "tasks.tracker/issues/two",
-                        json!({"title": "Review Ada's portfolio", "assignee": "person:bob"}),
-                    ),
+                        json!({
+                            "number": 7,
+                            "title": "Ship the reads",
+                            "body": "One read path.",
+                            "assignee": "person:ada",
+                            "labels": ["review", "urgent"],
+                        }),
+                    )],
+                }
+                .door(),
+            );
+            let answer = ran(
+                &task,
+                "for i in find(tasks.Issue) {\n    print(i.title)\n    print(i.assignee)\n    \
+             print(i.labels.len())\n    print(i.number)\n}",
+            );
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            // Each field as the app's surface types it: text, the text an option holds, a set's
+            // members, a count.
+            assert_eq!(
+                answer["output"],
+                json!(["Ship the reads", "person:ada", "2", "7"]),
+                "{answer:#}"
+            );
+            closed(&door);
+            let calls = calls.join().expect("the door");
+            // The app listed its directory and what its record published holds; reading the
+            // resource the program asked about, it listed the directory again to address that
+            // resource, asked whether it reads itself, and read through its own `read`, once.
+            assert_eq!(
+                calls,
+                [
+                    json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
+                    json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
+                    json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
+                    json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
+                    json!({
+                        "reads": {
+                            "app": "so.tilo.tasks",
+                            "resource": "bound:tasks.tracker/issues/one",
+                        },
+                    }),
+                    json!({
+                        "invoke": {
+                            "app": "so.tilo.tasks",
+                            "resource": "bound:tasks.tracker/issues/one",
+                            "action": "read",
+                            "arguments": {"item": null, "version": null},
+                        },
+                    }),
                 ],
-            }
-            .door(),
-        );
-        let answer = ran(
-            &task,
-            "for i in find(tasks.Issue).filter(i -> i.assignee == \"person:ada\") {\n    \
+                "{calls:#?}"
+            );
+        }
+
+        phase a_program_filters_a_native_apps_resources_by_their_fields;
+        {
+            let (task, _reader, door) = task_with(&[tasks()]);
+            let calls = scripted(
+                &door,
+                Reads {
+                    app: "so.tilo.tasks",
+                    record: "tasks.tracker",
+                    reading: &[
+                        "bound:tasks.tracker/issues/one",
+                        "bound:tasks.tracker/issues/two",
+                    ],
+                    rows: vec![
+                        row("tasks.tracker/issues/one", "Ship the reads"),
+                        row("tasks.tracker/issues/two", "Review Ada's portfolio"),
+                    ],
+                    items: vec![
+                        (
+                            "tasks.tracker/issues/one",
+                            json!({"title": "Ship the reads", "assignee": "person:ada"}),
+                        ),
+                        (
+                            "tasks.tracker/issues/two",
+                            json!({"title": "Review Ada's portfolio", "assignee": "person:bob"}),
+                        ),
+                    ],
+                }
+                .door(),
+            );
+            let answer = ran(
+                &task,
+                "for i in find(tasks.Issue).filter(i -> i.assignee == \"person:ada\") {\n    \
              print(i.title)\n}",
-        );
-        assert_eq!(answer["state"], "done", "{answer:#}");
-        assert_eq!(answer["output"], json!(["Ship the reads"]), "{answer:#}");
-        closed(&door);
-        let calls = calls.join().expect("the door");
-        // Its directory and its record's resources; the two the predicate reads, each by its
-        // own `read`; and the one the program prints, addressed again.
-        assert_eq!(calls.len(), 10, "{calls:#?}");
+            );
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(answer["output"], json!(["Ship the reads"]), "{answer:#}");
+            closed(&door);
+            let calls = calls.join().expect("the door");
+            // Its directory and its record's resources; the two the predicate reads, each by its
+            // own `read`; and the one the program prints, addressed again.
+            assert_eq!(calls.len(), 10, "{calls:#?}");
+        }
+
+        phase a_program_reads_a_native_apps_channels;
+        {
+            let (task, _reader, door) = task_with(&[chat()]);
+            // Chat's record reads itself and takes an item: its channels are read through it.
+            let calls = scripted(
+                &door,
+                Reads {
+                    app: "so.tilo.chat",
+                    record: "chat.workspace",
+                    reading: &[],
+                    rows: vec![
+                        row("chat.workspace/channels/general", "general"),
+                        row("chat.workspace/channels/design", "design"),
+                    ],
+                    items: vec![
+                        (
+                            "chat.workspace/channels/general",
+                            json!({"name": "general", "kind": "text", "archived": false}),
+                        ),
+                        (
+                            "chat.workspace/channels/design",
+                            json!({"name": "design", "kind": "voice", "archived": true}),
+                        ),
+                    ],
+                }
+                .door(),
+            );
+            let answer = ran(
+                &task,
+                "for c in find(chat.Conversation) {\n    print(c.name, c.kind, c.archived)\n}",
+            );
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(
+                answer["output"],
+                json!(["design .voice 1", "general .text 0"]),
+                "{answer:#}"
+            );
+            closed(&door);
+            let calls = calls.join().expect("the door");
+            // The app listed its directory, its record's resources, and for each channel the
+            // program read, the directory once more and the question of what reads it: its record
+            // does, taking the channel as its `item`. The listing read no channel's fields.
+            assert_eq!(calls.len(), 10, "{calls:#?}");
+        }
+
+        phase a_native_read_the_policy_refuses_fails_the_program_with_why;
+        {
+            let (task, _reader, door) = task_with(&[tasks()]);
+            let calls = scripted(&door, |message| {
+                if let Some(listing) = message.get("children") {
+                    let rows = match listing["resource"].as_str() {
+                        Some("") => vec![record_row("tasks.tracker", "Tasks")],
+                        _ => vec![row("tasks.tracker/issues/one", "Ship it")],
+                    };
+                    return json!({"ok": {"rows": rows}});
+                }
+                if message.get("reads").is_some() {
+                    return json!({"ok": {"reads": true}});
+                }
+                json!({"refused": "these are a person's private tasks"})
+            });
+            let answer = ran(&task, "for i in find(tasks.Issue) {\n    print(i.title)\n}");
+            closed(&door);
+            let calls = calls.join().expect("the door");
+            assert_eq!(calls.len(), 6, "{calls:#?}");
+            assert_eq!(answer["state"], "failed", "{answer:#}");
+            let why = answer["detail"].as_str().unwrap_or_default();
+            assert!(
+                why.contains("so.tilo.tasks refused the read: these are a person's private tasks"),
+                "{why}"
+            );
+        }
+
+        phase a_program_names_a_native_apps_fields_and_reads_no_other;
+        {
+            let (task, _reader, _door) = task_with(&[chat()]);
+            // A field the app does not publish is an error in the program, as in `tilolang check`.
+            let wrong = ran(
+                &task,
+                "for c in find(chat.Conversation) {\n    print(c.colour)\n}",
+            );
+            assert_eq!(wrong["state"], "rejected", "{wrong:#}");
+        }
+
+        phase a_native_apps_record_is_a_root_a_program_names;
+        {
+            let (task, _reader, _door) = task_with(&[chat(), tasks()]);
+            let catalogue = task.session.catalogue();
+            let roots = |app: &str| -> Vec<(String, String)> {
+                catalogue[app]["signatures"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|signature| signature["kind"] == "root")
+                    .map(|signature| {
+                        (
+                            signature["name"].as_str().unwrap_or_default().to_owned(),
+                            signature["call"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    })
+                    .collect()
+            };
+            // The app the program invokes the record of, and how it writes it.
+            assert_eq!(
+                roots("chat"),
+                [("workspace".to_owned(), "chat.workspace".to_owned())],
+                "{catalogue:#}"
+            );
+            assert_eq!(
+                roots("tasks"),
+                [("tracker".to_owned(), "tasks.tracker".to_owned())],
+                "{catalogue:#}"
+            );
+        }
     }
 
-    #[test]
-    fn a_program_reads_a_native_apps_channels() {
-        let (task, _reader, door) = task_with(&[chat()]);
-        // Chat's record reads itself and takes an item: its channels are read through it.
-        let calls = scripted(
-            &door,
-            Reads {
-                app: "so.tilo.chat",
-                record: "chat.workspace",
-                reading: &[],
-                rows: vec![
-                    row("chat.workspace/channels/general", "general"),
-                    row("chat.workspace/channels/design", "design"),
-                ],
-                items: vec![
-                    (
-                        "chat.workspace/channels/general",
-                        json!({"name": "general", "kind": "text", "archived": false}),
-                    ),
-                    (
-                        "chat.workspace/channels/design",
-                        json!({"name": "design", "kind": "voice", "archived": true}),
-                    ),
-                ],
-            }
-            .door(),
-        );
-        let answer = ran(
-            &task,
-            "for c in find(chat.Conversation) {\n    print(c.name, c.kind, c.archived)\n}",
-        );
-        assert_eq!(answer["state"], "done", "{answer:#}");
-        assert_eq!(
-            answer["output"],
-            json!(["design .voice 1", "general .text 0"]),
-            "{answer:#}"
-        );
-        closed(&door);
-        let calls = calls.join().expect("the door");
-        // The app listed its directory, its record's resources, and for each channel the
-        // program read, the directory once more and the question of what reads it: its record
-        // does, taking the channel as its `item`. The listing read no channel's fields.
-        assert_eq!(calls.len(), 10, "{calls:#?}");
+    tilo_test_env::scenario! {
+        fn a_program_changes_native_apps_only_through_actions_they_take;
+
+        phase a_program_changes_native_apps_through_their_actions;
+        {
+            let (task, _reader, door) = task_with(&[chat(), tasks()]);
+            let calls = answering(door, 2, r#"{"ok": {}}"#);
+            let answer = ran(
+                &task,
+                "chat.rename_channel(chat.workspace, \"general\", \"town\")\ntasks.create(tasks.tracker, \"Ship it\")",
+            );
+            let calls = calls.join().expect("the door");
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(
+                calls,
+                [
+                    json!({
+                        "app": "so.tilo.chat",
+                        "resource": "chat.workspace",
+                        "action": "rename-channel",
+                        "arguments": {"channel": "general", "name": "town"},
+                    }),
+                    json!({
+                        "app": "so.tilo.tasks",
+                        "resource": "tasks.tracker",
+                        "action": "create",
+                        "arguments": {
+                            "title": "Ship it",
+                            "parent": null,
+                            "body": null,
+                            "status": null,
+                            "assignee": null,
+                        },
+                    }),
+                ]
+            );
+            assert_eq!(answer["changed"], 2, "{answer:#}");
+            // Both steps reach the task's history on the records the apps publish, so `undo task`
+            // takes them back like any tl app's.
+            assert_eq!(
+                answer["history"],
+                json!([
+                    {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false},
+                    {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false},
+                ])
+            );
+        }
+
+        phase a_native_action_the_app_refuses_fails_the_program_and_changes_nothing;
+        {
+            let (task, _reader, door) = task_with(&[chat()]);
+            let calls = answering(
+                door,
+                1,
+                r#"{"refused": "the workspace asks its members before renaming"}"#,
+            );
+            let answer = ran(
+                &task,
+                "chat.rename_channel(chat.workspace, \"general\", \"town\")",
+            );
+            let calls = calls.join().expect("the door");
+            assert_eq!(calls.len(), 1, "{calls:#?}");
+            assert_eq!(answer["state"], "failed", "{answer:#}");
+            let why = answer["detail"].as_str().unwrap_or_default();
+            assert!(why.contains("asks its members before renaming"), "{why}");
+            assert_eq!(answer["changed"], 0, "{answer:#}");
+            assert_eq!(answer["history"], json!([]), "{answer:#}");
+        }
     }
 
-    #[test]
-    fn a_native_read_the_policy_refuses_fails_the_program_with_why() {
-        let (task, _reader, door) = task_with(&[tasks()]);
-        let calls = scripted(&door, |message| {
-            if let Some(listing) = message.get("children") {
-                let rows = match listing["resource"].as_str() {
-                    Some("") => vec![record_row("tasks.tracker", "Tasks")],
-                    _ => vec![row("tasks.tracker/issues/one", "Ship it")],
-                };
-                return json!({"ok": {"rows": rows}});
-            }
-            if message.get("reads").is_some() {
-                return json!({"ok": {"reads": true}});
-            }
-            json!({"refused": "these are a person's private tasks"})
-        });
-        let answer = ran(&task, "for i in find(tasks.Issue) {\n    print(i.title)\n}");
-        closed(&door);
-        let calls = calls.join().expect("the door");
-        assert_eq!(calls.len(), 6, "{calls:#?}");
-        assert_eq!(answer["state"], "failed", "{answer:#}");
-        let why = answer["detail"].as_str().unwrap_or_default();
-        assert!(
-            why.contains("so.tilo.tasks refused the read: these are a person's private tasks"),
-            "{why}"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_task_reaches_the_apps_its_session_and_catalogue_name;
 
-    #[test]
-    fn a_program_names_a_native_apps_fields_and_reads_no_other() {
-        let (task, _reader, _door) = task_with(&[chat()]);
-        // A field the app does not publish is an error in the program, as in `tilolang check`.
-        let wrong = ran(
-            &task,
-            "for c in find(chat.Conversation) {\n    print(c.colour)\n}",
-        );
-        assert_eq!(wrong["state"], "rejected", "{wrong:#}");
-    }
+        phase a_task_names_only_the_apps_its_session_hands_it;
+        {
+            let (task, _reader, _door) = task_with(&[]);
+            let answer = ran(
+                &task,
+                "for c in find(chat.Conversation) {\n    print(c.name)\n}",
+            );
+            assert_eq!(answer["state"], "rejected", "{answer:#}");
+            let why = format!("{:#}", answer["detail"]);
+            assert!(
+                why.contains("chat") || why.contains("chat.Conversation"),
+                "{why}"
+            );
+        }
 
-    #[test]
-    fn a_native_apps_record_is_a_root_a_program_names() {
-        let (task, _reader, _door) = task_with(&[chat(), tasks()]);
-        let catalogue = task.session.catalogue();
-        let roots = |app: &str| -> Vec<(String, String)> {
-            catalogue[app]["signatures"]
+        phase a_package_that_does_not_load_leaves_only_its_app_unreachable;
+        {
+            // One installed app among the rest whose package does not load here, as a module built
+            // for another runtime, or a payload damaged on its way to the device, hands one over.
+            let mut broken = counter();
+            let gone = broken.meta.app.clone();
+            broken.wasm = b"not a tilolang module".to_vec();
+            let (task, _reader, door) = task_over(&[discussion(), broken], &[]);
+            // The task starts: the catalogue lists the rest of the apps, and says of the broken one
+            // what a program naming it reads.
+            let catalogue = task.session.catalogue();
+            let alias = listed(&catalogue, &gone);
+            let said = catalogue[&alias]["unreachable"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{gone} is not reported: {catalogue:#}"))
+                .to_owned();
+            assert!(said.starts_with("can't be reached: "), "{said}");
+            let discussion = listed(&catalogue, "so.tilo.lang.discussion");
+            let signatures = catalogue[&discussion]["signatures"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|signature| signature["kind"] == "root")
-                .map(|signature| {
-                    (
-                        signature["name"].as_str().unwrap_or_default().to_owned(),
-                        signature["call"].as_str().unwrap_or_default().to_owned(),
-                    )
-                })
-                .collect()
-        };
-        // The app the program invokes the record of, and how it writes it.
-        assert_eq!(
-            roots("chat"),
-            [("workspace".to_owned(), "chat.workspace".to_owned())],
-            "{catalogue:#}"
-        );
-        assert_eq!(
-            roots("tasks"),
-            [("tracker".to_owned(), "tasks.tracker".to_owned())],
-            "{catalogue:#}"
-        );
-    }
-
-    #[test]
-    fn a_program_changes_native_apps_through_their_actions() {
-        let (task, _reader, door) = task_with(&[chat(), tasks()]);
-        let calls = answering(door, 2, r#"{"ok": {}}"#);
-        let answer = ran(
-            &task,
-            "chat.rename_channel(chat.workspace, \"general\", \"town\")\ntasks.create(tasks.tracker, \"Ship it\")",
-        );
-        let calls = calls.join().expect("the door");
-        assert_eq!(answer["state"], "done", "{answer:#}");
-        assert_eq!(
-            calls,
-            [
+                .collect::<Vec<&Json>>();
+            let root = signatures
+                .iter()
+                .find(|signature| signature["kind"] == "root")
+                .and_then(|signature| signature["call"].as_str())
+                .expect("discussion names its root");
+            let comment = signatures
+                .iter()
+                .find(|signature| signature["kind"] == "action" && signature["name"] == "comment")
+                .unwrap_or_else(|| panic!("discussion lists no comment action: {catalogue:#}"));
+            // The door takes it by the name it is published under.
+            let comment = comment["name"].as_str().unwrap_or_default().to_owned();
+            // Its actions resolve, and invoking one runs: the call goes to the app through the door,
+            // which answers the comment it made.
+            let called = scripted(&door, |message| {
+                if message.get("record").is_some() {
+                    return json!({"absent": true});
+                }
                 json!({
-                    "app": "so.tilo.chat",
-                    "resource": "chat.workspace",
-                    "action": "rename-channel",
-                    "arguments": {"channel": "general", "name": "town"},
-                }),
-                json!({
-                    "app": "so.tilo.tasks",
-                    "resource": "tasks.tracker",
-                    "action": "create",
-                    "arguments": {
-                        "title": "Ship it",
-                        "parent": null,
-                        "body": null,
-                        "status": null,
-                        "assignee": null,
+                    "ok": {
+                        "value": null,
+                        "resources": ["tl:so.tilo.lang.discussion:hello"],
                     },
-                }),
-            ]
-        );
-        assert_eq!(answer["changed"], 2, "{answer:#}");
-        // Both steps reach the task's history on the records the apps publish, so `undo task`
-        // takes them back like any tl app's.
-        assert_eq!(
-            answer["history"],
-            json!([
-                {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false},
-                {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false},
-            ])
-        );
-    }
+                })
+            });
+            let answer = ran(
+                &task,
+                &format!("{discussion}.comment({root}, RichText(\"hello\"))"),
+            );
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(answer["changed"], 1, "{answer:#}");
+            closed(&door);
+            let calls = called.join().expect("the door");
+            let invoked = calls
+                .iter()
+                .find(|call| call.get("invoke").is_some())
+                .unwrap_or_else(|| panic!("discussion's action was not invoked: {calls:#?}"));
+            assert_eq!(
+                invoked["invoke"]["app"], "so.tilo.lang.discussion",
+                "{calls:#?}"
+            );
+            assert_eq!(invoked["invoke"]["action"], comment, "{calls:#?}");
+            // A program naming the app that did not load is rejected, as one naming no app is, and
+            // the task goes on with the apps it reaches.
+            let unknown = ran(&task, &format!("{alias}.messages"));
+            assert_eq!(unknown["state"], "rejected", "{unknown:#}");
+            let nothing = ran(&task, "print(1)");
+            assert_eq!(nothing["state"], "done", "{nothing:#}");
+        }
 
-    #[test]
-    fn a_native_action_the_app_refuses_fails_the_program_and_changes_nothing() {
-        let (task, _reader, door) = task_with(&[chat()]);
-        let calls = answering(
-            door,
-            1,
-            r#"{"refused": "the workspace asks its members before renaming"}"#,
-        );
-        let answer = ran(
-            &task,
-            "chat.rename_channel(chat.workspace, \"general\", \"town\")",
-        );
-        let calls = calls.join().expect("the door");
-        assert_eq!(calls.len(), 1, "{calls:#?}");
-        assert_eq!(answer["state"], "failed", "{answer:#}");
-        let why = answer["detail"].as_str().unwrap_or_default();
-        assert!(why.contains("asks its members before renaming"), "{why}");
-        assert_eq!(answer["changed"], 0, "{answer:#}");
-        assert_eq!(answer["history"], json!([]), "{answer:#}");
-    }
-
-    #[test]
-    fn a_task_names_only_the_apps_its_session_hands_it() {
-        let (task, _reader, _door) = task_with(&[]);
-        let answer = ran(
-            &task,
-            "for c in find(chat.Conversation) {\n    print(c.name)\n}",
-        );
-        assert_eq!(answer["state"], "rejected", "{answer:#}");
-        let why = format!("{:#}", answer["detail"]);
-        assert!(
-            why.contains("chat") || why.contains("chat.Conversation"),
-            "{why}"
-        );
+        phase check_and_a_task_compile_against_the_same_catalogue;
+        {
+            let checked = checked();
+            let program =
+                "for c in find(chat.Conversation) {\n    print(c.name)\n    print(c.colour)\n}";
+            let Err(diagnostics) = tilolang::compile_program_reading(program, &checked, &[], &[])
+            else {
+                panic!("`colour` is no field of a chat conversation");
+            };
+            let expected: Vec<String> = diagnostics
+                .iter()
+                .map(|d| format!("{}:{}: {} {}", d.line, d.col, d.code, d.message))
+                .collect();
+            let (task, _reader, _door) = task_with(&[chat()]);
+            let answer = ran(&task, program);
+            assert_eq!(answer["state"], "rejected", "{answer:#}");
+            assert_eq!(answer["detail"], serde_json::json!(expected), "{answer:#}");
+        }
     }
 
     /// The bundle of the package `source` declares, its ids lock `ids`.
@@ -1335,100 +1442,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_package_that_does_not_load_leaves_only_its_app_unreachable() {
-        // One installed app among the rest whose package does not load here, as a module built
-        // for another runtime, or a payload damaged on its way to the device, hands one over.
-        let mut broken = counter();
-        let gone = broken.meta.app.clone();
-        broken.wasm = b"not a tilolang module".to_vec();
-        let (task, _reader, door) = task_over(&[discussion(), broken], &[]);
-        // The task starts: the catalogue lists the rest of the apps, and says of the broken one
-        // what a program naming it reads.
-        let catalogue = task.session.catalogue();
-        let alias = listed(&catalogue, &gone);
-        let said = catalogue[&alias]["unreachable"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{gone} is not reported: {catalogue:#}"))
-            .to_owned();
-        assert!(said.starts_with("can't be reached: "), "{said}");
-        let discussion = listed(&catalogue, "so.tilo.lang.discussion");
-        let signatures = catalogue[&discussion]["signatures"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .collect::<Vec<&Json>>();
-        let root = signatures
-            .iter()
-            .find(|signature| signature["kind"] == "root")
-            .and_then(|signature| signature["call"].as_str())
-            .expect("discussion names its root");
-        let comment = signatures
-            .iter()
-            .find(|signature| signature["kind"] == "action" && signature["name"] == "comment")
-            .unwrap_or_else(|| panic!("discussion lists no comment action: {catalogue:#}"));
-        // The door takes it by the name it is published under.
-        let comment = comment["name"].as_str().unwrap_or_default().to_owned();
-        // Its actions resolve, and invoking one runs: the call goes to the app through the door,
-        // which answers the comment it made.
-        let called = scripted(&door, |message| {
-            if message.get("record").is_some() {
-                return json!({"absent": true});
-            }
-            json!({
-                "ok": {
-                    "value": null,
-                    "resources": ["tl:so.tilo.lang.discussion:hello"],
-                },
-            })
-        });
-        let answer = ran(
-            &task,
-            &format!("{discussion}.comment({root}, RichText(\"hello\"))"),
-        );
-        assert_eq!(answer["state"], "done", "{answer:#}");
-        assert_eq!(answer["changed"], 1, "{answer:#}");
-        closed(&door);
-        let calls = called.join().expect("the door");
-        let invoked = calls
-            .iter()
-            .find(|call| call.get("invoke").is_some())
-            .unwrap_or_else(|| panic!("discussion's action was not invoked: {calls:#?}"));
-        assert_eq!(
-            invoked["invoke"]["app"], "so.tilo.lang.discussion",
-            "{calls:#?}"
-        );
-        assert_eq!(invoked["invoke"]["action"], comment, "{calls:#?}");
-        // A program naming the app that did not load is rejected, as one naming no app is, and
-        // the task goes on with the apps it reaches.
-        let unknown = ran(&task, &format!("{alias}.messages"));
-        assert_eq!(unknown["state"], "rejected", "{unknown:#}");
-        let nothing = ran(&task, "print(1)");
-        assert_eq!(nothing["state"], "done", "{nothing:#}");
-    }
-
     /// `tilolang check`'s packages: what the apps' directories publish.
     fn checked() -> Vec<PackageMeta> {
         let chat = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/chat");
         tilolang_tilo::catalogue::published_packages(&[chat]).expect("the surfaces read")
-    }
-
-    #[test]
-    fn check_and_a_task_compile_against_the_same_catalogue() {
-        let checked = checked();
-        let program =
-            "for c in find(chat.Conversation) {\n    print(c.name)\n    print(c.colour)\n}";
-        let Err(diagnostics) = tilolang::compile_program_reading(program, &checked, &[], &[])
-        else {
-            panic!("`colour` is no field of a chat conversation");
-        };
-        let expected: Vec<String> = diagnostics
-            .iter()
-            .map(|d| format!("{}:{}: {} {}", d.line, d.col, d.code, d.message))
-            .collect();
-        let (task, _reader, _door) = task_with(&[chat()]);
-        let answer = ran(&task, program);
-        assert_eq!(answer["state"], "rejected", "{answer:#}");
-        assert_eq!(answer["detail"], serde_json::json!(expected), "{answer:#}");
     }
 }
