@@ -165,38 +165,11 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "import-pages"
-kind = "undoable"
-writes = ["record", "pages.*"]
-params = [
-  { name = "pages", type = { list = { named = "ImportedPage" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { images = { type = "array", items = { type = "object", additionalProperties = false, properties = { bytes = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }, url = { type = "string" } }, required = ["url", "bytes"] } }, key = { type = "string" }, markdown = { type = "string" }, parent = { type = ["string", "null"] }, source = { type = "string" }, tags = { type = "array", items = { type = "string" } }, title = { type = "string" } }, required = ["source", "key", "title", "markdown"] } } },
-]
-
-[[resources.verbs]]
 id = "export-markdown-content"
 kind = "read"
 params = [
   { name = "page", type = { option = "text" }, required = false },
   { name = "title", type = { option = "text" }, required = false },
-]
-
-[[resources.types]]
-name = "ImportedImage"
-fields = [
-  { name = "url", type = "text" },
-  { name = "bytes", type = "any" },
-]
-
-[[resources.types]]
-name = "ImportedPage"
-fields = [
-  { name = "source", type = "text" },
-  { name = "key", type = "text" },
-  { name = "title", type = "text" },
-  { name = "markdown", type = "text" },
-  { name = "parent", type = { option = "text" } },
-  { name = "tags", type = { list = "text" } },
-  { name = "images", type = { list = { named = "ImportedImage" } } },
 ]
 
 [[resources.types]]

@@ -15,16 +15,14 @@
 use crate::metadata::CATALOG;
 use std::collections::{HashMap, HashSet};
 
-use serde::{Deserialize, Serialize};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Fields, Id, JsonSchema, Map, Model, NonBlank,
-    Reactions, Refusal, Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Fields, Id, Map, Model, NonBlank, Reactions, Refusal,
+    Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
-use uuid::Uuid;
 
 use crate::model::PageId;
 
@@ -91,84 +89,6 @@ pub struct Page {
     ///
     /// What people answered the note with, shown under its title.
     pub reactions: Reactions,
-}
-
-/// A page read from another wiki, as an import brings it in.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ImportedPage {
-    /// The wiki it came from: `outline`.
-    pub source: String,
-    /// The page as that wiki names it.
-    pub key: String,
-    pub title: String,
-    /// Its words, as Markdown.
-    pub markdown: String,
-    /// The page it sits under, by the same wiki's key: the hierarchy it kept
-    /// there.
-    #[serde(default)]
-    pub parent: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    /// The pictures it shows, each with the address its Markdown shows it at.
-    #[serde(default)]
-    pub images: Vec<ImportedImage>,
-}
-
-/// A picture an imported page shows: its bytes, and the address the page's
-/// Markdown names it by.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ImportedImage {
-    pub url: String,
-    pub bytes: Bytes,
-}
-
-/// The id a page imported from `source` as `key` is kept under: the same on
-/// every device that imports it, so an import updates the note it made
-/// instead of writing another.
-#[must_use]
-pub fn imported_page_id(source: &str, key: &str) -> Id {
-    let digest = blake3::hash(format!("{source}:{key}").as_bytes());
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest.as_bytes()[..16]);
-    // The shape of a name-based UUID, so it parses as a note's id.
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Id::from(Uuid::from_bytes(bytes).to_string())
-}
-
-/// `markdown` with every line that shows the picture `shown` taken out,
-/// answering the pictures it showed (their alt and digest) for the body to
-/// hold as pictures, in the order they read.
-fn take_pictures(
-    markdown: &str,
-    shown: &str,
-    digest: &str,
-    pictures: &mut Vec<(String, String)>,
-) -> String {
-    let mut output = String::with_capacity(markdown.len());
-    for segment in markdown.split_inclusive('\n') {
-        let (line, newline) = segment
-            .strip_suffix('\n')
-            .map_or((segment, ""), |line| (line, "\n"));
-        let Some((alt, destination)) = picture_line(line) else {
-            output.push_str(segment);
-            continue;
-        };
-        if destination != shown {
-            output.push_str(segment);
-            continue;
-        }
-        pictures.push((alt.to_owned(), digest.to_owned()));
-        let _ = newline;
-    }
-    output
-}
-
-/// A line that is one picture: its alt text and the address it names.
-fn picture_line(line: &str) -> Option<(&str, &str)> {
-    let body = line.trim().strip_prefix("![")?;
-    let (alt, destination) = body.split_once("](")?;
-    Some((alt, destination.strip_suffix(')')?.trim()))
 }
 
 /// A named tag notes carry.
@@ -758,124 +678,6 @@ impl Notebook {
         Ok(())
     }
 
-    /// Import pages
-    ///
-    /// Bring pages from another wiki in as notes. Each page keeps its title,
-    /// its words and the pictures it shows, the page it belonged under and
-    /// its tags. A page already imported is updated where it is: running the
-    /// import again follows the wiki instead of writing the pages twice.
-    #[action(step = "create", writes = pages)]
-    pub fn import_pages(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The pages as the wiki names them")] pages: Vec<ImportedPage>,
-    ) -> Result<(), Refusal> {
-        let fallback = CATALOG.t("notes-imported-untitled");
-        // Every page first, so the one a page goes under finds it here.
-        let mut placed = Vec::new();
-        for imported in &pages {
-            check_markdown_import(&imported.markdown).map_err(Refusal::new)?;
-            let id = imported_page_id(&imported.source, &imported.key);
-            let mut markdown = imported.markdown.clone();
-            // Each picture is placed the way the notebook places its own
-            // (`place-image`): a paragraph the body holds as written, so the
-            // editor draws it. The line the source showed it on comes out of
-            // the words, since a line of Markdown seeds text, not a picture.
-            let mut pictures = Vec::new();
-            for image in &imported.images {
-                let digest = self.store_image(&image.bytes)?;
-                let shown = image.url.trim();
-                if shown.is_empty() {
-                    continue;
-                }
-                markdown = take_pictures(&markdown, shown, &digest, &mut pictures);
-            }
-            let title = if imported.title.trim().is_empty() {
-                fallback.clone()
-            } else {
-                imported.title.trim().to_owned()
-            };
-            // A `[[Title]]` link leads to the note of that title, whether this
-            // import brings it or the notebook has it already.
-            let brought: Vec<(String, PageId)> = pages
-                .iter()
-                .filter_map(|page| {
-                    page_of(&imported_page_id(&page.source, &page.key))
-                        .map(|id| (page.title.trim().to_owned(), id))
-                })
-                .collect();
-            let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
-                self.pages
-                    .iter()
-                    .find(|(_, candidate)| candidate.title == target)
-                    .and_then(|(id, _)| page_of(id))
-                    .or_else(|| {
-                        brought
-                            .iter()
-                            .find(|(title, _)| title == target)
-                            .map(|(_, id)| *id)
-                    })
-            });
-            let body = written(&blocks);
-            if let Some(page) = self.pages.get_mut(&id) {
-                page.title.clone_from(&title);
-                page.body = body;
-            } else {
-                self.pages.push(
-                    id.clone(),
-                    Page {
-                        body,
-                        ..Page::titled(&title, None).made(cx)
-                    },
-                );
-            }
-            if let Some(page) = self.pages.get_mut(&id) {
-                for (alt, digest) in &pictures {
-                    page.body.perform(RichTextAction::AppendParagraph {
-                        text: format!("![{alt}](asset:{digest})"),
-                    });
-                }
-            }
-            for name in &imported.tags {
-                let name = name.trim();
-                if name.is_empty() {
-                    continue;
-                }
-                let tag = self.tag_named(name).unwrap_or_else(|| {
-                    let tag = Id::from(cx.uuid().to_string());
-                    self.tags.push(
-                        tag.clone(),
-                        Tag {
-                            name: Atom(name.to_owned()),
-                        },
-                    );
-                    tag
-                });
-                if let Some(page) = self.pages.get_mut(&id) {
-                    page.tags.insert(tag);
-                }
-            }
-            placed.push((id, imported.parent.clone(), imported.source.clone()));
-        }
-        // Then where each page sits, once every page it could go under is here.
-        for (id, parent, source) in placed {
-            let Some(parent) = parent else {
-                continue;
-            };
-            let parent = imported_page_id(&source, &parent);
-            let already = self
-                .pages
-                .get(&id)
-                .is_some_and(|page| page.parent.as_ref() == Some(&parent));
-            if self.pages.contains(&parent) && !already {
-                self.place(&id, Some(parent), None)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Notebook {
     /// A verb on a tag needs a tag to act on: until the notebook has one,
     /// "Delete tag" is not offered, rather than offered asking for a tag
     /// there is none of.
