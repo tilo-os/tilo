@@ -9,6 +9,9 @@
 //! walks that compare widget boxes, drawing, damage) for reading, never
 //! asserted: on a shared machine they vary with the load, the counts do not.
 //!
+//! A key typed into a long note is counted the same way: it paints its own
+//! line, whatever the note's length.
+//!
 //! `cargo test -p tilo-ui --lib scroll_cost -- --nocapture` prints a table.
 
 #![allow(
@@ -907,3 +910,38 @@ fn rows_entering_a_virtual_list_are_laid_out_in_place() {
 
 #[path = "draw_cull_frame_tests.rs"]
 mod culled_frames;
+
+/// A key typed into a long note paints the line it changed and moves what
+/// every other line in view drew: the key lays the editor out again, and
+/// that alone painted every line in view again.
+#[test]
+fn a_keystroke_in_a_long_note_paints_only_its_line() {
+    use crate::widget::rich_text_line;
+    let (mut app, mut scene, mut damage) = shown(note(600));
+    for event in [
+        crate::synthetic_input::cursor_moved(400.0, 200.0),
+        crate::synthetic_input::mouse_press(),
+        crate::synthetic_input::mouse_release(),
+    ] {
+        app.surface_input(&Window, event, false);
+        scene.reset();
+        app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        damage.take_copying();
+    }
+    for (index, letter) in "a few words typed"
+        .split("")
+        .filter(|s| !s.is_empty())
+        .enumerate()
+    {
+        let _ = rich_text_line::take_face_work();
+        app.surface_input(&Window, crate::synthetic_input::char_key(letter), false);
+        let cost = frame(&mut app, &mut scene, &mut damage, 0);
+        let (painted, kept) = rich_text_line::take_face_work();
+        assert_eq!(cost.whole, None, "key {index} repainted the window whole");
+        assert_eq!(
+            painted, 1,
+            "key {index} painted {painted} lines and kept {kept}"
+        );
+        assert!(kept > 20, "key {index} kept only {kept} lines in view");
+    }
+}

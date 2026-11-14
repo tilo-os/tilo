@@ -683,8 +683,8 @@ impl RichTextLine {
 
     /// A document editor's own 1× size; its height is measured again.
     pub(crate) fn set_size(&mut self, size: f32) {
-        self.paint_dirty = true;
         if self.font_size.to_bits() != size.to_bits() {
+            self.paint_dirty = true;
             self.forget_stack_heights();
             self.font_size = size;
             self.inner.set_base_size(size);
@@ -1891,7 +1891,7 @@ mod tests {
     use super::*;
     use crate::testing::{Dispatch, dispatch};
     use crate::widget::marks::Mark;
-    use winit::keyboard::{ModifiersKeyState, ModifiersState, NamedKey};
+    use winit::keyboard::{ModifiersState, NamedKey};
 
     use crate::synthetic_input::named_key;
 
@@ -2428,16 +2428,6 @@ mod tests {
                 ));
             }
         }
-    }
-
-    /// `ModifiersState` is fully `pub(crate)` in winit 0.30, so a Ctrl-down
-    /// modifier can't be synthesised in unit tests; Ctrl-B/I/E is exercised
-    /// through `toggle_mark` above instead.
-    fn _placeholder_for_modifiers_state() -> ModifiersState {
-        ModifiersState::default()
-    }
-    fn _placeholder_for_modifiers_key_state() -> ModifiersKeyState {
-        ModifiersKeyState::Unknown
     }
 
     /// A line in a window whose workspace has an emoji draws its picture,
