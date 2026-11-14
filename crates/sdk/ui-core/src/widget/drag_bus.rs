@@ -1,8 +1,14 @@
-//! What is being dragged, across widgets in one window.
+//! What is being dragged, across the widget trees on one thread: the widgets of one window, or
+//! the trees of a desktop that each stand on a display of their own.
+//!
+//! Every tree reads and writes the bus in its own coordinates. The bus keeps a drag in the
+//! coordinates the trees share (a desktop's logical pixels), and [`placed_at`] says where the tree
+//! that runs now stands in them: a tree on a second display sees a drag over it where it is, and a
+//! tree elsewhere does not see it at all.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::{Point, Rect, Vec2};
 
 /// What a drag in flight is.
 #[derive(Clone, Debug)]
@@ -27,6 +33,32 @@ thread_local! {
     static LANDED: RefCell<Option<Landed>> = const { RefCell::new(None) };
     static CARRIED_AWAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ORIGIN: Cell<Vec2> = const { Cell::new(Vec2::ZERO) };
+}
+
+/// Where the tree that runs now stands, until it is dropped.
+#[must_use = "the tree stands there only while this is held"]
+pub struct Placed {
+    before: Vec2,
+}
+
+impl Drop for Placed {
+    fn drop(&mut self) {
+        ORIGIN.with(|origin| origin.set(self.before));
+    }
+}
+
+/// The tree that runs while the answer is held stands at `origin` in the coordinates the trees on
+/// this thread share: what it writes to the bus is moved by it, what it reads moved back. Outside
+/// every tree the bus is read and written in the shared coordinates themselves.
+pub fn placed_at(origin: Point) -> Placed {
+    Placed {
+        before: ORIGIN.with(|placed| placed.replace(origin.to_vec2())),
+    }
+}
+
+fn origin() -> Vec2 {
+    ORIGIN.with(Cell::get)
 }
 
 /// Something in flight came, moved, went or landed.
@@ -43,7 +75,12 @@ pub fn revision() -> u64 {
 }
 
 /// `run` lifted an item: everything else in the window may take it now.
-pub fn publish(in_flight: InFlight) {
+pub fn publish(mut in_flight: InFlight) {
+    let origin = origin();
+    in_flight.pointer += origin;
+    for run in &mut in_flight.runs {
+        run.1 = run.1 + origin;
+    }
     IN_FLIGHT.with(|slot| *slot.borrow_mut() = Some(in_flight));
     changed();
 }
@@ -51,6 +88,8 @@ pub fn publish(in_flight: InFlight) {
 /// The pointer moved while something is in flight: what every run needs to show where it
 /// would land.
 pub fn moved(pointer: Point, run: (String, Rect)) {
+    let origin = origin();
+    let (pointer, run) = (pointer + origin, (run.0, run.1 + origin));
     IN_FLIGHT.with(|slot| {
         if let Some(in_flight) = slot.borrow_mut().as_mut() {
             in_flight.pointer = pointer;
@@ -66,13 +105,25 @@ pub fn moved(pointer: Point, run: (String, Rect)) {
 /// What is in flight now, if anything.
 #[must_use]
 pub fn current() -> Option<InFlight> {
-    IN_FLIGHT.with(|slot| slot.borrow().clone())
+    let origin = origin();
+    let mut in_flight = IN_FLIGHT.with(|slot| slot.borrow().clone())?;
+    in_flight.pointer -= origin;
+    for run in &mut in_flight.runs {
+        run.1 = run.1 - origin;
+    }
+    Some(in_flight)
 }
 
 /// The drag ended: `None` for a cancel, or where it was let go for a drop another run
 /// takes. A drag carried away lands nowhere here, wherever it is let go.
 pub fn end(landed: Option<Landed>) {
-    let landed = landed.filter(|_| !CARRIED_AWAY.with(std::cell::Cell::take));
+    let origin = origin();
+    let landed = landed
+        .filter(|_| !CARRIED_AWAY.with(std::cell::Cell::take))
+        .map(|landed| Landed {
+            pointer: landed.pointer + origin,
+            ..landed
+        });
     IN_FLIGHT.with(|slot| *slot.borrow_mut() = None);
     LANDED.with(|slot| *slot.borrow_mut() = landed);
     changed();
@@ -90,12 +141,87 @@ pub fn carry_away() {
 /// Take the drop `run` takes, if the last drag ended inside its `extent` and came from
 /// somewhere else.
 pub fn take(run: &str, extent: Rect) -> Option<Landed> {
+    let origin = origin();
     LANDED.with(|slot| {
         let mut slot = slot.borrow_mut();
         let landed = slot.as_ref()?;
-        if landed.source == run || !extent.contains(landed.pointer) {
+        if landed.source == run || !extent.contains(landed.pointer - origin) {
             return None;
         }
-        slot.take()
+        slot.take().map(|landed| Landed {
+            pointer: landed.pointer - origin,
+            ..landed
+        })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flight(pointer: Point) -> InFlight {
+        InFlight {
+            source: "elsewhere".into(),
+            payload: crate::dnd::DragPayload::Custom {
+                kind: "resource".into(),
+                blob: b"notes.page:one".to_vec(),
+            },
+            label: "Notes".into(),
+            pointer,
+            runs: Vec::new(),
+        }
+    }
+
+    /// Two trees on two displays side by side, the second one 1000 pixels to the right: a drag
+    /// over the second display is over the second tree, where it is on that display, and lands
+    /// there.
+    #[test]
+    fn a_tree_on_a_second_display_sees_a_drag_where_it_is_on_that_display() {
+        let first = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        let second = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        let on_second = Point::new(1100.0, 30.0);
+        // Published outside every tree, in the desktop's own coordinates.
+        publish(flight(on_second));
+        let seen = |at: Point| {
+            let _placed = placed_at(at);
+            current().map(|flight| flight.pointer)
+        };
+        assert_eq!(seen(Point::ZERO), Some(on_second));
+        assert!(!first.contains(on_second), "nothing over the first tree");
+        assert_eq!(
+            seen(Point::new(1000.0, 0.0)),
+            Some(Point::new(100.0, 30.0)),
+            "the second tree sees it over itself"
+        );
+        assert!(second.contains(Point::new(100.0, 30.0)));
+
+        // A drag the second tree moves is where that tree says, for the first tree too.
+        {
+            let _placed = placed_at(Point::new(1000.0, 0.0));
+            moved(Point::new(200.0, 40.0), ("second".into(), Rect::ZERO));
+        }
+        assert_eq!(
+            current().map(|flight| flight.pointer),
+            Some(Point::new(1200.0, 40.0))
+        );
+
+        end(Some(Landed {
+            source: "elsewhere".into(),
+            payload: flight(on_second).payload,
+            pointer: on_second,
+        }));
+        {
+            let _placed = placed_at(Point::ZERO);
+            assert!(
+                take("first", first).is_none(),
+                "the first tree takes nothing"
+            );
+        }
+        let _placed = placed_at(Point::new(1000.0, 0.0));
+        assert_eq!(
+            take("second", second).map(|landed| landed.pointer),
+            Some(Point::new(100.0, 30.0)),
+            "the second tree takes it where it was let go"
+        );
+    }
 }

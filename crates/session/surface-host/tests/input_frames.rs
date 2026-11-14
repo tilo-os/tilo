@@ -1,6 +1,7 @@
 //! A window's host presents on its own frame clock: the events of one keystroke reach the tree
 //! and the tree runs one frame for them, the frame the display's clock draws, rather than one
-//! frame per event. A drag that reaches the tree with no input of its own asks for a frame too.
+//! frame per event. A drag that reaches the tree with no input of its own asks for a frame too, and
+//! a tree on a second display sees it where it is on that display.
 
 #![allow(
     clippy::unwrap_used,
@@ -219,5 +220,85 @@ fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
     assert!(
         !host.prepare_frame(),
         "a drag ending away from the target changes nothing it shows"
+    );
+}
+
+/// A drop target on each of two displays side by side, as a desk shows one per display: a drag
+/// carried here over the second display, in the desktop's own pixels, draws the line over the
+/// second display's target alone and lands there, not on the first display's.
+#[test]
+fn a_drag_over_the_second_display_shows_and_lands_on_that_display() {
+    let _settled = ui::motion::testing::settled();
+    let host = |x: i32| {
+        let mut host = WidgetHost::new(
+            Box::new(ui::widget::DropTarget::new(
+                "window",
+                Box::new(Field::default()),
+                ui::component::Event::None,
+            )),
+            Placement {
+                origin: (x, 0),
+                size: (320, 240),
+                scale: 1.0,
+            },
+            true,
+        );
+        assert!(host.prepare_frame(), "the first frame draws the tree");
+        assert!(!host.prepare_frame(), "and the tree rests after it");
+        host
+    };
+    let mut first = host(0);
+    let mut second = host(320);
+    let payload = ui::dnd::DragPayload::Custom {
+        kind: ui::widget::RESOURCE_PAYLOAD.to_owned(),
+        blob: b"notes.page:one".to_vec(),
+    };
+    // The drag comes in away from both displays' targets, and both settle with it in flight.
+    ui::widget::drag_bus::publish(ui::widget::drag_bus::InFlight {
+        source: "carried-here".into(),
+        payload: payload.clone(),
+        label: "Notes".into(),
+        pointer: ui::kurbo::Point::new(5000.0, 5000.0),
+        runs: Vec::new(),
+    });
+    first.prepare_frame();
+    second.prepare_frame();
+    assert!(!first.prepare_frame() && !second.prepare_frame());
+
+    // It moves over the second display.
+    let over_second = ui::kurbo::Point::new(420.0, 20.0);
+    ui::widget::drag_bus::moved(
+        over_second,
+        ("carried-here".to_owned(), ui::kurbo::Rect::ZERO),
+    );
+    assert!(
+        !first.prepare_frame(),
+        "the first display shows no line: the drag is not over it"
+    );
+    assert!(
+        second.prepare_frame(),
+        "the second display draws the line over its target"
+    );
+
+    // Let go there: the first display's pass comes first and takes nothing.
+    ui::widget::drag_bus::end(Some(ui::widget::Landed {
+        source: "carried-here".into(),
+        payload,
+        pointer: over_second,
+    }));
+    first.prepare_frame();
+    assert!(
+        ui::widget::drag_bus::take("probe", ui::kurbo::Rect::new(-1e6, -1e6, 1e6, 1e6))
+            .is_some_and(|landed| {
+                // Put back for the second display's pass.
+                ui::widget::drag_bus::end(Some(landed));
+                true
+            }),
+        "the first display left the drop for the display it was let go over"
+    );
+    second.prepare_frame();
+    assert!(
+        ui::widget::drag_bus::take("probe", ui::kurbo::Rect::new(-1e6, -1e6, 1e6, 1e6)).is_none(),
+        "the second display's target took the drop"
     );
 }

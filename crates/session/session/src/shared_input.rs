@@ -924,7 +924,8 @@ impl SharedInput {
     /// Hand the compositor what the devices driving this one sent since the last look, the way
     /// every remote input reaches it: as soon as it is here, not on the next pass. A drag carried
     /// here goes on from where the pointer is with `desk` ; without it, or while its content is
-    /// on its way, what was sent after it waits.
+    /// on its way, what was sent after it waits. The drag moves with the compositor's pointer, in
+    /// the desktop's pixels, as the drag bus keeps it: each display's tree sees it in its own.
     pub(crate) fn inject(&self, compositor: &mut Compositor, desk: Option<&Desk<'_>>) {
         loop {
             for step in self.take_input() {

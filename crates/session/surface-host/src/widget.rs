@@ -318,6 +318,7 @@ impl WidgetHost {
     /// them in the same frame sees the windows where the tree just laid them
     /// out. What `work` draws, it draws over this tree's own backdrops.
     fn with_reports<T>(&mut self, work: impl FnOnce(&mut FrameHarness) -> T) -> T {
+        let _placed = self.placed();
         let _wells = self.wells.clone().map(ui::widget::window_well::install);
         let _previews = self
             .previews
@@ -598,7 +599,15 @@ impl WidgetHost {
         self.asked.replace(false) | moved
     }
 
+    /// Where the tree stands among the desktop's trees, while it runs: a drag on the toolkit's
+    /// drag bus is in the desktop's logical pixels, and the tree sees it in its own.
+    fn placed(&self) -> ui::widget::drag_bus::Placed {
+        let (x, y) = self.placement.origin;
+        ui::widget::drag_bus::placed_at(vello::kurbo::Point::new(f64::from(x), f64::from(y)))
+    }
+
     fn input(&mut self, event: &WindowEvent) {
+        let _placed = self.placed();
         self.host.send(event);
         self.owe();
     }
