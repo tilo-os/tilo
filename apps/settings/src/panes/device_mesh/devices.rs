@@ -6,10 +6,9 @@ use tilo_relay_protocol::WorkFrom;
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, ROOM, RelayRuntimeStatus, WORK_ANYONE,
-    WORK_NOTHING, WORK_OWN, home_server_row, last_seen_label, peer_health_badge,
-    peer_health_detail, peer_key, personal_device_key, room_shown, runtime_status_tone, takes_work,
-    work_shown,
+    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, ROOM, RelayRuntimeStatus, WORK_FROM,
+    home_server_row, last_seen_label, peer_health_badge, peer_health_detail, peer_key,
+    personal_device_key, room_shown, runtime_status_tone, takes_work, work_key,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -220,23 +219,14 @@ impl Page<'_> {
     }
 
     fn this_device_rows(&self) -> Vec<provider_settings_ui::widgets::Item> {
-        let work_shown_value = work_shown(&self.config.work);
-        let work_state = ui::LocalState::new(work_shown_value.clone());
-        let work = Dropdown::from_state(
-            [WORK_NOTHING, WORK_OWN, WORK_ANYONE]
-                .into_iter()
-                .map(|label| {
-                    t(match label {
-                        WORK_NOTHING => "mesh-work-nothing",
-                        WORK_OWN => "mesh-work-own",
-                        _ => "mesh-work-anyone",
-                    })
-                })
-                .collect(),
-            &work_state,
-        )
-        .with_id("device_mesh.work")
-        .with_placeholder(&work_shown_value);
+        // Work the page cannot set (some workspaces) shows as the placeholder.
+        let chosen = work_key(&self.config.work.from);
+        let selected = WORK_FROM.contains(&chosen).then(|| chosen.to_owned());
+        let state = ui::LocalState::new(selected.unwrap_or_default());
+        let mut work = Dropdown::from_state(Vec::new(), &state)
+            .with_id("device_mesh.work")
+            .with_placeholder(&t(chosen));
+        work.set_value_options(WORK_FROM.map(|key| (key.to_owned(), t(key))).to_vec());
         let work = self.bind(work, effect(DeviceMeshEffect::SET_WORK));
         let mut out = vec![setting_row_described(
             &t("mesh-this-device"),

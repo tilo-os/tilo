@@ -569,8 +569,11 @@ mesh-runtime-online = Online
 mesh-runtime-syncing = Synchronisiert
 mesh-runtime-ready = Bereit
 mesh-from = Von { $origin }
-mesh-resolved = Aufgelöst zu { $winner }; weicht ab von { $others }{ $suffix }
-mesh-and-more =  und { $n } weitere
+mesh-resolved = { $count ->
+    [1] Aufgelöst zu { $winner }; weicht ab von { $first }
+    [2] Aufgelöst zu { $winner }; weicht ab von { $first } und { $second }
+   *[other] Aufgelöst zu { $winner }; weicht ab von { $first }, { $second } und { $more } weiteren
+}
 mesh-wifi-row = WLAN: { $ssid }
 mesh-wifi-sealed = Versiegeltes { $security }-Profil. { $detail }
 mesh-roaming-unreadable = Einstellungen kann die hier gespeicherten Roaming-Einstellungen nicht lesen.

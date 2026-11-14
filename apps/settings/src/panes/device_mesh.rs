@@ -66,30 +66,25 @@ const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
 const APPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(60);
-const WORK_NOTHING: &str = "Nothing";
-const WORK_OWN: &str = "My own devices' work";
-const WORK_ANYONE: &str = "Anyone's work in my workspaces";
+/// The work this device can take, named by its message: the chooser's values
+/// are these, so its labels and the setting a choice writes share one table.
+const WORK_FROM: [&str; 3] = ["mesh-work-nothing", "mesh-work-own", "mesh-work-anyone"];
 
-/// The work this device takes, as a person states it.
-fn work_shown(work: &WorkSetting) -> String {
-    t(match &work.from {
+/// The message naming the work a setting takes.
+fn work_key(from: &WorkFrom) -> &'static str {
+    match from {
         WorkFrom::Nobody => "mesh-work-nothing",
         WorkFrom::OwnDevices => "mesh-work-own",
         WorkFrom::Anyone => "mesh-work-anyone",
         WorkFrom::Workspaces(_) => "mesh-work-some",
-    })
+    }
 }
 
-fn work_from_label(label: &str) -> Option<WorkFrom> {
-    if label == WORK_NOTHING || label == t("mesh-work-nothing") {
-        Some(WorkFrom::Nobody)
-    } else if label == WORK_OWN || label == t("mesh-work-own") {
-        Some(WorkFrom::OwnDevices)
-    } else if label == WORK_ANYONE || label == t("mesh-work-anyone") {
-        Some(WorkFrom::Anyone)
-    } else {
-        None
-    }
+/// The work a chosen value names, when it is one of the choices.
+fn work_from_key(key: &str) -> Option<WorkFrom> {
+    [WorkFrom::Nobody, WorkFrom::OwnDevices, WorkFrom::Anyone]
+        .into_iter()
+        .find(|from| work_key(from) == key)
 }
 
 /// The work setting a person picked: every kind of work when it takes any, and none when it takes
@@ -399,7 +394,6 @@ pub enum DeviceMeshEffect {
     CancelRemoval,
 }
 
-const WORK_FROM: [&str; 3] = [WORK_NOTHING, WORK_OWN, WORK_ANYONE];
 const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
 const SERVICES: [&str; 5] = [
     "full_content_replication",
@@ -723,29 +717,24 @@ fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
             &[("origin", winner.device_label.as_str().into())],
         );
     }
-    let others = alternatives
+    let names: Vec<&str> = alternatives
         .iter()
-        .take(3)
         .map(|origin| origin.device_label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let remainder = alternatives.len().saturating_sub(3);
-    let suffix = if remainder == 0 {
-        String::new()
-    } else {
-        t_args(
-            "mesh-and-more",
-            &[("n", i64::try_from(remainder).unwrap_or(0).into())],
-        )
-    };
-    t_args(
-        "mesh-resolved",
-        &[
-            ("winner", winner.device_label.as_str().into()),
-            ("others", others.into()),
-            ("suffix", suffix.into()),
-        ],
-    )
+        .collect();
+    let mut args = vec![("winner", winner.device_label.as_str().into())];
+    args.extend(name_args(&names));
+    t_args("mesh-resolved", &args)
+}
+
+/// The arguments a message that counts devices names them with.
+fn name_args(names: &[&str]) -> Vec<(&'static str, ui::i18n::ArgValue)> {
+    let count = i64::try_from(names.len()).unwrap_or(i64::MAX);
+    vec![
+        ("count", count.into()),
+        ("first", names.first().copied().unwrap_or_default().into()),
+        ("second", names.get(1).copied().unwrap_or_default().into()),
+        ("more", count.saturating_sub(2).into()),
+    ]
 }
 
 fn provenance_summaries(provenance: &RoamingProvenance) -> Vec<(String, String)> {
@@ -1075,7 +1064,7 @@ impl DeviceMeshModel {
         let configured = match effect {
             DeviceMeshEffect::SetWork { work } => {
                 let from =
-                    work_from_label(work).ok_or_else(|| "unsupported work setting".to_string())?;
+                    work_from_key(work).ok_or_else(|| "unsupported work setting".to_string())?;
                 self.apply_work(work_from(from, self.config.work.when));
                 true
             }
@@ -1397,28 +1386,28 @@ impl Page<'_> {
             .map(|device| device.label.as_str())
             .collect();
 
-        let summaries = self.roaming_provenance.as_ref().map(provenance_summaries);
-        let roaming_rows = if self.roaming_provenance_unreadable {
-            vec![note(&t("mesh-roaming-unreadable"))]
-        } else if let Some(summaries) = summaries.filter(|summaries| !summaries.is_empty()) {
-            let row = |(name, detail): (String, String)| value_row(&name, &detail);
-            summaries.into_iter().map(row).collect()
-        } else {
-            vec![note(&t("mesh-roaming-none"))]
-        };
-
         let mut groups = vec![self.devices_section().into_element()];
         if others.is_empty() {
             let waiting = rows(vec![note(&t("mesh-share-once-added"))]);
             groups.push(section(&t("mesh-privacy-title"), waiting).into_element());
         } else {
-            let shared_with = shared_with(&others);
+            let shared_with = t_args("mesh-shared-with", &name_args(&others));
             groups.extend(self.continuity_group(move |cx, continuity| {
                 privacy_section(cx, continuity, &shared_with)
             }));
+            // Roaming settings and sharing history both come from other devices.
+            let summaries = self.roaming_provenance.as_ref().map(provenance_summaries);
+            let roaming_rows = if self.roaming_provenance_unreadable {
+                vec![note(&t("mesh-roaming-unreadable"))]
+            } else if let Some(summaries) = summaries.filter(|summaries| !summaries.is_empty()) {
+                let row = |(name, detail): (String, String)| value_row(&name, &detail);
+                summaries.into_iter().map(row).collect()
+            } else {
+                vec![note(&t("mesh-roaming-none"))]
+            };
+            groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
+            groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
         }
-        groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
-        groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
         groups.extend(self.agents_group());
         page_of(groups)
     }
@@ -1505,20 +1494,6 @@ fn privacy_section(
         );
     }
     section(&t("mesh-privacy-title"), rows(privacy_rows))
-}
-
-/// Who the sharing reaches: "On for Pixel and Laptop".
-fn shared_with(others: &[&str]) -> String {
-    let count = i64::try_from(others.len()).unwrap_or(i64::MAX);
-    t_args(
-        "mesh-shared-with",
-        &[
-            ("count", count.into()),
-            ("first", others.first().copied().unwrap_or_default().into()),
-            ("second", others.get(1).copied().unwrap_or_default().into()),
-            ("more", (count - 2).into()),
-        ],
-    )
 }
 
 fn activity_section(continuity: &ContinuityPrivacy) -> SettingsSection {
@@ -2146,6 +2121,37 @@ mod tests {
         );
     }
 
+    /// A device's roaming reading: one setting from one other device, one
+    /// Wi-Fi network from four.
+    fn roaming_projection() -> RoamingProvenance {
+        let origin = |id: &str, label: &str, counter| Origin {
+            device_id: id.into(),
+            device_label: label.into(),
+            counter,
+        };
+        RoamingProvenance {
+            schema_version: SCHEMA_VERSION,
+            generated_unix_ms: 1,
+            settings: vec![SettingResolution {
+                key: "tilo.appearance.mode".into(),
+                winner: origin("b", "Laptop", 8),
+                alternatives: vec![origin("a", "Desktop", 7)],
+            }],
+            wifi: vec![WifiResolution {
+                network_id: "ab".repeat(32),
+                ssid: "Home".into(),
+                security: "WPA2".into(),
+                winner: origin("b", "Laptop", 9),
+                alternatives: vec![
+                    origin("a", "Desktop", 7),
+                    origin("c", "Phone", 6),
+                    origin("d", "Tablet", 5),
+                    origin("e", "NAS", 4),
+                ],
+            }],
+        }
+    }
+
     #[test]
     fn continuity_controls_are_typed_audited_and_refuse_future_provenance() {
         {
@@ -2166,28 +2172,7 @@ mod tests {
         }
 
         {
-            let origin = |id: &str, label: &str, counter| Origin {
-                device_id: id.into(),
-                device_label: label.into(),
-                counter,
-            };
-            let projection = RoamingProvenance {
-                schema_version: SCHEMA_VERSION,
-                generated_unix_ms: 1,
-                settings: vec![SettingResolution {
-                    key: "tilo.appearance.mode".into(),
-                    winner: origin("b", "Laptop", 8),
-                    alternatives: vec![origin("a", "Desktop", 7)],
-                }],
-                wifi: vec![WifiResolution {
-                    network_id: "ab".repeat(32),
-                    ssid: "Home".into(),
-                    security: "WPA2".into(),
-                    winner: origin("b", "Laptop", 9),
-                    alternatives: Vec::new(),
-                }],
-            };
-            let summaries = provenance_summaries(&projection);
+            let summaries = provenance_summaries(&roaming_projection());
             assert_eq!(
                 summaries,
                 vec![
@@ -2197,7 +2182,7 @@ mod tests {
                     ),
                     (
                         "Wi-Fi: Home".into(),
-                        "Sealed WPA2 profile. From Laptop".into()
+                        "Sealed WPA2 profile. Resolved to Laptop; differs from Desktop, Phone and 2 more".into()
                     )
                 ]
             );
@@ -2265,7 +2250,7 @@ mod tests {
             let mut pane = DeviceMeshModel::with_path(&path);
             let _ = pane.poll();
             pane.apply(&DeviceMeshEffect::SetWork {
-                work: WORK_ANYONE.into(),
+                work: "mesh-work-anyone".into(),
             })
             .unwrap();
             pane.apply(&DeviceMeshEffect::SetDeviceService {
@@ -2298,17 +2283,18 @@ mod tests {
             let _ = pane.poll();
             assert!(!path.exists());
             pane.apply(&DeviceMeshEffect::SetWork {
-                work: WORK_OWN.into(),
+                work: "mesh-work-own".into(),
             })
             .unwrap();
             assert!(path.exists());
         }
 
         {
-            assert_eq!(work_from_label(WORK_NOTHING), Some(WorkFrom::Nobody));
-            assert_eq!(work_from_label(WORK_OWN), Some(WorkFrom::OwnDevices));
-            assert_eq!(work_from_label(WORK_ANYONE), Some(WorkFrom::Anyone));
-            assert_eq!(work_from_label("Personal device"), None);
+            // A choice is a message key, so a language's label is never one.
+            assert_eq!(work_from_key("mesh-work-nothing"), Some(WorkFrom::Nobody));
+            assert_eq!(work_from_key("mesh-work-own"), Some(WorkFrom::OwnDevices));
+            assert_eq!(work_from_key("mesh-work-anyone"), Some(WorkFrom::Anyone));
+            assert_eq!(work_from_key(&t("mesh-work-some")), None);
             assert!(work_from(WorkFrom::Nobody, WorkWhen::always()).takes_nothing());
             assert!(!work_from(WorkFrom::OwnDevices, WorkWhen::always()).takes_nothing());
         }
@@ -2364,7 +2350,7 @@ mod tests {
             "only the shares the page offers are kept"
         );
         pane.apply(&DeviceMeshEffect::SetWork {
-            work: WORK_OWN.into(),
+            work: "mesh-work-own".into(),
         })
         .unwrap();
         let saved = RelayConfig::load(&path).unwrap();
@@ -2399,7 +2385,7 @@ mod tests {
             assert!(!pane.poll());
 
             pane.apply(&DeviceMeshEffect::SetWork {
-                work: WORK_OWN.into(),
+                work: "mesh-work-own".into(),
             })
             .unwrap();
 
@@ -2420,7 +2406,7 @@ mod tests {
             let mut pane = DeviceMeshModel::with_path(&path);
             let _ = pane.poll();
             pane.apply(&DeviceMeshEffect::SetWork {
-                work: WORK_ANYONE.into(),
+                work: "mesh-work-anyone".into(),
             })
             .unwrap();
             pane.apply(&DeviceMeshEffect::SetDeviceService {
@@ -2475,7 +2461,7 @@ mod tests {
     #[test]
     fn the_panes_troubles_read_in_the_persons_language() {
         let dir = tempfile::tempdir().unwrap();
-        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        let mut model = devices_and_a_home_server(dir.path());
         model.status = MeshStatus::NotSaved;
         model.personal_devices_unavailable = true;
         model.roaming_provenance_unreadable = true;
@@ -2916,6 +2902,11 @@ mod tests {
             "{alone}"
         );
         assert!(!alone.contains("Clipboard"), "{alone}");
+        // Roaming settings and sharing history come from other devices too.
+        assert!(!alone.contains(&t("mesh-roaming-title")), "{alone}");
+        assert!(!alone.contains(&t("mesh-activity-title")), "{alone}");
+        assert!(!alone.contains(&t("mesh-roaming-none")), "{alone}");
+        assert!(!alone.contains(&t("mesh-audit-empty")), "{alone}");
 
         let devices = devices_in(
             &serde_json::json!({"devices": [
@@ -2938,6 +2929,9 @@ mod tests {
         let described = descriptions(app.harness().root_widget());
         assert!(described.contains("On for Phone\n"), "{described}");
         assert!(!shown.contains("Add a device to choose"), "{shown}");
+        for present in [t("mesh-roaming-title"), t("mesh-activity-title")] {
+            assert!(shown.contains(&present), "{present}: {shown}");
+        }
         assert_eq!(devices_in("not a reading"), None);
     }
 
