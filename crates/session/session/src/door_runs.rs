@@ -73,14 +73,15 @@ impl DoorRuns {
             .map(|going| (going.run.clone(), going.answers.clone()))
     }
 
-    /// The name of the run in `workspace` whose agent is `agent`, while it goes, when that
-    /// agent came in from another of the person's own devices; `None` for any other run.
-    pub(crate) fn own_device_run(&self, workspace: &str, agent: &str) -> Option<String> {
+    /// The name of the run `run` in `workspace`, while it goes, when its agent came in from
+    /// another of the person's own devices; `None` for any other run. A run is named by its own
+    /// issue: two connections of one agent are two runs.
+    pub(crate) fn own_device_run(&self, workspace: &str, run: &str) -> Option<String> {
         self.held
             .lock_recover()
             .iter()
             .find(|going| {
-                going.from_own_device && going.workspace == workspace && going.run.agent == agent
+                going.from_own_device && going.workspace == workspace && going.run.issue == run
             })
             .map(|going| going.run.title.clone())
     }
@@ -477,7 +478,7 @@ mod tests {
         assert_eq!(runs.in_workspace(WORKSPACE), vec![minted.run.clone()]);
         assert!(runs.in_workspace("another").is_empty());
         assert_eq!(
-            runs.own_device_run(WORKSPACE, &minted.run.agent),
+            runs.own_device_run(WORKSPACE, &minted.run.issue),
             None,
             "an agent of this login is not one from another device"
         );
@@ -521,12 +522,12 @@ mod tests {
         let runs = Arc::new(DoorRuns::default());
         let held = runs.open(WORKSPACE, minted.run.clone(), true);
         assert_eq!(
-            runs.own_device_run(WORKSPACE, &minted.run.agent).as_deref(),
+            runs.own_device_run(WORKSPACE, &minted.run.issue).as_deref(),
             Some("claude-code@laptop#1")
         );
-        assert_eq!(runs.own_device_run("another", &minted.run.agent), None);
+        assert_eq!(runs.own_device_run("another", &minted.run.issue), None);
         assert_eq!(runs.own_device_run(WORKSPACE, "someone-else"), None);
         drop(held);
-        assert_eq!(runs.own_device_run(WORKSPACE, &minted.run.agent), None);
+        assert_eq!(runs.own_device_run(WORKSPACE, &minted.run.issue), None);
     }
 }

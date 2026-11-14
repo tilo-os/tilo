@@ -1826,6 +1826,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
         workspace: WORKSPACE.into(),
         person,
         app_id: today.into(),
+        run: None,
         target_app: "so.tilo.lang.tasks".into(),
         resource: "tasks".into(),
         action: "clear_done".into(),

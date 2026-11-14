@@ -101,6 +101,7 @@ impl AppBrokerState {
             workspace: workspace.to_owned(),
             person: person.to_owned(),
             app_id: run.agent,
+            run: Some(run.issue.clone()),
             target_app: question.app.clone(),
             resource: question.resource.clone(),
             action: question.action.clone(),

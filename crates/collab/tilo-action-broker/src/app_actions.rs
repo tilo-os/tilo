@@ -28,6 +28,9 @@ pub struct AppActionConsentRequest {
     pub person: String,
     /// The application asking.
     pub app_id: String,
+    /// The run that asks, where a run's step asks: its own issue, which names it among the
+    /// connections of the same agent. `None` for a question about an application's action.
+    pub run: Option<String>,
     /// The application whose action it wants to use.
     pub target_app: String,
     /// The resource of `target_app` that publishes the action, as a grant

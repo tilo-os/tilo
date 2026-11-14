@@ -89,7 +89,7 @@ impl Sheet {
         }
         let agent = self
             .doors
-            .own_device_run(&request.workspace, &request.app_id)?;
+            .own_device_run(&request.workspace, request.run.as_deref()?)?;
         if !(self.unasked)() {
             return None;
         }
@@ -209,6 +209,7 @@ mod tests {
             workspace: "w1".into(),
             person: "p".into(),
             app_id: "task-0123456789ab".into(),
+            run: None,
             target_app: "so.tilo.terminal".into(),
             resource: "terminal".into(),
             action: "run".into(),

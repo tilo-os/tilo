@@ -289,6 +289,7 @@ fn conversation_request(draft: &Draft, resource: &str, action: &str) -> AppActio
         workspace: String::new(),
         person: String::new(),
         app_id: String::new(),
+        run: None,
         target_app: String::new(),
         resource: resource.to_owned(),
         action: action.to_owned(),
