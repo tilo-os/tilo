@@ -1940,21 +1940,6 @@ fn session_with_agents() -> Session {
     session
 }
 
-/// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
-fn sent(session: &mut Session, n: usize) -> serde_json::Value {
-    until(session, |session| {
-        session.settle_services();
-        session
-            .read("session:send-to")
-            .and_then(|sent| sent.as_array()?.get(n).cloned())
-            .is_some()
-    });
-    session
-        .read("session:send-to")
-        .and_then(|sent| sent.as_array()?.get(n).cloned())
-        .expect("the send is read")
-}
-
 /// A request typed into search is the person's send of those words to the workspace's agent — one
 /// where they keep none yet, named as the workspace names its agent — through the session's one
 /// send (`session:send-to#send`), and search closes behind the row.
@@ -1979,7 +1964,7 @@ fn a_request_typed_into_search_is_sent_to_the_workspaces_agent() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    let first = sent(&mut session, 0);
+    let first = crate::common::sent(&mut session, 0);
     assert_eq!(first["text"], request, "{first}");
     assert_eq!(
         first["to"],
@@ -2006,7 +1991,7 @@ fn a_second_request_goes_to_the_agent_the_first_made() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    sent(&mut session, 0);
+    crate::common::sent(&mut session, 0);
     // The agent the send made is the workspace's to keep once the pass has read its record, as a
     // person's next search is opened long after.
     for _ in 0..10 {
@@ -2020,7 +2005,7 @@ fn a_second_request_goes_to_the_agent_the_first_made() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    let second = sent(&mut session, 1);
+    let second = crate::common::sent(&mut session, 1);
     assert_eq!(second["text"], "and move it to Friday", "{second}");
     let to = &second["to"][0];
     assert_eq!(to["kind"], "agent", "the agent kept now: {second}");

@@ -153,6 +153,26 @@ pub fn wait_for<T>(
     }
 }
 
+/// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
+pub fn sent(session: &mut Session, n: usize) -> Value {
+    wait_for(session, format!("send {n} to be carried out"), |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|read| read["sent"].as_array()?.get(n).cloned())
+    })
+}
+
+/// The newest send the session carried out, as `session:send-to` reads, once there is one.
+pub fn last_sent(session: &mut Session) -> Value {
+    wait_for(session, "the last send to be carried out", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|read| read["sent"].as_array()?.last().cloned())
+    })
+}
+
 /// [`wait_for`] without failing: whatever `probe` answers before the suite's hang bound runs out,
 /// for a test that asserts on its own observation (and says what it saw) rather than taking the
 /// helper's message.

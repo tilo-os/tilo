@@ -103,12 +103,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
             "text": "the plan for Friday",
         }),
     );
-    let sent = crate::common::wait_for(&mut session, "the send to be carried out", |session| {
-        session.settle_services();
-        session
-            .read("session:send-to")
-            .and_then(|read| read["sent"].as_array()?.last().cloned())
-    });
+    let sent = crate::common::last_sent(&mut session);
     assert_eq!(sent["text"], "the plan for Friday", "{sent}");
     assert_eq!(sent["to"][0]["kind"], "person", "{sent}");
     let listed = session

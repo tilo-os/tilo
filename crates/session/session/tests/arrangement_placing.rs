@@ -453,12 +453,7 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
                 .expect("arguments"),
         )
         .expect("text that names nothing asks the agent");
-    let sent = crate::common::wait_for(&mut session, "the ask to be sent", |session| {
-        session.settle_services();
-        session
-            .read("session:send-to")
-            .and_then(|read| read["sent"].as_array()?.last().cloned())
-    });
+    let sent = crate::common::last_sent(&mut session);
     assert_eq!(sent["text"], "nothing is called this", "{sent}");
     assert_eq!(
         arrangement(&session).places.len(),

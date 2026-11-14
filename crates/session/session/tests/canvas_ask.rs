@@ -74,16 +74,6 @@ fn ask(session: &mut Session, text: &str) {
     session.step(Duration::from_millis(1)).expect("a frame");
 }
 
-/// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
-fn sent(session: &mut Session, n: usize) -> serde_json::Value {
-    crate::common::wait_for(session, format!("send {n} to be carried out"), |session| {
-        session.settle_services();
-        session
-            .read("session:send-to")
-            .and_then(|sent| sent.as_array()?.get(n).cloned())
-    })
-}
-
 /// A question typed into the canvas entry is the person's send of those words to the workspace's
 /// agent: one where they keep none yet, named as the workspace names its agent. Nothing stands on
 /// the canvas for it — the conversation it lands in is Chat's to open.
@@ -96,7 +86,7 @@ fn a_question_typed_on_the_canvas_is_sent_to_the_workspaces_agent() {
 
     ask(&mut session, "what is on my task list?");
 
-    let first = sent(&mut session, 0);
+    let first = crate::common::sent(&mut session, 0);
     assert_eq!(first["text"], "what is on my task list?", "{first}");
     let to = first["to"].as_array().expect("whom it went to");
     assert_eq!(to.len(), 1, "one agent is asked: {first}");
@@ -121,11 +111,11 @@ fn a_second_ask_goes_to_the_agent_the_first_made() {
     let root = private_home();
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
-    sent(&mut session, 0);
+    crate::common::sent(&mut session, 0);
 
     ask(&mut session, "and what is due today?");
 
-    let second = sent(&mut session, 1);
+    let second = crate::common::sent(&mut session, 1);
     assert_eq!(second["text"], "and what is due today?", "{second}");
     let to = &second["to"][0];
     assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
