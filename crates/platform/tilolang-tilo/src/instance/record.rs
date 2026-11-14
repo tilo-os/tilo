@@ -305,7 +305,12 @@ impl InstanceRecord {
 
     /// The record's history verbs speak `locale` from now on.
     pub fn speak(&mut self, locale: impl Into<String>) {
-        self.words = HostWords::new(locale);
+        self.words.locale = locale.into();
+    }
+
+    /// The record's history verbs name the actions `resources` publish by their labels.
+    pub fn learn_labels(&mut self, resources: &[tilo_actions::ResourceSpec]) {
+        std::sync::Arc::make_mut(&mut self.words.labels).learn(resources);
     }
 
     /// The words the record's history verbs speak in.
@@ -1563,6 +1568,7 @@ impl InstanceRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<Vec<ChangeHash>, RecordError> {
+        let _steps = OwnSteps::enter();
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
@@ -2019,5 +2025,24 @@ impl crate::instance::HistoryAsk {
             Self::UndoStep(change) => undo(None, Some(change)),
             Self::UndoRun(run) => undo(Some(run), None),
         }
+    }
+}
+
+/// While held, what is committed on this thread joins no undo step another history opened on it
+/// (`tilo_actions::open_step`): a window's own document, where the window runs on the record's
+/// thread. A change of the record is a step of its invocation's, or one of its own.
+struct OwnSteps(Option<tilo_actions::ActionId>);
+
+impl OwnSteps {
+    fn enter() -> Self {
+        let open = tilo_actions::current_step();
+        tilo_actions::open_step(None);
+        Self(open)
+    }
+}
+
+impl Drop for OwnSteps {
+    fn drop(&mut self) {
+        tilo_actions::open_step(self.0);
     }
 }

@@ -1287,10 +1287,13 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
         assert!(host_actions.iter().any(|a| a == wanted), "{host_actions:?}");
     }
     let resources = Workspace::resources();
+    // Every record's `read` is the framework's, which answers it for each resource it publishes.
+    let mut handlers = ui::widget::resource_operation_handlers(&workspace.window);
+    handlers.insert(ui::tilo_resource::read::TYPE.to_owned());
     let violations = ui::tilo_actions::validate_surface(
         &resources,
         &ActionRegistry::with(register_actions),
-        &ui::widget::resource_operation_handlers(&workspace.window),
+        &handlers,
     );
     assert!(violations.is_empty(), "{violations:#?}");
     let output = workspace

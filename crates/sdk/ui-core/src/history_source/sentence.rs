@@ -234,47 +234,19 @@ pub fn step_title(entry: &ActionContext) -> Option<String> {
 }
 
 thread_local! {
-    /// The labels of the actions this thread's app publishes, by action id:
-    /// each with the kind of the resource that publishes it.
     /// The titles of the fields this thread's app stores, by owner type and
     /// key.
     static FIELD_TITLES: std::cell::RefCell<std::collections::HashMap<(String, String), String>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
-    static ACTION_LABELS: std::cell::RefCell<std::collections::HashMap<String, Vec<(String, String)>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The labels of the actions this thread's app publishes.
+    static ACTION_LABELS: std::cell::RefCell<tilo_history::ActionLabels> =
+        std::cell::RefCell::new(tilo_history::ActionLabels::default());
 }
 
 /// Remember the labels of the actions `resources` publish, as the app words
 /// them in the reader's language, so entries naming them read the same.
 pub fn learn_labels(resources: &[tilo_actions::ResourceSpec]) {
-    fn walk(
-        resource: &tilo_actions::ResourceSpec,
-        labels: &mut std::collections::HashMap<String, Vec<(String, String)>>,
-    ) {
-        for action in &resource.actions {
-            // What a change of the action says it by: the id the app declares it under, where
-            // that is not the name it publishes it by.
-            let by = if action.declared.is_empty() {
-                action.id.clone()
-            } else {
-                action.declared.clone()
-            };
-            let known = labels.entry(by).or_default();
-            match known.iter_mut().find(|(kind, _)| *kind == resource.kind) {
-                Some(entry) => entry.1.clone_from(&action.label),
-                None => known.push((resource.kind.clone(), action.label.clone())),
-            }
-        }
-        for child in &resource.children {
-            walk(child, labels);
-        }
-    }
-    ACTION_LABELS.with(|labels| {
-        let mut labels = labels.borrow_mut();
-        for resource in resources {
-            walk(resource, &mut labels);
-        }
-    });
+    ACTION_LABELS.with(|labels| labels.borrow_mut().learn(resources));
 }
 
 /// Remember the titles of the fields `shape` lays out (and those of its
@@ -334,16 +306,7 @@ impl tilo_history::Labels for ThreadLabels {
     }
 
     fn action(&self, key: &tilo_actions::ActionKey) -> Option<String> {
-        ACTION_LABELS.with(|labels| {
-            let labels = labels.borrow();
-            let known = labels.get(&key.action)?;
-            known
-                .iter()
-                .find(|(kind, _)| *kind == key.kind)
-                .or_else(|| known.first())
-                .map(|(_, label)| label.clone())
-                .filter(|label| !label.trim().is_empty())
-        })
+        ACTION_LABELS.with(|labels| tilo_history::Labels::action(&*labels.borrow(), key))
     }
 }
 

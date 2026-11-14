@@ -23,7 +23,7 @@ use tilolang_tilo::publish::{
     Caller, Committer, Planner, Publications, host_resource, publish_package,
 };
 use tilolang_tilo::search::{Hit, every_hit};
-use ui::tilo_actions::ActionInvoker;
+
 use ui::tilo_resource::profiling::Phase;
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry, SearchWeight};
 
@@ -202,21 +202,11 @@ fn live_host() -> Option<Host> {
     LIVE.with(|live| live.borrow().last().map(|published| published.host.clone()))
 }
 
-/// What the door admitted of an invoker, as the runtime reads it.
-#[must_use]
-pub fn caller_of(invoker: &ActionInvoker) -> Caller {
-    Caller {
-        actor: invoker.key(),
-        agent: !invoker.acting.is_person(),
-        on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
-    }
-}
-
 /// The planner and committer the published actions build with: the host's, reading the caller
 /// of the invocation being built from the door.
 fn door_handles(host: &Host) -> (Arc<dyn Planner>, Arc<dyn Committer>) {
     let handle = Arc::new(host.handle().with_caller(|| {
-        ui::invocation_scope::current_invoker().map(|invoker| caller_of(&invoker))
+        ui::invocation_scope::current_invoker().map(|invoker| Caller::from(&invoker))
     }));
     (handle.clone(), handle)
 }
@@ -296,14 +286,6 @@ impl Resource for Workspace {
     /// What the workspace's records hold is read as data, as every app's documents are: an agent
     /// reads a note's text rather than a screenshot of it.
     const READABLE: bool = true;
-
-    /// Every record and every item in one is part of the workspace's content (`tl:<app>:<id>`); the
-    /// package's own resource (`tl:<app>`) and the host's carry only actions.
-    fn document_child(_state: &WorkspaceState, id: &str) -> bool {
-        id.strip_prefix("tl:")
-            .and_then(|rest| rest.split_once(':'))
-            .is_some_and(|(app, item)| !app.is_empty() && !item.is_empty())
-    }
 
     /// Read by the runtime over `doc`: the live window's when it holds exactly that record, and
     /// otherwise (a version of the past) one of its own over it, as History's preview builds.

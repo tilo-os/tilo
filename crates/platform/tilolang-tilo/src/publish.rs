@@ -61,6 +61,17 @@ pub struct Caller {
     pub on_behalf_of: Option<String>,
 }
 
+impl From<&tilo_actions::ActionInvoker> for Caller {
+    /// What the door admitted of `invoker`, as the runtime reads it.
+    fn from(invoker: &tilo_actions::ActionInvoker) -> Self {
+        Self {
+            actor: invoker.key(),
+            agent: !invoker.acting.is_person(),
+            on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
+        }
+    }
+}
+
 /// Where the planner reads the caller of the invocation being built, on the thread that builds it.
 pub type CallerSource = dyn Fn() -> Option<Caller> + Send + Sync;
 
@@ -461,10 +472,10 @@ impl ActionTypes {
             && self.words == words
     }
 
-    /// The record `id` of the type `type_name`, labelled `label`, carrying its `open`, the
-    /// direct edits of its type ([`edit_types`]) and the actions on its type. A root and an
-    /// item are published alike: an item's edits are the same typed field edits, spliced into
-    /// the record by the item's id there ([`edit_action`]).
+    /// The record `id` of the type `type_name`, labelled `label`, carrying its `open`, its
+    /// `read`, the direct edits of its type ([`edit_types`]) and the actions on its type. A root
+    /// and an item are published alike: an item's edits are the same typed field edits, spliced
+    /// into the record by the item's id there ([`edit_action`]).
     ///
     /// A `root` record's `open` also takes the item under it to show, which a window that shows
     /// none of the record's items does not publish: a search hit on such an item opens it there.
@@ -474,12 +485,13 @@ impl ActionTypes {
         } else {
             open_spec(id)
         };
-        let mut resource = ResourceSpec::new(
-            resource_id(&self.meta.app, id),
-            self.meta.kind_of(type_name),
-            label,
-        )
-        .with_action(open);
+        let published = resource_id(&self.meta.app, id);
+        // What it holds is the workspace's content, read as data: an agent reads a note's text
+        // rather than a screenshot of it.
+        let read = tilo_resource::read::spec(Some(&published));
+        let mut resource = ResourceSpec::new(published, self.meta.kind_of(type_name), label)
+            .with_action(open)
+            .with_action(read);
         let Some(of_type) = self.on_type.get(type_name) else {
             return resource;
         };

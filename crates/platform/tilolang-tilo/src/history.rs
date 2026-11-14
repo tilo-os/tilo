@@ -34,11 +34,12 @@ pub fn with_verbs(mut resource: ResourceSpec) -> ResourceSpec {
 }
 
 /// What a tilolang host's history verbs say, without the toolkit: a step as the platform's
-/// history sentence in `locale`, a person by the handle their changes carry. The UI half renders
-/// History in the reader's own words.
+/// history sentence in `locale`, an action by the label the instance publishes it under, a person
+/// by the handle their changes carry. The UI half renders History in the reader's own words.
 #[derive(Clone, Debug)]
 pub struct HostWords {
-    locale: String,
+    pub(crate) locale: String,
+    pub(crate) labels: std::sync::Arc<tilo_history::ActionLabels>,
 }
 
 impl HostWords {
@@ -47,6 +48,7 @@ impl HostWords {
     pub fn new(locale: impl Into<String>) -> Self {
         Self {
             locale: locale.into(),
+            labels: std::sync::Arc::default(),
         }
     }
 }
@@ -60,7 +62,9 @@ impl ResolveAuthor for HostWords {
 
 impl HistoryWords for HostWords {
     fn sentence(&self, entry: &ActionContext) -> String {
-        tilo_history::Reader::new(&self.locale).sentence(entry)
+        tilo_history::Reader::new(&self.locale)
+            .with_labels(&*self.labels)
+            .sentence(entry)
     }
 }
 

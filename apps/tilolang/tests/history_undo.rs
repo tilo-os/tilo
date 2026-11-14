@@ -251,18 +251,8 @@ impl Window for InProcess {
     }
 
     fn action(&mut self, resource: &str, name: &str) -> String {
-        fn flattened<'a>(
-            specs: &'a [ui::tilo_actions::ResourceSpec],
-            out: &mut Vec<&'a ui::tilo_actions::ResourceSpec>,
-        ) {
-            for spec in specs {
-                out.push(spec);
-                flattened(&spec.children, out);
-            }
-        }
         let specs = self.app.harness().resources();
-        let mut all = Vec::new();
-        flattened(&specs, &mut all);
+        let all = crate::change_marks::flattened(&specs);
         all.iter()
             .find(|spec| spec.id.as_str() == resource)
             .and_then(|spec| spec.actions.iter().find(|action| action.id == name))

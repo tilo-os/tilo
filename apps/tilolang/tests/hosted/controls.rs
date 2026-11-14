@@ -582,7 +582,8 @@ impl super::Session {
 
     /// Invoke `action` of the published `resource` at the door the broker delivers to, as
     /// `invoker` (the person at the window when `None`), within `ambient`: the task the invoker
-    /// carries out, recorded with every change it makes. Answers what the operation answered.
+    /// carries out, recorded with every change it makes. The broker names the invoker it admitted
+    /// in the delivery's context. Answers what the operation answered.
     pub(crate) fn invoke(
         &mut self,
         invoker: Option<ui::tilo_actions::ActionInvoker>,
@@ -591,7 +592,13 @@ impl super::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
-        let actor = invoker.map_or_else(|| self.person.clone(), |invoker| invoker.key());
+        let actor = invoker
+            .as_ref()
+            .map_or_else(|| self.person.clone(), ui::tilo_actions::ActionInvoker::key);
+        let context = match invoker {
+            Some(invoker) => Some(ambient.cloned().unwrap_or_default().with_invoker(invoker)),
+            None => ambient.cloned(),
+        };
         let arguments = format!(
             "{}{}",
             ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -602,7 +609,7 @@ impl super::Session {
             resource.to_owned(),
             action.to_owned(),
             Some(arguments),
-            ambient.cloned(),
+            context,
         );
         match answered {
             Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),

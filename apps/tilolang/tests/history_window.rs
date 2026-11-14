@@ -1,10 +1,10 @@
 //! What tests of a window's history (`std.history`) read of it: the moments it shows as how
 //! long ago they were, when the window next wakes, and its pictures.
 
-use ui::framework::testing::HostedApp;
+use crate::change_marks::Driven;
 
 /// What each moment of the window says, as `ui.Time` shows it (`2 min ago`), top to bottom.
-pub(crate) fn times(app: &mut HostedApp) -> Vec<String> {
+pub(crate) fn times(app: &mut impl Driven) -> Vec<String> {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
     // The history's own steps, newest first: the page's facts stand over its heading and say
@@ -31,7 +31,7 @@ pub(crate) fn times(app: &mut HostedApp) -> Vec<String> {
 }
 
 /// How long the window sleeps before something it shows is due to change, if it waits for one.
-pub(crate) fn sleeps_for(app: &mut HostedApp) -> Option<ui::time::Duration> {
+pub(crate) fn sleeps_for(app: &mut impl Driven) -> Option<ui::time::Duration> {
     let deadline = app.harness().frame_schedule().next_wake_deadline?;
     Some(deadline.saturating_duration_since(ui::time::now()))
 }
@@ -55,7 +55,7 @@ pub(crate) fn shots_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Write the window as `<name>-light.png` and `<name>-dark.png`, when shots are asked for.
-pub(crate) fn shoot(app: &mut HostedApp, name: &str, settle: impl Fn(&mut HostedApp)) {
+pub(crate) fn shoot<W: Driven>(app: &mut W, name: &str, settle: impl Fn(&mut W)) {
     let Some(dir) = shots_dir() else {
         return;
     };

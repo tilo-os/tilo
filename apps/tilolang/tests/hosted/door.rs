@@ -1,10 +1,10 @@
 //! What an agent's task does through the door is the task's, for the person it acts for, and
 //! history and undo group it by task like any app's agent-driven change.
 
-use crate::change_marks::{flattened, settle};
+use super::Session;
+use crate::change_marks::{Driven as _, action_id, flattened, settle};
 use serde_json::{Map, Value as Json, json};
 use tilolang_tilo::action::resource_ids;
-use ui::framework::testing::HostedApp;
 use ui::history_source::steps::Scope;
 use ui::tilo_actions::{ActionContext, ActionInvoker};
 
@@ -25,29 +25,10 @@ fn arguments(value: &Json) -> Map<String, Json> {
 }
 
 /// The window of the installed Notes package as the person opened it, and the notebook's id.
-fn notes_open() -> (HostedApp, String) {
-    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
-    settle(&mut app);
+fn notes_open() -> (Session, String) {
+    let mut app = Session::notes();
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     (app, root)
-}
-
-/// The id of the action called `name` of the published resource `resource`.
-fn action_id(app: &mut HostedApp, resource: &str, name: &str) -> String {
-    let resources = app.harness().resources();
-    let all = flattened(&resources);
-    let published = all
-        .iter()
-        .find(|published| published.id.as_str() == resource);
-    published
-        .and_then(|published| published.actions.iter().find(|action| action.label == name))
-        .map_or_else(
-            || {
-                let ids: Vec<&str> = all.iter().map(|published| published.id.as_str()).collect();
-                panic!("{resource} publishes no `{name}`; published: {ids:?}")
-            },
-            |action| action.id.clone(),
-        )
 }
 
 /// How many items the collections of the notebooks of `doc` hold: the notes.
@@ -71,7 +52,7 @@ fn items_in(doc: &mut ui::tilo_resource::Doc) -> usize {
         .sum()
 }
 
-fn notes_in(app: &mut HostedApp) -> usize {
+fn notes_in(app: &mut Session) -> usize {
     app.read(items_in)
 }
 
@@ -85,7 +66,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     let notebook = format!("tl:{NOTES}:{root}");
     // The person adds a note themselves.
     let new_note = action_id(&mut app, &notebook, "New note");
-    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+    app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
     // The task adds one by a block, and one by the published verb.
@@ -99,7 +80,6 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
             HOST,
             &run_block,
             &arguments(&json!({ "source": block })),
-            false,
         )
         .unwrap();
     assert_eq!(answer.value.unwrap()["state"], "done");
@@ -109,7 +89,6 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
         &notebook,
         &new_note,
         &Map::new(),
-        false,
     )
     .unwrap();
     settle(&mut app);
@@ -123,7 +102,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_some_and(|invoker| invoker.key() == "agent-task:7")
+                .is_some_and(|invoker| invoker.key() == task().0.key())
         })
         .collect();
     assert!(
@@ -152,7 +131,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_none_or(|invoker| invoker.key() != "agent-task:7")
+                .is_none_or(|invoker| invoker.key() != task().0.key())
         })
         .filter(|version| {
             version
@@ -201,7 +180,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
 
 /// The undo steps of the task's that are in effect in `app`'s record, newest first, each the
 /// number of changes it takes back.
-fn task_steps(app: &mut HostedApp) -> Vec<usize> {
+fn task_steps(app: &mut Session) -> Vec<usize> {
     let scope = Scope::Run("task:7".to_owned());
     app.read(|doc| {
         ui::history_source::steps::steps_in_effect(doc, &|version| scope.owns(version), 16)
@@ -228,7 +207,6 @@ fn the_invocations_of_one_task_step_undo_as_one_step_and_separate_calls_as_their
             &notebook,
             &new_note,
             &Map::new(),
-            false,
         )
         .unwrap();
         settle(&mut app);
@@ -248,7 +226,6 @@ fn the_invocations_of_one_task_step_undo_as_one_step_and_separate_calls_as_their
             &notebook,
             &new_note,
             &Map::new(),
-            false,
         )
         .unwrap();
         settle(&mut app);
@@ -263,8 +240,7 @@ fn the_installed_package_is_the_app_and_opens_on_its_root_committed_through_the_
     let definition = crate::support::installed("notes");
     assert_eq!(definition.app_id(), NOTES, "the app's id is the package's");
     assert_eq!(definition.title(), "Notes");
-    let mut app = HostedApp::open(definition, "ada").unwrap();
-    settle(&mut app);
+    let mut app = Session::notes();
     assert_eq!(
         app.read(|doc| resource_ids(doc, NOTES)).len(),
         1,
@@ -277,30 +253,29 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
     let (mut app, root) = notes_open();
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut app, &notebook, "New note");
-    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+    app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
-    // History reads the labels the window publishes, which a live window learns as it
-    // publishes them.
-    let resources = app.harness().resources();
-    ui::history_source::sentence::learn_labels(&resources);
-    let versions = app.read(ui::tilo_resource::history::versions);
-    let sentences: Vec<String> = versions
+    // The record's history, as an agent or a person asks it at the door.
+    let package = format!("tl:{NOTES}");
+    let history = action_id(&mut app, &package, "History");
+    let listed = app
+        .invoke(None, None, &package, &history, &Map::new())
+        .unwrap()
+        .value
+        .unwrap();
+    let sentences: Vec<&str> = listed["versions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the history lists its versions: {listed:#}"))
         .iter()
-        .filter_map(|version| version.context.as_ref())
-        .filter(|context| context.what.is_some())
-        .map(ui::history_source::sentence::sentence)
+        .filter_map(|version| version["sentence"].as_str())
         .collect();
     assert!(
-        sentences
-            .iter()
-            .any(|sentence| sentence == "Created Notebook"),
+        sentences.contains(&"Created Notebook"),
         "the notebook the window made reads as native history's creation: {sentences:?}"
     );
     assert!(
-        sentences
-            .iter()
-            .any(|sentence| sentence == "New note: Untitled"),
+        sentences.contains(&"New note: Untitled"),
         "the person's action reads by its label, on the note it made by what its type calls an \
          untitled one: {sentences:?}"
     );
@@ -324,29 +299,22 @@ fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
             .collect()
     });
     let new_note = action_id(&mut app, &notebook, "New note");
-    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+    app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
-    let read_at = |app: &mut HostedApp, resource: &str, version: Option<&str>| {
+    let read_at = |app: &mut Session, resource: &str, version: Option<&str>| {
         let read = action_id(app, resource, "Read the content");
         let (invoker, context) = task();
         let mut arguments = Map::new();
         if let Some(version) = version {
             arguments.insert("version".into(), json!(version));
         }
-        app.invoke(
-            Some(invoker),
-            Some(&context),
-            resource,
-            &read,
-            &arguments,
-            false,
-        )
-        .unwrap()
-        .value
-        .unwrap()
+        app.invoke(Some(invoker), Some(&context), resource, &read, &arguments)
+            .unwrap()
+            .value
+            .unwrap()
     };
-    let read = |app: &mut HostedApp, resource: &str| read_at(app, resource, None);
+    let read = |app: &mut Session, resource: &str| read_at(app, resource, None);
     let content = read(&mut app, &notebook);
     assert_eq!(content["item"], json!(notebook));
     assert_eq!(content["kind"], json!(format!("tl.{NOTES}.Notebook")));

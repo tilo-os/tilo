@@ -76,6 +76,43 @@ pub trait Labels {
     }
 }
 
+/// The labels of the actions an app publishes, by the id a change of each
+/// says it by, each with the kind of the resource that publishes it: what a
+/// reader names an action by, in the words the app publishes it in.
+#[derive(Clone, Debug, Default)]
+pub struct ActionLabels(HashMap<String, Vec<(String, String)>>);
+
+impl ActionLabels {
+    /// Remember the labels of the actions `resources` publish, under each the id a change of it
+    /// says it by: the one the app declares it under.
+    pub fn learn(&mut self, resources: &[tilo_actions::ResourceSpec]) {
+        for resource in resources {
+            for action in &resource.actions {
+                let by = tilo_actions::ActionAddress::naming(resource, action).action;
+                let known = self.0.entry(by).or_default();
+                match known.iter_mut().find(|(kind, _)| *kind == resource.kind) {
+                    Some(entry) => entry.1.clone_from(&action.label),
+                    None => known.push((resource.kind.clone(), action.label.clone())),
+                }
+            }
+            self.learn(&resource.children);
+        }
+    }
+}
+
+impl Labels for ActionLabels {
+    /// On a resource of the key's kind, or of any kind when that one has none.
+    fn action(&self, key: &ActionKey) -> Option<String> {
+        let known = self.0.get(&key.action)?;
+        known
+            .iter()
+            .find(|(kind, _)| *kind == key.kind)
+            .or_else(|| known.first())
+            .map(|(_, label)| label.clone())
+            .filter(|label| !label.trim().is_empty())
+    }
+}
+
 /// Fluent sources loaded into one bundle for one locale.
 pub struct Catalogue {
     bundle: FluentBundle<FluentResource>,

@@ -69,6 +69,12 @@ mod typing;
 #[path = "hosted/controls.rs"]
 mod controls;
 
+#[path = "hosted/door.rs"]
+mod door;
+
+#[path = "hosted/history.rs"]
+mod history;
+
 #[path = "hosted/personal.rs"]
 mod personal;
 

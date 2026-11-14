@@ -33,7 +33,7 @@ use ui::widget::controls::ControlResult;
 use ui::widget::{AppModel, Element, ModelPath, Widget};
 
 use crate::names::Names;
-use crate::resource::{Live, Workspace, WorkspaceState, caller_of};
+use crate::resource::{Live, Workspace, WorkspaceState};
 use ui::tilo_resource::profiling::Phase;
 use ui::widget::DrawChild;
 
@@ -53,7 +53,10 @@ fn door_endpoints(
                 .borrow()
                 .clone()
                 .ok_or_else(|| "the tilolang host has not started".to_owned())?;
-            let who = caller.invoker.as_ref().map(caller_of);
+            let who = caller
+                .invoker
+                .as_ref()
+                .map(tilolang_tilo::publish::Caller::from);
             let first = host.next_ticket();
             let answered = host.answer(effect, who.as_ref());
             queue_commits(&host, &answering.2, first, Some(caller.invocation));

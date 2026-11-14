@@ -6,25 +6,24 @@
 //! With `TILO_HISTORY_SHOTS=<dir>` the test writes the note's window, light and dark, with the
 //! run's entry closed and open.
 
+use super::Session;
 use serde_json::Map;
 use tilolang_tilo::action::resource_ids;
-use ui::framework::testing::HostedApp;
 use ui::time::testing::with_wall;
 
-use crate::change_marks::{action_id, named, published_with, run, settle};
+use crate::change_marks::{Driven as _, action_id, named, published_with, run, settle};
 use crate::history_window::{after, shoot, sleeps_for, times};
 
 const NOTES: &str = "so.tilo.lang.notes";
 #[test]
 fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes() {
     let _settled = ui::motion::testing::settled();
-    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
-    settle(&mut app);
+    let mut app = Session::notes();
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut app, &notebook, "New note");
     let made = ui::time::SystemTime::now();
-    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+    app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
     let note = published_with(&mut app, &notebook, "Rename…");
@@ -34,7 +33,7 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
         args.insert("title".to_owned(), title.into());
         args
     };
-    app.invoke(None, None, &note, &retitle, &titled("Groceries"), false)
+    app.invoke(None, None, &note, &retitle, &titled("Groceries"))
         .unwrap();
     // An agent's run renames it three times: one entry of three changes.
     let (agent, ambient) = run();
@@ -45,7 +44,6 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
             &note,
             &retitle,
             &titled(title),
-            false,
         )
         .unwrap();
     }

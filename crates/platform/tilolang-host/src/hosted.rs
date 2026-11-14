@@ -66,16 +66,6 @@ fn local_now() -> chrono::DateTime<chrono::Local> {
     chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
 }
 
-/// Who invokes, as the runtime reads the invoker the broker admitted.
-#[must_use]
-fn caller_of(invoker: &ActionInvoker) -> Caller {
-    Caller {
-        actor: invoker.key(),
-        agent: !invoker.acting.is_person(),
-        on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
-    }
-}
-
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named
 /// them for the app's launch.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1832,7 +1822,7 @@ impl Hosted {
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         let shown = self.shown();
         let by_person = invoker.acting.is_person();
-        let caller = caller_of(&invoker);
+        let caller = Caller::from(&invoker);
         let host = self
             .instance
             .host()
@@ -2019,6 +2009,8 @@ impl Hosted {
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
         let resources = surface.resources(Some(&shown));
+        // The record's history names an action by the label the window offers it under.
+        self.record.learn_labels(&resources);
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
@@ -2776,7 +2768,7 @@ impl Applier {
             .surface
             .addressed(&[], address.item.as_deref().unwrap_or(&address.resource));
         let (resources, address) = self.surface.naming(resources, &address);
-        let caller = caller_of(&invoker);
+        let caller = Caller::from(&invoker);
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits, as the invoker's.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
