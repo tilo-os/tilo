@@ -1,4 +1,4 @@
-//! Windows floating above the desk: where the workspace's record has them,
+//! Windows floating above the shell: where the workspace's record has them,
 //! and what a drag that lifts or snaps one reports.
 //!
 //! The place itself lives in the workspace's arrangement (`float`, next to
@@ -47,9 +47,9 @@ fn workspace_with(tree: &Layout, strip: StripId) -> Option<&Workspace> {
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
 }
 
-/// A window the person floated or put back in its strip on this desk. The host makes it an
+/// A window the person floated or put back in its strip on this shell. The host makes it an
 /// arranging action of the workspace's layout ([`super::DesktopHandle::take_asked_floats`]); until
-/// then the desk shows the window as asked.
+/// then the shell shows the window as asked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AskedFloat {
     /// The window in front of the group, which the action names.
@@ -168,7 +168,7 @@ pub(super) fn opened_beside(row: &GroupRow, group: u64) -> Option<u64> {
 }
 
 /// A window floating as a card in the floating layer's column on this device: the layer stacks it
-/// with the activities' cards, by the one rule they all stand by, and the desk stands the window
+/// with the activities' cards, by the one rule they all stand by, and the shell stands the window
 /// where the layer put it ([`super::DesktopHandle::dock_at`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DockedCard {
@@ -185,12 +185,12 @@ pub struct DockedCard {
 pub(super) struct Dock {
     /// The docked windows, by group, each at its card size.
     pub(super) cards: std::collections::BTreeMap<u64, DockedCard>,
-    /// Where the layer put each docked window, in desk coordinates.
+    /// Where the layer put each docked window, in shell coordinates.
     pub(super) slots: std::collections::BTreeMap<u64, Rect>,
     /// The docked windows folded to their header, with the size they open to again.
     pub(super) collapsed: std::collections::BTreeMap<u64, (f64, f64)>,
     /// The windows that opened here as cards: snapped into their strip and floated again, they go
-    /// back to the column as the card they were, not over the desk at a window's size.
+    /// back to the column as the card they were, not over the shell at a window's size.
     pub(super) born: std::collections::BTreeSet<u64>,
 }
 
@@ -250,7 +250,7 @@ pub(super) fn float(shared: &mut Shared, strip: StripId, row: &mut GroupRow, gro
     }
 }
 
-/// Lift the window `group` above the desk where it stands: a chord or a
+/// Lift the window `group` above the shell where it stands: a chord or a
 /// menu row asked, so it takes the floating size over the middle of the
 /// place it had in its strip. Returns whether the tree changed.
 fn lift(shared: &mut Shared, strip: StripId, row: &GroupRow, group: u64) -> bool {

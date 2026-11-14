@@ -1,11 +1,11 @@
 //! The workspace a page replicates, as the start module reads it.
 //!
-//! [`crate::replication`] holds it: the records and the desk a workspace
+//! [`crate::replication`] holds it: the records and the shell a workspace
 //! keeps, merged from what the host sends and written as the person changes
 //! them. Reading and writing them runs through the client's engine — the
 //! workspace's channel keys, the frames they seal and the codec that reads
 //! them — and that engine is part of the peer's code, which the page fetches
-//! right after the start module (`web/host.mjs`). A desk, a shell and a mount
+//! right after the start module (`web/host.mjs`). A shell, a shell and a mount
 //! ask about the workspace while they draw, so the start module reaching the
 //! replication directly would link the engine into itself, and every page
 //! would wait for it before its first frame.
@@ -27,7 +27,7 @@ use tilo_session::platform::records::Changes;
 use ui::automerge::AutoCommit;
 use ui::record::RecordStore;
 
-/// The desk's own document, in the workspace's routes: what the desk of the
+/// The layout's own document, in the workspace's routes: what the layout of the
 /// browser runtime is to every other device of the workspace.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
@@ -68,7 +68,7 @@ pub(crate) struct Replicated {
     /// Where the page keeps the workspace's documents: in the profile, or in
     /// the page when its peer is kept in no profile.
     pub(crate) page_store: fn(u32) -> Option<Rc<MemoryStore>>,
-    /// A mount's records and desk, to replicate with the workspace.
+    /// A mount's records and shell, to replicate with the workspace.
     pub(crate) attach: fn(u32, u64, Attachment) -> bool,
     pub(crate) detach: fn(u32, u64),
     /// Publish what a mount wrote since the last pass.
@@ -95,10 +95,10 @@ pub(crate) struct Replicated {
     pub(crate) workspace_uuid: fn(u32) -> Option<String>,
     /// The records of that workspace the page holds, as wire `(app, record)`.
     pub(crate) records: fn(u32) -> Vec<(String, String)>,
-    /// The retained desk's frontier, without cloning its history.
+    /// The retained layout's frontier, without cloning its history.
     pub(crate) desktop_history_heads: fn(u32) -> Option<Vec<ui::automerge::ChangeHash>>,
-    /// The workspace's desk document, as the profile keeps a copy of it.
-    pub(crate) desk_bytes: fn(u32) -> Option<Vec<u8>>,
+    /// The workspace's layout document, as the profile keeps a copy of it.
+    pub(crate) layout_bytes: fn(u32) -> Option<Vec<u8>>,
 }
 
 thread_local! {
@@ -193,6 +193,6 @@ pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::Change
     installed(None, |replicated| (replicated.desktop_history_heads)(id))
 }
 
-pub(crate) fn desk_bytes(id: u32) -> Option<Vec<u8>> {
-    installed(None, |replicated| (replicated.desk_bytes)(id))
+pub(crate) fn layout_bytes(id: u32) -> Option<Vec<u8>> {
+    installed(None, |replicated| (replicated.layout_bytes)(id))
 }

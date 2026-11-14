@@ -5,7 +5,7 @@
 //! and that holds at the display's scale as at 1.
 
 use super::*;
-use crate::navigation::DeskEffect;
+use crate::navigation::LayoutEffect;
 use ui::widget::TileContent;
 
 /// The windows' content: each tab shows the notice its title names.
@@ -20,8 +20,8 @@ impl TileSource for Notices {
     }
 }
 
-/// A desk of `windows` windows, each an app of its own, and the frame that draws it at `scale` .
-pub(super) fn desk_at(windows: usize, scale: f64) -> (ui::headless::FrameHarness, DesktopHandle) {
+/// A shell of `windows` windows, each an app of its own, and the frame that draws it at `scale` .
+pub(super) fn shell_at(windows: usize, scale: f64) -> (ui::headless::FrameHarness, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs: Vec<Tab> = (0..windows)
         .map(|i| Tab {
@@ -37,7 +37,7 @@ pub(super) fn desk_at(windows: usize, scale: f64) -> (ui::headless::FrameHarness
             pinned: false,
         })
         .collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices));
     let mut frame = ui::headless::FrameHarness::for_root_with(
         ui::state::State::new(),
@@ -54,25 +54,25 @@ pub(super) fn desk_at(windows: usize, scale: f64) -> (ui::headless::FrameHarness
     (frame, handle)
 }
 
-/// The windows the desk holds, in strip order: each window's id and the tab it shows in front.
+/// The windows the shell holds, in strip order: each window's id and the tab it shows in front.
 pub(super) fn windows(frame: &ui::headless::FrameHarness) -> Vec<(GroupId, TabId)> {
     frame
         .root::<DesktopSurface>()
         .shown_row_ref()
-        .expect("the desk shows its strip")
+        .expect("the shell shows its strip")
         .groups
         .iter()
         .map(|group| (group.id, group.active_tab_id()))
         .collect()
 }
 
-/// Where `group` 's own close control is drawn, in the desk's logical pixels: the control a person
+/// Where `group` 's own close control is drawn, in the shell's logical pixels: the control a person
 /// presses to close that window.
 pub(super) fn close_of(frame: &ui::headless::FrameHarness, group: GroupId) -> Point {
     let bounds = frame
         .root::<DesktopSurface>()
         .shown_row_ref()
-        .expect("the desk shows its strip")
+        .expect("the shell shows its strip")
         .groups
         .iter()
         .find(|held| held.id == group)
@@ -85,13 +85,13 @@ pub(super) fn close_of(frame: &ui::headless::FrameHarness, group: GroupId) -> Po
 }
 
 /// Click at logical `at` as the person does: the pointer moves there and the left button goes down
-/// and up over it. `FrameHarness::click_at` speaks the desk's logical pixels and scales them to the
-/// display, as the compositor hands a press to the desk that stands on it.
+/// and up over it. `FrameHarness::click_at` speaks the shell's logical pixels and scales them to the
+/// display, as the compositor hands a press to the shell that stands on it.
 pub(super) fn click(frame: &mut ui::headless::FrameHarness, at: Point) {
     frame.click_at(at.x, at.y);
 }
 
-/// The frames a close takes to drop the window from the desk: the window fades out on the clock it
+/// The frames a close takes to drop the window from the shell: the window fades out on the clock it
 /// animates by, then the row prunes it.
 pub(super) fn settle(frame: &mut ui::headless::FrameHarness) {
     let mut now = ui::time::now();
@@ -106,7 +106,7 @@ pub(super) fn settle(frame: &mut ui::headless::FrameHarness) {
 #[test]
 fn the_second_windows_close_button_closes_only_that_window() {
     let _settled = ui::motion::testing::settled();
-    let (mut frame, _handle) = desk_at(3, 1.0);
+    let (mut frame, _handle) = shell_at(3, 1.0);
     let before = windows(&frame);
     assert_eq!(before.len(), 3, "three windows stand in the strip");
     let (group, tab) = before[1];
@@ -141,7 +141,7 @@ fn the_second_windows_close_button_closes_only_that_window() {
 #[test]
 fn a_windows_close_button_closes_only_that_window_at_scale_two() {
     let _settled = ui::motion::testing::settled();
-    let (mut frame, _handle) = desk_at(3, 2.0);
+    let (mut frame, _handle) = shell_at(3, 2.0);
     let before = windows(&frame);
     assert_eq!(before.len(), 3, "three windows stand in the strip");
     let (group, tab) = before[1];
@@ -171,20 +171,20 @@ fn a_windows_close_button_closes_only_that_window_at_scale_two() {
     );
 }
 
-/// Closing by the desk's own action names the window it closes: `close-tab` with one tab's id takes
+/// Closing by the shell's own action names the window it closes: `close-tab` with one tab's id takes
 /// that window and no other.
 #[test]
 fn closing_by_the_action_with_a_window_id_closes_only_that_window() {
     let _settled = ui::motion::testing::settled();
-    let (mut frame, handle) = desk_at(3, 1.0);
+    let (mut frame, handle) = shell_at(3, 1.0);
     let before = windows(&frame);
     let (_, tab) = before[1];
 
     handle
-        .dispatch(DeskEffect::CloseTab {
+        .dispatch(LayoutEffect::CloseTab {
             tab: tab.to_string(),
         })
-        .expect("the desk closes the window it is handed");
+        .expect("the shell closes the window it is handed");
     settle(&mut frame);
 
     let after = windows(&frame);
@@ -201,7 +201,7 @@ fn closing_by_the_action_with_a_window_id_closes_only_that_window() {
 }
 
 /// A window of an app that has a second window closes alone: two windows of one app are two windows
-/// of the desk, and closing one leaves the other.
+/// of the shell, and closing one leaves the other.
 #[test]
 fn closing_a_window_of_an_app_with_two_windows_leaves_the_other() {
     let _settled = ui::motion::testing::settled();
@@ -220,7 +220,7 @@ fn closing_a_window_of_an_app_with_two_windows_leaves_the_other() {
             pinned: false,
         })
         .collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, _handle) = DesktopSurface::new(tree, 7, Box::new(Notices));
     let mut frame = ui::headless::FrameHarness::for_root_with(
         ui::state::State::new(),
@@ -265,12 +265,12 @@ fn closing_a_window_of_an_app_with_two_windows_leaves_the_other() {
 #[test]
 fn a_press_beside_the_close_button_does_not_close_a_window() {
     let _settled = ui::motion::testing::settled();
-    let (mut frame, _handle) = desk_at(3, 2.0);
+    let (mut frame, _handle) = shell_at(3, 2.0);
     let (group, _) = windows(&frame)[1];
     let bounds = frame
         .root::<DesktopSurface>()
         .shown_row_ref()
-        .expect("the desk shows its strip")
+        .expect("the shell shows its strip")
         .groups
         .iter()
         .find(|held| held.id == group)

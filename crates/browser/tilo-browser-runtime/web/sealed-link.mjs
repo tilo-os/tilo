@@ -1,5 +1,5 @@
 /**
- * The address a sealed invitation's link opens, as the desk hands it over and
+ * The address a sealed invitation's link opens, as the shell hands it over and
  * a page takes it: `https://<site>/i/<handle>#<key>`
  * (crates/collab/workspace-join/src/sealed.rs). The site keeps the invitation
  * under the handle, sealed; the key that opens it travels after the `#`, which

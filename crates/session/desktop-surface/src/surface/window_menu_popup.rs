@@ -1,9 +1,9 @@
-//! The window menu as a menu of its own, for a host with no session around its desk: what the
+//! The window menu as a menu of its own, for a host with no session around its shell: what the
 //! desktop can do to one window, opened where a secondary click on that window's bar landed.
 //!
-//! The rows and what choosing one does are the desk's ([`DesktopHandle::window_menu`],
+//! The rows and what choosing one does are the shell's ([`DesktopHandle::window_menu`],
 //! [`DesktopHandle::choose_window_menu`]): a native session shows them through its window-menu
-//! view, and a host without one (the web page) mounts this beside its desk, in the toolkit's menu.
+//! view, and a host without one (the web page) mounts this beside its shell, in the toolkit's menu.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -26,11 +26,11 @@ pub struct Followed {
     pub changed: bool,
     /// The row the person chose, by its id.
     pub chosen: Option<String>,
-    /// Why the desk refused that row, as the menu says beside it.
+    /// Why the shell refused that row, as the menu says beside it.
     pub refused: Option<String>,
 }
 
-/// The window menu a host mounts over its desk: the desk's rows for the window whose bar asked.
+/// The window menu a host mounts over its shell: the shell's rows for the window whose bar asked.
 pub struct WindowMenuPopup {
     handle: DesktopHandle,
     menu: ContextMenu,
@@ -76,7 +76,7 @@ impl WindowMenuPopup {
         followed
     }
 
-    /// Show the desk's rows for the window showing `tab`, at `at` on the desk.
+    /// Show the shell's rows for the window showing `tab`, at `at` on the shell.
     fn open(&mut self, tab: TabId, at: Point) -> bool {
         let rows = self.handle.window_menu(tab);
         if rows.is_empty() {
@@ -86,7 +86,7 @@ impl WindowMenuPopup {
         self.menu.set_items(items);
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "a point on the desk, a few thousand logical pixels at most"
+            reason = "a point on the shell, a few thousand logical pixels at most"
         )]
         let at = [at.x as f32, at.y as f32];
         // Inside the area the popup covers, as the bar's own menus open inside theirs: the frame
@@ -144,7 +144,7 @@ impl Widget for WindowMenuPopup {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let menu = self.menu.build_layout(taffy, theme, map);
-        // Over the whole desk, out of its flow: the menu stands where the click was.
+        // Over the whole shell, out of its flow: the menu stands where the click was.
         let style = Style {
             position: taffy::Position::Absolute,
             inset: taffy::Rect {

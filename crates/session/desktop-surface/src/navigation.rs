@@ -153,15 +153,15 @@ impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
     }
 }
 
-/// What the desk under the windows can be asked to do: which window has focus, closing one, which
-/// display is worked on, what the search and the empty desk's launchpad do. Each is one published
-/// action on the desk's resource, so a person's chord, a page, a script and an agent do the same
-/// thing by the same verb. Ids travel as the decimal text the desk addresses its windows by; a
-/// caller that names something the desk does not hold is refused rather than given the nearest
+/// What the shell under the windows can be asked to do: which window has focus, closing one, which
+/// display is worked on, what the search and the empty shell's launchpad do. Each is one published
+/// action on the shell's resource, so a person's chord, a page, a script and an agent do the same
+/// thing by the same verb. Ids travel as the decimal text the shell addresses its windows by; a
+/// caller that names something the shell does not hold is refused rather than given the nearest
 /// thing.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "so.tilo.desk")]
-pub enum DeskEffect {
+#[effect(operation = "so.tilo.layout")]
+pub enum LayoutEffect {
     /// Bring its window to the front
     #[effect(own_device, idempotent)]
     Focus {
@@ -253,11 +253,11 @@ pub enum DeskEffect {
     },
 }
 
-/// What the surfaces over the desk can be asked to do: open and show apps,
+/// What the surfaces over the shell can be asked to do: open and show apps,
 /// move a window, and the windows of a strip and where they stand, what
 /// each shows, the strips and workspaces they are in, the notification
 /// centre, the workspace directory and the surfaces above them. Each is
-/// one published action on the chrome's resource; the desk publishes the
+/// one published action on the chrome's resource; the shell publishes the
 /// verbs it carries out itself and these are the rest, so no verb has two
 /// doors.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -276,9 +276,9 @@ pub enum ChromeEffect {
         /// Open it without taking focus.
         #[param("Open it without taking focus")]
         background: Option<bool>,
-        /// Stand it over the desk beside the place it opens into — what a
+        /// Stand it over the shell beside the place it opens into — what a
         /// conversation a send landed in does — instead of in its strip.
-        #[param("Stand it over the desk beside the place it opens into")]
+        #[param("Stand it over the shell beside the place it opens into")]
         float: Option<bool>,
     },
 
@@ -569,14 +569,14 @@ pub enum ChromeEffect {
         /// What to call it.
         #[param("What to call the workspace")]
         name: Option<String>,
-        /// Put it on the desk without going there: the person stays in the workspace they are in.
-        #[param("Put it on the desk without going there")]
+        /// Put it on the shell without going there: the person stays in the workspace they are in.
+        #[param("Put it on the shell without going there")]
         background: Option<bool>,
     },
 
     /// Branch a workspace
     /// A new workspace of the person's own that starts with everything the one named holds — its
-    /// records, desk, files and Terminal environments — and goes on apart from it, with the person
+    /// records, shell, files and Terminal environments — and goes on apart from it, with the person
     /// as its only member. Answers the new workspace's id; what it holds arrives as it is copied.
     #[effect(own_device, returns)]
     BranchWorkspace {
@@ -689,8 +689,8 @@ pub enum ChromeEffect {
         /// The window group.
         #[param(decimal, "The window group")]
         group: String,
-        /// Whether it floats above the desk.
-        #[param("Whether it floats above the desk")]
+        /// Whether it floats above the shell.
+        #[param("Whether it floats above the shell")]
         on: bool,
     },
 }
@@ -699,7 +699,7 @@ pub enum ChromeEffect {
 /// the ones its surfaces over it carry out, named by the one vocabulary's ids.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verb {
-    Desk(DeskEffect),
+    Layout(LayoutEffect),
     Chrome(ChromeEffect),
 }
 
@@ -707,13 +707,13 @@ impl Verb {
     /// The verb `effect` with `arguments`, as a caller dispatched it.
     ///
     /// # Errors
-    /// Returns why no verb of the desk's is named by the id and arguments.
+    /// Returns why no verb of the shell's is named by the id and arguments.
     pub fn decode(
         effect: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, String> {
-        if let Ok(verb) = DeskEffect::decode(effect, arguments) {
-            return Ok(Self::Desk(verb));
+        if let Ok(verb) = LayoutEffect::decode(effect, arguments) {
+            return Ok(Self::Layout(verb));
         }
         ChromeEffect::decode(effect, arguments)
             .map(Self::Chrome)
@@ -724,7 +724,7 @@ impl Verb {
     #[must_use]
     pub fn id(&self) -> &'static str {
         match self {
-            Self::Desk(verb) => verb.id(),
+            Self::Layout(verb) => verb.id(),
             Self::Chrome(verb) => verb.id(),
         }
     }
@@ -752,15 +752,15 @@ impl Verb {
     /// Never: every verb of the vocabulary is its declaration's arguments.
     pub fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
         match self {
-            Self::Desk(verb) => Effect::arguments(verb),
+            Self::Layout(verb) => Effect::arguments(verb),
             Self::Chrome(verb) => Effect::arguments(verb),
         }
     }
 }
 
-impl From<DeskEffect> for Verb {
-    fn from(verb: DeskEffect) -> Self {
-        Self::Desk(verb)
+impl From<LayoutEffect> for Verb {
+    fn from(verb: LayoutEffect) -> Self {
+        Self::Layout(verb)
     }
 }
 
@@ -813,7 +813,7 @@ pub enum Admitted {
     Strip(WorkspaceId, StripId),
     Workspace(WorkspaceId),
     /// An application id; the host checked that it can open it, and whether
-    /// it stands over the desk beside the place it opens into when the app
+    /// it stands over the shell beside the place it opens into when the app
     /// that opened it asked, else in the shown strip.
     Launch(String, bool),
     /// An application launch the desktop itself asked for, at a place of the
@@ -865,7 +865,7 @@ pub enum Admitted {
     CloseWindow(RouteIds),
     /// Take back the app's control of the desktop.
     StopDesktopControl(RouteIds),
-    /// Lift the window above the desk, or put it back into its strip.
+    /// Lift the window above the shell, or put it back into its strip.
     Float(RouteIds, bool),
 }
 
@@ -1029,35 +1029,35 @@ pub fn admit_with(
     capabilities: &Capabilities,
 ) -> Result<Admitted, String> {
     match verb {
-        Verb::Desk(verb) => admit_desk(verb, tree),
+        Verb::Layout(verb) => admit_layout(verb, tree),
         Verb::Chrome(verb) => admit_chrome(verb, tree, capabilities),
     }
 }
 
-/// The desk's own verbs, as the surface carries them out: the ones a page dispatches to move around
+/// The shell's own verbs, as the surface carries them out: the ones a page dispatches to move around
 /// the windows it shows.
-fn admit_desk(verb: &DeskEffect, tree: &Layout) -> Result<Admitted, String> {
+fn admit_layout(verb: &LayoutEffect, tree: &Layout) -> Result<Admitted, String> {
     match verb {
-        DeskEffect::CloseTab { tab } => tab_route(tree, tab).map(Admitted::Close),
-        DeskEffect::Focus { tab } => tab_route(tree, tab).map(Admitted::Select),
-        DeskEffect::Search { query } => match query {
+        LayoutEffect::CloseTab { tab } => tab_route(tree, tab).map(Admitted::Close),
+        LayoutEffect::Focus { tab } => tab_route(tree, tab).map(Admitted::Select),
+        LayoutEffect::Search { query } => match query {
             None => Ok(Admitted::Search(None)),
             Some(query) if ui::search::system::query_input_is_bounded(query) => {
                 Ok(Admitted::Search(Some(query.clone())))
             }
             Some(_) => Err("Search query too long".into()),
         },
-        DeskEffect::StepFocus { .. }
-        | DeskEffect::FocusDisplay { .. }
-        | DeskEffect::MoveToDisplay { .. }
-        | DeskEffect::ChooseSearchRow { .. }
-        | DeskEffect::Launchpad { .. }
-        | DeskEffect::WaitWindow { .. }
-        | DeskEffect::ForceQuitApp { .. } => Err("The desk carries this out itself".into()),
+        LayoutEffect::StepFocus { .. }
+        | LayoutEffect::FocusDisplay { .. }
+        | LayoutEffect::MoveToDisplay { .. }
+        | LayoutEffect::ChooseSearchRow { .. }
+        | LayoutEffect::Launchpad { .. }
+        | LayoutEffect::WaitWindow { .. }
+        | LayoutEffect::ForceQuitApp { .. } => Err("The shell carries this out itself".into()),
     }
 }
 
-/// The verbs the surfaces over the desk carry out, as the surface changes what it shows.
+/// The verbs the surfaces over the shell carry out, as the surface changes what it shows.
 #[expect(
     clippy::too_many_lines,
     reason = "one verb, one arm: every verb the surface carries out is admitted here"
@@ -1083,7 +1083,7 @@ fn admit_chrome(
             float,
         } => match (beside, float) {
             (Some(_), Some(true)) => {
-                Err("A window opens beside another or over the desk, not both".into())
+                Err("A window opens beside another or over the shell, not both".into())
             }
             (Some(beside), _) => tab_route(tree, beside)
                 .and_then(|ids| admit_beside(ids, app, background.unwrap_or(false))),
@@ -1239,7 +1239,7 @@ fn admit_chrome(
 }
 
 /// A launch of `app`, checked against the desktop it opens on: in the shown
-/// strip, or over the desk beside the place it opens into when `float` .
+/// strip, or over the shell beside the place it opens into when `float` .
 fn admit_launch(tree: &Layout, app: &str, float: bool) -> Result<Admitted, String> {
     // A workspace may hold no strip yet: the first window opened in it makes
     // the strip it goes in.
@@ -1704,7 +1704,7 @@ mod tests {
     use tilo_desktop_model::{Strip, Tab, TileContent, WindowWidth};
 
     fn tree() -> Layout {
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(u128::MAX), "Desk");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(u128::MAX), "Office");
         let mut strip = Strip::new(StripId(9_007_199_254_740_993), "Main");
         strip.window_groups = vec![WindowGroup {
             id: 3,
@@ -1743,8 +1743,8 @@ mod tests {
         E::from_payload(&payload).map_err(|error| error.to_string())
     }
 
-    fn desk(effect: &str, args: serde_json::Value) -> Verb {
-        Verb::Desk(decode(effect, args).unwrap())
+    fn shell(effect: &str, args: serde_json::Value) -> Verb {
+        Verb::Layout(decode(effect, args).unwrap())
     }
 
     fn chrome(effect: &str, args: serde_json::Value) -> Verb {
@@ -1760,12 +1760,12 @@ mod tests {
     /// invented, on the wire.
     #[test]
     fn every_verb_decodes_from_its_id_and_refuses_a_bad_argument() {
-        for declaration in DeskEffect::declarations()
+        for declaration in LayoutEffect::declarations()
             .into_iter()
             .chain(ChromeEffect::declarations())
         {
             let none_needed = declaration.params.iter().all(|param| !param.required);
-            let decoded = DeskEffect::decode(declaration.id, &serde_json::Map::default()).is_ok()
+            let decoded = LayoutEffect::decode(declaration.id, &serde_json::Map::default()).is_ok()
                 || ChromeEffect::decode(declaration.id, &serde_json::Map::default()).is_ok();
             assert_eq!(
                 decoded, none_needed,
@@ -1773,12 +1773,12 @@ mod tests {
                 declaration.id
             );
         }
-        assert!(decode::<DeskEffect>("no-such-verb", serde_json::json!({})).is_err());
+        assert!(decode::<LayoutEffect>("no-such-verb", serde_json::json!({})).is_err());
         assert_eq!(
-            decode::<DeskEffect>("focus", serde_json::json!({"tab":"4"})).ok(),
-            Some(DeskEffect::Focus { tab: "4".into() })
+            decode::<LayoutEffect>("focus", serde_json::json!({"tab":"4"})).ok(),
+            Some(LayoutEffect::Focus { tab: "4".into() })
         );
-        assert!(decode::<DeskEffect>("focus", serde_json::json!({"tab":4})).is_err());
+        assert!(decode::<LayoutEffect>("focus", serde_json::json!({"tab":4})).is_err());
         assert_eq!(
             decode::<ChromeEffect>("pan", serde_json::json!({"strip":"9","offset":1.5})).ok(),
             Some(ChromeEffect::Pan {
@@ -1859,19 +1859,19 @@ mod tests {
         assert_eq!(json["activeStrip"], "9007199254740993");
         assert_eq!(json["capabilities"]["workspaceSelect"], true);
 
-        let select = desk("focus", serde_json::json!({"tab":"4"}));
+        let select = shell("focus", serde_json::json!({"tab":"4"}));
         assert!(matches!(admit(&select, &tree), Ok(Admitted::Select(_))));
-        let gone = desk("focus", serde_json::json!({"tab":"5"}));
+        let gone = shell("focus", serde_json::json!({"tab":"5"}));
         assert_eq!(admit(&gone, &tree).unwrap_err(), "Window unavailable");
-        let bad: Result<DeskEffect, String> = decode("focus", serde_json::json!({"tab":"four"}));
+        let bad: Result<LayoutEffect, String> = decode("focus", serde_json::json!({"tab":"four"}));
         assert_eq!(
             bad.unwrap_err(),
             "the effect's `tab` argument is `four`, which names no id: ids travel as decimal \
              text"
         );
-        let search = desk("search", serde_json::json!({}));
+        let search = shell("search", serde_json::json!({}));
         assert_eq!(admit(&search, &tree), Ok(Admitted::Search(None)));
-        let typed = desk("search", serde_json::json!({"query":"sheets"}));
+        let typed = shell("search", serde_json::json!({"query":"sheets"}));
         assert_eq!(
             admit(&typed, &tree),
             Ok(Admitted::Search(Some("sheets".into())))

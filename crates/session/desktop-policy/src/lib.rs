@@ -21,7 +21,7 @@ use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, Workspace, WorkspaceId,
 };
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
+use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect, RouteIds, active_route};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
@@ -853,7 +853,7 @@ impl DesktopPolicy {
         let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
             return false;
         };
-        let command = DeskEffect::CloseTab {
+        let command = LayoutEffect::CloseTab {
             tab: beside.tab.to_string(),
         };
         self.handle.dispatch(command).is_ok()
@@ -905,7 +905,7 @@ impl DesktopPolicy {
         let Some(target) = target else {
             return false;
         };
-        let command = DeskEffect::Focus {
+        let command = LayoutEffect::Focus {
             tab: target.tab.to_string(),
         };
         self.handle.dispatch(command).is_ok()

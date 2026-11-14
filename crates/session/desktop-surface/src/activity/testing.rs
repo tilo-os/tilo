@@ -151,7 +151,7 @@ impl TestTree {
         let _ = tilo_resource::history::commit_stamped(&mut self.doc);
     }
 
-    /// Write the desk into the workspace's layout record, as a session's pass does, and say whether
+    /// Write the layout into the workspace's record, as a session's pass does, and say whether
     /// it changed anything.
     pub fn seed_doc_from_cache(&mut self) -> bool {
         let layout = tilo_desktop_model::ownership::SharedDesktop {
@@ -231,7 +231,7 @@ impl TestTree {
         self.governance.entry(workspace_id).or_default()
     }
 
-    /// Show the desk the layout record holds, as the pane's next read of it does.
+    /// Show the layout the record holds, as the pane's next read of it does.
     pub fn resync_cache_from_doc(&mut self) {
         let Some(layout) = tilo_desktop_model::shared_record::read(&self.doc, None) else {
             return;
@@ -255,7 +255,7 @@ impl TestTree {
         }
     }
 
-    /// A workspace on the desk. Which workspaces a desk shows is the workspace list's, which no
+    /// A workspace on the layout. Which workspaces a layout shows is the workspace list's, which no
     /// record of the layout holds.
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
         let workspace_id = WorkspaceId::from_u128(next_id().into());
@@ -267,7 +267,7 @@ impl TestTree {
     }
 
     /// A window opened into the first group of the workspace in front, as a launch into it is: the
-    /// desk shows it and the layout record holds it.
+    /// layout shows it and the layout record holds it.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the fixtures hand the record the blob they read a window from"

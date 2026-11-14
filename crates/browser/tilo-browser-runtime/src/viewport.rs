@@ -518,7 +518,7 @@ mod tests {
         }
 
         phase a_density_change_alone_keeps_the_layout_box_and_moves_the_extent;
-        // Catches a phone's desk laid out at its Retina pixel width read as CSS
+        // Catches a phone's shell laid out at its Retina pixel width read as CSS
         // pixels: a change of density alone draws the same box at the new one,
         // and the frame follows the density.
         {

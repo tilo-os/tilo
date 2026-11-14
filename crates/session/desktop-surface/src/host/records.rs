@@ -1,13 +1,13 @@
-//! What each window of a host's desktop shows, as the workspace's shared desk names it: the
+//! What each window of a host's desktop shows, as the workspace's shared layout names it: the
 //! records a joining host adopts and the records it writes back.
 //!
-//! A shared desk names a window's record by its route ([`RecordId::route`]): the package
+//! A shared layout names a window's record by its route ([`RecordId::route`]): the package
 //! primary's route is empty, every other record's is its id ([`wire_record`]). A host that joins a
-//! desk adopts the record each of its windows shows ([`adopted`]) and writes every one of them back
-//! ([`live`]), so it never holds a window on another record than the desk showed
+//! layout adopts the record each of its windows shows ([`adopted`]) and writes every one of them back
+//! ([`live`]), so it never holds a window on another record than the layout showed
 //! (`tilo_desktop_model::shared_record::guard` refuses such a write). What a host cannot bind yet —
 //! an application whose code has not loaded, one it does not run, or a record it does not read —
-//! keeps the desk's spelling verbatim, as the desk keeps the record a window held.
+//! keeps the layout's spelling verbatim, as the layout keeps the record a window held.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
@@ -16,7 +16,7 @@ use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{Layout, TabId, TileContent};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 
-/// The record `id` travels under on the workspace's shared desk: its route, empty for the
+/// The record `id` travels under on the workspace's shared layout: its route, empty for the
 /// package's primary record.
 #[must_use]
 pub fn wire_record(id: &RecordId) -> &str {
@@ -46,7 +46,7 @@ pub fn of_window<S: BuildHasher>(
 }
 
 /// `(tab, record)` for every window of `tree` whose component bound a record, or that keeps the
-/// record the desk showed it, in wire spelling.
+/// record the layout showed it, in wire spelling.
 #[must_use]
 pub fn live<S: BuildHasher>(
     bindings: &HashMap<TabId, RecordCheckout, S>,
@@ -68,16 +68,16 @@ pub fn live<S: BuildHasher>(
     records
 }
 
-/// The window records of `desk` a host takes as its own: bound to the record the desk shows for
+/// The window records of `layout` a host takes as its own: bound to the record the layout shows for
 /// each window whose application `kind_of` runs (the kind of record its component mounts), and
-/// held under the desk's own spelling for every other one, until the application that binds it
+/// held under the layout's own spelling for every other one, until the application that binds it
 /// arrives or for good when none does.
 #[must_use]
 pub fn adopted(
-    desk: &SharedDesktop,
+    layout: &SharedDesktop,
     kind_of: impl Fn(&str) -> Option<RecordKind>,
 ) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
-    let apps: HashMap<TabId, &str> = desk
+    let apps: HashMap<TabId, &str> = layout
         .tree
         .tabs()
         .filter_map(|tab| match &tab.tile {
@@ -87,7 +87,7 @@ pub fn adopted(
         .collect();
     let mut bound = HashMap::new();
     let mut held = HashMap::new();
-    for (tab, record) in &desk.records {
+    for (tab, record) in &layout.records {
         let opened = apps
             .get(tab)
             .and_then(|app| kind_of(app))
@@ -125,8 +125,8 @@ mod tests {
         }
     }
 
-    /// One strip (10) with a window per `(tab, app, record)` the desk shows.
-    fn desk(windows: &[(TabId, &str, &str)]) -> SharedDesktop {
+    /// One strip (10) with a window per `(tab, app, record)` the layout shows.
+    fn layout(windows: &[(TabId, &str, &str)]) -> SharedDesktop {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
         let mut strip = Strip::new(StripId(10), "Lounge");
         for (id, app, _) in windows {
@@ -165,15 +165,15 @@ mod tests {
             .then(|| RecordKind::new("test.record"))
     }
 
-    /// A host that joins a shared desk holds every window on the record the desk shows, the
+    /// A host that joins a shared layout holds every window on the record the layout shows, the
     /// package primary under the route it travels as.
     #[test]
-    fn a_joining_host_adopts_every_record_the_desk_shows() {
-        let desk = desk(&[
+    fn a_joining_host_adopts_every_record_the_layout_shows() {
+        let layout = layout(&[
             (1, "so.tilo.chat", ""),
             (2, "so.tilo.notes", "derived:default@tab:0000000000000002"),
         ]);
-        let (bound, held) = adopted(&desk, running);
+        let (bound, held) = adopted(&layout, running);
         assert!(held.is_empty(), "{held:?}");
         assert_eq!(
             bound[&1].id,
@@ -185,9 +185,9 @@ mod tests {
             RecordId::from_route("derived:default@tab:0000000000000002").unwrap()
         );
         assert_eq!(
-            live(&bound, &held, &desk.tree),
-            desk.records,
-            "the host writes each record back as the desk showed it"
+            live(&bound, &held, &layout.tree),
+            layout.records,
+            "the host writes each record back as the layout showed it"
         );
     }
 
@@ -195,7 +195,7 @@ mod tests {
     /// records: the host writes them back verbatim rather than leaving them out.
     #[test]
     fn a_window_whose_application_is_not_running_keeps_its_record() {
-        let shown = desk(&[
+        let shown = layout(&[
             (1, "so.tilo.chat", ""),
             (
                 3,
@@ -212,7 +212,7 @@ mod tests {
             "no window's record is lost"
         );
 
-        // The host runs chat now: it binds that window to the record the desk showed, and keeps
+        // The host runs chat now: it binds that window to the record the layout showed, and keeps
         // the one whose application it does not run.
         let (bound, held) = adopted(&shown, |app| running(app).filter(|_| app == "so.tilo.chat"));
         assert_eq!(bound[&1].id, RecordId::package_primary());
@@ -226,8 +226,8 @@ mod tests {
         );
 
         // A spelling no record reads as a route is held, not dropped, so the host still shows the
-        // desk what its window shows.
-        let legacy = desk(&[(1, "so.tilo.chat", "@tilo:package-primary")]);
+        // layout what its window shows.
+        let legacy = layout(&[(1, "so.tilo.chat", "@tilo:package-primary")]);
         let (bound, held) = adopted(&legacy, running);
         assert!(bound.is_empty(), "{bound:?}");
         assert_eq!(live(&bound, &held, &legacy.tree), legacy.records);

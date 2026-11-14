@@ -44,7 +44,7 @@ mod tests {
     }
 
     /// A workspace holds strips; the desktop names a strip a strip
-    /// everywhere, as the native strip switcher does, never a "desk".
+    /// everywhere, as the native strip switcher does, never a "shell".
     #[test]
     fn a_strip_is_called_a_strip_in_every_locale() {
         for (locale, source) in CATALOGS {
@@ -54,7 +54,7 @@ mod tests {
                     assert!(
                         !matches!(
                             word.to_lowercase().as_str(),
-                            "desk" | "desks" | "schreibtisch" | "schreibtische"
+                            "shell" | "shells" | "schreibtisch" | "schreibtische"
                         ),
                         "{locale}: {line}"
                     );

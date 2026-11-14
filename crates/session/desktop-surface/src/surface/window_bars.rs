@@ -30,7 +30,7 @@ pub(super) struct Bars {
     /// Tabs a person asked to name in their window's bar.
     renames: Vec<u64>,
     /// A field in a window's bar takes what is typed (a tab being named, a location edited): the
-    /// desk holds the keyboard until it closes, so the keys do not reach the app under it.
+    /// shell holds the keyboard until it closes, so the keys do not reach the app under it.
     typing: bool,
     /// Tabs whose app asked for its search, and how it opens.
     searches: Vec<(u64, SearchOpening)>,
@@ -124,8 +124,8 @@ impl DesktopHandle {
         self.queue_bar_ask(|bars| bars.searches.push((tab, opening)));
     }
 
-    /// Queue desk work an app handed over, and ask the desk for its next pass: what an app asks
-    /// reaches its window's bar in the pass that follows, not whenever the desk next draws
+    /// Queue shell work an app handed over, and ask the shell for its next pass: what an app asks
+    /// reaches its window's bar in the pass that follows, not whenever the shell next draws
     /// something of its own.
     fn queue_bar_ask(&self, ask: impl FnOnce(&mut Bars)) {
         let mut shared = self.shared.borrow_mut();
@@ -139,8 +139,8 @@ impl DesktopHandle {
         self.queue_bar_ask(|bars| bars.declared_targets.push((tab, connection, targets)));
     }
 
-    /// The controls the windows the desk shows offer by name and by what they do now, each with
-    /// where it stands on the desk: where a test, a tool or an agent finds them. A window's
+    /// The controls the windows the shell shows offer by name and by what they do now, each with
+    /// where it stands on the shell: where a test, a tool or an agent finds them. A window's
     /// controls are offered only while it is drawn, and its app's coordinates are offset by the
     /// tab's content, so where a control is and where the person sees it agree.
     #[must_use]
@@ -202,7 +202,7 @@ impl DesktopHandle {
     }
 
     /// The window a press by name reaches first: the active window of the strip the person works
-    /// on, whose content is what stands in front of them. `None` while the desk shows none.
+    /// on, whose content is what stands in front of them. `None` while the shell shows none.
     #[must_use]
     pub fn window_in_front(&self) -> Option<TabId> {
         let shared = self.shared.borrow();
@@ -229,7 +229,7 @@ impl DesktopHandle {
             .is_some_and(|(_, targets)| targets.iter().any(|target| target.name == name))
     }
 
-    /// Press the control `name` of a window the desk shows, as an assistive
+    /// Press the control `name` of a window the shell shows, as an assistive
     /// technology does: the app acts on it through its own accessibility
     /// path and answers on the connection that declared it. The first window
     /// of the strip that shows the name answers, and the press names its role
@@ -237,7 +237,7 @@ impl DesktopHandle {
     /// goes by the same name.
     ///
     /// # Errors
-    /// No window the desk draws shows a control by that name, or it answers
+    /// No window the shell draws shows a control by that name, or it answers
     /// nothing of `action`.
     pub fn press_window_control(&self, name: &str, action: TargetAction) -> Result<(), String> {
         let mut shared = self.shared.borrow_mut();
@@ -265,13 +265,13 @@ impl DesktopHandle {
         Err(format!("no window shows a control named {name}"))
     }
 
-    /// Press the control that does `identity` in a window the desk shows, as an assistive
+    /// Press the control that does `identity` in a window the shell shows, as an assistive
     /// technology does: the app acts on it through its own accessibility path and answers on the
     /// connection that declared it. What the control does is where the window composes it and
     /// what the person's language calls it, so this finds the control a name cannot.
     ///
     /// # Errors
-    /// No window the desk draws shows a control doing that, or it answers nothing of `action`.
+    /// No window the shell draws shows a control doing that, or it answers nothing of `action`.
     pub fn press_window_control_doing(
         &self,
         identity: &str,
@@ -332,7 +332,7 @@ impl DesktopHandle {
 
 impl DesktopHandle {
     /// Name the agent run that opened each window an agent opened for its person, by tab, as the
-    /// workspace's shared desk says: the window's bar names the agent, and opens the run in History.
+    /// workspace's shared layout says: the window's bar names the agent, and opens the run in History.
     /// Whether that changed anything.
     pub fn set_opened_by(
         &self,
@@ -406,7 +406,7 @@ impl DesktopSurface {
         changed
     }
 
-    /// Say whether a field in a window's bar takes what is typed, for the desk to hold the
+    /// Say whether a field in a window's bar takes what is typed, for the shell to hold the
     /// keyboard while it does ([`DesktopHandle::wants_keyboard`]).
     pub(super) fn publish_bar_typing(&self) {
         let typing = self
@@ -484,8 +484,8 @@ impl DesktopSurface {
             }
             (changed, renamed)
         };
-        // A window's name is what it shows, not a window the desk gained or lost: the rows rename
-        // their pills in place, and the desk's layout stands as it was.
+        // A window's name is what it shows, not a window the shell gained or lost: the rows rename
+        // their pills in place, and the shell's layout stands as it was.
         for descriptor in renamed {
             for group in self.rows.values_mut().flat_map(|row| row.groups.iter_mut()) {
                 group.update_tab_descriptor(descriptor.clone());
@@ -535,7 +535,7 @@ impl DesktopSurface {
                 continue;
             }
             shared.bars.targets.insert(tab, (connection, described));
-            // What a window offers by name is part of what the desk publishes.
+            // What a window offers by name is part of what the shell publishes.
             shared.changed();
             changed = true;
         }

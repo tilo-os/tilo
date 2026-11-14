@@ -16,7 +16,7 @@ pub(super) enum RowOp {
     },
     Width(StripId, GroupId, WindowWidth),
     ToggleMaximized(StripId, GroupId),
-    /// A launched window, already in the tree at `index` of `strip` , standing over the desk
+    /// A launched window, already in the tree at `index` of `strip` , standing over the shell
     /// beside it when `float` .
     Open {
         strip: StripId,

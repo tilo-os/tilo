@@ -15,7 +15,7 @@ use serde::Serialize;
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::surface::{FieldType, ParamSurface, RECORD_UNIT, Surface, TypeSet, VerbSurface};
 use tilo_actions::{ActionSpec, ResourceSpec, RiskLevel};
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
+use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
 use tilo_resource::Effect;
 use tilo_resource::effect::EffectDecl;
 
@@ -68,7 +68,7 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
         ),
         (
             tilo_desktop::desk_verbs::desk_resource(&[], &[], &[], None),
-            Some(<DeskEffect as Effect>::declaration),
+            Some(<LayoutEffect as Effect>::declaration),
         ),
         (
             crate::arrangement::resources(&crate::arrangement::words()).swap_remove(0),
@@ -100,7 +100,7 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     .into_iter()
     .find(|child| child.kind == tilo_desktop::desk_verbs::WINDOW_KIND)
     {
-        out.push((window, Some(<DeskEffect as Effect>::declaration)));
+        out.push((window, Some(<LayoutEffect as Effect>::declaration)));
     }
     out.push((application(), None));
     // What is already arranged: a place, a strip and a row are resources of their own, each with

@@ -3,10 +3,10 @@
 //!
 //! A window one of the session's own apps draws publishes what can be seen
 //! and read of it itself, from its own record. An X11 or Wayland window of
-//! another desktop has no surface of ours to ask, so the desk publishes the
+//! another desktop has no surface of ours to ask, so the shell publishes the
 //! two actions that only read: [`look`] pictures the window as it shows now,
 //! [`read`] says what it calls itself. Neither acts on the window, and no
-//! other action of the desk's window resource does either: a person works in
+//! other action of the shell's window resource does either: a person works in
 //! a foreign window with its own keyboard and pointer, where its own
 //! accessibility tree and its own shortcuts are, never by an address.
 //!
@@ -20,12 +20,12 @@ use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
 
 /// `look` 's operation type: the window as a picture.
-pub const LOOK: &str = "so.tilo.desktop.window.look";
+pub const LOOK: &str = "so.tilo.layouttop.window.look";
 
 /// `read` 's operation type: what the window says of itself.
-pub const READ: &str = "so.tilo.desktop.window.read";
+pub const READ: &str = "so.tilo.layouttop.window.read";
 
-/// The address of tab `tab` 's resource, which the desk publishes as the window's own:
+/// The address of tab `tab` 's resource, which the shell publishes as the window's own:
 /// `desktop:tab:<tab>` .
 #[must_use]
 pub fn resource(tab: u64) -> String {
@@ -35,16 +35,16 @@ pub fn resource(tab: u64) -> String {
 /// The prefix every window's resource address has, then its tab.
 pub const RESOURCE_PREFIX: &str = "desktop:tab:";
 
-/// The tab the window resource `resource` is of, when it is one of the desk's.
+/// The tab the window resource `resource` is of, when it is one of the shell's.
 #[must_use]
 pub fn resource_tab(resource: &str) -> Option<u64> {
     resource.strip_prefix(RESOURCE_PREFIX)?.parse().ok()
 }
 
-/// A window the desk shows that this session does not run: what `look` and `read` answer with.
+/// A window the shell shows that this session does not run: what `look` and `read` answer with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShownWindow {
-    /// Its title, as the desk names it in the bar, the strip and the catalogue.
+    /// Its title, as the shell names it in the bar, the strip and the catalogue.
     pub title: String,
     /// The app that showed it: its Wayland app id or X11 class.
     pub app_id: String,
@@ -54,8 +54,8 @@ pub struct ShownWindow {
     pub workspace: String,
 }
 
-/// The window the desk shows in tab `tab` , when it is one this session does not run — a foreign
-/// X11 or Wayland window — which the desk publishes the read actions of.
+/// The window the shell shows in tab `tab` , when it is one this session does not run — a foreign
+/// X11 or Wayland window — which the shell publishes the read actions of.
 #[must_use]
 pub fn shown(tree: &Layout, tab: u64) -> Option<ShownWindow> {
     tree.workspaces.iter().find_map(|workspace| {
@@ -83,7 +83,7 @@ pub fn look(label: String) -> ActionSpec {
     let spec = ActionSpec::typed_operation(
         "look",
         label,
-        crate::i18n::t("desk-look-window-action"),
+        crate::i18n::t("shell-look-window-action"),
         OperationKind::View,
         LOOK,
         Vec::new(),
@@ -93,7 +93,7 @@ pub fn look(label: String) -> ActionSpec {
         },
     )
     .of_kind(ActionKind::Read)
-    .with_description(crate::i18n::t("desk-look-window-detail"))
+    .with_description(crate::i18n::t("shell-look-window-detail"))
     .for_audience(Audience::Agents);
     result(spec)
 }
@@ -105,7 +105,7 @@ pub fn read(label: String) -> ActionSpec {
     let spec = ActionSpec::typed_operation(
         "read",
         label,
-        crate::i18n::t("desk-read-window-action"),
+        crate::i18n::t("shell-read-window-action"),
         OperationKind::View,
         READ,
         Vec::new(),
@@ -115,7 +115,7 @@ pub fn read(label: String) -> ActionSpec {
         },
     )
     .of_kind(ActionKind::Read)
-    .with_description(crate::i18n::t("desk-read-window-detail"))
+    .with_description(crate::i18n::t("shell-read-window-detail"))
     .for_audience(Audience::Agents);
     result(spec)
 }

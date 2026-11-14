@@ -40,7 +40,7 @@ test('modified text-editing keys are the app\'s, so every text field edits by wo
 
 test('the search chord is the page\'s, never a key the surface forwards',()=>{
   // The page's document listener answered the chord before the surface saw it; forwarding it
-  // would let the desk answer the same press a second time.
+  // would let the shell answer the same press a second time.
   assert.equal(keyboardRoute(key('KeyK',{metaKey:true}),false,true),'browser','Cmd+K on a Mac');
   assert.equal(keyboardRoute(key('KeyK',{ctrlKey:true}),false,false),'browser','Ctrl+K on Linux');
   assert.equal(semanticKeyboardRoute(key('KeyK',{metaKey:true}),false,true),'native');

@@ -140,7 +140,7 @@ pub(crate) fn wake_desktops() {
     });
 }
 
-/// Schedule a frame for every mount, desk or single application: the page
+/// Schedule a frame for every mount, shell or single application: the page
 /// draws at another device pixel ratio, and each lays out at it on its next
 /// frame.
 fn wake_mounts() {
@@ -337,7 +337,7 @@ struct SharedGpu {
     cx: ui::gpu::RenderContext,
     /// Vello's renderer, once its pipelines are compiled. The page's frames
     /// rasterize on the CPU until then (`Retained::switch_raster`), so the
-    /// desk is on screen while the browser compiles instead of after.
+    /// shell is on screen while the browser compiles instead of after.
     renderer: Option<vello::Renderer>,
     failure: Arc<Mutex<Option<String>>>,
     /// Mounts rendering with this device; a loss or error wakes each.
@@ -524,11 +524,11 @@ pub(crate) struct Mount {
     /// one (the mount closing) settles its request as failed.
     image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
     error: Option<String>,
-    /// How many frames this mount had presented when the desk took the last
+    /// How many frames this mount had presented when the shell took the last
     /// pressed key: the frame after that one is the first that can show what
     /// the key did. A page reading its own frame counter when the browser
     /// fires the key reads it earlier than that, as a frame can be presented
-    /// between the browser's event and the desk taking it.
+    /// between the browser's event and the shell taking it.
     frames_at_key: Option<u64>,
     /// When this mount made its GPU again lately ([`Mount::frame_failed`]).
     gpu_remakes: crate::gpu_recovery::GpuRemakes,
@@ -543,7 +543,7 @@ pub(crate) struct Mount {
     /// The workspace the mount's presence board speaks for.
     workspace: String,
     /// The name the page gave the workspace it mounted ([`Config::workspace_name`]):
-    /// what a tab is titled after while the desk's own space carries no name.
+    /// what a tab is titled after while the shell's own space carries no name.
     workspace_name: Option<String>,
     /// The change of the page's theme this mount draws in
     /// ([`crate::page_theme::generation`]).
@@ -579,7 +579,7 @@ pub(crate) struct Desktop {
     pub(crate) handle: tilo_desktop_surface::DesktopHandle,
     shared: crate::desktop::Shared,
     persistence: Rc<crate::desktop::Persistence>,
-    /// The person's arrangement of this desk: what the palette, a script and an
+    /// The person's arrangement of this layout: what the palette, a script and an
     /// agent arrange the windows with, as a session's arrangement does.
     arrangement: crate::arranging::Arranging,
     /// Navigation commands name the mount generation they were issued for.
@@ -607,10 +607,10 @@ pub(crate) struct Desktop {
     revoked: crate::agent_door::Revoked,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
-    /// The session's search, which the desk's palette asks beyond the desk's own windows and
+    /// The session's search, which the shell's palette asks beyond the shell's own windows and
     /// commands: the bundle's apps and what the arrangement publishes.
     search: Rc<tilo_session::search::SessionSearch>,
-    /// The desk's revision search last read what it publishes at.
+    /// The layout's revision, as search last read it.
     search_seen: Cell<Option<u64>>,
     /// Mentions of this person in the workspace's records, and what was told.
     mentions: RefCell<tilo_session::mentions::Mentions>,
@@ -631,7 +631,7 @@ pub(crate) struct Desktop {
     /// The runs a finished notice already told, by the history's id: an agent's sessions that
     /// worked one run are told of once.
     told_runs: RefCell<std::collections::BTreeSet<String>>,
-    /// The page's own rows on the desk, and whether the upload rows stand with them.
+    /// The page's own rows on the shell, and whether the upload rows stand with them.
     offered: uploads::Offered,
     /// The workspace's files, as the page copies dropped and uploaded files into them; `None`
     /// for a page in no workspace.
@@ -739,10 +739,10 @@ impl Desktop {
         }
     }
 
-    /// Serve the desk's search from the session's: what stands over the desk as published actions,
+    /// Serve the shell's search from the session's: what stands over the shell as published actions,
     /// the workspaces it shows, and the rows the person chose, carried out here.
     fn follow_search(&self) {
-        // What search reads of the desk is what the desk publishes, so it is read when the desk
+        // What search reads of the shell is what the shell publishes, so it is read when the shell
         // changed and not on a frame that only drew.
         let revision = self.handle.revision();
         if self.search_seen.replace(Some(revision)) != Some(revision) {
@@ -833,15 +833,15 @@ impl Desktop {
 }
 
 impl Mount {
-    /// The desk's search and the apps still arriving, beside a frame's status.
-    fn add_desk_state(&self, value: &mut serde_json::Value) {
+    /// The shell's search and the apps still arriving, beside a frame's status.
+    fn add_search_state(&self, value: &mut serde_json::Value) {
         let desktop = self.desktop.as_ref();
         value["searchOpen"] = desktop.is_some_and(|d| d.handle.search_open()).into();
         value["searchCard"] = self.search_card().into();
-        // Whether the open search still owes rows. A settled desk presents no
+        // Whether the open search still owes rows. A settled shell presents no
         // frame until something changes, so a page that waits for the palette's
         // answer reads this rather than counting presented frames: the answer
-        // is the desk's own, and a frame of it may wait for the next minute.
+        // is the shell's own, and a frame of it may wait for the next minute.
         value["searchSearching"] = desktop.is_some_and(|d| d.handle.search_searching()).into();
         // The apps whose code is still on its way: a link to one of them waits
         // for it before it asks the app's window for a view, where a large app
@@ -852,7 +852,7 @@ impl Mount {
             .into();
     }
 
-    /// What the open search stands on, as the desk shows it: the query the field holds and the rows
+    /// What the open search stands on, as the shell shows it: the query the field holds and the rows
     /// it offers, each as a name with what it says under it. A search the person pressed Enter on
     /// and that is still up says here what they were pressing on — a card that stayed open over a
     /// row that did nothing, or one that says why the row did not happen.
@@ -1335,7 +1335,7 @@ enum Root {
     Arriving(Box<dyn ui::widget::Widget>),
 }
 
-/// The session's search over this page's desk, with the workspace's files among its sources.
+/// The session's search over this page's shell, with the workspace's files among its sources.
 fn mount_search(
     id: u64,
     config: &Config,
@@ -1486,7 +1486,7 @@ fn present_desktop(
             arrangement: crate::arranging::Arranging::new(
                 &config.author(),
                 handle.clone(),
-                persistence.desk(),
+                persistence.layout(),
             ),
             handle,
             shared,
@@ -2179,7 +2179,7 @@ async fn shared_gpu(
 /// Compile the shared renderer's pipelines behind the page's frames: the
 /// first frames rasterize on the CPU ([`SharedGpu::renderer`] is `None`), and
 /// the frame after this installs the renderer repaints the target whole on
-/// the GPU, so the desk is on screen at once instead of after the compiles.
+/// the GPU, so the shell is on screen at once instead of after the compiles.
 fn compile_renderer(shared: Rc<RefCell<SharedGpu>>, device: wgpu::Device, caps: SurfaceCaps) {
     GPU_STEP.set(GpuStep::Pipelines);
     wasm_bindgen_futures::spawn_local(async move {
@@ -2754,7 +2754,7 @@ impl Mount {
             .get(gpu.surface.dev_id)
             .ok_or("WebGPU device missing")?;
         // Until the renderer's pipelines are compiled, frames rasterize on the
-        // CPU: the desk is on screen while the browser compiles instead of
+        // CPU: the shell is on screen while the browser compiles instead of
         // after it. The first frame the renderer draws repaints this target
         // whole (`Retained::switch_raster` forgets what it held): pixels the
         // CPU drew are not pixels the GPU's renderer drew.
@@ -3070,7 +3070,7 @@ impl Mount {
 
     /// A frame failed with `error`. When the GPU is what failed (its device
     /// lost, or an error from it), the device, surface and renderer are made
-    /// again and the desk redraws on them, keeping every document; anything
+    /// again and the shell redraws on them, keeping every document; anything
     /// else, or a GPU that keeps failing ([`crate::gpu_recovery`]), stops the
     /// desktop with `error`.
     fn frame_failed(&mut self, id: u64, error: String) {
@@ -3105,7 +3105,7 @@ impl Mount {
         self.publish(id);
     }
 
-    /// A pressed key reaching the desk: how many frames were presented by then.
+    /// A pressed key reaching the shell: how many frames were presented by then.
     fn note_key(&mut self, event: &WindowEvent) {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
@@ -3115,7 +3115,7 @@ impl Mount {
     }
 
     /// Let go of the GPU this mount draws with and make a new device, surface
-    /// and renderer: the next generation, whose first frame draws the desk
+    /// and renderer: the next generation, whose first frame draws the shell
     /// whole.
     fn remake_gpu(&mut self, id: u64) {
         unconfigure(&self.canvas);
@@ -3174,7 +3174,7 @@ impl Mount {
     }
 
     /// Where each semantic target the host asked about is drawn: the place of its action in the
-    /// record this page shows alone, or none on a desk.
+    /// record this page shows alone, or none on a shell.
     fn semantic_loci(&self) -> Vec<serde_json::Value> {
         self.semantic_targets
             .iter()
@@ -3280,7 +3280,7 @@ impl Mount {
             "tab": format!("{id:x}"),
             "error": self.error,
             "frames": self.frames,
-            // How many frames were presented when the desk took the last key:
+            // How many frames were presented when the shell took the last key:
             // the frame after it is the first that can show the key's effect.
             "framesAtKey": self.frames_at_key,
             // Frames the GPU never reported drawn since it last reported one:
@@ -3299,7 +3299,7 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             // The page titles its tab after it: the space in front on the
-            // desk, or, while the desk's own space is unnamed (one this page
+            // shell, or, while the shell's own space is unnamed (one this page
             // seeded for a workspace no directory named), the name the
             // workspace answered this page's admission with.
             "workspaceName": self.desktop.as_ref()
@@ -3310,7 +3310,7 @@ impl Mount {
             "ime": ime,
         });
         let mut value = value;
-        self.add_desk_state(&mut value);
+        self.add_search_state(&mut value);
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
         }

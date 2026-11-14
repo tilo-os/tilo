@@ -1,12 +1,12 @@
 //! The session's layers in the page: what a role of the session places over the
-//! desk — who is here, with its cards and everyone else's pointer — drawn by the
+//! shell — who is here, with its cards and everyone else's pointer — drawn by the
 //! page's own frame.
 //!
 //! [`tilo_session::platform::surfaces`] is the seam: a role draws its panel as a
 //! widget tree of its own and asks its host to show it on a layer above the
 //! windows. A native session's compositor draws each such tree on a surface of
 //! its own; the page has one canvas, so a layer is a widget tree standing over
-//! the desk in the page's own tree, and the page's semantic projection carries
+//! the shell in the page's own tree, and the page's semantic projection carries
 //! what it shows to assistive technology.
 
 use std::cell::Cell;
@@ -76,7 +76,7 @@ impl Layer for Handle {
 /// A layer in the page's tree: the shell draws it, routes the input that lands on it, and hands it
 /// to assistive technology as any other child.
 pub(crate) struct LayerWidget {
-    /// The role's widget tree, out of the page's flow over the whole desk.
+    /// The role's widget tree, out of the page's flow over the whole shell.
     root: Box<dyn Widget>,
     /// What the role hears from the page, beside the input its tree is given.
     heard: Heard,
@@ -117,7 +117,7 @@ impl Widget for LayerWidget {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let root = self.root.build_layout(taffy, theme, map);
-        // Over the whole desk, out of the page's flow: the role's tree covers what it draws on.
+        // Over the whole shell, out of the page's flow: the role's tree covers what it draws on.
         let style = Style {
             position: Position::Absolute,
             inset: ui::taffy::Rect {
@@ -224,7 +224,7 @@ impl Widget for LayerWidget {
 }
 
 /// The layers the session placed over the page, in the order it placed them: the shell draws them
-/// above the desk and below its own sheets.
+/// above the shell and below its own sheets.
 #[derive(Default)]
 pub(crate) struct Layers {
     placed: Vec<LayerWidget>,
@@ -237,7 +237,7 @@ impl Layers {
     }
 
     /// Whether a layer's role takes the pointer where it stands: a wheel over it is the role's,
-    /// never the desk's.
+    /// never the shell's.
     pub(crate) fn wants_pointer_capture(&self) -> bool {
         self.placed.iter().any(LayerWidget::wants_pointer_capture)
     }

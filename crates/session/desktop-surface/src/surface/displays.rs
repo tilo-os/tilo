@@ -126,7 +126,7 @@ pub(crate) fn lanes(
         .collect()
 }
 
-/// What one strip on the desk is laid out and shown as: the displays it is shown on, its window
+/// What one strip on the shell is laid out and shown as: the displays it is shown on, its window
 /// groups in lane order (display by display), and which display each belongs to.
 pub(crate) struct StripPlan {
     pub(crate) strip: StripId,
@@ -470,7 +470,7 @@ impl DesktopHandle {
     }
 
     /// The primary display: the one the person chose in Settings while it is connected, else the
-    /// first. `None` while the desk carries no partition, as one display needs no telling apart.
+    /// first. `None` while the shell carries no partition, as one display needs no telling apart.
     #[must_use]
     pub fn primary_display(&self) -> Option<u32> {
         self.read(|tree| tree.outputs.primary())
@@ -696,7 +696,7 @@ mod tests {
 
     /// A tree whose one strip holds groups `ids` , the first `left` of them on the left display.
     fn docked(ids: &[GroupId], left: usize) -> Layout {
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Desk");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Office");
         let mut strip = Strip::new(StripId(1), "S");
         strip.window_groups = ids.iter().map(|id| group(*id)).collect();
         workspace.strips = vec![strip];
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn one_display_steps_along_the_strip_and_stops_at_its_ends() {
-        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Desk");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Office");
         let mut s = Strip::new(StripId(1), "S");
         s.window_groups = vec![group(1), group(2)];
         workspace.strips = vec![s];

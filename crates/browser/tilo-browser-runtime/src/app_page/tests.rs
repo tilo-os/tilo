@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_window_on_a_record_still_on_its_way_waits_for_it;
-    // A desk window saved on a record the workspace still sends (one a shared desk names) is
+    // A layout window saved on a record the workspace still sends (one a shared layout names) is
     // loading, not a failure: preparing it says so, asks the workspace for it, and prepares once it
     // is here. The person never reads the store's own words for it.
     {

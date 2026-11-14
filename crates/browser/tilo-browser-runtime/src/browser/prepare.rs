@@ -1,4 +1,4 @@
-//! What a mount is prepared with before it draws: the stores, identity and settings its desk
+//! What a mount is prepared with before it draws: the stores, identity and settings its shell
 //! mounts with, its history, and the session that serves its windows.
 
 use std::cell::RefCell;
@@ -71,12 +71,12 @@ pub(super) fn host_offers(config: &Config) -> crate::shell::HostOffers {
     }
 }
 
-/// What the page's desk asks its history: the session's activity over this page's store, its apps
+/// What the page's shell asks its history: the session's activity over this page's store, its apps
 /// and the people presence knows, and the model this page may ask.
 ///
 /// The model is the host's, else a provider the person set up here: without one nothing is asked
-/// and the history keeps its deterministic digest. Only where this page's copy is the desk: in a
-/// workspace the desk is the workspace's document, and its metadata reaches everyone from the
+/// and the history keeps its deterministic digest. Only where this page's copy is the shell: in a
+/// workspace the shell is the workspace's document, and its metadata reaches everyone from the
 /// device that writes it there.
 pub(super) fn serve_history(
     surface: &mut tilo_desktop_surface::DesktopSurface,
@@ -94,7 +94,7 @@ pub(super) fn serve_history(
     });
     let people = crate::page_activity::person_of(here, people, config.author());
     let activity = tilo_session::activity::Activity::over(tilo_session::activity::Given {
-        layouts: Box::new(crate::page_activity::PageDesk(persistence.desk())),
+        layouts: Box::new(crate::page_activity::PageLayout(persistence.layout())),
         person: config.author(),
         store: Some(store),
         state: None,
@@ -126,7 +126,7 @@ impl tilo_session::platform::Models for PageModels {
 }
 
 /// The session that serves this desktop's windows, what it opens, its agent door, and the
-/// notifications the desk posts: served before the chrome reads any of them.
+/// notifications the shell posts: served before the chrome reads any of them.
 pub(super) fn serve_session(
     surface: &mut tilo_desktop_surface::DesktopSurface,
     config: &Config,

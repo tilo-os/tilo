@@ -4,7 +4,7 @@
 //! picture on the window's track of its live plane (`window/<tab>/high`), `tab` being the tab the
 //! window stands in on every device of the workspace. This page decodes what that track brings
 //! with the browser's own decoder (`WebCodecs`, `tilo_media`'s page decoder) and draws the newest
-//! picture in the window's tile, whole and keeping its shape, the same way the native desk places
+//! picture in the window's tile, whole and keeping its shape, the same way the native shell places
 //! a shared window's picture ([`tilo_desktop_surface::window_input::picture_rect`]). A reader who
 //! cannot see the picture finds the tile by the window's title.
 //!
@@ -203,13 +203,13 @@ pub(crate) fn heard(id: u32, workspace_id: WorkspaceId, from: [u8; 32], tab: u64
     match heard {
         Heard::Nothing => {}
         Heard::Picture => crate::browser::presence::heard(id, workspace_id),
-        // What the tile is changes: the desk builds it again.
+        // What the tile is changes: the shell builds it again.
         Heard::Tile => crate::browser::presence::page_arrived(id, workspace_id, tab),
     }
 }
 
 /// The tile of window `tab` of app `app_id` while this page draws its pictures, named `title` for a
-/// reader: `None` while no picture of it is here, so the desk's own tile answers that tab.
+/// reader: `None` while no picture of it is here, so the shell's own tile answers that tab.
 pub(crate) fn tile(tab: u64, title: &str, app_id: &str) -> Option<TileHost> {
     let window = WINDOWS.with_borrow(|windows| windows.get(&tab).cloned())?;
     if let Some(why) = window.borrow().failed.clone() {

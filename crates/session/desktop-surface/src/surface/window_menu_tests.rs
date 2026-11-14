@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::TileSource;
-use crate::navigation::{ChromeEffect, DeskEffect, Verb};
-use crate::surface::tests::{desk_with, one_window_desk};
+use crate::navigation::{ChromeEffect, LayoutEffect, Verb};
+use crate::surface::tests::{one_window_shell, shell_with};
 use crate::surface::{DesktopHandle, DesktopSurface};
 use std::collections::HashMap;
 use tilo_desktop_model::width::{
@@ -16,11 +16,11 @@ use tilo_desktop_model::{
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
 
-fn desk(windows: usize) -> (DesktopSurface, DesktopHandle) {
+fn shell(windows: usize) -> (DesktopSurface, DesktopHandle) {
     crate::surface::tests::desktop(windows)
 }
 
-/// The apps this desk runs, each opening a tab of its own app.
+/// The apps this shell runs, each opening a tab of its own app.
 struct Apps;
 
 impl TileSource for Apps {
@@ -47,8 +47,8 @@ impl TileSource for Apps {
     }
 }
 
-fn apps_desk(windows: usize) -> (DesktopSurface, DesktopHandle) {
-    desk_with(windows, Box::new(Apps))
+fn apps_shell(windows: usize) -> (DesktopSurface, DesktopHandle) {
+    shell_with(windows, Box::new(Apps))
 }
 
 fn present(surface: DesktopSurface) -> ui::headless::FrameHarness {
@@ -115,7 +115,7 @@ fn ids(rows: &[Row]) -> Vec<&str> {
 /// the name the app is listed under — never the id the app installs under.
 #[test]
 fn the_subject_names_the_window_the_way_a_person_does() {
-    let (_surface, handle) = one_window_desk(1);
+    let (_surface, handle) = one_window_shell(1);
     let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs[0].id);
     let subject = handle.window_subject(tab).expect("the window's subject");
     assert_eq!(subject.title, "App0", "the window's own title");
@@ -130,7 +130,7 @@ fn the_subject_names_the_window_the_way_a_person_does() {
 /// each means the command it names.
 #[test]
 fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
-    let (_surface, handle) = apps_desk(1);
+    let (_surface, handle) = apps_shell(1);
     let (route, tree) = (first_route(&handle), handle.read(Clone::clone));
     let rows = super::rows(&tree, &route, &Facts::default());
     assert_eq!(
@@ -164,7 +164,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
             vec![NEW_TAB],
             vec![CLOSE_WINDOW],
         ],
-        "covering and filling the window, lifting it over the desk, its share of
+        "covering and filling the window, lifting it over the shell, its share of
             the strip, what it shows, and closing it"
     );
     // Nowhere to move it to: the place offers no row at all, rather than one that cannot be chosen.
@@ -205,7 +205,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
 /// The row of a window asking for the person takes them to it, and is gone once they are there.
 #[test]
 fn a_window_asking_for_the_person_offers_to_be_gone_to_first() {
-    let (surface, handle) = desk(2);
+    let (surface, handle) = shell(2);
     let tab = tab_at(&handle, 1);
     assert!(handle.ask_attention(tab));
     let rows = handle.window_menu(tab);
@@ -215,7 +215,7 @@ fn a_window_asking_for_the_person_offers_to_be_gone_to_first() {
     let tree = handle.read(Clone::clone);
     assert!(matches!(
         command(&tree, &route, REVEAL, None),
-        Some(Verb::Desk(DeskEffect::Focus { .. }))
+        Some(Verb::Layout(LayoutEffect::Focus { .. }))
     ));
 
     let mut frame = present(surface);
@@ -236,7 +236,7 @@ fn a_window_asking_for_the_person_offers_to_be_gone_to_first() {
 /// which window covers it.
 #[test]
 fn the_full_screen_row_covers_the_display_and_gives_it_back() {
-    let (surface, handle) = desk(2);
+    let (surface, handle) = shell(2);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let covering =
@@ -283,11 +283,11 @@ fn the_full_screen_row_covers_the_display_and_gives_it_back() {
     );
 }
 
-/// The float row lifts the window over the desk at the floating size, and the row then offers to
+/// The float row lifts the window over the shell at the floating size, and the row then offers to
 /// put it back into its strip.
 #[test]
-fn the_float_row_lifts_the_window_over_the_desk_and_puts_it_back() {
-    let (surface, handle) = apps_desk(2);
+fn the_float_row_lifts_the_window_over_the_shell_and_puts_it_back() {
+    let (surface, handle) = apps_shell(2);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let floating = |handle: &DesktopHandle| {
@@ -353,7 +353,7 @@ fn the_float_row_lifts_the_window_over_the_desk_and_puts_it_back() {
 /// Filling the strip is offered, and once filled the row gives the strip back.
 #[test]
 fn filling_the_strip_is_offered_and_then_giving_it_back() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
     assert!(row(&handle.window_menu(route.tab), MAXIMIZE).is_some());
@@ -374,7 +374,7 @@ fn filling_the_strip_is_offered_and_then_giving_it_back() {
 /// step between the same shares, stopping at both ends with a row that says why.
 #[test]
 fn every_width_row_gives_the_window_the_share_it_names() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
     for (id, width) in [
@@ -443,7 +443,7 @@ fn every_width_row_gives_the_window_the_share_it_names() {
 /// Equalising gives every window of the strip the same share of it.
 #[test]
 fn equalizing_gives_every_window_of_the_strip_the_same_share() {
-    let (surface, handle) = apps_desk(2);
+    let (surface, handle) = apps_shell(2);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
@@ -473,7 +473,7 @@ fn equalizing_gives_every_window_of_the_strip_the_same_share() {
 /// A window moves into another strip of its workspace, by that strip's name.
 #[test]
 fn a_window_moves_to_another_strip_by_its_name() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
@@ -518,7 +518,7 @@ fn a_window_moves_to_another_strip_by_its_name() {
 /// A window moves into another workspace, by that workspace's name.
 #[test]
 fn a_window_moves_to_another_workspace_by_its_name() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
@@ -589,12 +589,12 @@ impl TileSource for Carrying {
 }
 
 /// The window of an app this device started runs in the workspace that started it, with its grants
-/// and its records: its tab does not cross by itself, and the desk hands the move to the session
+/// and its records: its tab does not cross by itself, and the shell hands the move to the session
 /// instead, leaving the tab where it is until the session carries it.
 #[test]
 fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab() {
     let carried = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let (surface, handle) = desk_with(
+    let (surface, handle) = shell_with(
         1,
         Box::new(Carrying {
             carried: std::rc::Rc::clone(&carried),
@@ -655,7 +655,7 @@ fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab
 #[test]
 fn a_programs_window_is_handed_over_too_and_the_session_moves_it_at_once() {
     let carried = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let (surface, handle) = desk_with(
+    let (surface, handle) = shell_with(
         1,
         Box::new(Carrying {
             carried: std::rc::Rc::clone(&carried),
@@ -692,7 +692,7 @@ fn a_programs_window_is_handed_over_too_and_the_session_moves_it_at_once() {
 /// A window shows on another display, by that display's name, as the keyboard chord does.
 #[test]
 fn a_window_moves_to_another_display_by_its_name() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
@@ -756,7 +756,7 @@ fn a_window_moves_to_another_display_by_its_name() {
 /// The new tab row opens another tab of the window's app, right beside it.
 #[test]
 fn a_new_tab_row_opens_another_tab_of_its_app_beside_it() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
     handle.choose_window_menu(route.tab, NEW_TAB, None).unwrap();
@@ -779,7 +779,7 @@ fn a_new_tab_row_opens_another_tab_of_its_app_beside_it() {
 /// and choosing it makes the request the window bar's item makes.
 #[test]
 fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
-    let (_surface, handle) = apps_desk(1);
+    let (_surface, handle) = apps_shell(1);
     let route = first_route(&handle);
     assert!(
         row(&handle.window_menu(route.tab), SHARE).is_none(),
@@ -836,7 +836,7 @@ fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
 /// long to show is refused.
 #[test]
 fn only_a_host_windows_tab_offers_a_name() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -858,7 +858,7 @@ fn only_a_host_windows_tab_offers_a_name() {
     assert_eq!(name.label, "Name this window…");
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, RENAME, Some("Shell")),
+        command(&tree, &route, RENAME, Some("Plans")),
         Some(Verb::Chrome(ChromeEffect::Rename { .. }))
     ));
     assert!(
@@ -873,7 +873,7 @@ fn only_a_host_windows_tab_offers_a_name() {
         "a name too long to show is refused"
     );
     handle
-        .choose_window_menu(route.tab, RENAME, Some("Shell"))
+        .choose_window_menu(route.tab, RENAME, Some("Plans"))
         .unwrap();
     settle(&mut frame);
     let named = handle
@@ -883,10 +883,10 @@ fn only_a_host_windows_tab_offers_a_name() {
         .find(|entry| entry.route.tab == route.tab.to_string())
         .map(|entry| entry.label)
         .unwrap();
-    assert_eq!(named, "Shell");
+    assert_eq!(named, "Plans");
 
     // A person types the name where the tab's title stands: the menu's Rename or a double click
-    // opens the field in the window's bar, the desk holds the keyboard while it is open (so the
+    // opens the field in the window's bar, the shell holds the keyboard while it is open (so the
     // keys never reach the app), Enter names the tab and Escape leaves it as it was.
     let shown = |frame: &ui::headless::FrameHarness| {
         let surface = frame.root::<DesktopSurface>();
@@ -904,11 +904,11 @@ fn only_a_host_windows_tab_offers_a_name() {
     handle.choose_window_menu(route.tab, RENAME, None).unwrap();
     settle(&mut frame);
     assert!(handle.wants_keyboard(), "the name field holds the keyboard");
-    frame.type_text("Shell 2");
+    frame.type_text("Plans 2");
     frame.key("Enter");
     settle(&mut frame);
     assert!(!handle.wants_keyboard(), "Enter gives the keyboard back");
-    assert_eq!(shown(&frame), ("Shell 2".to_owned(), true));
+    assert_eq!(shown(&frame), ("Plans 2".to_owned(), true));
     assert!(handle.read(|tree| tree.tab(route.tab).unwrap().is_named()));
 
     handle.choose_window_menu(route.tab, RENAME, None).unwrap();
@@ -919,7 +919,7 @@ fn only_a_host_windows_tab_offers_a_name() {
     assert!(!handle.wants_keyboard(), "Escape gives the keyboard back");
     assert_eq!(
         shown(&frame),
-        ("Shell 2".to_owned(), true),
+        ("Plans 2".to_owned(), true),
         "and names nothing"
     );
 
@@ -945,7 +945,7 @@ fn only_a_host_windows_tab_offers_a_name() {
 /// Split right takes the tab out into a window of its own, right after the one it was in.
 #[test]
 fn split_right_splits_a_tab_into_the_window_beside_it() {
-    let (surface, handle) = one_window_desk(2);
+    let (surface, handle) = one_window_shell(2);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let rows = handle.window_menu(route.tab);
@@ -982,7 +982,7 @@ fn split_right_splits_a_tab_into_the_window_beside_it() {
 /// Move to a new window takes the tab to a window of its own at the strip's end.
 #[test]
 fn a_tab_moves_to_a_new_window_at_the_strips_end() {
-    let (surface, handle) = one_window_desk(3);
+    let (surface, handle) = one_window_shell(3);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let rows = handle.window_menu(route.tab);
@@ -1012,7 +1012,7 @@ fn a_tab_moves_to_a_new_window_at_the_strips_end() {
 /// tab with it, and a reopen brings it back.
 #[test]
 fn closing_the_tab_leaves_the_window_that_closing_it_ends() {
-    let (surface, handle) = one_window_desk(2);
+    let (surface, handle) = one_window_shell(2);
     let mut frame = present(surface);
     let route = first_route(&handle);
     let other = handle.read(|tree| {
@@ -1055,7 +1055,7 @@ fn closing_the_tab_leaves_the_window_that_closing_it_ends() {
 /// and the row is gone once the grant is taken back.
 #[test]
 fn stopping_desktop_control_takes_the_grant_back() {
-    let (surface, handle) = apps_desk(1);
+    let (surface, handle) = apps_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());
@@ -1093,7 +1093,7 @@ fn stopping_desktop_control_takes_the_grant_back() {
 /// choosing one is refused.
 #[test]
 fn someone_elses_window_offers_no_move_nor_close() {
-    let (_surface, handle) = one_window_desk(2);
+    let (_surface, handle) = one_window_shell(2);
     let route = first_route(&handle);
     assert!(handle.set_holders(HashMap::from([(
         route.tab,
@@ -1121,7 +1121,7 @@ fn someone_elses_window_offers_no_move_nor_close() {
 /// A window the tree no longer holds offers no rows and no command.
 #[test]
 fn a_window_that_is_gone_offers_nothing() {
-    let (_surface, handle) = desk(1);
+    let (_surface, handle) = shell(1);
     let route = first_route(&handle);
     let mut gone = handle.read(Clone::clone);
     gone.workspaces[0].strips[0]

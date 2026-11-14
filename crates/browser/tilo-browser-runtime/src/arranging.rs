@@ -1,11 +1,11 @@
 //! The arrangement in the page: the role is [`tilo_session_core::arrangement`]'s, the one a native
-//! session runs, standing on the desk document this page keeps.
+//! session runs, standing on the layout document this page keeps.
 //!
 //! A page has no compositor to say whether the person is mid-gesture, and the palette's index is
 //! the frame's own, which the role cannot reach from here: an action that would wait for the
 //! person's hands never waits, and text typed on the canvas places nothing (the page's palette
 //! opens what it finds instead). Arranging by action — a place moved between rows, a place floated,
-//! a strip resized, the person's own undo — is the one attributed change of the desk it is in a
+//! a strip resized, the person's own undo — is the one attributed change of the layout it is in a
 //! session.
 
 use std::cell::RefCell;
@@ -15,7 +15,7 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::arrangement::{
     Arrangement, Ask, AskOrigin, Busy, Door, Find, FindDone, RECORD_RESOURCE,
 };
-use tilo_session_core::desk::Desk;
+use tilo_session_core::layout::LayoutDocument;
 
 /// The page's arrangement, and the door everything that arranges by action reaches it through.
 pub(crate) struct Arranging {
@@ -24,13 +24,13 @@ pub(crate) struct Arranging {
 }
 
 impl Arranging {
-    /// The page's arrangement of `handle`'s desk, whose changes `desk` keeps, naming windows as the
-    /// bundle's registry names them.
-    pub(crate) fn new(person: &str, handle: DesktopHandle, desk: Rc<Desk>) -> Self {
+    /// The page's arrangement of `handle`'s layout, whose changes `layout` keeps, naming windows as
+    /// the bundle's registry names them.
+    pub(crate) fn new(person: &str, handle: DesktopHandle, layout: Rc<LayoutDocument>) -> Self {
         let arrangement = Rc::new(RefCell::new(Arrangement::new(
             person,
             handle,
-            desk,
+            layout,
             Rc::new(tilo_desktop_search::names::window_name),
             tilo_session_core::arrangement::source_words(),
         )));
@@ -51,13 +51,13 @@ impl Arranging {
         Self { arrangement, door }
     }
 
-    /// What the arrangement publishes now: its own resource, the desk's record, and a resource per
-    /// row, strip and place on the desk.
+    /// What the arrangement publishes now: its own resource, the layout's record, and a resource per
+    /// row, strip and place on the layout.
     pub(crate) fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.door.resources()
     }
 
-    /// Whether `resource` is one the arrangement publishes: the desk's record, or the arrangement
+    /// Whether `resource` is one the arrangement publishes: the layout's record, or the arrangement
     /// and a row, strip or place of it.
     pub(crate) fn holds(&self, resource: &str) -> bool {
         fn held(resources: &[tilo_actions::ResourceSpec], id: &str) -> bool {
@@ -78,7 +78,7 @@ impl Arranging {
             .take(resources);
     }
 
-    /// Make each window the person floated or put back on the desk their arranging action.
+    /// Make each window the person floated or put back on the layout their arranging action.
     pub(crate) fn take_asked_floats(&self) {
         if let Err(why) = self.arrangement.borrow_mut().take_asked_floats() {
             tracing::warn!(why, "a window could not be floated or put back");
@@ -109,7 +109,7 @@ impl Arranging {
 
 #[cfg(test)]
 mod tests {
-    //! A page's desk, arranged by action: what an action does reaches the desk the page keeps, as
+    //! A page's layout, arranged by action: what an action does reaches the layout the page keeps, as
     //! one step of its history the person takes back.
 
     use super::*;
@@ -121,7 +121,7 @@ mod tests {
     use tilo_session_core::arrangement::{Item, RECORD_RESOURCE, RESOURCE};
     use ui::widget::TileHost;
 
-    /// What a test desk's windows say. Nothing the page would start.
+    /// What a test layout's windows say. Nothing the page would start.
     struct Tiles;
 
     impl TileSource for Tiles {
@@ -135,12 +135,12 @@ mod tests {
 
     struct Page {
         handle: DesktopHandle,
-        desk: Rc<Desk>,
+        layout: Rc<LayoutDocument>,
         arrangement: Arranging,
     }
 
     impl Page {
-        /// A page of one workspace with a window of Notes in its row, and its desk document.
+        /// A page of one workspace with a window of Notes in its row, and its layout document.
         fn new() -> Self {
             let mut minter = IdMinter::new(7);
             let notes = Tab {
@@ -157,24 +157,28 @@ mod tests {
             };
             let tree = seed_tree(&mut minter, "Studio", vec![notes]);
             let (_surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
-            let desk = Rc::new(Desk::new(ui::automerge::AutoCommit::new(), "ada", None));
-            // The desk as the page opened it: no step of the person's, as a
+            let layout = Rc::new(LayoutDocument::new(
+                ui::automerge::AutoCommit::new(),
+                "ada",
+                None,
+            ));
+            // The layout as the page opened it: no step of the person's, as a
             // session's first change is not one.
-            desk.record_now(
+            layout.record_now(
                 &handle.read(Clone::clone),
                 ui::time::unix_now_i64(),
                 &[],
                 None,
             );
-            let arrangement = Arranging::new("ada", handle.clone(), Rc::clone(&desk));
+            let arrangement = Arranging::new("ada", handle.clone(), Rc::clone(&layout));
             Self {
                 handle,
-                desk,
+                layout,
                 arrangement,
             }
         }
 
-        /// The one window on the desk.
+        /// The one window on the layout.
         fn window(&self) -> u64 {
             self.handle
                 .read(|tree| {
@@ -184,7 +188,7 @@ mod tests {
                         .and_then(|group| group.tabs.first())
                         .map(|tab| tab.id)
                 })
-                .expect("the desk has a window")
+                .expect("the layout has a window")
         }
 
         fn invoke(
@@ -198,7 +202,7 @@ mod tests {
                 .expect("the arrangement carries the action out")
         }
 
-        /// Whether the window `place` floats above the desk.
+        /// Whether the window `place` floats above the layout.
         fn floating(&self, place: u64) -> bool {
             self.handle.read(|tree| {
                 tree.active_workspace().is_some_and(|workspace| {
@@ -229,7 +233,7 @@ mod tests {
             })
         }
 
-        /// A second row on the desk, called `name`.
+        /// A second row on the layout, called `name`.
         fn add_row(&self, name: &str) -> u64 {
             let mut tree = self.handle.read(Clone::clone);
             let made = tilo_desktop_model::commands::apply_to_active_workspace(
@@ -239,7 +243,7 @@ mod tests {
                 },
                 &mut || Ok(self.handle.mint_id()),
             )
-            .expect("the desk takes a second row")
+            .expect("the layout takes a second row")
             .expect("the row has an id");
             self.handle.replace_tree(tree);
             made.0
@@ -247,10 +251,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_pages_desk_is_arranged_by_action;
+        fn the_pages_layout_is_arranged_by_action;
 
-        phase the_page_publishes_the_desks_places_as_arranging_resources;
-        // The arrangement publishes the desk's places, rows and record, so the page's palette, a
+        phase the_page_publishes_the_layouts_places_as_arranging_resources;
+        // The arrangement publishes the layout's places, rows and record, so the page's palette, a
         // script and an agent can arrange it by action.
         {
             let page = Page::new();
@@ -278,7 +282,7 @@ mod tests {
             );
             assert!(
                 page.arrangement.holds(RECORD_RESOURCE),
-                "the desk's record is the person's to step back"
+                "the layout's record is the person's to step back"
             );
             assert!(
                 !page.arrangement.holds("so.tilo.notes:record"),
@@ -287,12 +291,12 @@ mod tests {
         }
 
         phase a_float_through_the_door_is_one_step_the_person_takes_back;
-        // A float invoked through the door floats the page's window as one step of the desk's history,
+        // A float invoked through the door floats the page's window as one step of the layout's history,
         // and the person's undo puts it back.
         {
             let page = Page::new();
             let place = page.window();
-            assert!(!page.floating(place), "it stands among the desk's windows");
+            assert!(!page.floating(place), "it stands among the layout's windows");
 
             page.invoke(
                 &Item::Place.resource(&place.to_string()),
@@ -305,18 +309,18 @@ mod tests {
             );
             assert!(page.floating(place), "the window floats");
             assert_eq!(
-                page.desk.last_step("ada"),
+                page.layout.last_step("ada"),
                 Some(("ada".to_owned(), "float".to_owned())),
-                "floating is the person's own step of the desk's history"
+                "floating is the person's own step of the layout's history"
             );
 
             page.invoke(RECORD_RESOURCE, "undo", &serde_json::Map::new());
             assert!(!page.floating(place), "the person's undo puts it back");
         }
 
-        phase a_move_through_the_door_changes_the_pages_desk;
+        phase a_move_through_the_door_changes_the_pages_layout;
         // A move invoked through the door puts the page's window into the other row, as one step of
-        // the desk's history.
+        // the layout's history.
         {
             let page = Page::new();
             let place = page.window();
@@ -338,15 +342,15 @@ mod tests {
                 "the window stands in the row it was moved to"
             );
             assert_eq!(
-                page.desk.last_step("ada"),
+                page.layout.last_step("ada"),
                 Some(("ada".to_owned(), "move".to_owned())),
-                "the move is the person's step of the desk's history"
+                "the move is the person's step of the layout's history"
             );
         }
 
-        phase the_action_is_what_the_pages_desk_document_holds;
-        // What an action did is what the page's desk document holds: a reload of it reads the arranged
-        // desk, not the one before.
+        phase the_action_is_what_the_pages_layout_document_holds;
+        // What an action did is what the page's layout document holds: a reload of it reads the
+        // arranged layout, not the one before.
         {
             let page = Page::new();
             let place = page.window();
@@ -355,7 +359,7 @@ mod tests {
                 "pin",
                 &serde_json::Map::from_iter([("pinned".to_owned(), serde_json::json!(true))]),
             );
-            let reloaded = Desk::new(page.desk.document(), "ada", None);
+            let reloaded = LayoutDocument::new(page.layout.document(), "ada", None);
             let pinned = reloaded
                 .tree()
                 .and_then(|tree| {
@@ -370,7 +374,7 @@ mod tests {
                     })
                 })
                 .unwrap_or(false);
-            assert!(pinned, "the desk document holds the place as pinned");
+            assert!(pinned, "the layout document holds the place as pinned");
         }
     }
 }

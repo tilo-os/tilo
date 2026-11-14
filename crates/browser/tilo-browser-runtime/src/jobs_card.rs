@@ -1,9 +1,9 @@
-//! The page's long work on the desk: a card at the desk's foot with a row for each system job (a
+//! The page's long work on the shell: a card at the shell's foot with a row for each system job (a
 //! folder going up into the workspace, say), drawn by the system's own jobs band
 //! ([`ui::jobs::Band`]) so it reads as long work reads in every app: what it is, what it is doing
 //! now and how far, Stop while it runs, and how it ended until the person reads it.
 //!
-//! The card stands on a layer of its own over the desk ([`crate::layers`]) and shows only while
+//! The card stands on a layer of its own over the shell ([`crate::layers`]) and shows only while
 //! there is a job to show; the shell lays it out again whenever the jobs move
 //! ([`JobsCard::follow`]).
 
@@ -42,7 +42,7 @@ impl JobsCard {
             rect: Rect::ZERO,
             shown: false,
         };
-        // The page lays its layers out over the whole desk: where the card stands is its own.
+        // The page lays its layers out over the whole shell: where the card stands is its own.
         layers.placing(wake).place(
             "jobs",
             Box::new(card),
@@ -75,7 +75,7 @@ impl JobsCard {
     }
 }
 
-/// The card itself, on its layer: the band in a floating card at the desk's bottom right.
+/// The card itself, on its layer: the band in a floating card at the shell's bottom right.
 struct Card {
     presses: ui::jobs::Presses,
     /// The band, made once its code is in.

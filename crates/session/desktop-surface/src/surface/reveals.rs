@@ -14,12 +14,12 @@ use super::{DesktopHandle, DesktopSurface, navigation, route_of};
 /// moved between two keystrokes would move the field they type in from under their eyes.
 pub(crate) const INPUT_QUIET: Duration = Duration::from_secs(2);
 
-/// The window waiting to come into view, and how recently the person used the desk.
+/// The window waiting to come into view, and how recently the person used the shell.
 #[derive(Debug, Default)]
 pub(super) struct Revealing {
     /// The window to bring into view ([`DesktopHandle::reveal_tab`]); the newest ask wins.
     asked: Option<TabId>,
-    /// When the person last typed, scrolled or moved a held pointer on the desk.
+    /// When the person last typed, scrolled or moved a held pointer on the shell.
     last_input: Option<Instant>,
     /// The person holds the primary button down: a drag in progress, however still.
     pressed: bool,
@@ -110,7 +110,7 @@ impl DesktopHandle {
 }
 
 impl DesktopSurface {
-    /// Note the person's hands, as each event that reaches the desk shows them.
+    /// Note the person's hands, as each event that reaches the shell shows them.
     pub(super) fn note_input(&self, event: &WindowEvent) {
         self.shared
             .borrow_mut()
@@ -145,10 +145,10 @@ impl DesktopSurface {
         true
     }
 
-    /// The newest window an agent opened for this desk's own person that arrived from elsewhere,
+    /// The newest window an agent opened for this shell's own person that arrived from elsewhere,
     /// brought into view: the person sees what their agent opened. A window someone else holds is
-    /// theirs to show; this desk only points at it ([`super::arrivals`]). Which run opened a window
-    /// may reach the desk a pass after the window: an arrival waits for it while its hint would.
+    /// theirs to show; this shell only points at it ([`super::arrivals`]). Which run opened a window
+    /// may reach the shell a pass after the window: an arrival waits for it while its hint would.
     pub(super) fn reveal_agent_arrivals(&self) {
         let mut shared = self.shared.borrow_mut();
         let super::Shared {

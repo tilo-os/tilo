@@ -59,7 +59,7 @@ impl ui::resources::PublishesResources for OpensWriter {
     }
 }
 
-/// A desk whose Camera window offers to open Writer; any `so.tilo.` app launches as a window of its
+/// A shell whose Camera window offers to open Writer; any `so.tilo.` app launches as a window of its
 /// own.
 struct OpeningApps;
 
@@ -89,7 +89,7 @@ impl TileSource for OpeningApps {
 
 /// The page desktop: one frame hosting its windows in process, serving them its own session for the
 /// workspace `workspace` .
-fn serving_desk(
+fn serving_shell(
     workspace: &str,
 ) -> (
     ui::headless::FrameHarness,
@@ -98,7 +98,7 @@ fn serving_desk(
 ) {
     let mut minter = IdMinter::new(7);
     let camera = tab(&mut minter, "Camera");
-    let tree = seed_tree(&mut minter, "Desk", vec![camera]);
+    let tree = seed_tree(&mut minter, "Office", vec![camera]);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(OpeningApps));
     handle.set_viewport_width(1200.0);
     let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
@@ -128,7 +128,7 @@ fn serving_desk(
 /// refuses to open is said over the window that asked, never dropped.
 #[test]
 fn a_window_opens_another_app_through_the_desktop_s_session() {
-    let (mut driver, handle, openings) = serving_desk("workspace");
+    let (mut driver, handle, openings) = serving_shell("workspace");
     driver
         .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
         .expect("the session takes the open");
@@ -150,7 +150,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     );
     assert_eq!(driver.refusal_said(), None);
 
-    let (mut driver, handle, openings) = serving_desk("workspace");
+    let (mut driver, handle, openings) = serving_shell("workspace");
     driver
         .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
         .expect("the session takes the open");
@@ -252,7 +252,7 @@ fn a_filling_page_keeps_its_strip_to_the_band_and_settles() {
         .iter()
         .map(|title| tab(&mut minter, title))
         .collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(FillingTiles(text.clone())));
     handle.set_viewport_width(1200.0);
     let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
@@ -352,7 +352,7 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     };
     let mut minter = IdMinter::new(7);
     let chat = tab(&mut minter, "Chat");
-    let tree = seed_tree(&mut minter, "Desk", vec![chat]);
+    let tree = seed_tree(&mut minter, "Office", vec![chat]);
     let opened = Rc::default();
     let (surface, handle) = DesktopSurface::new(
         tree,
@@ -411,7 +411,7 @@ fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     };
     let mut minter = IdMinter::new(7);
     let chat = tab(&mut minter, "Chat");
-    let tree = seed_tree(&mut minter, "Desk", vec![chat]);
+    let tree = seed_tree(&mut minter, "Office", vec![chat]);
     let opened = Rc::default();
     let (surface, handle) = DesktopSurface::new(
         tree,
@@ -502,7 +502,7 @@ fn a_window_opens_content_in_another_app_through_the_desktop_s_session() {
     use ui::tilo_actions::remote::{ActionHost as _, ApplicationLaunch, Caller, InvokeRequest};
     let mut minter = IdMinter::new(7);
     let camera = tab(&mut minter, "Camera");
-    let tree = seed_tree(&mut minter, "Desk", vec![camera]);
+    let tree = seed_tree(&mut minter, "Office", vec![camera]);
     let opened = Rc::default();
     let (surface, handle) = DesktopSurface::new(
         tree,

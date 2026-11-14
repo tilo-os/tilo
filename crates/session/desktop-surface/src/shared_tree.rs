@@ -1,6 +1,6 @@
 //! Snapshot compatibility for hosts whose workspace carries a layout. Stream bindings and
 //! presentation belong to the receiving device, and a person's own windows
-//! ([`tilo_desktop_model::personal`]) to the desk they were opened on.
+//! ([`tilo_desktop_model::personal`]) to the shell they were opened on.
 use tilo_desktop_model::{Layout, OutputPartition, TabId, WindowWidth, WorkspaceId};
 
 pub(crate) fn projection(mut tree: Layout) -> Layout {
@@ -60,7 +60,7 @@ pub(crate) fn receive(local: &Layout, incoming: Layout, local_tabs: &[TabId]) ->
                     .tabs
                     .iter()
                     // A person's own window is never in what the workspace sends: it stays on
-                    // the desk it was opened on.
+                    // the shell it was opened on.
                     .filter(|t| local_tabs.contains(&t.id) || t.is_personal())
                     .cloned()
                     .collect();

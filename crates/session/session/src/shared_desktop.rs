@@ -1926,7 +1926,7 @@ impl LayoutHistory {
     }
 }
 
-impl crate::activity::DeskHistory for LayoutHistory {
+impl crate::activity::History for LayoutHistory {
     fn history(
         &self,
         tree: &Layout,

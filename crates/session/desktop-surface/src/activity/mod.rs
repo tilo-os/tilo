@@ -51,33 +51,33 @@ pub trait ActivityTree: Clone + Deref<Target = Layout> + DerefMut {
     }
 }
 
-/// What takes the desk a committing snapshot wrote back to where it is kept.
+/// What takes the layout a committing snapshot wrote back to where it is kept.
 type Commit = std::rc::Rc<dyn Fn(&Layout)>;
 
-/// Read-only admitted history of the desk. Construct from the actual admitted owner document, never
+/// Read-only admitted history of the layout. Construct from the actual admitted owner document, never
 /// from a re-encoded desktop cache. The supplied document is owned so `HistorySource` 's
 /// `AutoCommit` cursor cannot touch the live owner.
 #[derive(Clone)]
 pub struct ActivitySnapshot {
     pub desktop: Layout,
     pub doc: AutoCommit,
-    /// The workspace whose document this is, or `None` when the document is the desk's own.
+    /// The workspace whose document this is, or `None` when the document is the layout's own.
     workspace: Option<tilo_desktop_model::WorkspaceId>,
-    /// What the document holds the desk as.
+    /// What the document holds the layout as.
     shape: Shape,
     /// The workspace's own document, where this document is one of its records: what it governs —
     /// who owns it, who it is shared with, what it grants — is read from there.
     governance: Option<AutoCommit>,
     /// The workspace whose layout the document holds, where it holds one workspace's.
     owning: Option<tilo_desktop_model::WorkspaceId>,
-    /// What takes a change the model wrote back to the desk it came from: a host that keeps the
+    /// What takes a change the model wrote back to the layout it came from: a host that keeps the
     /// workspace's own layout applies it here, and a host whose history is read only keeps none.
     commit: Option<Commit>,
 }
-/// What a snapshot's document holds the desk as.
+/// What a snapshot's document holds the layout as.
 #[derive(Clone, Copy)]
 enum Shape {
-    /// The device's whole desk, as [`tilo_desktop_model::desktop_doc`] keeps it.
+    /// The device's whole layout, as [`tilo_desktop_model::desktop_doc`] keeps it.
     Devices,
     /// One workspace's layout, as the workspace's
     /// [`tilo_desktop_model::shared_record`] holds it.
@@ -108,8 +108,8 @@ impl ActivitySnapshot {
         Ok(snapshot)
     }
 
-    /// Snapshot the whole desk of `desktop` from the device's own document of it: every workspace,
-    /// in the one document this device keeps, whose changes are what the desk did and who did it.
+    /// Snapshot the whole layout of `desktop` from the device's own document of it: every workspace,
+    /// in the one document this device keeps, whose changes are what happened to it and who did it.
     #[must_use]
     pub fn of_desktop(desktop: Layout, doc: AutoCommit) -> Self {
         let mut snapshot = Self {
@@ -125,7 +125,7 @@ impl ActivitySnapshot {
         snapshot
     }
 
-    /// Snapshot the desk of `desktop` from `workspace_id`'s layout record: the strips, window groups and
+    /// Snapshot the layout of `desktop` from `workspace_id`'s record: the strips, window groups and
     /// windows it holds, and the changes of it a history lists.
     #[must_use]
     pub fn of_layout(
@@ -148,7 +148,7 @@ impl ActivitySnapshot {
 
     /// Hand every change the model writes to `commit` , with the workspace as the change left it: a
     /// host that keeps the workspace's layout writes it back, so undoing or restoring a change
-    /// reaches the desk itself.
+    /// reaches the layout itself.
     #[must_use]
     pub fn committing(mut self, commit: std::rc::Rc<dyn Fn(&Layout)>) -> Self {
         self.commit = Some(commit);
@@ -190,14 +190,14 @@ impl ActivityTree for ActivitySnapshot {
     fn replay_presentation_note(&self) -> Option<String> {
         // A workspace document records which windows the workspace holds and how they are arranged,
         // never how wide they are or which is in front: those are the device's. The device's own
-        // document of the desk records the view it was left in too, so there is nothing to note.
+        // document of the layout records the view it was left in too, so there is nothing to note.
         self.workspace
             .map(|_| crate::i18n::t("activity-replay-layout-not-recorded"))
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         let Some(workspace) = self.workspace else {
             match self.shape {
-                // The whole desk, out of the device's document: its topology, and the view it was
+                // The whole layout, out of the device's document: its topology, and the view it was
                 // left in.
                 Shape::Devices => {
                     tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
@@ -242,7 +242,7 @@ impl ActivityTree for ActivitySnapshot {
         let Some(commit) = self.commit.clone() else {
             return;
         };
-        // The change was written into the document: what the desk becomes is what that document
+        // The change was written into the document: what the layout becomes is what that document
         // projects, not the tree it projected before.
         let _ = self.resync_activity_cache();
         commit(&self.desktop);

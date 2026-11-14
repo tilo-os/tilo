@@ -54,7 +54,7 @@ pub fn recover(id: u64) -> Result<(), JsValue> {
 }
 
 /// Lose the mount's GPU device, as a driver reset or the browser does: what a
-/// test of the page's recovery from a lost device asks for. The desk makes a
+/// test of the page's recovery from a lost device asks for. The shell makes a
 /// new device and draws on.
 ///
 /// # Errors
@@ -214,9 +214,9 @@ pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsVal
     })
 }
 
-/// The point of the desk at physical `(x, y)` of the canvas, in the surface's coordinates, and
+/// The point of the shell at physical `(x, y)` of the canvas, in the surface's coordinates, and
 /// what one of those is in the canvas's pixels.
-fn desk_point(m: &super::Mount, x: f64, y: f64) -> (ui::kurbo::Point, f64) {
+fn shell_point(m: &super::Mount, x: f64, y: f64) -> (ui::kurbo::Point, f64) {
     let (mapped_x, mapped_y) = m.viewport.map_pointer(x, y);
     let dpr = m.viewport.applied().dpr.max(f64::MIN_POSITIVE);
     let (scale, _) = m.viewport.map_pointer(1.0, 1.0);
@@ -226,8 +226,8 @@ fn desk_point(m: &super::Mount, x: f64, y: f64) -> (ui::kurbo::Point, f64) {
     )
 }
 
-/// The desk's size in the surface's coordinates.
-fn desk_size(m: &super::Mount) -> (f64, f64) {
+/// The shell's size in the surface's coordinates.
+fn shell_size(m: &super::Mount) -> (f64, f64) {
     let applied = m.viewport.applied();
     let dpr = applied.dpr.max(f64::MIN_POSITIVE);
     (
@@ -240,7 +240,7 @@ fn desk_size(m: &super::Mount) -> (f64, f64) {
 /// takes, x, y, width, height}` (the window under the pointer, and whether its app opens files),
 /// `{kind: "strip", x, y, width, height}` (the place between the strip's windows a window opens
 /// at, drawn as a bar there), or `{kind: "refused", why}`. Places are in the canvas's pixels. A
-/// mount that is one app, not a desk, is all window.
+/// mount that is one app, not a shell, is all window.
 ///
 /// # Errors
 ///
@@ -257,8 +257,8 @@ pub fn drop_target(id: u64, x: f64, y: f64) -> Result<JsValue, JsValue> {
             set("takes", true.into());
             return Ok(answer.into());
         };
-        let (point, px) = desk_point(m, x, y);
-        let size = desk_size(m);
+        let (point, px) = shell_point(m, x, y);
+        let size = shell_size(m);
         let place = |rect: ui::kurbo::Rect| {
             set("x", (rect.x0 * px).into());
             set("y", (rect.y0 * px).into());
@@ -329,8 +329,8 @@ pub fn desktop_drop(
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
         let drops = drops_code()?;
-        let (point, _) = desk_point(m, x, y);
-        let target = drops.drop_target(desktop, point, desk_size(m));
+        let (point, _) = shell_point(m, x, y);
+        let target = drops.drop_target(desktop, point, shell_size(m));
         drops
             .drop_files(desktop, files, &target, progress)
             .map_err(error)?;
@@ -340,7 +340,7 @@ pub fn desktop_drop(
     })
 }
 
-/// Put `files` (`[{file, path}]`, as [`desktop_drop`] takes them) chosen with the desk menu's
+/// Put `files` (`[{file, path}]`, as [`desktop_drop`] takes them) chosen with the shell menu's
 /// uploads into the workspace's file tree, telling `progress` how it goes as [`desktop_drop`]
 /// does.
 ///

@@ -2,7 +2,7 @@
 //!
 //! A command is admitted against the tree when it is dispatched (see
 //! `crate::navigation`), and lands here on the next update pass: the tree takes it first, so
-//! peers and the next session read the desk it leaves, and each row is told what changed in it,
+//! peers and the next session read the shell it leaves, and each row is told what changed in it,
 //! in order, so its live widgets follow without being rebuilt.
 
 use ui::automerge::{AutoCommit, ObjId};
@@ -119,7 +119,7 @@ impl DesktopSurface {
                             && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
                             && tab.rename(&name)
                         {
-                            // A name is what the window shows, not a window the desk gained or
+                            // A name is what the window shows, not a window the shell gained or
                             // lost: the row renames its pill where it stands.
                             ops.push(RowOp::Rename {
                                 strip: ids.strip,
@@ -359,7 +359,7 @@ impl DesktopSurface {
         // that opened beside another asks of the strip — and the record takes
         // them now: the pass that opened the window is the last until
         // something else moves, and the tree would keep the widths the strip
-        // had before, which peers and the next session read as the desk's.
+        // had before, which peers and the next session read as the shell's.
         self.harvest();
     }
 }

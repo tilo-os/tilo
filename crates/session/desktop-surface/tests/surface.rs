@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, Route, Verb};
+use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect, Route, Verb};
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal, seed_tree,
 };
@@ -101,11 +101,11 @@ fn mount() -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
     mount_with(&["Notes", "Scratch"])
 }
 
-/// A desk of one window per title, each of the app named like it.
+/// A shell of one window per title, each of the app named like it.
 fn mount_with(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
     let mut minter = IdMinter::new(7);
     let tabs = titles.iter().map(|title| tab(&mut minter, title)).collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let built = Rc::new(Cell::new(0));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     handle.set_viewport_width(1200.0);
@@ -180,7 +180,7 @@ fn navigation_selects_resizes_and_closes_through_the_model() {
     dispatch(
         &mut driver,
         &handle,
-        DeskEffect::Focus {
+        LayoutEffect::Focus {
             tab: routes[1].tab.clone(),
         },
     );
@@ -211,7 +211,7 @@ fn navigation_selects_resizes_and_closes_through_the_model() {
     dispatch(
         &mut driver,
         &handle,
-        DeskEffect::CloseTab {
+        LayoutEffect::CloseTab {
             tab: routes[0].tab.clone(),
         },
     );
@@ -219,7 +219,7 @@ fn navigation_selects_resizes_and_closes_through_the_model() {
     assert_eq!(snapshot.entries.len(), 1);
     assert_eq!(snapshot.entries[0].route, routes[1]);
 
-    let stale = DeskEffect::Focus {
+    let stale = LayoutEffect::Focus {
         tab: routes[0].tab.clone(),
     };
     assert_eq!(handle.dispatch(stale).unwrap_err(), "Window unavailable");
@@ -265,7 +265,7 @@ fn a_replaced_tree_keeps_surviving_tabs_and_builds_only_new_ones() {
     );
 
     handle
-        .dispatch(DeskEffect::Focus {
+        .dispatch(LayoutEffect::Focus {
             tab: snapshot.entries[0].route.tab.clone(),
         })
         .unwrap();
@@ -295,7 +295,7 @@ fn an_idle_desktop_asks_its_host_for_no_frame() {
         &handle,
         verb("focus", serde_json::json!({"tab":routes[1].route.tab})),
     );
-    // The view slides to the window the change focused; once it is there the desk asks for no frame
+    // The view slides to the window the change focused; once it is there the shell asks for no frame
     // again.
     settle_still(&mut driver);
     assert!(
@@ -392,7 +392,7 @@ fn only_the_focused_window_is_built_before_the_first_frame() {
     let tabs = (0..5)
         .map(|i| tab(&mut minter, &format!("App{i}")))
         .collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let built = Rc::new(Cell::new(0));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     assert_eq!(built.get(), 1, "the focused window only");
@@ -417,7 +417,7 @@ fn only_the_focused_window_is_built_before_the_first_frame() {
 fn a_replaced_tree_builds_tabs_that_were_still_deferred() {
     let mut minter = IdMinter::new(7);
     let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let built = Rc::new(Cell::new(0));
     let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     assert_eq!(built.get(), 1);
@@ -445,7 +445,7 @@ fn a_restored_strip_opens_on_its_focused_window() {
     let tabs = (0..6)
         .map(|i| tab(&mut minter, &format!("App{i}")))
         .collect();
-    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let mut tree = seed_tree(&mut minter, "Office", tabs);
     let strip = &tree.workspaces[0].strips[0];
     let (strip_id, last) = (strip.id, strip.window_groups[5].id);
     tree.set_active_group(strip_id, last);
@@ -757,7 +757,7 @@ type Routes = Rc<std::cell::RefCell<Option<ui::widget::RouteHandle>>>;
 fn mount_apps(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Routes) {
     let mut minter = IdMinter::new(7);
     let tabs = titles.iter().map(|title| tab(&mut minter, title)).collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let routes = Routes::default();
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Apps(Rc::clone(&routes))));
     handle.set_viewport_width(1200.0);
@@ -1219,7 +1219,7 @@ fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
 /// runs.
 fn point_at_the_window(driver: &mut ui::headless::FrameHarness, handle: &DesktopHandle) {
     let Some((_, window)) = handle.shown_tabs().first().copied() else {
-        panic!("the desk shows no window to point at");
+        panic!("the shell shows no window to point at");
     };
     let at = window.center();
     driver.send(&ui::winit::event::WindowEvent::CursorMoved {
@@ -1494,7 +1494,7 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
     let tabs = (0..4)
         .map(|i| tab(&mut minter, &format!("App{i}")))
         .collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(1200.0);
     let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
@@ -1570,7 +1570,7 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     let tabs = (0..4)
         .map(|i| tab(&mut minter, &format!("App{i}")))
         .collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(1200.0);
     let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
@@ -1991,12 +1991,12 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
 
 /// Choose the row named `name` in open search, which must offer it.
 fn choose_row(
-    desk: &mut ui::headless::FrameHarness,
+    shell: &mut ui::headless::FrameHarness,
     chrome: &mut ui::headless::FrameHarness,
     handle: &DesktopHandle,
     name: &str,
 ) {
-    settle_search(desk, chrome, handle);
+    settle_search(shell, chrome, handle);
     let rows = result_rows(chrome);
     let names: Vec<_> = rows.iter().map(|row| row.name.clone()).collect();
     let row = rows.iter().find(|row| row.name.as_deref() == Some(name));
@@ -2010,7 +2010,7 @@ fn choose_row(
         )
         .unwrap();
     chrome.relayout();
-    desk.relayout();
+    shell.relayout();
     chrome.relayout();
 }
 
@@ -2022,7 +2022,7 @@ fn result_names(chrome: &ui::headless::FrameHarness) -> Vec<String> {
         .collect()
 }
 
-/// A source answers on a worker, and its answer is what asks for the frame that shows it: the desk
+/// A source answers on a worker, and its answer is what asks for the frame that shows it: the shell
 /// draws no frame of its own while a source works, so nothing on a clock asks the sources again.
 #[test]
 fn an_answer_asks_for_the_frame_that_shows_it() {
@@ -2030,10 +2030,10 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
     let pumped = ui::rt::background::Pumped::new();
     let _background = pumped.background().enter();
     ui::host::scoped(&services, || {
-        let (mut desk, handle, _) = mount();
+        let (mut shell, handle, _) = mount();
         let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("notes".into()));
-        // The frames the desk owes itself: asking the sources that hold its own state, and cutting
+        // The frames the shell owes itself: asking the sources that hold its own state, and cutting
         // the rows to the card. The sources on workers have not run yet, so they have not answered.
         let mut frames = 0;
         loop {
@@ -2045,22 +2045,22 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
             if open && !filling {
                 break;
             }
-            desk.relayout();
+            shell.relayout();
             chrome.relayout();
             frames += 1;
-            assert!(frames < 32, "the desk asks itself for the search forever");
+            assert!(frames < 32, "the shell asks itself for the search forever");
         }
         assert!(
             handle.search_open(),
-            "the desk opened the palette it was asked for"
+            "the shell opened the palette it was asked for"
         );
         assert!(
             handle.search_searching(),
             "the sources out on workers still owe an answer"
         );
         assert!(
-            !desk.frame_schedule().queued_work,
-            "a source still working asks for no frame: the desk polls nothing"
+            !shell.frame_schedule().queued_work,
+            "a source still working asks for no frame: the shell polls nothing"
         );
         assert!(
             !result_names(&chrome).iter().any(|name| name == "Notes"),
@@ -2071,12 +2071,12 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
         // The answer asks for the frame that shows it, and that frame shows the row it brings.
         pumped.run_pending();
         assert!(
-            desk.frame_schedule().queued_work,
-            "the answer woke the desk holding the search"
+            shell.frame_schedule().queued_work,
+            "the answer woke the shell holding the search"
         );
         let mut frames = 0;
         while handle.search_searching() {
-            desk.relayout();
+            shell.relayout();
             chrome.relayout();
             frames += 1;
             assert!(frames < 32, "the answer's frame never showed the search");
@@ -2118,7 +2118,7 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
         choose_row(&mut driver, &mut chrome, &handle, "3.1069 mi");
 
         // The web search is offered beside what matched, never alone: a query that names
-        // nothing says so instead. So the query names the window on the desk.
+        // nothing says so instead. So the query names the window on the shell.
         handle.open_search(Scope::Workspace, Some("notes".into()));
         settle_search(&mut driver, &mut chrome, &handle);
         choose_row(
@@ -2218,7 +2218,7 @@ impl TileSource for Scoped {
 fn a_window_is_built_under_its_tab_for_a_panic_hook() {
     let mut minter = IdMinter::new(7);
     let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Maps")];
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let built = Rc::new(std::cell::RefCell::new(Vec::new()));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Scoped(Rc::clone(&built))));
     handle.set_viewport_width(1200.0);
@@ -2266,7 +2266,7 @@ fn the_focused_windows_caret_is_published_even_when_keyboard_focus_is_elsewhere(
     dispatch(
         &mut driver,
         &handle,
-        DeskEffect::Focus {
+        LayoutEffect::Focus {
             tab: routes[1].tab.clone(),
         },
     );
@@ -2298,7 +2298,7 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     // it as its title and offers no new tab, so the focused window holds two.
     let mut minter = IdMinter::new(7);
     let tabs = vec![tab(&mut minter, "Notes")];
-    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let mut tree = seed_tree(&mut minter, "Office", tabs);
     let scratch = tab(&mut minter, "Scratch");
     tree.workspaces[0].strips[0].window_groups[0]
         .tabs
@@ -2363,7 +2363,7 @@ fn mount_wide() -> (ui::headless::FrameHarness, DesktopHandle) {
     let tabs = (0..3)
         .map(|i| tab(&mut minter, &format!("Wide{i}")))
         .collect();
-    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let mut tree = seed_tree(&mut minter, "Office", tabs);
     let strip = tree
         .workspaces
         .first_mut()
@@ -2514,9 +2514,9 @@ fn a_window_restored_from_maximized_is_in_view() {
     );
 }
 
-/// One member's desk in a workspace whose layout is personal: a tree of its own (its own ids, its
+/// One member's shell in a workspace whose layout is personal: a tree of its own (its own ids, its
 /// own strip) showing a Notes and a Chat window, on a screen `width` wide.
-fn personal_desk(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopHandle) {
+fn personal_shell(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopHandle) {
     let mut minter = IdMinter::new(seed);
     let tabs = ["Notes", "Chat"]
         .iter()
@@ -2553,7 +2553,7 @@ fn rect_f32(rect: ui::kurbo::Rect) -> [f32; 4] {
     ]
 }
 
-/// What a desk shows that a member's pointer can be relative to, as the browser runtime lays it
+/// What a shell shows that a member's pointer can be relative to, as the browser runtime lays it
 /// out: each shown window by the record it shows (here, its app's workspace record) and the shown
 /// strip.
 fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerLayout {
@@ -2600,18 +2600,18 @@ fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
 
 /// Two visitors of a workspace whose layout is personal, on screens of other widths: their strips
 /// are their own, with ids of their own, so a pointer over one's empty desktop says where it is
-/// beside the nearest window, and lands as far beside that window on the other's desk. Said in the
+/// beside the nearest window, and lands as far beside that window on the other's shell. Said in the
 /// strip's coordinates, it never landed anywhere.
 #[test]
 fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
     use tilo_relay_protocol::live::LivePointer;
-    let (_wide_driver, wide) = personal_desk(7, 1440);
-    let (_narrow_driver, narrow) = personal_desk(9, 1024);
+    let (_wide_driver, wide) = personal_shell(7, 1440);
+    let (_narrow_driver, narrow) = personal_shell(9, 1024);
     let (wide_layout, narrow_layout) = (pointer_layout(&wide), pointer_layout(&narrow));
     let (wide_strip, narrow_strip) = (wide_layout.strip.unwrap(), narrow_layout.strip.unwrap());
     assert_ne!(
         wide_strip.id, narrow_strip.id,
-        "each desk's strip is its own"
+        "each shell's strip is its own"
     );
     let notes = |layout: &tilo_relay_protocol::live::PointerLayout| {
         layout
@@ -2619,7 +2619,7 @@ fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
             .iter()
             .find(|(record, _)| record.app == "so.tilo.notes")
             .map(|(_, rect)| *rect)
-            .expect("the desk shows its notes")
+            .expect("the shell shows its notes")
     };
     let (wide_notes, narrow_notes) = (notes(&wide_layout), notes(&narrow_layout));
     assert!(
@@ -2643,7 +2643,7 @@ fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
     );
     let landed = narrow_layout
         .place(&pointer)
-        .expect("the other desk shows the notes");
+        .expect("the other shell shows the notes");
     let expected = [
         narrow_notes[0] - gutter,
         narrow_notes[1] + (narrow_notes[3] - narrow_notes[1]) / 3.0,
@@ -2677,7 +2677,7 @@ fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
 fn search_fits_a_phone_screen() {
     let mut minter = IdMinter::new(7);
     let tabs = vec![tab(&mut minter, "Notes")];
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(390.0);
     let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
@@ -2753,17 +2753,17 @@ fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
 #[path = "surface/actions.rs"]
 mod actions;
 
-/// A desk nobody touches has nothing to draw: a settled desk declines the frame its host offers, so
+/// A shell nobody touches has nothing to draw: a settled shell declines the frame its host offers, so
 /// a window's bar and its search lane paint nothing until what they show changes.
 #[test]
-fn a_settled_idle_desk_repaints_nothing() {
+fn a_settled_idle_shell_repaints_nothing() {
     let (mut driver, _handle, _) = mount();
     driver.relayout();
     driver.settle_for_capture(Duration::from_millis(2000));
     let schedule = driver.frame_schedule();
     assert!(
         !schedule.needs_redraw,
-        "an idle desk needs no repaint: {schedule:?} from {:?}",
+        "an idle shell needs no repaint: {schedule:?} from {:?}",
         driver.redraw_sources()
     );
     for _ in 0..3 {
@@ -2775,11 +2775,11 @@ fn a_settled_idle_desk_repaints_nothing() {
     }
 }
 
-/// A desk whose windows hold apps whose first frame is still on its way: the native session's tabs
-/// before a client draws at all. Their placeholders are deadlines, not animations, so such a desk
+/// A shell whose windows hold apps whose first frame is still on its way: the native session's tabs
+/// before a client draws at all. Their placeholders are deadlines, not animations, so such a shell
 /// at rest has nothing to draw either.
 #[test]
-fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
+fn a_settled_idle_shell_of_arriving_windows_repaints_nothing() {
     struct Arriving;
 
     impl TileSource for Arriving {
@@ -2793,7 +2793,7 @@ fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
         .into_iter()
         .map(|title| tab(&mut minter, title))
         .collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Arriving));
     handle.set_viewport_width(1200.0);
     let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
@@ -2813,7 +2813,7 @@ fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
         let schedule = driver.frame_schedule();
         assert!(
             !schedule.needs_redraw && !schedule.needs_animation_frame,
-            "an idle desk of arriving windows has nothing to draw: {schedule:?} from {:?}",
+            "an idle shell of arriving windows has nothing to draw: {schedule:?} from {:?}",
             driver.redraw_sources()
         );
         assert!(

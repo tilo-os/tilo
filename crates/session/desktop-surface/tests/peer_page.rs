@@ -86,8 +86,8 @@ fn announcement(tab: TabId) -> NeighbourMsg {
     }
 }
 
-/// A desk with one window another device shows.
-fn desk(minter: &mut IdMinter) -> (Layout, TabId) {
+/// A shell with one window another device shows.
+fn shell(minter: &mut IdMinter) -> (Layout, TabId) {
     let tab = Tab {
         id: minter.mint(),
         title: "Browser".into(),
@@ -102,7 +102,7 @@ fn desk(minter: &mut IdMinter) -> (Layout, TabId) {
         pinned: false,
     };
     let id = tab.id;
-    (seed_tree(minter, "Desk", vec![tab]), id)
+    (seed_tree(minter, "Office", vec![tab]), id)
 }
 
 /// The frame drawn for `stream` at `(width, height)`, and the frame its publisher holds drawn the
@@ -163,7 +163,7 @@ fn the_page_view_code_hands_over_the_tile_a_viewer_draws() {
     let engine = engine();
     let objects = payloads(&engine);
     // What the reading side asks for, instead of a stream of its own: the code
-    // this build links, or with `lazy-page-view` the module a desk fetches the
+    // this build links, or with `lazy-page-view` the module a shell fetches the
     // first time a page travels to it.
     let page = PAGE.get().expect("the page view this build links").open();
     for object in &objects {
@@ -192,7 +192,7 @@ fn the_page_view_code_hands_over_the_tile_a_viewer_draws() {
 #[test]
 fn a_page_stream_takes_the_tab_of_its_window_and_lets_it_go_when_it_ends() {
     let mut minter = IdMinter::new(7);
-    let (tree, tab) = desk(&mut minter);
+    let (tree, tab) = shell(&mut minter);
     let mut surfaces = PeerSurfaces::default();
     let started = PeerStreamStart::announced(&announcement(tab), LOCAL, "Laptop", "Browser", false)
         .expect("a page stream is announced like any other");
@@ -248,9 +248,9 @@ fn a_late_viewer_starts_at_the_whole_frame() {
 }
 
 #[test]
-fn a_tile_draws_the_page_the_desk_gives_it() {
+fn a_tile_draws_the_page_the_shell_gives_it() {
     let mut minter = IdMinter::new(7);
-    let (tree, tab) = desk(&mut minter);
+    let (tree, tab) = shell(&mut minter);
     let peers = Rc::new(RefCell::new(PeerSurfaces::default()));
     let started = PeerStreamStart::announced(&announcement(tab), LOCAL, "Laptop", "Browser", false)
         .expect("a page stream is announced like any other");
@@ -263,7 +263,7 @@ fn a_tile_draws_the_page_the_desk_gives_it() {
     );
     assert!(
         !matches!(failed.content(), ui::widget::TileContent::Notice { .. }),
-        "the desk hands the tab the page's tile"
+        "the shell hands the tab the page's tile"
     );
     let engine = engine();
     for object in payloads(&engine) {

@@ -1,7 +1,7 @@
-//! The names a desk holds, as a person reads them: the name they gave, or the word the desk calls
+//! The names a shell holds, as a person reads them: the name they gave, or the word the shell calls
 //! what nobody has named.
 //!
-//! A desk stores no name for what the person left unnamed — a workspace they never named, the strip
+//! A shell stores no name for what the person left unnamed — a workspace they never named, the strip
 //! a workspace comes with — so the record holds the same nothing on every device, and each person
 //! reads it in their own language.
 
@@ -12,7 +12,7 @@ use crate::i18n::{t, t_args};
 pub fn workspace(name: &str) -> String {
     let name = name.trim();
     if name.is_empty() {
-        t("desk-unnamed-workspace")
+        t("shell-unnamed-workspace")
     } else {
         name.to_owned()
     }
@@ -25,7 +25,7 @@ pub fn strip_named(name: &str, at: usize) -> String {
     let name = name.trim();
     if name.is_empty() {
         t_args(
-            "desk-unnamed-strip",
+            "shell-unnamed-strip",
             &[("number", at.saturating_add(1).to_string().into())],
         )
     } else {
@@ -50,10 +50,10 @@ mod tests {
         );
     }
 
-    /// A German desk reads its own words for the names nobody gave, and the names it was given as
+    /// A German shell reads its own words for the names nobody gave, and the names it was given as
     /// they are: one record, read in the language of the person reading it.
     #[test]
-    fn a_german_desk_names_what_nobody_named_in_german() {
+    fn a_german_shell_names_what_nobody_named_in_german() {
         crate::i18n::ensure();
         ui::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(workspace(""), "Arbeitsbereich");

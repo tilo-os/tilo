@@ -8,13 +8,13 @@
  * the strip's windows a window would open at, or why nothing there takes
  * files. What is dropped is copied into the workspace's file tree and opened
  * there (`desktop_drop`); a window that takes a file's bytes itself (a note
- * taking a picture) is handed them too. The desk menu's "Upload files…" and
+ * taking a picture) is handed them too. The shell menu's "Upload files…" and
  * "Upload a folder…" choose them with the browser's own chooser and copy them
  * in the same way (`desktop_upload`).
  */
 import {MAX_DROPPED_FILE, MAX_DROPPED_FILES} from './host-core.mjs';
 
-/** The desk menu's rows (offered by the desktop where the person may change
+/** The shell menu's rows (offered by the desktop where the person may change
  * the workspace's records). */
 export const UPLOAD_FILES = 'upload-files';
 export const UPLOAD_FOLDER = 'upload-folder';

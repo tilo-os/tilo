@@ -1,12 +1,12 @@
 //! An app's window opened beside one of its own tabs: it lands in that tab's window group, right
 //! after it.
 
-use super::tests::desk_with;
+use super::tests::shell_with;
 use super::*;
 use crate::navigation::{ChromeEffect, Route};
 use ui::widget::{TileContent, TileHost};
 
-/// The apps this desk runs, each opening a tab named by its id.
+/// The apps this shell runs, each opening a tab named by its id.
 struct Apps;
 
 impl TileSource for Apps {
@@ -59,7 +59,7 @@ fn group_titles(handle: &DesktopHandle) -> Vec<(Vec<String>, String)> {
 }
 
 fn mount() -> (ui::headless::FrameHarness, DesktopHandle) {
-    let (surface, handle) = desk_with(2, Box::new(Apps));
+    let (surface, handle) = shell_with(2, Box::new(Apps));
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     frame.relayout();
@@ -169,7 +169,7 @@ fn a_float_opened_beside_the_last_window_of_a_full_strip_stands_clear_of_its_car
     let (mut frame, handle) = mount();
     let last = handle.snapshot("g", vec![]).entries[1].route.clone();
     handle
-        .dispatch(crate::navigation::DeskEffect::Focus { tab: last.tab })
+        .dispatch(crate::navigation::LayoutEffect::Focus { tab: last.tab })
         .unwrap();
     frame.relayout();
     floats_beside(&mut frame, &handle);
@@ -197,7 +197,7 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
     let area = frame
         .widget_mut::<ui::widget::GroupRow>()
         .map(|row| floats::area_of(row.get_rect()))
-        .expect("the shown strip stands on the desk");
+        .expect("the shown strip stands on the shell");
     let (group, float) = handle
         .read(|tree| {
             let workspace = tree.workspaces.first()?;
@@ -248,7 +248,7 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
     assert_eq!(
         floats::rect_of(float.resolved(area)),
         card,
-        "the place every member's record keeps is the place this desk draws it at"
+        "the place every member's record keeps is the place this shell draws it at"
     );
     assert!(
         !card.overlaps(sender),
@@ -261,7 +261,7 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
         [group],
         "it stands in the floating layer's column"
     );
-    // The layer stacks it with the other cards: the desk stands it where the layer put it.
+    // The layer stacks it with the other cards: the shell stands it where the layer put it.
     let slot = ui::kurbo::Rect::new(904.0, 120.0, 1264.0, 560.0);
     handle.dock_at(std::iter::once((group, slot)).collect());
     frame.relayout();
@@ -277,7 +277,7 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
 }
 
 /// A card snapped into its strip stands there in the same pass, and floated again it goes back to
-/// the column as the card it was, not over the desk at a window's size: both are the desk's
+/// the column as the card it was, not over the shell at a window's size: both are the shell's
 /// actions, so a key or an agent snaps and floats it as the card's own controls do.
 #[test]
 fn a_card_snapped_into_its_strip_floats_back_as_the_card() {

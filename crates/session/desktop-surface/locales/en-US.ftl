@@ -1,6 +1,6 @@
-# What the desk calls what nobody has named
-desk-unnamed-workspace = Workspace
-desk-unnamed-strip = Strip { $number }
+# What the shell calls what nobody has named
+shell-unnamed-workspace = Workspace
+shell-unnamed-strip = Strip { $number }
 
 # Top bar
 continuity-dismiss = Dismiss
@@ -833,7 +833,7 @@ workspace-notice-agent-finished-in = { $agent } finished: { $count ->
    *[other] { $count } changes
 } in { $workspace }
 workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
-# What the desk says when something a person asked for did not happen: what
+# What the shell says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.
 answer-app-not-opened = { $app } could not open
 answer-app-stopped = { $app } stopped working
@@ -970,16 +970,16 @@ fullscreen-way-out = Press { $key } to leave full screen.
 
 ## The desktop's published actions
 desktop-actions-chrome = Desktop
-desktop-actions-desk = Windows
+desktop-actions-shell = Windows
 desktop-actions-launchpad = Launchpad
-desk-focus-window = Focus { $window }
-desk-close-window = Close { $window }
-desk-look-window = See { $window } as a picture
-desk-look-window-action = See the window as a picture
-desk-look-window-detail = See a window this desktop does not run as it shows now: answers with the picture, kept in the workspace the window stands in.
-desk-read-window = Read what { $window } shows
-desk-read-window-action = What the window calls itself
-desk-read-window-detail = What a window this desktop does not run says of itself: its title and the app it belongs to.
+shell-focus-window = Focus { $window }
+shell-close-window = Close { $window }
+shell-look-window = See { $window } as a picture
+shell-look-window-action = See the window as a picture
+shell-look-window-detail = See a window this desktop does not run as it shows now: answers with the picture, kept in the workspace the window stands in.
+shell-read-window = Read what { $window } shows
+shell-read-window-action = What the window calls itself
+shell-read-window-detail = What a window this desktop does not run says of itself: its title and the app it belongs to.
 session-host-new-workspace = New workspace
 session-host-new-workspace-description = Make one on this computer
 session-host-branch-workspace = Branch workspace
@@ -1017,11 +1017,11 @@ session-awaiting-admission = This device isn't in { $name } yet
 session-awaiting-admission-body = { $host } hosts { $name } and has to take this device in first. Its apps here wait until this device reaches { $host } once.
 desktop-no-workspace = There is no workspace called { $name }
 desktop-joined-workspace-unknown = That workspace shares a workspace this computer cannot join
-desk-first-workspace = This is the first workspace
-desk-last-workspace = This is the last workspace
-desk-first-strip = This is the first strip
-desk-last-strip = This is the last strip
-desk-window-edge = Nothing changed. The window can't move any further that way.
+shell-first-workspace = This is the first workspace
+shell-last-workspace = This is the last workspace
+shell-first-strip = This is the first strip
+shell-last-strip = This is the last strip
+shell-window-edge = Nothing changed. The window can't move any further that way.
 desktop-no-strip = There is no strip called { $name } here
 desktop-workspace-gone = That workspace is not here any more
 desktop-no-workspace-to-leave = There is no workspace to leave
@@ -1138,26 +1138,26 @@ window-menu-close-window = Close this window
 window-menu-stop-desktop-control = Stop controlling the desktop
 window-menu-someone-elses = { $name }'s window
 
-# The desk's widgets: what each is called, and what its controls do.
-desk-widget-music = Music
-desk-widget-team = People here
-desk-widget-calendar = Calendar
-desk-widget-system-monitor = System monitor
-desk-widget-pin = Always show this widget on this workspace
-desk-widget-unpin = Stop always showing this widget
-desk-widget-open = Open { $widget }
-desk-widget-collapse = Fold { $widget } back
-desk-widget-remove = Remove { $widget }
-desk-widget-removed = { $widget } removed from the desktop
-desk-widget-undo = Undo
-desk-team-title = In this workspace
-desk-team-more = +{ $count } more
-desk-monitor-title = This machine
-desk-monitor-cpu = Processor
-desk-monitor-memory = Memory
-desk-monitor-temperature = Temperature
-desk-monitor-cpu-short = CPU
-desk-monitor-memory-short = RAM
+# The shell's widgets: what each is called, and what its controls do.
+shell-widget-music = Music
+shell-widget-team = People here
+shell-widget-calendar = Calendar
+shell-widget-system-monitor = System monitor
+shell-widget-pin = Always show this widget on this workspace
+shell-widget-unpin = Stop always showing this widget
+shell-widget-open = Open { $widget }
+shell-widget-collapse = Fold { $widget } back
+shell-widget-remove = Remove { $widget }
+shell-widget-removed = { $widget } removed from the desktop
+shell-widget-undo = Undo
+shell-team-title = In this workspace
+shell-team-more = +{ $count } more
+shell-monitor-title = This machine
+shell-monitor-cpu = Processor
+shell-monitor-memory = Memory
+shell-monitor-temperature = Temperature
+shell-monitor-cpu-short = CPU
+shell-monitor-memory-short = RAM
 
 # A window whose app stopped answering its pings: what happened, and the two
 # ways out of it.
@@ -1165,8 +1165,8 @@ hung-app-title = Not responding
 hung-app-card = { $window } is not responding
 hung-app-wait = Wait
 hung-app-force-quit = Force quit
-desk-wait-window = Keep waiting for { $window }
-desk-force-quit-window = Force quit { $window }
+shell-wait-window = Keep waiting for { $window }
+shell-force-quit-window = Force quit { $window }
 activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close
@@ -1229,13 +1229,13 @@ so-tilo-chrome-switch-workspace = Switch workspace
 so-tilo-chrome-toggle-people = Who is here
 so-tilo-chrome-workspace-menu = Workspace menu
 so-tilo-chrome-workspace-settings = Workspace settings
-so-tilo-desk-choose-search-row = Choose a search result
-so-tilo-desk-close-tab = Close a window
-so-tilo-desk-focus = Focus a window
-so-tilo-desk-focus-display = Focus a display
-so-tilo-desk-force-quit-app = Force quit the app
-so-tilo-desk-launchpad = Choose a card
-so-tilo-desk-move-to-display = Move to another display
-so-tilo-desk-search = Search the desktop
-so-tilo-desk-step-focus = Step through the windows
-so-tilo-desk-wait-window = Keep waiting
+so-tilo-layout-choose-search-row = Choose a search result
+so-tilo-layout-close-tab = Close a window
+so-tilo-layout-focus = Focus a window
+so-tilo-layout-focus-display = Focus a display
+so-tilo-layout-force-quit-app = Force quit the app
+so-tilo-layout-launchpad = Choose a card
+so-tilo-layout-move-to-display = Move to another display
+so-tilo-layout-search = Search the desktop
+so-tilo-layout-step-focus = Step through the windows
+so-tilo-layout-wait-window = Keep waiting

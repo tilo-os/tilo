@@ -59,17 +59,17 @@ fn name_records(snapshot: &mut serde_json::Value, records: &[(tilo_desktop_model
     }
 }
 
-/// Who holds the input on the desk, and the field an input method is helping
+/// Who holds the input on the shell, and the field an input method is helping
 /// (`{owner, holder, ime}` JSON). `owner` is the keyboard owner path of the
 /// semantics tree the page holds, which the page matches its own accessible
 /// elements against; `holder` is who that is — `"system-search"` while the
-/// desk's search is up, else the application of the focused window, `null`
+/// shell's search is up, else the application of the focused window, `null`
 /// while no window has it; `ime` is the field an input method is helping,
 /// `null` while none is. `None` for a single-application mount, whose page
 /// holds its own input.
 ///
 /// The page reads it live, not from a status: routing a press on the page's own
-/// chrome and handing focus back after the desk activates something both need
+/// chrome and handing focus back after the shell activates something both need
 /// who holds the keyboard now. The owner path and the field are the last
 /// presented frame's, as the status reports them — the same tree the page
 /// holds, and a tree a keystroke retired between frames names no keyboard
@@ -97,7 +97,7 @@ pub fn desktop_input_ownership(id: u64) -> Result<Option<String>, JsValue> {
 /// Offer what only the page can do for the person (`[{id, title,
 /// subtitle?}]` JSON; in place of earlier ones): desktop search lists them
 /// beside the desktop's commands, and choosing one reaches the page as a
-/// host request `{action: id}`. The empty desk's welcome verbs are the
+/// host request `{action: id}`. The empty shell's welcome verbs are the
 /// desktop's own and are added here, so a page and a session offer the same
 /// rows, and so are "Upload files…" and "Upload a folder…" where the person
 /// may change the workspace's records (`uploads`).
@@ -131,7 +131,7 @@ pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
 
 /// Close desktop search wherever it stands, and nothing when none is open: the
 /// page dismissing the search that holds the keyboard after a press on its own
-/// chrome, which the desk's hit test never reaches.
+/// chrome, which the shell's hit test never reaches.
 ///
 /// # Errors
 ///

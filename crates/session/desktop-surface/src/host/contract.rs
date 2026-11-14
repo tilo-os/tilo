@@ -108,7 +108,7 @@ pub trait DesktopRules {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DesktopAsk {
     /// A request of the chrome the layers do not answer themselves: the people and profile
-    /// popovers, inviting, quick settings, the clock, and the menu a secondary press on the desk
+    /// popovers, inviting, quick settings, the clock, and the menu a secondary press on the shell
     /// asks for at that place.
     Intent(ChromeIntent),
     /// The person chose a host action (`id`) in the workspace menu.
@@ -121,14 +121,14 @@ pub enum DesktopAsk {
         workspace: WorkspaceId,
         name: String,
     },
-    /// The desk deleted the workspace `workspace` , which was called `name` : what is left of it in
+    /// The shell deleted the workspace `workspace` , which was called `name` : what is left of it in
     /// the host's record goes with it.
     DeletedWorkspace {
         workspace: WorkspaceId,
         name: String,
     },
     /// The person branched the workspace `source` into `workspace` , called `name` : the host
-    /// makes it, with what `source` holds, and puts it on the desk.
+    /// makes it, with what `source` holds, and puts it on the shell.
     BranchWorkspace {
         source: WorkspaceId,
         workspace: WorkspaceId,

@@ -1,10 +1,10 @@
 //! Window warmth: the temperature of the workspace a window is in and the colour of the person at
 //! this machine.
-//! The desk paints its own chrome in the active workspace's appearance and sends each app window
+//! The shell paints its own chrome in the active workspace's appearance and sends each app window
 //! the appearance of the workspace that window is in
 //! ([`ui::floating_surface::FloatingSurfaceHostMessage::Appearance`]), so a window takes the same
 //! temperature as the workspace around it and the same focus ring, caret and selection colour as
-//! the desk.
+//! the shell.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -122,7 +122,7 @@ impl WindowWarmth {
         }
     }
 
-    /// The appearance of the active workspace: what the desk's own chrome wears.
+    /// The appearance of the active workspace: what the shell's own chrome wears.
     #[must_use]
     pub fn active(&self) -> WindowAppearance {
         self.in_workspace(None)

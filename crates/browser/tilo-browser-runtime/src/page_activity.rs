@@ -90,11 +90,11 @@ impl Pane for PagePane {
     }
 }
 
-/// The desk's own history as the page keeps it: the one desk document the page keeps for the
-/// workspace it shows, which is that workspace's layout.
-pub(super) struct PageDesk(pub(super) Rc<tilo_session_core::desk::Desk>);
+/// The history of the page's layout: the one layout document the page keeps for the workspace it
+/// shows, which is that workspace's layout.
+pub(super) struct PageLayout(pub(super) Rc<tilo_session_core::layout::LayoutDocument>);
 
-impl tilo_session::activity::DeskHistory for PageDesk {
+impl tilo_session::activity::History for PageLayout {
     fn history(
         &self,
         tree: &tilo_desktop_model::Layout,

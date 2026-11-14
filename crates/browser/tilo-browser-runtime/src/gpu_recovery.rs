@@ -1,4 +1,4 @@
-//! A lost GPU is made again, and the desk drawn on it.
+//! A lost GPU is made again, and the shell drawn on it.
 //!
 //! A device can be lost for reasons the page never caused (a driver reset,
 //! memory pressure, a browser that took the device for another tab), and a

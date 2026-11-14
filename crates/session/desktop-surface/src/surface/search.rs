@@ -3,7 +3,7 @@
 //! Search opens from the same chords as the native shell's (Super+K and Super+Space; Ctrl+K where
 //! the platform's command key is Ctrl), from a `global-search` /`commands` navigation command, or
 //! from [`DesktopHandle::toggle_search`]. A window's new-tab control opens it over the applications
-//! only, and the one chosen opens as a tab of that window, as the native shell's does. The desk
+//! only, and the one chosen opens as a tab of that window, as the native shell's does. The shell
 //! keeps what search stands over and what it found; the chrome, which stands above the windows,
 //! draws the card there, dims what it covers, routes the person's input to it and closes it
 //! ([`DesktopHandle::search_palette`], [`DesktopHandle::search_area`]). Choosing an application
@@ -137,7 +137,7 @@ const QUERY_FIELD: u64 = 1;
 const TYPING_KEY: &[u8; 32] = b"desktop typing field revision 1!";
 
 /// The open search's query field, as committed text may write into it. The palette draws it in the
-/// desktop itself, so no text-input boundary of the windows the desk shows ever sees it.
+/// desktop itself, so no text-input boundary of the windows the shell shows ever sees it.
 fn typed_field(
     search: &tilo_desktop_search::LazyDesktopSearch,
 ) -> Result<TypedField, TypedRefusal> {
@@ -169,7 +169,7 @@ pub trait SearchHost {
     /// alone ([`Self::applications`]) do not.
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed;
     /// The apps this host opens, each an id a launch accepts, whether or not a search is over a
-    /// workspace: a window group's new tab and the empty desk's launchpad list the applications
+    /// workspace: a window group's new tab and the empty shell's launchpad list the applications
     /// alone, and the apps a person can open from there are this host's. A host whose tile source
     /// already lists them answers nothing here.
     fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
@@ -196,19 +196,19 @@ pub struct SearchRow {
     pub facts: Vec<String>,
 }
 
-/// The open search as the desk last showed it: its query and rows, and whether it is still filling
+/// The open search as the shell last showed it: its query and rows, and whether it is still filling
 /// in.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ShownSearch {
     pub query: String,
     pub rows: Vec<SearchRow>,
     /// The rows shown are not the search's answer yet: they are not cut to
-    /// the card, or nothing is ready to show. What the desk publishes as a
+    /// the card, or nothing is ready to show. What the shell publishes as a
     /// search still searching — and what holds Enter from a search that has
     /// nothing to press.
     pub searching: bool,
     /// Rows are still expected to join the ones shown (a window's content
-    /// index being built, an app's server still looking). What the desk
+    /// index being built, an app's server still looking). What the shell
     /// looks again for, so a late row is drawn when it arrives, without
     /// calling the ready rows "still searching".
     pub expecting: bool,
@@ -359,7 +359,7 @@ impl DesktopHandle {
 
     /// Choose the host action `id` for the person, as their pick in search or a banner does: the
     /// host carries it out on its next pass ([`Self::take_host_choices`]). An app asks for one
-    /// through the desk ([`tilo_actions::remote::session_actions::SHOW_CONNECT`]).
+    /// through the shell ([`tilo_actions::remote::session_actions::SHOW_CONNECT`]).
     pub fn choose_host_action(&self, id: &str) {
         self.shared.borrow_mut().host_choices.push(id.to_owned());
         self.wake();
@@ -377,9 +377,9 @@ impl DesktopHandle {
     }
 
     /// Close search, wherever it stands; nothing to close is nothing to do. The host is asked for
-    /// the pass that closes it. A host that sees a press the desk's own hit test never reaches (a page's chrome
+    /// the pass that closes it. A host that sees a press the shell's own hit test never reaches (a page's chrome
     /// beside the canvas) dismisses the search holding the keyboard this way, as a press beside
-    /// the card does on the desk itself, however often it asks.
+    /// the card does on the shell itself, however often it asks.
     pub fn close_search(&self) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Close);
         self.wake();
@@ -442,9 +442,9 @@ impl DesktopHandle {
 
     /// Who holds the keyboard: `"system-search"` while the search palette is up (it takes the
     /// keyboard, the pointer and Escape), else the application of the active workspace's focused
-    /// window. `None` while no window does — an empty desk, or one whose windows are all gone.
+    /// window. `None` while no window does — an empty shell, or one whose windows are all gone.
     ///
-    /// A host that stands outside the desk's own hit test (a page's chrome over the canvas) reads
+    /// A host that stands outside the shell's own hit test (a page's chrome over the canvas) reads
     /// this to know whose input a press elsewhere belongs to.
     pub fn input_owner(&self) -> Option<String> {
         let shared = self.shared.borrow();
@@ -457,10 +457,10 @@ impl DesktopHandle {
         tilo_desktop_model::apps::canonical_app_id(&tab.tile).map(String::from)
     }
 
-    /// The palette the desk searches with, shared with the host that draws it over the windows: the
-    /// desk fills it with what its windows hold and carries out what is chosen there, while that
+    /// The palette the shell searches with, shared with the host that draws it over the windows: the
+    /// shell fills it with what its windows hold and carries out what is chosen there, while that
     /// host draws it, routes the person's input to it and closes it. [`Self::note_search_activity`]
-    /// tells the desk what that host changed.
+    /// tells the shell what that host changed.
     pub fn search_palette(
         &self,
     ) -> std::rc::Rc<std::cell::RefCell<tilo_desktop_search::LazyDesktopSearch>> {
@@ -468,14 +468,14 @@ impl DesktopHandle {
     }
 
     /// Where the palette stands when it was opened for one window: that window under its bar, over
-    /// the rest of it, as the desk last laid it out; nothing over everything.
+    /// the rest of it, as the shell last laid it out; nothing over everything.
     pub fn search_area(&self) -> Option<Rect> {
         self.shared.borrow().search_area
     }
 
-    /// Changes to what the palette shows or asks of the desk, counted: a host
-    /// that changed the palette without asking the desk to (typing in it,
-    /// opening it) bumps it, and the desk takes that up on its next pass.
+    /// Changes to what the palette shows or asks of the shell, counted: a host
+    /// that changed the palette without asking the shell to (typing in it,
+    /// opening it) bumps it, and the shell takes that up on its next pass.
     pub fn note_search_activity(&self) {
         let mut shared = self.shared.borrow_mut();
         shared.search_revision = shared.search_revision.wrapping_add(1);
@@ -486,7 +486,7 @@ impl DesktopHandle {
         self.shared.borrow().search_revision
     }
 
-    /// Whether the desk itself takes the keys the person types: its notification centre is open,
+    /// Whether the shell itself takes the keys the person types: its notification centre is open,
     /// or a field in a window's bar (a tab being named), and what they type goes into it rather
     /// than to the window behind. Its search does not: the palette stands over the windows, drawn
     /// by the host above them, which takes the keys while it is up.
@@ -524,13 +524,13 @@ impl DesktopHandle {
 
     /// Whether the open search is still filling in, as of the last update pass: a source has still
     /// to answer for the query, or the rows shown are not cut to the card yet, so the rows will
-    /// change. What the desk publishes as a search still searching.
+    /// change. What the shell publishes as a search still searching.
     pub fn search_searching(&self) -> bool {
         self.shared.borrow().shown_search.searching
     }
 
     /// Whether the open search still expects rows to join the ones shown, as
-    /// of the last update pass: a source is still out, so the desk looks
+    /// of the last update pass: a source is still out, so the shell looks
     /// again shortly and draws the row when it arrives. It is not "still
     /// searching": the rows shown are the search's answer.
     pub fn search_expecting(&self) -> bool {
@@ -817,17 +817,17 @@ fn commands(tree: &Layout, host: &[HostAction], held: &dyn Fn(TabId) -> bool) ->
 }
 
 impl DesktopSurface {
-    /// Whether `event` is search's while the desk stands under it: a key or composed text, which no
+    /// Whether `event` is search's while the shell stands under it: a key or composed text, which no
     /// window's app may see while the palette holds the keyboard ([`DesktopHandle::input_owner`]),
-    /// and the chord that opens search, which is the desk's wherever it is pressed and never the
+    /// and the chord that opens search, which is the shell's wherever it is pressed and never the
     /// window's under it.
     ///
     /// The chrome above the windows hands the palette what the person types there. A key that
-    /// reaches the desk instead is one the card's own hit test does not cover — the frame the
+    /// reaches the shell instead is one the card's own hit test does not cover — the frame the
     /// palette opened in, a host routing the press itself, a chord the page's own listener let
     /// through — and letting it fall to the window fires that app's shortcut: a bare letter opens a
     /// dialog over the search the person was typing into, and the letters after it land in the
-    /// dialog's field. So the desk takes it here, where it decides which window a key belongs to.
+    /// dialog's field. So the shell takes it here, where it decides which window a key belongs to.
     pub(super) fn search_holds_the_key(
         &self,
         event: &ui::winit::event::WindowEvent,
@@ -849,7 +849,7 @@ impl DesktopSurface {
     /// show ([`Scope::WindowGroup`]).
     pub(super) fn open_search(&mut self, doc: &AutoCommit, scope: Scope, query: Option<String>) {
         // An app's search runs in that app's window; a window group's applications open into it.
-        // The others stand over the desk.
+        // The others stand over the shell.
         let window = match &scope {
             Scope::InApp(app) => self.app_window(app),
             Scope::WindowGroup(Some(group)) => {
@@ -865,7 +865,7 @@ impl DesktopSurface {
                 } else {
                     // The window's app is gone: there is nothing of its own left to search.
                     let scope = Scope::Workspace;
-                    let (data, usage) = self.desk_search_data(doc, &scope);
+                    let (data, usage) = self.shell_search_data(doc, &scope);
                     (scope, None, data, usage)
                 }
             }
@@ -873,7 +873,7 @@ impl DesktopSurface {
             // the workspace instead.
             (Scope::InApp(_), None) => {
                 let scope = Scope::Workspace;
-                let (data, usage) = self.desk_search_data(doc, &scope);
+                let (data, usage) = self.shell_search_data(doc, &scope);
                 (scope, None, data, usage)
             }
             (scope @ Scope::WindowGroup(_), _) => {
@@ -881,7 +881,7 @@ impl DesktopSurface {
                 (scope, window, data, None)
             }
             (scope @ (Scope::Workspace | Scope::Everywhere), _) => {
-                let (data, usage) = self.desk_search_data(doc, &scope);
+                let (data, usage) = self.shell_search_data(doc, &scope);
                 (scope, None, data, usage)
             }
         };
@@ -928,7 +928,7 @@ impl DesktopSurface {
         self.note_search_activity();
     }
 
-    /// Search opened or closed from the desk: what the host above the windows draws and asks about
+    /// Search opened or closed from the shell: what the host above the windows draws and asks about
     /// the palette changed, as it does when the person types there
     /// ([`DesktopHandle::note_search_activity`]).
     fn note_search_activity(&self) {
@@ -1000,7 +1000,7 @@ impl DesktopSurface {
                 .map(|part| part.label.clone())
                 .or_else(|| window_app(&shared.tree, group))
                 .filter(|name| !name.is_empty());
-            // What the app's window holds beyond the desk's own reading of it: an app that runs
+            // What the app's window holds beyond the shell's own reading of it: an app that runs
             // in a process of its own publishes its entries into this session's index, and the
             // actions it offers, which is what its search finds.
             let feed = shared
@@ -1028,7 +1028,7 @@ impl DesktopSurface {
     }
 
     /// The applications alone, each listed: what a window group's new tab
-    /// may show, the empty desk's launchpad.
+    /// may show, the empty shell's launchpad.
     ///
     /// Its source is the desktop's tile source and the host's own apps
     /// ([`SearchHost::applications`]): a session's tile source lists no app,
@@ -1049,7 +1049,7 @@ impl DesktopSurface {
 
     /// What the desktop has open now and what its host adds: over the workspace in front, or over
     /// every workspace.
-    fn desk_search_data(
+    fn shell_search_data(
         &self,
         doc: &AutoCommit,
         scope: &Scope,
@@ -1095,7 +1095,7 @@ impl DesktopSurface {
         (data, usage)
     }
 
-    /// The window each of the desk's resources is published in, for a row chosen in the search over
+    /// The window each of the shell's resources is published in, for a row chosen in the search over
     /// everything: the app's window comes forward and runs it.
     fn search_owners(
         &self,
@@ -1216,7 +1216,7 @@ impl DesktopSurface {
         shared.typed_field = typed;
         if changed {
             // What the host above the windows draws of search, and what it offers assistive
-            // technology, follows what the desk published.
+            // technology, follows what the shell published.
             shared.search_revision = shared.search_revision.wrapping_add(1);
         }
     }
@@ -1239,13 +1239,13 @@ impl DesktopSurface {
             // An Enter that waited for its query's rows chooses in a refresh, which ends search.
             let closed = closed || !search.is_open();
             // The rows the palette found, and the card they stand in, are drawn by the host above
-            // the windows (`DesktopHandle::search_palette`), never in this desk's own tree: the
+            // the windows (`DesktopHandle::search_palette`), never in this shell's own tree: the
             // card is not a child of the surface. A row that came or went is that card's paint,
             // and a frame reaching it (`DesktopSurface::needs_redraw`, by `search_revision`) shows
-            // it. Rebuilding this desk's composition for it would re-encode every open window —
+            // it. Rebuilding this shell's composition for it would re-encode every open window —
             // each window's whole scene, measured and drawn again — for a change none of them
             // holds, the cost growing with every window open: on a page drawing in software, a
-            // typed key then answered seconds late. Only the desk's own search *state* — one being
+            // typed key then answered seconds late. Only the shell's own search *state* — one being
             // open or closed, which moves where the card stands and what a choice opens into — is
             // structure here.
             self.structure_dirty |= closed;
@@ -1418,7 +1418,7 @@ impl DesktopSurface {
                     None
                 } else if id == tilo_desktop_search::ALL_APPS_COMMAND {
                     // Every app by its name: the applications' own search,
-                    // as the empty desk's launchpad opens it.
+                    // as the empty shell's launchpad opens it.
                     shared.search_request = Some(SearchRequest::Open {
                         scope: Scope::WindowGroup(None),
                         query: None,
@@ -1487,7 +1487,7 @@ impl DesktopSurface {
             Target::Action(_)
             | Target::Invoke(_)
             // A file a workspace holds opens as the app its bytes name launches, which only the
-            // host holding that content knows (`SearchHost::performs`): this desk opens nothing.
+            // host holding that content knows (`SearchHost::performs`): this shell opens nothing.
             | Target::Content { .. }
             | Target::Cancel { .. }
             | Target::Prefer { .. } => None,

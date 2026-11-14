@@ -1899,7 +1899,7 @@ fn place_at(
     // The strip the place would take for its own is this workspace's, or a new one: a strip another
     // workspace holds is no strip of this layout for this place. A strip on this layout is joined as a
     // tab below, whichever workspace and row it stands in.
-    let on_desk = tree.workspaces.iter().any(|held| {
+    let on_layout = tree.workspaces.iter().any(|held| {
         held.strips.iter().any(|strip| {
             strip
                 .window_groups
@@ -1914,7 +1914,7 @@ fn place_at(
     else {
         return Err(taken.into());
     };
-    if on_desk
+    if on_layout
         && !workspace.strips.iter().any(|strip| {
             strip
                 .window_groups

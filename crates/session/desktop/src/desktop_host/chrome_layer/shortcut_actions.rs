@@ -4,7 +4,7 @@
 
 use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::navigation::{
-    ActivityView, ChromeEffect, DeskEffect, Destination, Route,
+    ActivityView, ChromeEffect, Destination, LayoutEffect, Route,
 };
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
@@ -107,7 +107,7 @@ impl DesktopChrome {
             // The window in front goes, as its menu's Close row does.
             FixedAction::CloseTab => {
                 if let Some(route) = self.focused_route() {
-                    self.dispatch(DeskEffect::CloseTab { tab: route.tab });
+                    self.dispatch(LayoutEffect::CloseTab { tab: route.tab });
                 }
             }
             // Another window of the app in front, right after it, as the menu's New tab row opens
@@ -261,7 +261,7 @@ impl DesktopChrome {
         let Some(tab) = next else {
             return;
         };
-        self.dispatch(DeskEffect::Focus {
+        self.dispatch(LayoutEffect::Focus {
             tab: tab.to_string(),
         });
     }

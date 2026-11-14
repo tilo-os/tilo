@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod native_history {
-    //! A native session's history: the device's own document of the desk,
+    //! A native session's history: the device's own document of the layout,
     //! listed by the activity pane and restored through the host that keeps
-    //! the desk.
+    //! the layout.
 
     use super::*;
     #[allow(
@@ -28,14 +28,14 @@ mod native_history {
         pane
     }
 
-    /// Write the desk as it stands into `doc` and stamp it at `time`: one
-    /// change of the desk, as a session records each pass.
+    /// Write the layout as it stands into `doc` and stamp it at `time`: one
+    /// change of the layout, as a session records each pass.
     fn stamp(doc: &mut automerge::AutoCommit, tree: &tilo_desktop_model::Layout, time: i64) {
         tilo_desktop_model::desktop_doc::seed(doc, tree);
         doc.commit_with(automerge::transaction::CommitOptions::default().with_time(time));
     }
 
-    /// A native session's desk and its document: "Studio" opened with Notes,
+    /// A native session's layout and its document: "Studio" opened with Notes,
     /// Grace renaming it to "Plans", Ada then closing Notes.
     fn native_history() -> NativeHistory {
         use crate::activity::ActivitySnapshot;
@@ -56,8 +56,8 @@ mod native_history {
         };
         let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
 
-        // The one document the desk is kept as: its changes are what the desk
-        // did, who did it and when.
+        // The one document the layout is kept as: its changes are what happened
+        // to it, who did it and when.
         let ada = automerge::ActorId::random();
         let grace = automerge::ActorId::random();
         let mut doc = automerge::AutoCommit::new();
@@ -73,13 +73,13 @@ mod native_history {
         tree.workspaces[0].strips[0].window_groups.clear();
         stamp(&mut doc, &tree, 3_000);
 
-        // The desk the host keeps: what the model writes back reaches it,
+        // The layout the host keeps: what the model writes back reaches it,
         // and the session applies it on its next pass.
         let written: Rc<RefCell<Option<Layout>>> = Rc::new(RefCell::new(None));
-        let desk = Rc::clone(&written);
+        let layout = Rc::clone(&written);
         let snapshot = ActivitySnapshot::of_desktop(tree, doc).committing(Rc::new(
             move |restored: &Layout| {
-                *desk.borrow_mut() = Some(restored.clone());
+                *layout.borrow_mut() = Some(restored.clone());
             },
         ));
         let authors = std::collections::BTreeMap::from([
@@ -89,7 +89,7 @@ mod native_history {
         (snapshot, written, authors)
     }
 
-    /// A native session's history is the desk's own document: the pane lists
+    /// A native session's history is the layout's own document: the pane lists
     /// what changed there and who changed it.
     #[test]
     fn the_native_history_lists_what_changed_in_the_workspace() {
@@ -120,7 +120,7 @@ mod native_history {
         );
     }
 
-    /// Restoring a version writes the desk back through the host that keeps
+    /// Restoring a version writes the layout back through the host that keeps
     /// it, and the restore is itself a change of the workspace.
     #[test]
     fn a_version_restored_from_the_native_history_is_written_back() {
@@ -153,7 +153,7 @@ mod native_history {
         let restored: Layout = written
             .borrow_mut()
             .take()
-            .expect("the desk is written back");
+            .expect("the layout is written back");
         assert_eq!(
             restored
                 .active_workspace()

@@ -32,13 +32,13 @@ mod app_load;
     allow(dead_code, reason = "only the browser page opens an app alone")
 )]
 mod app_page;
-// The desk's arranging actions in the page: its tests run on the host too.
+// The shell's arranging actions in the page: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
     not(target_arch = "wasm32"),
     allow(
         dead_code,
-        reason = "only the browser page arranges its desk; the host runs its tests"
+        reason = "only the browser page arranges its shell; the host runs its tests"
     )
 )]
 mod arranging;
@@ -126,7 +126,7 @@ mod clipboard;
 mod console_log;
 #[cfg(target_arch = "wasm32")]
 mod crash;
-// The record each window shows on the workspace's shared desk: its tests run
+// The record each window shows on the workspace's shared shell: its tests run
 // on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(

@@ -150,7 +150,7 @@ export function keyboardRoute(event,composing,mac) {
   const primary=mac?Boolean(event.metaKey):Boolean(event.ctrlKey);
   if(primary&&clipboardCommands.has(lower))return 'clipboard';
   // The desktop search's chord is the page's own: it opened the search before
-  // the surface ever saw the key, and forwarding it is what let the desk open
+  // the surface ever saw the key, and forwarding it is what let the shell open
   // it again on the same press.
   if(isDesktopSearchShortcut(event,mac))return 'browser';
   if(primary&&!event.altKey&&applicationCommands.has(lower))return 'forward';
@@ -329,7 +329,7 @@ export function createHostStatus(element,{lifetime=HOST_STATUS_LIFETIME_MS,setTi
 }
 
 /**
- * Who holds the input, as the mount answers it: the desk's `{owner, holder,
+ * Who holds the input, as the mount answers it: the shell's `{owner, holder,
  * ime}` — the semantics tree's keyboard owner path, who that is (the
  * application holding the keyboard, or `"system-search"`), and the field an
  * input method is helping — or, for a mount that answers nothing, such as one

@@ -2,11 +2,11 @@
 //! the rows under the desk — its windows, its displays, the open search and the empty desk's
 //! launchpad — each offering its own verb of the same vocabulary, bound to the row it stands for.
 //! A person, the palette, an agent or a test reaches each the same way, by its address: the verbs
-//! are the desk's ([`DeskEffect`]) and the chrome's ([`ChromeEffect`]), published through [`offer`]
+//! are the desk's ([`LayoutEffect`]) and the chrome's ([`ChromeEffect`]), published through [`offer`]
 //! as every service's are.
 
 use tilo_actions::{ActionSpec, Audience, ResourcePresentation, ResourceSpec};
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
+use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
 use tilo_desktop_surface::window;
 use tilo_resource::{Effect, offer};
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
@@ -146,7 +146,7 @@ pub fn desk_resource(
     let screens = displays.iter().enumerate().map(|(index, display)| {
         let number = index.saturating_add(1).to_string();
         let focus = bound(
-            &DeskEffect::FocusDisplay {
+            &LayoutEffect::FocusDisplay {
                 display: display.to_string(),
             },
             None,
@@ -168,13 +168,13 @@ pub fn desk_resource(
         let names_the_window = &[("window", shown.title.as_str().into())];
         let mut window = ResourceSpec::new(tab_resource_id(*id), WINDOW_KIND, shown.title.clone())
             .with_action(bound(
-                &DeskEffect::Focus {
+                &LayoutEffect::Focus {
                     tab: id.to_string(),
                 },
                 Some(t_args("desk-focus-window", names_the_window)),
             ))
             .with_action(bound(
-                &DeskEffect::CloseTab {
+                &LayoutEffect::CloseTab {
                     tab: id.to_string(),
                 },
                 Some(t_args("desk-close-window", names_the_window)),
@@ -194,23 +194,23 @@ pub fn desk_resource(
         }
         window
             .with_action(bound(
-                &DeskEffect::WaitWindow {
+                &LayoutEffect::WaitWindow {
                     tab: id.to_string(),
                 },
                 Some(t_args("desk-wait-window", names_the_window)),
             ))
             .with_action(bound(
-                &DeskEffect::ForceQuitApp {
+                &LayoutEffect::ForceQuitApp {
                     tab: id.to_string(),
                 },
                 Some(t_args("desk-force-quit-window", names_the_window)),
             ))
     });
     let search = search.map(search_resource);
-    offer::<DeskEffect>(ResourceSpec::new(
+    offer::<LayoutEffect>(ResourceSpec::new(
         DESK_RESOURCE,
         "desktop",
-        t("desktop-actions-desk"),
+        t("desktop-actions-shell"),
     ))
     .with_children(windows.chain(screens).chain(search))
 }
@@ -229,7 +229,7 @@ pub fn launchpad_resource(cards: &[crate::launchpad::LaunchpadAction]) -> Resour
         .chain([("apps", t("launchpad-open-app"))]);
     let rows = cards.map(|(slug, label)| {
         let mut card = bound(
-            &DeskEffect::Launchpad { card: slug.into() },
+            &LayoutEffect::Launchpad { card: slug.into() },
             Some(label.clone()),
         );
         card.type_mut().contract.set_audience(Audience::Agents);
@@ -255,7 +255,7 @@ fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
     let rows = rows.iter().enumerate().map(|(at, row)| {
         let index = u64::try_from(at).unwrap_or(u64::MAX);
         let choose = bound_asking(
-            &DeskEffect::ChooseSearchRow {
+            &LayoutEffect::ChooseSearchRow {
                 row: index,
                 argument: None,
             },
@@ -278,7 +278,7 @@ fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
     } else {
         query.to_owned()
     };
-    let typed = bound_asking(&DeskEffect::Search { query: None }, &["query"], None);
+    let typed = bound_asking(&LayoutEffect::Search { query: None }, &["query"], None);
     let resource = ResourceSpec::new(SEARCH_RESOURCE, SEARCH_KIND, label)
         .with_action(typed)
         .with_children(rows);
@@ -292,7 +292,7 @@ fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
 }
 
 /// `verb` as the action its row offers, named `label` when one is given.
-fn bound(verb: &DeskEffect, label: Option<String>) -> ActionSpec {
+fn bound(verb: &LayoutEffect, label: Option<String>) -> ActionSpec {
     let mut spec = verb.bound();
     if let Some(label) = label {
         spec.type_mut().label = label;
@@ -302,7 +302,7 @@ fn bound(verb: &DeskEffect, label: Option<String>) -> ActionSpec {
 
 /// `verb` as the action its row offers, still asking its caller for the arguments named in `asking`
 /// , named `label` when one is given.
-fn bound_asking(verb: &DeskEffect, asking: &[&str], label: Option<String>) -> ActionSpec {
+fn bound_asking(verb: &LayoutEffect, asking: &[&str], label: Option<String>) -> ActionSpec {
     let mut spec = verb.bound_asking(asking);
     if let Some(label) = label {
         spec.type_mut().label = label;

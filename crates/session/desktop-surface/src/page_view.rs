@@ -132,7 +132,7 @@ impl Blobs {
     }
 }
 
-/// One page as a tile, drawn in the box the desk lays it out in.
+/// One page as a tile, drawn in the box the shell lays it out in.
 pub struct PageView {
     stream: Rc<RefCell<PageStream>>,
     rect: Rect,

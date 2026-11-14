@@ -177,7 +177,7 @@ pub trait TileSource {
     /// started it, with that workspace's grants and records, so the session starts it again where
     /// the person put it. Recording the move is what hands it over
     /// ([`tilo_desktop_policy::DesktopPolicy::take_carried`]).
-    /// Whether the session took it: false keeps the move the desk's own, and nothing else about it
+    /// Whether the session took it: false keeps the move the shell's own, and nothing else about it
     /// changes.
     fn carry(&self, _tab: TabId, _to: WorkspaceId) -> bool {
         false
@@ -231,7 +231,7 @@ struct Shared {
     minter: IdMinter,
     /// Logical width the strip lays out against.
     viewport_width: f64,
-    /// How much of the desk's top edge the desktop bar overlays now
+    /// How much of the shell's top edge the desktop bar overlays now
     /// ([`DesktopHandle::set_top_overlay_inset`]): every window moves down by it, whole, so its own
     /// bar stands below the bar shown over it rather than under it.
     top_overlay: f64,
@@ -239,7 +239,7 @@ struct Shared {
     replaced: bool,
     /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
     shown_tabs: ShownTabs,
-    /// Each window floating over the desk, and what it is drawn whole over the windows under it —
+    /// Each window floating over the shell, and what it is drawn whole over the windows under it —
     /// its bar, its body and the shadow that lifts it — as last drawn.
     float_covers: Vec<(TabId, Rect)>,
     /// The shown strip, the area it is drawn in and how far it is panned, as last laid out.
@@ -254,16 +254,16 @@ struct Shared {
     search_request: Option<search::SearchRequest>,
     search_open: bool,
     /// The search palette itself, shared with the host that draws it over the windows
-    /// (`DesktopHandle::search_palette`): the desk feeds it what its windows hold and carries out
+    /// (`DesktopHandle::search_palette`): the shell feeds it what its windows hold and carries out
     /// what is chosen there, while the host above the windows draws it and routes the person's
     /// input to it.
     search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
-    /// Bumped whenever what the palette shows or what opening it asks of the desk changes, so the
-    /// desk takes up what the host above it did and the host above it draws what the desk
+    /// Bumped whenever what the palette shows or what opening it asks of the shell changes, so the
+    /// shell takes up what the host above it did and the host above it draws what the shell
     /// published.
     search_revision: u64,
     /// Where search stands when it was opened for one window: under that window's bar, over the
-    /// rest of it, as the desk last laid it out.
+    /// rest of it, as the shell last laid it out.
     search_area: Option<Rect>,
     /// What the host offers to do for the person, and what they chose.
     host_actions: Vec<search::HostAction>,
@@ -317,7 +317,7 @@ struct Shared {
     liveness: Vec<(TabId, LivenessChoice)>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
-    /// The notifications the host installed: the desk carries out what the person chose there,
+    /// The notifications the host installed: the shell carries out what the person chose there,
     /// and the host above the windows draws them ([`DesktopHandle::notifications`]).
     notifications: Option<DesktopNotifications>,
     /// The windows other devices share with this one, each decoded into its tile as it arrives.
@@ -327,10 +327,10 @@ struct Shared {
     /// person did there, for the apps' connections ([`DesktopHandle::declare_bar`] and its
     /// siblings).
     bars: window_bars::Bars,
-    /// Sideways wheel travel the apps of these windows left to the desk,
+    /// Sideways wheel travel the apps of these windows left to the shell,
     /// by tab, taken on the next pass ([`DesktopHandle::sideways_wheel`]).
     sideways: Vec<(TabId, f64)>,
-    /// What wakes the host holding this desk for a change queued on its handle
+    /// What wakes the host holding this shell for a change queued on its handle
     /// ([`DesktopHandle::set_wake`]).
     wake: crate::wake::Waker,
 }
@@ -362,8 +362,8 @@ impl DesktopHandle {
         self.shared.borrow().dock.cards.values().cloned().collect()
     }
 
-    /// Where the floating layer put each docked window this pass, by group, in desk coordinates:
-    /// the desk stands each there from its next pass.
+    /// Where the floating layer put each docked window this pass, by group, in shell coordinates:
+    /// the shell stands each there from its next pass.
     pub fn dock_at(&self, slots: std::collections::BTreeMap<u64, Rect>) {
         let mut shared = self.shared.borrow_mut();
         if shared.dock.slots != slots {
@@ -383,7 +383,7 @@ impl DesktopHandle {
         read(&self.shared.borrow().tree)
     }
 
-    /// The windows other devices host that this desk shows, with the device hosting each: the
+    /// The windows other devices host that this shell shows, with the device hosting each: the
     /// windows whose page a host asks the plane for.
     #[must_use]
     pub fn hosted_windows(&self) -> Vec<(TabId, String)> {
@@ -403,8 +403,8 @@ impl DesktopHandle {
         })
     }
 
-    /// Have `wake` run whenever what this handle commands or changes is waiting for the desk's next
-    /// pass: the host holding the desk asks for that frame, however little of the desk shows.
+    /// Have `wake` run whenever what this handle commands or changes is waiting for the shell's next
+    /// pass: the host holding the shell asks for that frame, however little of the shell shows.
     pub fn set_wake(&self, wake: Rc<dyn Fn()>) {
         self.shared.borrow_mut().wake.set(wake);
     }
@@ -457,9 +457,9 @@ impl DesktopHandle {
         navigation::snapshot_with(&shared.tree, generation, applications, &shared.presentation)
     }
 
-    /// Ask the host for the desk's next pass: something the desk was told to
+    /// Ask the host for the shell's next pass: something the shell was told to
     /// do waits for it — a command, a search opening, a card chosen on the
-    /// empty desk, which the host carries out on that pass. A host that drew
+    /// empty shell, which the host carries out on that pass. A host that drew
     /// the press and then went quiet would otherwise carry it out whenever
     /// something else woke it.
     pub fn wake(&self) {
@@ -528,7 +528,7 @@ impl DesktopHandle {
         self.shared.borrow_mut().viewport_width = width.max(1.0);
     }
 
-    /// How much of the desk's top edge something overlays now: the desktop bar's height while it
+    /// How much of the shell's top edge something overlays now: the desktop bar's height while it
     /// shows over the windows under an auto-hiding bar, else zero. Every window moves down by it,
     /// whole, so the controls on its own bar stand below the bar instead of under it — where the
     /// bar's clock would read across a window's title on a phone.
@@ -587,7 +587,7 @@ impl DesktopHandle {
     /// Replace the tree with one changed elsewhere. The next update pass reconciles the live rows
     /// with it: tabs still present keep their running content, new tabs get content from the host's
     /// [`TileSource`], and removed tabs' applications close. Queued commands stay queued and are
-    /// re-checked against the new tree when applied. A tree changed elsewhere is a desk that moved
+    /// re-checked against the new tree when applied. A tree changed elsewhere is a shell that moved
     /// ([`Layout::external_revision`]): a window filling the tab held for it, or a window's new
     /// title, reaches the workspace's shared desktop as any other change does.
     pub fn replace_tree(&self, mut tree: Layout) {
@@ -595,7 +595,7 @@ impl DesktopHandle {
         observe_ids(&mut shared.minter, &tree);
         tree.external_revision = shared.tree.external_revision.wrapping_add(1);
         // A tree kept beside the state file carries no range of its own: it writes where this
-        // desk's ids were minted.
+        // shell's ids were minted.
         tree.salt = shared.minter.salt();
         shared.tree = tree;
         shared.replaced = true;
@@ -637,7 +637,7 @@ impl DesktopHandle {
 
     /// `tab` stands in for the app whose window did not come, saying why: what the person sees
     /// where the window would be, and closes when they are done with it. False when the tab is
-    /// gone, or holds a live window rather than an app this desk opened.
+    /// gone, or holds a live window rather than an app this shell opened.
     pub fn note_in_tab(&self, tab: TabId, note: &str) -> bool {
         let mut tree = self.read(Clone::clone);
         let Some(found) = tree
@@ -740,7 +740,7 @@ impl DesktopHandle {
         true
     }
 
-    /// The notifications the host installed on this desk: what the host above the windows draws
+    /// The notifications the host installed on this shell: what the host above the windows draws
     /// as the banners and the centre ([`NotificationLayer`]).
     #[must_use]
     pub fn notifications(&self) -> Option<DesktopNotifications> {
@@ -978,7 +978,7 @@ impl DesktopSurface {
         (surface, DesktopHandle { shared })
     }
 
-    /// The surface's own state, standing on the `shared` desk `new` made and drawing with `tiles` ,
+    /// The surface's own state, standing on the `shared` shell `new` made and drawing with `tiles` ,
     /// after its search `search` .
     fn standing(
         shared: Rc<RefCell<Shared>>,
@@ -1587,7 +1587,7 @@ impl DesktopSurface {
                 .reorder_group_within_strip(strip_id, group, index)
                 .is_some();
         }
-        // A window lifted over the desk, or let go back into its strip.
+        // A window lifted over the shell, or let go back into its strip.
         if let Some(ask) = row.take_pending_float() {
             changed |= floats::carry_out(&mut shared, strip_id, row, ask);
         }
@@ -1820,7 +1820,7 @@ impl DesktopSurface {
             row.set_motion_source(ui::tokens::MotionSource::Action);
             // A window the workspace holds floating takes no run of the strip, so
             // it shares nothing with what stands there — unless it opens over the
-            // desk beside it, where the strip gives up the width its card draws at,
+            // shell beside it, where the strip gives up the width its card draws at,
             // band and ring included, so the card stands beside the window it
             // opened next to, clear of it, not over it.
             if float {
@@ -1859,12 +1859,12 @@ impl DesktopSurface {
         if let Some(row) = self.shown_row() {
             row.set_fullscreen(fullscreen, false);
         }
-        // The desktop bar over the desk (an auto-hiding one, while it shows): every row's windows
+        // The desktop bar over the shell (an auto-hiding one, while it shows): every row's windows
         // move down by it, so nothing of theirs stands under its clock.
         for row in self.rows.values_mut() {
             row.set_top_overlay_inset(top_overlay);
         }
-        // A window the workspace holds floating stands over the desk, at the place its record keeps
+        // A window the workspace holds floating stands over the shell, at the place its record keeps
         // for this device's display; every other strip shows its windows in their strip.
         self.sync_floats();
         let (route, width) = {
@@ -2224,12 +2224,12 @@ impl Widget for DesktopSurface {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        // The desk's own search owns the keyboard while it is up, as
+        // The shell's own search owns the keyboard while it is up, as
         // [`DesktopHandle::input_owner`] says: no window's app is offered a key then, or a bare
         // letter reaches it as its own shortcut and a field of its dialog takes the rest of the
         // word. The chrome above the windows hands the palette what the person types; a key that
         // arrives here while the palette stands is search's, and the chord that opens search is
-        // the desk's wherever it is pressed.
+        // the shell's wherever it is pressed.
         if self.search_holds_the_key(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
@@ -2281,7 +2281,7 @@ impl Widget for DesktopSurface {
             });
         }
         self.route_pointer(event, ctx, &children);
-        // A tab's name field opened or closed under the event: the desk holds the keyboard for it,
+        // A tab's name field opened or closed under the event: the shell holds the keyboard for it,
         // or gives it back to the window.
         self.publish_bar_typing();
         if let WindowEvent::MouseInput {
@@ -2454,7 +2454,7 @@ impl Widget for DesktopSurface {
     /// needs no separate schedule. What the host above the windows did with the search palette
     /// since the last pass is work for this one: a row it chose, a scope it widened, a query field
     /// it typed into. So is a tree replaced from outside — a workspace's desktop its members
-    /// changed: the desk's rows are only brought to it by a pass, and none would come for it
+    /// changed: the shell's rows are only brought to it by a pass, and none would come for it
     /// otherwise.
     fn needs_redraw(&self) -> bool {
         let work = {
@@ -2469,7 +2469,7 @@ impl Widget for DesktopSurface {
                 // A window to bring into view, once the person's hands rest.
                 || shared.revealing.ready(ui::time::now())
         };
-        // The desk asks its search sources a frame at a time, and cuts its rows to the card once
+        // The shell asks its search sources a frame at a time, and cuts its rows to the card once
         // the card gives its room: a search with such work left draws the frames that do it, so it
         // ends with every source's rows rather than stalling part-way.
         work || self.search.borrow().filling_in()
@@ -2537,7 +2537,7 @@ impl Widget for DesktopSurface {
 
 impl DesktopSurface {
     /// The arrival hints, the cards of apps that stopped answering, the banners and the centre over
-    /// everything the desk draws.
+    /// everything the shell draws.
     fn draw_overlays(
         &mut self,
         scene: &mut Scene,

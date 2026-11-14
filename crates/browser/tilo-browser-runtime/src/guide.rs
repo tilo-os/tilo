@@ -1,6 +1,6 @@
 //! The shortcut guide in a page: the session's own sheet
 //! ([`tilo_sheets::shortcut_guide`]) over the desktop, explaining the table
-//! this page's desk answers keys with. What the person changes here is kept in
+//! this page's shell answers keys with. What the person changes here is kept in
 //! their settings, so it reaches their other devices; the chords pressed for a
 //! shortcut are taken from the page's keys, with the page's stand-in for Super.
 
@@ -19,7 +19,7 @@ use crate::over_page::OverSheet;
 
 /// The shortcut guide over the page.
 pub(crate) struct PageGuide {
-    /// The table the desk answers and the guide explains, kept in the
+    /// The table the shell answers and the guide explains, kept in the
     /// person's settings.
     table: Shared,
     state: Rc<State>,
@@ -47,7 +47,7 @@ impl PageGuide {
         }
     }
 
-    /// The table the desk answers keys with: the person's, as the guide shows
+    /// The table the shell answers keys with: the person's, as the guide shows
     /// and changes it.
     pub(crate) fn shortcuts(&self) -> Shared {
         Rc::clone(&self.table)

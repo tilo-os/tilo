@@ -1,7 +1,7 @@
 use super::*;
-use crate::surface::tests::one_window_desk;
+use crate::surface::tests::one_window_shell;
 
-/// The window `tab` shows fills its strip, as the desk's tree holds it.
+/// The window `tab` shows fills its strip, as the shell's tree holds it.
 fn fills_the_strip(handle: &DesktopHandle, tab: TabId) -> bool {
     handle.read(|tree| {
         tree.workspaces
@@ -15,13 +15,13 @@ fn fills_the_strip(handle: &DesktopHandle, tab: TabId) -> bool {
 
 /// A secondary click on a window's bar opens its menu where the click landed, and a click on
 /// "Fill the strip" fills the strip with that window: the menu's own row, chosen as a person
-/// chooses it, does what the desk says it does.
+/// chooses it, does what the shell says it does.
 #[test]
 fn a_row_clicked_in_the_menu_does_it_to_the_window_whose_bar_asked() {
-    let (surface, handle) = one_window_desk(1);
-    let mut desk =
+    let (surface, handle) = one_window_shell(1);
+    let mut shell =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
-    desk.relayout();
+    shell.relayout();
     let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs[0].id);
     assert!(!fills_the_strip(&handle, tab));
     // What a secondary click on the window's bar leaves for its host.
@@ -49,7 +49,7 @@ fn a_row_clicked_in_the_menu_does_it_to_the_window_whose_bar_asked() {
     page.click_at(f64::midpoint(row.x0, row.x1), f64::midpoint(row.y0, row.y1));
     for _ in 0..4 {
         page.relayout();
-        desk.relayout();
+        shell.relayout();
     }
     assert!(
         fills_the_strip(&handle, tab),
@@ -62,7 +62,7 @@ fn a_row_clicked_in_the_menu_does_it_to_the_window_whose_bar_asked() {
 /// widget drawn before left behind.
 #[test]
 fn the_menu_stands_where_the_bar_was_pressed_whatever_the_frame_names() {
-    let (_surface, handle) = one_window_desk(1);
+    let (_surface, handle) = one_window_shell(1);
     let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs[0].id);
     let mut popup = WindowMenuPopup::new(handle.clone());
     // Laid out over the whole page, as a host mounts it.

@@ -242,7 +242,7 @@ pub(crate) struct BoardView {
 /// certificate) its session is with.
 pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceCert, label: &str) {
     // The page's replication loads with this code, not with the start module
-    // (crate::replicated): from here on the desk, the shell and every mount
+    // (crate::replicated): from here on the shell, the shell and every mount
     // ask the workspace's documents through it.
     crate::replication::install();
     let Ok(publisher) = EndpointId::from_bytes(&cert.device_public_key) else {

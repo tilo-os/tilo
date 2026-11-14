@@ -460,7 +460,7 @@ pub fn set_hidden(hidden: bool) {
 }
 
 /// Show `notification` in the browser's notifications, only while the page
-/// is out of view and the person allows them: the desk tells them of it
+/// is out of view and the person allows them: the shell tells them of it
 /// itself otherwise.
 pub(crate) fn tell_browser(notification: &ui::notify::Notification) {
     if !notifies_browser() {

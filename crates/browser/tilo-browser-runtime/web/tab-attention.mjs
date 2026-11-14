@@ -1,13 +1,13 @@
 /**
  * What the browser tab says while the person is elsewhere. A tab in a row of
  * tabs shows only its title and icon, so both carry what needs the person:
- * - the title leads with the count of notices they have not seen (the desk's
+ * - the title leads with the count of notices they have not seen (the shell's
  *   bell), then an agent waiting for them ("Claude Code needs you") or one
  *   that finished while they were away ("Claude Code finished"), then the
  *   workspace;
  * - the icon carries a badge while anything of that is there.
  * An agent's finishing counts as news only until the person looks at the tab
- * again: they saw it on the desk then.
+ * again: they saw it on the shell then.
  *
  * The browser's notifications themselves are the runtime's to show (it shows
  * them only while the tab is hidden); this page asks for the permission they
@@ -87,7 +87,7 @@ export function createTabAttention({window: win = globalThis, storage = safeStor
   const doc = win.document;
   let workspace = null;
   let attention = {unread: 0, waiting: [], finished: []};
-  // Finished agents' notices the person saw: on the desk, while the tab was in view.
+  // Finished agents' notices the person saw: on the shell, while the tab was in view.
   const seen = new Set();
   let shownBadge;
   let offer = null;
@@ -119,7 +119,7 @@ export function createTabAttention({window: win = globalThis, storage = safeStor
   }
 
   function look() {
-    // In view, what is on the desk is seen.
+    // In view, what is on the shell is seen.
     if (hidden()) return;
     for (const {id} of attention.finished ?? []) seen.add(id);
     render();

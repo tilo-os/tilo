@@ -1,5 +1,5 @@
-//! The floating-surface capability of the desk's surface: what the windows'
-//! apps present over the desk, forwarded to the rows that hold them.
+//! The floating-surface capability of the shell's surface: what the windows'
+//! apps present over the shell, forwarded to the rows that hold them.
 
 use ui::automerge::ObjId;
 

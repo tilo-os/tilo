@@ -66,12 +66,12 @@ const SWIPE_VELOCITY: f64 = 700.0;
 /// rather than three panels that nearly line up. The overlay stack that hangs the centre and
 /// quick settings under the bar reads this constant too.
 pub const CORNER_INSET: f64 = 8.0;
-/// The gutter either side of a banner on a desk too narrow to keep it in the corner (a phone): the
+/// The gutter either side of a banner on a shell too narrow to keep it in the corner (a phone): the
 /// same gutter as the phone's who-is-here sheet (`spacing.s3`), so the two stand on one line.
 pub const NARROW_GUTTER: f64 = 12.0;
 
-/// Where a banner stands across `viewport`: its left edge and width. In the corner on a desk with
-/// room for it; on a narrow one (a phone) centred between equal gutters, inside the desk, as the
+/// Where a banner stands across `viewport`: its left edge and width. In the corner on a shell with
+/// room for it; on a narrow one (a phone) centred between equal gutters, inside the shell, as the
 /// who-is-here sheet stands, rather than off a corner with one gutter wider than the other.
 #[must_use]
 pub fn banner_span(viewport: Rect) -> (f64, f64) {
@@ -373,7 +373,7 @@ const MIN_BANNER_H: f64 = 56.0;
 #[must_use]
 pub fn transient_slot(viewport: Rect, top: f64, size: (f64, f64), window_bars: &[Rect]) -> Rect {
     let (width, height) = size;
-    // A banner as wide as the narrow desk's span stands where that span does.
+    // A banner as wide as the narrow shell's span stands where that span does.
     let x1 = if viewport.width() < 2.0 * TOAST_WIDTH {
         (viewport.center().x + width / 2.0).min(viewport.x1 - CORNER_INSET)
     } else {

@@ -1,7 +1,7 @@
 //! Moving a window out of the strip it is in.
 //! A window's bar reports a drag that left the strip. Only one strip is on screen at a time, so
 //! "another strip" is the one that way: below the strip when the window was let go under it, above
-//! when over it. The window lands at the end of that strip and the desk follows it there, so the
+//! when over it. The window lands at the end of that strip and the shell follows it there, so the
 //! person sees it arrive; let go where no strip lies, it stays where it was.
 
 use super::Shared;
@@ -30,7 +30,7 @@ fn strip_that_way(
 }
 
 /// Carry out the drag `row` reports out of `strip` : the window goes to the strip that way, its
-/// live content with it, and the desk shows it there. Returns whether the tree changed.
+/// live content with it, and the shell shows it there. Returns whether the tree changed.
 pub(super) fn carry_out(
     shared: &mut Shared,
     strip: StripId,

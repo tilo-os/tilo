@@ -252,7 +252,7 @@ export const HTML_APPS = new Set(['so.tilo.notes']);
 
 /** Mount what `route` shows, then show its target. `directory` is what the
  * desktop's workspace directory browses (`deps.directory`), handed to
- * whichever mount draws the desk: the page's own, or a peer's. */
+ * whichever mount draws the shell: the page's own, or a peer's. */
 export async function present({route, peer, surface, mountDesktop, directory = null, diagnostics = {}, onStatus, onNavigation, onAttention}) {
   const {target, mode} = route;
   const mount = peer ? (element, options) => peer.mountDesktop(element, options) : mountDesktop;
@@ -405,7 +405,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const listed = listedAt(workspaces, scope, admittedWorkspace);
   // The name the workspace answered this page's admission with, for one no
   // directory of the page's lists: a workspace a link's invitation admits
-  // into, or the person's own. Without it the desk it starts has no name and
+  // into, or the person's own. Without it the shell it starts has no name and
   // the tab never says which workspace it is.
   const workspaceName = listed?.name || peer?.workspaceName || null;
   // The desktop shows its invite sheet in a workspace the page can invite

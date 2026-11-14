@@ -23,7 +23,7 @@ use tilo_desktop::profile_card::{
     LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop_model::Layout;
-use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
+use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, LayoutEffect};
 use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_session_core::door::{Look, Published};
 use ui::host_operation::ResourceOperationStart;
@@ -1200,7 +1200,7 @@ impl Panel {
                     .and_then(|row| row.working_in.as_ref())
                     .map(|(tab, _)| *tab);
                 if let Some(tab) = tab {
-                    let command = DeskEffect::Focus {
+                    let command = LayoutEffect::Focus {
                         tab: tab.to_string(),
                     };
                     if let Err(error) = self.handle.dispatch(command) {

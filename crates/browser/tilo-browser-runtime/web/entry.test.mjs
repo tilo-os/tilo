@@ -150,7 +150,7 @@ test('a link waits for its resource as long as the desktop has not drawn the fra
 });
 
 // Catches a run's link losing the whole page again on a busy machine: the
-// desk drew its frames while Console's code was still downloading, so the
+// shell drew its frames while Console's code was still downloading, so the
 // link's wait ran out before the app could offer the run's view.
 test('a link waits for its app’s code before its own wait for the view begins', async () => {
   const timers = {setTimeout: done => queueMicrotask(done)};
@@ -158,7 +158,7 @@ test('a link waits for its app’s code before its own wait for the view begins'
   let frames = 0;
   let polls = 0;
   let loading = true;
-  // The desk draws every poll; the app's code arrives at the 300th, its
+  // The shell draws every poll; the app's code arrives at the 300th, its
   // views a few polls later.
   const late = {actions: () => {
     polls++;
@@ -315,7 +315,7 @@ test('the home workspace opens through its host door under its listed name, and 
 
 test('a workspace no listing of the page names is mounted under the name it answered admission with', async () => {
   // The person's own workspace on a host, reached by a link that names no
-  // workspace, on a site whose entry lists none: the desk the page starts has
+  // workspace, on a site whose entry lists none: the shell the page starts has
   // no name of its own to read, so the tab would never say which workspace it
   // is.
   const runtime = runtimeFake({

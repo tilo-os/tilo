@@ -37,7 +37,7 @@ use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::NamedKey;
 
 const APP: &str = "so.tilo.keyboard-test";
-/// An app the desk has installed and not opened.
+/// An app the shell has installed and not opened.
 const NOTES: &str = "so.tilo.notes";
 
 /// What each field was typed, by its test id.
@@ -380,14 +380,14 @@ struct SearchLog {
     labels: HashMap<u64, String>,
 }
 
-/// The desk's host, recording what each search asked it to cover.
+/// The shell's host, recording what each search asked it to cover.
 #[derive(Default)]
 struct HostLog {
     /// The scope search asked it to cover, in order.
     scopes: RefCell<Vec<Scope>>,
 }
 
-/// The host the desk searches through: one source of its own, which only a search of the workspace
+/// The host the shell searches through: one source of its own, which only a search of the workspace
 /// asks.
 struct DeskHost(Rc<HostLog>);
 
@@ -623,7 +623,7 @@ struct Source {
 
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        // An app that is not what this desk is about: a window of its own,
+        // An app that is not what this shell is about: a window of its own,
         // enough to see where search puts what it opens.
         if matches!(&tab.tile, TileContent::LocalApp { app_id, .. } if app_id == NOTES) {
             return TileHost::new(ui::widget::TileContent::Notice {
@@ -732,7 +732,7 @@ fn notes_tab(id: u64) -> Tab {
     }
 }
 
-/// The desk's rules, as the session's own say who may change it.
+/// The shell's rules, as the session's own say who may change it.
 struct ChromeRules {
     handle: DesktopHandle,
 }
@@ -755,27 +755,27 @@ impl DesktopRules for ChromeRules {
     }
 }
 
-struct Desk {
+struct Shell {
     driver: ui::headless::FrameHarness,
     handle: DesktopHandle,
     typed: Typed,
     tabs: Vec<u64>,
     root: std::path::PathBuf,
-    /// The tree the desk shows, as the chrome over it reads it.
+    /// The tree the shell shows, as the chrome over it reads it.
     tree: Layout,
     /// The chrome the session draws over the windows, holding search's card,
     /// made when a test first reaches it.
     chrome: Option<ui::headless::FrameHarness>,
 }
 
-impl Desk {
+impl Shell {
     /// `windows` app windows, each `permille` of the strip wide, in a viewport 1200 px wide: wide
     /// windows run off its right edge.
     fn new(windows: usize, permille: u32) -> Self {
         Self::of(windows, permille, false)
     }
 
-    /// The same desk with the windows' tabs on one bar, as a window group holding several tabs: a
+    /// The same shell with the windows' tabs on one bar, as a window group holding several tabs: a
     /// window a person adds a tab to.
     fn one_window(windows: usize, permille: u32) -> Self {
         Self::of(windows, permille, true)
@@ -787,7 +787,7 @@ impl Desk {
         let mut minter = IdMinter::new(29);
         let tabs: Vec<Tab> = (0..windows).map(|_| keyboard_tab(minter.mint())).collect();
         let ids = tabs.iter().map(|tab| tab.id).collect();
-        let mut tree = seed_tree(&mut minter, "Desk", tabs);
+        let mut tree = seed_tree(&mut minter, "Office", tabs);
         if one_window {
             let strip = &mut tree.workspaces[0].strips[0];
             let id = strip.window_groups[0].id;
@@ -829,7 +829,7 @@ impl Desk {
         );
         driver.set_caller_palette_enabled(false);
         driver.attach_owner_wake_queue(queue).unwrap();
-        let mut desk = Self {
+        let mut shell = Self {
             driver,
             handle,
             typed,
@@ -838,22 +838,22 @@ impl Desk {
             tree,
             chrome: None,
         };
-        desk.settle();
-        desk
+        shell.settle();
+        shell
     }
 
     fn settle(&mut self) {
         for _ in 0..4 {
             self.driver.relayout();
             self.driver.service_pending_owner_models().unwrap();
-            // The chrome stands over the windows, as the compositor draws it after the desk.
+            // The chrome stands over the windows, as the compositor draws it after the shell.
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.relayout();
             }
         }
     }
 
-    /// The chrome over the desk, as the session's chrome layer shows it.
+    /// The chrome over the shell, as the session's chrome layer shows it.
     fn chrome(&mut self) -> &mut ui::headless::FrameHarness {
         let tree = self.tree.clone();
         let handle = self.handle.clone();
@@ -897,12 +897,12 @@ impl Desk {
     }
 
     /// Frames until every source of the open search has answered. A source answers on a worker, and
-    /// its answer wakes the desk: a test pumps what the wake asks for and draws the frame it
+    /// its answer wakes the shell: a test pumps what the wake asks for and draws the frame it
     /// brings, as a host does.
     ///
     /// Two things a search waits for elsewhere are not waited for here. An application's own answer
     /// is the host's to look for on its clock. And the rows are not cut to the card's room: this
-    /// desk draws no card over its windows, so no layout ever gives the palette the room its rows
+    /// shell draws no card over its windows, so no layout ever gives the palette the room its rows
     /// stand in, and the rows a test reads are the ones cut to the guess the palette keeps until a
     /// host gives it one.
     fn settle_search(&mut self) {
@@ -951,7 +951,7 @@ impl Desk {
         log
     }
 
-    /// The desk's windows, each `(strip, group, tabs)` .
+    /// The shell's windows, each `(strip, group, tabs)` .
     fn windows(&self) -> Vec<(u64, u64, usize)> {
         self.handle.read(|tree| {
             tree.workspaces
@@ -987,7 +987,7 @@ impl Desk {
     }
 }
 
-impl Drop for Desk {
+impl Drop for Shell {
     fn drop(&mut self) {
         self.driver.close_components();
         let _ = std::fs::remove_dir_all(&self.root);
@@ -996,16 +996,16 @@ impl Drop for Desk {
 
 #[test]
 fn tab_cycles_through_the_focused_window_and_never_reaches_the_desktop_chrome() {
-    let mut desk = Desk::new(2, 450);
-    let first = desk.tabs[0];
+    let mut shell = Shell::new(2, 450);
+    let first = shell.tabs[0];
     // The first window is focused: its bar's controls and its app's search button, two fields and
     // late-built button are where Tab goes, in turn, round and round.
     let window = "DesktopSurface[0]/GroupRow[0]/WindowGroup[0]/";
     let app = format!("{window}TileHost[0]/");
     let mut visited = Vec::new();
     for _ in 0..24 {
-        desk.driver.key("Tab");
-        let focused = desk.focus_path();
+        shell.driver.key("Tab");
+        let focused = shell.focus_path();
         assert!(
             focused
                 .as_ref()
@@ -1030,27 +1030,28 @@ fn tab_cycles_through_the_focused_window_and_never_reaches_the_desktop_chrome() 
     // And typing goes where Tab put focus.
     let field = format!("field-{first}-2");
     for _ in 0..visited.len() {
-        if desk.focused_name().as_deref() == Some(field.as_str()) {
+        if shell.focused_name().as_deref() == Some(field.as_str()) {
             break;
         }
-        desk.driver.key("Tab");
+        shell.driver.key("Tab");
     }
-    desk.driver.type_text("ok");
-    assert_eq!(desk.typed(&field), "ok");
+    shell.driver.type_text("ok");
+    assert_eq!(shell.typed(&field), "ok");
 }
 
 #[test]
 fn the_window_shown_first_and_a_window_just_opened_take_the_keyboard() {
-    let mut desk = Desk::new(1, 450);
-    let first = desk.tabs[0];
-    desk.driver.type_text("a");
+    let mut shell = Shell::new(1, 450);
+    let first = shell.tabs[0];
+    shell.driver.type_text("a");
     assert_eq!(
-        desk.typed(&format!("field-{first}-1")),
+        shell.typed(&format!("field-{first}-1")),
         "a",
         "the desktop's focused window has the keyboard from the start"
     );
 
-    desk.handle
+    shell
+        .handle
         .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
             app: APP.into(),
             beside: None,
@@ -1058,128 +1059,129 @@ fn the_window_shown_first_and_a_window_just_opened_take_the_keyboard() {
             float: None,
         })
         .unwrap();
-    desk.settle();
-    let opened = desk
+    shell.settle();
+    let opened = shell
         .handle
         .shown_tabs()
         .into_iter()
         .map(|(tab, _)| tab)
         .find(|tab| *tab != first)
         .expect("the launched window is shown");
-    desk.driver.type_text("b");
+    shell.driver.type_text("b");
     assert_eq!(
-        desk.typed(&format!("field-{opened}-1")),
+        shell.typed(&format!("field-{opened}-1")),
         "b",
         "what is typed right after opening a window reaches it"
     );
-    assert_eq!(desk.typed(&format!("field-{first}-1")), "a");
+    assert_eq!(shell.typed(&format!("field-{first}-1")), "a");
 }
 
 #[test]
 fn a_click_in_a_window_partly_off_screen_aims_typing_at_it() {
-    let mut desk = Desk::new(2, 700);
-    let second = desk.tabs[1];
+    let mut shell = Shell::new(2, 700);
+    let second = shell.tabs[1];
     let field = format!("field-{second}-2");
-    let rect = desk.rect(&field);
+    let rect = shell.rect(&field);
     assert!(
         rect.x0 < 1200.0 && rect.x1 > 1200.0,
         "the second window runs off the right edge: {rect:?}"
     );
-    desk.driver
+    shell
+        .driver
         .click_at(f64::midpoint(rect.x0, 1200.0), rect.center().y);
-    desk.settle();
-    desk.driver.type_text("hi");
+    shell.settle();
+    shell.driver.type_text("hi");
     assert_eq!(
-        desk.typed(&field),
+        shell.typed(&field),
         "hi",
         "typing reaches the clicked control"
     );
-    let first = desk.tabs[0];
-    assert_eq!(desk.typed(&format!("field-{first}-1")), "");
+    let first = shell.tabs[0];
+    assert_eq!(shell.typed(&format!("field-{first}-1")), "");
 }
 
 #[test]
 fn an_apps_own_search_button_opens_search_over_its_window() {
-    let mut desk = Desk::new(2, 450);
-    assert!(!desk.handle.search_open());
-    desk.driver.click_named("search-open").unwrap();
-    desk.settle();
+    let mut shell = Shell::new(2, 450);
+    assert!(!shell.handle.search_open());
+    shell.driver.click_named("search-open").unwrap();
+    shell.settle();
     assert!(
-        desk.handle.search_open(),
+        shell.handle.search_open(),
         "the app's search button opens the desktop's search"
     );
 }
 
 #[test]
-fn the_desk_says_who_holds_the_keyboard() {
-    let mut desk = Desk::new(2, 450);
+fn the_shell_says_who_holds_the_keyboard() {
+    let mut shell = Shell::new(2, 450);
     assert_eq!(
-        desk.handle.input_owner().as_deref(),
+        shell.handle.input_owner().as_deref(),
         Some(APP),
         "the focused window's application holds it"
     );
-    desk.driver.click_named("search-open").unwrap();
-    desk.settle();
+    shell.driver.click_named("search-open").unwrap();
+    shell.settle();
     assert_eq!(
-        desk.handle.input_owner().as_deref(),
+        shell.handle.input_owner().as_deref(),
         Some("system-search"),
         "search takes the keyboard while its palette is up"
     );
-    desk.handle.close_search();
-    desk.settle();
+    shell.handle.close_search();
+    shell.settle();
     assert_eq!(
-        desk.handle.input_owner().as_deref(),
+        shell.handle.input_owner().as_deref(),
         Some(APP),
         "and gives it back to the window under it when it closes"
     );
     // A host that saw a press beside the card asks again: closing a closed search opens nothing.
-    desk.handle.close_search();
-    desk.settle();
+    shell.handle.close_search();
+    shell.settle();
     assert!(
-        !desk.handle.search_open(),
+        !shell.handle.search_open(),
         "dismissing twice never opens a search"
     );
 }
 
-/// Search owns the keyboard while it is up, as the desk says who holds it: a window's app is
+/// Search owns the keyboard while it is up, as the shell says who holds it: a window's app is
 /// offered no key. A bare letter is a shortcut in the app behind the card — a calendar's week view
 /// opens its new-event dialog on "n" — so one that reached it opened a dialog over the search and
 /// took the rest of the word into the dialog's title instead of the query.
 #[test]
 fn the_open_search_takes_every_key_from_the_window_under_it() {
     AS_CALENDAR.with(|calendar| calendar.set(true));
-    let mut desk = Desk::new(1, 450);
-    let tab = desk.tabs[0];
+    let mut shell = Shell::new(1, 450);
+    let tab = shell.tabs[0];
     assert_eq!(
-        desk.handle.input_owner().as_deref(),
+        shell.handle.input_owner().as_deref(),
         Some(APP),
         "the window's calendar has the keyboard before search opens"
     );
-    desk.handle.open_search(Scope::Workspace, None);
-    desk.settle();
-    assert!(desk.handle.search_open());
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle();
+    assert!(shell.handle.search_open());
     // What the person types is the search's.
-    desk.type_search("Notes");
+    shell.type_search("Notes");
     assert_eq!(
-        desk.handle.search_rows().0,
+        shell.handle.search_rows().0,
         "Notes",
         "the query holds what was typed"
     );
-    // The same keys handed to the desk itself — the frame the palette opened in, or a host that
+    // The same keys handed to the shell itself — the frame the palette opened in, or a host that
     // routes the press — are the search's too: no shortcut fires and no dialog takes the rest.
-    desk.driver.type_text("Notes");
+    shell.driver.type_text("Notes");
     assert_eq!(
         NEW_EVENT.with(std::cell::Cell::get),
         0,
         "no app shortcut fires while search is open"
     );
     assert_eq!(
-        desk.typed(&format!("event-title-{tab}")),
+        shell.typed(&format!("event-title-{tab}")),
         "",
         "and no dialog opened over the search to take the letters after it"
     );
     assert_eq!(
-        desk.handle.search_rows().0,
+        shell.handle.search_rows().0,
         "Notes",
         "the search still holds the query it was given"
     );
@@ -1190,8 +1192,8 @@ fn the_open_search_takes_every_key_from_the_window_under_it() {
 /// does not stay up over the sheet the host opens.
 #[test]
 fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
-    let mut desk = Desk::new(1, 450);
-    desk.handle.set_host_actions(vec![HostAction {
+    let mut shell = Shell::new(1, 450);
+    shell.handle.set_host_actions(vec![HostAction {
         id: "invite-people".into(),
         title: "Invite people".into(),
         subtitle: Some("Bring someone into this workspace".into()),
@@ -1200,10 +1202,10 @@ fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
         unasked: true,
         source: None,
     }]);
-    desk.handle.open_search(Scope::Workspace, None);
-    desk.settle();
-    desk.type_search("invite people");
-    let (_, rows) = desk.handle.search_rows();
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle();
+    shell.type_search("invite people");
+    let (_, rows) = shell.handle.search_rows();
     assert!(
         rows.iter().any(|row| row.title == "Invite people"),
         "the host's verb is a row: {rows:?}"
@@ -1213,17 +1215,17 @@ fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
         .position(|row| row.title == "Invite people")
         .expect("the row stands");
     for _ in 0..choosable {
-        desk.key_search(NamedKey::ArrowDown);
+        shell.key_search(NamedKey::ArrowDown);
     }
-    desk.key_search(NamedKey::Enter);
-    desk.settle();
+    shell.key_search(NamedKey::Enter);
+    shell.settle();
     assert_eq!(
-        desk.handle.take_host_choices(),
+        shell.handle.take_host_choices(),
         ["invite-people"],
         "the host is asked to perform it"
     );
     assert!(
-        !desk.handle.search_open(),
+        !shell.handle.search_open(),
         "and the search closes over what the host opens"
     );
 }
@@ -1233,9 +1235,9 @@ fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
 /// cannot run.
 #[test]
 fn an_action_that_cannot_run_now_takes_no_row_and_the_runnable_one_is_first() {
-    let mut desk = Desk::new(1, 450);
-    desk.with_host();
-    desk.handle.set_host_actions(vec![HostAction {
+    let mut shell = Shell::new(1, 450);
+    shell.with_host();
+    shell.handle.set_host_actions(vec![HostAction {
         id: "invite-people".into(),
         title: "Invite people".into(),
         subtitle: Some("Bring someone into this workspace".into()),
@@ -1244,10 +1246,10 @@ fn an_action_that_cannot_run_now_takes_no_row_and_the_runnable_one_is_first() {
         unasked: true,
         source: None,
     }]);
-    desk.handle.open_search(Scope::Workspace, None);
-    desk.settle();
-    desk.type_search("invite");
-    let (_, rows) = desk.handle.search_rows();
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle();
+    shell.type_search("invite");
+    let (_, rows) = shell.handle.search_rows();
     let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
     assert_eq!(
         titles.first().copied(),
@@ -1258,29 +1260,29 @@ fn an_action_that_cannot_run_now_takes_no_row_and_the_runnable_one_is_first() {
         !titles.contains(&"Invite"),
         "the event's Invite, with no event selected, takes no row: {titles:?}"
     );
-    desk.key_search(NamedKey::Enter);
-    desk.settle();
+    shell.key_search(NamedKey::Enter);
+    shell.settle();
     assert_eq!(
-        desk.handle.take_host_choices(),
+        shell.handle.take_host_choices(),
         ["invite-people"],
         "Enter carries out the row that stands first"
     );
 }
 
-/// The chord that opens search is the desk's, never the window's under it: an app that takes every
+/// The chord that opens search is the shell's, never the window's under it: an app that takes every
 /// key it is handed is not handed the chord, so no app's own Control+K runs on the press that opened
 /// the search.
 #[test]
 fn the_search_chord_is_never_the_windows() {
     GREEDY.with(|greedy| greedy.set(true));
-    let mut desk = Desk::new(1, 450);
-    let tab = desk.tabs[0];
-    desk.driver.set_modifiers(&["ctrl".into()]);
-    desk.driver.key("k");
-    desk.driver.set_modifiers(&[]);
-    desk.settle();
+    let mut shell = Shell::new(1, 450);
+    let tab = shell.tabs[0];
+    shell.driver.set_modifiers(&["ctrl".into()]);
+    shell.driver.key("k");
+    shell.driver.set_modifiers(&[]);
+    shell.settle();
     assert_eq!(
-        desk.typed(&format!("greedy-{tab}")),
+        shell.typed(&format!("greedy-{tab}")),
         "",
         "the window's app is offered nothing of the chord"
     );
@@ -1288,11 +1290,11 @@ fn the_search_chord_is_never_the_windows() {
 
 #[test]
 fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
-    let mut desk = Desk::new(1, 450);
-    desk.driver.click_named("search-open").unwrap();
-    desk.settle();
-    assert!(desk.handle.search_open());
-    desk.type_search("lofi");
+    let mut shell = Shell::new(1, 450);
+    shell.driver.click_named("search-open").unwrap();
+    shell.settle();
+    assert!(shell.handle.search_open());
+    shell.type_search("lofi");
     let asked = SEARCH.with_borrow(|search| search.asked.clone());
     assert_eq!(
         asked.last().map(String::as_str),
@@ -1303,7 +1305,7 @@ fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
     // row searching its service) shows.
     let before = asked.len();
     SEARCH.with_borrow_mut(|search| search.answered = true);
-    desk.settle();
+    shell.settle();
     let asked = SEARCH.with_borrow(|search| search.asked.clone());
     assert!(
         asked.len() > before && asked.last().map(String::as_str) == Some("lofi"),
@@ -1316,22 +1318,22 @@ fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
 #[test]
 fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
     SEARCH.with_borrow_mut(|search| search.answered = true);
-    let mut desk = Desk::new(1, 450);
-    desk.driver.click_named("search-open").unwrap();
-    desk.settle();
-    desk.type_search("lofi");
-    desk.key_search(NamedKey::Enter);
+    let mut shell = Shell::new(1, 450);
+    shell.driver.click_named("search-open").unwrap();
+    shell.settle();
+    shell.type_search("lofi");
+    shell.key_search(NamedKey::Enter);
     assert_eq!(
         SEARCH.with_borrow(|search| search.opened.clone()),
         ["videos.search:lofi"],
         "the app opens at the hit chosen"
     );
-    assert!(!desk.handle.search_open());
-    assert_eq!(desk.driver.refusal_said(), None);
+    assert!(!shell.handle.search_open());
+    assert_eq!(shell.driver.refusal_said(), None);
     assert!(
-        desk.driver.control_failures().is_empty(),
+        shell.driver.control_failures().is_empty(),
         "{:?}",
-        desk.driver.control_failures()
+        shell.driver.control_failures()
     );
 }
 
@@ -1340,95 +1342,95 @@ fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
 /// forward to show it.
 #[test]
 fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
-    let mut desk = Desk::new(2, 450);
-    let second = desk.tabs[1];
+    let mut shell = Shell::new(2, 450);
+    let second = shell.tabs[1];
     SEARCH.with_borrow_mut(|search| search.labels.insert(second, "Archive".into()));
-    desk.handle.open_search(Scope::Workspace, None);
-    desk.settle();
-    assert!(desk.handle.search_open());
-    desk.type_search("open archive");
-    desk.key_search(NamedKey::Enter);
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle();
+    assert!(shell.handle.search_open());
+    shell.type_search("open archive");
+    shell.key_search(NamedKey::Enter);
     // `open` asks for the item; it runs once that is given.
-    desk.type_search("clip");
-    desk.key_search(NamedKey::Enter);
+    shell.type_search("clip");
+    shell.key_search(NamedKey::Enter);
     assert_eq!(
         SEARCH.with_borrow(|search| search.opened.clone()),
         ["clip"],
         "the action runs in the app that offered it"
     );
-    assert_eq!(desk.driver.refusal_said(), None);
+    assert_eq!(shell.driver.refusal_said(), None);
     assert!(
-        desk.driver.control_failures().is_empty(),
+        shell.driver.control_failures().is_empty(),
         "{:?}",
-        desk.driver.control_failures()
+        shell.driver.control_failures()
     );
-    assert!(!desk.handle.search_open());
-    desk.driver.type_text("z");
+    assert!(!shell.handle.search_open());
+    shell.driver.type_text("z");
     assert_eq!(
-        desk.typed(&format!("field-{second}-1")),
+        shell.typed(&format!("field-{second}-1")),
         "z",
         "the app's window came forward and has the keyboard"
     );
 }
 
 /// Search over one app's window asks that window's app, and its host for the entries the app
-/// published for that window alone: not the desk's own commands, and never another app's rows. The
+/// published for that window alone: not the shell's own commands, and never another app's rows. The
 /// hit the app offers opens inside it.
 #[test]
-fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
+fn search_over_an_apps_window_asks_that_app_and_not_the_shell() {
     SEARCH.with_borrow_mut(|search| search.answered = true);
-    let mut desk = Desk::new(2, 450);
-    let host = desk.with_host();
-    desk.driver.click_named("search-open").unwrap();
-    desk.settle();
-    assert!(desk.handle.search_open());
+    let mut shell = Shell::new(2, 450);
+    let host = shell.with_host();
+    shell.driver.click_named("search-open").unwrap();
+    shell.settle();
+    assert!(shell.handle.search_open());
     assert!(
         matches!(host.scopes.borrow().as_slice(), [Scope::InApp(_)]),
         "an app's search asks the host for that app's window: {:?}",
         host.scopes.borrow()
     );
-    desk.type_search("lofi");
-    let (_, rows) = desk.handle.search_rows();
+    shell.type_search("lofi");
+    let (_, rows) = shell.handle.search_rows();
     assert!(
         rows.iter().any(|row| row.title.contains("lofi")),
         "the window's app answers: {rows:?}"
     );
     assert!(
         rows.iter().all(|row| row.title != "Close window"),
-        "the desk's own commands are not the window's: {rows:?}"
+        "the shell's own commands are not the window's: {rows:?}"
     );
-    desk.key_search(NamedKey::Enter);
+    shell.key_search(NamedKey::Enter);
     assert_eq!(
         SEARCH.with_borrow(|search| search.opened.clone()),
         ["videos.search:lofi"],
         "the hit opens inside the app"
     );
-    assert!(!desk.handle.search_open());
+    assert!(!shell.handle.search_open());
     assert!(
-        desk.driver.control_failures().is_empty(),
+        shell.driver.control_failures().is_empty(),
         "{:?}",
-        desk.driver.control_failures()
+        shell.driver.control_failures()
     );
 }
 
 /// An app that runs in a process of its own publishes its entries into the session's index and
-/// gives the desk no tree to read: what its window holds is found there, and the row opens the
+/// gives the shell no tree to read: what its window holds is found there, and the row opens the
 /// thing it names.
 #[test]
 fn a_windows_search_finds_what_the_session_holds_for_its_app() {
     SEARCH.with_borrow_mut(|search| search.answered = true);
-    let mut desk = Desk::new(2, 450);
-    let host = desk.with_host();
-    desk.driver.click_named("search-open").unwrap();
-    desk.settle();
-    assert!(desk.handle.search_open());
+    let mut shell = Shell::new(2, 450);
+    let host = shell.with_host();
+    shell.driver.click_named("search-open").unwrap();
+    shell.settle();
+    assert!(shell.handle.search_open());
     assert!(
         matches!(host.scopes.borrow().as_slice(), [Scope::InApp(_)]),
         "the host is asked for the app the window shows: {:?}",
         host.scopes.borrow()
     );
-    desk.type_search("quarterly");
-    let (_, rows) = desk.handle.search_rows();
+    shell.type_search("quarterly");
+    let (_, rows) = shell.handle.search_rows();
     assert!(
         rows.iter().any(|row| row.title == "Quarterly plan"),
         "what the app published for its window is found: {rows:?}"
@@ -1436,35 +1438,35 @@ fn a_windows_search_finds_what_the_session_holds_for_its_app() {
 }
 
 /// A window group's new tab asks which application to show there: the applications, not the rest of
-/// the desk, and the one chosen opens as a tab of that window group.
+/// the shell, and the one chosen opens as a tab of that window group.
 #[test]
 fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there() {
-    let mut desk = Desk::one_window(2, 450);
-    let host = desk.with_host();
-    let before = desk.windows();
+    let mut shell = Shell::one_window(2, 450);
+    let host = shell.with_host();
+    let before = shell.windows();
     assert_eq!(before.len(), 1, "one window, two tabs: {before:?}");
     let (strip, group, tabs) = before[0];
-    let plus = desk.new_tab_control();
-    desk.driver.click_at(plus.x, plus.y);
-    desk.settle();
-    assert!(desk.handle.search_open());
+    let plus = shell.new_tab_control();
+    shell.driver.click_at(plus.x, plus.y);
+    shell.settle();
+    assert!(shell.handle.search_open());
     assert!(
         host.scopes.borrow().is_empty(),
-        "the applications are the desk's own, not the host's: {:?}",
+        "the applications are the shell's own, not the host's: {:?}",
         host.scopes.borrow()
     );
-    let (_, rows) = desk.handle.search_rows();
+    let (_, rows) = shell.handle.search_rows();
     assert!(
         rows.iter().any(|row| row.title == "Notes"),
         "what a new tab may show: {rows:?}"
     );
     assert!(
         rows.iter().all(|row| row.title != "Quarterly plan"),
-        "and nothing the desk's host holds: {rows:?}"
+        "and nothing the shell's host holds: {rows:?}"
     );
-    desk.type_search("notes");
-    desk.key_search(NamedKey::Enter);
-    let after = desk.windows();
+    shell.type_search("notes");
+    shell.key_search(NamedKey::Enter);
+    let after = shell.windows();
     assert_eq!(
         after.len(),
         before.len(),
@@ -1481,33 +1483,35 @@ fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there
     );
 }
 
-/// Search over the workspace asks the desk's host and the desk's own windows; an application chosen
+/// Search over the workspace asks the shell's host and the shell's own windows; an application chosen
 /// there opens as a window of its own.
 #[test]
 fn search_over_the_workspace_asks_the_host_and_opens_an_app_as_its_own_window() {
-    let mut desk = Desk::new(2, 450);
-    let host = desk.with_host();
-    let before = desk.windows();
-    desk.handle
+    let mut shell = Shell::new(2, 450);
+    let host = shell.with_host();
+    let before = shell.windows();
+    shell
+        .handle
         .open_search(Scope::Workspace, Some("quarterly".into()));
-    desk.settle();
+    shell.settle();
     assert_eq!(*host.scopes.borrow(), [Scope::Workspace]);
-    let (_, rows) = desk.handle.search_rows();
+    let (_, rows) = shell.handle.search_rows();
     assert!(
         rows.iter().any(|row| row.title == "Quarterly plan"),
         "what the host holds is searched: {rows:?}"
     );
 
-    desk.handle
+    shell
+        .handle
         .open_search(Scope::Workspace, Some("notes".into()));
-    desk.settle();
-    desk.key_search(NamedKey::Enter);
+    shell.settle();
+    shell.key_search(NamedKey::Enter);
     assert_eq!(
         *host.scopes.borrow(),
         [Scope::Workspace, Scope::Workspace],
         "each search covers the workspace in front"
     );
-    let after = desk.windows();
+    let after = shell.windows();
     assert_eq!(
         after.len(),
         before.len() + 1,
@@ -1522,17 +1526,17 @@ fn search_over_the_workspace_asks_the_host_and_opens_an_app_as_its_own_window() 
 
 #[test]
 fn a_button_an_app_builds_after_it_opened_answers_its_click() {
-    let mut desk = Desk::new(2, 450);
-    for tab in desk.tabs.clone() {
+    let mut shell = Shell::new(2, 450);
+    for tab in shell.tabs.clone() {
         let button = format!("late-{tab}");
-        desk.driver.click_named(&button).unwrap();
-        desk.settle();
+        shell.driver.click_named(&button).unwrap();
+        shell.settle();
         let pressed = PRESSED.with_borrow(|all| all[&tab].get());
         assert_eq!(pressed, 1, "{button} ran its effect once");
         assert!(
-            desk.driver.control_failures().is_empty(),
+            shell.driver.control_failures().is_empty(),
             "{:?}",
-            desk.driver.control_failures()
+            shell.driver.control_failures()
         );
     }
 }
@@ -1540,21 +1544,21 @@ fn a_button_an_app_builds_after_it_opened_answers_its_click() {
 #[test]
 fn typing_reaches_the_focused_window_even_when_a_window_before_it_claims_keys() {
     GREEDY.with(|greedy| greedy.set(true));
-    let mut desk = Desk::new(2, 450);
-    let (first, second) = (desk.tabs[0], desk.tabs[1]);
+    let mut shell = Shell::new(2, 450);
+    let (first, second) = (shell.tabs[0], shell.tabs[1]);
     let field = format!("field-{second}-1");
-    let rect = desk.rect(&field);
-    desk.driver.click_at(rect.center().x, rect.center().y);
-    desk.settle();
-    desk.driver.type_text("ab");
-    desk.driver.commit_text("cd");
+    let rect = shell.rect(&field);
+    shell.driver.click_at(rect.center().x, rect.center().y);
+    shell.settle();
+    shell.driver.type_text("ab");
+    shell.driver.commit_text("cd");
     assert_eq!(
-        desk.typed(&field),
+        shell.typed(&field),
         "abcd",
         "keys and composed text reach the focused window's field"
     );
     assert_eq!(
-        desk.typed(&format!("greedy-{first}")),
+        shell.typed(&format!("greedy-{first}")),
         "",
         "the window beside it is not offered what is typed"
     );
@@ -1563,38 +1567,42 @@ fn typing_reaches_the_focused_window_even_when_a_window_before_it_claims_keys() 
 #[test]
 fn one_click_in_an_inactive_window_gives_the_control_under_it_the_keyboard() {
     for coalesce in [false, true] {
-        let mut desk = Desk::new(2, 450);
-        desk.driver.set_coalesce_input_frames(coalesce);
-        let second = desk.tabs[1];
+        let mut shell = Shell::new(2, 450);
+        shell.driver.set_coalesce_input_frames(coalesce);
+        let second = shell.tabs[1];
         let field = format!("field-{second}-2");
-        let rect = desk.rect(&field);
-        desk.driver
+        let rect = shell.rect(&field);
+        shell
+            .driver
             .send_host_event(&ui::synthetic_input::cursor_moved(
                 rect.center().x,
                 rect.center().y,
             ));
-        desk.driver
+        shell
+            .driver
             .send_host_event(&ui::synthetic_input::mouse_input(
                 ElementState::Pressed,
                 MouseButton::Left,
             ));
-        desk.driver
+        shell
+            .driver
             .send_host_event(&WindowEvent::Ime(ui::winit::event::Ime::Disabled));
-        desk.driver.send_host_event(&WindowEvent::Focused(true));
-        desk.driver
+        shell.driver.send_host_event(&WindowEvent::Focused(true));
+        shell
+            .driver
             .send_host_event(&ui::synthetic_input::mouse_input(
                 ElementState::Released,
                 MouseButton::Left,
             ));
         for _ in 0..4 {
-            let _ = desk.driver.poll_frame();
+            let _ = shell.driver.poll_frame();
         }
-        desk.driver.type_text("hi");
+        shell.driver.type_text("hi");
         assert_eq!(
-            desk.typed(&field),
+            shell.typed(&field),
             "hi",
             "coalesce {coalesce}: {:?}",
-            desk.focus_path()
+            shell.focus_path()
         );
     }
 }
@@ -1618,23 +1626,25 @@ fn semantic_path(node: &ui::headless::InspectionNode, name: &str) -> Option<Stri
 /// sets its value there.
 #[test]
 fn a_value_set_on_a_fields_semantics_reaches_the_app() {
-    let mut desk = Desk::new(2, 450);
-    let second = desk.tabs[1];
+    let mut shell = Shell::new(2, 450);
+    let second = shell.tabs[1];
     let field = format!("field-{second}-1");
-    let path = semantic_path(&desk.driver.inspection().root, &field).unwrap();
-    desk.driver
+    let path = semantic_path(&shell.driver.inspection().root, &field).unwrap();
+    shell
+        .driver
         .perform_semantic_named(&path, Some(&field), &ui::a11y::Action::Focus)
         .unwrap();
-    desk.settle();
-    desk.driver
+    shell.settle();
+    shell
+        .driver
         .perform_semantic_named(
             &path,
             Some(&field),
             &ui::a11y::Action::SetValue("Ada".into()),
         )
         .unwrap();
-    desk.settle();
-    assert_eq!(desk.typed(&field), "Ada");
+    shell.settle();
+    assert_eq!(shell.typed(&field), "Ada");
 }
 
 /// A press on one of the app's own slots in its window's bar is a press on the app: the keyboard
@@ -1642,16 +1652,16 @@ fn a_value_set_on_a_fields_semantics_reaches_the_app() {
 /// the slot opened) and what is typed next reach the app, not the bar.
 #[test]
 fn a_press_on_an_apps_slot_in_its_bar_leaves_the_keyboard_with_the_app() {
-    let mut desk = Desk::new(1, 450);
-    let tab = desk.tabs[0];
+    let mut shell = Shell::new(1, 450);
+    let tab = shell.tabs[0];
     let field = format!("field-{tab}-1");
-    let rect = desk.rect(&field);
-    desk.driver.click_at(rect.center().x, rect.center().y);
-    desk.settle();
-    desk.driver.type_text("a");
-    assert_eq!(desk.typed(&field), "a", "the clicked field takes typing");
+    let rect = shell.rect(&field);
+    shell.driver.click_at(rect.center().x, rect.center().y);
+    shell.settle();
+    shell.driver.type_text("a");
+    assert_eq!(shell.typed(&field), "a", "the clicked field takes typing");
 
-    let slot = desk
+    let slot = shell
         .driver
         .a11y_nodes()
         .into_iter()
@@ -1661,20 +1671,20 @@ fn a_press_on_an_apps_slot_in_its_bar_leaves_the_keyboard_with_the_app() {
                 .flatten()
         })
         .expect("the app's slot stands in its window's bar");
-    desk.driver.click_at(
+    shell.driver.click_at(
         f64::midpoint(slot.x0, slot.x1),
         f64::midpoint(slot.y0, slot.y1),
     );
-    desk.settle();
+    shell.settle();
     assert_eq!(
-        desk.focused_name().as_deref(),
+        shell.focused_name().as_deref(),
         Some(field.as_str()),
         "the field keeps the keyboard: {:?}",
-        desk.focus_path()
+        shell.focus_path()
     );
-    desk.driver.type_text("b");
+    shell.driver.type_text("b");
     assert_eq!(
-        desk.typed(&field),
+        shell.typed(&field),
         "ab",
         "typing after the press reaches the app"
     );

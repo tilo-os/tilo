@@ -1,4 +1,4 @@
-//! What a pass on the desk reports: the revision a host saves and shares against, and the count of
+//! What a pass on the shell reports: the revision a host saves and shares against, and the count of
 //! what the person sees changing.
 
 use std::cell::RefCell;
@@ -11,7 +11,7 @@ use super::shown::ShownTabs;
 use super::{Presentation, Shared};
 
 impl Shared {
-    /// A change a host saves and shares: the revision, and a wake for the host holding this desk.
+    /// A change a host saves and shares: the revision, and a wake for the host holding this shell.
     pub(super) fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.wake.wake();
@@ -25,7 +25,7 @@ impl Shared {
         }
     }
 
-    /// The desk's shared state at the start: the tree it presents, the minter for this device's new
+    /// The shell's shared state at the start: the tree it presents, the minter for this device's new
     /// ids, and the search it answers in.
     pub(super) fn new(
         tree: Layout,

@@ -64,10 +64,10 @@ pub(crate) fn now_seconds() -> i64 {
 #[cfg(target_os = "linux")]
 type ToldRefusal = (String, [u8; 32], neighbour_wire::RefusalReason);
 
-/// Where the pane reads the desk's own history, and writes what a model says of its changes: the
-/// workspaces' layout records.
-pub trait DeskHistory {
-    /// The history of the desk in the workspace `workspace_id` of `tree`.
+/// Where the pane reads the history of a layout, and writes what a model says of its changes: the
+/// workspaces' records.
+pub trait History {
+    /// The history of the layout in the workspace `workspace_id` of `tree`.
     fn history(&self, tree: &Layout, workspace_id: WorkspaceId) -> Option<ActivitySnapshot>;
     /// The layout of each workspace `tree` shows, as this host holds it.
     fn documents(&self, tree: &Layout) -> Vec<(WorkspaceId, automerge::AutoCommit)>;
@@ -86,7 +86,7 @@ pub trait DeskHistory {
 
 pub struct Given {
     /// Where the desk's own history is read from and written to.
-    pub layouts: Box<dyn DeskHistory>,
+    pub layouts: Box<dyn History>,
     /// Who sits here.
     pub person: String,
     pub store: Option<Store>,
@@ -109,7 +109,7 @@ pub struct Activity(Rc<Inner>);
 
 struct Inner {
     /// Where the desk's own history is read from and written to.
-    layouts: Box<dyn DeskHistory>,
+    layouts: Box<dyn History>,
     /// What this device shows: the workspace in front, and the displays' partition.
     shown: DeviceState,
     /// What the devices answered when one asked to be unlocked.
@@ -206,7 +206,7 @@ impl Activity {
         changes: crate::platform::records::Changes,
         apps: Option<Arc<dyn Apps>>,
         wake: Option<tilo_service::Wake>,
-        layouts: Box<dyn DeskHistory>,
+        layouts: Box<dyn History>,
     ) -> Self {
         let unlock = UnlockHistory::new(state, &person);
         let given = Given {
@@ -1542,7 +1542,7 @@ mod tests {
         }
     }
 
-    impl DeskHistory for Records {
+    impl History for Records {
         fn history(&self, tree: &Layout, workspace_id: WorkspaceId) -> Option<ActivitySnapshot> {
             let kept = self.0.borrow().get(&workspace_id)?.clone();
             Some(

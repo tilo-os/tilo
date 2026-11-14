@@ -98,7 +98,7 @@ fn each_apps_slots_stand_in_its_windows_bar_and_a_press_reaches_it() {
     let apps: Vec<(&'static str, Rc<RefCell<Vec<ToolbarEvent>>>)> =
         vec![("new-contact", Rc::default()), ("compose", Rc::default())];
     let action_of = |tab: u64| apps[usize::try_from(tab % 2).unwrap_or(0)].0;
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, _handle) = DesktopSurface::new(tree, 7, Box::new(SlotApps(apps.clone())));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
@@ -171,7 +171,7 @@ fn shown_tabs(frame: &ui::headless::FrameHarness) -> Vec<(u64, u64)> {
     reason = "one test, from the declaration to the press it sends back"
 )]
 fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection() {
-    let (surface, handle) = crate::surface::tests::desk_with(2, Box::new(WithHistory));
+    let (surface, handle) = crate::surface::tests::shell_with(2, Box::new(WithHistory));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -329,7 +329,7 @@ fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection(
     );
 }
 
-/// A window's app describes the controls of its own content over its connection: the desk lists
+/// A window's app describes the controls of its own content over its connection: the shell lists
 /// them where they are drawn, a press goes back on that connection, and they go with it.
 #[test]
 fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connection() {
@@ -417,12 +417,12 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
     );
 }
 
-/// What an app in a process of its own asks of its window's bar is desk work
-/// the desk is asked to take up: each one brings it the pass that shows it,
+/// What an app in a process of its own asks of its window's bar is shell work
+/// the shell is asked to take up: each one brings it the pass that shows it,
 /// so a bar the person is not touching shows what its app declared rather
-/// than waiting for the desk to draw something of its own.
+/// than waiting for the shell to draw something of its own.
 #[test]
-fn every_bar_ask_brings_the_desk_its_next_pass() {
+fn every_bar_ask_brings_the_shell_its_next_pass() {
     let (_surface, handle) = crate::surface::tests::desktop(1);
     let asked = Rc::new(Cell::new(false));
     let woken = Rc::clone(&asked);
@@ -490,7 +490,7 @@ impl TileSource for WithHistory {
 #[test]
 fn a_window_an_agent_opened_names_the_agent_and_its_run_and_one_a_person_opened_does_not() {
     const AGENT: &str = "Jane Doe's agent";
-    let (surface, handle) = crate::surface::tests::desk_with(2, Box::new(WithHistory));
+    let (surface, handle) = crate::surface::tests::shell_with(2, Box::new(WithHistory));
     let tabs: Vec<u64> = handle.read(|tree| tree.tabs().map(|tab| tab.id).collect());
     let run = tilo_desktop_model::ownership::OpenedBy {
         run: "agent-run:7".into(),
@@ -556,7 +556,7 @@ fn a_window_an_agent_opened_names_the_agent_and_its_run_and_one_a_person_opened_
         "History opened for the run"
     );
 
-    // Once the desk says no agent opened it, the window names none.
+    // Once the shell says no agent opened it, the window names none.
     assert!(handle.set_opened_by(std::collections::BTreeMap::new()));
     for _ in 0..3 {
         frame.relayout();
@@ -636,7 +636,7 @@ impl TileSource for Forms {
 )]
 fn tab_walks_the_focused_windows_bar_and_app_and_enter_on_the_agent_opens_its_run() {
     const AGENT: &str = "Jane Doe's agent";
-    let (surface, handle) = crate::surface::tests::desk_with(2, Box::new(Forms));
+    let (surface, handle) = crate::surface::tests::shell_with(2, Box::new(Forms));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -766,7 +766,7 @@ fn tab_walks_the_focused_windows_bar_and_app_and_enter_on_the_agent_opens_its_ru
 /// by an open item before comes back to its app's name, too.
 #[test]
 fn a_window_whose_bar_names_a_part_of_its_app_is_called_by_its_app() {
-    let (surface, handle) = crate::surface::tests::desk_with(1, Box::new(WithHistory));
+    let (surface, handle) = crate::surface::tests::shell_with(1, Box::new(WithHistory));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,

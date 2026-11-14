@@ -16,7 +16,7 @@ use crate::shell::{HostRequest, HostRequests};
 
 /// What the page tells its desktop about the workspace directory
 /// (`mountDesktop({directory})`): a page has no `community.toml`, no identity
-/// on disk and no desk of its own to read them from.
+/// on disk and no shell of its own to read them from.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct PageDirectoryConfig {
     /// The site whose directory the sheet lists: the page's own entry.

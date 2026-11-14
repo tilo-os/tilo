@@ -5,7 +5,7 @@
 //! record only once it is opened, that record is not here when the page mounts:
 //! the window shows the app arriving, and the component is built once the
 //! workspace sent the record or answered it holds none of it — the same wait a
-//! window on the desktop's shared desk takes.
+//! window on the desktop's shared shell takes.
 
 use std::cell::RefCell;
 use std::rc::Rc;

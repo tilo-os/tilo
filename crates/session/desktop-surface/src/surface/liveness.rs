@@ -1,12 +1,12 @@
-//! What the desk says about the apps that stopped answering, and what the person chose to do about
+//! What the shell says about the apps that stopped answering, and what the person chose to do about
 //! them.
 //! The compositor pings each app it shows and tells the host which windows went quiet; the host
 //! names them here, by the compositor's id for each window
 //! ([`DesktopHandle::set_unresponsive_windows`]). From then on those tabs read as stopped answering
-//! — in the published desk reading every view reads, and in the card drawn over the window
+//! — in the published shell reading every view reads, and in the card drawn over the window
 //! ([`super::hung`]). The person's answer comes back the same way:
 //! [`DesktopHandle::take_liveness_choices`] hands it to the host that owns the compositor, whether
-//! it was pressed on the card, asked by the desk's own verbs, or sent by a script.
+//! it was pressed on the card, asked by the shell's own verbs, or sent by a script.
 
 use std::collections::BTreeSet;
 
@@ -54,7 +54,7 @@ impl DesktopHandle {
         self.shared.borrow().unresponsive_revision
     }
 
-    /// The tabs whose app stopped answering, as the host last said: the windows the desk offers to
+    /// The tabs whose app stopped answering, as the host last said: the windows the shell offers to
     /// wait for or quit.
     #[must_use]
     pub fn unresponsive_tabs(&self) -> Vec<TabId> {
@@ -82,7 +82,7 @@ impl DesktopHandle {
         std::mem::take(&mut self.shared.borrow_mut().liveness)
     }
 
-    /// The person chose `choice` on the window of `tab` , as the desk's own verbs do: the host
+    /// The person chose `choice` on the window of `tab` , as the shell's own verbs do: the host
     /// carries it out with the cards' choices.
     pub fn liveness_choice(&self, tab: TabId, choice: LivenessChoice) {
         let mut shared = self.shared.borrow_mut();

@@ -35,16 +35,16 @@ test('stable semantic node removes cleared topic, role, live and focus state',()
 });
 test('a closed dialog and what it holds are not mirrored, and come back when it opens',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
-  const dialog=hidden=>({root:{path:'desk',semantics:{role:'Group',name:'Desk'},children:[
-    {path:'desk/about',semantics:{role:'Dialog',name:'About Tilo',state:{modal:true,hidden}},children:[
-      {path:'desk/about/link',semantics:{role:'Link',name:'Get Tilo'}}]}]}});
+  const dialog=hidden=>({root:{path:'shell',semantics:{role:'Group',name:'Shell'},children:[
+    {path:'shell/about',semantics:{role:'Dialog',name:'About Tilo',state:{modal:true,hidden}},children:[
+      {path:'shell/about/link',semantics:{role:'Link',name:'Get Tilo'}}]}]}});
   const names=()=>{const out=[];const visit=el=>{if(el.getAttribute)out.push(el.getAttribute('aria-label'));el.children.forEach(visit);};root.children.forEach(visit);return out;};
   bridge.update(dialog(true));
-  assert.deepEqual(names(),['Desk'],'only the desk while the dialog is closed');
+  assert.deepEqual(names(),['Shell'],'only the shell while the dialog is closed');
   bridge.update(dialog(false));
-  assert.deepEqual(names(),['Desk','About Tilo','Get Tilo']);
+  assert.deepEqual(names(),['Shell','About Tilo','Get Tilo']);
   bridge.update(dialog(true));
-  assert.deepEqual(names(),['Desk']);
+  assert.deepEqual(names(),['Shell']);
 });
 test('a control that carries files out is the one draggable element the pointer reaches',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
@@ -443,9 +443,9 @@ test('a node a widget lends to two places is its own element in each',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
   document.activeElement=document.body;
   const lent=()=>({role:'Group',name:'Lent',children:[{role:'Button',name:'Act',action_target:'act'}]});
-  const view=()=>({root:{path:'desk',children:[
-    {path:'desk/left',semantics:{role:'Group',name:'Left'},children:[{path:'shared',semantics:lent()}]},
-    {path:'desk/right',semantics:{role:'Group',name:'Right'},children:[{path:'shared',semantics:lent()}]},
+  const view=()=>({root:{path:'shell',children:[
+    {path:'shell/left',semantics:{role:'Group',name:'Left'},children:[{path:'shared',semantics:lent()}]},
+    {path:'shell/right',semantics:{role:'Group',name:'Right'},children:[{path:'shared',semantics:lent()}]},
   ]}});
   bridge.update(view());
   const lentIn=nodes=>nodes.filter(node=>node.getAttribute('aria-label')==='Lent');
@@ -462,8 +462,8 @@ test('a row drawn again inside itself is its own element',()=>{
   document.activeElement=document.body;
   // A widget's test ID covers the layer tree, and the layer's row holds the
   // same layer again: one key would put the row's element inside itself.
-  const view=()=>({root:{path:'desk',children:[
-    {path:'desk/layers',test_id:'layer-tree',semantics:{role:'Group',name:'Layers',children:[
+  const view=()=>({root:{path:'shell',children:[
+    {path:'shell/layers',test_id:'layer-tree',semantics:{role:'Group',name:'Layers',children:[
       {role:'TreeItem',name:'Layer 1',semantic_key:'1',action_target:'key:1',children:[
         {role:'ListItem',name:'Layer 1',semantic_key:'1'}]}]}},
   ]}});
@@ -766,9 +766,9 @@ test('unique test ids do not replace the canonical keyboard owner for text actio
 test('mirrored elements sit over their drawn rects, nested ones relative to the element they are in',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
   const at=element=>['left','top','width','height'].map(side=>element.style[side]);
-  bridge.update({root:{path:'desk',children:[
-    {path:'desk/send',rect:[40,30,80,24],semantics:{role:'Button',name:'Send'}},
-    {path:'desk/list',rect:[0,100,300,200],semantics:{role:'List',name:'Rows',children:[
+  bridge.update({root:{path:'shell',children:[
+    {path:'shell/send',rect:[40,30,80,24],semantics:{role:'Button',name:'Send'}},
+    {path:'shell/list',rect:[0,100,300,200],semantics:{role:'List',name:'Rows',children:[
       {role:'ListItem',name:'First',bounds:{x0:10,y0:110,x1:290,y1:140}},
       {role:'ListItem',name:'Whole'}]}}]}});
   const [send,list]=root.children,[first,whole]=list.children;
@@ -783,7 +783,7 @@ test('mirrored elements sit over their drawn rects, nested ones relative to the 
   assert.deepEqual(at(list),['0px','200px','600px','400px']);
   assert.deepEqual(at(first),['20px','20px','560px','60px']);
   // A redrawn frame moves the button; its element follows.
-  bridge.update({root:{path:'desk',children:[{path:'desk/send',rect:[50,30,80,24],semantics:{role:'Button',name:'Send'}}]}});
+  bridge.update({root:{path:'shell',children:[{path:'shell/send',rect:[50,30,80,24],semantics:{role:'Button',name:'Send'}}]}});
   assert.equal(root.children[0],send);assert.deepEqual(at(send),['100px','60px','160px','48px']);
 });
 

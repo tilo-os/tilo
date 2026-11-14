@@ -58,7 +58,7 @@ test('a drop is copied into the workspace where something takes it, and a window
   const strip = {kind: 'strip'};
   assert.equal(dropRoute({target: note, files: few, folder: false}), 'hand', 'a picture into a note');
   assert.equal(dropRoute({target: photos, files: few, folder: false}), 'copy', 'Photos opens what was copied');
-  assert.equal(dropRoute({target: strip, files: few, folder: false}), 'copy', 'the desk opens it where it fell');
+  assert.equal(dropRoute({target: strip, files: few, folder: false}), 'copy', 'the shell opens it where it fell');
   assert.equal(dropRoute({target: note, files: few, folder: true}), 'copy', 'a folder is copied, wherever it lands');
   assert.equal(dropRoute({target: note, files: [{file: file('film.mov', MAX_DROPPED_FILE + 1)}], folder: false}), 'copy',
     'a file too large for a window is copied');

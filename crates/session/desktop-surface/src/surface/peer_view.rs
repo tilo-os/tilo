@@ -1618,7 +1618,7 @@ impl super::DesktopHandle {
         peers.borrow().tabs()
     }
 
-    /// The monitor of the display the tile in `tab` stands on, while the desk spreads over several;
+    /// The monitor of the display the tile in `tab` stands on, while the shell spreads over several;
     /// `None` when one picture is shown on every output, or the tile stands nowhere.
     #[must_use]
     pub fn peer_surface_display(&self, tab: TabId) -> Option<String> {

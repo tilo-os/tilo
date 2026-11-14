@@ -1,13 +1,13 @@
 /**
  * Closing or reloading the tab asks first only while leaving would lose or
  * hold back something the person did: a file still going up (any job the
- * desk runs), an edit this browser has not yet saved, or one the
+ * shell runs), an edit this browser has not yet saved, or one the
  * workspace's host has not yet received. Otherwise the tab closes at once:
  * the browser's "Leave site?" prompt is never shown for nothing, and a page
  * with no `beforeunload` listener stays eligible for the back/forward cache.
  */
 
-/** Why leaving now would lose work, or `null`: `jobs` running on the desk
+/** Why leaving now would lose work, or `null`: `jobs` running on the shell
  * (their titles), `pendingWrites` this browser has not saved, and
  * `outgoingPending` changes the host has not acknowledged. */
 export function unfinishedWork({jobs = [], pendingWrites = 0, outgoingPending = 0} = {}) {

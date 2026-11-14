@@ -1,6 +1,6 @@
 //! Workspace-wide history aggregation.
 //!
-//! A workspace is not one Automerge document: the shell tree describes its
+//! A workspace is not one Automerge document: the layout tree describes its
 //! windows and governance, while every open record owns a separate change
 //! graph.  This module is the join.  It deliberately retains the originating
 //! document beside each change; a bare [`HistoryEntryId`] is only unique

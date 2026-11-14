@@ -67,11 +67,11 @@ fn peer_tab(minter: &mut IdMinter) -> Tab {
 }
 
 /// A desktop showing one window another device shares, in the toolkit's own frame pipeline.
-fn desk() -> (FrameHarness, DesktopHandle, TabId) {
+fn shell() -> (FrameHarness, DesktopHandle, TabId) {
     let mut minter = IdMinter::new(7);
     let tab = peer_tab(&mut minter);
     let tab_id = tab.id;
-    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = seed_tree(&mut minter, "Office", vec![tab]);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(HostTiles));
     handle.set_viewport_width(1200.0);
     let mut driver = FrameHarness::new_with_controlled_inputs(
@@ -184,7 +184,7 @@ fn push_settled(tile: &Rc<RefCell<PeerSurface>>, seq: u64, unit: &[u8]) -> PeerO
 
 #[test]
 fn a_received_stream_is_pictured_in_its_tile() {
-    let (mut driver, handle, tab) = desk();
+    let (mut driver, handle, tab) = shell();
     assert_eq!(
         handle.show_peer_surface(&stream_start(tab, true)),
         Some(tab),
@@ -233,7 +233,7 @@ fn three_pushes_at_a_held_paint_leave_the_newest_picture_in_the_resource() {
     let mut minter = IdMinter::new(7);
     let tab = peer_tab(&mut minter);
     let tab_id = tab.id;
-    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = seed_tree(&mut minter, "Office", vec![tab]);
     let mut peers = PeerSurfaces::default();
     let tab = peers
         .start(&tree, &stream_start(tab_id, true))
@@ -285,7 +285,7 @@ fn three_pushes_at_a_held_paint_leave_the_newest_picture_in_the_resource() {
 
 #[test]
 fn a_pointer_scroll_keys_and_text_reach_a_writable_share_and_a_read_only_one_refuses_them() {
-    let (mut driver, handle, tab) = desk();
+    let (mut driver, handle, tab) = shell();
     handle.show_peer_surface(&stream_start(tab, true));
     driver.relayout();
     let id = format!("desktop.peer-surface:{SURFACE}");
@@ -363,7 +363,7 @@ fn a_pointer_scroll_keys_and_text_reach_a_writable_share_and_a_read_only_one_ref
         ]
     );
 
-    let (mut driver, handle, tab) = desk();
+    let (mut driver, handle, tab) = shell();
     handle.show_peer_surface(&stream_start(tab, false));
     driver.relayout();
     driver
@@ -380,7 +380,7 @@ fn a_pointer_scroll_keys_and_text_reach_a_writable_share_and_a_read_only_one_ref
 
 #[test]
 fn ending_the_share_removes_the_tile_s_resource() {
-    let (mut driver, handle, tab) = desk();
+    let (mut driver, handle, tab) = shell();
     handle.show_peer_surface(&stream_start(tab, true));
     driver.relayout();
     assert!(

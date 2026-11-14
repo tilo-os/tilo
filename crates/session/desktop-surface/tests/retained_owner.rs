@@ -196,7 +196,7 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
         .unwrap()
         .route;
     handle
-        .dispatch(tilo_desktop_surface::navigation::DeskEffect::Focus { tab: route.tab })
+        .dispatch(tilo_desktop_surface::navigation::LayoutEffect::Focus { tab: route.tab })
         .unwrap();
     driver.relayout();
     driver.service_pending_owner_models().unwrap();
@@ -237,7 +237,7 @@ fn dragging_the_edge_of_a_window_with_a_checked_component_resizes_it() {
     let root = std::env::temp_dir().join(format!("tilo-edge-drag-{}", uuid::Uuid::new_v4()));
     let mut minter = IdMinter::new(29);
     let tabs = vec![tab(&mut minter), tab(&mut minter)];
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let width_of =
         |tree: &tilo_desktop_model::Layout| tree.workspaces[0].strips[0].window_groups[0].width;
     let before = width_of(&tree);

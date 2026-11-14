@@ -1,11 +1,11 @@
-//! The fixed chords the page's desk leaves to its host: the capture studio
+//! The fixed chords the page's shell leaves to its host: the capture studio
 //! and cutting a remote control. Each runs a session surface over a system's
 //! screen, and a page has none, so the chord says so through the one
 //! [`Outcome`] path rather than doing nothing.
 //!
 //! The rest of the fixed chords — closing the window in front, a new window,
 //! another window of the app in front, the terminal, the strip switcher and
-//! the workspace history — never reach here: the desk carries them out on its
+//! the workspace history — never reach here: the shell carries them out on its
 //! own tree, as the native desktop does. Alt+Shift+Tab, the walk over the
 //! windows, is the session's own and is taken before any of them
 //! ([`tilo_session::switcher::WindowWalk`]).
@@ -14,8 +14,8 @@ use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::outcome::Outcome;
 use ui::shortcut_table::FixedAction;
 
-/// What the page says about the fixed `action` its desk left to the host, or
-/// `None` for one the desk answers itself, or one no window is here for.
+/// What the page says about the fixed `action` its shell left to the host, or
+/// `None` for one the shell answers itself, or one no window is here for.
 pub(crate) fn unserved(action: FixedAction) -> Option<Outcome> {
     match action {
         FixedAction::CaptureScreenshot

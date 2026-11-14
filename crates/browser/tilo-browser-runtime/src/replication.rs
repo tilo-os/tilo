@@ -16,9 +16,9 @@
 //!   (`RecordStore::merge_replica`, Automerge semantics, local undo untouched)
 //!   or, when no mount has it open, into the record's stored document so
 //!   opening it later shows them.
-//! - **The desktop** is the desk's own document
+//! - **The desktop** is the layout's own document
 //!   ([`tilo_desktop_model::desktop_doc`]) on the route native peers and the
-//!   workspace host use for it, the one the native desk keeps: every workspace,
+//!   workspace host use for it, the one the native shell keeps: every workspace,
 //!   strip, group and window its own entry, so concurrent changes to
 //!   different ones all land. The page writes only what differs from what
 //!   the document holds, one change naming the person who made it, and an
@@ -88,7 +88,7 @@ pub(crate) fn install() {
         workspace_uuid,
         records,
         desktop_history_heads,
-        desk_bytes,
+        layout_bytes,
     });
 }
 
@@ -367,9 +367,9 @@ pub(crate) fn workspace_name(id: u32) -> Option<String> {
         .and_then(tilo_desktop_surface::history_log::workspace_name)
 }
 
-/// The workspace's desk document, for the profile's copy of it: what the person's
-/// desk is once the workspace has answered.
-pub(crate) fn desk_bytes(id: u32) -> Option<Vec<u8>> {
+/// The workspace's layout document, for the profile's copy of it: what the person's
+/// layout is once the workspace has answered.
+pub(crate) fn layout_bytes(id: u32) -> Option<Vec<u8>> {
     let joined = replica_of(id)?;
     let bytes = joined.borrow_mut().desktop.document_mut().save();
     (!bytes.is_empty()).then_some(bytes)
@@ -1630,8 +1630,8 @@ impl Joined {
         }) else {
             return;
         };
-        // The desk as it reads to a peer: what it says moved is what the
-        // workspace decides on, and an unchanged desk writes nothing.
+        // The shell as it reads to a peer: what it says moved is what the
+        // workspace decides on, and an unchanged shell writes nothing.
         let value = serde_json::to_value(&desktop).unwrap_or(serde_json::Value::Null);
         if self.local_value.as_ref() == Some(&value) {
             return;
@@ -1658,9 +1658,9 @@ impl Joined {
         // The desktop this page joined with is not something the person did.
         let joined = self.desktop_value.is_some();
         let doc = self.desktop.document_mut();
-        // What differs is written into the desk's own document, as one change
+        // What differs is written into the layout's own document, as one change
         // stamped with the time and who made it, which the history pane tells
-        // by and every peer reads back as the desk.
+        // by and every peer reads back as the layout.
         let wrote = tilo_desktop_model::desktop_doc::write_shared(
             doc,
             &desktop.tree,

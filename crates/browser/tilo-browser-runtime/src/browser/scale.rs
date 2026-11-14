@@ -1,12 +1,12 @@
 //! The page's device pixel ratio, as the browser changes it.
 //!
-//! The canvas's box is in CSS pixels, and every mount lays the desk out in
-//! them: a phone's 390 CSS pixels are a phone's desk at any density. What a
+//! The canvas's box is in CSS pixels, and every mount lays the shell out in
+//! them: a phone's 390 CSS pixels are a phone's shell at any density. What a
 //! change of density moves is the extent the page draws into, and the extent
 //! is not the page's own to see: winit reports the canvas in device pixels
 //! when its box changes, and a change of the ratio leaves the box alone, so
 //! nothing arrives. Pairing the ratio of the moment with the extent of
-//! before laid a phone's desk out at 780 CSS pixels — a laptop's.
+//! before laid a phone's shell out at 780 CSS pixels — a laptop's.
 //!
 //! A ratio is the one thing `(resolution: Xdppx)` matches, so a page asking
 //! for the ratio it draws at is told the moment it is not that ratio any

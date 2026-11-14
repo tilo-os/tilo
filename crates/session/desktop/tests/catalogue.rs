@@ -12,7 +12,7 @@ use tilo_desktop::desk_verbs::{
     CHROME_RESOURCE, DESK_RESOURCE, OpenSearch, chrome_resource, desk_resource, tab_resource_id,
 };
 use tilo_desktop_surface::SearchRow;
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
+use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
 use tilo_desktop_surface::window;
 use tilo_resource::Effect;
 
@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
     phase no_verb_is_declared_twice;
     {
         let mut seen = BTreeSet::new();
-        for decl in DeskEffect::declarations() {
+        for decl in LayoutEffect::declarations() {
             assert!(seen.insert(decl.id), "{} is declared twice", decl.id);
         }
         for decl in ChromeEffect::declarations() {
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
     {
         assert_eq!(DESK_RESOURCE, "desktop:desk");
         assert_eq!(CHROME_RESOURCE, "desktop:chrome");
-        let desk: BTreeSet<&str> = DeskEffect::declarations()
+        let desk: BTreeSet<&str> = LayoutEffect::declarations()
             .iter()
             .map(|decl| decl.id)
             .collect();
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
                     Some(window::LOOK | window::READ)
                 );
                 assert!(
-                    read || DeskEffect::declaration(action).is_some()
+                    read || LayoutEffect::declaration(action).is_some()
                         || ChromeEffect::declaration(action).is_some(),
                     "{} offers {action}, which neither vocabulary declares",
                     resource.id.as_str()

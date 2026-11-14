@@ -107,7 +107,7 @@ impl Desktop {
     /// an agent's notice opens its card in Console.
     pub(super) fn follow_notice_choices(&self) {
         use tilo_desktop_surface::NotificationOutcome;
-        // The person chose the browser's notification of an agent: its card, as the desk's own
+        // The person chose the browser's notification of an agent: its card, as the shell's own
         // notice opens it.
         for client in super::attention::take_chosen_agents() {
             self.shared

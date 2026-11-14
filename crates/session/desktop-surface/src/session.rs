@@ -175,13 +175,13 @@ pub struct DesktopSession {
     /// The invocations a person's door admitted, and that door, which
     /// answers for them.
     door_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
-    /// The host actions a window asked the desk to choose for the person
+    /// The host actions a window asked the shell to choose for the person
     /// ([`session_actions::SHOW_CONNECT`]), for the desktop to take.
     chosen: Chosen,
     woken: Arc<AtomicBool>,
 }
 
-/// Host actions asked of the desk, by id, waiting for the desktop.
+/// Host actions asked of the shell, by id, waiting for the desktop.
 type Chosen = Arc<std::sync::Mutex<Vec<String>>>;
 
 /// The desktop's end of its [`DesktopSession`].

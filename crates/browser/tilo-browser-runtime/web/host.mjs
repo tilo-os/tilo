@@ -441,11 +441,11 @@ export async function mountDesktop(target,options={}) {
     onError:error=>report({catalogueError:String(error)})});
   const fontMountValid=()=>!closed&&!crashed&&registry.current(token)&&id!==undefined&&runtimeReady;
   fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes,fontLoader.digestOf(bytes)??''),failed:()=>runtime.font_failed(id)});
-  // What the page shows of files dragged over the desk and dropped on it.
+  // What the page shows of files dragged over the shell and dropped on it.
   const dropFeedback=createDropFeedback({canvas});
-  // Files chosen with the desk menu (`[{file, path}]`), copied into the
+  // Files chosen with the shell menu (`[{file, path}]`), copied into the
   // workspace: how far it is shows at the foot of the page; a refusal the
-  // desk says itself.
+  // shell says itself.
   function upload(files){
     if(!active()||!files?.length)return;
     const rect=canvas.getBoundingClientRect();
@@ -464,14 +464,14 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(UPLOAD_ACTIONS.includes(request?.action))/* The desk menu's upload rows: the browser's chooser, then the files go up. */void chooseFiles({folder:request.action===UPLOAD_FOLDER}).then(upload,error=>report({upload:'failed',error:String(error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(Array.isArray(request?.profiles))fetchNames(request.profiles);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(UPLOAD_ACTIONS.includes(request?.action))/* The shell menu's upload rows: the browser's chooser, then the files go up. */void chooseFiles({folder:request.action===UPLOAD_FOLDER}).then(upload,error=>report({upload:'failed',error:String(error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(Array.isArray(request?.profiles))fetchNames(request.profiles);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
     if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
     if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
-      // A mount of one application holds no desk, so the page answers for its input
+      // A mount of one application holds no shell, so the page answers for its input
       // itself; a desktop's answer is read live (`desktop_input_ownership`).
       desktopOwnership=Boolean(runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
@@ -479,7 +479,7 @@ export async function mountDesktop(target,options={}) {
       if(runtime.desktop_navigation_snapshot(id)){
         navigation=createDesktopNavigation({snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),active});
         options.onNavigation?.(navigation.controller);
-        // What the browser tab says while the person is elsewhere, told by the desk whenever it changes, drawn or not.
+        // What the browser tab says while the person is elsewhere, told by the shell whenever it changes, drawn or not.
         if(options.onAttention&&runtime.desktop_on_attention)runtime.desktop_on_attention(id,raw=>{if(active())options.onAttention(JSON.parse(raw));});
       }
     }
@@ -711,16 +711,16 @@ export async function mountDesktop(target,options={}) {
     // Desktop search's chord is the desktop's wherever focus is on the page:
     // the browser must not take it (Ctrl+K focuses its address bar). This page
     // owns it for the mount's whole life: a mount with a desktop takes it even
-    // before its first status told the page what the desk holds (the toggle
+    // before its first status told the page what the shell holds (the toggle
     // needs the mount, not the navigation), and one showing a single app has
-    // no desk search to open. Answering it here, and only here, is what keeps
+    // no shell search to open. Answering it here, and only here, is what keeps
     // one press one toggle: a press the page declined used to fall through to
-    // the desk's own chord, and a press it forwarded came back as a second
+    // the shell's own chord, and a press it forwarded came back as a second
     // sighting of the same key.
     on(document,'keydown',event=>{
       if(!active()||!isDesktopSearchShortcut(event,config.mac))return;
-      // A mount showing one app has no desk search: its toggle refuses, and the key stays the
-      // app's. Only a toggle the desk took is the page's to consume.
+      // A mount showing one app has no shell search: its toggle refuses, and the key stays the
+      // app's. Only a toggle the shell took is the page's to consume.
       try{runtime.desktop_search_toggle(id);}catch{return;}
       event.preventDefault();event.stopImmediatePropagation();
       canvas.focus({preventScroll:true});report({lastInput:'search'});
@@ -760,7 +760,7 @@ export async function mountDesktop(target,options={}) {
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
-    // Files dragged over the page: the desk says where they would go, at
+    // Files dragged over the page: the shell says where they would go, at
     // most once a frame, and the page outlines it with what a drop there
     // does. Dropped, they are copied into the workspace's files and opened
     // where they fell (`upload-files.mjs`); a window that takes a few plain
@@ -770,7 +770,7 @@ export async function mountDesktop(target,options={}) {
     const dropTarget=(x,y)=>{try{return runtime.drop_target(id,x,y);}catch{return null;}};
     const showDragTarget=()=>{dragFrame=0;if(!dragAt||!active())return;const [x,y]=dragAt.point;dropFeedback.over(dropTarget(x,y),dragAt.clientX,dragAt.clientY);};
     // On the whole surface, before anything in it: files dragged over the
-    // hidden text field a window's caret holds are the desk's, never text
+    // hidden text field a window's caret holds are the shell's, never text
     // for that field.
     on(surface,'dragover',event=>{
       if(!active()||!draggingFiles(event.dataTransfer))return;event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='copy';
@@ -820,7 +820,7 @@ export async function mountDesktop(target,options={}) {
     // Canvas clicks are hit-tested by the runtime. Page chrome is outside that
     // surface, so route dismissal to the current search owner without stealing
     // focus or consuming the external control's pointer event. A press beside
-    // the card closes the desk's search on the desk itself; closing it is what
+    // the card closes the shell's search on the shell itself; closing it is what
     // this press means there too.
     on(document,'pointerdown',event=>{
       if(!active()||surface.contains(event.target))return;

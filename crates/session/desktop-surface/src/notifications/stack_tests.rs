@@ -533,7 +533,7 @@ fn a_banner_keeps_the_page_drawing_until_it_stands_at_every_width() {
         }
         assert!(frames > 2, "{width} wide: the entry took {frames} frames");
         // Each width stands the card where its span says (the corner, or centred on a narrow
-        // desk): the page draws the same entry, whole.
+        // shell): the page draws the same entry, whole.
         let (x0, card_width) = banner_span(Rect::new(0.0, 0.0, width, 800.0));
         assert_eq!(
             stack.rect(),
@@ -1329,8 +1329,8 @@ fn a_banner_at_rest_is_solid() {
     }
 }
 
-/// On a phone a banner stands centred across the desk, between the same equal gutters as the
-/// who-is-here sheet, inside it; on a wide desk it keeps to the corner.
+/// On a phone a banner stands centred across the shell, between the same equal gutters as the
+/// who-is-here sheet, inside it; on a wide shell it keeps to the corner.
 #[test]
 fn a_phones_banner_stands_between_equal_gutters() {
     for width in [390.0, 360.0] {

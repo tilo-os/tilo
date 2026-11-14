@@ -6,7 +6,7 @@
 //! marked [`ui::history_source::GENERATED_BY`], and only such a name is ever rewritten by it.
 //! Nothing here holds a model or reaches the network: [`Describer::next`] hands the host one
 //! [`Job`] at a time and [`Describer::apply`] writes its answer, so a session asks through the
-//! model gateway off the desk's thread and the portable host asks whatever its page injects.
+//! model gateway off the shell's thread and the portable host asks whatever its page injects.
 //! Without a model no job is asked at all, and the history keeps its deterministic digest.
 
 use std::collections::{HashMap, HashSet};

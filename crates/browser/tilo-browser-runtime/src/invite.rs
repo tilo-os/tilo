@@ -24,7 +24,7 @@ use ui::LocalState;
 use crate::over_page::{OverSheet, PageSheet};
 use crate::shell::{HostRequest, HostRequests};
 
-/// How long a link the sheet makes works, as the session's desk makes one.
+/// How long a link the sheet makes works, as the session's shell makes one.
 const LINK_SECONDS: u64 = 3_600;
 
 /// What the page tells its desktop about invitations (`mountDesktop({invite})`).

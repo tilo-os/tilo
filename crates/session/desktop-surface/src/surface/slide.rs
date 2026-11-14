@@ -257,7 +257,7 @@ impl super::DesktopSurface {
         let motion = self.motion;
         // Across several displays a strip change happens on the display the person works on; the
         // strip left behind stays where it was on the displays that keep showing it, so the change
-        // lands there instead of sliding the whole desk.
+        // lands there instead of sliding the whole shell.
         let started = self.navigation_source().and_then(|source| {
             let started = Started {
                 kind,

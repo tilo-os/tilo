@@ -1,4 +1,4 @@
-//! The bar and the desk's rules over what a host knows: one model for every shell host, native or
+//! The bar and the shell's rules over what a host knows: one model for every shell host, native or
 //! a page, fed by the facts only that host can see ([`ChromeSource`]). Portable display snapshots
 //! and typed chrome requests. No system probing or effects.
 use std::cell::{Cell, RefCell};
@@ -338,8 +338,8 @@ pub enum ChromeIntent {
     /// question of their own about it.
     DeleteWorkspaceConfirmed,
     /// Open or close the menu behind the workspace name, under
-    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a place on the desk a
-    /// secondary press named, standing there instead: the same menu, offering the desk's own
+    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a place on the shell a
+    /// secondary press named, standing there instead: the same menu, offering the shell's own
     /// commands and kept inside the screen at an edge.
     ToggleWorkspaceMenu {
         at: Option<(i32, i32)>,
@@ -419,7 +419,7 @@ pub trait DesktopChromeSource {
     fn snapshot(&self) -> DesktopChromeSnapshot;
     fn tree(&self) -> Layout;
     /// Where each display's bar goes. A host that cannot tell its displays apart answers none, and
-    /// the desk carries one full bar across it.
+    /// the shell carries one full bar across it.
     fn bars(&self) -> Placement {
         Placement::default()
     }
@@ -451,7 +451,7 @@ pub trait DesktopChromeSource {
 }
 pub type Chrome = std::rc::Rc<dyn DesktopChromeSource>;
 
-/// What a host knows of the desk it shows, which the bar, its rules and the desk's asks are made
+/// What a host knows of the shell it shows, which the bar, its rules and the shell's asks are made
 /// from: the tree, who is here, the person at this device, and whatever else only it can see (a
 /// session's compositor and tray, a page's here-list and storage). The chrome reads these; the host
 /// answers nothing about the bar itself.
@@ -512,7 +512,7 @@ pub trait ChromeSource {
     fn bars(&self) -> Placement {
         Placement::default()
     }
-    /// Whether a window on this desk covers its display.
+    /// Whether a window on this shell covers its display.
     fn fullscreen(&self) -> bool {
         self.handle().read(|tree| tree.fullscreen_group().is_some())
     }
@@ -568,7 +568,7 @@ impl Facts {
     }
 }
 
-/// The bar and the desk's rules, over what `source` knows: one model both a native session and a
+/// The bar and the shell's rules, over what `source` knows: one model both a native session and a
 /// page present, so each of them answers only where its facts come from.
 pub struct HostChrome<S: ?Sized> {
     source: std::rc::Rc<S>,
@@ -763,17 +763,17 @@ pub struct Placement {
     /// One per display. Empty: one full bar along the bar's own area.
     pub bars: Vec<BarPlace>,
     /// The bars a window covers, by the same key as [`Self::bars`]: `None` for the one bar of a
-    /// desk that needs no placing, a display's id for a display's own. Each takes no room there
+    /// shell that needs no placing, a display's id for a display's own. Each takes no room there
     /// until it is reached for.
     pub fullscreen: Vec<Option<u32>>,
 }
 
 impl Placement {
-    /// The bars a desk of `tree` carries: one per display, the display in use full and the others
+    /// The bars a shell of `tree` carries: one per display, the display in use full and the others
     /// compact, each on its own display's rectangle. `fullscreen` names the monitors of the
-    /// displays a fullscreen window owns; a window the desk itself took full screen covers its
+    /// displays a fullscreen window owns; a window the shell itself took full screen covers its
     /// display too, as the compositor never saw that one asked for.
-    /// A desk showing a single display carries no bars here: one bar across the desk needs no
+    /// A shell showing a single display carries no bars here: one bar across the shell needs no
     /// placing, and the bar's own layout already stands it there.
     #[must_use]
     pub fn of(tree: &Layout, fullscreen: &[String]) -> Self {
@@ -791,7 +791,7 @@ impl Placement {
                 .collect()
         };
         if !tree.is_partitioned() {
-            // The desk has one display, and any monitor the compositor names is that one.
+            // The shell has one display, and any monitor the compositor names is that one.
             let covered = tree.fullscreen_group().is_some() || !fullscreen.is_empty();
             return Self {
                 bars: Vec::new(),

@@ -1,10 +1,10 @@
-//! Applications opened from the desk's search: what a row of it opens, and
-//! that the desk goes on drawing however many are opened in a row.
+//! Applications opened from the shell's search: what a row of it opens, and
+//! that the shell goes on drawing however many are opened in a row.
 
 use super::*;
 
 /// A catalogue of ten applications, as a workspace's own roster of them is:
-/// what the desk's search offers and what a row of it opens.
+/// what the shell's search offers and what a row of it opens.
 const CATALOGUE: [&str; 10] = [
     "Browser",
     "Calculator",
@@ -18,7 +18,7 @@ const CATALOGUE: [&str; 10] = [
     "Sheets",
 ];
 
-/// A desk whose search offers [`CATALOGUE`]: each row opens that app's own
+/// A shell whose search offers [`CATALOGUE`]: each row opens that app's own
 /// window, as a workspace with those apps installed does.
 #[derive(Default)]
 struct Catalogue;
@@ -61,18 +61,18 @@ impl TileSource for Catalogue {
 }
 
 /// Every application the search offers, opened from it in a row: each Enter
-/// leaves its window on the desk by the next frame, and the desk goes on
-/// drawing after all of them. A desk that stopped presenting after some number
+/// leaves its window on the shell by the next frame, and the shell goes on
+/// drawing after all of them. A shell that stopped presenting after some number
 /// of opens would swallow the next person's Enter, and the page above it would
 /// show a search that never closed.
 #[test]
-fn every_open_from_the_search_in_a_row_shows_its_window_and_the_desk_keeps_drawing() {
+fn every_open_from_the_search_in_a_row_shows_its_window_and_the_shell_keeps_drawing() {
     let mut minter = IdMinter::new(7);
     // A window of an app the catalogue does not offer, so every row of it is a
-    // new window: a row for an app already on the desk brings that one forward,
+    // new window: a row for an app already on the shell brings that one forward,
     // as it should, and adds none.
     let scratch = tab(&mut minter, "Scratch");
-    let tree = seed_tree(&mut minter, "Desk", vec![scratch]);
+    let tree = seed_tree(&mut minter, "Office", vec![scratch]);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Catalogue));
     handle.set_viewport_width(1200.0);
     let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
@@ -118,7 +118,7 @@ fn every_open_from_the_search_in_a_row_shows_its_window_and_the_desk_keeps_drawi
                 .any(|entry| entry.label == app.to_lowercase()),
             "the window opened for {app} is not the app's"
         );
-        // The desk finishes what the open began — it never waits for a frame
+        // The shell finishes what the open began — it never waits for a frame
         // that no one asks for.
         settle_still(&mut driver);
     }

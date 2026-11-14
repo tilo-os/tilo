@@ -4,11 +4,11 @@
 //! list, and the workspace's live plane carries it as one track per window
 //! (`tilo-page/1`). This page draws the windows other devices host: it asks
 //! its host — the session this page's peer is with — for exactly the tracks of
-//! the windows on its desk ([`follow`]), and what those tracks bring rebuilds
+//! the windows on its shell ([`follow`]), and what those tracks bring rebuilds
 //! the frame the hosting device holds ([`heard`]). The tile itself is the
 //! toolkit's page view (`tilo_desktop_surface::page_view`), the same one the
-//! native desk draws a page with; its code is in a module of its own, so a
-//! desk that never shows a hosted window never loads it ([`PAGE`]).
+//! native shell draws a page with; its code is in a module of its own, so a
+//! shell that never shows a hosted window never loads it ([`PAGE`]).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -77,8 +77,8 @@ thread_local! {
 }
 
 /// Ask the host — the session this page's peer `id` is with — for the pages of the windows this
-/// desk holds, `workspace`'s, and stop reading the devices left out. Whether what it asks changed.
-pub(crate) fn follow(id: u32, workspace: &str, desk: &DesktopHandle) -> bool {
+/// shell holds, `workspace`'s, and stop reading the devices left out. Whether what it asks changed.
+pub(crate) fn follow(id: u32, workspace: &str, shell: &DesktopHandle) -> bool {
     let Ok(workspace) = crate::peer::workspace_id(workspace) else {
         return false;
     };
@@ -86,7 +86,7 @@ pub(crate) fn follow(id: u32, workspace: &str, desk: &DesktopHandle) -> bool {
         return false;
     };
     let mut shown: BTreeMap<[u8; 32], Vec<u64>> = BTreeMap::new();
-    for (tab, host) in desk.hosted_windows() {
+    for (tab, host) in shell.hosted_windows() {
         let Some(host) = hex::decode(&host)
             .ok()
             .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())

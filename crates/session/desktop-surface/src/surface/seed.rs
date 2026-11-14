@@ -1,4 +1,4 @@
-//! The desk a host starts from when it has no stored one: one workspace,
+//! The shell a host starts from when it has no stored one: one workspace,
 //! one strip, and a window group per tab.
 
 use tilo_desktop_model::{IdMinter, Layout, StripId, Tab, WindowWidth, Workspace, WorkspaceId};
@@ -9,9 +9,9 @@ pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) ->
     seed_tree_in(minter, WorkspaceId::new(), workspace_name, tabs)
 }
 
-/// [`seed_tree`] for a desk opened in the workspace `identity` names: its workspace is that one,
+/// [`seed_tree`] for a shell opened in the workspace `identity` names: its workspace is that one,
 /// as a session's is the workspace it joined, so what keeps the workspace's records by its id
-/// (its history, its agents' runs) finds them from the desk.
+/// (its history, its agents' runs) finds them from the shell.
 pub fn seed_tree_in(
     minter: &mut IdMinter,
     identity: WorkspaceId,
@@ -19,7 +19,7 @@ pub fn seed_tree_in(
     tabs: Vec<Tab>,
 ) -> Layout {
     let mut workspace = Workspace::new(identity, workspace_name);
-    // A strip no one has named keeps no name: the desk names it by its place, in the language of
+    // A strip no one has named keeps no name: the shell names it by its place, in the language of
     // whoever reads it.
     let mut strip = tilo_desktop_model::Strip::new(StripId(minter.mint()), "");
     strip.window_groups = tabs
@@ -38,8 +38,8 @@ pub fn seed_tree_in(
     workspace.strips = vec![strip];
     let mut tree = Layout {
         active: workspace.id(),
-        // Every id above is the minter's, so the desk's own range is too: what a record of this
-        // desk shares is this device's to write.
+        // Every id above is the minter's, so the shell's own range is too: what a record of this
+        // shell shares is this device's to write.
         salt: minter.salt(),
         ..Layout::default()
     };
@@ -56,11 +56,11 @@ mod tests {
     use super::*;
     use crate::names;
 
-    /// The desk a host starts from keeps no name of its own: what nobody named is the desk's word
+    /// The shell a host starts from keeps no name of its own: what nobody named is the shell's word
     /// to say, in the language of whoever reads it, so the record holds the same nothing on every
     /// device.
     #[test]
-    fn a_fresh_desk_stores_no_name_beside_its_workspace_and_strip() {
+    fn a_fresh_shell_stores_no_name_beside_its_workspace_and_strip() {
         crate::i18n::ensure();
         let mut minter = IdMinter::default();
         let tree = seed_tree(&mut minter, "", Vec::new());

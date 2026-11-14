@@ -40,13 +40,13 @@ use tilo_desktop_model::{
 use ui::icons::Icon;
 
 use crate::i18n::{t, t_args};
-use crate::navigation::{ChromeEffect, DeskEffect, Destination, RouteIds, Verb, WidthPreset};
+use crate::navigation::{ChromeEffect, Destination, LayoutEffect, RouteIds, Verb, WidthPreset};
 
 use super::{DesktopHandle, Shared, app_name_of};
 
 impl DesktopHandle {
     /// The windows whose bar was asked for its menu since the last call — a secondary click — in
-    /// the order they asked, each with the place on the desk the person pressed, where the menu
+    /// the order they asked, each with the place on the shell the person pressed, where the menu
     /// stands.
     pub fn take_tab_menus(&self) -> Vec<(TabId, ui::kurbo::Point)> {
         std::mem::take(&mut self.shared.borrow_mut().menus)
@@ -369,14 +369,14 @@ fn covering_rows(group: &WindowGroup, fullscreen: bool) -> Vec<Row> {
     ]
 }
 
-/// Whether the workspace holds the window `group` floating above the desk.
+/// Whether the workspace holds the window `group` floating above the shell.
 fn floating(tree: &Layout, group: GroupId) -> bool {
     tree.workspaces
         .iter()
         .any(|workspace| workspace.arrangement.float_of(group).is_some())
 }
 
-/// What lifting the window offers: over the desk, or back in its strip.
+/// What lifting the window offers: over the shell, or back in its strip.
 fn float_rows(floating: bool) -> Vec<Row> {
     vec![
         Row::offered(
@@ -582,7 +582,7 @@ pub fn command(tree: &Layout, route: &RouteIds, id: &str, name: Option<&str>) ->
     let group_id = route.group.to_string();
     let tab_id = route.tab.to_string();
     let verb = match id {
-        REVEAL => Verb::Desk(DeskEffect::Focus { tab: tab_id }),
+        REVEAL => Verb::Layout(LayoutEffect::Focus { tab: tab_id }),
         RENAME => Verb::Chrome(ChromeEffect::Rename {
             tab: Some(tab_id),
             group: None,
@@ -648,7 +648,7 @@ pub fn command(tree: &Layout, route: &RouteIds, id: &str, name: Option<&str>) ->
         }),
         SPLIT_RIGHT => Verb::Chrome(ChromeEffect::SplitRight { tab: tab_id }),
         NEW_GROUP => Verb::Chrome(ChromeEffect::NewGroup { tab: tab_id }),
-        CLOSE => Verb::Desk(DeskEffect::CloseTab { tab: tab_id }),
+        CLOSE => Verb::Layout(LayoutEffect::CloseTab { tab: tab_id }),
         CLOSE_WINDOW => Verb::Chrome(ChromeEffect::CloseWindow { group: group_id }),
         STOP_DESKTOP_CONTROL => Verb::Chrome(ChromeEffect::StopDesktopControl { group: group_id }),
         place => {
@@ -806,7 +806,7 @@ fn move_to_strip(
             .is_ok()
         });
     if moved {
-        // The person stays with the window they moved: the desk shows the strip it landed in, with
+        // The person stays with the window they moved: the shell shows the strip it landed in, with
         // it in front, as dragging it there does.
         tree.active_strip.insert(ids.workspace, strip);
         tree.set_active_group(strip, ids.group);
@@ -847,7 +847,7 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
         });
     if moved {
         // The window the tab joined is the one in front, showing the tab that just arrived: the
-        // window it left may have gone with its last tab, so the desk would be left with nothing in
+        // window it left may have gone with its last tab, so the shell would be left with nothing in
         // front.
         tree.active_strip.insert(ids.workspace, ids.strip);
         tree.set_active_group(ids.strip, into);

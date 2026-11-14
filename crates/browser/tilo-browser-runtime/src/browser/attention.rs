@@ -1,7 +1,7 @@
 //! What the browser tab says about the workspace while the person is elsewhere: the page titles
 //! the tab and badges its icon from it (`web/tab-attention.mjs`).
 //!
-//! The desk hears the workspace's news (an agent finishing, a mention, someone renaming the
+//! The shell hears the workspace's news (an agent finishing, a mention, someone renaming the
 //! workspace) on its own, not only while it draws: a hidden tab draws nothing, and news heard
 //! only on the next frame reached the person only once they came back to the tab, which is when
 //! they no longer needed telling. What the person did not cause and would want to hear of
@@ -26,7 +26,7 @@ thread_local! {
     static LISTENERS: RefCell<HashMap<u64, (Function, String)>> = RefCell::default();
 }
 
-/// The agents (by client) whose browser notification the person chose, waiting for the desk.
+/// The agents (by client) whose browser notification the person chose, waiting for the shell.
 static CHOSEN_AGENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Hear what the tab should say about desktop `id` (`{unread, waiting}` JSON, see
@@ -73,7 +73,7 @@ pub(super) fn forget(id: u64) {
 }
 
 /// What the tab says, and what closing it would cut short: `working`, the titles of the jobs
-/// running on the desk; `unread`, the notices the person has not seen (the desk's bell count);
+/// running on the shell; `unread`, the notices the person has not seen (the shell's bell count);
 /// `waiting`, the agents waiting for the person to answer them, by the name their client goes
 /// by ("Claude Code"); and `finished`, the agents whose finishing the person has not seen yet,
 /// each with its notice's `id`, so the page tells apart one it already showed in view.
@@ -99,12 +99,12 @@ fn attention(desktop: &Desktop) -> serde_json::Value {
         "unread": notifications.unread(),
         "waiting": crate::agent_questions::waiting_agents(),
         "finished": finished,
-        // What leaving the tab now would cut short: the jobs on the desk (a file going up).
+        // What leaving the tab now would cut short: the jobs on the shell (a file going up).
         "working": ui::jobs::running().iter().map(|job| job.title().to_owned()).collect::<Vec<_>>(),
     })
 }
 
-/// Tell the browser of `notice`, posted on the desk about an agent: while the tab is hidden and
+/// Tell the browser of `notice`, posted on the shell about an agent: while the tab is hidden and
 /// the person allows it, a notification that, chosen, brings the tab forward onto the agent's card.
 pub(super) fn tell_browser_of_agent(
     notice: &tilo_desktop_surface::notifications::Notification,
@@ -150,8 +150,8 @@ fn tag_hash(text: &str) -> u32 {
 }
 
 impl Desktop {
-    /// The workspace's news since the last call, told on the desk (and, while the tab is hidden,
-    /// in the browser's notifications): what others did to the desk, agents that finished, and
+    /// The workspace's news since the last call, told on the shell (and, while the tab is hidden,
+    /// in the browser's notifications): what others did in the workspace, agents that finished, and
     /// mentions of this person. A drawn frame hears it too; this is for the tab that draws none.
     pub(super) fn hear_news(&self) {
         self.post_workspace_notices();

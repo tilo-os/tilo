@@ -31,14 +31,14 @@ impl TileSource for Apps {
 }
 
 /// A desktop `width` px wide showing one window, Chat, run on a held clock.
-struct Desk {
+struct Shell {
     frame: ui::headless::FrameHarness,
     handle: DesktopHandle,
     now: Instant,
     width: f64,
 }
 
-impl Desk {
+impl Shell {
     fn with_chat(width: u32) -> Self {
         let mut minter = IdMinter::new(9);
         let chat = Tab {
@@ -53,7 +53,7 @@ impl Desk {
             view: String::new(),
             pinned: false,
         };
-        let tree = seed_tree(&mut minter, "Desk", vec![chat]);
+        let tree = seed_tree(&mut minter, "Office", vec![chat]);
         let (surface, handle) = DesktopSurface::new(tree, 9, Box::new(Apps));
         handle.set_viewport_width(f64::from(width));
         let frame = ui::headless::FrameHarness::for_root_with(
@@ -62,14 +62,14 @@ impl Desk {
             (width, 800),
             ui::headless::FrameOptions::default(),
         );
-        let mut desk = Self {
+        let mut shell = Self {
             frame,
             handle,
             now: ui::time::now(),
             width: f64::from(width),
         };
-        desk.frames(4);
-        desk
+        shell.frames(4);
+        shell
     }
 
     fn frames(&mut self, n: usize) {
@@ -102,15 +102,15 @@ impl Desk {
 #[test]
 fn an_opened_window_lands_whole_beside_the_one_in_use_which_keeps_its_name() {
     for width in [1440, 1280, 1024] {
-        let mut desk = Desk::with_chat(width);
-        desk.launch("so.tilo.weather");
-        let row = desk.row();
+        let mut shell = Shell::with_chat(width);
+        shell.launch("so.tilo.weather");
+        let row = shell.row();
         assert_eq!(row.groups.len(), 2, "{width}: Weather opened");
         let (chat, weather) = (&row.groups[0], &row.groups[1]);
         let (chat_rect, weather_rect) = (chat.get_rect(), weather.get_rect());
         let title = chat.tab_rects()[0];
         assert!(
-            title.x0 >= 0.0 && title.x1 <= desk.width,
+            title.x0 >= 0.0 && title.x1 <= shell.width,
             "{width}: Chat's name stays on screen: {title:?} of {chat_rect:?}"
         );
         assert!(
@@ -118,15 +118,15 @@ fn an_opened_window_lands_whole_beside_the_one_in_use_which_keeps_its_name() {
             "{width}: the window in use stays whole on screen: {chat_rect:?}"
         );
         assert!(
-            weather_rect.x1 <= desk.width - STRIP_EDGE_GUTTER_PX + 0.5,
+            weather_rect.x1 <= shell.width - STRIP_EDGE_GUTTER_PX + 0.5,
             "{width}: the new window keeps the strip's gutter, so its border \
              and corners show: {weather_rect:?}"
         );
         assert!(
-            weather.tab_rects()[0].x1 <= desk.width,
+            weather.tab_rects()[0].x1 <= shell.width,
             "{width}: and its name"
         );
-        let widths = desk.handle.read(|tree| {
+        let widths = shell.handle.read(|tree| {
             tree.workspaces[0].strips[0]
                 .window_groups
                 .iter()
@@ -144,9 +144,9 @@ fn an_opened_window_lands_whole_beside_the_one_in_use_which_keeps_its_name() {
 /// already there and for one just opened.
 #[test]
 fn each_tab_wears_its_apps_mark() {
-    let mut desk = Desk::with_chat(1440);
-    desk.launch("so.tilo.weather");
-    let marks: Vec<_> = desk
+    let mut shell = Shell::with_chat(1440);
+    shell.launch("so.tilo.weather");
+    let marks: Vec<_> = shell
         .row()
         .groups
         .iter()

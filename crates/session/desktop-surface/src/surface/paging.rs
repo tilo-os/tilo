@@ -25,13 +25,13 @@ pub(super) enum Sideways {
 }
 
 /// The hand a gesture follows. A wheel or a trackpad reports its own momentum after the fingers
-/// lift, so the strip is thrown nowhere at its end; the desk's own three fingers carry no momentum,
+/// lift, so the strip is thrown nowhere at its end; the shell's own three fingers carry no momentum,
 /// so the strip coasts with the velocity they let go at.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Hand {
     /// A wheel: a mouse's notches, or a trackpad, which coasts the gesture itself.
     Wheel,
-    /// Three fingers on the touchpad, which the desk claims and follows.
+    /// Three fingers on the touchpad, which the shell claims and follows.
     Fingers,
 }
 
@@ -114,7 +114,7 @@ pub(super) fn can_pan(row: &GroupRow, travel: f64) -> bool {
 }
 
 impl super::DesktopHandle {
-    /// The app of `tab` left a sideways wheel to the desk: its content did not scroll with it, so
+    /// The app of `tab` left a sideways wheel to the shell: its content did not scroll with it, so
     /// the strip its window is on moves by `travel` logical pixels, positive toward later windows,
     /// as the wheel over the strip's own canvas does. What the app scrolled with itself never
     /// arrives here, so a gesture is never split between its content and the strip: the app decided
@@ -123,7 +123,7 @@ impl super::DesktopHandle {
     pub fn sideways_wheel(&self, tab: TabId, travel: f64) {
         let mut shared = self.shared.borrow_mut();
         shared.sideways.push((tab, travel));
-        // Where the windows are is nothing the workspace publishes: the desk draws the moved strip
+        // Where the windows are is nothing the workspace publishes: the shell draws the moved strip
         // in the frame this asks for, and nothing else.
         shared.wake.wake();
     }
@@ -131,7 +131,7 @@ impl super::DesktopHandle {
 
 impl DesktopSurface {
     /// Move the shown strip by what the apps of its windows left of their sideways wheels
-    /// ([`DesktopHandle::sideways_wheel`]): the same routing a wheel over the desk takes
+    /// ([`DesktopHandle::sideways_wheel`]): the same routing a wheel over the shell takes
     /// ([`DesktopSurface::take_sideways`]), with the content's answer already in — the app did not
     /// scroll with the event, so the strip takes the whole gesture from its first event on.
     pub(super) fn take_app_sideways(&mut self, now: ui::time::Instant) -> bool {
@@ -153,7 +153,7 @@ impl DesktopSurface {
     }
 }
 
-/// How a wheel the desk routes moves the strip it stands on, and who owns the gesture it is part
+/// How a wheel the shell routes moves the strip it stands on, and who owns the gesture it is part
 /// of.
 impl DesktopSurface {
     /// A wheel event in a gesture the strip owns: the strip moves by its
@@ -290,7 +290,7 @@ impl DesktopSurface {
             // A wheel reports where it is: the strip shows each event at once, with nothing of its
             // own to resample.
             Hand::Wheel => row.hold_strip_pull(carried, now),
-            // The desk resamples three fingers' travel at each frame, so a steady swipe moves the
+            // The shell resamples three fingers' travel at each frame, so a steady swipe moves the
             // strip evenly whatever their report rate.
             Hand::Fingers => {
                 if began {
@@ -382,7 +382,7 @@ impl DesktopSurface {
         }
     }
 
-    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. Fingers the desk claims report
+    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. Fingers the shell claims report
     /// their own end, so this only ends a wheel's.
     pub(super) fn end_idle_swipe(&mut self, now: Instant) {
         let Some(swipe) = self.swipe else {

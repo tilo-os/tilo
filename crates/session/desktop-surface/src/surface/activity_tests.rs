@@ -16,8 +16,8 @@ use ui::widget::TileContent;
 
 const WORKSPACE: &str = "workspace-a";
 
-/// Write the desk as it stands into `doc` and commit it at `time` , as a page records each pass:
-/// one change of the desk, by its person.
+/// Write the shell as it stands into `doc` and commit it at `time` , as a page records each pass:
+/// one change of the shell, by its person.
 fn stamp(doc: &mut AutoCommit, tree: &Layout, time: i64) {
     tilo_desktop_model::desktop_doc::seed(doc, tree);
     doc.commit_with(
@@ -55,7 +55,7 @@ impl TileSource for Activity {
     }
 }
 
-/// The desk's own document, as a browser page keeps it.
+/// The layout's own document, as a browser page keeps it.
 struct RetainedHistory {
     document: Rc<std::cell::RefCell<AutoCommit>>,
 }
@@ -152,7 +152,7 @@ impl Served {
             view: String::new(),
             pinned: false,
         };
-        let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+        let tree = seed_tree(&mut minter, "Office", vec![tab]);
         let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Activity));
         let mut tree = handle.read(Clone::clone);
         let mut retained = AutoCommit::new();
@@ -240,8 +240,8 @@ fn succeeded(call: &ui::InvocationCall) -> bool {
 /// and again only when the history moved, each time as the next result.
 #[test]
 fn the_app_reads_the_retained_history_and_follows_new_changes() {
-    let mut desk = Served::new(None);
-    let door = desk.door(person());
+    let mut shell = Served::new(None);
+    let door = shell.door(person());
     let feed = door.follow(
         wire::target(wire::FEED),
         wire::argument(&wire::FeedQuery::default()),
@@ -250,30 +250,30 @@ fn the_app_reads_the_retained_history_and_follows_new_changes() {
         latest::<wire::Feed>(&feed).is_none(),
         "read on the next pass"
     );
-    desk.frame();
+    shell.frame();
     let (first, read) = latest::<wire::Feed>(&feed).expect("the history is read");
     // The setup is no change to show; the rename is.
     assert_eq!(read.entries.len(), 1);
     assert!(!read.mutations, "a page's history is read only");
 
-    desk.frame();
-    desk.frame();
+    shell.frame();
+    shell.frame();
     assert_eq!(
         latest::<wire::Feed>(&feed).map(|(sequence, _)| sequence),
         Some(first),
         "nothing moved, nothing is sent"
     );
 
-    desk.rename("Renamed again", 3_000);
-    desk.frame();
+    shell.rename("Renamed again", 3_000);
+    shell.frame();
     let (next, read) = latest::<wire::Feed>(&feed).unwrap();
     assert!(next > first);
     assert_eq!(read.entries.len(), 2);
 
     // Closing the app stops following: nothing is open on the desktop.
     drop(feed);
-    desk.frame();
-    assert!(desk.surface.activity.is_none());
+    shell.frame();
+    assert!(shell.surface.activity.is_none());
 }
 
 /// Asked for from outside the app (the bar's History, a person's changes,
@@ -281,21 +281,21 @@ fn the_app_reads_the_retained_history_and_follows_new_changes() {
 /// is offered the view; closing it closes its window.
 #[test]
 fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
-    let mut desk = Served::new(None);
-    let workspace = desk.workspace();
+    let mut shell = Served::new(None);
+    let workspace = shell.workspace();
     let open = |view, author: Option<&str>| ChromeEffect::Activity {
         workspace: workspace.clone(),
         view,
         author: author.map(str::to_owned),
     };
     let replay = open(navigation::ActivityView::Replay, None);
-    desk.handle.dispatch(replay).unwrap();
-    desk.frame();
-    assert_eq!(desk.activity_windows(), 1);
+    shell.handle.dispatch(replay).unwrap();
+    shell.frame();
+    assert_eq!(shell.activity_windows(), 1);
 
-    let door = desk.door(person());
+    let door = shell.door(person());
     let focus = door.follow(wire::target(wire::FOCUS), wire::argument(&()));
-    desk.frame();
+    shell.frame();
     let (_, offered) = latest::<Option<wire::Focus>>(&focus).unwrap();
     let offered = offered.expect("the view is offered");
     assert_eq!(offered.view, wire::View::Replay);
@@ -308,32 +308,32 @@ fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
         }),
         None,
     );
-    desk.frame();
+    shell.frame();
     assert!(succeeded(&shown));
     assert_eq!(latest::<Option<wire::Focus>>(&focus).unwrap().1, None);
 
     // One person's changes: the window there already comes forward.
     let theirs = open(navigation::ActivityView::CatchUp, Some("Ben"));
-    desk.handle.dispatch(theirs).unwrap();
-    desk.frame();
-    assert_eq!(desk.activity_windows(), 1);
+    shell.handle.dispatch(theirs).unwrap();
+    shell.frame();
+    assert_eq!(shell.activity_windows(), 1);
     let (_, offered) = latest::<Option<wire::Focus>>(&focus).unwrap();
     let offered = offered.unwrap();
     assert_eq!(offered.author.as_deref(), Some("Ben"));
     assert_eq!(offered.view, wire::View::History);
 
     let close = ChromeEffect::CloseActivity { workspace };
-    desk.handle.dispatch(close).unwrap();
-    desk.frame();
-    assert_eq!(desk.activity_windows(), 0);
+    shell.handle.dispatch(close).unwrap();
+    shell.frame();
+    assert_eq!(shell.activity_windows(), 0);
 }
 
 /// What this device has seen is the person's own, and so is every workspace's history but the one
 /// an agent works in; the history itself a page only shows.
 #[test]
 fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
-    let mut desk = Served::new(None);
-    let agent = desk.door(Caller::local_agent("helper"));
+    let mut shell = Served::new(None);
+    let agent = shell.door(Caller::local_agent("helper"));
     let viewed = wire::argument(&wire::Viewed {
         entries: Vec::new(),
         later: false,
@@ -350,7 +350,7 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
         wire::target(wire::FEED),
         wire::argument(&wire::FeedQuery::default()),
     );
-    desk.frame();
+    shell.frame();
     let personal = crate::i18n::t("activity-served-personal-only");
     assert_eq!(refusal(&marked), Some(personal.clone()));
     assert_eq!(refusal(everywhere.call()), Some(personal));
@@ -359,11 +359,11 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
         "an agent reads the workspace it works in"
     );
 
-    let person = desk.door(person());
+    let person = shell.door(person());
     let marked = person.invoke(wire::target(wire::MARK_VIEWED), viewed, None);
     let range = wire::Range::one(&wire::entry_hex(&[0; 16]));
     let undone = person.invoke(wire::target(wire::UNDO), wire::argument(&range), None);
-    desk.frame();
+    shell.frame();
     assert!(succeeded(&marked));
     assert_eq!(
         refusal(&undone),
@@ -371,12 +371,12 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
     );
 
     // Someone outside the workspace reads nothing of it.
-    let outside = RemoteActions::with_host(desk.session.clone(), Caller::local_person("eve"));
+    let outside = RemoteActions::with_host(shell.session.clone(), Caller::local_person("eve"));
     let feed = outside.follow(
         wire::target(wire::FEED),
         wire::argument(&wire::FeedQuery::default()),
     );
-    desk.frame();
+    shell.frame();
     assert!(
         feed.call()
             .with(|arrival| matches!(arrival, Arrival::Failed(ActionHostError::UnknownAction)))
@@ -388,18 +388,18 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
 #[test]
 fn reads_asked_while_the_code_loads_are_served_once_it_has_loaded() {
     let code = Rc::new(std::cell::Cell::new(ActivityPaneCode::Loading));
-    let mut desk = Served::new(Some(Rc::clone(&code)));
-    let door = desk.door(person());
+    let mut shell = Served::new(Some(Rc::clone(&code)));
+    let door = shell.door(person());
     let feed = door.follow(
         wire::target(wire::FEED),
         wire::argument(&wire::FeedQuery::default()),
     );
-    desk.frame();
+    shell.frame();
     assert!(latest::<wire::Feed>(&feed).is_none());
-    assert!(desk.surface.activity_loading && desk.surface.needs_animation_frame());
+    assert!(shell.surface.activity_loading && shell.surface.needs_animation_frame());
 
     code.set(ActivityPaneCode::Ready(open_activity));
-    desk.frame();
-    assert!(!desk.surface.activity_loading);
+    shell.frame();
+    assert!(!shell.surface.activity_loading);
     assert_eq!(latest::<wire::Feed>(&feed).unwrap().1.entries.len(), 1);
 }

@@ -51,7 +51,7 @@ struct NoticeState {
     /// The person asked the centre open or closed (the bell, a chord, the banner stack's "more"
     /// card): whoever draws it over the windows takes the ask on its next pass.
     centre_asked: Cell<Option<bool>>,
-    /// An app a row of the centre asked to open: the desk focuses its window.
+    /// An app a row of the centre asked to open: the shell focuses its window.
     open_app: RefCell<Option<String>>,
     /// Where the shown windows' content starts: banners stand below it.
     clear_top: Cell<f64>,
@@ -62,7 +62,7 @@ struct NoticeState {
     /// centre.
     banners_elsewhere: Cell<bool>,
     /// The notification centre is open: no banner stands over it, and what arrives while it is open
-    /// goes into it rather than onto the desk.
+    /// goes into it rather than onto the shell.
     centre_open: Cell<bool>,
     /// Told of each outcome as it happens.
     taps: RefCell<Vec<OutcomeTap>>,
@@ -72,8 +72,8 @@ struct NoticeState {
     /// How many unread notifications each app says it has, by the id the launcher attributed: what
     /// its icon badges.
     badges: RefCell<std::collections::BTreeMap<String, u32>>,
-    /// The shell's own centre stands over the desk, as its reading says. Its own state: the shell
-    /// knows when it closes, the desk's layer when its own does.
+    /// The shell's own centre stands over the shell, as its reading says. Its own state: the shell
+    /// knows when it closes, the shell's layer when its own does.
     shell_centre: Cell<bool>,
 }
 
@@ -282,7 +282,7 @@ impl DesktopNotifications {
 
     /// Replace the banner or centre row the same origin as `notification` showed before, keeping
     /// its local id so hit targets and centre selection survive: what another device's notification
-    /// update is. Returns the id it shows under; `None` when the desk showed none from that origin
+    /// update is. Returns the id it shows under; `None` when the shell showed none from that origin
     /// yet.
     pub fn replace_remote(&self, notification: &Notification) -> Option<u64> {
         let route = notification.remote_route.as_ref()?;
@@ -301,7 +301,7 @@ impl DesktopNotifications {
     }
 
     /// Take every copy of the notification `id` another device projected,
-    /// live or retained: its origin is done with it. Returns whether the desk
+    /// live or retained: its origin is done with it. Returns whether the shell
     /// showed any.
     pub fn retire_remote(&self, source_device: &str, id: ContinuityNotificationId) -> bool {
         let gone: Vec<u64> = {
@@ -345,7 +345,7 @@ impl DesktopNotifications {
         self.log.quiet.borrow().is_some()
     }
 
-    /// The centre stands open on the desk: what arrives joins its list, so no banner covers it. A
+    /// The centre stands open on the shell: what arrives joins its list, so no banner covers it. A
     /// banner up when it opens goes into it, since a stack over an open centre would take the
     /// presses meant for its rows.
     pub fn set_centre_open(&self, open: bool) {
@@ -355,7 +355,7 @@ impl DesktopNotifications {
         self.log.centre_open.set(open);
     }
 
-    /// The shell's centre stands over the desk, or has closed: the shell says which, every pass,
+    /// The shell's centre stands over the shell, or has closed: the shell says which, every pass,
     /// since it knows every way the person leaves it. What arrives joins the list it shows while it
     /// is up, and none covers it.
     pub fn set_shell_centre(&self, open: bool) {
@@ -365,7 +365,7 @@ impl DesktopNotifications {
         self.log.shell_centre.set(open);
     }
 
-    /// Whether the centre is open, on the desk or over it.
+    /// Whether the centre is open, on the shell or over it.
     #[must_use]
     pub fn centre_open(&self) -> bool {
         self.log.centre_open.get() || self.log.shell_centre.get()
@@ -393,7 +393,7 @@ impl DesktopNotifications {
         self.log.badges.borrow().get(app_id).copied().unwrap_or(0)
     }
 
-    /// When the desk's notifications next change with nobody asking: a banner's dwell running out,
+    /// When the shell's notifications next change with nobody asking: a banner's dwell running out,
     /// or the Clear all undo closing.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.log.log.borrow().next_deadline()
@@ -590,7 +590,7 @@ impl DesktopNotifications {
         self.host().clear_history();
     }
 
-    /// Clear every notice the desk lists, the banners still up with the ones retired into the
+    /// Clear every notice the shell lists, the banners still up with the ones retired into the
     /// centre: the banners retire into the centre first, so one Undo brings all of them back.
     pub fn clear_all(&self) {
         self.retire_banners();
@@ -922,7 +922,7 @@ impl NotificationLayer {
     /// Open or close the centre. Either way the person has seen what it holds: nothing is unread
     /// after. Every close — Escape, a press outside, an app opened from a row — comes through here,
     /// since the arrivals read its state: a centre that only appeared to close would keep every
-    /// later banner off the desk.
+    /// later banner off the shell.
     pub fn set_center_open(&mut self, open: bool) {
         if open == self.centre_open {
             return;
@@ -1440,13 +1440,13 @@ mod tests {
             "nothing left to take away"
         );
         assert!(
-            !notifications.retire_remote("desk", id),
+            !notifications.retire_remote("shell", id),
             "another device's id is not this one's"
         );
     }
 
     /// Escape closes the centre the way a press outside does, and arrivals read the same state
-    /// either way: the one after it is a banner on the desk again, not another row behind a centre
+    /// either way: the one after it is a banner on the shell again, not another row behind a centre
     /// that is no longer there.
     #[test]
     fn escape_closes_the_centre_for_arrivals_too() {
@@ -1465,8 +1465,8 @@ mod tests {
         );
     }
 
-    /// The shell draws its own centre over the desk: a banner up when it opens goes into it, what
-    /// arrives joins it, and once the shell says it closed, the desk's own panel is not opened in
+    /// The shell draws its own centre over the shell: a banner up when it opens goes into it, what
+    /// arrives joins it, and once the shell says it closed, the shell's own panel is not opened in
     /// its place.
     #[test]
     fn the_shells_centre_holds_arrivals_without_opening_the_desks_panel() {
@@ -1481,7 +1481,7 @@ mod tests {
         assert!(!notifications.centre_open());
         assert!(
             !layer.center_open(),
-            "the shell's centre never stands the desk's panel up"
+            "the shell's centre never stands the shell's panel up"
         );
     }
 
@@ -1547,7 +1547,7 @@ mod tests {
 
     /// The person opened the centre to read what it holds: no banner stands over the rows it
     /// covers, wherever the host draws the banners, what arrives meanwhile goes into the centre,
-    /// and the ones that came before are rows of it too — a banner is gone from the desk once the
+    /// and the ones that came before are rows of it too — a banner is gone from the shell once the
     /// centre took it.
     #[test]
     fn a_banner_never_stands_over_the_open_centre() {
@@ -1597,7 +1597,7 @@ mod tests {
         assert_eq!(
             notifications.feed().banners.len(),
             1,
-            "a desk with no centre over it shows banners again"
+            "a shell with no centre over it shows banners again"
         );
     }
 

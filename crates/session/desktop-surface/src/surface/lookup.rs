@@ -1,8 +1,8 @@
-//! Finding a desk's windows and ids in its tree.
+//! Finding a shell's windows and ids in its tree.
 
 use tilo_desktop_model::{GroupId, IdMinter, Layout, StripId, Tab, TabId, Workspace};
 
-/// Note every id `tree` holds, so the desk never mints one of them again.
+/// Note every id `tree` holds, so the shell never mints one of them again.
 pub(super) fn observe_ids(minter: &mut IdMinter, tree: &Layout) {
     for workspace in &tree.workspaces {
         for strip in &workspace.strips {

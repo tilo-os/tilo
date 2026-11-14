@@ -32,7 +32,7 @@ impl Frame {
     }
 }
 
-struct Desk {
+struct Shell {
     frame: ui::headless::FrameHarness,
     handle: DesktopHandle,
     /// Each window's group and tab, in strip order.
@@ -41,7 +41,7 @@ struct Desk {
     now: Instant,
 }
 
-impl Desk {
+impl Shell {
     /// Five windows, the strip panned to show window `focus` .
     fn focused_on(focus: usize) -> Self {
         let mut minter = IdMinter::new(7);
@@ -59,7 +59,7 @@ impl Desk {
                 pinned: false,
             })
             .collect();
-        let tree = seed_tree(&mut minter, "Desk", tabs);
+        let tree = seed_tree(&mut minter, "Office", tabs);
         let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices));
         let mut frame = ui::headless::FrameHarness::for_root_with(
             ui::state::State::new(),
@@ -125,7 +125,7 @@ impl Desk {
             .unwrap()
             .route;
         self.handle
-            .dispatch(navigation::DeskEffect::CloseTab { tab: route.tab })
+            .dispatch(navigation::LayoutEffect::CloseTab { tab: route.tab })
             .unwrap();
     }
 
@@ -213,7 +213,7 @@ fn assert_calm(case: &str, before: &Frame, trace: &[Frame], still: &[GroupId]) -
 #[test]
 fn a_window_closed_left_of_the_view_takes_nothing_on_screen_with_it() {
     for (focus, close) in [(4, 1), (2, 0), (3, 0)] {
-        let mut strip = Desk::focused_on(focus);
+        let mut strip = Shell::focused_on(focus);
         let before = strip.sample();
         strip.close(close);
         let trace = strip.frames(40);
@@ -241,7 +241,7 @@ fn a_window_closed_left_of_the_view_takes_nothing_on_screen_with_it() {
 
 #[test]
 fn a_window_closed_right_of_the_view_moves_nothing_shown() {
-    let mut strip = Desk::focused_on(2);
+    let mut strip = Shell::focused_on(2);
     let before = strip.sample();
     strip.close(4);
     let trace = strip.frames(40);
@@ -252,7 +252,7 @@ fn a_window_closed_right_of_the_view_moves_nothing_shown() {
 
 #[test]
 fn the_window_right_of_a_closed_one_slides_into_its_place() {
-    let mut strip = Desk::focused_on(2);
+    let mut strip = Shell::focused_on(2);
     let before = strip.sample();
     strip.close(2);
     let trace = strip.frames(40);
@@ -272,7 +272,7 @@ fn the_window_right_of_a_closed_one_slides_into_its_place() {
 
 #[test]
 fn closing_the_last_window_pans_only_as_far_as_the_strip_shrinks() {
-    let mut strip = Desk::focused_on(4);
+    let mut strip = Shell::focused_on(4);
     let before = strip.sample();
     strip.close(4);
     let trace = strip.frames(40);
@@ -302,7 +302,7 @@ fn closing_the_last_window_pans_only_as_far_as_the_strip_shrinks() {
 fn a_tree_replaced_from_the_workspace_moves_the_strip_as_a_close_here_does() {
     // The workspace echoes the person's own close mid-motion.
     for (focus, close, still) in [(4, 4, vec![]), (2, 2, vec![0, 1]), (4, 1, vec![2, 3, 4])] {
-        let mut strip = Desk::focused_on(focus);
+        let mut strip = Shell::focused_on(focus);
         let before = strip.sample();
         strip.close(close);
         let mut trace = strip.frames(3);
@@ -325,7 +325,7 @@ fn a_tree_replaced_from_the_workspace_moves_the_strip_as_a_close_here_does() {
         (4, 1, vec![2, 3, 4]),
         (2, 4, vec![1, 2, 3]),
     ] {
-        let mut strip = Desk::focused_on(focus);
+        let mut strip = Shell::focused_on(focus);
         let before = strip.sample();
         let mut tree = strip.handle.shared_tree();
         tree.remove_tab(strip.windows[close].1);

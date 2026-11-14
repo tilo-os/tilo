@@ -2,7 +2,7 @@
 
 use super::paging::panned_to;
 use super::*;
-use crate::navigation::{ChromeEffect, DeskEffect, Route};
+use crate::navigation::{ChromeEffect, LayoutEffect, Route};
 use ui::automerge::AutoCommit;
 use ui::search::Scope;
 use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX, TileContent};
@@ -21,7 +21,7 @@ impl TileSource for Notices {
 }
 
 pub(super) fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
-    desk_with(windows, Box::new(Notices))
+    shell_with(windows, Box::new(Notices))
 }
 
 /// `windows` windows, each running an app of its own.
@@ -42,23 +42,23 @@ fn windows_tabs(minter: &mut IdMinter, windows: usize) -> Vec<Tab> {
         .collect()
 }
 
-/// The same desk, with a source of its own for the windows' content.
-pub(super) fn desk_with(
+/// The same shell, with a source of its own for the windows' content.
+pub(super) fn shell_with(
     windows: usize,
     tiles: Box<dyn TileSource>,
 ) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs = windows_tabs(&mut minter, windows);
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     DesktopSurface::new(tree, 7, tiles)
 }
 
-/// A desk whose one window holds `windows` windows' tabs on its bar, as a strip does once the
+/// A shell whose one window holds `windows` windows' tabs on its bar, as a strip does once the
 /// windows have been gathered into one.
-pub(super) fn one_window_desk(windows: usize) -> (DesktopSurface, DesktopHandle) {
+pub(super) fn one_window_shell(windows: usize) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs = windows_tabs(&mut minter, windows);
-    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let mut tree = seed_tree(&mut minter, "Office", tabs);
     let strip = &mut tree.workspaces[0].strips[0];
     let id = strip.window_groups[0].id;
     let tabs: Vec<Tab> = strip
@@ -97,7 +97,7 @@ fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
     let tab: TabId = route.tab.parse().unwrap();
     assert!(handle.set_holders(HashMap::from([(tab, held_by("Ben"))])));
     let refusal = handle
-        .dispatch(DeskEffect::CloseTab {
+        .dispatch(LayoutEffect::CloseTab {
             tab: route.tab.clone(),
         })
         .unwrap_err();
@@ -119,7 +119,7 @@ fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
     let offered = handle.read(|tree| search::offered_commands(tree, &|_| false));
     assert!(offered.iter().any(|id| id == "desktop.close-window"));
     handle
-        .dispatch(DeskEffect::CloseTab { tab: route.tab })
+        .dispatch(LayoutEffect::CloseTab { tab: route.tab })
         .unwrap();
 }
 
@@ -279,7 +279,7 @@ fn a_windows_search_control_opens_search() {
     assert!(handle.search_open());
 }
 
-/// A desk with apps installed, whose windows are notices.
+/// A shell with apps installed, whose windows are notices.
 struct Installed;
 
 impl TileSource for Installed {
@@ -304,7 +304,7 @@ impl TileSource for Installed {
 /// name, with nothing typed.
 #[test]
 fn the_all_apps_row_opens_the_catalogue() {
-    let (surface, handle) = desk_with(1, Box::new(Installed));
+    let (surface, handle) = shell_with(1, Box::new(Installed));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -435,7 +435,7 @@ fn selects_apply_in_the_frame_they_wake() {
     for target in [0, 2, 1, 2] {
         let route = entries[target].route.clone();
         handle
-            .dispatch(DeskEffect::Focus {
+            .dispatch(LayoutEffect::Focus {
                 tab: route.tab.clone(),
             })
             .unwrap();
@@ -508,7 +508,7 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
             (0, "the first"),
         ] {
             handle
-                .dispatch(DeskEffect::Focus {
+                .dispatch(LayoutEffect::Focus {
                     tab: entries[target].route.tab.clone(),
                 })
                 .unwrap();
@@ -619,7 +619,7 @@ fn closing_a_window_keeps_every_frame_settling() {
     }
     let route = handle.snapshot("g", vec![]).entries[0].route.clone();
     handle
-        .dispatch(DeskEffect::CloseTab { tab: route.tab })
+        .dispatch(LayoutEffect::CloseTab { tab: route.tab })
         .unwrap();
     // Forty frames of a 60 Hz display, on the clock the close animates by.
     let mut at = ui::time::now();
@@ -722,21 +722,21 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     );
 }
 
-/// The desk mints its ids under the device's range, and a tree kept beside the device's state file
-/// carries none of its own: installing the kept tree lays this device's changes in this desk's
+/// The shell mints its ids under the device's range, and a tree kept beside the device's state file
+/// carries none of its own: installing the kept tree lays this device's changes in this shell's
 /// range, not in "nobody's".
 #[test]
 fn a_tree_kept_beside_the_state_file_installs_in_this_desks_range() {
     let (_surface, handle) = desktop(1);
     let minted = handle.read(Clone::clone);
-    assert_eq!(minted.salt, 7, "the desk mints in the device's range");
+    assert_eq!(minted.salt, 7, "the shell mints in the device's range");
     let mut kept = minted.clone();
     kept.salt = 0;
     handle.replace_tree(kept);
     let installed = handle.read(Clone::clone);
     assert_eq!(
         installed.salt, minted.salt,
-        "the tree installed writes in this desk's range"
+        "the tree installed writes in this shell's range"
     );
     assert_eq!(
         installed.workspaces[0].strips[0].id, minted.workspaces[0].strips[0].id,
@@ -752,7 +752,7 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     let mut local = handle.read(Clone::clone);
     let strip = &mut local.workspaces[0].strips[0];
     let stream = strip.window_groups[2].tabs[0].id;
-    // A window this desk keeps to itself: the person's own Settings.
+    // A window this shell keeps to itself: the person's own Settings.
     strip.window_groups[2].tabs[0].tile = tilo_desktop_model::TileContent::LocalApp {
         app_id: "so.tilo.settings".into(),
         label: "Settings".into(),
@@ -810,10 +810,10 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     assert!(handle.read(|tree| tree.workspaces.is_empty()));
 }
 
-/// A person's own window (their Settings) stands on their desk in a shared workspace and is never
-/// what the workspace is sent; one that arrives from someone else's desk is not laid on this one.
+/// A person's own window (their Settings) stands on their shell in a shared workspace and is never
+/// what the workspace is sent; one that arrives from someone else's shell is not laid on this one.
 #[test]
-fn a_persons_own_window_stays_on_their_desk_and_never_reaches_the_workspace() {
+fn a_persons_own_window_stays_on_their_shell_and_never_reaches_the_workspace() {
     let (mut surface, handle) = desktop(3);
     let state = AutoCommit::new();
     surface.update(&state, &ui::automerge::ROOT);
@@ -836,7 +836,7 @@ fn a_persons_own_window_stays_on_their_desk_and_never_reaches_the_workspace() {
     assert!(sent.tab(mine).is_none(), "the workspace is never sent it");
     assert_eq!(sent.tabs().count(), local.tabs().count() - 1);
 
-    // The workspace's desk as it comes back, with someone else's Settings window an older page
+    // The workspace's shell as it comes back, with someone else's Settings window an older page
     // placed there.
     let mut incoming = sent;
     let mut theirs = incoming.workspaces[0].strips[0].window_groups[0].clone();
@@ -851,7 +851,7 @@ fn a_persons_own_window_stays_on_their_desk_and_never_reaches_the_workspace() {
     handle.read(|tree| {
         assert!(
             tree.tab(mine).is_some(),
-            "their own Settings stays on their desk"
+            "their own Settings stays on their shell"
         );
         assert!(tree.tab(9_001).is_none(), "someone else's is not laid here");
     });
@@ -883,7 +883,7 @@ fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
         }
     }
     let mut minter = IdMinter::new(7);
-    let tree = seed_tree(&mut minter, "Desk", Vec::new());
+    let tree = seed_tree(&mut minter, "Office", Vec::new());
     let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Relaunch));
     let notifications = DesktopNotifications::default();
     let mut notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
@@ -929,7 +929,7 @@ fn notification_navigation_shows_expired_real_banners_in_the_center() {
         .unwrap();
     let state = AutoCommit::new();
     surface.update(&state, &ui::automerge::ROOT);
-    // The desk asks whoever draws the centre over the windows to open it.
+    // The shell asks whoever draws the centre over the windows to open it.
     assert_eq!(notifications.take_centre_ask(), Some(true));
     let mut centre = NotificationLayer::new(notifications.clone());
     centre.set_center_open(true);
@@ -1133,7 +1133,7 @@ fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
     }
 }
 
-/// A laid-out desk of `windows` windows, its strip overflowed so it can pan.
+/// A laid-out shell of `windows` windows, its strip overflowed so it can pan.
 fn laid_out(windows: usize) -> (ui::headless::FrameHarness, DesktopHandle) {
     let (surface, handle) = desktop(windows);
     let mut frame = ui::headless::FrameHarness::for_root_with(
@@ -1340,7 +1340,7 @@ fn focusing_a_window_off_screen_slides_the_strip_into_frame() {
         .route
         .clone();
     handle
-        .dispatch(DeskEffect::Focus {
+        .dispatch(LayoutEffect::Focus {
             tab: last.tab.clone(),
         })
         .unwrap();
@@ -1807,7 +1807,7 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
 }
 
 thread_local! {
-    /// The desk's monotonic clock once a test has started stepping frames.
+    /// The shell's monotonic clock once a test has started stepping frames.
     static CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
 
@@ -2048,7 +2048,7 @@ fn counted_desktop(
     let tiles = Box::new(Counted {
         built: std::rc::Rc::clone(&built),
     });
-    let (surface, handle) = desk_with(windows, tiles);
+    let (surface, handle) = shell_with(windows, tiles);
     (surface, handle, built)
 }
 
@@ -2077,7 +2077,7 @@ fn drag_out(frame: &mut ui::headless::FrameHarness, tab: TabId, below: bool) -> 
     staged
 }
 
-/// A window dragged out of its strip lands in the strip below it and the desk follows it there,
+/// A window dragged out of its strip lands in the strip below it and the shell follows it there,
 /// live content and all.
 #[test]
 fn a_window_dragged_out_of_its_strip_moves_to_the_strip_below_it() {
@@ -2146,7 +2146,7 @@ fn a_window_dragged_out_of_its_strip_moves_to_the_strip_below_it() {
         )
     });
     assert_eq!(home, Some(second), "the window moved into the strip below");
-    assert_eq!(shown, Some(second), "and the desk shows it there");
+    assert_eq!(shown, Some(second), "and the shell shows it there");
     assert!(focused.is_some(), "the moved window is focused there");
     let strip = handle.read(|tree| {
         tree.workspaces[0]
@@ -2172,7 +2172,7 @@ fn a_window_dragged_out_of_its_strip_moves_to_the_strip_below_it() {
 }
 
 /// Let go where no strip lies, a dragged window goes back where it was,
-/// and nothing about the desk changes.
+/// and nothing about the shell changes.
 #[test]
 fn a_window_dragged_off_the_only_strip_stays_where_it_was() {
     let (surface, handle) = desktop(2);
@@ -2239,11 +2239,11 @@ fn bar_order(frame: &ui::headless::FrameHarness, group: GroupId) -> Vec<TabId> {
         .unwrap_or_default()
 }
 
-/// A tab dragged along its own bar stays where it was let go: the desk's tree holds that order, not
+/// A tab dragged along its own bar stays where it was let go: the shell's tree holds that order, not
 /// the one it had before the drag, and the window the person pressed is still the one they are on.
 #[test]
 fn a_tab_dragged_along_its_bar_keeps_the_order_it_lands_in() {
-    let (surface, handle) = one_window_desk(3);
+    let (surface, handle) = one_window_shell(3);
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -2261,7 +2261,7 @@ fn a_tab_dragged_along_its_bar_keeps_the_order_it_lands_in() {
             group.active_tab,
         )
     });
-    assert_eq!(shown, tabs[0], "the desk starts on the first window");
+    assert_eq!(shown, tabs[0], "the shell starts on the first window");
     assert_eq!(bar_order(&frame, group), tabs);
 
     // Right along the bar: the first window is let go past the last one.
@@ -2341,7 +2341,7 @@ fn a_windows_own_icon_is_on_its_tab() {
         view: String::new(),
         pinned: false,
     };
-    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = seed_tree(&mut minter, "Office", vec![tab]);
     let (surface, handle) = DesktopSurface::new(tree, 11, Box::new(Notices));
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
@@ -2489,7 +2489,7 @@ fn a_sideways_swipe_pans_the_strip_with_the_fingers_and_rests_where_they_stopped
     }
 }
 
-/// A strip only a little wider than the screen, as a desk of a few wide
+/// A strip only a little wider than the screen, as a shell of a few wide
 /// windows is: a swipe asked for more than the strip has stops at its end the
 /// fingers' way and stays there, and one asked for where the strip has none
 /// moves nothing at all. Neither turns the strip around.
@@ -2586,9 +2586,9 @@ fn unread_notices_stay_unread_across_a_restart() {
     assert_eq!(unread, ["New"]);
 }
 
-/// A desk of one window that the workspace's desk then gives Notes, opened by this person's own
+/// A shell of one window that the workspace's shell then gives Notes, opened by this person's own
 /// agent three windows further along the strip than the view reaches: `before` runs first, on the
-/// desk as it was, and the window that had the keyboard before it arrived is returned with Notes.
+/// shell as it was, and the window that had the keyboard before it arrived is returned with Notes.
 fn agent_opens_notes_out_of_sight(
     before: impl FnOnce(&mut ui::headless::FrameHarness),
 ) -> (ui::headless::FrameHarness, DesktopHandle, TabId, Route) {
@@ -2621,7 +2621,7 @@ fn agent_opens_notes_out_of_sight(
     }
     on_clock(Duration::from_millis(16), || {
         handle.replace_shared_tree(incoming, &[]);
-        // The workspace's desk says this person's agent opened Notes; nobody else holds it.
+        // The workspace's shell says this person's agent opened Notes; nobody else holds it.
         handle.set_opened_by(std::collections::BTreeMap::from([(
             notes,
             tilo_desktop_model::ownership::OpenedBy {
@@ -2634,7 +2634,7 @@ fn agent_opens_notes_out_of_sight(
     (frame, handle, notes, focused)
 }
 
-/// Whether the window showing `tab` stands wholly in the desk's view.
+/// Whether the window showing `tab` stands wholly in the shell's view.
 fn in_view(frame: &ui::headless::FrameHarness, tab: TabId) -> bool {
     let surface = frame.root::<DesktopSurface>();
     let viewport = surface.get_rect();

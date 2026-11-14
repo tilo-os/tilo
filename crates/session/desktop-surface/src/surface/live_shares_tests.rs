@@ -197,12 +197,12 @@ impl TileSource for ShareTiles {
     }
 }
 
-fn desk(seen: &Seen) -> (ui::headless::FrameHarness, u64) {
-    desk_with(seen, "Plan")
+fn shell(seen: &Seen) -> (ui::headless::FrameHarness, u64) {
+    shell_with(seen, "Plan")
 }
 
 /// The conversation and a notes window titled `notes` , and the notes window's tab.
-fn desk_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64) {
+fn shell_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64) {
     let mut minter = IdMinter::new(8);
     let mut tabs = Vec::new();
     let mut notes = 0;
@@ -231,7 +231,7 @@ fn desk_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64
             pinned: false,
         });
     }
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Office", tabs);
     let (surface, _handle) = DesktopSurface::new(tree, 8, Box::new(ShareTiles(seen.clone())));
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
@@ -250,7 +250,7 @@ fn desk_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64
 #[test]
 fn a_view_a_window_embeds_is_its_own_app_drawn_scaled_into_its_place() {
     let seen = Seen::default();
-    let (mut frame, _) = desk(&seen);
+    let (mut frame, _) = shell(&seen);
     assert_eq!(seen.embedded.get(), 1, "one app for the view, kept");
     assert_eq!(*seen.asked.borrow(), vec![plan()]);
     assert_eq!(
@@ -275,7 +275,7 @@ fn a_view_a_window_embeds_is_its_own_app_drawn_scaled_into_its_place() {
 #[test]
 fn a_window_on_a_record_is_offered_for_sharing_from_its_menu() {
     let seen = Seen::default();
-    let (mut frame, notes) = desk(&seen);
+    let (mut frame, notes) = shell(&seen);
     let windows = ui::window_share::windows();
     assert_eq!(windows.len(), 1, "the conversation itself is not offered");
     assert_eq!(windows[0].tab, notes);
@@ -342,7 +342,7 @@ fn a_window_on_a_record_is_offered_for_sharing_from_its_menu() {
 #[test]
 fn a_window_without_a_bar_is_offered_for_sharing_from_its_title_row() {
     let seen = Seen::default();
-    let (mut frame, sketch) = desk_with(&seen, "Sketch");
+    let (mut frame, sketch) = shell_with(&seen, "Sketch");
     let windows = ui::window_share::windows();
     assert_eq!(windows.len(), 1);
     assert_eq!(windows[0].tab, sketch);

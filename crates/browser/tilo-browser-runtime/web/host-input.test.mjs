@@ -32,7 +32,7 @@ class Node {
  replaceChildren(){this.children=[];}
 }
 const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
-// What the desk answers to `desktop_input_ownership`: the semantics tree's keyboard owner path, who
+// What the shell answers to `desktop_input_ownership`: the semantics tree's keyboard owner path, who
 // that is, and the field an input method is helping.
 const holding=(holder,{purpose='Text',ime=true,field='field'}={})=>({owner:`/${holder}/${field}[0]`,holder,ime:ime?{x:0,y:0,width:2,height:20,purpose}:null});
 async function fixture({standalone=false,models,providerManagement,app,files,dom=true,gpu=true,flushFiles}={}){
@@ -46,7 +46,7 @@ async function fixture({standalone=false,models,providerManagement,app,files,dom
  // Winit's web backend reports the canvas's own focus and blur as the window's.
  const runtime=runtimeFake({provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>files,load_application:async()=>true,flush_files:async()=>{if(flushFiles==='unloaded')throw new TypeError("undefined is not an object (evaluating 'wasm.flush_files')");},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
 
-  // The desk's live answer: who holds the keyboard, and the field an input method is helping.
+  // The shell's live answer: who holds the keyboard, and the field an input method is helping.
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop closed');return standalone?undefined:JSON.stringify(state);},
   desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,
   desktop_search_toggle(){this.searchToggles++;state=state.holder==='system-search'?holding('writer',{ime:false}):holding('system-search',{purpose:'Search'});},
@@ -60,7 +60,7 @@ async function fixture({standalone=false,models,providerManagement,app,files,dom
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
  const target=new Node('div');document.body.append(target);const statuses=[];const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement,...(dom===false?{dom:false}:{}),onStatus:status=>statuses.push(status)});await tick();
- // A status's `ime` is the presented frame's field, which the desk's own answer reports from then on.
+ // A status's `ime` is the presented frame's field, which the shell's own answer reports from then on.
  const updateStatus=status=>{if('ime' in status)state={...state,ime:status.ime??null};return update(JSON.stringify(status));};
  return {host,runtime,document,delivered,windowFocus,statuses,disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},get ownershipReads(){return ownershipReads;},update:updateStatus};
 }
@@ -181,7 +181,7 @@ test('Rust-internal Search selection hands off only for a local surface gesture'
  const f=await fixture();f.host.canvas.focus();
  f.host.canvas.addEventListener('keydown',()=>{f.state=holding('chat');});
  f.host.canvas.dispatchEvent(new DomEvent('keydown',{key:'Enter'}));await tick();
- assert.equal(f.document.activeElement,f.host.editor,'what the desk activated owns the keyboard now, and the page hands it the editor');
+ assert.equal(f.document.activeElement,f.host.editor,'what the shell activated owns the keyboard now, and the page hands it the editor');
  const external=new Node('textarea');f.document.body.append(external);external.focus();
  f.state=holding('writer');f.update({phase:'presented',frames:2});await tick();
  assert.equal(f.document.activeElement,external,'a later outside focus is not stolen back');
@@ -219,7 +219,7 @@ test('the hidden IME editor paints nothing over the canvas',async()=>{
 test('a standalone runtime keeps local text input and is never asked who owns it',async()=>{
  const f=await fixture({standalone:true});f.host.editor.focus();f.host.editor.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'local'}));
  assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','local']]);
- assert.equal(f.ownershipReads,0,'a page that holds its own input has no desk to ask');
+ assert.equal(f.ownershipReads,0,'a page that holds its own input has no shell to ask');
 });
 test('the focused field\'s purpose reaches the browser editor and free text keeps its defaults',async()=>{
  const f=await fixture();
@@ -265,7 +265,7 @@ test('a Safari trackpad swipe reaches the runtime whole and never the page, from
 test('outside pointer press dismisses only the current system search and preserves the external click',async()=>{
  const f=await fixture();const outside=new Node('button');f.document.body.append(outside);
  const dismissed=()=>f.runtime.searchCloses;
- assert.ok(f.ownershipReads>0,'the desk is asked live who holds the keyboard');
+ assert.ok(f.ownershipReads>0,'the shell is asked live who holds the keyboard');
  f.state=holding('system-search',{purpose:'Search'});
  const press=new DomEvent('pointerdown');outside.dispatchEvent(press);
  assert.equal(dismissed(),1,'the press closes the search that holds the keyboard');
@@ -279,7 +279,7 @@ test('outside pointer press dismisses only the current system search and preserv
  f.state=holding('writer',{ime:false});f.update({phase:'presented',frames:2,searchOpen:true});await tick();
  outside.dispatchEvent(new DomEvent('pointerdown'));
  assert.equal(dismissed(),2,'no search holds the keyboard: the press dismisses nothing');
- // A press on the surface is the desk\'s own hit test: the page leaves it alone.
+ // A press on the surface is the shell\'s own hit test: the page leaves it alone.
  f.state=holding('system-search',{purpose:'Search'});
  f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));
  assert.equal(dismissed(),2);
@@ -296,23 +296,23 @@ test('the desktop search chord opens search from anywhere on the page and the br
  assert.equal(f.runtime.searchToggles,2,'Ctrl+K stays the app\'s on a Mac');assert.equal(plain.defaultPrevented,false);
 });
 test('the search chord opens the search once, from inside the surface and before the first status',async()=>{
- // A press made before the desk's first status (no navigation yet) still opens search: the page
+ // A press made before the shell's first status (no navigation yet) still opens search: the page
  // owns the chord for the mount's whole life.
  const fresh=await fixture();const outsideBefore=new Node('input');fresh.document.body.append(outsideBefore);outsideBefore.focus();
  const early=new DomEvent('keydown',{key:'k',code:'KeyK',metaKey:true});outsideBefore.dispatchEvent(early);
  assert.equal(fresh.runtime.searchToggles,1,'a chord before the first status opened nothing');
  assert.equal(early.defaultPrevented,true);
- // A press with the keyboard in the surface's own field is the page's too: the desk never sees
+ // A press with the keyboard in the surface's own field is the page's too: the shell never sees
  // it, so one press is one toggle, never open-then-close.
  const f=await fixture();const chord=new DomEvent('keydown',{key:'k',code:'KeyK',metaKey:true});
  const seen=[];f.host.canvas.addEventListener('keydown',event=>seen.push({key:event.key,meta:event.metaKey}));
  f.host.editor.focus();f.host.editor.dispatchEvent(chord);
  assert.equal(f.runtime.searchToggles,1,'one press toggled the search once');
- assert.deepEqual(seen,[],'the desk never saw the chord, so it cannot toggle it a second time');
+ assert.deepEqual(seen,[],'the shell never saw the chord, so it cannot toggle it a second time');
 });
 test('a key forwarded into the surface does not bubble back to the page',async()=>{
  const f=await fixture();
- // The desk asks the surface to act on a key the page's capture listener would answer too (the
+ // The shell asks the surface to act on a key the page's capture listener would answer too (the
  // search chord): a forwarded copy must stay the surface's, or the page sees one press twice.
  let pageSightings=0;
  f.document.addEventListener('keydown',event=>{if(event.metaKey&&String(event.key).toLowerCase()==='k')pageSightings++;},true);
@@ -466,7 +466,7 @@ test('a file too large to drop is named with its size, its contents never read',
 test('a wheel tells the runtime where the fingers are before it reads one',async()=>{
  const f=await fixture();const canvas=f.host.canvas;Object.assign(canvas,{clientWidth:800,clientHeight:600});
  // Winit reads a wheel by the pointer it saw last, and a script's or a
- // forwarded wheel can name a place it never saw the pointer at: the desk
+ // forwarded wheel can name a place it never saw the pointer at: the shell
  // then pans the strip by a wheel meant for a window's grid.
  const seen=[];canvas.addEventListener('pointermove',event=>seen.push(event));
  canvas.dispatchEvent(new WheelEvent('wheel',{cancelable:true,deltaX:12,deltaY:0,clientX:300,clientY:220}));

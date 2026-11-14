@@ -137,7 +137,7 @@ mod tests {
 
     fn handle() -> DesktopHandle {
         let mut minter = tilo_desktop_model::IdMinter::new(7);
-        let tree = crate::seed_tree(&mut minter, "Desk", Vec::new());
+        let tree = crate::seed_tree(&mut minter, "Office", Vec::new());
         crate::DesktopSurface::new(tree, 7, Box::new(Notices)).1
     }
 

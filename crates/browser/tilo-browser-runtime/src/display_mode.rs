@@ -1,6 +1,6 @@
 //! Whether the page runs in a browser tab or installed as an app window
 //! (`display-mode: standalone`), as the page reports it. A tab's browser keeps
-//! Ctrl+W, Ctrl+T, Ctrl+N and Ctrl+Tab for its own tabs, so the desk answers
+//! Ctrl+W, Ctrl+T, Ctrl+N and Ctrl+Tab for its own tabs, so the shell answers
 //! them only in an app window, and the shortcut guide offers the keys that
 //! reach the page where it runs.
 

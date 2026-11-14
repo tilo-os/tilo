@@ -1,6 +1,6 @@
-//! Files and folders a person puts into the workspace from the page with the desk menu's
+//! Files and folders a person puts into the workspace from the page with the shell menu's
 //! "Upload files…" and "Upload a folder…": copied into the workspace's file tree as a drop on the
-//! desk is ([`super::drops`]), from where the browser keeps them, a piece at a time.
+//! shell is ([`super::drops`]), from where the browser keeps them, a piece at a time.
 
 use std::cell::RefCell;
 
@@ -9,9 +9,9 @@ use wasm_bindgen::prelude::*;
 
 use super::Desktop;
 
-/// The desk menu's row that chooses files to upload.
+/// The shell menu's row that chooses files to upload.
 pub(crate) const UPLOAD_FILES: &str = "upload-files";
-/// The desk menu's row that chooses a folder to upload.
+/// The shell menu's row that chooses a folder to upload.
 pub(crate) const UPLOAD_FOLDER: &str = "upload-folder";
 
 /// One file the page hands over: its bytes where the browser keeps them (a `File` or `Blob`),
@@ -101,7 +101,7 @@ impl Picked {
     }
 }
 
-/// The desk menu's upload rows, offered only to a person who may change the workspace's records.
+/// The shell menu's upload rows, offered only to a person who may change the workspace's records.
 pub(super) fn host_actions() -> [tilo_desktop_surface::HostAction; 2] {
     let row =
         |id: &str, title: &str, subtitle: &str, icon: &str| tilo_desktop_surface::HostAction {
@@ -133,7 +133,7 @@ pub(super) fn host_actions() -> [tilo_desktop_surface::HostAction; 2] {
 /// come and go with whether they may change the workspace's records.
 #[derive(Default)]
 pub(super) struct Offered {
-    /// The rows the page asked the desk to offer.
+    /// The rows the page asked the shell to offer.
     page: RefCell<Vec<tilo_desktop_surface::HostAction>>,
     /// Whether the rows offered now include the upload rows; `None` before the first offer.
     uploads: RefCell<Option<bool>>,
@@ -151,8 +151,8 @@ impl Desktop {
                 .is_some_and(|role| role.includes(tilo_action_policy::Role::Editor))
     }
 
-    /// Offer `rows`, the page's own, on the desk, with the upload rows where the person may
-    /// upload. What the desk no longer offers is withdrawn from what still asks for it. Whether
+    /// Offer `rows`, the page's own, on the shell, with the upload rows where the person may
+    /// upload. What the shell no longer offers is withdrawn from what still asks for it. Whether
     /// anything was withdrawn.
     pub(super) fn offer_host_actions(&self, rows: Vec<tilo_desktop_surface::HostAction>) -> bool {
         *self.offered.page.borrow_mut() = rows;

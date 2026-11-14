@@ -2,11 +2,11 @@
 //! over what this page publishes.
 //!
 //! [`tilo_session::search::SessionSearch`] is the desktop's search beyond its own windows and
-//! commands — what stands over the desk as published actions, Settings' pages, the apps this page
+//! commands — what stands over the shell as published actions, Settings' pages, the apps this page
 //! has, the records its workspaces hold, the question the person types, and the sources they
-//! switched off — and the rows a host alone can carry out. The desk draws the palette and the row
+//! switched off — and the rows a host alone can carry out. The shell draws the palette and the row
 //! the person chose ([`tilo_desktop_surface::SearchHost`]); this page hands over what only it
-//! knows and takes the choices back to the desk it arranges.
+//! knows and takes the choices back to the shell it arranges.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use tilo_session::search::{AppActions, SearchOptions, SessionSearch};
 /// for.
 ///
 /// A native desktop's action host starts an app and delivers its actions into the process it
-/// started. The page draws that app's window itself, so it asks the desk to bring the app's window
+/// started. The page draws that app's window itself, so it asks the shell to bring the app's window
 /// forward — opening it when the app is closed — and asks for the action to run in it once it is up,
 /// as a window asking another app to show something does ([`super::session_asks`]).
 struct PageActions {
@@ -38,15 +38,15 @@ struct PageActions {
 }
 
 impl AppActions for PageActions {
-    /// The page arranges its own windows: every other row is the desk's, which launches, focuses
+    /// The page arranges its own windows: every other row is the shell's, which launches, focuses
     /// and opens addresses where this page does. A workspace's file by its content is the page's:
     /// only it holds the bytes that say which app opens the file.
     fn performs(&self, target: &Target) -> bool {
         matches!(target, Target::Invoke(_) | Target::Content { .. })
     }
 
-    /// What apps publish through an action host: on the page each app publishes into the desk it
-    /// draws, and the desk's own door runs those rows.
+    /// What apps publish through an action host: on the page each app publishes into the shell it
+    /// draws, and the shell's own door runs those rows.
     fn published(&self, _: &str) -> Vec<PublishedActions> {
         Vec::new()
     }
@@ -132,12 +132,12 @@ impl AppActions for PageActions {
         })
     }
 
-    /// A row this page alone reaches is answered by the desk, which opens addresses
+    /// A row this page alone reaches is answered by the shell, which opens addresses
     /// ([`Target::Open`]).
     fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
         Err(DoorError::Unavailable {
             code: "no_uri_opener".into(),
-            reason: "The desk opens addresses here".into(),
+            reason: "The shell opens addresses here".into(),
         })
     }
 
@@ -149,17 +149,17 @@ impl AppActions for PageActions {
         })
     }
 
-    /// A launch is the desk's to arrange ([`Self::performs`]).
+    /// A launch is the shell's to arrange ([`Self::performs`]).
     fn open_application(&self, _: &str, _: &str, _: LaunchPlace) -> Result<(), DoorError> {
         Err(DoorError::Unavailable {
-            code: "desk_arranges_launches".into(),
-            reason: "The desk opens applications here".into(),
+            code: "shell_arranges_launches".into(),
+            reason: "The shell opens applications here".into(),
         })
     }
 }
 
 impl PageActions {
-    /// Whether a window of `app` stands on the desk.
+    /// Whether a window of `app` stands on the shell.
     fn showing(&self, app: &str) -> bool {
         self.handle
             .read(|tree| tilo_desktop_surface::navigation::window_of_app(tree, app).is_some())
@@ -171,11 +171,11 @@ impl PageActions {
 pub(crate) struct WorkspaceHost {
     pub search: Arc<dyn tilo_actions::remote::ResourceSearch>,
     pub workspace: String,
-    /// What asks for the desk's pass that lists the host's answer.
+    /// What asks for the shell's pass that lists the host's answer.
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
 
-/// The session's search over this page's desk, mounted as a native desktop mounts it: the bundle's
+/// The session's search over this page's layout, mounted as a native desktop mounts it: the bundle's
 /// apps as the apps installed here, the records the workspace's indexes name as `store` holds them
 /// (what the page's replication took in, noted in its one stream of record changes), the page's
 /// own model service as the gateway its questions run on, and the page as the host of the rows that

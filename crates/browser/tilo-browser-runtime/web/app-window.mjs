@@ -1,7 +1,7 @@
 /**
  * Whether the page runs installed as an app window or in a browser tab. A
  * tab's browser keeps Ctrl+W, Ctrl+T, Ctrl+N and Ctrl+Tab for its own tabs;
- * an app window hands them to the page, where the desk answers them as any
+ * an app window hands them to the page, where the shell answers them as any
  * app does and the shortcut guide shows them (`set_app_window`).
  */
 

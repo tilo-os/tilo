@@ -20,7 +20,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_model::{Layout, TabId};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::DeskEffect;
+use tilo_desktop_surface::navigation::LayoutEffect;
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
@@ -295,12 +295,12 @@ impl DeskLayer {
 
 impl DeskLayer {
     /// Carry out a verb of the desk's.
-    fn perform(&self, verb: &DeskEffect) -> bool {
+    fn perform(&self, verb: &LayoutEffect) -> bool {
         match verb {
-            DeskEffect::Focus { tab } => {
+            LayoutEffect::Focus { tab } => {
                 return tab.parse().is_ok_and(|tab| self.handle.focus_tab(tab));
             }
-            DeskEffect::CloseTab { tab } => {
+            LayoutEffect::CloseTab { tab } => {
                 let Ok(tab) = tab.parse::<u64>() else {
                     return false;
                 };
@@ -309,17 +309,17 @@ impl DeskLayer {
             // With nothing typed the effect is the search key itself: it opens search, and a press
             // over the open search closes it, as the shell's own search key does. A query is typed
             // into the search already open instead.
-            DeskEffect::Search { query } => match query {
+            LayoutEffect::Search { query } => match query {
                 None => self.handle.toggle_search(),
                 Some(query) => self
                     .handle
                     .open_search(Scope::Workspace, Some(query.clone())),
             },
-            DeskEffect::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
+            LayoutEffect::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
                 usize::try_from(*row).unwrap_or(usize::MAX),
                 argument.clone(),
             ),
-            DeskEffect::Launchpad { card } => {
+            LayoutEffect::Launchpad { card } => {
                 if card == "apps" {
                     self.handle.open_search(Scope::WindowGroup(None), None);
                 } else if let Some(card) = LaunchpadAction::ALL
@@ -335,27 +335,27 @@ impl DeskLayer {
                     return false;
                 }
             }
-            DeskEffect::StepFocus { steps } => {
+            LayoutEffect::StepFocus { steps } => {
                 self.handle
                     .step_focus(i32::try_from(*steps).unwrap_or_default());
             }
-            DeskEffect::FocusDisplay { display } => {
+            LayoutEffect::FocusDisplay { display } => {
                 let Ok(display) = display.parse::<u32>() else {
                     return false;
                 };
                 self.handle.focus_display(display);
             }
-            DeskEffect::MoveToDisplay { steps } => {
+            LayoutEffect::MoveToDisplay { steps } => {
                 self.handle
                     .move_focused_to_display(i32::try_from(*steps).unwrap_or_default());
             }
-            DeskEffect::WaitWindow { tab } => {
+            LayoutEffect::WaitWindow { tab } => {
                 let Ok(tab) = tab.parse() else {
                     return false;
                 };
                 ask(&self.handle, &self.asks, DesktopAsk::WaitWindow(tab));
             }
-            DeskEffect::ForceQuitApp { tab } => {
+            LayoutEffect::ForceQuitApp { tab } => {
                 let Ok(tab) = tab.parse() else {
                     return false;
                 };
@@ -414,7 +414,7 @@ impl ui::resources::PublishesResources for DeskLayer {
 
 impl ui::host_operation::ResourceOperations for DeskLayer {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[DeskEffect::OPERATION]
+        &[LayoutEffect::OPERATION]
     }
 
     fn start_operation(
@@ -424,8 +424,8 @@ impl ui::host_operation::ResourceOperations for DeskLayer {
         path: &ui::automerge::ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
         if let Some(request) = op.unscoped()
-            && request.type_id == DeskEffect::OPERATION
-            && let Ok(verb) = DeskEffect::from_payload(request.payload)
+            && request.type_id == LayoutEffect::OPERATION
+            && let Ok(verb) = LayoutEffect::from_payload(request.payload)
             && self.perform(&verb)
         {
             return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(

@@ -4,7 +4,7 @@
 //! An app that locks up leaves its window on the desktop as it last drew it,
 //! taking presses that never come back and looking like any other window. The
 //! compositor notices the silence — it pings each app it shows and expects an
-//! answer — and tells the desk which windows those are
+//! answer — and tells the shell which windows those are
 //! ([`DesktopHandle::set_unresponsive_windows`]). This card is what the person
 //! sees on such a window: what happened, and their two ways out. It sits over
 //! the window, takes the presses that land on it, and goes as soon as the app
@@ -13,7 +13,7 @@
 //! What the person chooses is queued on the handle
 //! ([`DesktopHandle::take_liveness_choices`]) and carried out by the host that
 //! owns the compositor, the same way a script or the shell's own view reaches
-//! it: through the desk's `wait-window` and `force-quit-app` verbs.
+//! it: through the shell's `wait-window` and `force-quit-app` verbs.
 
 use std::cell::Cell;
 
@@ -36,7 +36,7 @@ use vello::peniko::Fill;
 use super::{DesktopSurface, LivenessChoice};
 use crate::i18n::{t, t_args};
 
-/// A window whose app stopped answering, as the host last told the desk.
+/// A window whose app stopped answering, as the host last told the shell.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Hung {
     /// The tab of the window saying it.
@@ -77,13 +77,13 @@ pub(crate) struct HungApps {
     /// The revision `answered` belongs to: the host's revision the cards were laid out for.
     revision: u64,
     /// The host's revision now. A new one lays the cards out again, so the cards a host reports
-    /// reach the desk in the frame it reports them in.
+    /// reach the shell in the frame it reports them in.
     wanted: u64,
     dirty: Cell<bool>,
 }
 
 impl HungApps {
-    /// The windows that say they stopped responding, as of the desk's last layout, at the host's
+    /// The windows that say they stopped responding, as of the shell's last layout, at the host's
     /// revision `revision` .
     pub(super) fn set_hung(&mut self, revision: u64, mut hung: Vec<Hung>) {
         if self.revision != revision {
@@ -490,7 +490,7 @@ impl Widget for HungApps {
 }
 
 impl DesktopSurface {
-    /// Lay a card over each window whose app stopped answering, as the host last told the desk.
+    /// Lay a card over each window whose app stopped answering, as the host last told the shell.
     pub(super) fn place_hung_apps(&mut self) {
         let revision = self.shared.borrow().unresponsive_revision;
         let hung = {
@@ -551,8 +551,8 @@ mod tests {
         }
     }
 
-    /// A desk whose one window is the compositor's window `window` , drawn once, and its handle.
-    fn desk(window: u64) -> (ui::headless::FrameHarness, DesktopHandle, TabId) {
+    /// A shell whose one window is the compositor's window `window` , drawn once, and its handle.
+    fn shell(window: u64) -> (ui::headless::FrameHarness, DesktopHandle, TabId) {
         let mut minter = IdMinter::new(11);
         let tab = Tab {
             id: minter.mint(),
@@ -566,7 +566,7 @@ mod tests {
             pinned: false,
         };
         let id = tab.id;
-        let tree = super::super::seed_tree(&mut minter, "Desk", vec![tab]);
+        let tree = super::super::seed_tree(&mut minter, "Office", vec![tab]);
         let (surface, handle) = DesktopSurface::new(tree, 11, Box::new(Notices));
         let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
@@ -575,15 +575,15 @@ mod tests {
             Theme::dark(),
         );
         frame.relayout();
-        frame.poll_frame().expect("a frame draws the desk");
+        frame.poll_frame().expect("a frame draws the shell");
         (frame, handle, id)
     }
 
     /// A window whose app stopped answering says so over the window itself,
-    /// and the desk offers to wait for its app or to quit it.
+    /// and the shell offers to wait for its app or to quit it.
     #[test]
     fn a_window_whose_app_stopped_answering_says_so_over_it() {
-        let (mut frame, handle, tab) = desk(91);
+        let (mut frame, handle, tab) = shell(91);
         assert!(handle.set_unresponsive_windows(vec![91]));
         assert_eq!(handle.unresponsive_tabs(), vec![tab]);
         frame.request_layout();
@@ -606,7 +606,7 @@ mod tests {
                 && card.x1 <= viewport.x1
                 && card.y0 >= viewport.y0
                 && card.y1 <= viewport.y1,
-            "the card {card:?} stays inside the desk {viewport:?}"
+            "the card {card:?} stays inside the shell {viewport:?}"
         );
         assert!(
             surface.hung_apps.accessibility().is_some(),
@@ -616,7 +616,7 @@ mod tests {
         // The app answers again: nothing is left to say.
         assert!(handle.set_unresponsive_windows(Vec::new()));
         frame.request_layout();
-        frame.poll_frame().expect("a frame draws the desk");
+        frame.poll_frame().expect("a frame draws the shell");
         assert!(
             frame
                 .root::<DesktopSurface>()
@@ -631,7 +631,7 @@ mod tests {
     /// card goes at once, so the press answers.
     #[test]
     fn waiting_on_the_card_is_the_persons_choice() {
-        let (mut frame, handle, tab) = desk(91);
+        let (mut frame, handle, tab) = shell(91);
         assert!(handle.set_unresponsive_windows(vec![91]));
         frame.request_layout();
         frame.poll_frame().expect("a frame draws the card");
@@ -661,7 +661,7 @@ mod tests {
     /// Force quit is the other choice, and it names the same window.
     #[test]
     fn force_quitting_on_the_card_names_the_window() {
-        let (mut frame, handle, tab) = desk(91);
+        let (mut frame, handle, tab) = shell(91);
         assert!(handle.set_unresponsive_windows(vec![91]));
         frame.request_layout();
         frame.poll_frame().expect("a frame draws the card");

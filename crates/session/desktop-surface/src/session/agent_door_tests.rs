@@ -148,15 +148,15 @@ impl crate::TileSource for Notices {
     }
 }
 
-/// A window asking the desk to show how an agent or a computer connects
+/// A window asking the shell to show how an agent or a computer connects
 /// (Settings' "Connect an agent or computer") chooses the host action the
 /// person's own card does, which the page carries out: one setup, wherever
 /// it is opened. An agent acting for the person can't ask for it.
 #[test]
-fn a_window_asks_the_desk_for_the_persons_connect_setup() {
+fn a_window_asks_the_shell_for_the_persons_connect_setup() {
     use tilo_actions::remote::session_actions;
     let mut minter = tilo_desktop_model::IdMinter::new(7);
-    let tree = crate::seed_tree(&mut minter, "Desk", Vec::new());
+    let tree = crate::seed_tree(&mut minter, "Office", Vec::new());
     let handle = crate::DesktopSurface::new(tree, 7, Box::new(Notices)).1;
     let (session, openings) = super::serve("workspace", Arc::default());
     let person = Caller::local_person("ada").in_workspace("workspace");

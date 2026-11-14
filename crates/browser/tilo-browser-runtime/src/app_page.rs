@@ -43,7 +43,7 @@ pub(crate) enum Unopened {
 #[derive(Debug)]
 pub(crate) enum Unbuilt {
     /// The record is still on its way from the workspace (a window saved on it, or one a shared
-    /// desk names): the window shows it loading, and is built again once it is here. Not a
+    /// layout names): the window shows it loading, and is built again once it is here. Not a
     /// failure, so the person never reads one.
     Arriving,
     /// What the window says instead.

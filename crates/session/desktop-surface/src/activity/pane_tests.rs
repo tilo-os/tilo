@@ -70,7 +70,7 @@ mod tests {
                             .find_map(|strip| strip.window_groups.first_mut())
                     })
                     .and_then(|group| group.tabs.pop());
-                assert!(closed.is_some(), "the desk has a window to close");
+                assert!(closed.is_some(), "the layout has a window to close");
                 assert!(tree.seed_doc_from_cache(), "the layout takes the close");
             }
             tree.doc.set_actor(reader.clone());
@@ -116,7 +116,7 @@ mod tests {
         (tree, workspace_id, user)
     }
 
-    /// Which workspace a desk shows is the device's, so a switch writes no change: the pane reads
+    /// Which workspace a layout shows is the device's, so a switch writes no change: the pane reads
     /// nothing, describes nothing, and shows the rows of the workspace now in front.
     #[test]
     fn a_workspace_switch_reads_no_change_and_shows_the_workspace_in_front() {
@@ -580,7 +580,7 @@ mod tests {
         assert!(pane.undo_pending.is_some(), "one undo at a time");
     }
 
-    /// The same record, admitted the way the shell admits it: as an app record read from a detached
+    /// The same record, admitted the way the session admits it: as an app record read from a detached
     /// document rather than a mounted store.
     fn detached_records(
         records: &RecordStore,
@@ -639,7 +639,7 @@ mod tests {
         pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
         assert!(
             !pane.agent_runs.is_empty(),
-            "the refresh the shell uses reads the runs"
+            "the refresh the pane uses reads the runs"
         );
         let end = pane.agent_runs[0].run.steps[0].run.end;
         let row = detached_row(&pane, end);
@@ -1235,7 +1235,7 @@ mod tests {
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         show_summary(&mut pane);
-        // A row of the desk's own document: a governed row is read-only, and offers neither.
+        // A row of the layout's own document: a governed row is read-only, and offers neither.
         let idx = (0..pane.timeline.row_count())
             .find(|&i| {
                 pane.timeline
@@ -1641,7 +1641,7 @@ mod tests {
         assert_eq!(before_name, "Design review");
         let versions_before = pane.entries().len();
 
-        // Another window opens, so there is a change of the desk's own document to revert.
+        // Another window opens, so there is a change of the layout's own document to revert.
         assert!(
             tree.doc_append_tab_to_first_group_of_active_workspace(
                 next_id(),

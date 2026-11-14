@@ -59,7 +59,7 @@ test('an agent that finished while the person was away stays in the title until 
   tab.update({unread: 1, waiting: [], finished: [{id: 7, agent: 'Claude Code'}]});
   assert.equal(page.document.title, '(1) Claude Code finished · Tilo · Garden');
   page.show('visible');
-  assert.equal(page.document.title, '(1) Tilo · Garden', 'seen on the desk once the tab is in view');
+  assert.equal(page.document.title, '(1) Tilo · Garden', 'seen on the shell once the tab is in view');
   tab.update({unread: 1, waiting: [], finished: [{id: 7, agent: 'Claude Code'}]});
   assert.equal(page.document.title, '(1) Tilo · Garden');
 });

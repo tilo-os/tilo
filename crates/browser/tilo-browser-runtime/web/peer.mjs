@@ -1083,7 +1083,7 @@ async function connect({
     /** The person's name, as history and presence show it from now on. */
     get displayName() { return displayName; },
     /** The workspace's name as its host answered this page's admission with:
-     * the name the tab is titled after and the desk's first space is given,
+     * the name the tab is titled after and the shell's first space is given,
      * for a workspace the page read in no directory — one a link's invitation
      * admits into, or the person's own. */
     noteWorkspaceName(name) {
@@ -1642,7 +1642,7 @@ async function enterOnSession({
   try {
     const answered = await entryAnswered(peer);
     // The name the workspace gave itself, before its shared desktop reaches
-    // the page: what the tab is titled after and the desk's first space is
+    // the page: what the tab is titled after and the shell's first space is
     // given.
     peer.noteWorkspaceName?.(answered.name);
     onProgress?.({phase: 'admitted', room: answered.workspace, workspaceName: answered.name, role: answered.role});

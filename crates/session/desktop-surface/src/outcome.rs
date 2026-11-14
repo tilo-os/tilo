@@ -1,8 +1,8 @@
-//! What the desk says when something a person asked for did not happen: what they asked for, why it
+//! What the shell says when something a person asked for did not happen: what they asked for, why it
 //! did not happen, and — where trying again can work — the way to try.
 //! One [`Outcome`] is the whole vocabulary. It is drawn where the thing they touched was (the tab
 //! of an app that did not open, the row of a search that could not run), or, when nothing of it is
-//! left on the desk, told as a notice. Nothing else words a failure of the person's own action.
+//! left on the shell, told as a notice. Nothing else words a failure of the person's own action.
 
 use ui::widget::{
     AppKind, AppWidget, Button, ButtonRole, Column, Container, Element, Text, Widget,
@@ -70,7 +70,7 @@ impl Outcome {
     }
 
     /// The same outcome as a notice, for what the person asked for that has nothing of it left on
-    /// the desk to be drawn on: it says what did not happen and why in the notification centre,
+    /// the shell to be drawn on: it says what did not happen and why in the notification centre,
     /// where it waits to be read.
     #[must_use]
     pub fn notice(&self) -> crate::notifications::Notification {
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(Outcome::new("No permission.").detail(), "No permission");
     }
 
-    /// What has nothing of it left on the desk is told as a notice: its sentence leads and its why
+    /// What has nothing of it left on the shell is told as a notice: its sentence leads and its why
     /// follows, waiting in the notification centre.
     #[test]
     fn an_outcome_with_nothing_to_be_drawn_on_is_a_notice() {

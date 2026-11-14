@@ -46,19 +46,19 @@ fn window_group(minter: &mut IdMinter, title: &str) -> tilo_desktop_model::Windo
     }
 }
 
-/// A desk of three strips, each holding one window, on a held clock.
-struct Desk {
+/// A shell of three strips, each holding one window, on a held clock.
+struct Shell {
     frame: ui::headless::FrameHarness,
     handle: DesktopHandle,
     now: Instant,
     strips: Vec<StripId>,
 }
 
-impl Desk {
+impl Shell {
     fn new() -> Self {
         let mut minter = IdMinter::new(9);
         let notes = tab(&mut minter, "Notes");
-        let mut tree = seed_tree(&mut minter, "Desk", vec![notes]);
+        let mut tree = seed_tree(&mut minter, "Office", vec![notes]);
         let workspace = &mut tree.workspaces[0];
         let mut strips = vec![workspace.strips[0].id];
         for name in ["Research", "Reading"] {
@@ -89,14 +89,14 @@ impl Desk {
             (1200, 800),
             ui::headless::FrameOptions::default(),
         );
-        let mut desk = Self {
+        let mut shell = Self {
             frame,
             handle,
             now: ui::time::now(),
             strips,
         };
-        desk.frames(4);
-        desk
+        shell.frames(4);
+        shell
     }
 
     fn frames(&mut self, n: usize) {
@@ -169,49 +169,49 @@ impl Desk {
 /// is gone.
 #[test]
 fn a_clicked_strip_slides_across_frames_instead_of_cutting() {
-    let mut desk = Desk::new();
-    let second = desk.strips[1];
-    desk.go_to(second, ui::tokens::MotionSource::Pointer);
-    desk.frames(1);
-    let first = desk.leaving().expect("the strip left is drawn");
+    let mut shell = Shell::new();
+    let second = shell.strips[1];
+    shell.go_to(second, ui::tokens::MotionSource::Pointer);
+    shell.frames(1);
+    let first = shell.leaving().expect("the strip left is drawn");
     assert_eq!(
         first, 0.0,
         "the slide starts from what the person saw: {first}"
     );
-    desk.frames(3);
-    let later = desk.leaving().expect("still on its way");
+    shell.frames(3);
+    let later = shell.leaving().expect("still on its way");
     assert!(
         later < 0.0,
         "going down the deck, the strip left goes up: {later}"
     );
-    desk.frames(6);
-    let further = desk.leaving().expect("still on its way");
+    shell.frames(6);
+    let further = shell.leaving().expect("still on its way");
     assert!(
         further < later,
         "the strips move on every frame, not in one step: {further} after {later}"
     );
-    desk.frames(60);
+    shell.frames(60);
     assert_eq!(
-        desk.leaving(),
+        shell.leaving(),
         None,
         "a slide comes to rest and stops drawing"
     );
-    assert!(!desk.moving());
+    assert!(!shell.moving());
 }
 
 /// A strip the person went back to slides the other way.
 #[test]
 fn going_back_slides_the_other_way() {
-    let mut desk = Desk::new();
-    let (second, first) = (desk.strips[1], desk.strips[0]);
-    desk.go_to(second, ui::tokens::MotionSource::Pointer);
-    desk.frames(2);
-    assert!(desk.moving(), "the first change is on its way");
-    desk.frames(80);
-    assert!(!desk.moving());
-    desk.go_to(first, ui::tokens::MotionSource::Pointer);
-    desk.frames(4);
-    let shift = desk.leaving().expect("the strip left is drawn");
+    let mut shell = Shell::new();
+    let (second, first) = (shell.strips[1], shell.strips[0]);
+    shell.go_to(second, ui::tokens::MotionSource::Pointer);
+    shell.frames(2);
+    assert!(shell.moving(), "the first change is on its way");
+    shell.frames(80);
+    assert!(!shell.moving());
+    shell.go_to(first, ui::tokens::MotionSource::Pointer);
+    shell.frames(4);
+    let shift = shell.leaving().expect("the strip left is drawn");
     assert!(
         shift > 0.0,
         "going up the deck, the strip left goes down: {shift}"
@@ -223,12 +223,12 @@ fn going_back_slides_the_other_way() {
 /// is made from says whether anything is drawn moving at all.
 #[test]
 fn a_strip_change_is_a_step_along_the_deck() {
-    let desk = Desk::new();
-    let (first, second, third) = (desk.strips[0], desk.strips[1], desk.strips[2]);
-    let (kind, toward, steps) = desk.change(Some(first), Some(second));
+    let shell = Shell::new();
+    let (first, second, third) = (shell.strips[0], shell.strips[1], shell.strips[2]);
+    let (kind, toward, steps) = shell.change(Some(first), Some(second));
     assert_eq!(kind, super::slide::SlideKind::Strip);
     assert_eq!((toward, steps), (1.0, 1.0), "down the deck, one screen");
-    let (_, toward, steps) = desk.change(Some(third), Some(first));
+    let (_, toward, steps) = shell.change(Some(third), Some(first));
     assert_eq!((toward, steps), (-1.0, 2.0), "up the deck, two screens");
 }
 
@@ -236,43 +236,43 @@ fn a_strip_change_is_a_step_along_the_deck() {
 /// briefly, and it never takes the deck's full settle.
 #[test]
 fn a_key_slide_is_within_fast() {
-    let mut desk = Desk::new();
-    let second = desk.strips[1];
-    desk.go_to(second, ui::tokens::MotionSource::Keyboard);
-    desk.frames(1);
-    assert_eq!(desk.shown(), Some(second), "the strip it went to is shown");
+    let mut shell = Shell::new();
+    let second = shell.strips[1];
+    shell.go_to(second, ui::tokens::MotionSource::Keyboard);
+    shell.frames(1);
+    assert_eq!(shell.shown(), Some(second), "the strip it went to is shown");
     assert_eq!(
-        desk.leaving(),
+        shell.leaving(),
         Some(0.0),
         "it starts from what the person saw"
     );
     // `fast` is 130 ms: within a tenth of a second the strips have arrived.
-    desk.frames(10);
-    assert!(!desk.moving(), "a chord's change is over within `fast`");
+    shell.frames(10);
+    assert!(!shell.moving(), "a chord's change is over within `fast`");
 }
 
 /// A change nobody's hand made (an action, a script, an agent) is a shortcut's too: it moves within
 /// `fast` and never waits on a hand.
 #[test]
 fn an_action_slide_is_within_fast() {
-    let mut desk = Desk::new();
-    let second = desk.strips[1];
-    desk.go_to(second, ui::tokens::MotionSource::Action);
-    desk.frames(1);
-    assert_eq!(desk.shown(), Some(second));
-    desk.frames(10);
-    assert!(!desk.moving());
+    let mut shell = Shell::new();
+    let second = shell.strips[1];
+    shell.go_to(second, ui::tokens::MotionSource::Action);
+    shell.frames(1);
+    assert_eq!(shell.shown(), Some(second));
+    shell.frames(10);
+    assert!(!shell.moving());
 }
 
 /// A shortcut's slide is shorter than a hand's: the same change made with a pointer is still moving
 /// when a chord's has arrived.
 #[test]
 fn a_chord_s_slide_is_shorter_than_a_click_s() {
-    let mut by_key = Desk::new();
+    let mut by_key = Shell::new();
     let second = by_key.strips[1];
     by_key.go_to(second, ui::tokens::MotionSource::Keyboard);
     by_key.frames(10);
-    let mut by_click = Desk::new();
+    let mut by_click = Shell::new();
     let second = by_click.strips[1];
     by_click.go_to(second, ui::tokens::MotionSource::Pointer);
     by_click.frames(10);
@@ -284,35 +284,35 @@ fn a_chord_s_slide_is_shorter_than_a_click_s() {
 /// first, and the whole motion asks the clock for frames until it settles.
 #[test]
 fn a_slide_asks_for_frames_and_starts_from_rest() {
-    let mut desk = Desk::new();
-    let second = desk.strips[1];
-    desk.go_to(second, ui::tokens::MotionSource::Pointer);
-    desk.frames(1);
-    assert_eq!(desk.leaving(), Some(0.0));
+    let mut shell = Shell::new();
+    let second = shell.strips[1];
+    shell.go_to(second, ui::tokens::MotionSource::Pointer);
+    shell.frames(1);
+    assert_eq!(shell.leaving(), Some(0.0));
     assert!(
-        desk.moving(),
-        "the slide is what makes the desk draw the frames after it"
+        shell.moving(),
+        "the slide is what makes the shell draw the frames after it"
     );
-    desk.frames(120);
-    assert!(!desk.moving());
+    shell.frames(120);
+    assert!(!shell.moving());
 }
 
 /// A change asked for mid-slide keeps its place and carries on as one motion instead of starting
 /// over from the top.
 #[test]
 fn a_second_change_mid_slide_carries_on_from_where_it_is_drawn() {
-    let mut desk = Desk::new();
-    let (first, second, third) = (desk.strips[0], desk.strips[1], desk.strips[2]);
-    desk.go_to(second, ui::tokens::MotionSource::Pointer);
-    desk.frames(3);
-    let partway = desk.leaving().expect("on its way");
-    desk.go_to(third, ui::tokens::MotionSource::Pointer);
-    desk.frames(1);
-    let after = desk.leaving().expect("still drawn");
+    let mut shell = Shell::new();
+    let (first, second, third) = (shell.strips[0], shell.strips[1], shell.strips[2]);
+    shell.go_to(second, ui::tokens::MotionSource::Pointer);
+    shell.frames(3);
+    let partway = shell.leaving().expect("on its way");
+    shell.go_to(third, ui::tokens::MotionSource::Pointer);
+    shell.frames(1);
+    let after = shell.leaving().expect("still drawn");
     // The slide restarts its progress but keeps its place: the strip left is still the first one,
     // drawn from where it stood, so the second change carries on out instead of cutting.
     assert!(
-        after < 0.0 && after > -desk.height(),
+        after < 0.0 && after > -shell.height(),
         "the strips carry on from the place they were left in: {after} after {partway}"
     );
     let _ = first;
@@ -322,20 +322,21 @@ fn a_second_change_mid_slide_carries_on_from_where_it_is_drawn() {
 /// view, not a whole screen, as the old shell drew it.
 #[test]
 fn a_workspace_switch_is_a_whole_view_change() {
-    let mut desk = Desk::new();
-    let workspace = desk
+    let mut shell = Shell::new();
+    let workspace = shell
         .handle
         .read(|tree| tree.workspaces.get(1).map(|w| (w.id().to_string(), w.id())))
         .expect("a second workspace");
     ui::motion::note_source(ui::tokens::MotionSource::Pointer);
-    desk.handle
+    shell
+        .handle
         .dispatch(navigation::ChromeEffect::SwitchWorkspace {
             workspace: Some(workspace.0),
             delta: None,
         })
         .expect("the workspace is there");
-    desk.frames(2);
-    let shift = desk.leaving().expect("the workspace left is drawn");
+    shell.frames(2);
+    let shift = shell.leaving().expect("the workspace left is drawn");
     assert!(
         shift < 0.0 && shift.abs() <= 28.0,
         "a shared axis, not a full-width push: {shift}"
@@ -346,12 +347,12 @@ fn a_workspace_switch_is_a_whole_view_change() {
 /// paints no motion.
 #[test]
 fn asking_for_the_strip_already_shown_moves_nothing() {
-    let mut desk = Desk::new();
-    let first = desk.strips[0];
-    desk.go_to(first, ui::tokens::MotionSource::Pointer);
-    desk.frames(2);
-    assert_eq!(desk.leaving(), None);
-    assert!(!desk.moving());
+    let mut shell = Shell::new();
+    let first = shell.strips[0];
+    shell.go_to(first, ui::tokens::MotionSource::Pointer);
+    shell.frames(2);
+    assert_eq!(shell.leaving(), None);
+    assert!(!shell.moving());
 }
 
 /// A hand's change is drawn from where the person was; a chord's is over within `fast` . Both start
@@ -364,12 +365,12 @@ fn every_strip_change_starts_from_what_the_person_saw() {
         ui::tokens::MotionSource::Keyboard,
         ui::tokens::MotionSource::Action,
     ] {
-        let mut desk = Desk::new();
-        let second = desk.strips[1];
-        desk.go_to(second, source);
-        desk.frames(1);
+        let mut shell = Shell::new();
+        let second = shell.strips[1];
+        shell.go_to(second, source);
+        shell.frames(1);
         assert_eq!(
-            desk.leaving(),
+            shell.leaving(),
             Some(0.0),
             "{source:?}: the change starts from the place the person saw"
         );

@@ -120,7 +120,7 @@ export async function untilViewable(mount, target, options,
       // The app's window offers its views once its code is in, and that code
       // is a download of its own (tens of megabytes for the largest apps, the
       // page allows minutes for it): the wait for the views starts when it
-      // arrived, not when the link asked. The desk drawing meanwhile says
+      // arrived, not when the link asked. The shell drawing meanwhile says
       // nothing about the app.
       if (loading()) {
         waited = 0;

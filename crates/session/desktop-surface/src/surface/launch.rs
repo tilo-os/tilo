@@ -9,7 +9,7 @@ use crate::navigation;
 
 /// Put a window for `app` after the focused one of the shown strip, or at
 /// the place `at` in it (a drop's [`StripSlot::index`]), standing over the
-/// desk beside it when the app asked for a window that floats.
+/// shell beside it when the app asked for a window that floats.
 pub(super) fn open(
     tiles: &mut dyn TileSource,
     shared: &mut Shared,
@@ -70,7 +70,7 @@ pub(super) fn open(
         },
     );
     // A window group the canvas does not place is a window neither the framed
-    // canvas, the spaces canvas nor the traditional desktop draws: the desk a
+    // canvas, the spaces canvas nor the traditional desktop draws: the shell a
     // person just opened an app on would look empty. The group takes a place
     // as any other group does, by the same rule ([`Arrangement::place_missing`]).
     if let Some(workspace) = shared
@@ -86,7 +86,7 @@ pub(super) fn open(
         } = workspace;
         arrangement.place_missing(strips);
     }
-    // A window the app that opened it stands over the desk takes the place its
+    // A window the app that opened it stands over the shell takes the place its
     // strip gives it, as the record keeps places: by its corner of the work
     // area, so every member finds it there. The row stands it there, since
     // only the row knows the place the strip's share makes for it.
@@ -140,7 +140,7 @@ pub fn slot_among(windows: &[(usize, f64, f64)], x: f64) -> StripSlot {
 
 impl super::DesktopHandle {
     /// Where a window opened at `x` (the surface's coordinates) goes in the
-    /// shown strip: what a drop of files on the desk between windows opens
+    /// shown strip: what a drop of files on the shell between windows opens
     /// them at. `None` with no workspace shown.
     #[must_use]
     pub fn slot_at(&self, x: f64) -> Option<StripSlot> {

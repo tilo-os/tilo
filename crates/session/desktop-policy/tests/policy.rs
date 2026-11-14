@@ -14,7 +14,7 @@ use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{GroupId, TileContent};
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::{DesktopPolicy, Placement, Window};
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
+use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
 use ui::kurbo::Rect;
 
 const WIDTH: f64 = 1200.0;
@@ -152,7 +152,7 @@ fn a_window_the_person_closes_is_reported_once_for_the_client_to_close() {
     assert!(policy.take_closed().is_empty());
 
     let route = policy.handle().snapshot("g", vec![]).active.unwrap();
-    let close = DeskEffect::CloseTab { tab: route.tab };
+    let close = LayoutEffect::CloseTab { tab: route.tab };
     policy.handle().dispatch(close).unwrap();
     settle(&mut driver);
 

@@ -2,7 +2,7 @@
 //! and its song, the other players one can switch to, where its sound can go,
 //! and what another of the person's devices hands this one.
 //!
-//! One reading, kept here, so the Quick Settings card, the desk's music
+//! One reading, kept here, so the Quick Settings card, the shell's music
 //! widget, the lock screen's card and the bar's pill can never disagree about
 //! the song. A host that runs the media stack builds it from the audio
 //! service's `media` reading ([`now_playing`]); the transport every surface

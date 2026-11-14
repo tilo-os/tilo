@@ -1,6 +1,6 @@
 //! The desktop's chrome in the page, from `tilo-desktop`'s widgets: the
 //! native shell's backdrop, its top bar over the strip, the launchpad on a
-//! desk with no windows yet, the overview panel the bar's Tilo mark opens,
+//! shell with no windows yet, the overview panel the bar's Tilo mark opens,
 //! and the About sheet saying what this is.
 //!
 //! Desktop chords are the native shell's, read from the same shortcut
@@ -162,7 +162,7 @@ pub(crate) struct HostOffers {
     /// card opens on it, asking the person to confirm.
     pub link_offer: Option<String>,
     /// The workspace directory this page browses (`mountDesktop({directory})`):
-    /// a page has no community site, identity on disk or desk of its own to
+    /// a page has no community site, identity on disk or shell of its own to
     /// read one from.
     pub directory: Option<crate::directory::PageDirectoryConfig>,
     /// How the page lays the desktop out.
@@ -315,7 +315,7 @@ impl ChromeSource for PageChrome {
         self.host.clone()
     }
 
-    /// The page's desk never takes a window full screen over the bar: it has one window of its
+    /// The page's shell never takes a window full screen over the bar: it has one window of its
     /// own and no display to give it.
     fn fullscreen(&self) -> bool {
         false
@@ -355,7 +355,7 @@ fn page_chrome(
 
 /// The page's side of the desktop's control hints — the person's record as their settings hold it,
 /// and what this page alone knows of the moment — the bar that reads them, and the shortcut guide
-/// whose table the desk answers.
+/// whose table the shell answers.
 fn hints_and_guide(
     top: DesktopChrome,
 ) -> (
@@ -368,13 +368,13 @@ fn hints_and_guide(
     let guide = crate::over_page::OverPage::new(PageGuide::new(top.mac()));
     let mut top = top;
     top.set_hints_feed(hints.clone());
-    // The desk answers the person's chords, as the guide shows them.
+    // The shell answers the person's chords, as the guide shows them.
     top.set_shortcuts(guide.shortcuts());
     (hints, top, guide)
 }
 
 /// Who is here: the session's own roster, mounted on the page as a native desktop mounts it, on a
-/// layer of its own over the desk. It reads who is here from the page's sync and asks the page for
+/// layer of its own over the shell. It reads who is here from the page's sync and asks the page for
 /// what only it can do ([`BrowserShell::follow_people`]); what it shows the page draws.
 fn mount_people(
     handle: &DesktopHandle,
@@ -400,7 +400,7 @@ fn mount_people(
             scale: 1.0,
             seated: chrome.authorship.author.clone(),
             // Each window's record, by its tab: the page's windows name no app beside it, which
-            // the desk's tree says.
+            // the shell's tree says.
             notes: Rc::new(move || shared.shown_records()),
             apps: Some(
                 Arc::new(crate::page_apps::PageApps) as Arc<dyn tilo_session::platform::apps::Apps>
@@ -473,11 +473,11 @@ fn minute() -> i64 {
 }
 
 /// The desktop the page mounts: the desktop's own layers (backdrop, top
-/// bar, the strip with the launchpad beneath it while the desk shown is
+/// bar, the strip with the launchpad beneath it while the shell shown is
 /// empty), and what only the page shows over them.
 pub(crate) struct BrowserShell {
     /// Under the windows: backdrop, launchpad and the strip.
-    desk: DeskLayer,
+    under: DeskLayer,
     /// Over them: the bar, the strip ribbon and rail, the overview and
     /// the bar's menus.
     top: DesktopChrome,
@@ -485,7 +485,7 @@ pub(crate) struct BrowserShell {
     drawn_minute: Cell<i64>,
     rect: Rect,
     chrome: Rc<PageChrome>,
-    /// The bar and the desk's rules over what the page knows, which the bar and the chrome
+    /// The bar and the shell's rules over what the page knows, which the bar and the chrome
     /// read.
     source: Rc<HostChrome<PageChrome>>,
     handle: DesktopHandle,
@@ -493,7 +493,7 @@ pub(crate) struct BrowserShell {
     requests: HostRequests,
     profile: LazyProfileCard,
     /// Who is here: the session's own roster, its cards and every other person's pointer, on the
-    /// layer it placed over the desk.
+    /// layer it placed over the shell.
     people: Rc<RefCell<tilo_session::people::People>>,
     /// The session's sync, when this page takes part in the workspace's plane.
     sync: Option<Rc<tilo_session::sync::Client>>,
@@ -504,12 +504,12 @@ pub(crate) struct BrowserShell {
     layers: crate::layers::Layers,
     /// The page's long work, on a card of its own among those layers.
     jobs: crate::jobs_card::JobsCard,
-    /// Alt+Shift+Tab's walk over the desk's windows, the session's own, whose panel the bar draws.
+    /// Alt+Shift+Tab's walk over the shell's windows, the session's own, whose panel the bar draws.
     walk: tilo_session::switcher::WindowWalk,
     /// Whom this page follows, and what of their place it already showed: the same machine a native
     /// session runs.
     follow: RefCell<tilo_session_core::presence::Follow>,
-    /// What showing the person's own agent's work last looked at: who is here, the desk and the
+    /// What showing the person's own agent's work last looked at: who is here, the shell and the
     /// records its windows show, by their revisions.
     agent_work_seen: Cell<Option<(u64, u64, usize)>>,
     /// The workspace directory, over the page while it is up: the session's
@@ -519,7 +519,7 @@ pub(crate) struct BrowserShell {
     /// made and listed through the workspace's host.
     invite: crate::over_page::OverPage<crate::over_page::LazySheet>,
     /// The shortcut guide, over the page while it is up: the session's own,
-    /// explaining and changing the table this page's desk answers.
+    /// explaining and changing the table this page's shell answers.
     guide: crate::over_page::OverPage<PageGuide>,
     /// What the person's agents ask them, over everything while a question
     /// waits: the session's own question sheet, made once its code is in.
@@ -577,10 +577,10 @@ pub struct ChromeSources {
 }
 
 impl BrowserShell {
-    /// The children the page draws in order: the desk, the bar, this person's own card, the
+    /// The children the page draws in order: the shell, the bar, this person's own card, the
     /// session's layers over them, the sheets above everything, and a window's menu over those.
     fn drawn_children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.desk, &self.top, &self.profile];
+        let mut children: Vec<&dyn Widget> = vec![&self.under, &self.top, &self.profile];
         children.extend(self.layers.iter().map(|layer| layer as &dyn Widget));
         children.extend([
             &self.invite as &dyn Widget,
@@ -666,7 +666,7 @@ impl BrowserShell {
         let wake = Arc::clone(&sources.wake);
         let session = Arc::clone(&sources.session);
         let caller = sources.caller.clone();
-        handle.set_wake(desk_wake(&wake, &shared));
+        handle.set_wake(page_wake(&wake, &shared));
         let (chrome, intents) = page_chrome(&handle, &offers, &wake, sources);
         let source = Rc::new(HostChrome::new(Rc::clone(&chrome)));
         let tree = handle.read(Clone::clone);
@@ -676,7 +676,7 @@ impl BrowserShell {
             // A phone shows the time above the page: the bar's own would say it twice.
             .with_device_clock();
         let about = AboutSheet::new(AboutVariant::Browser, &offers.about);
-        let desk = page_desk(surface, &handle);
+        let under = page_layer(surface, &handle);
         // The desktop's shortcut table keeps the native defaults: the page
         // keeps no device settings to rebind them in.
         let mut top = DesktopChrome::new(
@@ -692,7 +692,7 @@ impl BrowserShell {
         // What a secondary click on a window's bar offers, over everything.
         let window_menu =
             tilo_desktop_surface::surface::window_menu::popup::WindowMenuPopup::new(handle.clone());
-        // The page's directory: over the desk, from this page's own site,
+        // The page's directory: over the shell, from this page's own site,
         // person and workspaces (`mountDesktop({directory})`).
         let directory = crate::over_page::OverPage::new(crate::over_page::LazySheet::directory(
             Rc::clone(&requests),
@@ -725,7 +725,7 @@ impl BrowserShell {
         });
         let sync = peer.and_then(crate::peer_sync::client);
         Self {
-            desk,
+            under,
             top,
             walk,
             drawn_minute: Cell::new(i64::MIN),
@@ -778,7 +778,7 @@ impl BrowserShell {
             cursor.is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
         for (layer, &node) in self.layers.iter_mut().zip(nodes) {
             // The bar's band is the bar's, but for what a layer draws there to be pressed (the
-            // follow banner's face and Stop): those presses are the layer's, as on a native desk.
+            // follow banner's face and Stop): those presses are the layer's, as on a native shell.
             let bar_point = on_bar && cursor.is_some_and(|point| layer.takes_bar_point(point));
             if (on_bar && !key && !bar_point) || (key && !layer.wants_keyboard()) {
                 continue;
@@ -882,7 +882,7 @@ impl BrowserShell {
                 app,
             )) => {
                 // Their app, where no window here shows their record by the name it is noted
-                // under: a window of that app here already is where they are, as a native desk
+                // under: a window of that app here already is where they are, as a native shell
                 // brings it forward. Following never opens a second window beside it; it opens
                 // the app only where none stands.
                 if !self.handle.focus_app(&app) {
@@ -916,7 +916,7 @@ impl BrowserShell {
     /// Where the person's own agent works comes into view each time it moves or acts: they see what
     /// their agent does. The strip scrolls to the window without taking the keyboard from the field
     /// they are in, and waits while they type or drag (`DesktopHandle::reveal_tab`). Looked at
-    /// again only when who is here, the desk or the agent's actions moved.
+    /// again only when who is here, the shell or the agent's actions moved.
     fn show_own_agent_work(&self) -> bool {
         let seen = (
             self.chrome.here.borrow().revision(),
@@ -1153,7 +1153,7 @@ impl BrowserShell {
             build: self.offers.build.clone(),
             names,
         };
-        if let Some((draft, crops)) = self.picker.take_report(self.desk.area(), &cx) {
+        if let Some((draft, crops)) = self.picker.take_report(self.under.area(), &cx) {
             // The frame drawn next has no picker over it: the parts'
             // pictures are copied from it, then the composer opens.
             crate::feedback_crops::want(crate::feedback_crops::Wanted {
@@ -1238,7 +1238,7 @@ impl BrowserShell {
                 });
             }
             // The bar's faces open who is here: the session's own roster, in the bar's own
-            // place over the desk.
+            // place over the shell.
             ChromeIntent::TogglePeople => {
                 self.close_bar_popovers_except(BarPopover::Chrome);
                 if !self.top.menu_open() {
@@ -1296,7 +1296,7 @@ impl BrowserShell {
     }
 
     /// What the desktop's layers asked of the page since it last looked.
-    /// Ask the session for the windows other devices host that this desk shows, stop reading the
+    /// Ask the session for the windows other devices host that this shell shows, stop reading the
     /// ones it stopped showing, and send the person's input on them to their hosts. Whether
     /// anything went.
     fn follow_pages(&self) -> bool {
@@ -1315,7 +1315,7 @@ impl BrowserShell {
             .top
             .take_asks()
             .into_iter()
-            .chain(self.desk.take_asks())
+            .chain(self.under.take_asks())
             .collect();
         let changed = !asks.is_empty();
         for ask in asks {
@@ -1355,7 +1355,7 @@ impl BrowserShell {
                 | DesktopAsk::FixedShortcut(ui::shortcut_table::FixedAction::ShortcutGuide) => {
                     self.guide.toggle();
                 }
-                // A fixed chord the desk carries out on its own windows and
+                // A fixed chord the shell carries out on its own windows and
                 // strips never reaches here. The capture studio and cutting
                 // remote input are surfaces over a system's screen, which a
                 // page has none of: it says so rather than doing nothing.
@@ -1363,7 +1363,7 @@ impl BrowserShell {
                 // The page's own keys reach the browser's shortcuts.
                 // Leaving or deleting a workspace is a session's to confirm,
                 // carry out and say: a page holds no device record of it.
-                // It places no desk widget, so no music control of one is
+                // It places no shell widget, so no music control of one is
                 // here to press: steering a player is the session's, on the
                 // machine that runs it. A window that stopped answering is
                 // waited for or quit where the compositor runs, which a page
@@ -1394,7 +1394,7 @@ impl BrowserShell {
         changed
     }
 
-    /// Tell the person why a fixed chord the desk left to the page did not
+    /// Tell the person why a fixed chord the shell left to the page did not
     /// run here.
     fn answer_fixed_shortcut(&self, action: ui::shortcut_table::FixedAction) {
         let Some(outcome) = crate::fixed_chords::unserved(action) else {
@@ -1726,14 +1726,14 @@ impl BrowserShell {
     }
 
     /// Carry out the host action `id`, however it was chosen: a card on the
-    /// empty desk, the workspace menu, or its row in search.
+    /// empty shell, the workspace menu, or its row in search.
     fn host_action(&self, id: String) {
         // The workspace menu's "Join a workspace…": the directory the
         // session's shell opens, over the page's own site.
         if id == tilo_desktop::desktop_host::JOIN_WORKSPACE {
             self.directory.open();
         } else if let Some(card) = LaunchpadAction::from_host_id(&id) {
-            // The empty desk's welcome verbs are the desktop's own, carried
+            // The empty shell's welcome verbs are the desktop's own, carried
             // out here.
             self.launchpad(card);
         } else {
@@ -1742,7 +1742,7 @@ impl BrowserShell {
         }
     }
 
-    /// A verb of the empty desk's launchpad, as its card, its host action
+    /// A verb of the empty shell's launchpad, as its card, its host action
     /// and its resource action all ask for it: the app action the verb
     /// declares, what only the page can do, and else the app itself.
     fn launchpad(&self, action: LaunchpadAction) {
@@ -1765,12 +1765,12 @@ impl BrowserShell {
     }
 }
 
-/// What the desk asks of the page when what it queued waits for the host's next pass — the card a
-/// person chose on the empty desk, the search its own "Open an app" opens, a command from an
-/// agent. The desk is host work the next frame takes, which is also the frame that presents what
-/// that pass did, so the wake marks the work and asks for the frame: a desk left to itself would
+/// What the shell asks of the page when what it queued waits for the host's next pass — the card a
+/// person chose on the empty shell, the search its own "Open an app" opens, a command from an
+/// agent. The shell is host work the next frame takes, which is also the frame that presents what
+/// that pass did, so the wake marks the work and asks for the frame: a shell left to itself would
 /// carry the choice out whenever an unrelated frame came, seconds or a minute later.
-fn desk_wake(wake: &Arc<dyn Fn() + Send + Sync>, shared: &crate::desktop::Shared) -> Rc<dyn Fn()> {
+fn page_wake(wake: &Arc<dyn Fn() + Send + Sync>, shared: &crate::desktop::Shared) -> Rc<dyn Fn()> {
     let wake = Arc::clone(wake);
     let shared = shared.clone();
     Rc::new(move || {
@@ -1857,8 +1857,8 @@ impl Widget for BrowserShell {
             // Not kept, a hint at worst shows once more: nothing to tell.
             settings_store::control_hints::LEARNED.set(learned).ok();
         }
-        changed |= self.desk.update(state, path);
-        // The pages of the windows other devices host, as this pass's desk shows them: what this
+        changed |= self.under.update(state, path);
+        // The pages of the windows other devices host, as this pass's shell shows them: what this
         // page asks its session for, and only what it shows.
         changed |= self.follow_pages();
         changed |= self.follow_asks();
@@ -1892,7 +1892,7 @@ impl Widget for BrowserShell {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::taffy::{Display, FlexDirection, Size};
-        let desk = self.desk.build_layout(taffy, theme, map);
+        let layer = self.under.build_layout(taffy, theme, map);
         let top = self.top.build_layout(taffy, theme, map);
         let profile = self.profile.build_layout(taffy, theme, map);
         let layers: Vec<NodeId> = self
@@ -1911,7 +1911,7 @@ impl Widget for BrowserShell {
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        let mut children = vec![desk, top, profile];
+        let mut children = vec![layer, top, profile];
         children.extend(layers);
         children.extend([invite, directory, guide, questions, window_menu]);
         taffy.widget_node(style, &children, map, self)
@@ -1922,10 +1922,10 @@ impl Widget for BrowserShell {
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap_or_default();
         let sheets = children.len().saturating_sub(SHEETS);
-        if let (Some(&desk), Some(&top), Some(&profile)) =
+        if let (Some(&shell), Some(&top), Some(&profile)) =
             (children.first(), children.get(1), children.get(2))
         {
-            self.desk.apply_layout(taffy, desk, inner);
+            self.under.apply_layout(taffy, shell, inner);
             self.top.apply_layout(taffy, top, inner);
             self.profile.apply_layout(taffy, profile, inner);
             for (layer, &node) in self
@@ -1960,12 +1960,12 @@ impl Widget for BrowserShell {
     ) {
         let started = ui::time::now();
         self.drawn_minute.set(minute());
-        self.desk
+        self.under
             .draw_child(scene, transform, text, theme, presence);
         // Last of the desktop, so what the bar opens below its band stays
         // above windows.
         self.top.draw_child(scene, transform, text, theme, presence);
-        // Who is here, over the desk: the session's roster, its cards and every other person's
+        // Who is here, over the shell: the session's roster, its cards and every other person's
         // pointer, on the layer it placed.
         for layer in self.layers.iter_mut() {
             layer.draw_child(scene, transform, text, theme, presence);
@@ -1995,7 +1995,7 @@ impl Widget for BrowserShell {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let sheets = children.len().saturating_sub(SHEETS);
-        let (Some(&desk), Some(&top), Some(&profile)) =
+        let (Some(&shell), Some(&top), Some(&profile)) =
             (children.first(), children.get(1), children.get(2))
         else {
             return;
@@ -2010,9 +2010,13 @@ impl Widget for BrowserShell {
         if self.picker.is_open() {
             let windows = self.pick_windows();
             let modifiers = ctx.modifiers.state();
-            *ctx.handled =
-                self.picker
-                    .handle_event(event, self.cursor, modifiers, self.desk.area(), &windows);
+            *ctx.handled = self.picker.handle_event(
+                event,
+                self.cursor,
+                modifiers,
+                self.under.area(),
+                &windows,
+            );
             return;
         }
         if self.window_menu_event(event, ctx, window_menu) {
@@ -2082,8 +2086,8 @@ impl Widget for BrowserShell {
         if *ctx.handled {
             self.follow_asks();
         } else if !self.top.overview_open() {
-            self.desk
-                .handle_event(event, &mut ctx.reborrow(ctx.path, desk));
+            self.under
+                .handle_event(event, &mut ctx.reborrow(ctx.path, shell));
         }
         // A press or a key the person made somewhere none of this stands: what the roster has open
         // closes, and their view is their own again rather than whom they followed.
@@ -2111,7 +2115,7 @@ impl Widget for BrowserShell {
     /// the strip takes the wheel first: the People popover, a menu, the
     /// overview, or the bar under the pointer (its centre cycles widgets).
     /// The surface is the area's top layer, so a wheel it takes never
-    /// reaches the empty desk's launchpad beneath.
+    /// reaches the empty shell's launchpad beneath.
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.layers.wants_pointer_capture()
             && !self.invite.is_open()
@@ -2128,7 +2132,7 @@ impl Widget for BrowserShell {
             && self
                 .cursor
                 .is_none_or(|point| !self.top.takes_wheel_at(point))
-            && self.desk.surface_view_only_scroll(event)
+            && self.under.surface_view_only_scroll(event)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2153,7 +2157,7 @@ impl Widget for BrowserShell {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.desk, &mut self.top, &mut self.profile];
+            vec![&mut self.under, &mut self.top, &mut self.profile];
         children.extend(
             self.layers
                 .iter_mut()
@@ -2224,9 +2228,9 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
         && own_name.is_some_and(|name| !name.trim().is_empty())
 }
 
-/// The page's desk: its one window hosts the cards itself, since no compositor gives an app's card
+/// The page's shell: its one window hosts the cards itself, since no compositor gives an app's card
 /// a window of its own.
-fn page_desk(surface: DesktopSurface, handle: &DesktopHandle) -> DeskLayer {
+fn page_layer(surface: DesktopSurface, handle: &DesktopHandle) -> DeskLayer {
     let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
     DeskLayer::new(
         Box::new(surface),
@@ -2240,7 +2244,7 @@ fn page_desk(surface: DesktopSurface, handle: &DesktopHandle) -> DeskLayer {
                 .filter(|card| card.offered(|app| crate::desktop::known_application(app).is_some()))
                 .collect()
         }),
-        // The page has no widget layer of its own under the desk, so the
+        // The page has no widget layer of its own under the shell, so the
         // layer keeps the asks to itself; `follow_asks` reads them back.
         Rc::default(),
         Vec::new(),
@@ -2291,7 +2295,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     struct OfferedEdits {
         rename: bool,
-        add_desk: bool,
+        add_strip: bool,
     }
 
     /// What `standing` may change about `tree`'s active workspace, whose
@@ -2313,7 +2317,7 @@ mod tests {
             rename: may(DesktopCommand::RenameWorkspace {
                 name: String::new(),
             }),
-            add_desk: may(DesktopCommand::CreateStrip {
+            add_strip: may(DesktopCommand::CreateStrip {
                 name: String::new(),
             }),
         }
@@ -2344,19 +2348,19 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_menu_offers_rename_and_new_desk_only_to_who_governs() {
+    fn the_workspace_menu_offers_rename_and_new_strip_only_to_who_governs() {
         let (tree, authors) = lounge();
         let offers = |person, role| offered_edits(&standing(person, role), &authors, &tree);
         let none = OfferedEdits {
             rename: false,
-            add_desk: false,
+            add_strip: false,
         };
         let all = OfferedEdits {
             rename: true,
-            add_desk: true,
+            add_strip: true,
         };
         // A guest and a member of the public workspace write in it, and
-        // leave its name and desks to its owner and moderators.
+        // leave its name and strips to its owner and moderators.
         assert_eq!(offers(GUEST, Some(Role::Editor)), none);
         assert_eq!(offers("member", Some(Role::Editor)), none);
         assert_eq!(offers("moderator", Some(Role::Moderator)), all);

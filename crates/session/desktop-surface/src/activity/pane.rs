@@ -392,13 +392,13 @@ pub struct WorkspaceActivityPane {
     /// were all passed over (a workspace switch) and the rows are as derived.
     last_rows: u64,
     /// The heads of the workspace's own document at the last rebuild: what it governed since is
-    /// read even while the desk's own document stands still.
+    /// read even while the layout's own document stands still.
     last_governing: Vec<ChangeHash>,
     period: Period,
     /// Every row the document yielded, with the workspace each belongs to (`None` for no single
     /// workspace). [`Self::scope`] selects the subset handed to the timeline.
     derived: Vec<(HistoryEntry, Option<WorkspaceId>)>,
-    /// Tree rows after workspace scoping, retained as the shell-document contribution to the
+    /// Tree rows after workspace scoping, retained as the layout document's contribution to the
     /// workspace-wide multi-document index.
     scoped_tree_rows: Vec<HistoryEntry>,
     history_index: WorkspaceHistoryIndex,
@@ -468,7 +468,7 @@ pub struct WorkspaceActivityPane {
     /// rows of its governance come from there ([`ActivityTree::governance_document`]).
     governance_log: ui::history_source::HistoryLog,
     /// The rows read from the workspace's own document: they address changes in it, not in the
-    /// document the desk is read from, so nothing here diffs or reverts them.
+    /// document the layout is read from, so nothing here diffs or reverts them.
     governance_rows: HashSet<HistoryEntryId>,
     /// Each workspace change's reading, kept across refreshes; see [`describe_workspace_changes`].
     workspace_changes: HashMap<ChangeHash, WorkspaceChange>,
@@ -565,14 +565,14 @@ impl WorkspaceActivityPane {
                     .on_undo_band(move |req| *ui.borrow_mut() = Some(req.clone()))
                     .on_name_group(move |req| *ni.borrow_mut() = Some(req.clone()));
                 t.set_draws_own_surface(false);
-                // The shell owns the Everyone/person selector directly above the timeline. Keep the
+                // The pane owns the Everyone/person selector directly above the timeline. Keep the
                 // operation chips, but never repeat an `author:any` row inside the embedded widget.
                 t.set_show_author_pill(false);
                 t.set_show_day_headings(true);
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively: what its layout
-            // record holds is one row per change of the desk.
+            // record holds is one row per change of the layout.
             source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
             revert_intent,
             name_intent,
@@ -876,7 +876,7 @@ impl WorkspaceActivityPane {
             }
             origin.get_or_insert(next);
         }
-        // A row read from the workspace's own document addresses a change the desk's document does
+        // A row read from the workspace's own document addresses a change the layout's document does
         // not hold: there is nothing here to compare it with or to take back.
         if detail
             .entry_ids
@@ -2266,7 +2266,7 @@ impl WorkspaceActivityPane {
         if !self.host.mutations_available() {
             return false;
         }
-        // A row of another record, or of the workspace's own document, is not the desk's to
+        // A row of another record, or of the workspace's own document, is not the layout's to
         // rewind: the layout's document is this device's to write.
         if self.governance_rows.contains(id) {
             return false;
@@ -2611,7 +2611,7 @@ fn describe_workspace_changes(
             .or_insert_with(|| WorkspaceChange::read(doc, deps, hash));
         *tag = change.workspace;
         if let Some((summary, entry_kind)) = change.counts.describe() {
-            // A change that says what was done keeps its own words; one that only says the desk
+            // A change that says what was done keeps its own words; one that only says the layout
             // changed is read from its patches, which say which window opened or whose name
             // changed.
             let tells_its_own_story = entry

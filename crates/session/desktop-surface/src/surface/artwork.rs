@@ -1,7 +1,7 @@
 //! The artwork each window brought of its own: the icon a program set for its
 //! window, which that window's tab paints in place of its app kind's glyph,
 //! and which the switcher shows
-//! ([`DesktopHandle::set_window_artwork`]). Never part of the tree: a desk does
+//! ([`DesktopHandle::set_window_artwork`]). Never part of the tree: a shell does
 //! not keep a window's icon after the window it belonged to is gone.
 
 use super::{DesktopHandle, DesktopSurface};

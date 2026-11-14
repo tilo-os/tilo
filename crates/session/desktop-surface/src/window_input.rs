@@ -1,7 +1,7 @@
 //! A person's pointer and keys on the picture of another device's window, as the input the device
 //! hosting the window replays ([`InputEvent`]).
 //!
-//! Every desk that shows such a window, natively or in a browser, translates with these: the
+//! Every shell that shows such a window, natively or in a browser, translates with these: the
 //! picture is drawn whole in its tile, centred and keeping its shape, so a point is read against the
 //! picture and not the tile, and lands in the window's own pixels however large the tile is. A key
 //! is the keyboard's physical key as a Linux evdev code, which the host turns into its own

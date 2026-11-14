@@ -1,6 +1,6 @@
 //! Who is here, as the page's own frames read them: the workspace's presence
 //! board, merged from every member's word ([`crate::peer`]), written into the
-//! desk's members and into the frame's presence, so editors draw each
+//! shell's members and into the frame's presence, so editors draw each
 //! member's caret under their name and the desktop's roster lists them. The
 //! pointers themselves are the session's to draw ([`tilo_session::people`]),
 //! as on every host.
@@ -84,7 +84,7 @@ impl Mount {
     }
 
     /// Who is here, placed: what each member is, what they are called, and where their caret is,
-    /// for the desks and editors that draw them. Runs at the start of every frame and after each
+    /// for the shells and editors that draw them. Runs at the start of every frame and after each
     /// drawn one.
     pub(super) fn place_presence(&mut self) {
         let Some(peer) = self.peer else {
@@ -358,7 +358,7 @@ pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
 
 /// A member's word arrived in `workspace` of `peer`: a mount that draws it
 /// asks for a frame at once, because the next frame is what places the
-/// pointer that moved. A desk at rest draws nothing on its own, so without
+/// pointer that moved. A shell at rest draws nothing on its own, so without
 /// this the pointer would wait for the next unrelated change.
 /// One object of another device's window page reached this page: the mounts showing
 /// `workspace` of `peer` build window `tab` again, so the frame that arrived is drawn, and ask for
