@@ -199,11 +199,6 @@ pub const KINDS: &[OriginKind] = &[
                 "The person's agents here, and what each is on and did.",
             ),
             field(
-                "rooms",
-                "Collection<session.room>",
-                "The person's other workspaces, with who is in each and what it holds.",
-            ),
-            field(
                 "notices",
                 "Collection<session.notice>",
                 "What the person was told, newest first.",
@@ -420,31 +415,6 @@ pub const KINDS: &[OriginKind] = &[
                 "Bool",
                 "Whether it is seated at the person's agent door now, a client they admitted, \
                  rather than a run's own agent.",
-            ),
-        ],
-    },
-    OriginKind {
-        name: "session.room",
-        doc: "A workspace the person is in, as the workspace overview names it.",
-        derived: true,
-        fields: &[
-            field(
-                "key",
-                "Text",
-                "The workspace's id, as switching to it names it.",
-            ),
-            field("name", "Text", "Its name."),
-            field("current", "Bool", "Whether it is the one in front."),
-            field(
-                "members",
-                "Text",
-                "Who is in it, by their names, in the person's language.",
-            ),
-            field("present", "Int", "How many people are in it now."),
-            field(
-                "activity",
-                "Text",
-                "What happened in it last, in a few words.",
             ),
         ],
     },

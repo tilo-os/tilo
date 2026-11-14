@@ -36,34 +36,6 @@ scenario "an afternoon at the desk" {
             unseen: 3,
         ),
     )
-    d.rooms.insert(
-        Room(
-            key: "studio",
-            name: "Studio",
-            current: true,
-            members: "Ada, Mia, Sam, Fieldwork",
-            present: 3,
-            activity: "Mia edited Release planning",
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "home",
-            name: "Home",
-            members: "Ada",
-            present: 0,
-            activity: "Your notes from the weekend",
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "release",
-            name: "Release 4.2",
-            members: "Ada, Mia, Jo, Fieldwork",
-            present: 2,
-            activity: "The release board moved to Review",
-        ),
-    )
     d.windows.insert(
         Win(
             key: "w1",
@@ -312,25 +284,6 @@ scenario "the overview" {
             unseen: 3,
         ),
     )
-    d.rooms.insert(
-        Room(
-            key: "studio",
-            name: "Studio",
-            current: true,
-            members: "Ada, Mia, Fieldwork",
-            present: 2,
-            activity: "Mia edited Release planning",
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "home",
-            name: "Home",
-            members: "Ada",
-            present: 0,
-            activity: "Your notes from the weekend",
-        ),
-    )
     d.windows.insert(
         Win(
             key: "w1",
@@ -475,25 +428,6 @@ scenario "the overview, searching" {
             doing: "Sorting the inbox",
             mark: "3 threads filed",
             unseen: 3,
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "studio",
-            name: "Studio",
-            current: true,
-            members: "Ada, Mia, Fieldwork",
-            present: 2,
-            activity: "Mia edited Release planning",
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "home",
-            name: "Home",
-            members: "Ada",
-            present: 0,
-            activity: "Your notes from the weekend",
         ),
     )
     d.windows.insert(
@@ -1363,50 +1297,19 @@ scenario "an empty notification centre" {
     d.here = "centre"
 }
 
-/// The workspaces: every one the person is in, with who is there and what it holds.
+/// The workspaces: every one the person is in, and who is here in the one in front.
 scenario "the workspaces" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.clock = "9:12 AM"
     d.workspace = "Studio"
     d.here = "workspaces"
-    d.rooms.insert(
-        Room(
-            key: "studio",
-            name: "Studio",
-            current: true,
-            members: "Ada, Mia, Sam, Fieldwork",
-            present: 3,
-            activity: "Mia edited Release planning",
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "home",
-            name: "Home",
-            members: "Ada",
-            present: 0,
-            activity: "Your notes from the weekend",
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "release",
-            name: "Release 4.2",
-            members: "Ada, Mia, Jo, Fieldwork, two agents",
-            present: 2,
-            activity: "The release board moved to Review",
-        ),
-    )
-    d.rooms.insert(
-        Room(
-            key: "garden",
-            name: "Garden",
-            members: "Ada, Jo",
-            present: 1,
-            activity: "Jo added a planting calendar",
-        ),
-    )
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "release", name: "Release 4.2"))
+    d.workspaces.insert(Workspace(key: "garden", name: "Garden"))
+    d.people.insert(Person(key: "mia", name: "Mia Clayton"))
+    d.people.insert(Person(key: "sam", name: "Sam Okafor"))
 }
 
 /// A banner over the desk: a build failure with its actions, above a desk at work.
@@ -1417,16 +1320,7 @@ scenario "a banner" {
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
-    d.rooms.insert(
-        Room(
-            key: "studio",
-            name: "Studio",
-            current: true,
-            members: "Ada, Mia",
-            present: 2,
-            activity: "Mia edited Release planning",
-        ),
-    )
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.windows.insert(
         Win(
             key: "w1",

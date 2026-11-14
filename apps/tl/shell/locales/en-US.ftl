@@ -77,8 +77,6 @@ d-prsypg4e = Dock covered
 
 d-twcpnt5t = Agents
 
-d-sh62fec4 = Rooms
-
 d-3vvnnztw = Notices
 
 d-lz6qs7zm = Notice actions
@@ -302,29 +300,6 @@ d-p6gfsj72 = Seat
 d-labby3mp-filter-unseen = Unseen
 
 d-labby3mp-filter-seat = Seat
-
-d-jlqw5py5 = Room
-    .doc = A workspace the person is in, as the workspace overview names it.
-    .noun = { $count ->
-        [one] room
-       *[other] rooms
-    }
-
-d-wvbsg6yl = Key
-
-d-wofgn4vi = Name
-
-d-5p6whtgp = Current
-
-d-huv4cci3 = Members
-
-d-l4d25hj6 = Present
-
-d-no5yi6m7 = Activity
-
-d-jlqw5py5-filter-current = Current
-
-d-jlqw5py5-filter-present = Present
 
 d-zk7pzrt2 = Notice
     .doc = Something a sender told the person here: an app, or the agent task that did.
@@ -1342,7 +1317,7 @@ d-rcjzvfxp = Overview
     .w-no-windows = No windows
     .w-open-something-to-see-its-window = Open something to see its window
 
-d-f5tl6n63 = Rooms here
+d-766s7y4k = Workspaces here
     .w-here = { $len } here
 
 d-7nxhynyj = Picture
@@ -1423,14 +1398,6 @@ d-ycck5awo = Power row
     .w-log-out = Log out
     .w-restart = Restart
     .w-shut-down = Shut down
-
-d-wdjxaekq = Workspaces
-    .w-workspaces = Workspaces
-    .w-name-a-new-workspace = Name a new workspace
-    .w-create = Create
-    .w-join-a-workspace = Join a workspace
-
-d-wcb3o55u = Room card
 
 d-xzb2gybw = Style switch
 
@@ -1538,3 +1505,12 @@ d-cijhlzxf = Window commands
 
 d-yx7doxgr = Traditional bar
     .w-tilo = Tilo
+
+d-wdjxaekq = Workspaces
+    .w-workspaces = Workspaces
+    .w-name-a-new-workspace = Name a new workspace
+    .w-create = Create
+    .w-join-a-workspace = Join a workspace
+
+d-7nsn4srj = Workspace card
+    .w-here = { $len } here

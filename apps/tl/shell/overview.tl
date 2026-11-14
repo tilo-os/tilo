@@ -31,7 +31,7 @@ view overview(d: Desk) {
             ui.TextInput(bind: query, placeholder: "Search windows") {
                 on submit: session.search(query: query)
             }
-            rooms_here(d)
+            workspaces_here(d)
             if query == "" {
                 if here.is_empty() {
                     ui.EmptyState(
@@ -52,16 +52,16 @@ view overview(d: Desk) {
 }
 
 /// The workspaces the person is in, as chips that switch to them, and how many people are here.
-view rooms_here(d: Desk) {
-    if not d.rooms.is_empty() or not d.people.is_empty() {
+view workspaces_here(d: Desk) {
+    if not d.workspaces.is_empty() or not d.people.is_empty() {
         row(gap: .related, align: .center, wrap: true) {
-            for r in d.rooms.sort_by(r -> r.name) {
+            for w in d.workspaces.sort_by(w -> w.name) {
                 ui.Chip(
-                    r.name,
-                    icon: if r.current { .layers } else { .folder },
-                    selected: r.current,
+                    w.name,
+                    icon: if w.current { .layers } else { .folder },
+                    selected: w.current,
                 ) {
-                    on press: device.switch_workspace(device.desk, workspace: r.key)
+                    on press: device.switch_workspace(device.desk, workspace: w.key)
                 }
             }
             if not d.people.is_empty() {
@@ -189,12 +189,12 @@ view window_menu(d: Desk, w: Win) {
                 }
             }
         }
-        for r in d.rooms.filter(r -> r.key != w.workspace_key) {
-            ui.MenuItem("Move to {r.name}", icon: .layers) {
+        for o in d.workspaces.filter(o -> o.key != w.workspace_key) {
+            ui.MenuItem("Move to {o.name}", icon: .layers) {
                 on choose: session.move_tab(
                     tab: w.key,
                     strip: .none,
-                    workspace: r.key,
+                    workspace: o.key,
                     display: .none,
                 )
             }

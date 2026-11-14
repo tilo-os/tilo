@@ -52,7 +52,6 @@ type Desk (origin: session.desk) {
     dock_reached: Bool
     dock_covered: Bool
     agents: Collection<Agent>
-    rooms: Collection<Room>
     notices: Collection<Notice>
     notice_actions: Collection<NoticeAction>
     windows: Collection<Win>
@@ -176,16 +175,6 @@ type Agent (origin: session.agent) {
     /// Whether it is seated at the person's agent door now, a client they admitted, rather
     /// than a run's own agent.
     seat: Bool
-}
-
-/// A workspace the person is in, as the workspace overview names it.
-type Room (origin: session.room) {
-    key: Text merge register
-    name: Text merge register
-    current: Bool
-    members: Text merge register
-    present: Int
-    activity: Text merge register
 }
 
 /// Something a sender told the person here: an app, or the agent task that did. How the centre

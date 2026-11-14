@@ -39,6 +39,11 @@ pub(super) fn reading_with_windows() -> DeskReading {
         clock: "4:28 PM".to_owned(),
         workspace: "Desk".to_owned(),
         strip: "Main".to_owned(),
+        workspaces: vec![WorkspaceReading {
+            key: "1".to_owned(),
+            name: "Desk".to_owned(),
+            current: true,
+        }],
         styles: shipped_styles(),
         windows: vec![
             WindowReading {
@@ -47,6 +52,7 @@ pub(super) fn reading_with_windows() -> DeskReading {
                 origin_app: "Notes".to_owned(),
                 strip: "Main".to_owned(),
                 workspace: "Desk".to_owned(),
+                workspace_key: "1".to_owned(),
                 focused: true,
                 ..WindowReading::default()
             },
@@ -56,6 +62,7 @@ pub(super) fn reading_with_windows() -> DeskReading {
                 origin_app: "Mail".to_owned(),
                 strip: "Main".to_owned(),
                 workspace: "Desk".to_owned(),
+                workspace_key: "1".to_owned(),
                 ..WindowReading::default()
             },
         ],

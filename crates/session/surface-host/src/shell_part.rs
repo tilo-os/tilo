@@ -46,8 +46,8 @@ pub use tilo_session_core::shell::{
     ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
     ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE,
     DESK_RESOURCE, DeskReading, DeskStyleReading, NoticeActionReading, NoticeReading, ORIGIN,
-    PersonReading, RoomReading, SHELL_APP, SHELL_RECORD, ScreenEdges, TimerReading, TrayReading,
-    WindowReading, WindowRect, WorkspaceReading, reach_pad, screen_edges,
+    PersonReading, SHELL_APP, SHELL_RECORD, ScreenEdges, TimerReading, TrayReading, WindowReading,
+    WindowRect, WorkspaceReading, reach_pad, screen_edges,
 };
 
 mod host;
@@ -111,10 +111,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/quick.tl"),
     ),
     (
-        "rooms.tl",
-        include_str!("../../../../apps/tl/shell/rooms.tl"),
-    ),
-    (
         "session.tl",
         include_str!("../../../../apps/tl/shell/session.tl"),
     ),
@@ -133,6 +129,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "traditional.tl",
         include_str!("../../../../apps/tl/shell/traditional.tl"),
+    ),
+    (
+        "workspaces.tl",
+        include_str!("../../../../apps/tl/shell/workspaces.tl"),
     ),
 ];
 /// The shell package's ids lock.
@@ -707,23 +707,6 @@ impl SessionOrigin {
                     ("doing", text(&a.doing)),
                     ("mark", text(&a.mark)),
                     ("unseen", Value::Int(a.unseen)),
-                ]
-            },
-        ));
-        writes.extend(self.mirror.sync(
-            &reading.rooms,
-            root,
-            field(desk, "rooms").as_deref(),
-            kind("room").ok(),
-            |r| r.key.clone(),
-            |r| {
-                vec![
-                    ("key", text(&r.key)),
-                    ("name", text(&r.name)),
-                    ("current", Value::Bool(r.current)),
-                    ("members", text(&r.members)),
-                    ("present", Value::Int(r.present)),
-                    ("activity", text(&r.activity)),
                 ]
             },
         ));

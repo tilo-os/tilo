@@ -612,18 +612,6 @@ impl Desk {
                 .unwrap_or_default(),
             windows: self.windows_reaching(tree, instant),
             agents: self.seats.readings(),
-            rooms: tree
-                .workspaces
-                .iter()
-                .map(|workspace| shell::RoomReading {
-                    key: workspace.slot.0.to_string(),
-                    name: tilo_desktop_surface::names::workspace(&workspace.name),
-                    current: workspace.slot == tree.active,
-                    members: self.person.clone(),
-                    present: 0,
-                    activity: String::new(),
-                })
-                .collect(),
             notices: notices(&self.notices),
             notice_actions: notice_actions(&self.notices),
             badges: self.signals.badges(),

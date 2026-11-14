@@ -113,17 +113,6 @@ pub struct AgentReading {
     pub seat: bool,
 }
 
-/// A workspace the person is in, as the workspace overview names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoomReading {
-    pub key: String,
-    pub name: String,
-    pub current: bool,
-    pub members: String,
-    pub present: i64,
-    pub activity: String,
-}
-
 /// Something a sender told the person here: an app, or the agent task that did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoticeReading {
@@ -209,9 +198,6 @@ pub struct DeskReading {
     /// The person's agents here, and what each is on and did.
     #[serde(default)]
     pub agents: Vec<AgentReading>,
-    /// The workspaces the person is in, with who is in each and what it holds.
-    #[serde(default)]
-    pub rooms: Vec<RoomReading>,
     /// What the person was told, newest first.
     #[serde(default)]
     pub notices: Vec<NoticeReading>,

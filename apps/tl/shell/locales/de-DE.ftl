@@ -76,8 +76,6 @@ d-prsypg4e = Dock verdeckt
 
 d-twcpnt5t = Agenten
 
-d-sh62fec4 = Arbeitsbereiche
-
 d-3vvnnztw = Hinweise
 
 d-lz6qs7zm = Aktionen der Hinweise
@@ -276,29 +274,6 @@ d-p6gfsj72 = Sitz
 d-labby3mp-filter-unseen = Ungesehen
 
 d-labby3mp-filter-seat = Sitz
-
-d-jlqw5py5 = Arbeitsbereich
-    .doc = Ein Arbeitsbereich, in dem die Person ist, wie ihn die Übersicht der Arbeitsbereiche nennt.
-    .noun = { $count ->
-        [one] Arbeitsbereich
-       *[other] Arbeitsbereiche
-    }
-
-d-wvbsg6yl = Schlüssel
-
-d-wofgn4vi = Name
-
-d-5p6whtgp = Aktuell
-
-d-huv4cci3 = Mitglieder
-
-d-l4d25hj6 = Anwesend
-
-d-no5yi6m7 = Aktivität
-
-d-jlqw5py5-filter-current = Aktuell
-
-d-jlqw5py5-filter-present = Anwesend
 
 d-zk7pzrt2 = Hinweis
     .doc = Etwas, das ein Absender der Person hier gesagt hat: eine App oder die Aufgabe, die es tat.
@@ -1165,7 +1140,7 @@ d-rcjzvfxp = Übersicht
     .w-no-windows = Keine Fenster
     .w-open-something-to-see-its-window = Öffne etwas, um sein Fenster zu sehen
 
-d-f5tl6n63 = Arbeitsbereiche hier
+d-766s7y4k = Arbeitsbereiche hier
     .w-here = { $len } hier
 
 d-7nxhynyj = Bild
@@ -1253,7 +1228,8 @@ d-wdjxaekq = Arbeitsbereiche
     .w-create = Erstellen
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
 
-d-wcb3o55u = Arbeitsbereichskarte
+d-7nsn4srj = Arbeitsbereichskarte
+    .w-here = { $len } hier
 
 d-xzb2gybw = Stilumschalter
 

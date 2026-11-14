@@ -925,6 +925,7 @@ fn overview_with(strips: &[&str]) -> DeskReading {
                 strip: (*strip).to_owned(),
                 strip_key: at.to_string(),
                 workspace: "Desk".to_owned(),
+                workspace_key: "1".to_owned(),
                 recency: i64::try_from(at).unwrap(),
                 focused: at == 0,
                 preview: "none".to_owned(),
@@ -1369,14 +1370,6 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
     link.publish(DeskReading {
         here: "overview".to_owned(),
         windows,
-        // The workspace in front, as the session publishes it: the overview places a window by
-        // the workspace its fields name current.
-        rooms: vec![RoomReading {
-            key: "1".to_owned(),
-            name: "Desk".to_owned(),
-            current: true,
-            ..RoomReading::default()
-        }],
         ..reading()
     });
     for _ in 0..6 {
