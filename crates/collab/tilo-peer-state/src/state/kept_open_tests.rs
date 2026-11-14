@@ -216,7 +216,7 @@ fn a_compacted_history_is_opened_whole_again_and_reads_alike() {
 }
 
 #[test]
-fn a_write_sealed_after_a_rotation_opens_only_with_the_rotated_keys() {
+fn a_write_sealed_after_a_rotation_waits_for_the_rotated_keys_and_hides_nothing_before_it() {
     let mut f = fixture();
     let before = f.keys();
     let reader = f.authority.device_public_key;
@@ -229,10 +229,8 @@ fn a_write_sealed_after_a_rotation_opens_only_with_the_rotated_keys() {
         f.now,
     );
     admit(&mut f.host, &f.owner, message, f.now);
-    let mut stale = KeptRecord::default();
-    let mut current = KeptRecord::default();
-    read_kept(&f.host, reader, &[&before], &mut stale).unwrap();
-    read_kept(&f.host, reader, &[&before], &mut current).unwrap();
+    let mut kept = KeptRecord::default();
+    read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
     let after = f.rotate();
     let message = write(
         &f.host,
@@ -242,19 +240,14 @@ fn a_write_sealed_after_a_rotation_opens_only_with_the_rotated_keys() {
         f.now,
     );
     admit(&mut f.host, &f.owner, message, f.now);
-    // Keys from before the rotation (a member it removed holds no others)
-    // open nothing new, and keep nothing open.
-    assert!(matches!(
-        read_kept(&f.host, reader, &[&before], &mut stale),
-        Err(crate::PeerDocumentReadError::Opening(_))
-    ));
-    assert!(
-        !stale.is_open(),
-        "a read its keys refuse forgets what it kept"
+    // Keys from before the rotation open nothing new, and hide nothing read before.
+    let (document, _) = read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
+    assert_eq!(
+        document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("before")
     );
     // The rotated keys open the new write alone, and read as a whole read.
-    let (mut document, opened) =
-        read_kept(&f.host, reader, &[&before, &after], &mut current).unwrap();
+    let (mut document, opened) = read_kept(&f.host, reader, &[&before, &after], &mut kept).unwrap();
     assert_eq!(opened, 1);
     same(
         &mut document,

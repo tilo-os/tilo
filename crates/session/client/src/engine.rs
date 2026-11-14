@@ -742,10 +742,10 @@ impl Engine {
             .get()
             .and_then(|keys| keys.history_keys(workspace));
         // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
-        // of the branch it was sealed on, has not reached this device — is a record still
-        // arriving here: it reads whole once the keys have, as the app's own channel holds such a
-        // write until they do. The record's keys open what they carry; the channel's own history
-        // keys open the rest.
+        // of the branch it was sealed on, has not reached this device — reads as what opened
+        // before it until they have, as the app's own channel holds such a write until they do;
+        // a record none of whose writes open yet is still arriving here. The record's keys open
+        // what they carry; the channel's own history keys open the rest.
         let mut unopened = false;
         let key = (workspace, app.to_owned(), record.to_owned());
         // Taken out while it is read: a read of the same record meanwhile opens it whole. What was

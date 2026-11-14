@@ -1783,7 +1783,7 @@ fn captured_history_denial_and_capacity_precede_opening_and_missing_keys_refuse(
 }
 
 #[test]
-fn captured_history_replays_compaction_and_requires_all_held_epochs() {
+fn captured_history_replays_compaction_and_waits_for_epochs_not_held() {
     let mut f = fixture();
     let old_keys = f.keys();
     let mut author = Author::new(&f.host);
@@ -1825,16 +1825,21 @@ fn captured_history_replays_compaction_and_requires_all_held_epochs() {
             .unwrap(),
         "after rotation"
     );
-    assert!(matches!(
-        restored_peer.capture_document(
+    // Without the rotated key the capture is the compaction alone: the write after it waits.
+    let capture = restored_peer
+        .capture_document(
             f.authority.device_public_key,
             (APP, RECORD),
             f.now,
             1024 * 1024,
             Some(&mut |op| open(&old_keys, op)),
-        ),
-        Err(crate::PeerDocumentReadError::Opening(_))
-    ));
+        )
+        .unwrap();
+    let restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+    assert_eq!(
+        restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("before rotation")
+    );
     let mut wire: DurableV6<'_> = postcard::from_bytes(&before).unwrap();
     wire.sealed[0].1.swap(0, 1);
     let misplaced = postcard::to_allocvec(&wire).unwrap();

@@ -168,9 +168,9 @@ pub fn changes_since(
 ///
 /// What it holds is plaintext the reader's keys opened, so it lives with that reader, in its
 /// memory, and is never stored here. A read the workspace refuses (the reader was removed, may no
-/// longer read the record, or the history no longer covers every write) forgets it, as does a
-/// write that does not open with the keys the reader holds now: what is kept never answers a
-/// reader the workspace or the keys would not answer whole.
+/// longer read the record, or the history no longer covers every write) forgets it: what is kept
+/// never answers a reader the workspace would not answer. A write that does not open with the
+/// keys the reader holds now ends what it holds until they do.
 #[derive(Default)]
 pub struct KeptRecord(Option<Opened>);
 
@@ -290,7 +290,8 @@ impl StatePeer {
     ///
     /// # Errors
     /// The reader may not read the record, it is not held, it is encrypted and nothing opens it,
-    /// its history does not cover every admitted write or does not open, or it exceeds `maximum`.
+    /// its history does not cover every admitted write or none of it opens, or it exceeds
+    /// `maximum`.
     pub fn open_document<'a>(
         &'a self,
         reader: [u8; 32],
@@ -442,7 +443,14 @@ fn open_history<'a>(
     // A write too large for one frame was written as segments, each a sealed write of its own:
     // it is read once all of them are held.
     for (index, op) in document.sealed.iter().enumerate().skip(opened.count) {
-        let plaintext = open(op).map_err(PeerDocumentReadError::Opening)?;
+        let plaintext = match open(op) {
+            Ok(plaintext) => plaintext,
+            // A write whose key has not reached this reader yet is read without, with every write
+            // after it, until the key is here: what opened before it still reads, as the reader
+            // read it a moment ago. A record none of whose writes open is still arriving.
+            Err(_) if index > 0 && opened.transfers.is_empty() => break,
+            Err(why) => return Err(PeerDocumentReadError::Opening(why)),
+        };
         opened.size = opened.size.saturating_add(plaintext.len());
         if opened.size > maximum {
             return Err(PeerDocumentReadError::Capacity);

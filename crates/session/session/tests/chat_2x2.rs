@@ -182,24 +182,16 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
     }
     // Bob's laptop starts again: the workspace hands it all three, in order,
     // and his phone the same when it comes back.
-    studio.bob_laptop.start();
-    studio.bob_laptop.wait_holding(&studio.site.workspace);
-    studio.bob_laptop.wait_showing(&studio.site.workspace);
-    studio.bob_laptop.open("so.tilo.chat");
-    studio.bob_laptop.wait_for_window("so.tilo.chat");
-    studio
-        .bob_laptop
-        .chat()
-        .wait_for_texts(&ada_key, &["one", "two", "three"]);
-    studio.bob_phone.start();
-    studio.bob_phone.wait_holding(&studio.site.workspace);
-    studio.bob_phone.wait_showing(&studio.site.workspace);
-    studio.bob_phone.open("so.tilo.chat");
-    studio.bob_phone.wait_for_window("so.tilo.chat");
-    studio
-        .bob_phone
-        .chat()
-        .wait_for_texts(&ada_key, &["one", "two", "three"]);
+    for device in [&mut studio.bob_laptop, &mut studio.bob_phone] {
+        device.start();
+        device.wait_holding(&studio.site.workspace);
+        device.wait_showing(&studio.site.workspace);
+        device.open("so.tilo.chat");
+        device.wait_for_window("so.tilo.chat");
+        device
+            .chat()
+            .wait_for_texts(&ada_key, &["one", "two", "three"]);
+    }
     // Bob answers, and Ada's laptop—which stayed on—shows it with her own three.
     studio.bob_phone.chat().send(&ada_key, "answered");
     studio
@@ -207,10 +199,15 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
         .chat()
         .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
     // Ada's phone was away too: it reads the whole conversation at once, under the same ids.
-    studio
-        .ada_phone
-        .chat()
-        .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
+    // Bob's laptop shows his answer beside Ada's three too.
+    for (device, peer) in [
+        (&studio.ada_phone, &bob_key),
+        (&studio.bob_laptop, &ada_key),
+    ] {
+        device
+            .chat()
+            .wait_for_texts(peer, &["one", "two", "three", "answered"]);
+    }
     // Every device reads that conversation off the copy of its record it keeps itself: the
     // workspace's host gone, all of them still show it, under the same ids.
     studio.site.stop();
