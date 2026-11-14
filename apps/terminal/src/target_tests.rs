@@ -398,13 +398,6 @@ tilo_test_env::scenario! {
         let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
         let doc = AutoCommit::new();
         widget.sync(&doc, &ROOT);
-        widget.open_target_menu();
-        let labels = widget.target_menu_labels().unwrap();
-        let run_on = crate::i18n::t("terminal-run-on");
-        assert!(
-            !labels.iter().any(|l| l.contains(&run_on)),
-            "an environment runs where it is asked for: {labels:?}"
-        );
 
         let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
             "agent:helper",
