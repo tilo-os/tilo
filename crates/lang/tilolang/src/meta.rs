@@ -738,6 +738,20 @@ impl PackageMeta {
         params.first().and_then(|param| self.type_named(&param.ty))
     }
 
+    /// Every type of this package the action whose parameters are `params` acts on: its
+    /// subject's, or each case of a union its first parameter takes (`to: TextChannel | Thread`),
+    /// since a call acts on a resource of one of them.
+    #[must_use]
+    pub fn subjects_of(&self, params: &[ParamMeta]) -> Vec<&TypeMeta> {
+        params.first().map_or_else(Vec::new, |param| {
+            param
+                .ty
+                .split(" | ")
+                .filter_map(|case| self.type_named(case))
+                .collect()
+        })
+    }
+
     /// The parameters beyond the subject that the address carries: what an invocation gives.
     #[must_use]
     pub fn arguments<'a>(&self, params: &'a [ParamMeta]) -> &'a [ParamMeta] {

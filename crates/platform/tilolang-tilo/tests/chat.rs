@@ -1444,3 +1444,43 @@ impl tilolang_runtime::Words for EchoWords {
         }
     }
 }
+
+/// Sending is an action on a channel, a thread or a direct conversation: the change a send in a
+/// channel commits names the channel's kind, and the package's surface publishes the send there,
+/// or every other device in a real workspace refuses the message.
+#[test]
+fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let first = ada.host.next_ticket();
+    call(
+        &ada,
+        "send",
+        vec![
+            design,
+            rich("Is the build on the test machines?"),
+            Value::none(),
+        ],
+    );
+    let committed = ada.host.take_committed_from(first);
+    assert!(!committed.is_empty(), "the send commits a change");
+    let meta = ada.host.package(APP).unwrap().meta;
+    let surfaces = tilolang_tilo::surface::package_surfaces(&meta, &tilolang_runtime::SourceWords);
+    for entry in committed {
+        let action = &entry.action;
+        assert_eq!(action.kind, "tl.so.tilo.lang.chat.TextChannel");
+        let surface = surfaces
+            .iter()
+            .find(|surface| surface.kind == action.kind)
+            .unwrap_or_else(|| panic!("no surface of kind {}", action.kind));
+        assert!(
+            surface.verb(&action.action_id).is_some(),
+            "{} publishes no {}",
+            action.kind,
+            action.action_id
+        );
+    }
+}

@@ -474,11 +474,14 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     for ty in &meta.types {
         let mut types = TypeSet::new();
         let mut verbs = edit_verbs(ty);
+        // An action on a union of the package's types is one on each of them: the change a call
+        // makes is claimed on the kind of the resource it was called on.
         verbs.extend(
             meta.offered_actions()
                 .filter(|action| {
-                    meta.subject_of(&action.params)
-                        .is_some_and(|subject| subject.id == ty.id)
+                    meta.subjects_of(&action.params)
+                        .iter()
+                        .any(|subject| subject.id == ty.id)
                 })
                 .map(|action| verb(meta, action, &mut types)),
         );
