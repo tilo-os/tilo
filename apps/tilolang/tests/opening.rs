@@ -2,7 +2,7 @@
 //! the workspace's index, takes the record in once it is decoded off the frame, and goes on as the
 //! window of the record, with nothing the person sees built again.
 
-use crate::change_marks::settle;
+use crate::change_marks::{said, settle};
 use serde_json::Map;
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
@@ -27,14 +27,6 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-/// Everything the window says, as a screen reader hears it.
-fn said(app: &mut HostedApp) -> Vec<String> {
-    app.harness().relayout();
-    (app.harness().inspection().root.nodes().into_iter())
-        .filter_map(|node| node.semantics.as_ref()?.name.clone())
-        .collect()
 }
 
 /// A profile in `dir` whose workspace holds a notebook of `n` notes, as an earlier session left it.

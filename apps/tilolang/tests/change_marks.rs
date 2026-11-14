@@ -34,11 +34,17 @@ impl Driven for HostedApp {
     }
 
     fn settle(&mut self) {
-        for _ in 0..12 {
-            self.harness()
-                .settle_for_capture(ui::time::Duration::from_millis(300));
-            self.harness().relayout();
-        }
+        captured(self, 12);
+    }
+}
+
+/// `rounds` of the frames a capture waits for, each laid out again: the window at rest, as a
+/// capture photographs it.
+pub(crate) fn captured(app: &mut impl Driven, rounds: usize) {
+    for _ in 0..rounds {
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_millis(300));
+        app.harness().relayout();
     }
 }
 
@@ -50,6 +56,50 @@ pub(crate) fn flattened(
         .iter()
         .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))
         .collect()
+}
+
+/// Everything the window says, as a screen reader hears it: each node's accessible name.
+pub(crate) fn said(app: &mut impl Driven) -> Vec<String> {
+    app.harness().relayout();
+    (app.harness().inspection().root.nodes().into_iter())
+        .filter_map(|node| node.semantics.as_ref()?.name.clone())
+        .collect()
+}
+
+/// A right click at `(x, y)`: the move, the press and the release of the secondary button.
+pub(crate) fn right_click(app: &mut impl Driven, (x, y): (f64, f64)) {
+    use ui::winit::event::{ElementState, MouseButton};
+    let harness = app.harness();
+    harness.send(&ui::synthetic_input::cursor_moved(x, y));
+    for state in [ElementState::Pressed, ElementState::Released] {
+        harness.send(&ui::synthetic_input::mouse_input(state, MouseButton::Right));
+    }
+    harness.relayout();
+}
+
+/// The names of the open menu's items, in order.
+pub(crate) fn menu_items(app: &mut impl Driven) -> Vec<String> {
+    fn items(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        if node.role == ui::a11y::Role::MenuItem
+            && let Some(name) = &node.name
+        {
+            out.push(name.clone());
+        }
+        for child in &node.children {
+            items(child, out);
+        }
+    }
+    let snapshot = app.harness().inspection();
+    let all = snapshot.root.nodes();
+    let mut out = Vec::new();
+    for node in all.into_iter().filter(|node| node.widget == "ContextMenu") {
+        if let Some(semantics) = &node.semantics
+            && semantics.state.expanded == Some(true)
+        {
+            items(semantics, &mut out);
+        }
+    }
+    out
 }
 
 pub(crate) fn settle(app: &mut impl Driven) {

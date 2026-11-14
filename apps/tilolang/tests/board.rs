@@ -10,7 +10,7 @@
     reason = "test assertions"
 )]
 
-use crate::change_marks::flattened;
+use crate::change_marks::{flattened, menu_items, right_click};
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 
@@ -26,11 +26,7 @@ fn staged() -> TestApp<TlApp> {
 }
 
 fn settle(app: &mut TestApp<TlApp>) {
-    for _ in 0..8 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
+    crate::change_marks::captured(app, 8);
 }
 
 /// The controls bound to an action the window does not publish: the live host refuses to
@@ -59,46 +55,6 @@ fn card_rect(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
                     .is_some_and(|access| access.name.as_deref() == Some(title))
         })
         .map_or_else(|| panic!("no card `{title}`"), |node| node.rect)
-}
-
-/// The names of the open menu's items, in order.
-fn menu_items(app: &mut TestApp<TlApp>) -> Vec<String> {
-    fn items(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-        if node.role == ui::a11y::Role::MenuItem
-            && let Some(name) = &node.name
-        {
-            out.push(name.clone());
-        }
-        for child in &node.children {
-            items(child, out);
-        }
-    }
-    let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    let mut out = Vec::new();
-    for node in all.into_iter().filter(|node| node.widget == "ContextMenu") {
-        if let Some(semantics) = &node.semantics
-            && semantics.state.expanded == Some(true)
-        {
-            items(semantics, &mut out);
-        }
-    }
-    out
-}
-
-fn right_click(app: &mut TestApp<TlApp>, rect: [f64; 4]) {
-    let (x, y) = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
-    let harness = app.harness();
-    harness.send(&ui::synthetic_input::cursor_moved(x, y));
-    harness.send(&ui::synthetic_input::mouse_input(
-        ui::winit::event::ElementState::Pressed,
-        ui::winit::event::MouseButton::Right,
-    ));
-    harness.send(&ui::synthetic_input::mouse_input(
-        ui::winit::event::ElementState::Released,
-        ui::winit::event::MouseButton::Right,
-    ));
-    harness.relayout();
 }
 
 #[test]
@@ -136,7 +92,7 @@ fn a_cards_menu_offers_its_moves_and_actions_and_keeps_every_binding_published()
     let _settled = ui::motion::testing::settled();
     let mut app = staged();
     let card = card_rect(&mut app, "Write the release notes");
-    right_click(&mut app, card);
+    right_click(&mut app, (card[0] + card[2] / 2.0, card[1] + card[3] / 2.0));
     let items = menu_items(&mut app);
     for wanted in ["Move to Doing", "Move to Done", "Delete"] {
         assert!(
@@ -172,7 +128,7 @@ fn a_cards_menu_offers_its_moves_and_actions_and_keeps_every_binding_published()
         .expect("the row is reachable");
     settle(&mut app);
     let card = card_rect(&mut app, "Write the release notes");
-    right_click(&mut app, card);
+    right_click(&mut app, (card[0] + card[2] / 2.0, card[1] + card[3] / 2.0));
     let items = menu_items(&mut app);
     assert!(
         items.iter().any(|item| item == "Move to To do")

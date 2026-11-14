@@ -14,6 +14,7 @@
     reason = "test assertions"
 )]
 
+use crate::change_marks::{menu_items, right_click};
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 
@@ -29,11 +30,7 @@ fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
 }
 
 fn settle(app: &mut TestApp<TlApp>) {
-    for _ in 0..8 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
+    crate::change_marks::captured(app, 8);
 }
 
 /// The rects of the widgets named `widget`, in tree order.
@@ -44,31 +41,6 @@ fn rects_of(app: &mut TestApp<TlApp>, widget: &str) -> Vec<[f64; 4]> {
         .filter(|node| node.widget == widget)
         .map(|node| node.rect)
         .collect()
-}
-
-/// The names of the open menu's items, in order.
-fn menu_items(app: &mut TestApp<TlApp>) -> Vec<String> {
-    fn items(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-        if node.role == ui::a11y::Role::MenuItem
-            && let Some(name) = &node.name
-        {
-            out.push(name.clone());
-        }
-        for child in &node.children {
-            items(child, out);
-        }
-    }
-    let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    let mut out = Vec::new();
-    for node in all.into_iter().filter(|node| node.widget == "ContextMenu") {
-        if let Some(semantics) = &node.semantics
-            && semantics.state.expanded == Some(true)
-        {
-            items(semantics, &mut out);
-        }
-    }
-    out
 }
 
 /// Where the open menu draws its item `name`.
@@ -129,20 +101,6 @@ fn last_message(app: &mut TestApp<TlApp>) -> [f64; 4] {
         .filter_map(|node| node.semantics.as_ref().and_then(|a| a.name.clone()))
         .collect();
     panic!("each message swipes; the window holds {names:?}, saying {said:?}");
-}
-
-fn right_click(app: &mut TestApp<TlApp>, (x, y): (f64, f64)) {
-    let harness = app.harness();
-    harness.send(&ui::synthetic_input::cursor_moved(x, y));
-    harness.send(&ui::synthetic_input::mouse_input(
-        ui::winit::event::ElementState::Pressed,
-        ui::winit::event::MouseButton::Right,
-    ));
-    harness.send(&ui::synthetic_input::mouse_input(
-        ui::winit::event::ElementState::Released,
-        ui::winit::event::MouseButton::Right,
-    ));
-    harness.relayout();
 }
 
 #[test]

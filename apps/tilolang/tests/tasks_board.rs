@@ -64,11 +64,7 @@ fn show_board(app: &mut TestApp<TlApp>) {
 }
 
 fn settle(app: &mut TestApp<TlApp>) {
-    for _ in 0..8 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
+    crate::change_marks::captured(app, 8);
 }
 
 /// The cards on the board, `(title, [x, y, width, height])`, in the order they are drawn: a
@@ -902,8 +898,10 @@ fn bo_writing(app: &mut crate::hosted::Session, task: &str, at: usize) -> [f64; 
         .nodes()
         .into_iter()
         .find(|node| node.path == "presence-mark-bo")
-        .map(|node| node.rect)
-        .unwrap_or_else(|| panic!("Bo's caret is drawn in the title"))
+        .map_or_else(
+            || panic!("Bo's caret is drawn in the title"),
+            |node| node.rect,
+        )
 }
 
 /// The window's tasks, opened: Ada's own task in her inbox, and the published tasks list.

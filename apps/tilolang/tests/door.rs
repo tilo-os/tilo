@@ -1,6 +1,7 @@
 //! What an agent's task does through the door is the task's, for the person it acts for, and
 //! history and undo group it by task like any app's agent-driven change.
 
+use crate::change_marks::{flattened, settle};
 use serde_json::{Map, Value as Json, json};
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
@@ -25,28 +26,12 @@ fn arguments(value: &Json) -> Map<String, Json> {
     value.as_object().cloned().unwrap_or_default()
 }
 
-fn settle(app: &mut HostedApp) {
-    for _ in 0..12 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
-}
-
 /// The window of the installed Notes package as the person opened it, and the notebook's id.
 fn notes_open() -> (HostedApp, String) {
     let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
     settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     (app, root)
-}
-
-/// Every resource `resources` publishes, with the ones under them.
-fn flattened(resources: &[ui::tilo_actions::ResourceSpec]) -> Vec<&ui::tilo_actions::ResourceSpec> {
-    resources
-        .iter()
-        .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))
-        .collect()
 }
 
 /// The id of the action called `name` of the published resource `resource`.

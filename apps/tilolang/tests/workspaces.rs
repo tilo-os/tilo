@@ -3,6 +3,7 @@
 //! the shell tells the window (`ui::workspace_sync`), and the app's own sentence shows only once the
 //! workspace has synced.
 
+use crate::change_marks::{said, settle};
 use ui::framework::testing::HostedApp;
 use ui::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
 
@@ -17,22 +18,10 @@ fn told(state: WorkspaceSyncState) -> WorkspaceSync {
     }
 }
 
-/// Everything the window says, as a screen reader hears it: each node's accessible name.
-fn said(app: &mut HostedApp) -> Vec<String> {
-    app.harness().relayout();
-    (app.harness().inspection().root.nodes().into_iter())
-        .filter_map(|node| node.semantics.as_ref()?.name.clone())
-        .collect()
-}
-
 /// The window of the installed Notes package over a workspace with nothing in it yet.
 fn empty_notebook() -> HostedApp {
     let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
-    for _ in 0..12 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
+    settle(&mut app);
     app
 }
 

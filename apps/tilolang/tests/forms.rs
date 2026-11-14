@@ -14,6 +14,7 @@
     reason = "test assertions"
 )]
 
+use crate::change_marks::right_click;
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 
@@ -32,11 +33,7 @@ fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
 }
 
 fn settle(app: &mut TestApp<TlApp>) {
-    for _ in 0..8 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
+    crate::change_marks::captured(app, 8);
 }
 
 /// Chooses the sidebar's place `label`, as a person does: what is due before today waits in
@@ -128,20 +125,6 @@ fn escape(app: &mut TestApp<TlApp>) {
     settle(app);
 }
 
-fn right_click(app: &mut TestApp<TlApp>, at: ui::kurbo::Point) {
-    let harness = app.harness();
-    harness.send(&ui::synthetic_input::cursor_moved(at.x, at.y));
-    harness.send(&ui::synthetic_input::mouse_input(
-        ui::winit::event::ElementState::Pressed,
-        ui::winit::event::MouseButton::Right,
-    ));
-    harness.send(&ui::synthetic_input::mouse_input(
-        ui::winit::event::ElementState::Released,
-        ui::winit::event::MouseButton::Right,
-    ));
-    harness.relayout();
-}
-
 fn click(app: &mut TestApp<TlApp>, at: ui::kurbo::Point) {
     app.harness().click_at(at.x, at.y);
     settle(app);
@@ -151,7 +134,7 @@ fn click(app: &mut TestApp<TlApp>, at: ui::kurbo::Point) {
 fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
     let row = bounds_of(app, title, None)
         .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
-    right_click(app, row.center());
+    right_click(app, (row.center().x, row.center().y));
     let items = menu_items(app);
     let at = bounds_of(app, item, Some(ui::a11y::Role::MenuItem))
         .unwrap_or_else(|| panic!("the menu offers {item}: {items:?}"));
@@ -178,7 +161,7 @@ fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
     let mut app = staged(DESKTOP);
     open_place(&mut app, "Today");
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
-    right_click(&mut app, row.center());
+    right_click(&mut app, (row.center().x, row.center().y));
     let items = menu_items(&mut app);
     // The day and the assignment both ask for what nobody gave them; what the view places
     // stands on its own, and the commands the task's type offers wait behind "More".
