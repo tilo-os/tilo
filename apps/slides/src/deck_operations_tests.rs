@@ -393,12 +393,10 @@ fn add_slide_writes_its_title_and_body_in_one_step() {
 
 #[test]
 fn an_agents_changes_read_as_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
     ui::i18n::I18nManager::init("en-US");
     let mut app = seeded();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <Deck as ui::tilo_resource::Resource>::KIND;
     let call = |app: &mut TestApp<SlidesShell>, resource: &str, id: &str, args: Value| {
         app.call_by(agent.clone(), resource, id, args)
@@ -444,7 +442,7 @@ fn an_agents_changes_read_as_sentences() {
         entry
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.actor == "agent:claude")
+            .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
     }));
     assert_eq!(
         sentences,
@@ -466,7 +464,7 @@ fn an_agents_changes_read_as_sentences() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .skip(2)
         .take(3)

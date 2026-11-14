@@ -94,7 +94,7 @@ pub fn activity_of(source: &Source<'_>, person: &str, since_ms: i64) -> Vec<Acti
         };
         let invoker = context.invoker.as_ref();
         let by_person = invoker.is_some_and(|invoker| {
-            invoker.actor == person || invoker.on_behalf_of.as_deref() == Some(person)
+            invoker.key() == person || invoker.acting.acted_for_person() == Some(person)
         });
         if by_person && version.time_ms >= since_ms {
             let what = context
@@ -109,7 +109,7 @@ pub fn activity_of(source: &Source<'_>, person: &str, since_ms: i64) -> Vec<Acti
                 before: before.clone(),
                 time_ms: version.time_ms,
                 actor: invoker
-                    .map(|invoker| invoker.actor.clone())
+                    .map(tilo_actions::ActionInvoker::key)
                     .unwrap_or_default(),
                 what: clip(&what, MAX_ARGS_CHARS),
                 destructive: is_destructive(context, destructive),

@@ -82,7 +82,7 @@ fn apply(_host: &Host, doc: &mut AutoCommit, action: &DynAction) {
         &action.kind,
     )
     .with_app("so.tilo.lang", "tilolang")
-    .with_invoker(ActionInvoker::actor("ada"));
+    .with_invoker(ActionInvoker::person("ada"));
     tilo_actions::apply_local_with_context(
         doc,
         action,

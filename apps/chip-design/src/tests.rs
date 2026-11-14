@@ -1135,12 +1135,10 @@ fn generic_gated_delta_dimensions_and_candidate_artifacts_are_consistent() {
 /// What an agent does in the project, one call each, reads as the app's sentences.
 #[test]
 fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <ChipProject as ui::tilo_resource::Resource>::KIND;
     let mut call = |action: &str, args: serde_json::Value| {
         app.call_by(agent.clone(), kind, action, args).unwrap();
@@ -1173,7 +1171,7 @@ fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
         entry
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.actor == "agent:claude")
+            .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
     }));
     assert_eq!(
         sentences,

@@ -34,8 +34,8 @@ use collaboration::{
     CollabEvent, CollabRequest, DocumentMutation, SurfaceDelta, SurfacePublication, WorkspaceCommit,
 };
 use tilo_actions::{
-    ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, ActorKind,
-    EncodedAction, InvocationId, InvocationUpdate, ResourceSpec,
+    ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, EncodedAction,
+    InvocationId, InvocationUpdate, ResourceSpec,
 };
 use tilo_render_protocol::patch::{ActionCatalogue, ToUi, Transport};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
@@ -70,9 +70,9 @@ fn local_now() -> chrono::DateTime<chrono::Local> {
 #[must_use]
 fn caller_of(invoker: &ActionInvoker) -> Caller {
     Caller {
-        actor: invoker.actor.clone(),
-        agent: invoker.kind != ActorKind::Person,
-        on_behalf_of: invoker.on_behalf_of.clone(),
+        actor: invoker.key(),
+        agent: !invoker.acting.is_person(),
+        on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
     }
 }
 
@@ -1190,7 +1190,7 @@ impl Hosted {
     ) -> Result<(), RecordError> {
         let _code = self.scope.enter();
         let (resource, kind) = &self.resource;
-        let invoker = ActionInvoker::actor(self.spec.person.clone());
+        let invoker = ActionInvoker::person(self.spec.person.clone());
         self.record
             .revert_step(&mut self.instance, resource, kind, invoker, ambient, change)
     }
@@ -1594,9 +1594,11 @@ impl Hosted {
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
         // A member's own record is that person's alone: anyone else is refused before anything
         // of it is read.
-        let person = match invoker.kind {
-            ActorKind::Person => Some(invoker.actor.as_str()),
-            _ => invoker.on_behalf_of.as_deref(),
+        let key = invoker.key();
+        let person = if invoker.acting.is_person() {
+            Some(key.as_str())
+        } else {
+            invoker.acting.acted_for_person()
         };
         if !tilolang_tilo::reaches(self.record.route().record.as_deref(), person) {
             let update = failed(
@@ -1829,7 +1831,7 @@ impl Hosted {
             .clone()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         let shown = self.shown();
-        let by_person = invoker.kind == ActorKind::Person;
+        let by_person = invoker.acting.is_person();
         let caller = caller_of(&invoker);
         let host = self
             .instance
@@ -1838,7 +1840,7 @@ impl Hosted {
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let (address, encoded) = host.carrying_out(invoker.actor.as_bytes(), || {
+        let (address, encoded) = host.carrying_out(invoker.key().as_bytes(), || {
             self.encode_named(&surface, &shown, address, argument)
         });
         CALLER.with(|slot| *slot.borrow_mut() = None);
@@ -2134,7 +2136,7 @@ impl Hosted {
         let Some((press, address, argument)) = self.instance.take_chosen() else {
             return false;
         };
-        let invoker = ActionInvoker::actor(self.spec.person.clone());
+        let invoker = ActionInvoker::person(self.spec.person.clone());
         let opens_what_it_made = self.is_primary(&address);
         match self.invoke(&address, argument.as_deref(), invoker, None) {
             Ok(output) => {
@@ -2723,7 +2725,7 @@ impl Applier {
         // Made as the invoker's step: the store writes it as theirs.
         self.host
             .store()
-            .writing_as(invoker.actor.as_bytes(), || {
+            .writing_as(invoker.key().as_bytes(), || {
                 self.host.root_record(&self.spec.app, ty)
             })
             .map_err(|error| error.to_string())?;
@@ -2778,7 +2780,7 @@ impl Applier {
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits, as the invoker's.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
-        let encoded = self.host.carrying_out(invoker.actor.as_bytes(), || {
+        let encoded = self.host.carrying_out(invoker.key().as_bytes(), || {
             tilo_actions::door::encode_json(&resources, &address, &change.arguments)
         });
         CALLER.with(|slot| *slot.borrow_mut() = None);

@@ -372,7 +372,7 @@ fn change_by(invoker: tilo_actions::ActionInvoker) -> Vec<automerge::Change> {
 }
 
 fn bot(actor: &str) -> tilo_actions::ActionInvoker {
-    tilo_actions::ActionInvoker::actor(actor).with_kind(tilo_actions::ActorKind::Bot)
+    tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor))
 }
 
 tilo_test_env::scenario! {
@@ -394,20 +394,20 @@ tilo_test_env::scenario! {
         ));
         // An invoker that names the bot's actor id without being a bot is refused.
         let posing = change_by(
-            tilo_actions::ActionInvoker::actor("bot:7f1c").with_appearance(Some(alice.clone())),
+            tilo_actions::ActionInvoker::bot("7f1c").with_appearance(Some(alice.clone())),
         );
         assert!(matches!(
             check_appearances(&posing, Some("bot:7f1c")),
             Err(ReceiptRefusal::Appearance { .. })
         ));
         let by_person = change_by(
-            tilo_actions::ActionInvoker::actor("person:mallory").with_appearance(Some(alice)),
+            tilo_actions::ActionInvoker::person("person:mallory").with_appearance(Some(alice)),
         );
         assert!(matches!(
             check_appearances(&by_person, Some("bot:7f1c")),
             Err(ReceiptRefusal::Appearance { .. })
         ));
-        let plain = change_by(tilo_actions::ActionInvoker::actor("person:ada"));
+        let plain = change_by(tilo_actions::ActionInvoker::person("person:ada"));
         assert_eq!(check_appearances(&plain, None), Ok(()));
     }
 

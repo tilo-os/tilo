@@ -148,11 +148,7 @@ mod tests {
                     version: tilo_actions::INTERACTION_VERSION,
                     invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
                     sequence: 2,
-                    actor: tilo_actions::InteractionActor {
-                        id: "quill".into(),
-                        kind: tilo_actions::ActorKind::Agent,
-                        for_person: None,
-                    },
+                    actor: tilo_actions::Acting::agent("quill"),
                     phase: tilo_actions::InteractionPhase::Committed,
                     action: tilo_actions::InteractionAction {
                         id: "rename".into(),

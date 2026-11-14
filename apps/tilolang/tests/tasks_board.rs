@@ -813,11 +813,7 @@ fn agent_acting(
         version: ui::tilo_actions::INTERACTION_VERSION,
         invocation: ui::tilo_actions::InvocationId::new(),
         sequence: 1,
-        actor: ui::tilo_actions::InteractionActor {
-            id: agent.actor,
-            kind: ui::tilo_actions::ActorKind::Agent,
-            for_person: None,
-        },
+        actor: agent.acting,
         phase: ui::tilo_actions::InteractionPhase::Applying,
         action: ui::tilo_actions::InteractionAction {
             id: descriptor.address.action.clone(),
@@ -843,10 +839,9 @@ fn show_acting(
 ) {
     let (agent, _) = crate::change_marks::run();
     let shown = app.harness().update_presence(|presence| {
-        presence.names.insert(
-            ui::permissions::UserId(agent.actor.clone()),
-            "Helper".into(),
-        );
+        presence
+            .names
+            .insert(ui::permissions::UserId(agent.key()), "Helper".into());
         presence
             .apply_interaction(event)
             .expect("a well-formed interaction applies")
@@ -1013,7 +1008,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     let all = snapshot.root.nodes();
     let caret = all
         .iter()
-        .find(|node| node.path == format!("presence-mark-{}", agent.actor))
+        .find(|node| node.path == format!("presence-mark-{}", agent.key()))
         .unwrap_or_else(|| panic!("the agent's caret is drawn in the title"));
     let named = caret
         .semantics

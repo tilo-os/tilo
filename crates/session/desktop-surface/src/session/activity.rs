@@ -25,7 +25,7 @@ use tilo_actions::remote::{
     ActionHostError, Caller, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, pending,
 };
-use tilo_actions::{ActionFailure, ActionOutput, ActorKind, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
 use crate::activity::{is_document_write, is_personal, is_read, refused_to_agent};
@@ -113,7 +113,7 @@ fn wake(waiters: Vec<Completer<()>>) {
 /// Whether `caller` is the person at this device, rather than an agent, an app or a Shortcut acting
 /// on their behalf.
 fn is_person(caller: &Caller) -> bool {
-    caller.actor().kind == ActorKind::Person
+    caller.acting().is_person() && caller.acting().app().is_none()
 }
 
 fn refused(reason: String) -> ActionHostError {

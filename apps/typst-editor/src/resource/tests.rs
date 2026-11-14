@@ -293,14 +293,12 @@ fn an_agent_edits_the_workspace_one_call_each() {
 
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let (_dir, path) = typ_file("notes.typ", "= Notes\n");
     let mut app = TestApp::<TypstEditorShell>::launched(&[&path]).unwrap();
     let file = first(&app.state());
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let item = file_resource_id(&file);
     let paths = Workspace::paths().files.item(&file);
     for edit in [
@@ -337,7 +335,7 @@ fn history_entries_render_as_the_apps_sentences() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);

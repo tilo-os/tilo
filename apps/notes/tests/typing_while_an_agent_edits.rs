@@ -5,14 +5,12 @@
 use crate::framework_support::{open, surface};
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::ActionInvoker;
 
 const TYPED: &str = "Typed by the person";
 
 fn agent() -> ActionInvoker {
-    ActionInvoker::actor("agent:claude-code")
-        .with_kind(ActorKind::Agent)
-        .acting_for("person")
+    ActionInvoker::agent("claude-code").acting_for("person")
 }
 
 fn note_titled(app: &TestApp<NotesShell>, title: &str) -> PageId {

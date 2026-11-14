@@ -302,17 +302,17 @@ impl UndoLog {
 
     /// Who a change is by, as far as this window knows: the host's word for
     /// this session's steps, else the invoker its entry records.
-    fn author_of<'v>(&'v self, version: &'v Version) -> Option<&'v str> {
+    fn author_of(&self, version: &Version) -> Option<String> {
         let presented = self.presented.get(&step_key(version));
         presented
             .and_then(|step| step.author.as_ref())
-            .map(|author| author.0.as_str())
+            .map(|author| author.0.clone())
             .or_else(|| {
                 version
                     .context
                     .as_ref()
                     .and_then(|context| context.invoker.as_ref())
-                    .map(|invoker| invoker.actor.as_str())
+                    .map(tilo_actions::ActionInvoker::key)
             })
     }
 
@@ -406,7 +406,7 @@ impl UndoLog {
             author: step
                 .first()
                 .and_then(|newest| self.author_of(newest))
-                .map(|by| UserId(by.to_owned())),
+                .map(UserId),
             instance_id: presented.and_then(|step| step.instance_id),
             // A redo stands for the step it brought back.
             step: step.first().and_then(|newest| {
@@ -604,7 +604,7 @@ impl UndoLog {
         if context.invoker.is_none()
             && let Some(author) = author
         {
-            context.invoker = Some(tilo_actions::ActionInvoker::actor(author.0.clone()));
+            context.invoker = Some(tilo_actions::ActionInvoker::person(author.0.clone()));
         }
         if context.gesture.is_none() {
             context.gesture = Some(self.open);
@@ -788,7 +788,7 @@ impl UndoLog {
             group: step.and_then(|step| step.group.clone()),
             invoker: by
                 .as_ref()
-                .map(|by| tilo_actions::ActionInvoker::actor(by.0.clone()))
+                .map(|by| tilo_actions::ActionInvoker::person(by.0.clone()))
                 .or_else(|| step.and_then(|step| step.invoker.clone())),
             gesture: Some(ActionId::new()),
             ..ActionContext::default()

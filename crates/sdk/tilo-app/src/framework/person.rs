@@ -780,7 +780,7 @@ impl PersonState {
         if !(1..=MAX_STEPS).contains(&steps) {
             return Err(format!("steps is 1 to {MAX_STEPS}"));
         }
-        if invoker.actor != self.me && invoker.on_behalf_of.as_deref() != Some(self.me.as_str()) {
+        if invoker.key() != self.me && invoker.acting.acted_for_person() != Some(self.me.as_str()) {
             return Err(format!(
                 "`{}` is {}'s own; only they change it",
                 request.record, self.me
@@ -792,7 +792,7 @@ impl PersonState {
             .find(|published| published.id == request.record)
             .ok_or_else(|| format!("no record of yours is open as {}", request.record))?;
         let mut taken = 0;
-        while taken < steps && (record.step)(request.undo, &invoker.actor) {
+        while taken < steps && (record.step)(request.undo, &invoker.key()) {
             taken = taken.saturating_add(1);
         }
         if taken == 0 {

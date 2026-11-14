@@ -1187,7 +1187,7 @@ pub fn change_message(person: Option<&str>) -> String {
         "Desktop",
     );
     if let Some(person) = person.filter(|person| !person.is_empty()) {
-        context = context.with_invoker(tilo_actions::ActionInvoker::actor(person));
+        context = context.with_invoker(tilo_actions::ActionInvoker::person(person));
     }
     context
         .change_message()
@@ -1206,7 +1206,7 @@ pub fn step_message(person: &str) -> String {
             crate::ownership::DESKTOP_KIND,
             "Desktop",
         )
-        .with_invoker(tilo_actions::ActionInvoker::actor(person))
+        .with_invoker(tilo_actions::ActionInvoker::person(person))
     }
     .change_message()
     .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message())
@@ -1217,7 +1217,7 @@ pub fn step_message(person: &str) -> String {
 #[must_use]
 pub fn housekeeping_message(person: &str) -> String {
     tilo_actions::ActionContext::default()
-        .with_invoker(tilo_actions::ActionInvoker::actor(person))
+        .with_invoker(tilo_actions::ActionInvoker::person(person))
         .with_change(tilo_actions::ChangeKind::Housekeeping)
         .change_message()
         .unwrap_or_else(|| change_message(Some(person)))
@@ -1229,7 +1229,7 @@ pub fn housekeeping_message(person: &str) -> String {
 pub fn change_author(message: Option<&str>) -> Option<String> {
     tilo_actions::ActionContext::from_change_message(message?)?
         .invoker
-        .map(|invoker| invoker.actor)
+        .map(|invoker| invoker.key())
         .filter(|actor| !actor.is_empty())
 }
 

@@ -2028,7 +2028,7 @@ async fn last_published(
 async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
     use crate::workspaces::tests::bots::{bridge_program, install_command};
     use automerge::transaction::Transactable as _;
-    use tilo_actions::{ActionContext, ActionInvoker, ActorKind, Appearance};
+    use tilo_actions::{ActionContext, ActionInvoker, Appearance};
 
     let lounge = Box::new(lounge().await);
     let (workspaces, workspace) = (&lounge.workspaces, lounge.workspace.as_str());
@@ -2059,8 +2059,7 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
     bot.set_actor(automerge::ActorId::from(b"bridge".as_slice()));
     bot.put(ROOT, "posted", "for Ada").unwrap();
     let context = ActionContext::default().with_invoker(
-        ActionInvoker::actor(format!("bot:{installation}"))
-            .with_kind(ActorKind::Bot)
+        ActionInvoker::bot(installation)
             .with_appearance(Some(Appearance::new("Ada", None, None).unwrap())),
     );
     bot.commit_with(

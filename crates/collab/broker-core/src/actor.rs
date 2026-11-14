@@ -159,13 +159,13 @@ impl BrokerActor {
     /// How this actor shows where it acts when no caller says more: its kind, and for an agent
     /// the person it acts for.
     #[must_use]
-    pub fn shown(&self) -> tilo_actions::InteractionActor {
+    pub fn shown(&self) -> Acting {
         if !self.is_agent {
-            return tilo_actions::InteractionActor::new(&self.id, tilo_actions::ActorKind::Person);
+            return Acting::person(self.id.clone());
         }
-        let agent = tilo_actions::InteractionActor::new(&self.id, tilo_actions::ActorKind::Agent);
+        let agent = Acting::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id));
         match &self.for_person {
-            Some(person) => agent.acting_for(person),
+            Some(person) => agent.acting_for(Acting::person(person.clone())),
             None => agent,
         }
     }

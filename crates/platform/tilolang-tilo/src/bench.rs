@@ -634,7 +634,7 @@ fn bench_step(action: &DynAction, who: &str) -> (DynAction, ActionContext) {
         &action.kind,
     )
     .with_app("so.tilo.lang", "tilolang")
-    .with_invoker(ActionInvoker::actor(who.to_owned()));
+    .with_invoker(ActionInvoker::person(who.to_owned()));
     (action, context)
 }
 

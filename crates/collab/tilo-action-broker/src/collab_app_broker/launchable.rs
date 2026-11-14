@@ -1387,8 +1387,8 @@ mod tests {
             );
             assert_eq!(
                 interaction.actor,
-                tilo_actions::InteractionActor::new("agent:scribe", tilo_actions::ActorKind::Agent)
-                    .acting_for("owner")
+                tilo_actions::Acting::agent("scribe")
+                    .acting_for(tilo_actions::Acting::person("owner"))
             );
             assert_eq!(interaction.phase, tilo_actions::InteractionPhase::Applying);
             assert_eq!(interaction.action.id, "new-window");
@@ -1409,11 +1409,8 @@ mod tests {
             };
             assert_eq!(
                 interaction.actor,
-                tilo_actions::InteractionActor::new(
-                    "shortcut:morning",
-                    tilo_actions::ActorKind::Shortcut
-                )
-                .acting_for("owner")
+                tilo_actions::Acting::automation("morning")
+                .acting_for(tilo_actions::Acting::person("owner"))
             );
         }
 
@@ -1453,8 +1450,8 @@ mod tests {
                 .context()
                 .and_then(|context| context.invoker.clone())
                 .expect("the host records the invoker");
-            assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
-            assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
+            assert!(invoker.acting.is_agent());
+            assert_eq!(invoker.acting.acted_for_person(), Some("owner"));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
                 payload: ui::collaboration::PresencePayload::Interaction(interaction),
                 ..
@@ -1464,8 +1461,8 @@ mod tests {
             };
             assert_eq!(
                 interaction.actor,
-                tilo_actions::InteractionActor::new("agent:mcp-1", tilo_actions::ActorKind::Agent)
-                    .acting_for("owner")
+                tilo_actions::Acting::agent("mcp-1")
+                    .acting_for(tilo_actions::Acting::person("owner"))
             );
 
             assert!(
@@ -1544,7 +1541,7 @@ mod tests {
                 CollabEvent::RemotePresenceUpdate {
                     payload: PresencePayload::Interaction(interaction), ..
                 } if interaction.invocation == delivered.invocation
-                    && interaction.actor.id == "agent:mcp-1"
+                    && interaction.actor.by.key() == "agent:mcp-1"
                     && interaction.phase == tilo_actions::InteractionPhase::Committed
             ),
             "the view receives the running action's actual outcome"

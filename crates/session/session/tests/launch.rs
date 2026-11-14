@@ -688,11 +688,7 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,
-        actor: tilo_actions::InteractionActor {
-            id: "scribe".to_owned(),
-            kind: tilo_actions::ActorKind::Agent,
-            for_person: None,
-        },
+        actor: tilo_actions::Acting::agent("scribe".to_owned()),
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {
             id: "rename".to_owned(),

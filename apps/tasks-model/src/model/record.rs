@@ -159,7 +159,7 @@ fn check_estimate(estimate: Option<u32>) -> Result<(), Refusal> {
 }
 
 fn by_agent(cx: &ActionCx) -> bool {
-    matches!(cx.actor_kind(), Some(tilo_actions::ActorKind::Agent))
+    cx.invoked_by().is_some_and(|by| by.is_agent())
 }
 
 fn message_text(text: NonBlank) -> Result<String, Refusal> {

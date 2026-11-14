@@ -299,12 +299,7 @@ impl Shared {
             return Err("a message needs words or something to carry".into());
         }
         // A window's box sends as the person at it; an agent or a script as itself.
-        let agent = by.filter(|by| {
-            !matches!(
-                by.kind,
-                tilo_actions::ActorKind::App | tilo_actions::ActorKind::Person
-            )
-        });
+        let agent = by.filter(|by| !by.acting.is_person());
         let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
@@ -315,7 +310,8 @@ impl Shared {
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
             Addressed::Report(destination) => {
-                let from = by.map_or(CHAT, |by| by.actor.as_str());
+                let key = by.map(tilo_actions::ActionInvoker::key);
+                let from = key.as_deref().unwrap_or(CHAT);
                 let report = destination.report(from, attached, text)?;
                 (
                     destination.workspace.clone(),
@@ -329,7 +325,7 @@ impl Shared {
                 match agent {
                     Some(by) => self
                         .doors
-                        .invoke_as(&by.actor, &own.address, &own.arguments, look),
+                        .invoke_as(&by.key(), &own.address, &own.arguments, look),
                     None => self.doors.invoke(&own.address, &own.arguments, look),
                 }
                 .map(drop)

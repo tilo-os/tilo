@@ -1464,7 +1464,7 @@ impl Arrangement {
 /// it makes names it.
 pub fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
-        invoker: Some(tilo_actions::ActionInvoker::actor(asked.to_owned())),
+        invoker: Some(tilo_actions::ActionInvoker::person(asked.to_owned())),
         what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
             tilo_actions::ActionKey::new("so.tilo.session", "arrangement", verb(action)),
             std::iter::empty(),

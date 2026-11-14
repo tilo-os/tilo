@@ -622,11 +622,10 @@ tilo_test_env::scenario! {
 
     phase history_entries_render_as_the_apps_sentences;
     {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
 
         let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
+        let agent = ActionInvoker::agent("claude")
             .acting_for("ada");
         let kind = Workspace::KIND;
         app.call_by(
@@ -681,7 +680,7 @@ tilo_test_env::scenario! {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         }));
         assert_eq!(
             sentences,

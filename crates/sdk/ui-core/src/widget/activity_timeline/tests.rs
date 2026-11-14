@@ -743,13 +743,11 @@ tilo_test_env::scenario! {
 
     phase a_bots_change_is_marked_as_the_bots_and_an_agents_is_not;
     {
-        let acting = |kind| {
+        let acting = |acting: tilo_actions::Acting| {
             HistoryAuthor::new("Standup Bot", 120.0, "ab12")
                 .with_relation(crate::widget::history::AuthorRelation::Software)
                 .with_attribution(crate::widget::history::HistoryAttribution {
-                    actor: "bot:standup".into(),
-                    kind,
-                    on_behalf_of: Some("ada".into()),
+                    acting: acting.acting_for(tilo_actions::Acting::person("ada")),
                     on_behalf_of_name: Some("Ada".into()),
                 writer: None,
                 writer_label: None,
@@ -757,8 +755,8 @@ tilo_test_env::scenario! {
                 folder: None,
             })
         };
-        assert!(is_bot_author(&acting(tilo_actions::ActorKind::Bot)));
-        assert!(!is_bot_author(&acting(tilo_actions::ActorKind::Agent)));
+        assert!(is_bot_author(&acting(tilo_actions::Acting::bot("standup"))));
+        assert!(!is_bot_author(&acting(tilo_actions::Acting::agent("standup"))));
         assert!(!is_bot_author(&HistoryAuthor::new("Ada", 10.0, "cd34")));
     }
 

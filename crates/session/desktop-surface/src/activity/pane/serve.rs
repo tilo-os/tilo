@@ -34,7 +34,6 @@ pub(super) fn author(author: &ui::widget::history::HistoryAuthor) -> wire::Autho
             ui::widget::history::AuthorRelation::Person => wire::Relation::Person,
             ui::widget::history::AuthorRelation::Software => wire::Relation::Software,
         },
-        kind: attribution.map_or(tilo_actions::ActorKind::Person, |who| who.kind),
         on_behalf_of: attribution.and_then(|who| who.on_behalf_of_name.clone()),
         for_reader: author.for_reader,
         task: author.task.clone(),

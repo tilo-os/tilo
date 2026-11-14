@@ -40,7 +40,7 @@ pub(crate) fn draw_action_presence(
         if !names_a_place(bounds, viewport) {
             continue;
         }
-        let user = crate::permissions::UserId(interaction.actor.id.clone());
+        let user = crate::permissions::UserId(interaction.actor.by.key());
         let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
         // An agent's place is washed in its colour and framed in it, brighter the moment its step
         // is taken; anyone else's outline is the selection. One fill either way, at the

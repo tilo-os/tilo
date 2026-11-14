@@ -322,8 +322,8 @@ mod tests {
     )]
 
     use super::*;
-    use crate::interaction::{InteractionAction, InteractionActor, InteractionTextRange};
-    use crate::{ActionApp, ActionResource, ActorKind, InteractionPhase, InvocationId};
+    use crate::interaction::{InteractionAction, InteractionTextRange};
+    use crate::{ActionApp, ActionResource, InteractionPhase, InvocationId};
 
     fn interaction(
         step: Option<StepKind>,
@@ -334,7 +334,7 @@ mod tests {
             version: crate::INTERACTION_VERSION,
             invocation: InvocationId(uuid::Uuid::from_u128(1)),
             sequence: 1,
-            actor: InteractionActor::new("quill", ActorKind::Agent),
+            actor: crate::Acting::agent("quill"),
             phase: InteractionPhase::Applying,
             action: InteractionAction {
                 id: "create".into(),

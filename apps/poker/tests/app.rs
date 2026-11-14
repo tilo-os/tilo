@@ -402,7 +402,7 @@ fn the_window_bar_names_the_table_and_the_window_draws_no_title() {
 fn waiting_on_grace() -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
     take_a_seat(&mut app);
-    let grace = ui::tilo_actions::ActionInvoker::actor("grace");
+    let grace = ui::tilo_actions::ActionInvoker::person("grace");
     app.call_by(
         grace,
         "so.tilo.poker.table",
@@ -411,7 +411,7 @@ fn waiting_on_grace() -> TestApp<App> {
     )
     .expect("grace sits down");
     let dealer = app.state().dealer().map(str::to_owned).expect("a dealer");
-    let dealer = ui::tilo_actions::ActionInvoker::actor(&dealer);
+    let dealer = ui::tilo_actions::ActionInvoker::person(&dealer);
     app.call_by(
         dealer,
         "so.tilo.poker.table",
@@ -426,7 +426,7 @@ fn waiting_on_grace() -> TestApp<App> {
         if actor != "ada" {
             break;
         }
-        let ada = ui::tilo_actions::ActionInvoker::actor("ada");
+        let ada = ui::tilo_actions::ActionInvoker::person("ada");
         app.call_by(
             ada,
             "so.tilo.poker.table",
@@ -546,7 +546,7 @@ fn dealing_is_offered_with_the_graces_count() {
     ui::time::testing::with_monotonic_time(start, || {
         let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
         take_a_seat(&mut app);
-        let grace = ui::tilo_actions::ActionInvoker::actor("grace");
+        let grace = ui::tilo_actions::ActionInvoker::person("grace");
         app.call_by(
             grace,
             "so.tilo.poker.table",
@@ -555,7 +555,7 @@ fn dealing_is_offered_with_the_graces_count() {
         )
         .expect("grace sits down");
         let dealer = app.state().dealer().map(str::to_owned).expect("a dealer");
-        let dealer = ui::tilo_actions::ActionInvoker::actor(&dealer);
+        let dealer = ui::tilo_actions::ActionInvoker::person(&dealer);
         app.call_by(
             dealer,
             "so.tilo.poker.table",
@@ -568,7 +568,7 @@ fn dealing_is_offered_with_the_graces_count() {
             let Some(actor) = app.state().hand.actor().map(|p| p.player.clone()) else {
                 break;
             };
-            let who = ui::tilo_actions::ActionInvoker::actor(&actor);
+            let who = ui::tilo_actions::ActionInvoker::person(&actor);
             let verb = if actor == "ada" { "fold" } else { "call" };
             app.call_by(who, "so.tilo.poker.table", verb, ui::serde_json::json!({}))
                 .expect("the turn is taken");

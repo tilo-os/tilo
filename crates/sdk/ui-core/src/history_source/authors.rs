@@ -278,10 +278,13 @@ impl AuthorDirectory {
         // a program) wrote through the person's mount: the row is the person's
         // own, wearing the person's avatar, with the writer named beside it.
         let person_key = hex::encode(person);
-        let kind = match writer {
-            fs_protocol::AttributedWriter::Agent => tilo_actions::ActorKind::Agent,
-            fs_protocol::AttributedWriter::App => tilo_actions::ActorKind::App,
-            fs_protocol::AttributedWriter::Program => tilo_actions::ActorKind::Program,
+        let acting = match writer {
+            fs_protocol::AttributedWriter::Agent => {
+                tilo_actions::Acting::of_key(&attribution.actor)
+            }
+            fs_protocol::AttributedWriter::App | fs_protocol::AttributedWriter::Program => {
+                tilo_actions::Acting::person(person_key.clone())
+            }
         };
         let label = match writer {
             fs_protocol::AttributedWriter::App => app_name(
@@ -293,7 +296,7 @@ impl AuthorDirectory {
         let author = self
             .resolve_identity(&principal_key(&person_key))
             .with_attribution(
-                HistoryAttribution::new(attribution.actor.clone(), kind)
+                HistoryAttribution::new(acting)
                     .acting_for(person_key.clone(), self.person_name(&person_key))
                     .written_by(writer, label)
                     .from_device(self.device_name(&hex::encode(device)).map(str::to_owned))
@@ -320,7 +323,7 @@ impl AuthorDirectory {
         let mut author = author_coloured(agent.label.clone(), short_id(actor_hex), agent.rgb)
             .with_relation(AuthorRelation::Software)
             .with_attribution(
-                HistoryAttribution::new(agent.principal.clone(), tilo_actions::ActorKind::Agent)
+                HistoryAttribution::new(tilo_actions::Acting::of_key(&agent.principal))
                     .acting_for(agent.person.clone(), person),
             );
         author.for_reader = reader.as_deref() == Some(agent.person.as_str());
@@ -388,33 +391,36 @@ impl AuthorDirectory {
                 author
             };
         };
+        let actor = invoker.key();
+        let software = !invoker.acting.is_person();
+        let on_behalf_of = invoker.acting.acted_for_person().map(str::to_owned);
         // A delegated agent writing as itself, under its own principal.
         if let Some(agent) = self.agents.get(&actor_hex.to_lowercase())
-            && agent.principal == invoker.actor
+            && agent.principal == actor
         {
             return self.agent_author(actor_hex, agent);
         }
         // The person's own writer names them as the directory knows them;
         // anyone else by their principal, without its namespace.
         let author = if self.is_registered(actor_hex)
-            && actor_handle(actor_hex).as_deref() == Some(invoker.actor.as_str())
+            && actor_handle(actor_hex).as_deref() == Some(actor.as_str())
         {
             self.resolve(actor_hex)
         } else {
-            let principal = hex::encode(invoker.actor.as_bytes());
+            let principal = hex::encode(actor.as_bytes());
             let author = self.resolve(&principal);
             // Software is painted as presence paints it: by the one rule, from what it is — and
             // clear of the colour of the person it acted for. A run's own task agent is named by
             // the agent its admission named, never by the run, so its changes wear one colour
             // however often it comes; any other agent's principal is its identity already.
             let agent = match invoker.name.as_deref() {
-                Some(name) if is_run_agent(&invoker.actor) => name,
-                _ => invoker.actor.as_str(),
+                Some(name) if is_run_agent(&actor) => name,
+                _ => actor.as_str(),
             };
-            let author = if invoker.kind.acts_for_someone() {
+            let author = if software {
                 let painted = self.color_overrides.get(agent).copied();
                 author.with_rgb(painted.unwrap_or_else(|| {
-                    crate::presence::participant_color(agent, true, invoker.on_behalf_of.as_deref())
+                    crate::presence::participant_color(agent, true, on_behalf_of.as_deref())
                 }))
             } else {
                 author
@@ -428,25 +434,24 @@ impl AuthorDirectory {
                 }
                 None if !self.is_registered(&principal) => {
                     let mut author = author;
-                    author.name = principal_name(&invoker.actor);
+                    author.name = principal_name(&actor);
                     author
                 }
                 None => author,
             }
         };
-        let reads = reader.as_deref() == Some(invoker.actor.as_str());
+        let reads = reader.as_deref() == Some(actor.as_str());
         let relation = if reads {
             AuthorRelation::Reader
-        } else if invoker.kind.acts_for_someone() {
+        } else if software {
             AuthorRelation::Software
         } else {
             AuthorRelation::Person
         };
-        let for_person = invoker
-            .on_behalf_of
+        let for_person = on_behalf_of
             .as_deref()
             .map(|person| self.resolve(&hex::encode(person.as_bytes())).name);
-        let for_reader = reader.is_some() && reader == invoker.on_behalf_of;
+        let for_reader = reader.is_some() && reader == on_behalf_of;
         // The task the change was taken in names who did it: there are no
         // separate agents, only tasks, so a person whose window ran a task
         // reads as themselves through it, and an agent that ran one reads
@@ -456,9 +461,8 @@ impl AuthorDirectory {
             .filter(|group| group.kind == crate::history_source::steps::TASK_RUN)
             .map(|task| task.label.clone())
             .filter(|label| !label.trim().is_empty());
-        let attribution = invoker.kind.acts_for_someone().then(|| {
-            let mut attribution = HistoryAttribution::new(invoker.actor.clone(), invoker.kind);
-            attribution.on_behalf_of.clone_from(&invoker.on_behalf_of);
+        let attribution = software.then(|| {
+            let mut attribution = HistoryAttribution::new(invoker.acting.clone());
             attribution.on_behalf_of_name = for_person;
             attribution
         });
@@ -706,8 +710,7 @@ mod tests {
         // admission named, never the run that carried it — and never in its person's.
         {
             let of = |run: &str, name: &str| {
-                let invoker = tilo_actions::ActionInvoker::actor(run)
-                    .with_kind(tilo_actions::ActorKind::Agent)
+                let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(run))
                     .acting_for("ada")
                     .named(Some(name.into()));
                 let entry = tilo_actions::ActionContext::default().with_invoker(invoker);

@@ -80,7 +80,7 @@ tilo_test_env::scenario! {
         let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
         binding.author = UserId("agent".into());
         std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
-            Some(ActionInvoker::actor("person"));
+            Some(ActionInvoker::person("person"));
         let mut outer = AutoCommit::new();
         assert_eq!(executing_host_person(), None);
         assert!(!host_person_invocation_permitted());
@@ -89,11 +89,11 @@ tilo_test_env::scenario! {
                 assert_eq!(executing_host_person().as_deref(), Some("person"));
                 assert!(host_person_invocation_permitted());
                 {
-                    let _invoker = InvokerScope::enter(ActionInvoker::actor("agent"));
+                    let _invoker = InvokerScope::enter(ActionInvoker::person("agent"));
                     assert!(!host_person_invocation_permitted());
                 }
                 {
-                    let _invoker = InvokerScope::enter(ActionInvoker::actor("person"));
+                    let _invoker = InvokerScope::enter(ActionInvoker::person("person"));
                     assert!(host_person_invocation_permitted());
                 }
                 let mut nested = binding.clone();
@@ -134,7 +134,7 @@ tilo_test_env::scenario! {
         records.create_record(&checkout).unwrap();
         let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
         std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
-            Some(ActionInvoker::actor("untrusted-label"));
+            Some(ActionInvoker::person("untrusted-label"));
         let mut outer = AutoCommit::new();
         assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
         binding
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
                     ActionCx::for_apply(doc, b"preview", 0).author(),
                     Some("person")
                 );
-                let _invoker = InvokerScope::enter(ActionInvoker::actor("guest"));
+                let _invoker = InvokerScope::enter(ActionInvoker::person("guest"));
                 binding
                     .with_record_frame(doc, false, |doc, _| {
                         assert_eq!(

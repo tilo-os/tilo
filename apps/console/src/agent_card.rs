@@ -138,7 +138,6 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
     let face = wire::Author {
         name: client.to_owned(),
         relation: wire::Relation::Software,
-        kind: ui::tilo_actions::ActorKind::Agent,
         ..wire::Author::default()
     };
     let now = match (working, newest) {

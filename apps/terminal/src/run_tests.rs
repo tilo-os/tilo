@@ -4,7 +4,7 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use base64::Engine as _;
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::ActionInvoker;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Bytes, Settled};
 
@@ -192,9 +192,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         assert!(offered.iter().any(|id| id == verb), "{verb}: {offered:?}");
     }
 
-    let agent = ActionInvoker::actor("agent:helper")
-        .with_kind(ActorKind::Agent)
-        .acting_for("person:ada");
+    let agent = ActionInvoker::agent("helper").acting_for("person:ada");
     app.call_by(
         agent,
         &item_resource_id::<Terminal>("runs", first),
@@ -896,9 +894,7 @@ fn an_agents_run_gets_the_agent_rendering() {
     settle_until(&mut app, |state| {
         state.runs.len() == 1 && state.requests.pending().next().is_none()
     });
-    let agent = ActionInvoker::actor("agent:helper")
-        .with_kind(ActorKind::Agent)
-        .acting_for("person:ada");
+    let agent = ActionInvoker::agent("helper").acting_for("person:ada");
     app.call_by(
         agent,
         Terminal::KIND,
@@ -1049,9 +1045,7 @@ fn an_agents_refused_run_answers_with_the_refusal_and_shows_the_person_the_promp
     );
     let (mut app, _print, lines) = marked_session(output);
     settle_until(&mut app, |state| !state.pane_id().is_empty());
-    let agent = ActionInvoker::actor("agent:helper")
-        .with_kind(ActorKind::Agent)
-        .acting_for("person:ada");
+    let agent = ActionInvoker::agent("helper").acting_for("person:ada");
     app.call_by(
         agent,
         <Terminal as ui::tilo_resource::Resource>::KIND,

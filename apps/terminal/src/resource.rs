@@ -453,7 +453,7 @@ impl Terminal {
             requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
             for_person: cx.acting().and_then(|acting| acting.person),
             pane,
-            agent: cx.actor_kind() == Some(ui::tilo_actions::ActorKind::Agent),
+            agent: cx.invoked_by().is_some_and(|by| by.is_agent()),
         };
         requests.push(cx.id(), request);
         Ok(())

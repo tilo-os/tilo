@@ -1211,7 +1211,7 @@ fn replica_standing(
     workspace: &str,
     participant: &str,
 ) -> (tilo_actions::ActionInvoker, PermissionContext) {
-    let mut invoker = tilo_actions::ActionInvoker::actor(participant);
+    let mut invoker = tilo_actions::ActionInvoker::person(participant);
     let permissions = match actor {
         ReplicaActor::Agent => {
             let member = PermissionContext::member_of(workspace, participant, Role::Editor);
@@ -1234,9 +1234,9 @@ fn replica_standing(
             standing,
             ..
         } => {
-            invoker = invoker
-                .with_kind(tilo_actions::ActorKind::Bot)
-                .acting_for(installer);
+            invoker =
+                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(participant))
+                    .acting_for(installer);
             PermissionContext::from_standing(standing)
         }
         ReplicaActor::Member {
@@ -1258,10 +1258,9 @@ fn replica_standing(
             .at_unix_time(unix_time)
             .reaching_person();
             if let Some(agent) = agent {
-                // Named as the host admitted it (`Caller::actor`), so
+                // Named as the host admitted it (`Caller::acting`), so
                 // History reads the agent, for the person.
-                invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
-                    .with_kind(tilo_actions::ActorKind::Agent)
+                invoker = tilo_actions::ActionInvoker::agent(agent)
                     .acting_for(person)
                     .named(agent_name);
             }

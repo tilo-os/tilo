@@ -2,16 +2,14 @@
 //! door the run goes through.
 
 use ui::framework::testing::HostedApp;
-use ui::tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+use ui::tilo_actions::{ActionContext, ActionInvoker};
 
 pub(crate) const RUN: &str = "issue-7@8000000000000001";
 
 /// The agent's run of issue 7, acting for `ada`, as the broker stamps it.
 pub(crate) fn run() -> (ActionInvoker, ActionContext) {
     (
-        ActionInvoker::actor("agent:helper")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada"),
+        ActionInvoker::agent("helper").acting_for("ada"),
         ActionContext::default().with_group(
             RUN,
             "Tidy the notes",

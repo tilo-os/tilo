@@ -438,9 +438,9 @@ tilo_test_env::scenario! {
         let (workspace, applied, invoker) = handed.first().expect("the origin was handed the change");
         assert_eq!(workspace, &f.workspace);
         assert_eq!(applied, &change(NOTES));
-        assert_eq!(invoker.actor, "agent:scribe");
-        assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
-        assert_eq!(invoker.on_behalf_of.as_deref(), Some(f.person.as_str()));
+        assert_eq!(invoker.key(), "agent:scribe");
+        assert!(invoker.acting.is_agent());
+        assert_eq!(invoker.acting.acted_for_person(), Some(f.person.as_str()));
     }
 
     phase a_change_the_workspace_denies_the_agent_never_reaches_the_origin;

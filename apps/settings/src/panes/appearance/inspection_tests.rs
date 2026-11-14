@@ -73,7 +73,7 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
         .unwrap();
     assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
     let refused = app.call_by(
-        ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
+        ui::tilo_actions::ActionInvoker::person("unrelated-collaborator"),
         &action.address.resource,
         &action.address.action,
         serde_json::json!({}),
@@ -84,7 +84,7 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
     );
     assert!(
         app.call_by(
-            ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
+            ui::tilo_actions::ActionInvoker::person("unrelated-collaborator"),
             &format!("settings:{APPEARANCE}"),
             "choose-theme",
             serde_json::json!({"theme":"Dark"})

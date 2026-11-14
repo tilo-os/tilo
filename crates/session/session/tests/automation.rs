@@ -366,7 +366,7 @@ fn seed_record(home: &tilo_test_env::TestHome) {
 fn a_posted_message_change() -> String {
     use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Described, Did};
     ActionContext::for_app(PACKAGE, "Chat")
-        .with_invoker(ActionInvoker::actor("bob"))
+        .with_invoker(ActionInvoker::person("bob"))
         .with_described(Described::new(Did::verb(
             ActionKey::new(PACKAGE, "chat.workspace", "post"),
             [],

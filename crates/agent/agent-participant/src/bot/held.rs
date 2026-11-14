@@ -334,8 +334,8 @@ impl DoorParticipant for HeldRecords {
                 let by = context
                     .invoker
                     .as_ref()
-                    .map(|invoker| invoker.actor.as_str());
-                (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
+                    .map(tilo_actions::ActionInvoker::key);
+                (RunStep::of(&context).as_ref() == Some(step) && by.as_deref() == Some(actor))
                     .then_some(context)
             })
         };

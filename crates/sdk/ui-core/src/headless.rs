@@ -5119,7 +5119,7 @@ impl FrameHarness {
                 mark.saying = self
                     .drawn_action_markers
                     .iter()
-                    .find(|marker| marker.interaction.actor.id == mark.user.0)
+                    .find(|marker| marker.interaction.actor.by.key() == mark.user.0)
                     .map(|marker| self.presence.interaction_status_label(&marker.interaction));
             }
             let path = format!("presence-mark-{}", mark.user.0);
@@ -5128,7 +5128,7 @@ impl FrameHarness {
             written.push(mark.user.0);
         }
         for marker in &self.drawn_action_markers {
-            let actor = &marker.interaction.actor.id;
+            let actor = &marker.interaction.actor.by.key();
             if written.contains(actor) {
                 continue;
             }
@@ -6790,12 +6790,13 @@ impl FrameHarness {
                     continuation.invoker.clone(),
                     invocation,
                 );
+                let actor = continuation.invoker.key();
                 self.invoke_bound_action_for(
                     address,
                     arguments,
                     confirmed,
                     continuation.context.as_ref(),
-                    Some((invocation, Some(&continuation.invoker.actor))),
+                    Some((invocation, Some(&actor))),
                 )
             }
             None => self.invoke_bound_action_for(

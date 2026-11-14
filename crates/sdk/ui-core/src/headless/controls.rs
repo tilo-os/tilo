@@ -91,11 +91,7 @@ pub fn agent_acting(resource: &str, action: &str) -> tilo_actions::SemanticInter
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,
-        actor: tilo_actions::InteractionActor {
-            id: "agent".into(),
-            kind: tilo_actions::ActorKind::Agent,
-            for_person: None,
-        },
+        actor: tilo_actions::Acting::agent("agent"),
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {
             id: action.into(),
@@ -167,8 +163,8 @@ impl FrameHarness {
 
     /// The exact retained control locus for a semantic action, if uniquely available.
     pub fn semantic_locus(&self, interaction: &tilo_actions::SemanticInteraction) -> Option<Rect> {
-        if interaction.actor.kind.acts_for_someone()
-            && let Some((_, rect)) = self.text_locus(&interaction.actor.id)
+        if !interaction.actor.is_person()
+            && let Some((_, rect)) = self.text_locus(&interaction.actor.by.key())
         {
             return Some(rect);
         }
@@ -198,7 +194,7 @@ impl FrameHarness {
             .presence
             .agent_marker_interactions(crate::time::now())
             .into_iter()
-            .find(|interaction| interaction.actor.id == actor)
+            .find(|interaction| interaction.actor.by.key() == actor)
         else {
             return false;
         };
@@ -746,11 +742,7 @@ mod locus_tests {
             version: tilo_actions::INTERACTION_VERSION,
             invocation: tilo_actions::InvocationId::new(),
             sequence: 1,
-            actor: tilo_actions::InteractionActor {
-                id: "synthetic-test-only".into(),
-                kind: tilo_actions::ActorKind::Person,
-                for_person: None,
-            },
+            actor: tilo_actions::Acting::person("synthetic-test-only"),
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
                 id: "edit".into(),
@@ -792,7 +784,7 @@ mod locus_tests {
                 .unwrap();
             assert_eq!(calls.get(), 1, "the actual semantic executor ran once");
             let mut event = interaction("first");
-            event.actor.kind = tilo_actions::ActorKind::Agent;
+            event.actor = tilo_actions::Acting::agent(event.actor.by.id().to_owned());
             let now = crate::time::now();
             frame.update_presence(|presence| {
                 presence.apply_interaction_at(event.clone(), now).unwrap()
@@ -883,8 +875,7 @@ mod locus_tests {
                     )
                     .unwrap();
                 let mut event = interaction("first");
-                event.actor.id = "scribe".into();
-                event.actor.kind = tilo_actions::ActorKind::Agent;
+                event.actor = tilo_actions::Acting::agent("scribe");
                 let at = crate::time::now()
                     .checked_sub(crate::time::Duration::from_secs(2))
                     .unwrap();
@@ -965,8 +956,7 @@ mod locus_tests {
         std::fs::create_dir_all(&out).unwrap();
         frame.render_png(&out.join("tasks-before.png"));
         let mut event = interaction("so.tilo.tasks/issues");
-        event.actor.id = "scribe".into();
-        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.actor = tilo_actions::Acting::agent("scribe");
         event.action.id = "check-off".into();
         event.action.label = "Check off".into();
         event.anchor = tilo_actions::InteractionAnchor::ListItems {
@@ -980,9 +970,10 @@ mod locus_tests {
             .expect("the clock is later than a second ago");
         let mut label = String::new();
         frame.update_presence(|presence| {
-            presence
-                .names
-                .insert(crate::permissions::UserId("scribe".into()), "Ada".into());
+            presence.names.insert(
+                crate::permissions::UserId("agent:scribe".into()),
+                "Ada".into(),
+            );
             let applied = presence
                 .apply_interaction_at(event.clone(), at)
                 .expect("a well-formed interaction applies");
@@ -1020,8 +1011,7 @@ mod locus_tests {
         let mut frame = FrameHarness::new(State::new(), Box::new(root), (480, 240));
         frame.relayout();
         let mut event = interaction("so.tilo.tasks/issues");
-        event.actor.id = "scribe".into();
-        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.actor = tilo_actions::Acting::agent("scribe");
         event.action.id = "check-off".into();
         event.action.label = "Check off".into();
         event.anchor = tilo_actions::InteractionAnchor::ListItems {
@@ -1265,8 +1255,7 @@ mod locus_tests {
 
     fn agent_acting(frame: &mut FrameHarness, resource: &str) -> tilo_actions::SemanticInteraction {
         let mut event = interaction(resource);
-        event.actor.id = "scribe".into();
-        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.actor = tilo_actions::Acting::agent("scribe");
         let at = crate::time::now()
             .checked_sub(crate::time::Duration::from_secs(1))
             .expect("the clock is later than a second ago");
@@ -1303,14 +1292,14 @@ mod locus_tests {
             "not following moves nothing"
         );
         let mut followed = FollowedView::default();
-        assert!(frame.follow_view("scribe", &mut followed));
+        assert!(frame.follow_view("agent:scribe", &mut followed));
         let edit = frame.semantic_locus(&event).expect("the edit's control");
         assert!(
             view.contains(edit.origin()) && edit.y1 <= view.y1,
             "in view: {edit:?}"
         );
         assert!(
-            !frame.follow_view("scribe", &mut followed),
+            !frame.follow_view("agent:scribe", &mut followed),
             "each action is gone to once"
         );
     }
@@ -1333,9 +1322,9 @@ mod locus_tests {
         let mut followed = FollowedView::default();
         assert!(!frame.follow_view("someone-else", &mut FollowedView::default()));
         assert_eq!(opened.get(), 0, "not following switches nothing");
-        assert!(frame.follow_view("scribe", &mut followed));
+        assert!(frame.follow_view("agent:scribe", &mut followed));
         assert_eq!(opened.get(), 1, "the sheet's view opened");
-        assert!(!frame.follow_view("scribe", &mut followed));
+        assert!(!frame.follow_view("agent:scribe", &mut followed));
         assert_eq!(opened.get(), 1, "opened once");
     }
 
@@ -1365,7 +1354,7 @@ mod locus_tests {
         let written = 13;
         let block = crate::widget::block_editor::block_presence_key("p-33");
         frame.update_presence(|presence| {
-            presence.set_remote_caret("scribe".into(), block.clone(), written);
+            presence.set_remote_caret("agent:scribe".into(), block.clone(), written);
             true
         });
         let viewport = Rect::new(0.0, 0.0, 400.0, 240.0);
@@ -1387,7 +1376,7 @@ mod locus_tests {
             "not following moves nothing"
         );
         let mut followed = FollowedView::default();
-        assert!(frame.follow_view("scribe", &mut followed));
+        assert!(frame.follow_view("agent:scribe", &mut followed));
         let shown = frame
             .semantic_locus(&event)
             .expect("the agent's place in view");
@@ -1396,7 +1385,7 @@ mod locus_tests {
             "the words it wrote are in view: {shown:?}"
         );
         assert!(
-            !frame.follow_view("scribe", &mut followed),
+            !frame.follow_view("agent:scribe", &mut followed),
             "each action is gone to once"
         );
     }
@@ -1412,14 +1401,14 @@ mod locus_tests {
         let event = agent_acting(&mut frame, "notes.document:root");
         frame.update_presence(|presence| {
             let block = crate::widget::block_editor::block_presence_key("p-33");
-            presence.set_remote_caret("scribe".into(), block, 13);
+            presence.set_remote_caret("agent:scribe".into(), block, 13);
             true
         });
         let said = crate::presence::capability::subtree_presence(frame.root.as_ref());
         let mut followed = FollowedView::default();
         let mut moved = 0;
         for _ in 0..60 {
-            moved += usize::from(frame.follow_view("scribe", &mut followed));
+            moved += usize::from(frame.follow_view("agent:scribe", &mut followed));
             frame.relayout();
         }
         assert_eq!(moved, 1, "the view goes to the words once");
@@ -1476,8 +1465,7 @@ mod locus_tests {
         let (tree, bindings) = frame.retained_action_geometry().unwrap();
         let mut presence = crate::presence::PresenceCtx::empty();
         let mut event = interaction("first");
-        event.actor.id = "opaque-software".into();
-        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.actor = tilo_actions::Acting::agent("opaque-software");
         let at = crate::time::now();
         presence.apply_interaction_at(event.clone(), at).unwrap();
         let theme = crate::theme::Theme::dark();
@@ -1520,7 +1508,7 @@ mod locus_tests {
             first[0].marker, arrived[0].marker,
             "published bounds follow the animated paint, not the target"
         );
-        presence.unregister_peer(&event.actor.id);
+        presence.unregister_peer(&event.actor.by.key());
         let retired = crate::action_locus::draw_action_presence(
             &mut crate::paint::PaintCtx::new(
                 &mut scene,

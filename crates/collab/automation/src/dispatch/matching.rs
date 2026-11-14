@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tilo_actions::Acting;
 use tilo_actions::entry::{Did, PathStep};
-use tilo_actions::interaction::ActorKind;
 use tilo_actions::params::ParamType;
 
 use super::event::{ConnectorEvent, Event};
@@ -153,7 +153,7 @@ fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
             // record's readers marking it read change nothing a trigger on
             // the record's changes acts on.
             change.kind == *kind
-                && actor_counts(*by, change.actor.kind)
+                && actor_counts(*by, &change.actor)
                 && ((actions.is_empty() && fields.is_empty() && !change.housekeeping)
                     || verbs_of(&change.did)
                         .iter()
@@ -171,8 +171,10 @@ fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
                 && app_id
                     .as_ref()
                     .is_none_or(|app| app_of(&change.did).as_deref() == Some(app.as_str()))
-                && from.as_ref().is_none_or(|from| *from == change.actor.id)
-                && saver.is_none_or(|saver| saver != change.actor.id)
+                && from
+                    .as_ref()
+                    .is_none_or(|from| *from == change.actor.by.key())
+                && saver.is_none_or(|saver| saver != change.actor.by.key())
         }
         (
             TriggerSpec::Connector {
@@ -205,11 +207,11 @@ fn connector_matches(
             .all(|(field, wanted)| event.payload.get(field) == Some(wanted))
 }
 
-const fn actor_counts(filter: ActorFilter, kind: ActorKind) -> bool {
+fn actor_counts(filter: ActorFilter, actor: &Acting) -> bool {
     match filter {
         ActorFilter::Anyone => true,
-        ActorFilter::People => matches!(kind, ActorKind::Person),
-        ActorFilter::NotBots => !matches!(kind, ActorKind::Bot),
+        ActorFilter::People => actor.is_person(),
+        ActorFilter::NotBots => !actor.is_bot(),
     }
 }
 
@@ -220,7 +222,7 @@ fn self_triggered(firer: &Firer<'_>, event: Event<'_>) -> bool {
         return false;
     };
     match firer {
-        Firer::Bot { .. } => change.actor.id == firer.key(),
+        Firer::Bot { .. } => change.actor.by.key() == firer.key(),
         Firer::Shortcut { shortcut, .. } => change.shortcut.as_deref() == Some(*shortcut),
     }
 }
@@ -250,7 +252,7 @@ fn cause_for(firer: &Firer<'_>, event: Event<'_>) -> Option<Cause> {
     let parent = match event {
         // Only a bot's own change can continue a chain: a depth any other
         // actor claims is ignored, so nobody can lengthen or shorten one.
-        Event::Record(change) if change.actor.kind == ActorKind::Bot => {
+        Event::Record(change) if change.actor.is_bot() => {
             event.caused_by().map_or(0, |cause| cause.depth)
         }
         _ => 0,

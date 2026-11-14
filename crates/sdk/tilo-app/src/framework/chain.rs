@@ -563,7 +563,7 @@ impl<P: Chained> ChainState<P> {
             let context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
                 .with_app(self.workspace.app_id, self.workspace.app_title)
                 .with_invoker(entry.invoker.clone());
-            let writer = ui_core::bound_dispatch::document_writer(&entry.invoker.actor, &doc);
+            let writer = ui_core::bound_dispatch::document_writer(&entry.invoker.key(), &doc);
             if let Err(error) = tilo_actions::apply_local_with_context(
                 &mut doc,
                 &action,
@@ -1181,7 +1181,7 @@ impl<P: Chained> ChainState<P> {
             .store
             .with_history(&id, |doc, history| {
                 let before = doc.get_heads();
-                let writer = ui_core::bound_dispatch::document_writer(&invoker.actor, doc);
+                let writer = ui_core::bound_dispatch::document_writer(&invoker.key(), doc);
                 let applied = tilo_actions::apply_local_with_context(
                     doc,
                     action,
@@ -1785,7 +1785,7 @@ impl<P: Chained> Chain<P> {
         };
         let undone = self
             .state
-            .apply_history(&edit, &ActionInvoker::actor(me))
+            .apply_history(&edit, &ActionInvoker::person(me))
             .map(drop);
         if let Err(error) = &undone {
             self.dispatch.refused().set(Some(super::dispatch::Refused {
@@ -1822,7 +1822,7 @@ impl<P: Chained> Chain<P> {
     ) -> Result<Option<u64>, ActionError> {
         let action = invoke.build(now_ms).map_err(ActionError::Refused)?;
         self.state
-            .apply_as(&action, &ActionInvoker::actor(author), &mut None)
+            .apply_as(&action, &ActionInvoker::person(author), &mut None)
             .map(|written| written.map(|(index, _)| index))
     }
 
@@ -1983,7 +1983,7 @@ pub(crate) fn dispatching<P: Chained>(
     make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
-    let invoker = ActionInvoker::actor(me);
+    let invoker = ActionInvoker::person(me);
     let told: Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::dispatch::Refused>>>> =
         Rc::default();
     let telling = Rc::clone(&told);
@@ -2194,7 +2194,7 @@ impl Chains {
             .cloned()
             .ok_or_else(|| format!("no chain `{}` is open here", request.record))?;
         let invoker = ui_core::invocation_scope::current_invoker()
-            .or_else(|| me.map(ActionInvoker::actor))
+            .or_else(|| me.map(ActionInvoker::person))
             .ok_or("nobody changes a past version")?;
         door.apply_in(&request.action, &invoker, live)
     }

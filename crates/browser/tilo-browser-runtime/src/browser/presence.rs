@@ -118,8 +118,8 @@ impl Mount {
         // An agent acting for this person shows them where it acts, even where it already was.
         if let Some(desktop) = &self.desktop {
             for interaction in &narrated {
-                if interaction.actor.kind == tilo_actions::ActorKind::Agent
-                    && let Some(person) = &interaction.actor.for_person
+                if interaction.actor.is_agent()
+                    && let Some(person) = interaction.actor.acted_for_person()
                 {
                     desktop.here.borrow_mut().note_agent_acted(person);
                 }

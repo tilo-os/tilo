@@ -228,7 +228,7 @@ fn cvs_open_through_the_desktop(
         let id = listed["id"].as_str().unwrap();
         let answer = app
             .call_by(
-                tilo_actions::ActionInvoker::actor("agent:planner"),
+                tilo_actions::ActionInvoker::agent("planner"),
                 &format!("mail.attachment:{id}:0"),
                 "open-attachment",
                 serde_json::json!({ "group": "4242" }),

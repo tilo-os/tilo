@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 use ui::automerge::ObjId;
-use ui::tilo_actions::ActorKind;
 use ui::tilo_resource::{
     self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, ModelError, NonBlank, Refusal,
     resource,
@@ -144,11 +143,14 @@ impl Moderation {
 }
 
 fn reporter(cx: &ActionCx) -> Result<String, Refusal> {
-    match (cx.actor_kind(), cx.author()) {
-        (None | Some(ActorKind::Person), Some(author)) => Ok(author.to_owned()),
-        (Some(ActorKind::Agent | ActorKind::Bot), Some(author)) if author == crate::AGENT => {
-            Ok(author.to_owned())
-        }
+    let invoked_by = cx.invoked_by();
+    let by_person = invoked_by
+        .as_ref()
+        .is_none_or(ui::tilo_actions::Acting::is_person);
+    let by_software = invoked_by.is_some_and(|by| by.is_agent() || by.is_bot());
+    match cx.author() {
+        Some(author) if by_person => Ok(author.to_owned()),
+        Some(author) if by_software && author == crate::AGENT => Ok(author.to_owned()),
         _ => Err(Refusal::new("only a person reports, for themselves")),
     }
 }

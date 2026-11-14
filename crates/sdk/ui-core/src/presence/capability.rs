@@ -160,9 +160,9 @@ pub fn agent_text_loci(
 ) -> Vec<(tilo_actions::InvocationId, vello::kurbo::Rect)> {
     interactions
         .iter()
-        .filter(|interaction| interaction.actor.kind.acts_for_someone())
+        .filter(|interaction| !interaction.actor.is_person())
         .filter_map(|interaction| {
-            let (key, range) = actor_text_range(presence, &interaction.actor.id)?;
+            let (key, range) = actor_text_range(presence, &interaction.actor.by.key())?;
             let (_, rect) = range_locus(root, theme, key, range)?;
             Some((interaction.invocation, rect))
         })

@@ -1200,7 +1200,7 @@ impl Editor {
             if rects.is_empty() {
                 continue;
             }
-            let user = UserId(interaction.actor.id.clone());
+            let user = UserId(interaction.actor.by.key());
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
             }

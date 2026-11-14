@@ -1212,7 +1212,7 @@ tilo_test_env::scenario! {
             let result = invoke_confirmed_by(
                 &mut app,
                 role,
-                ActionInvoker::actor("guest"),
+                ActionInvoker::person("guest"),
                 &FileExplorer::IMPORT_MOUNTED.with(file_explorer::ImportMounted {
                     device: "test-device".into(),
                     paths: vec!["/private/Google.docx".into()],
@@ -1283,7 +1283,7 @@ tilo_test_env::scenario! {
             let error = invoke_confirmed_by(
                 &mut app,
                 role,
-                ActionInvoker::actor(actor),
+                ActionInvoker::person(actor),
                 &FileExplorer::CLOUD_IMPORT.with(file_explorer::CloudImport {
                     device: "test-device".into(),
                     job_id: format!("{actor}-attempt"),
@@ -1313,7 +1313,7 @@ tilo_test_env::scenario! {
         app.set_role(ui::permissions::Role::Owner);
         let error = app
             .call_by(
-                ui::tilo_actions::ActionInvoker::actor("guest-owner"),
+                ui::tilo_actions::ActionInvoker::person("guest-owner"),
                 <FileExplorer as ui::tilo_resource::Resource>::KIND,
                 "cloud-import",
                 serde_json::json!({
@@ -1361,7 +1361,7 @@ tilo_test_env::scenario! {
                 use ui::tilo_resource::Effect as _;
                 let error = app
                     .call_by(
-                        ActionInvoker::actor(actor),
+                        ActionInvoker::person(actor),
                         <FileExplorer as ui::tilo_resource::Resource>::KIND,
                         effect.id(),
                         serde_json::Value::Object(effect.arguments()),
@@ -1386,18 +1386,17 @@ tilo_test_env::scenario! {
 
     phase cloud_attribution_and_mutable_authority_do_not_grant_personal_account_access;
     {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
         use ui::tilo_resource::Effect as _;
 
         for invoker in [
-            ActionInvoker::actor("guest-owner").acting_for("local-person"),
-            ActionInvoker::actor("guest-agent")
-                .with_kind(ActorKind::Agent)
+            ActionInvoker::person("guest-owner").acting_for("local-person"),
+            ActionInvoker::agent("guest-agent")
                 .acting_for("local-person"),
         ] {
             let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
             app.set_permissions(ui::permissions::PermissionContext::member(
-                invoker.actor.clone(),
+                invoker.key(),
                 ui::permissions::Role::Owner,
             ));
             let root = tempfile::tempdir().unwrap();
@@ -1440,7 +1439,7 @@ tilo_test_env::scenario! {
         invoke_confirmed_by(
             &mut app,
             ui::permissions::Role::Editor,
-            ui::tilo_actions::ActionInvoker::actor("guest-editor"),
+            ui::tilo_actions::ActionInvoker::person("guest-editor"),
             &FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
                 device: "test-device".into(),
                 parent: AbsolutePath::new(folder.path()).unwrap(),
@@ -1616,8 +1615,7 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
         let before = app.versions().len();
         let kind = <FileExplorer as ui::tilo_resource::Resource>::KIND;
-        let agent = ui::tilo_actions::ActionInvoker::actor("agent:claude")
-            .with_kind(ui::tilo_actions::ActorKind::Agent)
+        let agent = ui::tilo_actions::ActionInvoker::agent("claude")
             .acting_for("ada");
         for (verb, args) in [
             ("add-bookmark", serde_json::json!({ "place": "~/Projects" })),

@@ -775,7 +775,7 @@ fn hold_for(workspace: &mut Workspace, secs: i64) {
     let context =
         ui::tilo_actions::ActionContext::for_resource(&root.doc, &action.kind, &action.kind)
             .with_app(APP, "tilolang")
-            .with_invoker(ui::tilo_actions::ActionInvoker::actor("ada".to_owned()));
+            .with_invoker(ui::tilo_actions::ActionInvoker::person("ada".to_owned()));
     ui::tilo_actions::apply_local_with_context(
         &mut workspace.doc,
         &action,
@@ -1022,7 +1022,7 @@ fn add_quote(workspace: &mut Workspace, message: &ResourceRef, said: &str, quote
     let context =
         ui::tilo_actions::ActionContext::for_resource(&message.doc, &action.kind, &action.kind)
             .with_app(APP, "tilolang")
-            .with_invoker(ui::tilo_actions::ActionInvoker::actor("ada".to_owned()));
+            .with_invoker(ui::tilo_actions::ActionInvoker::person("ada".to_owned()));
     ui::tilo_actions::apply_local_with_context(
         &mut workspace.doc,
         &action,

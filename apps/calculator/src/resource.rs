@@ -555,12 +555,10 @@ mod tests {
 
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
 
         let mut app = TestApp::<CalculatorShell>::new().unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada");
+        let agent = ActionInvoker::agent("claude").acting_for("ada");
         app.call_by(
             agent.clone(),
             Calculator::KIND,
@@ -595,7 +593,7 @@ mod tests {
                 entry
                     .invoker
                     .as_ref()
-                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+                    .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
             })
             .collect();
         let sentences = app.sentences(&entries);
@@ -610,8 +608,8 @@ mod tests {
         );
         let invoker = entries[0].invoker.as_ref().unwrap();
         assert_eq!(
-            (invoker.kind, invoker.on_behalf_of.as_deref()),
-            (ActorKind::Agent, Some("ada"))
+            (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+            (true, Some("ada"))
         );
     }
 

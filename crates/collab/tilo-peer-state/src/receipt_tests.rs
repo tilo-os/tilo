@@ -685,7 +685,7 @@ fn an_op_naming_another_surface_than_its_record_is_refused() {
 #[test]
 fn a_persons_change_showing_another_name_is_refused() {
     let (mut peer, key, guest) = workspace_with(Role::Editor);
-    let impostor = tilo_actions::ActionInvoker::actor("person:guest").with_appearance(Some(
+    let impostor = tilo_actions::ActionInvoker::person("person:guest").with_appearance(Some(
         tilo_actions::Appearance::new("Owner", None, None).unwrap(),
     ));
     let edited = guest_write_by(
@@ -702,7 +702,7 @@ fn a_persons_change_showing_another_name_is_refused() {
         &key,
         |doc| doc.put(ROOT, "value", "y").unwrap(),
         edit_value(),
-        tilo_actions::ActionInvoker::actor("person:guest"),
+        tilo_actions::ActionInvoker::person("person:guest"),
     );
     receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
 }
@@ -744,9 +744,7 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
         );
         let actor = format!("bot:{}", crate::state::bot_members_tests::BOT);
         let invoker = |appearance: Option<tilo_actions::Appearance>| {
-            tilo_actions::ActionInvoker::actor(actor.clone())
-                .with_kind(tilo_actions::ActorKind::Bot)
-                .with_appearance(appearance)
+            tilo_actions::ActionInvoker::bot(actor.clone()).with_appearance(appearance)
         };
         let shown = guest_write_by(
             &peer,

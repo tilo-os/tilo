@@ -1196,12 +1196,10 @@ fn an_outbox_message_saved_before_the_undo_window_still_reads() {
 
 #[test]
 fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = TestApp::<MailShell>::new().unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let message = DraftData::from_draft(&Draft {
         to: "you@example.test".into(),
         subject: "Lunch".into(),
@@ -1264,7 +1262,7 @@ fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
 
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = TestApp::<MailShell>::new().unwrap();
     app.invoke(Mail::INGEST.with(mailbox::Ingest {
@@ -1274,9 +1272,7 @@ fn history_entries_render_as_the_apps_sentences() {
         }],
     }))
     .unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     for change in [
         at("m1").starred.set(true),
         at("m1").labels.insert(&"work".to_owned()),
@@ -1308,7 +1304,7 @@ fn history_entries_render_as_the_apps_sentences() {
         entry
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.actor == "agent:claude")
+            .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
     }));
     assert_eq!(
         sentences,

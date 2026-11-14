@@ -885,7 +885,7 @@ fn commit(
     } else {
         action.authorship.invoker.clone()
     };
-    let invoker = ActionInvoker::actor(author.clone());
+    let invoker = ActionInvoker::person(author.clone());
     let context = ActionContext::for_resource(
         action.resources().first().copied().unwrap_or("workspace"),
         &action.kind,
@@ -1008,11 +1008,7 @@ mod tests {
             version: tilo_actions::INTERACTION_VERSION,
             invocation: tilo_actions::InvocationId::new(),
             sequence: 1,
-            actor: tilo_actions::InteractionActor {
-                id: "scribe".into(),
-                kind: tilo_actions::ActorKind::Agent,
-                for_person: None,
-            },
+            actor: tilo_actions::Acting::agent("scribe"),
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
                 id: descriptor.address.action.clone(),

@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
@@ -37,7 +38,6 @@ use tilo_actions::remote::{
     application_provider_record, identity_admin, pending, provider_workspace, session_actions,
     workspace_activity as wire,
 };
-use tilo_actions::{ActorKind, InvocationId};
 
 use tilo_lock::MutexRecover as _;
 
@@ -264,7 +264,7 @@ impl DesktopSession {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if caller.actor().kind != ActorKind::Person {
+        if !(caller.acting().is_person() && caller.acting().app().is_none()) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         let door = self
@@ -364,7 +364,7 @@ impl DesktopSession {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         // Shown to the person on their own screen, as their card shows it: never an agent's.
-        if caller.actor().kind != ActorKind::Person {
+        if !(caller.acting().is_person() && caller.acting().app().is_none()) {
             return Err(ActionHostError::UnknownAction);
         }
         self.chosen

@@ -219,7 +219,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             assert_eq!(note.action, "create-page");
             assert_eq!(note.actor, "agent:scribe", "delivered as the agent's own");
             let invoker = tilo_actions::ActionInvoker::delivered(&note.actor, note.context());
-            assert_eq!(invoker.actor, "agent:scribe", "its history names the agent");
+            assert_eq!(invoker.key(), "agent:scribe", "its history names the agent");
             assert!(notes.try_recv().is_err(), "one call, one delivery");
 
             // Kept under the agent's own custody: the agent follows the

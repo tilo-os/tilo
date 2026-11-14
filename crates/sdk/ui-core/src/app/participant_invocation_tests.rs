@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
             .expect("attributed change");
         assert_eq!(
             context.invoker,
-            Some(tilo_actions::ActionInvoker::actor("agent:scribe").with_participant(task()))
+            Some(tilo_actions::ActionInvoker::agent("scribe").with_participant(task()))
         );
 
         // Without a participant the same address resolves in this window's view.
@@ -317,7 +317,7 @@ tilo_test_env::scenario! {
             .expect("attributed change");
         assert_eq!(
             context.invoker,
-            Some(tilo_actions::ActionInvoker::actor("person:guest")),
+            Some(tilo_actions::ActionInvoker::person("person:guest")),
             "history names the delivered actor, never the envelope's"
         );
     }
@@ -474,7 +474,7 @@ tilo_test_env::scenario! {
         // Resolution of a component target also rebuilds the invoker's tree.
         let snapshots = {
             let _scope = crate::invocation_scope::InvokerScope::enter(
-                tilo_actions::ActionInvoker::actor("agent:scribe").with_participant(task()),
+                tilo_actions::ActionInvoker::agent("scribe").with_participant(task()),
             );
             crate::bound_dispatch::discover_bound_resources(
                 app.root_widget.as_ref(),

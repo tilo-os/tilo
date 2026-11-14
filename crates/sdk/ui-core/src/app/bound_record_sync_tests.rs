@@ -337,7 +337,7 @@ fn every_letter_typed_into_the_primary_record_travels_under_its_action() {
             type_id: "notes.type".into(),
             payload: format!("{text:?}").into_bytes(),
         }),
-        invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+        invoker: Some(tilo_actions::ActionInvoker::person("alice")),
         ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
     };
     for (text, message) in [

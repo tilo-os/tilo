@@ -37,7 +37,7 @@ pub fn mark_authored(
 ) -> Result<(), automerge::AutomergeError> {
     let Some(author) = tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
-        .map(|invoker| invoker.actor)
+        .map(|invoker| invoker.key())
     else {
         return Ok(());
     };
@@ -365,7 +365,7 @@ mod tests {
             let typed_by = |doc: &mut Doc, who: &str, edit: TextEdit| {
                 let encoded = tilo_actions::EncodedAction::encode(TEXT_ACTION_TYPE, &edit).unwrap();
                 let context = tilo_actions::ActionContext::for_resource("text", "tilo.text", "Text")
-                    .with_invoker(tilo_actions::ActionInvoker::actor(who));
+                    .with_invoker(tilo_actions::ActionInvoker::person(who));
                 tilo_actions::apply_local_with_context(doc, &edit, encoded, None, context).unwrap();
             };
             let mut doc = Doc::new();

@@ -397,13 +397,11 @@ mod tests {
 
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
         use ui::tilo_resource::items::item_resource_id;
 
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada");
+        let agent = ActionInvoker::agent("claude").acting_for("ada");
         let kind = <Library as ui::tilo_resource::Resource>::KIND;
         let call = |app: &mut TestApp<VideoPlayerShell>, resource: &str, action: &str, args| {
             app.call_by(agent.clone(), resource, action, args).unwrap();
@@ -469,7 +467,7 @@ mod tests {
                     entry
                         .invoker
                         .as_ref()
-                        .is_some_and(|invoker| invoker.actor == "agent:claude")
+                        .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
                 })
                 .map(|entry| reader.sentence(&entry))
                 .collect()

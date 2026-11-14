@@ -1047,14 +1047,12 @@ impl ContentBackend for PeerFetchingBackend {
 #[test]
 fn history_entries_render_as_the_readers_sentences() {
     use ui::framework::testing::TestApp;
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = TestApp::<crate::PdfViewerShell>::new().expect("the reader");
     app.invoke(PdfMarkup::START_PAGE_PLAN.with(2))
         .expect("the plan");
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = PdfMarkup::KIND;
     app.call_by(
         agent.clone(),
@@ -1105,7 +1103,7 @@ fn history_entries_render_as_the_readers_sentences() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);
@@ -1120,8 +1118,8 @@ fn history_entries_render_as_the_readers_sentences() {
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada")),
+        (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+        (true, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
 }

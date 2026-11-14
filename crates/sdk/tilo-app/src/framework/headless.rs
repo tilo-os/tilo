@@ -1309,7 +1309,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         effect: &E,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
         self.effect_invoked(
-            Some(tilo_actions::ActionInvoker::actor(actor)),
+            Some(tilo_actions::ActionInvoker::person(actor)),
             <A::Resource as Resource>::KIND,
             effect.id(),
             &effect.arguments(),

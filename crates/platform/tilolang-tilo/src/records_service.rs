@@ -493,7 +493,7 @@ impl RecordService {
         let author = context
             .invoker
             .as_ref()
-            .map_or_else(|| self.person.clone(), |invoker| invoker.actor.clone());
+            .map_or_else(|| self.person.clone(), tilo_actions::ActionInvoker::key);
         let store = self.host.store();
         self.host
             .with_schemas(|| {
@@ -553,7 +553,7 @@ impl RecordService {
             // The action is planned to be carried out at once: what its plan writes is its
             // change, written once, as the invoker's.
             let resources = self.resources();
-            let encoded = self.host.carrying_out(invoker.actor.as_bytes(), || {
+            let encoded = self.host.carrying_out(invoker.key().as_bytes(), || {
                 tilo_actions::door::encode_json(&resources, &address, arguments)
             })?;
             if encoded.type_id == crate::effects::OPEN_OPERATION {
@@ -785,7 +785,7 @@ fn invoker_of(action: &DynAction) -> tilo_actions::ActionInvoker {
     } else {
         action.authorship.invoker.clone()
     };
-    tilo_actions::ActionInvoker::actor(actor)
+    tilo_actions::ActionInvoker::person(actor)
 }
 
 impl RecordService {
@@ -945,7 +945,7 @@ impl Service for RecordService {
         action: &str,
         arguments: &Map<String, Json>,
     ) -> Result<Started, DoorError> {
-        let invoker = tilo_actions::ActionInvoker::actor(self.person.clone());
+        let invoker = tilo_actions::ActionInvoker::person(self.person.clone());
         self.run(action, resource, arguments, &invoker, None)
     }
 

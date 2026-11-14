@@ -703,7 +703,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         let narrated: BTreeSet<String> = browser
             .narrated
             .iter()
-            .map(|(_, work)| work.actor.id.clone())
+            .map(|(_, work)| work.actor.by.key())
             .collect();
         let all = agents.iter().all(|name| {
             seen.get(name)
@@ -764,14 +764,14 @@ async fn both_routes_decide_every_callers_actions_alike() {
     // changes it makes are one, for the same person.
     for (who, caller) in &callers {
         let actor = BrokerActor::for_caller(caller);
-        let named = caller.actor();
-        if actor.id() != named.id || actor.acting_for() != named.for_person.as_deref() {
+        let named = caller.acting();
+        if actor.id() != named.by.key() || actor.acting_for() != named.acted_for_person() {
             differences.push(format!(
                 "{who}: the broker acts as {} for {:?}, the host names {} for {:?}",
                 actor.id(),
                 actor.acting_for(),
-                named.id,
-                named.for_person
+                named.by.key(),
+                named.acted_for_person()
             ));
         }
     }
@@ -990,7 +990,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
             browser
                 .narrated
                 .iter()
-                .any(|(_, work)| work.actor.id == agent.publisher)
+                .any(|(_, work)| work.actor.by.key() == agent.publisher)
         });
         if agents.len() == 1
             && agents[0].label == "Claude Code"

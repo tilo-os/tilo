@@ -95,7 +95,7 @@ pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
     let label = attribution.writer_label.as_deref();
     match attribution.writer? {
-        fs_protocol::AttributedWriter::Agent => agent_tool_name(&attribution.actor)
+        fs_protocol::AttributedWriter::Agent => agent_tool_name(&attribution.acting.by.key())
             .map(str::to_owned)
             .or_else(|| label.map(str::to_owned)),
         fs_protocol::AttributedWriter::App | fs_protocol::AttributedWriter::Program => {
@@ -116,7 +116,7 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     match writer {
         fs_protocol::AttributedWriter::Agent => {
             parts.push(crate::i18n::widget_format("history-writer-agent", &[]));
-            let tool = agent_tool_name(&attribution.actor);
+            let tool = agent_tool_name(&attribution.acting.by.key());
             if let Some(tool) = tool {
                 parts.push(tool.to_owned());
             }

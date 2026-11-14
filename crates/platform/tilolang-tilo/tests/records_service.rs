@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
         // Invoked as an agent answering in a conversation, the open is answered with nothing done to
         // the record: the session places the note beside that conversation.
         let agent =
-            tilo_actions::ActionInvoker::actor("agent:tide").with_kind(tilo_actions::ActorKind::Agent);
+            tilo_actions::ActionInvoker::agent("tide");
         service.note_beside("chat.workspace/channels/c_tide");
         let started = service
             .invoke_as(&agent, &note, "open", &Map::new())
@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
         let opened = service.take_open();
         assert_eq!(opened.len(), 1, "one place asked for");
         let (invoker, place) = &opened[0];
-        assert_eq!(invoker.actor, "agent:tide", "asked as the agent");
+        assert_eq!(invoker.key(), "agent:tide", "asked as the agent");
         assert_eq!(place.resource, note, "the note the invocation addressed");
         assert_eq!(place.view, "", "its primary view: its own default `open`");
         assert_eq!(
@@ -490,8 +490,7 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
     service.provide_content(APP, store.clone());
     let note = new_note(&mut service);
     let body = pasted_body();
-    let agent =
-        tilo_actions::ActionInvoker::actor("agent:tide").with_kind(tilo_actions::ActorKind::Agent);
+    let agent = tilo_actions::ActionInvoker::agent("tide");
     let started = service
         .invoke_as(
             &agent,

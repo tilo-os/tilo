@@ -352,44 +352,6 @@ impl Caller {
         self
     }
 
-    /// Who acts, as presence and history name them.
-    #[must_use]
-    pub fn actor(&self) -> crate::InteractionActor {
-        let acting = &self.acting;
-        if let tilo_action_policy::Actor::Automation(shortcut) = &acting.by {
-            let actor = crate::InteractionActor::new(
-                format!("shortcut:{}", shortcut.as_str()),
-                crate::ActorKind::Shortcut,
-            );
-            return match acting.acted_for_person() {
-                Some(person) => actor.acting_for(person.to_owned()),
-                None => actor,
-            };
-        }
-        if let Some(app) = acting.app() {
-            let actor = crate::InteractionActor::new(format!("app:{app}"), crate::ActorKind::App);
-            return match acting.person_id().filter(|person| !person.is_empty()) {
-                Some(person) => actor.acting_for(person.to_owned()),
-                None => actor,
-            };
-        }
-        let (id, kind) = if let Some(agent) = acting.agent_id() {
-            (format!("agent:{agent}"), crate::ActorKind::Agent)
-        } else if let Some(bot) = acting.bot_id() {
-            (format!("bot:{bot}"), crate::ActorKind::Bot)
-        } else {
-            (
-                acting.person_id().unwrap_or_default().to_owned(),
-                crate::ActorKind::Person,
-            )
-        };
-        let actor = crate::InteractionActor::new(id, kind);
-        match acting.acted_for_person() {
-            Some(person) => actor.acting_for(person.to_owned()),
-            None => actor,
-        }
-    }
-
     /// Who an action this caller invokes is decided for, as the transport
     /// admitted it ([`tilo_action_policy::Acting`]).
     #[must_use]

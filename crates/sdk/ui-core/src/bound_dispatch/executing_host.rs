@@ -53,7 +53,7 @@ pub fn executing_host_person() -> Option<String> {
 #[must_use]
 pub fn host_person_invocation_permitted() -> bool {
     executing_host_person().is_some_and(|person| {
-        crate::invocation_scope::current_invoker().is_none_or(|invoker| invoker.actor == person)
+        crate::invocation_scope::current_invoker().is_none_or(|invoker| invoker.key() == person)
     })
 }
 

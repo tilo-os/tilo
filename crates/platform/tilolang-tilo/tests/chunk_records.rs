@@ -499,7 +499,7 @@ fn a_retitle_writes_and_syncs_the_card_s_chunk_alone() {
         .apply_invoked(
             &mut ada.instance,
             &action,
-            &ActionInvoker::actor("ada"),
+            &ActionInvoker::person("ada"),
             None,
         )
         .unwrap();
@@ -581,7 +581,7 @@ fn a_card_moved_across_chunks_keeps_its_id_and_history_and_undo_brings_it_back()
         .apply_invoked(
             &mut ada.instance,
             &action,
-            &ActionInvoker::actor("ada"),
+            &ActionInvoker::person("ada"),
             None,
         )
         .unwrap();
@@ -821,7 +821,7 @@ fn a_replica_that_joins_gets_the_manifest_and_every_chunk() {
         .apply_invoked(
             &mut ada.instance,
             &action,
-            &ActionInvoker::actor("ada"),
+            &ActionInvoker::person("ada"),
             None,
         )
         .unwrap();
@@ -954,7 +954,7 @@ fn a_part_the_workspace_refuses_takes_back_the_chunks_it_wrote_before_it() {
             .apply_invoked(
                 &mut ada.instance,
                 &action,
-                &ActionInvoker::actor("ada"),
+                &ActionInvoker::person("ada"),
                 None
             )
             .is_err(),
@@ -1297,7 +1297,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         }],
     };
     record
-        .apply_change(&root_action, &ActionInvoker::actor("ada"), None)
+        .apply_change(&root_action, &ActionInvoker::person("ada"), None)
         .unwrap();
     let card_ty = card_type(&meta);
     let card = "c0".to_owned();
@@ -1335,7 +1335,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         ],
     };
     record
-        .apply_change(&put, &ActionInvoker::actor("ada"), None)
+        .apply_change(&put, &ActionInvoker::person("ada"), None)
         .unwrap();
     assert!(
         record.chunk(2).is_some(),
@@ -1448,7 +1448,7 @@ fn a_direct_edit_of_a_card_in_a_chunk_is_written_in_that_chunk() {
         .apply_invoked(
             &mut ada.instance,
             &action,
-            &ActionInvoker::actor("ada"),
+            &ActionInvoker::person("ada"),
             None,
         )
         .unwrap();

@@ -2549,9 +2549,9 @@ pub(crate) fn runs_own_device(
             && ambient
                 .and_then(|context| context.invoker.as_ref())
                 .is_some_and(|invoker| {
-                    invoker.actor == actor
-                        && invoker.kind == tilo_actions::ActorKind::Agent
-                        && invoker.on_behalf_of.as_deref() == Some(local_author)
+                    invoker.key() == actor
+                        && invoker.acting.is_agent()
+                        && invoker.acting.acted_for_person() == Some(local_author)
                 }))
 }
 
@@ -2626,7 +2626,7 @@ pub(crate) fn execute_resource_operation(
     // The admitted caller is who the action is by, local or delivered:
     // pinned with it, so its `apply` reads the same author everywhere.
     if context.invoker.is_none() && !actor.is_empty() {
-        context = context.with_invoker(tilo_actions::ActionInvoker::actor(actor));
+        context = context.with_invoker(tilo_actions::ActionInvoker::person(actor));
     }
     // Ambient context is descriptive and may arrive from the caller. The
     // retained dispatch boundary is the sole source for invocation
@@ -4319,7 +4319,7 @@ impl CallbackBinding {
     pub(crate) fn authored_context(&self) -> tilo_actions::ActionContext {
         let mut context = (*self.operation_context).clone();
         if context.invoker.is_none() {
-            context.invoker = Some(tilo_actions::ActionInvoker::actor(self.author.0.clone()));
+            context.invoker = Some(tilo_actions::ActionInvoker::person(self.author.0.clone()));
         }
         context
     }
@@ -4698,7 +4698,7 @@ impl CallbackBinding {
             _scope: ExecutingHostScope::enter(self.lifetime_id),
             _actor: tilo_resource::action::RecordActorScope::enter(
                 crate::invocation_scope::current_invoker()
-                    .map_or_else(|| self.author.0.clone(), |invoker| invoker.actor),
+                    .map_or_else(|| self.author.0.clone(), |invoker| invoker.key()),
             ),
         })
     }

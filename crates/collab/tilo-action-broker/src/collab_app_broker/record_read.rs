@@ -143,8 +143,7 @@ fn apply_record_change(
         .clone()
         .ok_or_else(|| unavailable("this host has no origin for its records".into()))?;
     drop(state);
-    let invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
-        .with_kind(tilo_actions::ActorKind::Agent)
+    let invoker = tilo_actions::ActionInvoker::agent(agent)
         .acting_for(person)
         .named(name.map(str::to_owned));
     origin

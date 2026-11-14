@@ -935,10 +935,7 @@ pub fn governance_events(
             record: String::new(),
             kind: tilo_action_policy::roles::ROOM_KIND.to_owned(),
             change,
-            actor: tilo_actions::interaction::InteractionActor::new(
-                owner,
-                tilo_actions::ActorKind::Person,
-            ),
+            actor: tilo_actions::Acting::person(owner),
             did: tilo_actions::entry::Did::Verb(tilo_actions::entry::VerbCall::new(
                 tilo_actions::ActionKey::new(ROOM_APP, tilo_action_policy::roles::ROOM_KIND, verb),
                 args.iter().filter_map(|(key, value)| {

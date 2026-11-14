@@ -540,8 +540,7 @@ fn an_agents_send_is_the_agents_on_every_member() {
     let bob = "b0".repeat(32);
     let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
     let conversation = Chat::direct_id([MemberId::person(ada.clone()), MemberId::person(bob)]);
-    let helper = tilo_actions::ActionInvoker::actor("agent:helper")
-        .with_kind(tilo_actions::ActorKind::Agent)
+    let helper = tilo_actions::ActionInvoker::agent("helper")
         .acting_for(ada)
         .named(Some("Helper".into()));
 

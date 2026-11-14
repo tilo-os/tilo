@@ -318,7 +318,7 @@ tilo_test_env::scenario! {
         assert_eq!(resource.label, "Studio mixer");
         assert_ne!(resource.label, <Board as Resource>::LABEL);
         let invoker = context.invoker.unwrap();
-        assert_eq!(invoker.actor, "test-author");
+        assert_eq!(invoker.key(), "test-author");
 
         // A past version is read by nobody in particular.
         let first = app.versions().first().unwrap().hash;
@@ -340,7 +340,7 @@ tilo_test_env::scenario! {
             .find_map(|version| version.context)
             .unwrap();
         assert_eq!(seed.change, tilo_actions::ChangeKind::External);
-        assert_eq!(seed.invoker.unwrap().actor, "test-author");
+        assert_eq!(seed.invoker.unwrap().key(), "test-author");
 
         // Neither Ctrl+Z nor the `undo` action takes the seed back.
         assert!(!app.undo());

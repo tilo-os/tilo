@@ -355,7 +355,7 @@ fn later_writers(
                 v.context
                     .as_ref()
                     .and_then(|context| context.invoker.as_ref())
-                    .is_some_and(|other| other.actor == invoker)
+                    .is_some_and(|other| other.key() == invoker)
             })
         {
             continue;
@@ -686,7 +686,7 @@ pub fn revert_changes(
         let (before, after, covered) = run_bounds(doc, &run)?;
         let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
             .and_then(|context| context.invoker)
-            .map(|invoker| invoker.actor);
+            .map(|invoker| invoker.key());
         let (outcome, patches) = plan(
             doc,
             (&before, &after, covered),

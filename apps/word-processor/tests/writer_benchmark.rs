@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tilo_doc::DocSnapshot;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ActorKind, ParticipantId};
+use ui::tilo_actions::{ActionInvoker, ParticipantId};
 use word_processor::framework::WordProcessorApp;
 
 type App = TestApp<WordProcessorApp>;
@@ -212,8 +212,7 @@ fn matches_reference(snapshot: &DocSnapshot) -> Result<String, String> {
 }
 
 fn agent() -> ActionInvoker {
-    ActionInvoker::actor(AGENT)
-        .with_kind(ActorKind::Agent)
+    ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(AGENT))
         .acting_for(PERSON)
         .with_participant(ParticipantId::new(PARTICIPANT).unwrap())
 }
@@ -329,7 +328,7 @@ fn typed_arm(receipt: &mut Receipt) -> App {
             entry
                 .invoker
                 .as_ref()
-                .is_none_or(|invoker| invoker.actor != AGENT)
+                .is_none_or(|invoker| invoker.key() != AGENT)
         })
         .count();
     receipt.record(

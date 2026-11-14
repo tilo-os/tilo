@@ -90,7 +90,7 @@ tilo_test_env::scenario! {
                             .message()
                             .and_then(|s| tilo_actions::ActionContext::from_change_message(s))
                             .map(crate::state::owned_restore_tests::unstamped),
-                        Some(context().with_invoker(tilo_actions::ActionInvoker::actor(
+                        Some(context().with_invoker(tilo_actions::ActionInvoker::person(
                             binding.author.0.clone()
                         )))
                     );

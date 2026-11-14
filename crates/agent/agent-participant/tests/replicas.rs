@@ -468,9 +468,9 @@ fn a_bot_replica_edits_within_its_grant_for_its_installer() {
         .flatten()
         .expect("the bot's change records its entry");
     let invoker = entry.invoker.clone().unwrap();
-    assert_eq!(invoker.actor, "bot:b1");
-    assert_eq!(invoker.kind, tilo_actions::ActorKind::Bot);
-    assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
+    assert_eq!(invoker.key(), "bot:b1");
+    assert!(invoker.acting.is_bot());
+    assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
     assert_eq!(entry.caused_by.as_ref().unwrap().event, "e1");
     assert_eq!(
         tilo_agent_participant::bot::door::RunStep::of(&entry),

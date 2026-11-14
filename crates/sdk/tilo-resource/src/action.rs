@@ -52,7 +52,7 @@ pub struct Acting {
 fn invoking_author() -> Option<String> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
-        .map(|invoker| invoker.actor)
+        .map(|invoker| invoker.key())
         .or_else(|| RECORD_ACTOR.with_borrow(Clone::clone))
 }
 
@@ -173,9 +173,12 @@ impl ActionCx {
                 .name
                 .filter(|name| !name.trim().is_empty())
                 .map(crate::Atom),
-            person: invoker.on_behalf_of.map(crate::Atom),
+            person: invoker
+                .acting
+                .acted_for_person()
+                .map(|person| crate::Atom(person.to_owned())),
         };
-        (invoker.kind.acts_for_someone() && acting != Acting::default()).then_some(acting)
+        (!invoker.acting.is_person() && acting != Acting::default()).then_some(acting)
     }
 
     /// The name and avatar a bot showed for this action instead of its own,
@@ -184,17 +187,17 @@ impl ActionCx {
     pub fn appearance(&self) -> Option<tilo_actions::Appearance> {
         tilo_actions::invoking_context()
             .and_then(|context| context.invoker)
-            .filter(|invoker| invoker.kind == tilo_actions::ActorKind::Bot)
+            .filter(|invoker| invoker.acting.is_bot())
             .and_then(|invoker| invoker.appearance)
     }
 
-    /// What kind of actor invoked the action (a person, an agent, a
-    /// Shortcut), as the envelope pinned it.
+    /// Who invoked the action (a person, an agent, an automation), as the
+    /// envelope pinned it.
     #[must_use]
-    pub fn actor_kind(&self) -> Option<tilo_actions::ActorKind> {
+    pub fn invoked_by(&self) -> Option<tilo_actions::Acting> {
         tilo_actions::invoking_context()
             .and_then(|context| context.invoker)
-            .map(|invoker| invoker.kind)
+            .map(|invoker| invoker.acting)
     }
 
     /// When the action was authored, in milliseconds since the Unix epoch, as

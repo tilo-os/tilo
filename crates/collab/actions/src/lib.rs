@@ -197,10 +197,10 @@ pub use executor::{
 };
 pub use framework::FrameworkChange;
 pub use interaction::{
-    ActorKind, INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionAnchor,
-    InteractionGridRange, InteractionPhase, InteractionTextRange, InteractionUpdate,
-    InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
-    MAX_LABEL_BYTES, SemanticInteraction,
+    INTERACTION_VERSION, InteractionAction, InteractionAnchor, InteractionGridRange,
+    InteractionPhase, InteractionTextRange, InteractionUpdate, InteractionViolation,
+    MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES, MAX_LABEL_BYTES,
+    SemanticInteraction,
 };
 pub use key::{ActionKey, CREATE_ACTION};
 pub use outcome::{
@@ -243,6 +243,7 @@ pub use tilo_action_policy as policy;
 /// is placed below it ([`ActionContract::field`]), where someone who may only
 /// comment is granted changes.
 pub use tilo_action_policy::roles::{COMMENTS_FIELD, MODERATION_FIELD};
+pub use tilo_action_policy::{Acting, Actor, MemberId};
 
 #[cfg(test)]
 mod tests {

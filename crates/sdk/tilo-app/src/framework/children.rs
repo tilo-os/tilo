@@ -557,7 +557,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             self.workspace
                 .store
                 .with_history(&record, |doc, history| {
-                    let writer = ui_core::bound_dispatch::document_writer(&invoker.actor, doc);
+                    let writer = ui_core::bound_dispatch::document_writer(&invoker.key(), doc);
                     let applied = tilo_actions::apply_local_with_context(
                         doc,
                         &action,
@@ -845,7 +845,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             .store
             .with_history(&record, |doc, history| {
                 let before = doc.get_heads();
-                let writer = ui_core::bound_dispatch::document_writer(&invoker.actor, doc);
+                let writer = ui_core::bound_dispatch::document_writer(&invoker.key(), doc);
                 let applied = tilo_actions::apply_local_with_context(
                     doc,
                     action,
@@ -1594,7 +1594,7 @@ mod tests {
         phase the_door_offers_one_lifecycle_on_every_child_and_carries_each_childs_own_actions;
         {
             let (_, children) = workspace();
-            let agent = ActionInvoker::actor("agent-1");
+            let agent = ActionInvoker::person("agent-1");
             let invoke =
                 |resource: &tilo_actions::ResourceSpec, action: &str, args: serde_json::Value| {
                     let spec = resource

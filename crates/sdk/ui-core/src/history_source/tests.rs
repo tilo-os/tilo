@@ -816,7 +816,7 @@ tilo_test_env::scenario! {
     phase rows_tell_the_readers_changes_from_a_collaborators_and_an_agents;
     {
         use crate::widget::history::AuthorRelation;
-        use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+        use tilo_actions::{ActionContext, ActionInvoker};
         let mut doc = AutoCommit::new();
         let step = |doc: &mut AutoCommit, key: &str, invoker: ActionInvoker| {
             doc.put(ROOT, key, "x").unwrap();
@@ -828,13 +828,12 @@ tilo_test_env::scenario! {
                 .with_invoker(invoker);
             doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         };
-        step(&mut doc, "mine", ActionInvoker::actor("kai"));
-        step(&mut doc, "theirs", ActionInvoker::actor("ada"));
+        step(&mut doc, "mine", ActionInvoker::person("kai"));
+        step(&mut doc, "theirs", ActionInvoker::person("ada"));
         step(
             &mut doc,
             "agents",
-            ActionInvoker::actor("agent:claude")
-                .with_kind(ActorKind::Agent)
+            ActionInvoker::agent("claude")
                 .acting_for("kai"),
         );
         let mut authors = AuthorDirectory::new();
@@ -862,7 +861,7 @@ tilo_test_env::scenario! {
     // The row names both and carries them as data.
     {
         use crate::widget::history::{AuthorRelation, HistoryAttribution};
-        use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+        use tilo_actions::{ActionContext, ActionInvoker};
         // Through the action surface: the host stamps the authenticated agent
         // and the person it acted for on the change.
         let mut doc = AutoCommit::new();
@@ -873,8 +872,7 @@ tilo_test_env::scenario! {
                 [],
             )))
             .with_invoker(
-                ActionInvoker::actor("agent:claude")
-                    .with_kind(ActorKind::Agent)
+                ActionInvoker::agent("claude")
                     .acting_for("ada"),
             );
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
@@ -888,9 +886,8 @@ tilo_test_env::scenario! {
         assert_eq!(
             author.attribution,
             Some(HistoryAttribution {
-                actor: "agent:claude".into(),
-                kind: ActorKind::Agent,
-                on_behalf_of: Some("ada".into()),
+                acting: tilo_actions::Acting::agent("claude")
+                    .acting_for(tilo_actions::Acting::person("ada")),
                 on_behalf_of_name: Some("ada".into()),
                 writer: None,
                 writer_label: None,
@@ -934,9 +931,8 @@ tilo_test_env::scenario! {
         assert_eq!(
             author.attribution,
             Some(HistoryAttribution {
-                actor: "agent:scribe".into(),
-                kind: ActorKind::Agent,
-                on_behalf_of: Some(person.clone()),
+                acting: tilo_actions::Acting::agent("scribe")
+                    .acting_for(tilo_actions::Acting::person(person.clone())),
                 on_behalf_of_name: Some("Ada".into()),
                 writer: None,
                 writer_label: None,
@@ -959,7 +955,7 @@ tilo_test_env::scenario! {
     // was made in, and the task's id and label stay on the row as data.
     {
         use crate::widget::history::AuthorRelation;
-        use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+        use tilo_actions::{ActionContext, ActionInvoker};
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "x").unwrap();
         let context = ActionContext::default()
@@ -969,8 +965,7 @@ tilo_test_env::scenario! {
                 "task",
             )
             .with_invoker(
-                ActionInvoker::actor("agent:claude")
-                    .with_kind(ActorKind::Agent)
+                ActionInvoker::agent("claude")
                     .acting_for("ada"),
             );
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
@@ -998,12 +993,10 @@ tilo_test_env::scenario! {
     // An author as an app reads it over the wire words its row once: the
     // agent's own name, whom it acted for, and the reader as themselves.
     {
-        use tilo_actions::ActorKind;
-        use tilo_actions::remote::workspace_activity as wire;
+                use tilo_actions::remote::workspace_activity as wire;
         let agent = wire::Author {
             name: "claude".into(),
             relation: wire::Relation::Software,
-            kind: ActorKind::Agent,
             on_behalf_of: Some("ada".into()),
             ..wire::Author::default()
         };

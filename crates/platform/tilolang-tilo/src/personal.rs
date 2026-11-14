@@ -280,7 +280,12 @@ impl Keep {
 /// action's apply, where no person is acting.
 fn acting() -> Option<String> {
     let invoker = tilo_actions::invoking_context()?.invoker?;
-    Some(invoker.on_behalf_of.unwrap_or(invoker.actor))
+    Some(
+        invoker
+            .acting
+            .acted_for_person()
+            .map_or_else(|| invoker.key(), str::to_owned),
+    )
 }
 
 impl Action for Keep {
@@ -533,7 +538,7 @@ mod tests {
     fn apply_as(doc: &mut Doc, actor: &str, keep: &Keep) -> Result<(), String> {
         let encoded = tilo_resource::encode::<Personal>(keep).map_err(|e| e.to_string())?;
         let context = ActionContext::for_resource(KIND, KIND, Personal::LABEL)
-            .with_invoker(tilo_actions::ActionInvoker::actor(actor));
+            .with_invoker(tilo_actions::ActionInvoker::person(actor));
         tilo_actions::apply_local_with_context(doc, keep, encoded, None, context)
             .map(|_| ())
             .map_err(|error| error.to_string())

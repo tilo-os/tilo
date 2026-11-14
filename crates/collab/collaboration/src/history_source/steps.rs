@@ -75,7 +75,7 @@ impl Scope {
             return Self::Run(group.id.clone());
         }
         if let Some(invoker) = context.and_then(|context| context.invoker.as_ref()) {
-            return Self::Invoker(invoker.actor.clone());
+            return Self::Invoker(invoker.key());
         }
         Self::Actor(actor_hex.to_owned())
     }
@@ -103,7 +103,7 @@ impl Scope {
                 run.is_none()
                     && context
                         .and_then(|context| context.invoker.as_ref())
-                        .is_some_and(|invoker| &invoker.actor == actor)
+                        .is_some_and(|invoker| invoker.key() == *actor)
             }
             Self::Actor(actor) => run.is_none() && version.actor.eq_ignore_ascii_case(actor),
         }

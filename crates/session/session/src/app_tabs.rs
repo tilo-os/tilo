@@ -361,8 +361,9 @@ impl AppTabs {
     /// whose window it was, for the person at it: the action every agent and script runs too.
     fn deliver_sends(&mut self, shared: &crate::Shared) {
         for sent in std::mem::take(&mut self.sent) {
-            let mut by = tilo_actions::ActionInvoker::actor(sent.app.clone());
-            by.kind = tilo_actions::ActorKind::App;
+            let by = tilo_actions::ActionInvoker::admitted(
+                &tilo_actions::Acting::person(String::new()).in_app(sent.app.clone()),
+            );
             let taken = shared.services.borrow_mut().invoke_as(
                 &by,
                 None,

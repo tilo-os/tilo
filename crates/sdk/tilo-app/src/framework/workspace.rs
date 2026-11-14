@@ -160,12 +160,12 @@ impl<P: Resource> Shared<P> {
         let change = action.change_kind();
         // Who the change is: the invoker's own actor (an agent acting in a turn, attributed as it
         // is at an app's record origin), or the person seated here for an invoker naming nobody.
-        let invoker = if invoker.actor.is_empty() {
-            ActionInvoker::actor(&self.me)
+        let invoker = if invoker.key().is_empty() {
+            ActionInvoker::person(&self.me)
         } else {
             invoker.clone()
         };
-        let actor = invoker.actor.clone();
+        let actor = invoker.key();
         let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
             .with_app(self.app_id, self.app_title)
             .with_invoker(invoker)

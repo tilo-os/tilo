@@ -129,7 +129,7 @@ fn apply_signed(
     encoded: &EncodedAction,
 ) -> Result<tilo_actions::ActionEnvelope, tilo_actions::ActionError> {
     let context = tilo_actions::ActionContext::default()
-        .with_invoker(tilo_actions::ActionInvoker::actor(CONTRACT_AUTHOR));
+        .with_invoker(tilo_actions::ActionInvoker::person(CONTRACT_AUTHOR));
     tilo_actions::apply_local_with_context(doc, action, encoded.clone(), None, context)
 }
 

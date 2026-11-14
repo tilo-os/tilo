@@ -34,7 +34,7 @@ pub(crate) fn recorded(
         &action.kind,
         &action.kind,
     )
-    .with_invoker(ActionInvoker::actor(invoker));
+    .with_invoker(ActionInvoker::person(invoker));
     host.with_schemas(|| apply_local_with_context(record, action, encoded, None, context))
         .map(|_| ())
         .map_err(|error| error.to_string())

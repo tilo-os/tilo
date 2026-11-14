@@ -700,15 +700,14 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     assert!(
         invokers
             .iter()
-            .any(|invoker| invoker.actor == person
-                && invoker.kind == tilo_actions::ActorKind::Person),
+            .any(|invoker| invoker.key() == person && invoker.acting.is_person()),
         "{invokers:?}"
     );
     assert!(
         invokers
             .iter()
-            .any(|invoker| invoker.actor == "agent:Claude Code"
-                && invoker.on_behalf_of.as_deref() == Some(person.as_str())),
+            .any(|invoker| invoker.acting.agent_id() == Some("Claude Code")
+                && invoker.acting.acted_for_person() == Some(person.as_str())),
         "{invokers:?}"
     );
     browser.peer.close();

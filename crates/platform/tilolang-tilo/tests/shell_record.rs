@@ -828,7 +828,7 @@ fn undo(r: &mut Replica) {
     let action: HostHistoryEdit = serde_json::from_slice(&payload).unwrap();
     // The history edit is on the workspace root, which a tree path names `room`.
     let context = ActionContext::for_resource("room", "history", "history")
-        .with_invoker(ActionInvoker::actor(r.name.clone()));
+        .with_invoker(ActionInvoker::person(r.name.clone()));
     tilo_actions::apply_local_with_context(
         &mut r.doc,
         &action,

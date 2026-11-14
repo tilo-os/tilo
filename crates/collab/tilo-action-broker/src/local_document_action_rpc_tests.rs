@@ -175,7 +175,7 @@ async fn local_report_admission(
                     }),
                     source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::new_v4())),
                     purpose: Some("private original purpose".into()),
-                    invoker: Some(tilo_actions::ActionInvoker::actor(
+                    invoker: Some(tilo_actions::ActionInvoker::person(
                         "app-claimed-other-person",
                     )),
                     ..tilo_actions::ActionContext::default()

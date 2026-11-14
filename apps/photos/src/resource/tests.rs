@@ -1158,7 +1158,7 @@ fn timeline_days_parse_within_bounds() {
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::framework::testing::TestApp;
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("lake.png");
@@ -1166,9 +1166,7 @@ fn history_entries_render_as_the_apps_sentences() {
     std::fs::write(&path, &png).unwrap();
     let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
     let lake = app.state().all_photos().next().unwrap().id.clone();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <PhotoLibrary as ui::tilo_resource::Resource>::KIND;
     let item = photo_resource_id(&lake);
     let paths = photo_paths(&lake);
@@ -1209,7 +1207,7 @@ fn history_entries_render_as_the_apps_sentences() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);
@@ -1226,8 +1224,8 @@ fn history_entries_render_as_the_apps_sentences() {
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada")),
+        (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+        (true, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
 }

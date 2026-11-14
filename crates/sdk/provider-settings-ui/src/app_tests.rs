@@ -48,7 +48,7 @@ fn invoke(
         }
     }
     app.call_by(
-        ui::tilo_actions::ActionInvoker::actor("provider-administrator"),
+        ui::tilo_actions::ActionInvoker::person("provider-administrator"),
         &row,
         effect.id(),
         serde_json::Value::Object(arguments),
@@ -142,7 +142,7 @@ fn without_authority_the_window_says_who_sets_providers_up() {
 fn agents_list_presets_and_add_providers_through_actions() {
     let backend = Arc::new(FakeAdminBackend::default());
     let mut app = mount(backend.clone());
-    let agent = || ui::tilo_actions::ActionInvoker::actor("provider-administrator");
+    let agent = || ui::tilo_actions::ActionInvoker::person("provider-administrator");
     let listed = app
         .call_by(
             agent(),
@@ -266,7 +266,7 @@ fn list_models_through_the_door(
     let row = format!("settings.agent-provider:{provider}");
     let listed = app
         .call_by(
-            ui::tilo_actions::ActionInvoker::actor("provider-administrator"),
+            ui::tilo_actions::ActionInvoker::person("provider-administrator"),
             &row,
             ProviderEffect::LIST_PROVIDER_MODELS.id(),
             serde_json::json!({}),

@@ -399,7 +399,7 @@ mod tests {
     ) -> tilo_actions::ActionEnvelope {
         let encoded = ui::tilo_resource::encode::<crate::model::Document>(action).unwrap();
         let context = tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer")
-            .with_invoker(tilo_actions::ActionInvoker::actor(author));
+            .with_invoker(tilo_actions::ActionInvoker::person(author));
         tilo_actions::apply_local_with_context(doc, action, encoded, None, context).unwrap()
     }
 

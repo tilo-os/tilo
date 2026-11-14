@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
         OPEN_BINDING.with_borrow_mut(|binding| *binding = None);
         let mut app = TestApp::<PagesApp>::new().unwrap();
         let page = item(&mut app, "Private page").unwrap();
-        let invoker = tilo_actions::ActionInvoker::actor("page-agent")
+        let invoker = tilo_actions::ActionInvoker::person("page-agent")
             .with_participant(tilo_actions::ParticipantId::new("page-agent").unwrap());
         let error = app
             .call_by(invoker, page.id.as_str(), "open", serde_json::json!({}))

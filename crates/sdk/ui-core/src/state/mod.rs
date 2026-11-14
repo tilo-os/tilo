@@ -1077,7 +1077,7 @@ mod tests {
                 .map(owned_restore_tests::unstamped);
             assert_eq!(
                 decoded,
-                Some(context.with_invoker(tilo_actions::ActionInvoker::actor("ada")))
+                Some(context.with_invoker(tilo_actions::ActionInvoker::person("ada")))
             );
             assert!(state.peek_last_undo().is_some());
         }

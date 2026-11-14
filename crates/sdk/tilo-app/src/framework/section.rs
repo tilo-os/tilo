@@ -259,7 +259,7 @@ impl SectionDoor {
         let action = self.kind.decode(encoded)?;
         let id = action_id(&encoded.payload);
         self.kind
-            .apply(action.as_ref(), &id, &invoker.actor, invoked_by)?;
+            .apply(action.as_ref(), &id, &invoker.key(), invoked_by)?;
         self.notice();
         Ok(())
     }
@@ -619,7 +619,7 @@ impl SettingsRecords {
                 invocation.address,
                 &arguments,
                 invocation.confirmed,
-                &ActionInvoker::actor(&person),
+                &ActionInvoker::person(&person),
                 None,
             )
         })

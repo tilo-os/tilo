@@ -28,8 +28,7 @@ use tilo_actions::remote::{
     ReceiptStatus, RecordAddress, RecordCopy, RecordReads, RecordWake,
 };
 use tilo_actions::{
-    ActionContext, ActionFailure, ActionInvoker, ActionOutput, ActorKind, InvocationId,
-    InvocationUpdate,
+    ActionContext, ActionFailure, ActionInvoker, ActionOutput, InvocationId, InvocationUpdate,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -95,8 +94,8 @@ pub(crate) fn step_change(
         let by = context
             .invoker
             .as_ref()
-            .map(|invoker| invoker.actor.as_str());
-        (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
+            .map(tilo_actions::ActionInvoker::key);
+        (RunStep::of(&context).as_ref() == Some(step) && by.as_deref() == Some(actor))
             .then(|| (change.clone(), context))
     })
 }
@@ -233,9 +232,7 @@ impl<P: DoorParticipant> BotDoor<P> {
     }
 
     fn invoker(&self) -> ActionInvoker {
-        ActionInvoker::actor(self.actor())
-            .with_kind(ActorKind::Bot)
-            .acting_for(self.installer.clone())
+        ActionInvoker::bot(self.installation.clone()).acting_for(self.installer.clone())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, P> {

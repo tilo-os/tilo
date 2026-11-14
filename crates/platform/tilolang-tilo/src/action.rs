@@ -448,7 +448,7 @@ impl DynAction {
             &self.kind,
             &self.kind,
         )
-        .with_invoker(tilo_actions::ActionInvoker::actor(
+        .with_invoker(tilo_actions::ActionInvoker::person(
             self.authorship.invoker.clone(),
         ))
         .with_source_invocation(self.authorship.invocation.as_deref().map(invocation_id));

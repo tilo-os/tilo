@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 28
+version = 29
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -33,6 +33,8 @@ sources = [
     "crates/collab/reference/src/attached.rs",
     "crates/collab/reference/src/reference.rs",
     "crates/collab/actions/src/interaction.rs",
+    "crates/collab/action-policy/src/member.rs",
+    "crates/platform/tilo-app-id/src/lib.rs",
     "crates/collab/actions/src/step.rs",
     "crates/collab/actions/src/outcome.rs",
     "crates/collab/collab-types/src/presence/hue.rs",
@@ -46,6 +48,13 @@ ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or pa
 Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) and that set's parameters, each a name and a number"
 
 [schema]
+"Acting" = "struct"
+"Acting.agent_session" = "Option<AgentSessionId> optional"
+"Acting.app" = "Option<AppId> optional"
+"Acting.by" = "Actor"
+"Acting.cause" = "Option<ResourceId> optional"
+"Acting.for" = "Vec<Acting> optional"
+"Acting.foreign_device" = "bool optional"
 "ActionApp" = "struct"
 "ActionApp.id" = "String"
 "ActionApp.label" = "String"
@@ -53,20 +62,18 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "ActionResource.id" = "String"
 "ActionResource.kind" = "String"
 "ActionResource.label" = "String"
-"ActorKind" = "enum external"
-"ActorKind::agent" = "unit"
-"ActorKind::app" = "unit"
-"ActorKind::bot" = "unit"
-"ActorKind::person" = "unit"
-"ActorKind::program" = "unit"
-"ActorKind::shortcut" = "unit"
+"Actor" = "enum external"
+"Actor::automation" = "tuple(AutomationId)"
+"Actor::member" = "tuple(MemberId)"
 "AdoptedQuery" = "struct"
 "AdoptedQuery.options" = "FindOptions optional"
 "AdoptedQuery.query" = "String"
 "AdoptedQuery.serial" = "u64"
+"AgentSessionId" = "tuple(String) transparent"
 "Anchor" = "struct"
 "Anchor.query" = "String"
 "Anchor.resource" = "String"
+"AppId" = "tuple(String) transparent"
 "Ask" = "enum internal tag=ask"
 "Ask::share" = "tuple(OpenWindow)"
 "Ask::stop" = "struct"
@@ -94,6 +101,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "Attached::video.name" = "String"
 "Attached::video.size" = "u64"
 "Attached::video.w" = "u32"
+"AutomationId" = "tuple(String) transparent"
 "Border" = "struct deny_unknown_fields"
 "Border.ink" = "BorderInk"
 "Border.width" = "f32"
@@ -381,10 +389,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "InteractionAction.id" = "String"
 "InteractionAction.label" = "String"
 "InteractionAction.step" = "Option<StepKind> optional"
-"InteractionActor" = "struct"
-"InteractionActor.for_person" = "Option<String> optional"
-"InteractionActor.id" = "String"
-"InteractionActor.kind" = "ActorKind"
 "InteractionAnchor" = "enum internal tag=kind"
 "InteractionAnchor::grid" = "struct"
 "InteractionAnchor::grid.ranges" = "Vec<InteractionGridRange>"
@@ -455,6 +459,10 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "LocationSuggestion.icon" = "Option<String> optional"
 "LocationSuggestion.label" = "String"
 "LocationSuggestion.value" = "String"
+"MemberId" = "enum external"
+"MemberId::agent" = "tuple(String)"
+"MemberId::bot" = "tuple(String)"
+"MemberId::person" = "tuple(String)"
 "MotionCurve" = "enum external"
 "MotionCurve::eased" = "unit"
 "MotionCurve::none" = "unit"
@@ -542,6 +550,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "ResourceAt.app" = "String"
 "ResourceAt.record" = "Option<String> optional"
 "ResourceAt.reference" = "ResourceRef flatten"
+"ResourceId" = "tuple(String) transparent"
 "ResourceRef" = "struct"
 "ResourceRef.id" = "String"
 "ResourceRef.kind" = "String"
@@ -583,7 +592,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "SelectorFinish.strip" = "StripMaterial"
 "SemanticInteraction" = "struct"
 "SemanticInteraction.action" = "InteractionAction"
-"SemanticInteraction.actor" = "InteractionActor"
+"SemanticInteraction.actor" = "Acting"
 "SemanticInteraction.anchor" = "InteractionAnchor"
 "SemanticInteraction.group" = "Option<WorkGroup> optional"
 "SemanticInteraction.invocation" = "InvocationId"

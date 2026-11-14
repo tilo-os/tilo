@@ -16,7 +16,7 @@ use notes::{Notebook, NotesShell, PageId};
 use serde_json::json;
 use ui::framework::testing::TestApp;
 use ui::synthetic_input::{char_key, cursor_moved, named_key};
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::ActionInvoker;
 use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::NamedKey;
@@ -25,9 +25,7 @@ type App = TestApp<NotesShell>;
 
 /// An agent changing notes, one call each, as one connection does.
 fn agent() -> ActionInvoker {
-    ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada")
+    ActionInvoker::agent("claude").acting_for("ada")
 }
 
 /// Call `id` on `resource` with the arguments a palette or an agent passes.
@@ -321,7 +319,10 @@ fn sidebar_delete_and_duplicate_submit_the_notebooks_verbs() {
         let entries = twin.history();
         let last = entries.last().expect("the agent's delete is in history");
         assert_eq!(
-            last.invoker.as_ref().map(|invoker| invoker.actor.as_str()),
+            last.invoker
+                .as_ref()
+                .map(ui::tilo_actions::ActionInvoker::key)
+                .as_deref(),
             Some("agent:claude"),
             "an agent reaches the same delete by the verb's id"
         );

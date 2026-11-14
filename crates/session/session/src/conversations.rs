@@ -717,7 +717,7 @@ impl tilo_service::Service for TurnSummonses {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
-        let invoker = tilo_actions::ActionInvoker::actor(self.conversations.person());
+        let invoker = tilo_actions::ActionInvoker::person(self.conversations.person());
         self.invoke_as(&invoker, resource, action, arguments)
     }
 

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use tilo_actions::Acting;
 use tilo_actions::context::{ActionContext, Cause};
 use tilo_actions::entry::Did;
-use tilo_actions::interaction::InteractionActor;
 
 /// The item a change touched: its kind, id and label at the time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ pub struct RecordEvent {
     pub kind: String,
     /// The change's hash, hex: the event's identity.
     pub change: String,
-    pub actor: InteractionActor,
+    pub actor: Acting,
     pub did: Did,
     /// The full recorded arguments of the verb, when the change was one.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
@@ -79,7 +79,6 @@ pub fn event_of(
     change: &str,
     context: &ActionContext,
 ) -> RecordEvent {
-    let invoker = context.invoker.clone().unwrap_or_default();
     let facet = |key: &str| {
         context
             .facets
@@ -92,11 +91,10 @@ pub fn event_of(
         record: record.to_owned(),
         kind: kind.to_owned(),
         change: change.to_owned(),
-        actor: InteractionActor {
-            id: invoker.actor,
-            kind: invoker.kind,
-            for_person: invoker.on_behalf_of,
-        },
+        actor: context
+            .acting()
+            .cloned()
+            .unwrap_or_else(|| Acting::person(String::new())),
         did: context
             .what
             .clone()

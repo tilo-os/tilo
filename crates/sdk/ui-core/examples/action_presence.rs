@@ -55,11 +55,7 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,
-        actor: tilo_actions::InteractionActor {
-            id: "scribe".into(),
-            kind: tilo_actions::ActorKind::Agent,
-            for_person: None,
-        },
+        actor: tilo_actions::Acting::agent("scribe"),
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {
             id: "edit".into(),

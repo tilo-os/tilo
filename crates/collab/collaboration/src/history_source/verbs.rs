@@ -576,12 +576,7 @@ fn by(version: &Version) -> String {
         .context
         .as_ref()
         .and_then(|context| context.invoker.as_ref())
-        .map(|invoker| {
-            invoker
-                .name
-                .clone()
-                .unwrap_or_else(|| invoker.actor.clone())
-        })
+        .map(|invoker| invoker.name.clone().unwrap_or_else(|| invoker.key()))
         .or_else(|| super::authors::actor_handle(&version.actor))
         .unwrap_or_else(|| version.actor.chars().take(8).collect())
 }
@@ -603,10 +598,20 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
     }
     if let Some(invoker) = &context.invoker {
         let mut actor = serde_json::Map::new();
-        actor.insert("id".into(), invoker.actor.clone().into());
-        actor.insert("kind".into(), json!(invoker.kind));
-        if let Some(person) = &invoker.on_behalf_of {
-            actor.insert("for".into(), person.clone().into());
+        actor.insert("id".into(), invoker.key().into());
+        let acting = &invoker.acting;
+        let kind = if acting.is_agent() {
+            "agent"
+        } else if acting.is_bot() {
+            "bot"
+        } else if acting.is_automation() {
+            "automation"
+        } else {
+            "person"
+        };
+        actor.insert("kind".into(), kind.into());
+        if let Some(person) = acting.acted_for_person() {
+            actor.insert("for".into(), person.into());
         }
         if let Some(name) = &invoker.name {
             let (red, green, blue) = collab_types::presence::agent_rgb(name);

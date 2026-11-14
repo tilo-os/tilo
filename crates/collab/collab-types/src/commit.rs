@@ -646,7 +646,7 @@ impl Read {
                 read.principal = context
                     .invoker
                     .as_ref()
-                    .map(|invoker| invoker.actor.clone());
+                    .map(tilo_actions::ActionInvoker::key);
             }
             if read.run.is_none() {
                 read.run = context.group.as_ref().map(|group| CommitGroup {
@@ -871,7 +871,7 @@ mod tests {
                 new: None,
                 args: std::collections::BTreeMap::new(),
             })),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            invoker: Some(tilo_actions::ActionInvoker::person("alice")),
             source_invocation: Some(invocation),
             ..ActionContext::for_resource("tasks", "tasks", field)
         };
@@ -994,7 +994,7 @@ mod tests {
                     new: None,
                     args: std::collections::BTreeMap::new(),
                 })),
-                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                invoker: Some(tilo_actions::ActionInvoker::person("alice")),
                 source_invocation: Some(invocation),
                 ..ActionContext::for_resource("tasks", "tasks", "a")
             };
@@ -1064,7 +1064,7 @@ mod tests {
                     type_id: "notes.type".into(),
                     payload: format!("{text:?}").into_bytes(),
                 }),
-                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                invoker: Some(tilo_actions::ActionInvoker::person("alice")),
                 ..ActionContext::default().in_gesture(Some(gesture))
             };
             let mut doc = automerge::AutoCommit::new();
@@ -1136,7 +1136,7 @@ mod tests {
                     kind: "agent-run".to_owned(),
                     title: None,
                 }),
-                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                invoker: Some(tilo_actions::ActionInvoker::person("alice")),
                 source_invocation: Some(invocation),
                 ..ActionContext::for_resource("tasks", "tasks", "note:1")
             };

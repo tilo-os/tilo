@@ -291,12 +291,10 @@ mod tests {
     /// Windows Apps' sentence, naming who did it for whom.
     #[test]
     fn an_agent_routes_an_app_in_one_call_and_history_says_so() {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
 
         let mut app = TestApp::<WindowsShell>::new().unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada");
+        let agent = ActionInvoker::agent("claude").acting_for("ada");
         let routes = Windows::paths().routes;
         for edit in [
             routes.key("adobe-reader").set(Route::Proton),
@@ -324,7 +322,7 @@ mod tests {
                 entry
                     .invoker
                     .as_ref()
-                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+                    .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
             })
             .collect();
         let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
@@ -338,8 +336,8 @@ mod tests {
         );
         let invoker = entries[0].invoker.as_ref().unwrap();
         assert_eq!(
-            (invoker.kind, invoker.on_behalf_of.as_deref()),
-            (ActorKind::Agent, Some("ada"))
+            (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+            (true, Some("ada"))
         );
         assert!(app.undo());
         assert_eq!(app.state().route("adobe-reader"), Some(Route::Vm));

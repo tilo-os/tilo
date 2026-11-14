@@ -5,7 +5,7 @@
 use notes::{Notebook, NotesShell, PageId};
 use tilo_document::RichTextAction;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::ActionInvoker;
 
 fn note_titled(app: &TestApp<NotesShell>, title: &str) -> PageId {
     crate::framework_support::shown(app)
@@ -20,9 +20,7 @@ fn note_titled(app: &TestApp<NotesShell>, title: &str) -> PageId {
 fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <Notebook as ui::tilo_resource::Resource>::KIND;
     let call = |app: &mut TestApp<NotesShell>, resource: &str, id: &str, args| {
         app.call_by(agent.clone(), resource, id, args)
@@ -99,7 +97,7 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);
@@ -117,8 +115,8 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada")),
+        (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+        (true, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
 }
@@ -135,9 +133,7 @@ fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
         .unwrap();
     let kind = <Notebook as ui::tilo_resource::Resource>::KIND;
     let before = app.versions().len();
-    let agent = ActionInvoker::actor("agent:scribe")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("scribe").acting_for("ada");
 
     let made = app
         .call_by(
@@ -162,8 +158,8 @@ fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
         .and_then(|version| version.context.as_ref())
         .and_then(|context| context.invoker.as_ref())
         .expect("the step names who made it");
-    assert_eq!(by.actor, "agent:scribe");
-    assert_eq!(by.on_behalf_of.as_deref(), Some("ada"));
+    assert_eq!(by.key(), "agent:scribe");
+    assert_eq!(by.acting.acted_for_person(), Some("ada"));
 
     app.call_by(agent, kind, "undo", serde_json::json!({}))
         .unwrap();

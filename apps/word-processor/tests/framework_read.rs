@@ -348,7 +348,7 @@ fn an_edit_told_which_paragraph_acts_there_and_leaves_the_agent_there() {
         "align is told where by a place"
     );
 
-    let agent = tilo_actions::ActionInvoker::actor("scribe")
+    let agent = tilo_actions::ActionInvoker::person("scribe")
         .with_participant(tilo_actions::ParticipantId::new("scribe-1").unwrap());
     app.call_by(
         agent.clone(),

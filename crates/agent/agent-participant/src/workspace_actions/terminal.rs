@@ -584,7 +584,7 @@ impl Worker {
         let context = caller_context(&ended.caller, &ended.request);
         // The run is the caller's, for the person they act for: the host
         // records it on their behalf.
-        let invoker = tilo_actions::ActionInvoker::admitted(&ended.caller.actor())
+        let invoker = tilo_actions::ActionInvoker::admitted(ended.caller.acting())
             .named(ended.caller.agent_name().map(str::to_owned));
         let holder = {
             self.mount(&ended.route, &state).map_err(failed)?;

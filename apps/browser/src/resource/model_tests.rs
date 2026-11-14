@@ -220,12 +220,10 @@ fn the_address_book_holds_valid_profiles_only() {
 
 #[test]
 fn an_agents_changes_render_as_the_browsers_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = ui::framework::testing::TestApp::<BrowserShell>::capture(None).unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = Browser::KIND;
     app.call_by(
         agent.clone(),
@@ -281,7 +279,7 @@ fn an_agents_changes_render_as_the_browsers_sentences() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);
@@ -298,7 +296,7 @@ fn an_agents_changes_render_as_the_browsers_sentences() {
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada"))
+        (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+        (true, Some("ada"))
     );
 }

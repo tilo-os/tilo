@@ -747,9 +747,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// reads whose it is here, never from the view.
     pub fn person(&self) -> Option<String> {
         match ui_core::invocation_scope::current_invoker() {
-            Some(invoker) => {
-                (invoker.kind == tilo_actions::ActorKind::Person).then_some(invoker.actor)
-            }
+            Some(invoker) => invoker.acting.is_person().then(|| invoker.key()),
             None => self.env.dispatch.me().map(str::to_owned),
         }
     }

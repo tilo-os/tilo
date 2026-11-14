@@ -676,7 +676,7 @@ fn undo(r: &mut Replica) {
     let payload = serde_json::to_vec(&edit).unwrap();
     let action: HostHistoryEdit = serde_json::from_slice(&payload).unwrap();
     let context = ActionContext::for_resource("workspace", "history", "history")
-        .with_invoker(ActionInvoker::actor(r.name.clone()));
+        .with_invoker(ActionInvoker::person(r.name.clone()));
     tilo_actions::apply_local_with_context(
         &mut r.doc,
         &action,

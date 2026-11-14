@@ -971,9 +971,8 @@ mod tests {
         assert_eq!(
             rows[1].author.attribution,
             Some(HistoryAttribution {
-                actor: "agent:scribe".into(),
-                kind: tilo_actions::ActorKind::Agent,
-                on_behalf_of: Some(hex::encode(ada)),
+                acting: tilo_actions::Acting::agent("scribe")
+                    .acting_for(tilo_actions::Acting::person(hex::encode(ada))),
                 on_behalf_of_name: Some("Ada".into()),
                 writer: None,
                 writer_label: None,
@@ -1002,9 +1001,8 @@ mod tests {
         assert_eq!(
             rows[0].author.attribution,
             Some(HistoryAttribution {
-                actor: "agent:courier".into(),
-                kind: tilo_actions::ActorKind::Agent,
-                on_behalf_of: Some(hex::encode(ada)),
+                acting: tilo_actions::Acting::agent("courier")
+                    .acting_for(tilo_actions::Acting::person(hex::encode(ada))),
                 on_behalf_of_name: Some("Ada".into()),
                 writer: None,
                 writer_label: None,

@@ -993,7 +993,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     let issue = only(&app);
     let before = app.versions().len();
 
-    let scribe = ActionInvoker::actor("agent:scribe");
+    let scribe = ActionInvoker::agent("scribe");
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: app.harness().component_instance_id().unwrap(),
         address: ui::tilo_resource::Effect::address_on(
@@ -1071,7 +1071,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .and_then(|version| version.context.as_ref())
         .and_then(|context| context.invoker.as_ref())
         .expect("the step names who made it");
-    assert_eq!(by.actor, "agent:scribe");
+    assert_eq!(by.key(), "agent:scribe");
 
     app.call_by(scribe, "tasks.tracker", "undo", json!({}))
         .expect("the agent undoes its step");

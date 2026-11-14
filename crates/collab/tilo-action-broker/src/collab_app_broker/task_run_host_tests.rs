@@ -468,7 +468,7 @@ impl crate::services::RecordChangeServices for Origin {
         self.applied
             .lock()
             .unwrap()
-            .push((invoker.actor.clone(), change.action.clone()));
+            .push((invoker.key(), change.action.clone()));
         Ok(serde_json::json!({"ok": {"value": null}, "differs": false}))
     }
 }

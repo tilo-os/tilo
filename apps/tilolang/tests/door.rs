@@ -6,7 +6,7 @@ use serde_json::{Map, Value as Json, json};
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
 use ui::history_source::steps::Scope;
-use ui::tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+use ui::tilo_actions::{ActionContext, ActionInvoker};
 
 const NOTES: &str = "so.tilo.lang.notes";
 const HOST: &str = "tl:host";
@@ -15,9 +15,7 @@ const HOST: &str = "tl:host";
 /// is grouped under.
 fn task() -> (ActionInvoker, ActionContext) {
     (
-        ActionInvoker::actor("agent-task:7")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada"),
+        ActionInvoker::agent("agent-task:7").acting_for("ada"),
         ActionContext::default().with_group("task:7", "Tidy the notes", "task"),
     )
 }
@@ -125,7 +123,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_some_and(|invoker| invoker.actor == "agent-task:7")
+                .is_some_and(|invoker| invoker.key() == "agent-task:7")
         })
         .collect();
     assert!(
@@ -135,9 +133,9 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     for version in &by_task {
         let context = version.context.as_ref().unwrap();
         let invoker = context.invoker.as_ref().unwrap();
-        assert_eq!(invoker.kind, ActorKind::Agent);
+        assert!(invoker.acting.is_agent());
         assert_eq!(
-            invoker.on_behalf_of.as_deref(),
+            invoker.acting.acted_for_person(),
             Some("ada"),
             "for the person"
         );
@@ -154,7 +152,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_none_or(|invoker| invoker.actor != "agent-task:7")
+                .is_none_or(|invoker| invoker.key() != "agent-task:7")
         })
         .filter(|version| {
             version
@@ -177,7 +175,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
             context
                 .invoker
                 .as_ref()
-                .is_none_or(|invoker| invoker.kind == ActorKind::Person),
+                .is_none_or(|invoker| invoker.acting.is_person()),
             "and theirs"
         );
     }

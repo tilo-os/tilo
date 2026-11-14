@@ -401,12 +401,10 @@ mod tests {
 
     #[test]
     fn an_agent_works_the_map_one_call_each_and_history_reads_it() {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
 
         let mut app = TestApp::<MapsShell>::capture(Some("route")).unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada");
+        let agent = ActionInvoker::agent("claude").acting_for("ada");
         let kind = <Workspace as tilo_resource::Resource>::KIND;
         let place = app.state().places[0].id.clone();
         let paths = Workspace::paths();
@@ -449,7 +447,7 @@ mod tests {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         }));
         assert_eq!(
             sentences,

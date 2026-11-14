@@ -321,7 +321,7 @@ fn agents_and_collaborators_never_open_the_device_shell() {
 
     let operate = |app: &mut App, actor: &str, target: &str| {
         let _scope = ui::invocation_scope::InvokerScope::enter(
-            ui::tilo_actions::ActionInvoker::actor(actor),
+            ui::tilo_actions::ActionInvoker::person(actor),
         );
         on_tab(app, |tab| {
             tab.perform(crate::resource::TerminalEffect::OpenIn {
@@ -399,7 +399,7 @@ tilo_test_env::scenario! {
         let doc = AutoCommit::new();
         widget.sync(&doc, &ROOT);
 
-        let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
+        let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::person(
             "agent:helper",
         ));
         widget
@@ -971,7 +971,7 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     );
     {
         let _scope = ui::invocation_scope::InvokerScope::enter(
-            ui::tilo_actions::ActionInvoker::actor("agent:helper"),
+            ui::tilo_actions::ActionInvoker::agent("helper"),
         );
         let result = app
             .with_surface(|terminal: &mut crate::TerminalView| {

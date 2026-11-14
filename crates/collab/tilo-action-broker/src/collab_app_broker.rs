@@ -5815,7 +5815,7 @@ impl AppBrokerState {
         // this device's certified person vouches for it.
         self.publish_presence(route, &key, &payload);
         let event = CollabEvent::RemotePresenceUpdate {
-            user_id: shown.actor.id.clone(),
+            user_id: shown.actor.by.key(),
             key,
             payload,
         };

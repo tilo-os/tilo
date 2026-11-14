@@ -245,7 +245,7 @@ fn the_linking_actions_are_offered_to_every_member_through_the_host() {
 
 /// The bridge bot, which offers accounts Discord vouched for.
 fn bot() -> ui::tilo_actions::ActionInvoker {
-    ui::tilo_actions::ActionInvoker::actor("bridge").with_kind(ui::tilo_actions::ActorKind::Bot)
+    ui::tilo_actions::ActionInvoker::bot("bridge")
 }
 
 /// The bot offers Discord user `user`, named `user_name`, under `token`,

@@ -91,7 +91,7 @@ impl TextInput {
         let Some(acting) = presence
             .visible_interactions(now)
             .into_iter()
-            .find(|interaction| interaction.actor.id == *identity)
+            .find(|interaction| interaction.actor.by.key() == *identity)
         else {
             return;
         };
@@ -145,7 +145,7 @@ impl TextInput {
             let Some(alpha) = presence.interaction_fade(interaction.invocation, now) else {
                 continue;
             };
-            let user = UserId(interaction.actor.id.clone());
+            let user = UserId(interaction.actor.by.key());
             let bands: Vec<(Rect, f32)> = self
                 .selection_rects(theme, start, end)
                 .into_iter()

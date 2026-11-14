@@ -842,16 +842,14 @@ fn layout_and_spelling_language_follow_the_person() {
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
     let mut app = open();
     let kind = <Document as ui::tilo_resource::Resource>::KIND;
     let block = app.read_document(|doc| {
         let c = word_processor::model::open(doc).unwrap();
         tilo_doc::model::blocks_in_order(doc, &c).remove(0)
     });
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let edit = |op: RichTextAction| serde_json::json!({ "edit": word_processor::model::edit(&op) });
     for op in [
         RichTextAction::SpliceText {
@@ -912,7 +910,7 @@ fn history_entries_render_as_the_apps_sentences() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);
@@ -929,8 +927,8 @@ fn history_entries_render_as_the_apps_sentences() {
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada")),
+        (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+        (true, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
 }

@@ -152,11 +152,10 @@ tilo_test_env::scenario! {
 
     phase an_agents_changes_render_as_the_apps_sentences;
     {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
 
         let mut app = ui::framework::testing::TestApp::<ImagerShell>::new().unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
+        let agent = ActionInvoker::agent("claude")
             .acting_for("ada");
         let kind = Imager::KIND;
         let source = serde_json::to_value(sample_source()).unwrap();
@@ -197,7 +196,7 @@ tilo_test_env::scenario! {
                 entry
                     .invoker
                     .as_ref()
-                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+                    .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
             })
             .collect();
         let sentences = app.sentences(&entries);
@@ -214,8 +213,8 @@ tilo_test_env::scenario! {
         );
         let invoker = entries[0].invoker.as_ref().unwrap();
         assert_eq!(
-            (invoker.kind, invoker.on_behalf_of.as_deref()),
-            (ActorKind::Agent, Some("ada"))
+            (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+            (true, Some("ada"))
         );
     }
 }

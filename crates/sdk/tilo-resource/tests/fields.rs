@@ -113,8 +113,12 @@ impl Board {
     pub fn add_card_for(&mut self, cx: &mut ActionCx) {
         self.cards = self.cards.saturating_add(1);
         self.author = format!(
-            "{:?} for {}",
-            cx.actor_kind().unwrap_or_default(),
+            "{} for {}",
+            if cx.invoked_by().is_some_and(|acting| acting.is_agent()) {
+                "Agent"
+            } else {
+                "Person"
+            },
             cx.acting()
                 .and_then(|acting| acting.person)
                 .unwrap_or_default()

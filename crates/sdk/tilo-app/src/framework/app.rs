@@ -954,7 +954,7 @@ fn apply_seed_actions(
     for (action, encoded) in actions.iter().zip(encoded) {
         let context = tilo_actions::ActionContext::for_resource(app.kind, app.kind, app.label)
             .with_app(app.id(), app.title())
-            .with_invoker(tilo_actions::ActionInvoker::actor(author))
+            .with_invoker(tilo_actions::ActionInvoker::person(author))
             .with_change(tilo_actions::ChangeKind::External);
         tilo_actions::apply_local_with_context(doc, *action, encoded, Some(&writer), context)
             .map_err(|error| format!("seeding the new record failed: {error}"))?;

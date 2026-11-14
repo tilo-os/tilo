@@ -460,11 +460,10 @@ mod tests {
 
         phase history_entries_render_as_the_apps_sentences;
         {
-            use ui::tilo_actions::{ActionInvoker, ActorKind};
+            use ui::tilo_actions::ActionInvoker;
 
             let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
-            let agent = ActionInvoker::actor("agent:claude")
-                .with_kind(ActorKind::Agent)
+            let agent = ActionInvoker::agent("claude")
                 .acting_for("ada");
             let kind = <Library as ui::tilo_resource::Resource>::KIND;
             for edit in [
@@ -505,7 +504,7 @@ mod tests {
                 entry
                     .invoker
                     .as_ref()
-                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+                    .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
             }));
             assert_eq!(
                 sentences,

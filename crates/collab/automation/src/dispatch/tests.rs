@@ -1,7 +1,7 @@
 use serde_json::{Map, json};
+use tilo_actions::Acting;
 use tilo_actions::ActionKey;
 use tilo_actions::entry::{Did, EditOp, FieldEdit, GroupOf, PathStep, VerbCall};
-use tilo_actions::interaction::{ActorKind, InteractionActor};
 use tilo_actions::params::{ActionParam, ParamType};
 
 use super::*;
@@ -36,7 +36,7 @@ fn verb(action: &str) -> Did {
     ))
 }
 
-fn post(actor: InteractionActor, change: &str, caused_by: Option<Cause>) -> RecordEvent {
+fn post(actor: Acting, change: &str, caused_by: Option<Cause>) -> RecordEvent {
     RecordEvent {
         workspace: "ws-1".into(),
         record: "rec-1".into(),
@@ -56,16 +56,12 @@ fn post(actor: InteractionActor, change: &str, caused_by: Option<Cause>) -> Reco
     }
 }
 
-fn person(id: &str) -> InteractionActor {
-    InteractionActor::new(id, ActorKind::Person)
+fn person(id: &str) -> Acting {
+    Acting::person(id)
 }
 
-fn bot(id: &str) -> InteractionActor {
-    InteractionActor {
-        id: format!("bot:{id}"),
-        kind: ActorKind::Bot,
-        for_person: Some("ada".into()),
-    }
+fn bot(id: &str) -> Acting {
+    Acting::bot(id).acting_for(Acting::person("ada"))
 }
 
 fn watch_chat(by: ActorFilter) -> TriggerSpec {
@@ -106,7 +102,10 @@ tilo_test_env::scenario! {
         let firing = &out.firings[0];
         assert_eq!(firing.firer, "bot:b1");
         assert_eq!(firing.inputs["event"]["after"]["text"], "hi");
-        assert_eq!(firing.inputs["event"]["actor"]["id"], "bob");
+        assert_eq!(
+        firing.inputs["event"]["actor"]["by"]["member"]["person"],
+        "bob"
+    );
         assert_eq!(
             firing.cause,
             Some(Cause {
@@ -130,7 +129,7 @@ tilo_test_env::scenario! {
     {
         use tilo_actions::{ActionContext, ActionFacet, ActionInvoker, Described, EncodedAction};
         let mut context = ActionContext::for_app("so.tilo.chat", "Chat")
-            .with_invoker(ActionInvoker::actor("bob"))
+            .with_invoker(ActionInvoker::person("bob"))
             .with_described(Described::new(verb("post")))
             .with_facet(ActionFacet::new(
                 tilo_actions::INCOMING_MESSAGE_FACET,
@@ -143,7 +142,7 @@ tilo_test_env::scenario! {
             payload: br#"{"action":"post","args":{"channel":"c1","text":"hi"}}"#.to_vec(),
         });
         let event = event_of("ws-1", "rec-1", "chat.workspace", "ab", &context);
-        assert_eq!(event.actor.id, "bob");
+        assert_eq!(event.actor, Acting::person("bob"));
         assert!(event.incoming_message);
         assert_eq!(event.shortcut.as_deref(), Some("tidy"));
         assert_eq!(event.arguments["text"], "hi");
@@ -218,11 +217,7 @@ tilo_test_env::scenario! {
         // A Shortcut's run acts as its person; the run's `shortcut` facet is
         // what names it.
         let mut event = post(
-            InteractionActor {
-                id: "ada".into(),
-                kind: ActorKind::Shortcut,
-                for_person: Some("ada".into()),
-            },
+            Acting::automation("ada").acting_for(Acting::person("ada")),
             &"c".repeat(64),
             None,
         );
@@ -312,11 +307,7 @@ tilo_test_env::scenario! {
     {
         let people = program(vec![watch_chat(ActorFilter::People)]);
         let not_bots = program(vec![watch_chat(ActorFilter::NotBots)]);
-        let agent = InteractionActor {
-            id: "agent:a".into(),
-            kind: ActorKind::Agent,
-            for_person: Some("ada".into()),
-        };
+        let agent = Acting::agent("a").acting_for(Acting::person("ada"));
         let cases = [
             (person("bob"), true, true),
             (agent, false, true),

@@ -758,14 +758,12 @@ fn an_agent_edits_and_opens_snippets_one_call_each() {
 /// for whom.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
     use ui::tilo_resource::Atom;
 
     let mut app = launched(&[snippet("Deploy", "")]);
     let (deploy, _) = by_title(&app, "Deploy");
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <Snippets as ui::tilo_resource::Resource>::KIND;
     let item = item_resource_id::<Snippets>("snippets", &deploy);
     let paths = Snippets::paths().snippets.item(&deploy);
@@ -815,7 +813,7 @@ fn history_entries_render_as_the_apps_sentences() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);
@@ -835,8 +833,8 @@ fn history_entries_render_as_the_apps_sentences() {
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada")),
+        (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+        (true, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
 }

@@ -27,7 +27,7 @@ use tilolang_tilo::DynValue;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 use ui::headless::FrameHarness;
-use ui::tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+use ui::tilo_actions::{ActionContext, ActionInvoker};
 
 use crate::settle::{self, Woken};
 
@@ -48,9 +48,7 @@ fn tasks() -> Bundle {
 /// An agent's run of `issue-7`, acting for ada, as the broker stamps its changes.
 fn marked_run() -> (ActionInvoker, ActionContext) {
     (
-        ActionInvoker::actor("agent:helper")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada"),
+        ActionInvoker::agent("helper").acting_for("ada"),
         ActionContext::default().with_group(
             RUN,
             "Tidy the tasks",
@@ -407,7 +405,7 @@ impl Hosted {
                 ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(arguments.clone())
             )),
-            actor: invoker.map_or_else(|| "ada".to_owned(), |invoker| invoker.actor.clone()),
+            actor: invoker.map_or_else(|| "ada".to_owned(), ui::tilo_actions::ActionInvoker::key),
             context: ambient.cloned().map(Box::new),
         });
         let sent = Rc::clone(&self.sent);

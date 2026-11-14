@@ -351,9 +351,9 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
         })
         .expect("the agent's comment is a version with what it did");
     let invoker = spent.invoker.as_ref().expect("the change names its actor");
-    assert_eq!(invoker.actor, AGENT);
-    assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
-    assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
+    assert_eq!(invoker.key(), AGENT);
+    assert!(invoker.acting.is_agent());
+    assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
 }
 
 /// A create says what it makes: the collection it adds to, so a window says the
@@ -410,7 +410,7 @@ fn rename_writes_the_issue_title_and_refuses_a_blank_one() {
         .find_map(|version| version.context.clone())
         .expect("the rename is a version with what it did");
     assert_eq!(
-        spent.invoker.expect("the change names its actor").actor,
+        spent.invoker.expect("the change names its actor").key(),
         AGENT
     );
     assert!(

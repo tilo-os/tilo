@@ -36,13 +36,13 @@ pub(super) fn host_set_invoker(
         None
     };
     // A Shortcut's step is admitted as its person: the invoker stays them.
-    let admitting = caller.filter(|caller| caller.actor().id == actor.id);
+    let admitting = caller.filter(|caller| caller.acting().by.key() == actor.id);
     // Without a caller (an agent's task run), the admitted actor says whom an agent acts for.
-    let admitted = admitting.map_or_else(|| actor.shown(), tilo_actions::remote::Caller::actor);
+    let admitted = admitting.map_or_else(|| actor.shown(), |caller| caller.acting().clone());
 
     // A person acting for themselves needs no context to say so; anyone else is named with
     // their kind and the person they act for, so what they write is theirs, not that person's.
-    if context.is_none() && participant.is_none() && !admitted.kind.acts_for_someone() {
+    if context.is_none() && participant.is_none() && admitted.direct() {
         return Ok(None);
     }
     let mut context = context
@@ -74,7 +74,7 @@ mod tests {
         tilo_actions::ActionContext::default()
             .with_group(TASK, TASK, "task")
             .with_invoker(
-                tilo_actions::ActionInvoker::actor("person:owner")
+                tilo_actions::ActionInvoker::person("person:owner")
                     .with_participant(tilo_actions::ParticipantId::new("owner-window").unwrap()),
             )
     }
@@ -90,7 +90,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 context.invoker,
-                Some(tilo_actions::ActionInvoker::actor("person:guest"))
+                Some(tilo_actions::ActionInvoker::person("person:guest"))
             );
             assert_eq!(invoker_participant(Some(&context)), None);
             assert_eq!(
@@ -111,8 +111,7 @@ mod tests {
             assert_eq!(
                 context.invoker,
                 Some(
-                    tilo_actions::ActionInvoker::actor("agent:alpha")
-                        .with_kind(tilo_actions::ActorKind::Agent)
+                    tilo_actions::ActionInvoker::agent("alpha")
                         .with_participant(tilo_actions::ParticipantId::for_agent_task(TASK).unwrap())
                 )
             );
@@ -120,7 +119,7 @@ mod tests {
             let started = BrokerActor::agent("agent:alpha").for_person("owner");
             let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
             let invoker = context.and_then(|context| context.invoker).unwrap();
-            assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
+            assert_eq!(invoker.acting.acted_for_person(), Some("owner"));
             let untasked = tilo_actions::ActionContext::default();
             let context = host_set_invoker(Some(untasked), &actor, None, None)
                 .unwrap()
@@ -143,8 +142,7 @@ mod tests {
             assert_eq!(
                 context.invoker,
                 Some(
-                    tilo_actions::ActionInvoker::actor("agent:alpha")
-                        .with_kind(tilo_actions::ActorKind::Agent)
+                    tilo_actions::ActionInvoker::agent("alpha")
                         .acting_for("owner")
                 )
             );
@@ -158,8 +156,7 @@ mod tests {
             assert_eq!(
                 context.invoker,
                 Some(
-                    tilo_actions::ActionInvoker::actor("agent:alpha")
-                        .with_kind(tilo_actions::ActorKind::Agent)
+                    tilo_actions::ActionInvoker::agent("alpha")
                         .acting_for("owner")
                         .named(Some("Helper".into()))
                 )
@@ -177,7 +174,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 context.invoker,
-                Some(tilo_actions::ActionInvoker::actor("owner"))
+                Some(tilo_actions::ActionInvoker::person("owner"))
             );
         }
 

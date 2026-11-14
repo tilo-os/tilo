@@ -847,9 +847,11 @@ impl DispatchCore {
         // agent at its own caret, a collaborator a scenario stages), else
         // this window's person.
         let mut named = self.context();
-        if let Some(invoker) = ui_core::invocation_scope::current_invoker()
-            .or_else(|| self.me.as_ref().map(|me| ActionInvoker::actor(me.as_ref())))
-        {
+        if let Some(invoker) = ui_core::invocation_scope::current_invoker().or_else(|| {
+            self.me
+                .as_ref()
+                .map(|me| ActionInvoker::person(me.as_ref()))
+        }) {
             named = named.with_invoker(invoker);
         }
         let mut context = context.enriched_by(&named);
@@ -1698,7 +1700,7 @@ impl<R: Resource> Dispatcher<R> {
         }
         let mut context = self.core.context();
         if let Some(me) = &self.core.me {
-            context = context.with_invoker(ActionInvoker::actor(me.as_ref()));
+            context = context.with_invoker(ActionInvoker::person(me.as_ref()));
         }
         group_now(&mut self.core.host.borrow_mut(), edits, &group, context)?;
         // A group is a step of its own: nothing continues it.

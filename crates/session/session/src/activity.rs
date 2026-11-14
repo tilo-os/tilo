@@ -1729,9 +1729,7 @@ mod tests {
             *time = time.saturating_add(1);
             let wrote = tilo_actions::ActionContext {
                 invoker: Some(
-                    tilo_actions::ActionInvoker::actor("agent:Claude Code".to_owned())
-                        .with_kind(tilo_actions::ActorKind::Agent)
-                        .acting_for("ada".to_owned()),
+                    tilo_actions::ActionInvoker::agent("Claude Code").acting_for("ada".to_owned()),
                 ),
                 what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
                     tilo_actions::ActionKey::new(

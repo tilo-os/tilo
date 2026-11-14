@@ -76,7 +76,7 @@ fn a_shared_window_is_a_live_message_only_its_sharer_changes_it() {
     assert_eq!(editable.share.unwrap().access, ShareAccess::Edit);
 
     // Someone else neither ends it nor says whether it is open.
-    let other = ActionInvoker::actor("u_bob");
+    let other = ActionInvoker::person("u_bob");
     for (action, arguments) in [
         ("stop-sharing", json!({})),
         ("share-open", json!({"open": false})),

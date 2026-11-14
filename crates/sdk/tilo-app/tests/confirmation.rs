@@ -213,7 +213,7 @@ impl Widget for Remover {
             }
             Now::InvokedGesture => {
                 let _agent = tilo_app::invocation_scope::InvokerScope::enter(
-                    tilo_actions::ActionInvoker::actor("agent:helper"),
+                    tilo_actions::ActionInvoker::agent("helper"),
                 );
                 dispatch.submit_gesture(edits, Notes::REMOVE.with(first))
             }

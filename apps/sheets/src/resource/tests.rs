@@ -515,13 +515,11 @@ fn selection_edits_are_declarations_beside_the_published_workbook() {
 
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = TestApp::<SheetsShell>::new().unwrap();
     let sheet = app.state().sheets.ids().next().unwrap().clone();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let item = tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
     app.call_by(
         agent.clone(),
@@ -558,7 +556,7 @@ fn history_entries_render_as_the_apps_sentences() {
         entry
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.actor == "agent:claude")
+            .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
     }));
     assert_eq!(
         sentences,

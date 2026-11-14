@@ -1106,7 +1106,7 @@ impl SharedDesktops {
         // Who asked for it: the invoker the step records, else the person whose desk it is.
         let who = step
             .invoker
-            .map_or_else(|| person.to_owned(), |invoker| invoker.actor);
+            .map_or_else(|| person.to_owned(), |invoker| invoker.key());
         let what = match step.what {
             Some(Did::Verb(call)) => call.action.action,
             _ => String::new(),

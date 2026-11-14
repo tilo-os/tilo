@@ -485,7 +485,7 @@ tilo_test_env::scenario! {
         ));
         {
             let _outer = super::InvokerScope::enter(
-                ActionInvoker::actor("agent:a").with_participant(participant.clone()),
+                ActionInvoker::agent("a").with_participant(participant.clone()),
             );
             assert_eq!(super::current_participant(), Some(participant.clone()));
             assert!(super::view_operation_permitted(
@@ -502,7 +502,7 @@ tilo_test_env::scenario! {
                 "only the current invoker's own view"
             );
             {
-                let _inner = super::InvokerScope::enter(ActionInvoker::actor("agent:a"));
+                let _inner = super::InvokerScope::enter(ActionInvoker::agent("a"));
                 assert_eq!(super::current_participant(), None);
                 assert!(!super::view_operation_permitted(
                     "agent:a",

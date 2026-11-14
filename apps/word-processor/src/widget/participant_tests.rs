@@ -241,7 +241,7 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
     wp.set_participant_view(&human, &caret(&ids[0], 5), &state.doc);
     let local_before = wp.local_participant_view();
 
-    let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
+    let invoker = ActionInvoker::person("agent-actor").with_participant(agent.clone());
     let outcome = (
         vec![crate::actions::splice_text_action(
             RegionKind::Body,
@@ -271,7 +271,7 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
         "a participant's edit never opens the local window's undo group"
     );
 
-    let no_participant = ActionInvoker::actor("agent-actor");
+    let no_participant = ActionInvoker::person("agent-actor");
     assert!(
         window
             .editor_mut()
@@ -411,7 +411,7 @@ fn assert_keyboard_action_parity(
     let mut agent_widget = Editor::detached();
     agent_widget.sync(&agent_state.doc, &agent_state.root);
     let agent = pid("parity-agent");
-    let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
+    let invoker = ActionInvoker::person("agent-actor").with_participant(agent.clone());
     agent_widget.set_participant_view(&agent, &keyboard.local_participant_view(), &agent_state.doc);
 
     for (input, step) in inputs.iter().zip(steps) {
@@ -651,7 +651,7 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
     let mut window = WordProcessorWidget::over(wp);
     let tree = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
-            ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
+            ActionInvoker::person("agent-actor").with_participant(agent.clone()),
         );
         ui::resources::resources(&window, &state.doc)
     };
@@ -732,7 +732,7 @@ fn invoke_opening_action(
         });
     assert!(published, "Writer publishes the opening action `{action}`");
     let invoker =
-        ActionInvoker::actor("person:opening-rehearsal").with_participant(participant.clone());
+        ActionInvoker::person("person:opening-rehearsal").with_participant(participant.clone());
     app.call_by(invoker, resource, action, arguments)
         .unwrap_or_else(|error| panic!("`{action}` for {participant:?}: {error}"));
     app.settle();

@@ -4289,7 +4289,7 @@ fn is_bot_author(author: &crate::widget::history::HistoryAuthor) -> bool {
     author
         .attribution
         .as_ref()
-        .is_some_and(|attribution| attribution.kind == tilo_actions::ActorKind::Bot)
+        .is_some_and(|attribution| attribution.acting.is_bot())
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@
 use notes::NotesShell;
 use notes::model::PageId;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::ActionInvoker;
 use ui::tilo_resource::{Bytes, Invoke};
 
 /// A noisy picture, so it does not compress below the size it is meant to
@@ -159,9 +159,7 @@ fn a_picture_an_agent_places_is_sealed_where_it_invokes() {
     let picture = png(200, 160);
     let mut app = app();
     let page = with_page(&mut app);
-    let agent = ActionInvoker::actor("agent:scribe")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("scribe").acting_for("ada");
     app.call_by(
         agent,
         &notes::actions::page_resource_id(page),

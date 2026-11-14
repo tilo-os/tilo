@@ -204,7 +204,7 @@ fn the_header_plus_opens_the_new_note_to_be_named() {
 #[test]
 fn a_note_another_actor_makes_never_opens_this_windows_title() {
     use crate::framework_support::surface;
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
     ui::i18n::I18nManager::init("en-US");
     let directory = tempfile::tempdir().unwrap();
     let mut app = TestApp::<NotesShell>::open_data_dir(directory.path()).unwrap();
@@ -215,7 +215,7 @@ fn a_note_another_actor_makes_never_opens_this_windows_title() {
         surface(&mut app, |notes| notes.main_title_editing_for_test()),
         "the person's own new note opens its title"
     );
-    let agent = ActionInvoker::actor("scribe").with_kind(ActorKind::Agent);
+    let agent = ActionInvoker::agent("scribe");
     let mine =
         surface(&mut app, |notes| notes.selected_for_test()).expect("the person's note is open");
     app.call_by(

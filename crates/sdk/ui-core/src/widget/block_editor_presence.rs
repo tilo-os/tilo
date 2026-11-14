@@ -72,7 +72,7 @@ impl BlockEditor {
             let Some(alpha) = ctx.presence.interaction_fade(interaction.invocation, now) else {
                 continue;
             };
-            let user = crate::permissions::UserId(interaction.actor.id.clone());
+            let user = crate::permissions::UserId(interaction.actor.by.key());
             acting.push(user.clone());
             let rect = line.selection_rect(ctx.theme, start, end);
             let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));

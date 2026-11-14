@@ -337,7 +337,7 @@ pub(crate) trait ControlHost: HostCore {
         let json = json_argument(&intent.arguments);
         let actor = acting.as_ref().map_or_else(
             || self.local_author().0.clone(),
-            |acting| acting.invoker.actor.clone(),
+            |acting| acting.invoker.key(),
         );
         let scopes = acting
             .as_ref()
@@ -427,7 +427,7 @@ pub(crate) trait ControlHost: HostCore {
         }
         let actor = acting.as_ref().map_or_else(
             || self.local_author().0.clone(),
-            |acting| acting.invoker.actor.clone(),
+            |acting| acting.invoker.key(),
         );
         let scopes = acting
             .as_ref()

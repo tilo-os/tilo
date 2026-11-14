@@ -504,7 +504,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let message = tilo_actions::ActionContext::default()
-            .with_invoker(tilo_actions::ActionInvoker::actor("ada"))
+            .with_invoker(tilo_actions::ActionInvoker::person("ada"))
             .change_message()
             .unwrap();
         ada.doc

@@ -1558,7 +1558,7 @@ fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
         &action.kind,
     )
     .with_app(&action.app, "tilolang")
-    .with_invoker(ActionInvoker::actor("ada"));
+    .with_invoker(ActionInvoker::person("ada"));
     // The document's own actor writes it: a fork of it is a replica of its own, and two
     // replicas' changes never share a sequence number.
     tilo_actions::apply_local_with_context(doc, action, encoded, None, context)

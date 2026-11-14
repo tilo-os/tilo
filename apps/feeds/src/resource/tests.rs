@@ -848,12 +848,10 @@ fn fetched_rows_are_no_undo_step_and_an_import_is_one() {
 )]
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = TestApp::<FeedsShell>::new().unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <Library as Resource>::KIND;
     app.call_by(
         agent.clone(),
@@ -942,7 +940,7 @@ fn history_entries_render_as_the_apps_sentences() {
                 entry
                     .invoker
                     .as_ref()
-                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+                    .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
             })
             .map(|entry| reader.sentence(&entry))
             .collect()

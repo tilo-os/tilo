@@ -392,7 +392,7 @@ impl Shared {
             };
             let address = tilo_actions::ActionAddress::new(crate::arrangement::RESOURCE, "open");
             let run = self.doors.invoke_as(
-                &invoker.actor,
+                &invoker.key(),
                 &address,
                 &arguments,
                 &mut tilo_session_core::door::Look::none(),

@@ -44,7 +44,6 @@ fn agent(name: &str, person: &str) -> wire::Author {
         rgb: [214, 130, 77],
         identity: format!("agent:{}", name.to_lowercase()),
         relation: wire::Relation::Software,
-        kind: ui::tilo_actions::ActorKind::Agent,
         on_behalf_of: Some(person.to_owned()),
         for_reader: true,
         ..wire::Author::default()

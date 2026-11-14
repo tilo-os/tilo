@@ -92,7 +92,7 @@ pub struct PublishedInvocationRequest {
 impl PublishedInvocationRequest {
     /// The invoker this request resolves for: the admitted actor plus the host-set participant.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
-        let invoker = tilo_actions::ActionInvoker::actor(self.actor.clone());
+        let invoker = tilo_actions::ActionInvoker::person(self.actor.clone());
         match &self.participant {
             Some(participant) => invoker.with_participant(participant.clone()),
             None => invoker,
@@ -240,7 +240,7 @@ pub fn view_operation_permitted(
         || contract.reads_record()
         || (contract.is_participant_view()
             && current_invoker()
-                .is_some_and(|invoker| invoker.actor == actor && invoker.participant.is_some()))
+                .is_some_and(|invoker| invoker.key() == actor && invoker.participant.is_some()))
 }
 
 /// Inert declaration retained by the actual host at original admission. This is not authority, and is

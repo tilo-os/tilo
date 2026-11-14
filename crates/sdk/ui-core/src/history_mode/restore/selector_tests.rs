@@ -1957,7 +1957,7 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
             .map(crate::state::owned_restore_tests::unstamped),
         Some(
             crate::state::owned_restore_tests::context()
-                .with_invoker(tilo_actions::ActionInvoker::actor("ada"))
+                .with_invoker(tilo_actions::ActionInvoker::person("ada"))
         )
     );
     assert_eq!(state.doc.get_actor(), &actor);

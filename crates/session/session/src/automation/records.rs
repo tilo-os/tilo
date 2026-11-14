@@ -344,7 +344,7 @@ mod tests {
         doc.put(automerge::ROOT, "seed", 1).unwrap();
         let before = doc.get_heads();
         let context = ActionContext::for_app("so.tilo.chat", "Chat")
-            .with_invoker(tilo_actions::ActionInvoker::actor("bob"))
+            .with_invoker(tilo_actions::ActionInvoker::person("bob"))
             .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
                 tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
                 [],
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.change, hash.to_string());
-        assert_eq!(event.actor.id, "bob");
+        assert_eq!(event.actor, tilo_actions::Acting::person("bob"));
         assert!(event.incoming_message);
         assert_eq!(
             tilo_automation::dispatch::verbs_of(&event.did),

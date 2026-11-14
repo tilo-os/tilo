@@ -134,7 +134,7 @@ fn a_participants_verb_leaves_them_where_it_lands_and_the_surface_is_told() {
     let mut app = TestApp::<ScriptApp>::new().unwrap();
     let agent = tilo_actions::ParticipantId::new("agent-1").unwrap();
     app.call_by(
-        tilo_actions::ActionInvoker::actor("agent").with_participant(agent),
+        tilo_actions::ActionInvoker::person("agent").with_participant(agent),
         "test.script",
         "append",
         serde_json::json!({"text": "Hello"}),
@@ -177,7 +177,7 @@ fn an_effect_told_where_to_act_acts_there_and_leaves_its_participant_there() {
         end: 5,
     };
     app.call_by(
-        tilo_actions::ActionInvoker::actor("agent").with_participant(agent.clone()),
+        tilo_actions::ActionInvoker::person("agent").with_participant(agent.clone()),
         "test.script",
         "mark",
         serde_json::json!({"at": {"item": line, "start": 0, "end": 5}}),
@@ -196,7 +196,7 @@ fn an_effect_told_where_to_act_acts_there_and_leaves_its_participant_there() {
     // Not told where: it acts at the caret and nobody moves.
     let before = LANDED.with(|landed| landed.borrow().len());
     app.call_by(
-        tilo_actions::ActionInvoker::actor("agent").with_participant(agent),
+        tilo_actions::ActionInvoker::person("agent").with_participant(agent),
         "test.script",
         "mark",
         serde_json::json!({}),

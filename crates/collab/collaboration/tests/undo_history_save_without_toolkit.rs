@@ -49,7 +49,7 @@ fn step_authors(doc: &mut AutoCommit) -> Vec<String> {
     tilo_resource::history::versions(doc)
         .iter()
         .filter_map(|version| version.context.as_ref()?.invoker.as_ref())
-        .map(|invoker| invoker.actor.clone())
+        .map(tilo_actions::ActionInvoker::key)
         .collect()
 }
 

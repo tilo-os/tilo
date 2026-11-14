@@ -914,7 +914,6 @@ mod tests {
         wire::Author {
             name: "Claude Code".to_owned(),
             relation: wire::Relation::Software,
-            kind: ui::tilo_actions::ActorKind::Agent,
             for_reader,
             on_behalf_of: on_behalf_of.map(str::to_owned),
             ..wire::Author::default()

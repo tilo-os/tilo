@@ -797,7 +797,7 @@ fn apply_as(
     let encoded = tilo_actions::EncodedAction::encode(RICH_TEXT_ACTION_TYPE, action).unwrap();
     let context =
         tilo_actions::ActionContext::for_resource(RichText::KIND, RichText::KIND, RichText::LABEL)
-            .with_invoker(tilo_actions::ActionInvoker::actor(writer));
+            .with_invoker(tilo_actions::ActionInvoker::person(writer));
     tilo_actions::apply_local_with_context(
         replica.doc_mut(),
         action,
@@ -906,7 +906,7 @@ fn apply_on(
     let encoded = tilo_actions::EncodedAction::encode(RICH_TEXT_ACTION_TYPE, action).unwrap();
     let context =
         tilo_actions::ActionContext::for_resource(RichText::KIND, RichText::KIND, RichText::LABEL)
-            .with_invoker(tilo_actions::ActionInvoker::actor(writer));
+            .with_invoker(tilo_actions::ActionInvoker::person(writer));
     tilo_actions::apply_local_with_context(
         replica.doc_mut(),
         action,

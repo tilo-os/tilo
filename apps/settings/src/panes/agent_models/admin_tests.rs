@@ -57,7 +57,7 @@ fn invoke(
         }
     }
     app.call_by(
-        ui::tilo_actions::ActionInvoker::actor("provider-administrator"),
+        ui::tilo_actions::ActionInvoker::person("provider-administrator"),
         &row,
         effect.id(),
         serde_json::Value::Object(arguments),

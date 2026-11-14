@@ -1209,7 +1209,7 @@ tilo_test_env::scenario! {
         for caller in [&first, &second, &first] {
             let mut request = request();
             request.context = Some(tilo_actions::ActionContext::default().with_invoker(
-                tilo_actions::ActionInvoker::actor("a1".repeat(32)).with_participant(forged.clone()),
+                tilo_actions::ActionInvoker::person("a1".repeat(32)).with_participant(forged.clone()),
             ));
             assert!(matches!(
                 state
@@ -1220,7 +1220,7 @@ tilo_test_env::scenario! {
             let delivery = app.try_recv().unwrap();
             let invoker =
                 tilo_actions::ActionInvoker::delivered(&delivery.actor, delivery.context.as_ref());
-            assert_eq!(invoker.actor, "a1".repeat(32));
+            assert_eq!(invoker.key(), "a1".repeat(32));
             let participant = invoker.participant.expect("a run owns a participant view");
             assert_ne!(participant, forged);
             participants.push(participant);

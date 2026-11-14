@@ -565,7 +565,7 @@ tilo_test_env::scenario! {
             .last()
             .and_then(|version| version.context.clone())
             .and_then(|context| context.invoker)
-            .map(|invoker| invoker.actor);
+            .map(|invoker| invoker.key());
         assert_eq!(invoker.as_deref(), Some("agent:writer"));
     }
 }
@@ -713,7 +713,7 @@ fn start_named_receipt(app: &mut TestApp<MailApp>, action: &str) -> tilo_actions
     let (invocation, started) = app
         .harness()
         .start_bound_job_for(
-            Some(tilo_actions::ActionInvoker::actor("agent:receipt-writer")),
+            Some(tilo_actions::ActionInvoker::agent("receipt-writer")),
             &address,
             &serde_json::Map::new(),
             true,
@@ -752,7 +752,7 @@ fn delayed_receipt_completion_applies_history_as_its_original_invoker() {
             .invoker
             .as_ref()
             .unwrap()
-            .actor,
+            .key(),
         "agent:receipt-writer"
     );
     assert!(

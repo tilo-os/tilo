@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
             })
             .flatten()
             .expect("the watch is a version of the record");
-        assert_eq!(version.invoker.unwrap().actor, ada());
+        assert_eq!(version.invoker.unwrap().key(), ada());
         assert!(on_laptop.undo());
         assert_eq!(videos(&on_laptop), ["on-the-phone"]);
         assert!(on_laptop.redo());

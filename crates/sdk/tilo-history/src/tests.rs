@@ -1,5 +1,5 @@
 use super::*;
-use tilo_actions::{ActionInvoker, ActorKind, PathStep};
+use tilo_actions::{ActionInvoker, PathStep};
 
 const SNIPPETS_EN: &str = r"
 snippets-snippet-favorite = { $new ->
@@ -238,10 +238,8 @@ fn a_task_names_the_person_who_acted_through_it() {
 #[test]
 fn actors_are_named_with_the_person_they_act_for() {
     let reader = Reader::new("en-US");
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("person:ada");
-    assert_eq!(agent.kind, ActorKind::Agent);
+    let agent = ActionInvoker::agent("claude").acting_for("person:ada");
+    assert!(agent.acting.is_agent());
     assert_eq!(
         reader.actor(&Who {
             actor: "Claude",

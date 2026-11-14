@@ -4118,8 +4118,8 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
             .follow_view("someone-else", &mut ui::headless::FollowedView::default()),
         "not following moves nothing"
     );
-    assert!(app.harness().follow_view("agent", &mut followed));
-    assert!(!app.harness().follow_view("agent", &mut followed));
+    assert!(app.harness().follow_view("agent:agent", &mut followed));
+    assert!(!app.harness().follow_view("agent:agent", &mut followed));
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

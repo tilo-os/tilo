@@ -243,7 +243,7 @@ impl Editor {
     ) -> bool {
         // A staged collaborator's verb is theirs in history.
         let _author = author.map(|author| {
-            ui::invocation_scope::InvokerScope::enter(tilo_actions::ActionInvoker::actor(author))
+            ui::invocation_scope::InvokerScope::enter(tilo_actions::ActionInvoker::person(author))
         });
         let action = ui::tilo_resource::Stamped {
             operation,

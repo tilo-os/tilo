@@ -225,9 +225,9 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         browser.pump();
         let by = invokers(browser.documents.get(&notes).map_or(&[][..], Vec::as_slice));
         if by.iter().any(|invoker| {
-            invoker.kind == tilo_actions::ActorKind::Agent
-                && invoker.actor == "agent:Claude Code"
-                && invoker.on_behalf_of.as_deref() == Some(person.as_str())
+            invoker.acting.is_agent()
+                && invoker.acting.agent_id() == Some("Claude Code")
+                && invoker.acting.acted_for_person() == Some(person.as_str())
         }) {
             break;
         }
@@ -368,7 +368,7 @@ fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::Wor
             context
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.kind == tilo_actions::ActorKind::Agent)
+                .is_some_and(|invoker| invoker.acting.is_agent())
         })
         .map(|context| context.group)
         .collect()
@@ -657,9 +657,9 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
             .flat_map(|(_, changes)| changes.iter().cloned())
             .collect();
         let by_agent = invokers(&changes).iter().any(|invoker| {
-            invoker.kind == tilo_actions::ActorKind::Agent
-                && invoker.actor == "agent:Claude Code"
-                && invoker.on_behalf_of.as_deref() == Some(person.as_str())
+            invoker.acting.is_agent()
+                && invoker.acting.agent_id() == Some("Claude Code")
+                && invoker.acting.acted_for_person() == Some(person.as_str())
         });
         if by_agent {
             break;

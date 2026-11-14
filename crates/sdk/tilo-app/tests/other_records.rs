@@ -323,7 +323,7 @@ tilo_test_env::scenario! {
                 .minutes
         };
         let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "field-edit");
-        let invoker = tilo_app::tilo_actions::ActionInvoker::actor("ada");
+        let invoker = tilo_app::tilo_actions::ActionInvoker::person("ada");
 
         let records = tilo_app::framework::SettingsRecords::new(LockApp::ID, LockApp::records);
         let resources = records.resources();
@@ -446,7 +446,7 @@ tilo_test_env::scenario! {
 
         // Someone else in the workspace does not change it; software acting for
         // the person does.
-        let bob = tilo_actions::ActionInvoker::actor("b0".repeat(32));
+        let bob = tilo_actions::ActionInvoker::person("b0".repeat(32));
         assert!(
             app.call_by(
                 bob,
@@ -456,8 +456,7 @@ tilo_test_env::scenario! {
             )
             .is_err()
         );
-        let agent = tilo_actions::ActionInvoker::actor("agent:helper")
-            .with_kind(tilo_actions::ActorKind::Agent)
+        let agent = tilo_actions::ActionInvoker::agent("helper")
             .acting_for(ada());
         app.call_by(
             agent,

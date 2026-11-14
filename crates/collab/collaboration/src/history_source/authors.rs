@@ -378,12 +378,8 @@ pub struct HistoryAuthor {
 /// what the history actions return).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryAttribution {
-    /// The acting principal as it was authenticated (`agent:scribe`).
-    pub actor: String,
-    /// What the actor is.
-    pub kind: tilo_actions::ActorKind,
-    /// The principal of the person it acted for, when it acted for one.
-    pub on_behalf_of: Option<String>,
+    /// Who acted, and who for, as it was authenticated.
+    pub acting: tilo_actions::Acting,
     /// That person's display name.
     pub on_behalf_of_name: Option<String>,
     /// What wrote the change, when the device recorded a writer beside the
@@ -403,11 +399,9 @@ impl HistoryAttribution {
     /// An attribution of an action's invoker acting for a person, as it was
     /// before a device began recording the writer beside the version.
     #[must_use]
-    pub fn new(actor: String, kind: tilo_actions::ActorKind) -> Self {
+    pub fn new(acting: tilo_actions::Acting) -> Self {
         Self {
-            actor,
-            kind,
-            on_behalf_of: None,
+            acting,
             on_behalf_of_name: None,
             writer: None,
             writer_label: None,
@@ -419,7 +413,10 @@ impl HistoryAttribution {
     /// Record whom it acted for.
     #[must_use]
     pub fn acting_for(mut self, principal: impl Into<String>, name: impl Into<String>) -> Self {
-        self.on_behalf_of = Some(principal.into());
+        let person = principal.into();
+        if self.acting.person_id() != Some(person.as_str()) {
+            self.acting.acted_for = vec![tilo_actions::Acting::person(person)];
+        }
         self.on_behalf_of_name = Some(name.into());
         self
     }

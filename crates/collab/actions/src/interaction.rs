@@ -9,91 +9,16 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{ActionApp, ActionResource, InvocationId, WorkGroup};
+use tilo_action_policy::Acting;
 
 /// Wire version understood by this crate.
-pub const INTERACTION_VERSION: u16 = 1;
+pub const INTERACTION_VERSION: u16 = 2;
 /// Hard ceiling for one JSON-encoded update at a trust boundary.
 pub const MAX_INTERACTION_BYTES: usize = 32 * 1024;
 pub const MAX_ANCHOR_ITEMS: usize = 64;
 pub const MAX_ID_BYTES: usize = 512;
 pub const MAX_LABEL_BYTES: usize = 512;
 pub const MAX_DETAIL_BYTES: usize = 2 * 1024;
-
-/// What kind of actor did something: in presence, in history and at every
-/// door. Assigned by the host that authenticated the actor, never inferred
-/// from a display name or an `agent:` string prefix.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ActorKind {
-    #[default]
-    Person,
-    Agent,
-    /// A Shortcut running steps for a person.
-    Shortcut,
-    /// An application acting under its own identity.
-    App,
-    /// An installed bot acting as itself, for its installer.
-    Bot,
-    /// A third-party desktop program acting under its own identity. Last: the
-    /// compact encodings name a variant by its place.
-    Program,
-}
-
-impl ActorKind {
-    /// Software acting for someone (an agent, a Shortcut, an app), never a
-    /// person at their own keyboard: shown with the agent mark and named
-    /// with whom it acts for.
-    #[must_use]
-    pub const fn acts_for_someone(self) -> bool {
-        !matches!(self, Self::Person)
-    }
-}
-
-/// Identity attached by the broker to the normalized interaction event.
-/// Friendly names and colours remain roster-owned presentation data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InteractionActor {
-    pub id: String,
-    pub kind: ActorKind,
-    /// The person an agent, a Shortcut or an app acts for, as the host
-    /// admitted the delegation: what presence names as "Claude for Ada".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub for_person: Option<String>,
-}
-
-impl InteractionActor {
-    /// `id`, of `kind`, acting for nobody but itself.
-    #[must_use]
-    pub fn new(id: impl Into<String>, kind: ActorKind) -> Self {
-        Self {
-            id: id.into(),
-            kind,
-            for_person: None,
-        }
-    }
-
-    #[must_use]
-    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
-        self.for_person = Some(person.into());
-        self
-    }
-
-    /// The actor a receiver shows for an update a peer sent as `sender`:
-    /// the actor the update names when it is software acting for exactly
-    /// the person the transport certified the sender as (`certified`), so
-    /// a device can say its own person's agent acted, never that someone
-    /// else did; otherwise the sender itself, as a person.
-    #[must_use]
-    pub fn from_peer(&self, sender: &str, certified: Option<&str>) -> Self {
-        let vouched = self.kind.acts_for_someone()
-            && certified.is_some_and(|person| self.for_person.as_deref() == Some(person));
-        if vouched {
-            self.clone()
-        } else {
-            Self::new(sender, ActorKind::Person)
-        }
-    }
-}
 
 /// A stable character range within a document block.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,7 +145,7 @@ pub struct SemanticInteraction {
     pub version: u16,
     pub invocation: InvocationId,
     pub sequence: u64,
-    pub actor: InteractionActor,
+    pub actor: Acting,
     pub phase: InteractionPhase,
     pub action: InteractionAction,
     pub resource: ActionResource,
@@ -243,7 +168,7 @@ impl SemanticInteraction {
     /// validating or broadcasting the normalized event. Presence consumers
     /// may trust attribution only on broker-originated streams.
     #[must_use]
-    pub fn normalized_by_broker(mut self, actor: InteractionActor, sequence: u64) -> Self {
+    pub fn normalized_by_broker(mut self, actor: Acting, sequence: u64) -> Self {
         self.actor = actor;
         self.sequence = sequence;
         self
@@ -256,9 +181,8 @@ impl SemanticInteraction {
         if self.version != INTERACTION_VERSION {
             return Err(issue("version", "unsupported interaction version"));
         }
-        validate_id("actor.id", &self.actor.id)?;
-        if let Some(person) = &self.actor.for_person {
-            validate_id("actor.for_person", person)?;
+        for node in self.actor.nodes() {
+            validate_id("actor", node.by.id())?;
         }
         validate_id("action.id", &self.action.id)?;
         validate_label("action.label", &self.action.label)?;
@@ -431,32 +355,6 @@ fn validate_count(field: &'static str, count: usize) -> Result<(), InteractionVi
 }
 
 #[cfg(test)]
-mod peer_actor_tests {
-    use super::*;
-
-    #[test]
-    fn a_peer_can_vouch_only_for_its_own_persons_software() {
-        let agent = InteractionActor::new("agent:claude", ActorKind::Agent).acting_for("ada");
-        assert_eq!(agent.from_peer("peer@7", Some("ada")), agent);
-        assert_eq!(
-            agent.from_peer("peer@7", Some("bob")),
-            InteractionActor::new("peer@7", ActorKind::Person),
-            "Bob's device cannot say Ada's agent acted"
-        );
-        assert_eq!(
-            agent.from_peer("peer@7", None),
-            InteractionActor::new("peer@7", ActorKind::Person)
-        );
-        let impostor = InteractionActor::new("carol", ActorKind::Person).acting_for("ada");
-        assert_eq!(
-            impostor.from_peer("peer@7", Some("ada")),
-            InteractionActor::new("peer@7", ActorKind::Person),
-            "a person is only ever the sender"
-        );
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -465,11 +363,7 @@ mod tests {
             version: INTERACTION_VERSION,
             invocation: InvocationId::new(),
             sequence: 2,
-            actor: InteractionActor {
-                id: "agent:scribe".into(),
-                kind: ActorKind::Agent,
-                for_person: None,
-            },
+            actor: Acting::agent("scribe"),
             phase: InteractionPhase::Applying,
             action: InteractionAction {
                 id: "format-range".into(),
@@ -541,15 +435,8 @@ mod tests {
 
     fn broker_normalization_replaces_claimed_attribution_and_sequence() {
         let claimed = example(InteractionAnchor::Resource);
-        let normalized = claimed.normalized_by_broker(
-            InteractionActor {
-                id: "agent:reviewer".into(),
-                kind: ActorKind::Agent,
-                for_person: None,
-            },
-            17,
-        );
-        assert_eq!(normalized.actor.id, "agent:reviewer");
+        let normalized = claimed.normalized_by_broker(Acting::agent("reviewer"), 17);
+        assert_eq!(normalized.actor, Acting::agent("reviewer"));
         assert_eq!(normalized.sequence, 17);
     }
 

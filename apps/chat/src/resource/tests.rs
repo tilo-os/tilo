@@ -656,11 +656,10 @@ fn feedback_is_filed_by_people_and_never_offered_to_agents() {
 
 #[test]
 fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let agent = ActionInvoker::actor("agent-task:44444444-4444-4444-8444-444444444444")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent =
+        ActionInvoker::agent("agent-task:44444444-4444-4444-8444-444444444444").acting_for("ada");
     let _ = general(&app);
     app.call_by(
         agent.clone(),
@@ -966,10 +965,9 @@ tilo_test_env::scenario! {
 
     phase history_entries_render_as_the_apps_sentences;
     {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let agent = ActionInvoker::actor("agent-task:55555555-5555-4555-8555-555555555555")
-            .with_kind(ActorKind::Agent)
+        let agent = ActionInvoker::agent("agent-task:55555555-5555-4555-8555-555555555555")
             .acting_for("ada");
         let (channel, _) = general(&app);
         app.call_by(
@@ -1026,7 +1024,7 @@ tilo_test_env::scenario! {
 
         let sentences = app.sentences(app.history().iter().filter(|entry| {
             entry.invoker.as_ref().is_some_and(|invoker| {
-                invoker.actor == "agent-task:55555555-5555-4555-8555-555555555555"
+                invoker.key() == "agent-task:55555555-5555-4555-8555-555555555555"
             })
         }));
         assert_eq!(

@@ -148,7 +148,7 @@ pub struct InteractionCardPlacement {
 impl PresenceCtx {
     pub(super) fn remove_interactions_for_actor(&mut self, actor_id: &str) {
         self.interactions
-            .retain(|_, entry| entry.interaction.actor.id != actor_id);
+            .retain(|_, entry| entry.interaction.actor.by.key() != actor_id);
         self.interaction_markers
             .remove(&UserId(actor_id.to_owned()));
     }
@@ -185,12 +185,19 @@ impl PresenceCtx {
             }
         }
 
-        let user = UserId(interaction.actor.id.clone());
-        self.set_participant_kind(&user, ParticipantKind::from(interaction.actor.kind));
-        self.set_acting_for(&user, interaction.actor.for_person.clone().map(UserId));
+        let user = UserId(interaction.actor.by.key());
+        self.set_participant_kind(&user, ParticipantKind::from(&interaction.actor));
+        self.set_acting_for(
+            &user,
+            interaction
+                .actor
+                .acted_for_person()
+                .map(str::to_owned)
+                .map(UserId),
+        );
         // Software the workspace's roster does not know (a Shortcut's run) is
         // named by the run it works in.
-        if interaction.actor.kind.acts_for_someone()
+        if !interaction.actor.is_person()
             && super::stored(&self.names, &user).is_none()
             && let Some(group) = &interaction.group
         {
@@ -199,7 +206,7 @@ impl PresenceCtx {
         let (first_received_at, superseded, pulsed) =
             match self.interactions.get(&interaction.invocation) {
                 Some(entry) => (entry.first_received_at, entry.superseded, entry.pulsed_at),
-                None if interaction.actor.kind.acts_for_someone() => {
+                None if !interaction.actor.is_person() => {
                     let (starts_at, pulsed) = self.pace_agent(&interaction, now);
                     // The characters a write put in a text are there when its
                     // phase arrives. The rest on the agent's last target still
@@ -245,14 +252,14 @@ impl PresenceCtx {
         interaction: &SemanticInteraction,
         now: Instant,
     ) -> (Instant, Option<Instant>) {
-        let actor = &interaction.actor.id;
+        let actor = &interaction.actor.by;
         let mut resting: Option<Instant> = None;
         let mut pulsed = None;
         for entry in self.interactions.values_mut().filter(|entry| {
             !entry.superseded
                 && entry.alive_at(now)
-                && entry.interaction.actor.kind.acts_for_someone()
-                && entry.interaction.actor.id == *actor
+                && !entry.interaction.actor.is_person()
+                && entry.interaction.actor.by == *actor
         }) {
             let waiting = now < entry.first_received_at;
             let same_target = entry.interaction.resource.id == interaction.resource.id
@@ -281,8 +288,8 @@ impl PresenceCtx {
     /// a flash of the same agent went off within [`AGENT_PULSE_QUIET`].
     fn pulse_of(&self, interaction: &SemanticInteraction, now: Instant) -> Option<Instant> {
         let quiet = self.interactions.values().any(|entry| {
-            entry.interaction.actor.kind.acts_for_someone()
-                && entry.interaction.actor.id == interaction.actor.id
+            !entry.interaction.actor.is_person()
+                && entry.interaction.actor.by == interaction.actor.by
                 && entry.pulsed_at.is_some_and(|at| {
                     now.saturating_duration_since(at.max(entry.first_received_at))
                         < AGENT_PULSE_QUIET
@@ -376,20 +383,24 @@ impl PresenceCtx {
     /// against its current action loci and paint at most one moving marker per
     /// agent; people and older agent invocations retain the ordinary outline.
     pub fn agent_marker_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
-        let mut newest = HashMap::<&str, &InteractionPresenceEntry>::new();
-        for entry in self.interactions.values().filter(|entry| {
-            entry.visible_at(now) && entry.interaction.actor.kind.acts_for_someone()
-        }) {
-            let slot = newest
-                .entry(entry.interaction.actor.id.as_str())
-                .or_insert(entry);
+        let mut newest = HashMap::<&tilo_actions::Actor, &InteractionPresenceEntry>::new();
+        for entry in self
+            .interactions
+            .values()
+            .filter(|entry| entry.visible_at(now) && !entry.interaction.actor.is_person())
+        {
+            let slot = newest.entry(&entry.interaction.actor.by).or_insert(entry);
             if marker_entry_is_newer(entry, slot) {
                 *slot = entry;
             }
         }
         let mut entries = newest.into_values().collect::<Vec<_>>();
         entries.compact_sort_by(|left, right| {
-            left.interaction.actor.id.cmp(&right.interaction.actor.id)
+            left.interaction
+                .actor
+                .by
+                .key()
+                .cmp(&right.interaction.actor.by.key())
         });
         entries
             .into_iter()
@@ -455,7 +466,7 @@ impl PresenceCtx {
         theme: &Theme,
     ) -> Option<f32> {
         let entry = self.interactions.get(&interaction.invocation)?;
-        if !entry.visible_at(now) || !interaction.actor.kind.acts_for_someone() {
+        if !entry.visible_at(now) || interaction.actor.is_person() {
             return None;
         }
         let pulsed_at = entry.pulsed_at.map(|at| at.max(entry.first_received_at));
@@ -478,7 +489,7 @@ impl PresenceCtx {
         now: Instant,
     ) -> Option<AgentActionMarker> {
         let (locus, control) = (place.locus, place.control);
-        if !interaction.actor.kind.acts_for_someone()
+        if interaction.actor.is_person()
             || !valid_marker_rect(locus)
             || !valid_marker_rect(viewport)
         {
@@ -488,7 +499,7 @@ impl PresenceCtx {
         if !entry.visible_at(now)
             || &entry.interaction != interaction
             || self
-                .newest_agent_entry(&interaction.actor.id, now)
+                .newest_agent_entry(&interaction.actor.by, now)
                 .is_none_or(|newest| newest.interaction.invocation != interaction.invocation)
         {
             return None;
@@ -499,7 +510,7 @@ impl PresenceCtx {
         }
         let first_received_at = entry.first_received_at;
         let pulsed_at = entry.pulsed_at.map(|at| at.max(first_received_at));
-        let user = UserId(interaction.actor.id.clone());
+        let user = UserId(interaction.actor.by.key());
         // The tip rests on the control the invocation is bound to: what the
         // agent would press, fully inside the frame.
         let control = control.intersect(viewport);
@@ -628,8 +639,8 @@ impl PresenceCtx {
         if matches!(interaction.phase, InteractionPhase::Locating) {
             return None;
         }
-        let user = UserId(interaction.actor.id.clone());
-        let actor = actor_label(self, &user, interaction.actor.kind.acts_for_someone());
+        let user = UserId(interaction.actor.by.key());
+        let actor = actor_label(self, &user, !interaction.actor.is_person());
         let state = match &interaction.phase {
             InteractionPhase::Waiting {
                 reason: Some(reason),
@@ -677,7 +688,7 @@ impl PresenceCtx {
         interaction: &SemanticInteraction,
         doing: &str,
     ) -> String {
-        let user = UserId(interaction.actor.id.clone());
+        let user = UserId(interaction.actor.by.key());
         // The adjacent shared identity mark already distinguishes an Agent.
         // Do not append another role to names such as "Release Notes Agent".
         let actor = self
@@ -687,10 +698,10 @@ impl PresenceCtx {
             .map_or_else(
                 || {
                     crate::i18n::widget_format(
-                        if interaction.actor.kind.acts_for_someone() {
-                            "interaction-agent"
-                        } else {
+                        if interaction.actor.is_person() {
                             "interaction-collaborator"
+                        } else {
+                            "interaction-agent"
                         },
                         &[],
                     )
@@ -791,15 +802,15 @@ impl PresenceCtx {
 
     fn newest_agent_entry(
         &self,
-        actor_id: &str,
+        actor: &tilo_actions::Actor,
         now: Instant,
     ) -> Option<&InteractionPresenceEntry> {
         self.interactions
             .values()
             .filter(|entry| {
                 entry.visible_at(now)
-                    && entry.interaction.actor.kind.acts_for_someone()
-                    && entry.interaction.actor.id == actor_id
+                    && !entry.interaction.actor.is_person()
+                    && entry.interaction.actor.by == *actor
             })
             .max_by(|left, right| {
                 left.first_received_at
@@ -853,7 +864,7 @@ impl PresenceCtx {
             None,
             &shape,
         );
-        let user = UserId(interaction.actor.id.clone());
+        let user = UserId(interaction.actor.by.key());
         let actor_color = super::render::color_for(self, &user, theme);
         let phase_color = phase_color(&interaction.phase, theme, actor_color);
         let stroke = if matches!(interaction.phase, InteractionPhase::Locating) {
@@ -865,7 +876,7 @@ impl PresenceCtx {
         let bar = Rect::new(rect.x0, rect.y0 + 7.0, rect.x0 + 3.0, rect.y1 - 7.0);
         scene.fill(Fill::NonZero, transform, phase_color, None, &bar);
 
-        let is_agent = interaction.actor.kind.acts_for_someone();
+        let is_agent = !interaction.actor.is_person();
         let glyph_center = Point::new(rect.x0 + 15.0, rect.y0 + 16.0);
         let glyph_outline = theme.on_surface(actor_color).ink;
         if is_agent {
@@ -1176,8 +1187,8 @@ mod tests {
     use super::*;
     use crate::text_render::TextRenderer;
     use tilo_actions::{
-        ActionApp, ActionResource, ActorKind, INTERACTION_VERSION, InteractionAction,
-        InteractionActor, InteractionAnchor, StepKind,
+        Acting, ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction,
+        InteractionAnchor, StepKind,
     };
     use uuid::Uuid;
 
@@ -1190,11 +1201,7 @@ mod tests {
             version: INTERACTION_VERSION,
             invocation: InvocationId(Uuid::from_u128(invocation)),
             sequence,
-            actor: InteractionActor {
-                id: "quill".into(),
-                kind: ActorKind::Agent,
-                for_person: None,
-            },
+            actor: Acting::agent("quill"),
             phase,
             action: InteractionAction {
                 id: "rename".into(),
@@ -1629,7 +1636,7 @@ mod tests {
                     .apply_interaction_at(interaction(2, 1, InteractionPhase::Applying), at)
                     .unwrap();
                 let mut forged = interaction(2, 2, InteractionPhase::Committed);
-                forged.actor.id = "someone-else".into();
+                forged.actor = tilo_actions::Acting::person("someone-else");
                 assert!(!presence.apply_interaction_at(forged, at).unwrap());
                 let mut moved = interaction(2, 2, InteractionPhase::Committed);
                 moved.resource.id = "file:secret".into();
@@ -1705,7 +1712,7 @@ mod tests {
                 let mut presence = PresenceCtx::empty();
                 for id in 1..=5 {
                     let mut someone = interaction(id, 1, InteractionPhase::Applying);
-                    someone.actor.id = format!("agent-{id}");
+                    someone.actor = tilo_actions::Acting::person(format!("agent-{id}"));
                     presence.apply_interaction_at(someone, at).unwrap();
                 }
                 let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
@@ -1723,7 +1730,7 @@ mod tests {
             let mut presence = PresenceCtx::empty();
             let resolved = interaction(60, 1, InteractionPhase::Applying);
             let mut unresolved = interaction(61, 1, InteractionPhase::Applying);
-            unresolved.actor.id = "another-agent".into();
+            unresolved.actor = tilo_actions::Acting::agent("another-agent");
             presence.apply_interaction_at(resolved.clone(), at).unwrap();
             presence
                 .apply_interaction_at(unresolved.clone(), at)
@@ -1936,18 +1943,18 @@ mod tests {
             let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
             presence.set_display_name(UserId("ada".into()), "Ada");
-            presence.set_display_name(UserId("quill".into()), "Claude");
+            presence.set_display_name(UserId("agent:quill".into()), "Claude");
             let mut agent = interaction(30, 1, InteractionPhase::Applying);
-            agent.actor.for_person = Some("ada".into());
+            agent.actor.acted_for = vec![tilo_actions::Acting::person("ada")];
             assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
-            let claude = UserId("quill".into());
+            let claude = UserId("agent:quill".into());
             assert_eq!(presence.display_name(&claude), "Claude for Ada");
             assert_eq!(presence.acting_for(&claude), Some(&UserId("ada".into())));
             assert!(presence.is_agent(&claude));
             assert_eq!(presence.agent_marker_interactions(at), vec![agent]);
 
             let mut shortcut = interaction(31, 1, InteractionPhase::Applying);
-            shortcut.actor = InteractionActor::new("shortcut:morning", ActorKind::Shortcut);
+            shortcut.actor = Acting::automation("morning");
             shortcut.group = Some(tilo_actions::WorkGroup {
                 id: "run-7".into(),
                 label: "Morning".into(),
@@ -1955,7 +1962,7 @@ mod tests {
                 title: None,
             });
             assert!(presence.apply_interaction_at(shortcut, at).unwrap());
-            let morning = UserId("shortcut:morning".into());
+            let morning = UserId("automation:morning".into());
             assert_eq!(
                 presence.display_name(&morning),
                 "Morning · Shortcut",
@@ -1964,7 +1971,7 @@ mod tests {
             assert_eq!(presence.agent_marker_interactions(at).len(), 2);
 
             let mut person = interaction(32, 1, InteractionPhase::Applying);
-            person.actor = InteractionActor::new("bob", ActorKind::Person);
+            person.actor = Acting::person("bob");
             presence.set_display_name(UserId("bob".into()), "Bob");
             assert!(presence.apply_interaction_at(person, at).unwrap());
             assert_eq!(presence.display_name(&UserId("bob".into())), "Bob");
@@ -1983,10 +1990,10 @@ mod tests {
             let at = crate::time::now();
             let theme = Theme::default();
             let mut presence = PresenceCtx::empty();
-            presence.set_display_name(UserId("quill".into()), "Claude Code");
+            presence.set_display_name(UserId("agent:quill".into()), "Claude Code");
             let agent = interaction(40, 1, InteractionPhase::Applying);
             presence.apply_interaction_at(agent.clone(), at).unwrap();
-            let claude = UserId("quill".into());
+            let claude = UserId("agent:quill".into());
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             presence.draw_peer_caret_labeled_in(
@@ -2028,10 +2035,10 @@ mod tests {
             let at = crate::time::now();
             let theme = Theme::default();
             let mut presence = PresenceCtx::empty();
-            presence.set_display_name(UserId("quill".into()), "Claude Code");
+            presence.set_display_name(UserId("agent:quill".into()), "Claude Code");
             let agent = interaction(41, 1, InteractionPhase::Applying);
             presence.apply_interaction_at(agent.clone(), at).unwrap();
-            let claude = UserId("quill".into());
+            let claude = UserId("agent:quill".into());
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             // Its caret stands in another field, far from the button it acts on.
@@ -2158,7 +2165,7 @@ mod tests {
                 let mut presence = PresenceCtx::empty();
                 presence
                     .names
-                    .insert(UserId("quill".into()), "Release Notes Agent".into());
+                    .insert(UserId("agent:quill".into()), "Release Notes Agent".into());
                 assert_eq!(
                     presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
                     "Release Notes Agent: Working in Draft.md"
@@ -2188,12 +2195,12 @@ mod tests {
                 assert_eq!(actor_label(&presence, &user, true), "Agent");
                 assert_eq!(actor_label(&presence, &user, false), "Collaborator");
                 let mut keyed = interaction(12, 1, InteractionPhase::Committed);
-                keyed.actor = InteractionActor::new(key, ActorKind::Person);
+                keyed.actor = Acting::person(key);
                 assert_eq!(
                     presence.interaction_status_label(&keyed),
                     "Collaborator: Working in Draft.md"
                 );
-                let agent = UserId("quill".into());
+                let agent = UserId("agent:quill".into());
                 presence.set_display_name(agent.clone(), "Claude");
                 presence.set_participant_kind(&agent, ParticipantKind::Agent);
                 presence.set_acting_for(&agent, Some(user));
@@ -2208,7 +2215,7 @@ mod tests {
                 let mut presence = PresenceCtx::empty();
                 presence
                     .names
-                    .insert(UserId("quill".into()), "Quill".into());
+                    .insert(UserId("agent:quill".into()), "Quill".into());
                 let applying = interaction(11, 1, InteractionPhase::Applying);
                 assert_eq!(
                     presence.interaction_announcement(&applying).as_deref(),
@@ -2249,7 +2256,7 @@ mod tests {
                 .names
                 .insert(UserId("agent:helper".into()), "Helper".into());
             let mut write = interaction(95, 1, InteractionPhase::Applying);
-            write.actor = InteractionActor::new("agent:helper", ActorKind::Agent);
+            write.actor = Acting::agent("helper");
             write.action = InteractionAction {
                 id: "replace-range".into(),
                 label: "Replace text at a place".into(),

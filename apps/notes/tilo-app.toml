@@ -47,7 +47,7 @@ mode = "off"
 [sandbox.services]
 collab     = "optional@25"
 tilo-fs     = "optional@25"
-shell-ui   = "optional@28"
+shell-ui   = "optional@29"
 
 [entrypoint]
 bin             = "bin/notes"

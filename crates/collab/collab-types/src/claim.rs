@@ -763,7 +763,7 @@ mod tests {
             ClaimedAction::whole_record_edit(String::new())
         );
         let unspecific = ActionContext {
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            invoker: Some(tilo_actions::ActionInvoker::person("alice")),
             ..ActionContext::for_resource("notes/1", "note", "Note")
         };
         assert_eq!(

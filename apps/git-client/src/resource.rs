@@ -413,12 +413,10 @@ mod tests {
     /// own sentence; recording the projection is not theirs.
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
-        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_actions::ActionInvoker;
 
         let mut app = TestApp::<GitClientShell>::capture(Some("empty")).unwrap();
-        let agent = ActionInvoker::actor("agent:claude")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada");
+        let agent = ActionInvoker::agent("claude").acting_for("ada");
         let open = GitClient::paths()
             .repository
             .set(Atom("/srv/repos/tilo".into()));
@@ -437,15 +435,15 @@ mod tests {
                 entry
                     .invoker
                     .as_ref()
-                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+                    .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
             })
             .collect();
         let sentences = app.sentences(&entries);
         assert_eq!(sentences, ["Opened the repository /srv/repos/tilo"]);
         let invoker = entries[0].invoker.as_ref().unwrap();
         assert_eq!(
-            (invoker.kind, invoker.on_behalf_of.as_deref()),
-            (ActorKind::Agent, Some("ada"))
+            (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+            (true, Some("ada"))
         );
     }
 

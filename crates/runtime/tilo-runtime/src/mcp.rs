@@ -2966,7 +2966,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             tilo_actions::ActionContext {
                 group: Some(run),
-                invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
+                invoker: Some(tilo_actions::ActionInvoker::person(self.actor.clone())),
                 gesture: STEP.try_with(|step| *step).ok(),
                 ..tilo_actions::ActionContext::default()
             }

@@ -395,7 +395,7 @@ tilo_test_env::scenario! {
             ("person:owner", "person card"),
         ] {
             app.call_by(
-                tilo_actions::ActionInvoker::actor(actor),
+                tilo_actions::ActionInvoker::person(actor),
                 "test.board",
                 "add",
                 json!({"text": text}),
@@ -412,7 +412,7 @@ tilo_test_env::scenario! {
             .expect("history publishes the exact invoker");
         assert_eq!(author, "agent:clipboard-helper");
         app.call_by(
-            tilo_actions::ActionInvoker::actor("person:owner"),
+            tilo_actions::ActionInvoker::person("person:owner"),
             "test.board",
             "undo",
             json!({"by": author}),
@@ -591,8 +591,8 @@ tilo_test_env::scenario! {
     phase an_agents_edit_is_recorded_as_the_agent_acting_for_its_person;
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
-        let agent = tilo_actions::InteractionActor::new("agent:claude", tilo_actions::ActorKind::Agent)
-            .acting_for("person:ada");
+        let agent = tilo_actions::Acting::agent("claude")
+            .acting_for(tilo_actions::Acting::person("person:ada"));
         app.call_by(
             tilo_actions::ActionInvoker::admitted(&agent),
             "test.board",
@@ -606,9 +606,9 @@ tilo_test_env::scenario! {
             .and_then(|version| version.context)
             .expect("the agent's edit is recorded");
         let invoker = entry.invoker.expect("attributed");
-        assert_eq!(invoker.actor, "agent:claude");
-        assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
-        assert_eq!(invoker.on_behalf_of.as_deref(), Some("person:ada"));
+        assert_eq!(invoker.key(), "agent:claude");
+        assert!(invoker.acting.is_agent());
+        assert_eq!(invoker.acting.acted_for_person(), Some("person:ada"));
         let listed = newest(&mut app);
         assert_eq!(listed["actor"]["kind"], "agent", "{listed}");
         assert_eq!(listed["actor"]["for"], "person:ada", "{listed}");

@@ -2066,8 +2066,8 @@ mod command_path_tests {
             assert_eq!(ui::author_line(&entry.author), "Scribe for Ada Lovelace");
             assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
             let attribution = entry.author.attribution.expect("who acted for whom");
-            assert_eq!(attribution.actor, "agent:scribe");
-            assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
+            assert_eq!(attribution.acting.by.key(), "agent:scribe");
+            assert_eq!(attribution.acting.acted_for_person().map(str::to_owned), Some(hex::encode(person)));
             assert_eq!(
                 attribution.on_behalf_of_name.as_deref(),
                 Some("Ada Lovelace")

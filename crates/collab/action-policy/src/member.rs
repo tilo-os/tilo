@@ -237,6 +237,16 @@ impl Actor {
         }
     }
 
+    /// The spelling a stored id uses: a member's [`MemberId::key`], an
+    /// automation's `automation:<id>`.
+    #[must_use]
+    pub fn key(&self) -> String {
+        match self {
+            Self::Member(member) => member.key(),
+            Self::Automation(id) => format!("automation:{}", id.as_str()),
+        }
+    }
+
     /// The id inside the actor: a member's, or an automation's.
     #[must_use]
     pub fn id(&self) -> &str {
@@ -315,6 +325,21 @@ impl Acting {
     #[must_use]
     pub fn person(id: impl Into<String>) -> Self {
         Self::member(MemberId::person(id))
+    }
+
+    /// The actor an [`Actor::key`] spells, acting for itself.
+    #[must_use]
+    pub fn of_key(key: &str) -> Self {
+        if let Some(id) = key.strip_prefix("automation:") {
+            return Self::automation(id);
+        }
+        if let Some(id) = key.strip_prefix("agent:") {
+            return Self::agent(id);
+        }
+        if let Some(id) = key.strip_prefix("bot:") {
+            return Self::bot(id);
+        }
+        Self::person(key)
     }
 
     #[must_use]

@@ -109,7 +109,7 @@ impl Replica {
     /// Commit one planned action through the executor, as the host does for a window: it is
     /// the change's recorded action, attributed to this replica's person.
     pub fn apply(&mut self, action: &DynAction) {
-        let invoker = ActionInvoker::actor(self.name.clone());
+        let invoker = ActionInvoker::person(self.name.clone());
         self.apply_as(action, invoker, None);
     }
 
@@ -125,7 +125,7 @@ impl Replica {
             );
             self.apply_as(
                 &committed.action,
-                ActionInvoker::actor(agent.to_owned()),
+                ActionInvoker::person(agent.to_owned()),
                 Some(&ambient),
             );
         }
@@ -137,7 +137,7 @@ impl Replica {
         for committed in self.host.take_committed() {
             self.apply_as(
                 &committed.action,
-                ActionInvoker::actor(who.to_owned()),
+                ActionInvoker::person(who.to_owned()),
                 None,
             );
         }
@@ -192,7 +192,7 @@ impl Replica {
         };
         let context = ActionContext::for_resource("workspace", "workspace", "workspace")
             .with_app("so.tilo.lang", "tilolang")
-            .with_invoker(ActionInvoker::actor(self.name.clone()));
+            .with_invoker(ActionInvoker::person(self.name.clone()));
         tilo_actions::apply_local_with_context(
             &mut self.doc,
             &action,

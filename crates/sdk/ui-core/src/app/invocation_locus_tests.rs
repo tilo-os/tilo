@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
             if case == 5 {
                 invoker.participant = Some(tilo_actions::ParticipantId::new("another-run").unwrap());
             } else if case == 6 {
-                invoker.actor = "another-actor".into();
+                invoker.acting = tilo_actions::Acting::person("another-actor");
             }
             let _invoker = crate::invocation_scope::InvokerScope::enter(invoker);
             fixture

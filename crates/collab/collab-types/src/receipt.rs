@@ -486,18 +486,17 @@ pub fn check_appearances(
         let Some(appearance) = &invoker.appearance else {
             continue;
         };
-        if invoker.kind != tilo_actions::ActorKind::Bot
-            || persona_author != Some(invoker.actor.as_str())
-        {
+        let actor = invoker.key();
+        if !invoker.acting.is_bot() || persona_author != Some(actor.as_str()) {
             return Err(ReceiptRefusal::Appearance {
-                actor: invoker.actor.clone(),
+                actor,
                 reason: "its author is not a bot allowed to post under other names".into(),
             });
         }
         appearance
             .validate()
             .map_err(|error| ReceiptRefusal::Appearance {
-                actor: invoker.actor.clone(),
+                actor: actor.clone(),
                 reason: error.to_string(),
             })?;
     }

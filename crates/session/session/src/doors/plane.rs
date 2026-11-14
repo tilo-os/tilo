@@ -105,12 +105,7 @@ impl Published for ServiceDoor {
         _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         // An agent is named `agent:<id>` , as the agent door names it.
-        let invoker = tilo_actions::ActionInvoker::actor(actor);
-        let invoker = if actor.starts_with("agent:") {
-            invoker.with_kind(tilo_actions::ActorKind::Agent)
-        } else {
-            invoker
-        };
+        let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor));
         match self.services.borrow_mut().invoke_by(
             &invoker,
             &address.resource,

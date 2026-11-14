@@ -1006,7 +1006,7 @@ fn applied(
         &action.kind,
     )
     .with_source_invocation(invocation)
-    .with_invoker(tilo_actions::ActionInvoker::actor(person));
+    .with_invoker(tilo_actions::ActionInvoker::person(person));
     tilo_actions::apply_local_with_context(
         doc,
         action,
@@ -2209,12 +2209,7 @@ fn apply(
 
 /// An agent task acting for ada, as the broker admitted it.
 fn task_invoker() -> serde_json::Value {
-    serde_json::to_value(
-        tilo_actions::ActionInvoker::actor("agent:scribe")
-            .with_kind(tilo_actions::ActorKind::Agent)
-            .acting_for("ada"),
-    )
-    .unwrap()
+    serde_json::to_value(tilo_actions::ActionInvoker::agent("scribe").acting_for("ada")).unwrap()
 }
 
 tilo_test_env::scenario! {

@@ -419,7 +419,7 @@ tilo_test_env::scenario! {
             .iter()
             .filter_map(|version| {
                 let invoker = version.context.as_ref()?.invoker.as_ref()?;
-                Some((invoker.actor.clone(), version.time_ms))
+                Some((invoker.key(), version.time_ms))
             })
             .collect();
         assert!(

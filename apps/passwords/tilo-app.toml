@@ -46,7 +46,7 @@ secrets = "via-host"
 collab = "optional@25"
 tilo-fs = "optional@25"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
-shell-ui = "optional@28"
+shell-ui = "optional@29"
 # The permission requests the messaging service makes for Messages.
 messaging = "optional@1"
 

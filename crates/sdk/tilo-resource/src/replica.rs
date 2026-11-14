@@ -31,10 +31,8 @@ pub struct Replica<R: Resource> {
     registry: ActionRegistry,
     log: Vec<ActionEnvelope>,
     author: Option<String>,
-    /// The person the author acts for, when the author is an agent.
-    acting_for: Option<String>,
-    /// What kind of actor the author is while it acts for someone.
-    acting_kind: tilo_actions::ActorKind,
+    /// The author as software acting for someone.
+    acting: Option<tilo_actions::Acting>,
     /// Who invokes from this replica when it acts as its own device
     /// ([`Self::as_invoker`]).
     invoker: Option<String>,
@@ -89,8 +87,7 @@ impl<R: Resource> Replica<R> {
             registry,
             log: Vec::new(),
             author: None,
-            acting_for: None,
-            acting_kind: tilo_actions::ActorKind::Agent,
+            acting: None,
             invoker: None,
             app: None,
             appearance: None,
@@ -140,8 +137,10 @@ impl<R: Resource> Replica<R> {
     #[must_use]
     pub fn as_agent_for(mut self, agent: &str, person: &str) -> Self {
         self.author = Some(agent.to_owned());
-        self.acting_for = Some(person.to_owned());
-        self.acting_kind = tilo_actions::ActorKind::Agent;
+        self.acting = Some(
+            tilo_actions::Acting::agent(agent.strip_prefix("agent:").unwrap_or(agent))
+                .acting_for(tilo_actions::Acting::person(person)),
+        );
         self
     }
 
@@ -150,8 +149,10 @@ impl<R: Resource> Replica<R> {
     #[must_use]
     pub fn as_bot_for(mut self, installation: &str, installer: &str) -> Self {
         self.author = Some(format!("bot:{installation}"));
-        self.acting_for = Some(installer.to_owned());
-        self.acting_kind = tilo_actions::ActorKind::Bot;
+        self.acting = Some(
+            tilo_actions::Acting::bot(installation)
+                .acting_for(tilo_actions::Acting::person(installer)),
+        );
         self
     }
 
@@ -255,12 +256,9 @@ impl<R: Resource> Replica<R> {
             .as_ref()
             .or(self.invoker.as_ref())
             .map(|author| {
-                let invoker = tilo_actions::ActionInvoker::actor(author.clone());
-                let invoker = match &self.acting_for {
-                    Some(person) => invoker
-                        .with_kind(self.acting_kind)
-                        .acting_for(person.clone()),
-                    None => invoker,
+                let invoker = match &self.acting {
+                    Some(acting) => tilo_actions::ActionInvoker::admitted(acting),
+                    None => tilo_actions::ActionInvoker::person(author.clone()),
                 };
                 let invoker = invoker
                     .with_appearance(self.appearance.clone())

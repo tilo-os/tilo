@@ -365,13 +365,11 @@ fn the_executable_opens_a_path_edits_and_saves_it() {
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use hex_editor::model::BufferEdit;
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let (_directory, path) = file("history.bin", &[0x00, 0x11, 0x22, 0x33]);
     let mut app = launched(&path);
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <HexEditor as ui::tilo_resource::Resource>::KIND;
     let bytes = HexEditor::paths().bytes;
     for edit in [
@@ -411,7 +409,7 @@ fn history_entries_render_as_the_apps_sentences() {
         entry
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.actor == "agent:claude")
+            .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
     }));
     assert_eq!(
         sentences,

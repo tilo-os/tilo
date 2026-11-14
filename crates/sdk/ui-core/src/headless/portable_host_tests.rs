@@ -1067,11 +1067,7 @@ fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteractio
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,
-        actor: tilo_actions::InteractionActor {
-            id: "scribe".into(),
-            kind: tilo_actions::ActorKind::Agent,
-            for_person: None,
-        },
+        actor: tilo_actions::Acting::agent("scribe"),
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {
             id: "insert".into(),
@@ -1149,9 +1145,10 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         .expect("the clock is later than a second ago");
     let mut label = String::new();
     agent_frame.update_presence(|presence| {
-        presence
-            .names
-            .insert(crate::permissions::UserId("scribe".into()), "Ada".into());
+        presence.names.insert(
+            crate::permissions::UserId("agent:scribe".into()),
+            "Ada".into(),
+        );
         let applied = presence
             .apply_interaction_at(event.clone(), at)
             .expect("a well-formed interaction applies");
@@ -1203,8 +1200,10 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
         .checked_sub(crate::time::Duration::from_secs(1))
         .expect("the clock is later than a second ago");
     frame.update_presence(|presence| {
-        presence.names.insert(UserId("scribe".into()), "Ada".into());
-        presence.set_caret(&key, UserId("scribe".into()), 9);
+        presence
+            .names
+            .insert(UserId("agent:scribe".into()), "Ada".into());
+        presence.set_caret(&key, UserId("agent:scribe".into()), 9);
         presence
             .apply_interaction_at(event.clone(), at)
             .expect("a well-formed interaction applies")
@@ -1216,7 +1215,7 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
         .presence()
         .caret_tags()
         .into_iter()
-        .filter(|tag| tag.user == UserId("scribe".into()))
+        .filter(|tag| tag.user == UserId("agent:scribe".into()))
         .map(|tag| tag.label)
         .collect();
     assert_eq!(

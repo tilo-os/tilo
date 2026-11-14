@@ -1201,16 +1201,14 @@ tilo_test_env::scenario! {
 /// was called.
 #[test]
 fn an_agents_edits_render_as_the_editors_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let (project, clip) = one_clip();
     let track = project.clip(clip).unwrap().track;
     let mut app = ui::framework::testing::TestApp::<crate::VideoEditor>::new().unwrap();
     app.invoke_confirmed(Invoke::edit(&load_project(&project)).unwrap())
         .unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <Project as Resource>::KIND;
     let clip_paths = Project::paths().clips.item(&id(clip));
     let track_paths = Project::paths().tracks.item(&id(track));
@@ -1247,7 +1245,7 @@ fn an_agents_edits_render_as_the_editors_sentences() {
         entry
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.actor == "agent:claude")
+            .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
     }));
     assert_eq!(
         sentences,

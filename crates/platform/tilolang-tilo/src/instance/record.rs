@@ -886,7 +886,7 @@ impl InstanceRecord {
             if !self.can_revert(&change) {
                 continue;
             }
-            let invoker = ActionInvoker::actor(self.person.clone());
+            let invoker = ActionInvoker::person(self.person.clone());
             let chunk = self.chunk_of_change(&change).unwrap_or(FIRST);
             let edit = HistoryEdit::Undo {
                 steps: None,
@@ -936,7 +936,7 @@ impl InstanceRecord {
             }
             HistoryAsk::Undo | HistoryAsk::Redo | HistoryAsk::UndoRun(_) => FIRST,
         };
-        let me = ActionInvoker::actor(self.person.clone());
+        let me = ActionInvoker::person(self.person.clone());
         self.history_chunk(instance, chunk, &edit, resource, kind, me, None)
             .map(|_| true)
     }
@@ -972,7 +972,7 @@ impl InstanceRecord {
         let mut brought = false;
         for chunk in undone {
             let edit = HistoryEdit::Redo { steps: None };
-            let invoker = ActionInvoker::actor(self.person.clone());
+            let invoker = ActionInvoker::person(self.person.clone());
             self.history_apply(chunk, &edit, resource, kind, invoker, Some(&ambient))?;
             brought = true;
         }
@@ -1397,7 +1397,7 @@ impl InstanceRecord {
             .store()
             .committed(ticket)
             .ok_or(RecordError::NoAction(ticket))?;
-        let invoker = ActionInvoker::actor(self.person.clone());
+        let invoker = ActionInvoker::person(self.person.clone());
         // The stage of the person's the change is one of, when it is one of a burst of typing;
         // every other change is a step of its own.
         let gesture = action
@@ -1566,7 +1566,7 @@ impl InstanceRecord {
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
-        let author = invoker.actor.clone();
+        let author = invoker.key();
         let context = context.with_invoker(invoker);
         let workspace = self.route.cluster_id.to_string();
         let app = self.route.app_id.clone();

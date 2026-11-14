@@ -23,7 +23,7 @@ use tilolang_tilo::publish::{
     Caller, Committer, Planner, Publications, host_resource, publish_package,
 };
 use tilolang_tilo::search::{Hit, every_hit};
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::ActionInvoker;
 use ui::tilo_resource::profiling::Phase;
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry, SearchWeight};
 
@@ -206,9 +206,9 @@ fn live_host() -> Option<Host> {
 #[must_use]
 pub fn caller_of(invoker: &ActionInvoker) -> Caller {
     Caller {
-        actor: invoker.actor.clone(),
-        agent: invoker.kind != ActorKind::Person,
-        on_behalf_of: invoker.on_behalf_of.clone(),
+        actor: invoker.key(),
+        agent: !invoker.acting.is_person(),
+        on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
     }
 }
 

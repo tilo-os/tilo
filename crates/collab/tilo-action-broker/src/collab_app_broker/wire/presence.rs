@@ -99,14 +99,12 @@ impl PresenceSession {
         update: tilo_actions::SemanticInteraction,
     ) -> Result<tilo_actions::SemanticInteraction, String> {
         let actor = self.verified_identity.broker_actor();
-        let normalized_actor = tilo_actions::InteractionActor::new(
-            AppBrokerState::participant_id(&self.verified_identity),
-            if actor.is_agent {
-                tilo_actions::ActorKind::Agent
-            } else {
-                tilo_actions::ActorKind::Person
-            },
-        );
+        let id = AppBrokerState::participant_id(&self.verified_identity);
+        let normalized_actor = if actor.is_agent {
+            tilo_actions::Acting::agent(id.strip_prefix("agent:").unwrap_or(&id))
+        } else {
+            tilo_actions::Acting::person(id)
+        };
         let mut sequences = self
             .interaction_sequences
             .lock()

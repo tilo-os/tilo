@@ -7,7 +7,7 @@
 use code_editor::project::{Project, SourceEdit};
 use code_editor::{CodeEditorShell, actions};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_actions::ActionInvoker;
 use ui::tilo_resource::Resource as _;
 
 fn entry_named(app: &TestApp<CodeEditorShell>, name: &str) -> String {
@@ -28,9 +28,7 @@ fn entry_named(app: &TestApp<CodeEditorShell>, name: &str) -> String {
 fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<CodeEditorShell>::new().unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = Project::KIND;
     let call = |app: &mut TestApp<CodeEditorShell>, resource: &str, id: &str, args| {
         app.call_by(agent.clone(), resource, id, args)
@@ -113,7 +111,7 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
             entry
                 .invoker
                 .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
+                .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
         })
         .collect();
     let sentences = app.sentences(&entries);
@@ -131,8 +129,8 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada")),
+        (invoker.acting.is_agent(), invoker.acting.acted_for_person()),
+        (true, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
 }

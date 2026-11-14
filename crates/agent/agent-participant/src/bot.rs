@@ -76,7 +76,7 @@ mod tests {
         let cursor = doc.get_heads();
         let mut context =
             tilo_actions::ActionContext::for_resource("chat.workspace", "chat.workspace", "Chat")
-                .with_invoker(tilo_actions::ActionInvoker::actor("bob"));
+                .with_invoker(tilo_actions::ActionInvoker::person("bob"));
         context.item = Some(tilo_actions::entry::ActionItem {
             id: "m1".into(),
             label: "hi".into(),
@@ -92,7 +92,7 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         let (event, heads) = &events[0];
-        assert_eq!(event.actor.id, "bob");
+        assert_eq!(event.actor, tilo_actions::Acting::person("bob"));
         assert_eq!(event.before.as_ref().unwrap()["text"], "hi");
         assert_eq!(event.after.as_ref().unwrap()["text"], "edited");
         assert_eq!(heads, &hex(&doc.get_heads()));

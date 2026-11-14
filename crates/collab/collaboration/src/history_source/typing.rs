@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use tilo_actions::{ActionContext, ActorKind, Did, EditOp, PathStep};
+use tilo_actions::{ActionContext, Did, EditOp, PathStep};
 
 /// How long a person may stop typing in a field and still be writing the
 /// same thing: long enough to think through the rest of a formula or a
@@ -40,7 +40,7 @@ impl TypedField {
         if context
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.kind != ActorKind::Person)
+            .is_some_and(|invoker| !invoker.acting.is_person())
         {
             return None;
         }

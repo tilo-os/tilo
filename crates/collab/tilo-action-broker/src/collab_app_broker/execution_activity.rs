@@ -120,7 +120,7 @@ pub(super) struct ActivityTarget {
 
 #[derive(Clone)]
 pub(super) struct ShownActor {
-    pub(super) actor: tilo_actions::InteractionActor,
+    pub(super) actor: tilo_actions::Acting,
     pub(super) action: tilo_actions::InteractionAction,
     /// What it acts in, named as the step's line says it: the item's own label
     /// where the invocation names one, else the record's.
@@ -406,9 +406,9 @@ impl ShownActor {
         action: &PublishedAction,
         argument: Option<&str>,
     ) -> Option<Self> {
-        let shown = caller.map_or_else(|| actor.shown(), Caller::actor);
+        let shown = caller.map_or_else(|| actor.shown(), |caller| caller.acting().clone());
         let remote = caller.is_some_and(|caller| caller.device_public_key().is_some());
-        if !shown.kind.acts_for_someone() && shown.for_person.is_none() && !remote {
+        if shown.direct() && shown.app().is_none() && !remote {
             return None;
         }
         let label = item_named(action, surface, argument).unwrap_or(&action.resource_label);

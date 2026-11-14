@@ -59,12 +59,7 @@ pub(crate) fn invoke_service_step(
     >,
 ) {
     use tilo_service::Started;
-    let invoker = tilo_actions::ActionInvoker::actor(actor);
-    let invoker = if actor.starts_with("agent:") {
-        invoker.with_kind(tilo_actions::ActorKind::Agent)
-    } else {
-        invoker
-    };
+    let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor));
     let started = services.borrow_mut().invoke_as_beside(
         &invoker,
         run,
@@ -101,10 +96,9 @@ pub(super) fn change_through(
 ) -> Option<Result<serde_json::Value, ActionHostError>> {
     // Who the change is attributed to: the agent acting for its person, or the person.
     let invoker = if let Some(agent) = actor.agent_id() {
-        tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
-            .with_kind(tilo_actions::ActorKind::Agent)
+        tilo_actions::ActionInvoker::agent(agent)
     } else {
-        tilo_actions::ActionInvoker::actor(actor.person_id()?.to_owned())
+        tilo_actions::ActionInvoker::person(actor.person_id()?.to_owned())
     };
     services.borrow().record(&change.app)?;
     let ran = services.borrow_mut().invoke_as(

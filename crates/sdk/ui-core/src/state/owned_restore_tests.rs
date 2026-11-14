@@ -116,7 +116,7 @@ tilo_test_env::scenario! {
                 .message()
                 .and_then(|s| tilo_actions::ActionContext::from_change_message(s))
                 .map(unstamped),
-            Some(context().with_invoker(tilo_actions::ActionInvoker::actor("ada")))
+            Some(context().with_invoker(tilo_actions::ActionInvoker::person("ada")))
         );
         assert_eq!(value(&state.doc), "old");
         assert_eq!(state.doc.get_actor(), &actor);

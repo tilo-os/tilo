@@ -156,7 +156,7 @@ impl AttachedView {
             workspace,
             checkout,
             document,
-            &tilo_actions::ActionInvoker::actor(me),
+            &tilo_actions::ActionInvoker::person(me),
             permissions,
             created,
         )
@@ -199,7 +199,7 @@ impl AttachedView {
             workspace,
             checkout,
             document,
-            invoker: tilo_actions::ActionInvoker::actor("owner"),
+            invoker: tilo_actions::ActionInvoker::person("owner"),
             permissions: PermissionContext::permissive(),
             created: false,
             content: None,
@@ -218,7 +218,7 @@ impl AttachedView {
             content,
         } = view;
         let invoker = &invoker;
-        let me = invoker.actor.as_str();
+        let me = &*invoker.key();
         let joined_at = (!created).then(|| heads_of(&document)).transpose()?;
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
@@ -436,7 +436,7 @@ impl AttachedView {
         self.context
             .as_ref()
             .and_then(|context| context.invoker.clone())
-            .filter(|invoker| invoker.actor == self.invoker.actor)
+            .filter(|invoker| invoker.key() == self.invoker.key())
             .unwrap_or_else(|| self.invoker.clone())
             .with_appearance(appearance)
     }

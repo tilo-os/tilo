@@ -69,7 +69,7 @@ fn append_to_note_refuses_a_title_no_note_carries() {
 
 /// An agent of the workspace, as the host admits one.
 fn agent(name: &str) -> ui::tilo_actions::ActionInvoker {
-    ui::tilo_actions::ActionInvoker::actor(name).with_kind(ui::tilo_actions::ActorKind::Agent)
+    ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(name))
 }
 
 /// `who` calls the notebook's `action` with `arguments`: its answer.

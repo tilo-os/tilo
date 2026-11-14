@@ -234,7 +234,7 @@ mod tests {
                 new: None,
                 args: std::collections::BTreeMap::new(),
             })),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            invoker: Some(tilo_actions::ActionInvoker::person("alice")),
             source_invocation: Some(invocation),
             ..ActionContext::for_resource(field, "tasks", field)
         };
@@ -374,7 +374,7 @@ mod tests {
                 new: None,
                 args: std::collections::BTreeMap::new(),
             })),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            invoker: Some(tilo_actions::ActionInvoker::person("alice")),
             source_invocation: Some(invocation),
             ..ActionContext::for_resource(field, "tasks", field)
         };

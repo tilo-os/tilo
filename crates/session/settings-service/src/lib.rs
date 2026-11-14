@@ -168,7 +168,7 @@ impl SettingsService {
             earlier,
             &[settings_sections::declare],
         );
-        self.invoker = Some(ActionInvoker::actor(person));
+        self.invoker = Some(ActionInvoker::person(person));
         self.published = self.build();
     }
 

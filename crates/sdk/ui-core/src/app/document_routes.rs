@@ -1043,7 +1043,7 @@ mod tests {
                 new: None,
                 args: std::collections::BTreeMap::new(),
             })),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            invoker: Some(tilo_actions::ActionInvoker::person("alice")),
             source_invocation: Some(tilo_actions::InvocationId(invocation)),
             ..tilo_actions::ActionContext::for_resource("tasks", "tasks", field)
         };
@@ -1163,7 +1163,7 @@ mod tests {
                     type_id: "notes.type".into(),
                     payload: format!("{text:?}").into_bytes(),
                 }),
-                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                invoker: Some(tilo_actions::ActionInvoker::person("alice")),
                 ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
             };
             let id = fixture.bindings[0].checkout.id.clone();

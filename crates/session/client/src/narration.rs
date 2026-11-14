@@ -6,8 +6,8 @@
 
 use collab_types::presence::Shown;
 use tilo_actions::{
-    ActionAddress, ActionApp, ActionResource, ActorKind, INTERACTION_VERSION, InteractionAction,
-    InteractionActor, InteractionAnchor, InteractionPhase, InvocationId, SemanticInteraction,
+    Acting, ActionAddress, ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction,
+    InteractionAnchor, InteractionPhase, InvocationId, SemanticInteraction,
 };
 use tilo_relay_protocol::live::SemanticFrame;
 
@@ -42,7 +42,7 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
         version: INTERACTION_VERSION,
         invocation: narrated.invocation,
         sequence: seq,
-        actor: InteractionActor::new(narrated.agent, ActorKind::Agent),
+        actor: Acting::agent(narrated.agent),
         phase: narrated.phase.clone(),
         action: InteractionAction {
             id: narrated.action.action.clone(),
@@ -96,7 +96,7 @@ pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<Se
     if interaction.invocation.0 != event.execution {
         return None;
     }
-    interaction.actor = InteractionActor::new(publisher, ActorKind::Agent);
+    interaction.actor = Acting::agent(publisher);
     interaction.validate().ok()?;
     Some(interaction)
 }
@@ -357,12 +357,10 @@ mod tests {
 
         let admitted = admit(&present, agent, &event).expect("the agent's work is drawn");
         assert_eq!(
-            admitted.actor.id,
-            hex::encode(agent),
+            admitted.actor,
+            Acting::agent(hex::encode(agent)),
             "bound to the publisher"
         );
-        assert_eq!(admitted.actor.kind, ActorKind::Agent);
-        assert_eq!(admitted.actor.for_person, None);
 
         assert!(
             admit(&present, person, &event).is_none(),
@@ -415,7 +413,7 @@ mod tests {
         )
         .unwrap();
         let admitted = admit(&present, host, &event).expect("the host's word for its run");
-        assert_eq!(admitted.actor.id, hex::encode(stand_in));
+        assert_eq!(admitted.actor, Acting::agent(hex::encode(stand_in)));
         assert!(
             admit(&present, other, &event).is_none(),
             "another device does not speak for the host's run"

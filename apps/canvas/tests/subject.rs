@@ -174,7 +174,7 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
     let versions = app.versions().len();
     let output = app
         .call_by(
-            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            ui::tilo_actions::ActionInvoker::agent("canvas-finder"),
             "canvas.artwork",
             "find-area",
             json!({"refine": 8}),
@@ -195,12 +195,12 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
             .invoker
             .as_ref()
             .unwrap()
-            .actor,
+            .key(),
         "agent:canvas-finder"
     );
     let undo = app
         .call_by(
-            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            ui::tilo_actions::ActionInvoker::agent("canvas-finder"),
             "canvas.artwork",
             "undo",
             json!({}),
@@ -210,7 +210,7 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
     assert_eq!(app.state(), before);
     let redo = app
         .call_by(
-            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            ui::tilo_actions::ActionInvoker::agent("canvas-finder"),
             "canvas.artwork",
             "redo",
             json!({}),
@@ -239,7 +239,7 @@ fn an_accepted_edge_job_allows_its_participants_published_inspect() {
             .any(ui::tilo_actions::InvocationUpdate::is_terminal)
     );
     let another_participant = app.call_by(
-        ui::tilo_actions::ActionInvoker::actor("agent:canvas-reader"),
+        ui::tilo_actions::ActionInvoker::agent("canvas-reader"),
         "canvas.artwork",
         "inspect",
         json!({}),

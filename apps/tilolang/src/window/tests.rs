@@ -58,9 +58,7 @@ struct Workspace {
 
 /// The delegate of an agent's task, acting for the person at the window.
 fn task() -> ActionInvoker {
-    ActionInvoker::actor("agent-task:7")
-        .with_kind(ui::tilo_actions::ActorKind::Agent)
-        .acting_for("ada")
+    ActionInvoker::agent("agent-task:7").acting_for("ada")
 }
 
 impl Workspace {
@@ -196,7 +194,8 @@ impl Workspace {
     /// Hand every pending invocation to the door and apply what it builds.
     fn door(&mut self) {
         while let Some((invocation, origin)) = self.window.take_attributed_control_invocation() {
-            let invoker = origin.map_or_else(|| ActionInvoker::actor("ada".to_owned()), |_| task());
+            let invoker =
+                origin.map_or_else(|| ActionInvoker::person("ada".to_owned()), |_| task());
             let resources = Self::resources();
             let result = (|| -> Result<(), String> {
                 let address = ui::tilo_actions::door::published(
@@ -219,7 +218,7 @@ impl Workspace {
                     &mut self.doc,
                     action.as_ref(),
                     encoded,
-                    Some(invoker.actor.as_bytes()),
+                    Some(invoker.key().as_bytes()),
                     context,
                 )
                 .map_err(|error| error.to_string())?;
@@ -313,7 +312,7 @@ impl Workspace {
             .ok_or_else(|| format!("{resource}/{action} is not published"))?;
         let invoker = who
             .clone()
-            .unwrap_or_else(|| ActionInvoker::actor("ada".to_owned()));
+            .unwrap_or_else(|| ActionInvoker::person("ada".to_owned()));
         let encoded = {
             let _admitted = who.map(ui::invocation_scope::InvokerScope::enter);
             ui::tilo_actions::door::encode_json(
@@ -332,7 +331,7 @@ impl Workspace {
             &mut self.doc,
             action.as_ref(),
             encoded,
-            Some(invoker.actor.as_bytes()),
+            Some(invoker.key().as_bytes()),
             context,
         )
         .map_err(|error| error.to_string())?;
@@ -972,7 +971,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
         "the agent's note did not open"
     );
     // So does a script on the control socket, which acts as the person but not at the window.
-    let script = ActionInvoker::actor("ada".to_owned());
+    let script = ActionInvoker::person("ada".to_owned());
     workspace
         .applies_as(Some(script), &notebook, &new_note, &Json::Null)
         .unwrap();

@@ -104,7 +104,12 @@ impl DoorParticipant for FakeParticipant {
             .iter()
             .find(|(_, context)| {
                 RunStep::of(context).as_ref() == Some(step)
-                    && context.invoker.as_ref().map(|i| i.actor.as_str()) == Some(actor)
+                    && context
+                        .invoker
+                        .as_ref()
+                        .map(tilo_actions::ActionInvoker::key)
+                        .as_deref()
+                        == Some(actor)
             })
             .cloned()
     }
@@ -229,9 +234,9 @@ fn a_step_is_recorded_as_the_bot_with_its_run_step_and_cause() {
     }));
     block(door.invoke(&bot(), post())).unwrap();
     let (by, context, _) = invoked.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(by.actor, "bot:b1");
-    assert_eq!(by.kind, ActorKind::Bot);
-    assert_eq!(by.on_behalf_of.as_deref(), Some("ada"));
+    assert_eq!(by.key(), "bot:b1");
+    assert!(by.acting.is_bot());
+    assert_eq!(by.acting.acted_for_person(), Some("ada"));
     assert_eq!(
         RunStep::of(&context),
         Some(RunStep {
@@ -257,7 +262,7 @@ fn a_step_already_in_history_is_answered_not_repeated() {
     let request = post();
     fake.history.lock().unwrap().push((
         route("so.tilo.chat", "rec-1"),
-        step_context().with_invoker(ActionInvoker::actor("bot:b1")),
+        step_context().with_invoker(ActionInvoker::bot("b1")),
     ));
     let invoked = fake.invoked.clone();
     let door = door(fake, vec![]);
@@ -344,7 +349,7 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
     // A send names no item: the entry is found by what its change queued.
     history.lock().unwrap().push((
         route("so.tilo.discord", "rec-2"),
-        step_context().with_invoker(ActionInvoker::actor("bot:b1")),
+        step_context().with_invoker(ActionInvoker::bot("b1")),
     ));
     queued_in_history.lock().unwrap().push("q1".into());
     let receipt = block(door.invoke(&bot(), send())).unwrap();

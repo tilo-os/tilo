@@ -122,8 +122,8 @@ tilo_test_env::scenario! {
         assert_eq!(reviewed["target_heads"], compared["from_heads"]);
 
         let agent =
-            tilo_actions::InteractionActor::new("agent:historian", tilo_actions::ActorKind::Agent)
-                .acting_for("person:ada");
+            tilo_actions::Acting::agent("historian")
+                .acting_for(tilo_actions::Acting::person("person:ada"));
         let restored = app
             .call_by(
                 tilo_actions::ActionInvoker::admitted(&agent),

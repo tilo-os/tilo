@@ -164,7 +164,7 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
     assert_eq!(inspection["lifecycle"], "open", "the session stays open");
     {
         let _agent = ui::invocation_scope::InvokerScope::enter(
-            ui::tilo_actions::ActionInvoker::actor("agent:fixture"),
+            ui::tilo_actions::ActionInvoker::agent("fixture"),
         );
         assert!(
             on_tab(&mut app, |terminal| terminal

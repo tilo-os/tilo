@@ -495,7 +495,7 @@ fn parsed(change: &(impl ChangeHead + ?Sized)) -> std::rc::Rc<Parsed> {
 pub(crate) fn maker_of(change: &automerge::Change) -> Option<String> {
     let parsed = parsed(change);
     let invoker = parsed.context.as_ref()?.invoker.as_ref()?;
-    Some(invoker.actor.clone())
+    Some(invoker.key())
 }
 
 impl Parsed {
@@ -937,7 +937,7 @@ pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
     let hash = change.hash().to_string();
     Some(Stamp {
         version: Version {
-            who: invoker.actor.clone(),
+            who: invoker.key(),
             at: tilolang::calendar::time_text(change.timestamp()),
             action: STEP_ACTION.to_owned(),
             run: run_of(context),

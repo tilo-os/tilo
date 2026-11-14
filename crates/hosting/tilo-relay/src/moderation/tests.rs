@@ -98,7 +98,7 @@ fn flooded_room() -> Replica {
         let before = message_ids(&page);
         let post = serde_json::json!({ "channel": general, "text": text });
         page.invoke_with(
-            Some(tilo_actions::ActionInvoker::actor(author)),
+            Some(tilo_actions::ActionInvoker::person(author)),
             None,
             &tilo_actions::door::ActionAddress::new(
                 ui::record::chain_resource_id(&chat::parts::chain()),

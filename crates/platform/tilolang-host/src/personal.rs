@@ -126,7 +126,7 @@ impl PersonalRecord {
         let encoded = tilo_resource::encode::<Personal>(keep)?;
         let context = ActionContext::for_resource(personal::KIND, personal::KIND, Personal::LABEL)
             .with_app(self.app.clone(), self.app.clone())
-            .with_invoker(ActionInvoker::actor(person))
+            .with_invoker(ActionInvoker::person(person))
             .with_change(keep.change_kind());
         tilo_actions::apply_local_with_context(
             &mut self.doc,

@@ -325,7 +325,7 @@ impl<P: Resource> RecordDoor for Held<P> {
 /// path reads it, so an agent's change is the agent's in whichever record
 /// it lands, and names the person it acts for.
 pub(crate) fn acting(me: &str) -> ActionInvoker {
-    ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::actor(me))
+    ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::person(me))
 }
 
 /// Answer one published action of a record: apply it to the record it
@@ -343,7 +343,7 @@ pub(crate) fn answer(
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     let me = me.ok_or("this window changes no record of anyone's")?;
     let invoker = acting(me);
-    let theirs = invoker.actor == me || invoker.on_behalf_of.as_deref() == Some(me);
+    let theirs = invoker.key() == me || invoker.acting.acted_for_person() == Some(me);
     if !theirs {
         return Err(format!(
             "`{}` is {me}'s own; only they change it",

@@ -591,7 +591,7 @@ impl super::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
-        let actor = invoker.map_or_else(|| self.person.clone(), |invoker| invoker.actor);
+        let actor = invoker.map_or_else(|| self.person.clone(), |invoker| invoker.key());
         let arguments = format!(
             "{}{}",
             ui::tilo_actions::ARGUMENTS_JSON_PREFIX,

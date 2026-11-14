@@ -338,13 +338,11 @@ fn a_notes_text_edits_at_its_path_and_undoes() {
 /// reader's language as the app's sentences, naming who did it for whom.
 #[test]
 fn an_agents_changes_read_back_as_the_apps_sentences() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_actions::ActionInvoker;
 
     let mut app = ui::framework::testing::TestApp::<EbookShell>::new().unwrap();
     app.invoke(shelve(&row(BOOK, "Annotated"))).unwrap();
-    let agent = ActionInvoker::actor("agent:claude")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
+    let agent = ActionInvoker::agent("claude").acting_for("ada");
     let kind = <Ebook as Resource>::KIND;
     app.call_by(
         agent.clone(),
@@ -387,7 +385,7 @@ fn an_agents_changes_read_back_as_the_apps_sentences() {
         entry
             .invoker
             .as_ref()
-            .is_some_and(|invoker| invoker.actor == "agent:claude")
+            .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
     }));
     assert_eq!(
         sentences,

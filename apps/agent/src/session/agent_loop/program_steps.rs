@@ -314,7 +314,7 @@ pub(super) fn where_section(
     if let Some(person) = context
         .as_ref()
         .and_then(|context| context.invoker.as_ref())
-        .and_then(|invoker| invoker.on_behalf_of.as_deref())
+        .and_then(|invoker| invoker.acting.acted_for_person())
     {
         let _ = writeln!(out, "You act for {person}.");
     }

@@ -575,16 +575,10 @@ impl Workspaces {
 /// its own, which a member holds the change's author to as the bot it names.
 fn shown_by(change: &Change) -> Option<String> {
     let invoker = tilo_actions::ActionContext::from_change_message(change.message()?)?.invoker?;
-    if invoker.kind != tilo_actions::ActorKind::Bot || invoker.appearance.is_none() {
+    if !invoker.acting.is_bot() || invoker.appearance.is_none() {
         return None;
     }
-    Some(
-        invoker
-            .actor
-            .strip_prefix("bot:")
-            .unwrap_or(&invoker.actor)
-            .to_owned(),
-    )
+    invoker.acting.bot_id().map(str::to_owned)
 }
 
 /// `kept` by the bot installation each change says made it showing a name
@@ -910,31 +904,26 @@ mod tests {
 
     #[test]
     fn only_a_bot_change_that_shows_a_name_is_the_bots_to_publish() {
-        use tilo_actions::{ActionInvoker, ActorKind, Appearance};
+        use tilo_actions::{ActionInvoker, Appearance};
 
         let shown = Appearance::new("Ada", None, None).unwrap();
         let bot_showing = edit_by(
             &mut AutoCommit::new(),
-            ActionInvoker::actor("bot:7f1c")
-                .with_kind(ActorKind::Bot)
-                .with_appearance(Some(shown.clone())),
+            ActionInvoker::bot("7f1c").with_appearance(Some(shown.clone())),
         );
         assert_eq!(
             shown_by(&bot_showing).as_deref(),
             Some("7f1c"),
             "the bot a change shows another name for is the one that publishes it"
         );
-        let bot_itself = edit_by(
-            &mut AutoCommit::new(),
-            ActionInvoker::actor("bot:7f1c").with_kind(ActorKind::Bot),
-        );
+        let bot_itself = edit_by(&mut AutoCommit::new(), ActionInvoker::bot("7f1c"));
         assert_eq!(shown_by(&bot_itself), None, "a bot posting as itself");
         let person = edit_by(
             &mut AutoCommit::new(),
-            ActionInvoker::actor("person:ada").with_appearance(Some(shown)),
+            ActionInvoker::person("person:ada").with_appearance(Some(shown)),
         );
         assert_eq!(shown_by(&person), None, "only a bot shows another name");
-        let unnamed = edit_by(&mut AutoCommit::new(), ActionInvoker::actor("person:ada"));
+        let unnamed = edit_by(&mut AutoCommit::new(), ActionInvoker::person("person:ada"));
         assert_eq!(shown_by(&unnamed), None);
     }
 

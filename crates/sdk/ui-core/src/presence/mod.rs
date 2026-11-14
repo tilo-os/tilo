@@ -517,15 +517,16 @@ pub enum ParticipantKind {
     Bot,
 }
 
-impl From<tilo_actions::ActorKind> for ParticipantKind {
-    fn from(kind: tilo_actions::ActorKind) -> Self {
-        match kind {
-            tilo_actions::ActorKind::Person => Self::Person,
-            tilo_actions::ActorKind::Agent => Self::Agent,
-            tilo_actions::ActorKind::Shortcut => Self::Shortcut,
-            tilo_actions::ActorKind::App => Self::App,
-            tilo_actions::ActorKind::Program => Self::Program,
-            tilo_actions::ActorKind::Bot => Self::Bot,
+impl From<&tilo_actions::Acting> for ParticipantKind {
+    fn from(acting: &tilo_actions::Acting) -> Self {
+        if acting.is_automation() {
+            Self::Shortcut
+        } else if acting.is_agent() {
+            Self::Agent
+        } else if acting.is_bot() {
+            Self::Bot
+        } else {
+            Self::Person
         }
     }
 }

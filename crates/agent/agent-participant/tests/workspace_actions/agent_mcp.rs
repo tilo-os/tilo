@@ -159,7 +159,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             .iter()
             .filter(|(_, work)| {
                 run.as_ref()
-                    .is_some_and(|run| work.actor.id == run.publisher)
+                    .is_some_and(|run| work.actor.by.key() == run.publisher)
             })
             .filter(|(record, work)| {
                 work.action.id == "new-sheet"

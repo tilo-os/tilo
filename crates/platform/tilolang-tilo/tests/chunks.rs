@@ -82,7 +82,7 @@ fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
     // Recorded in this thread's window, whose store keeps an action's large parts.
     let _window = crate::window::store();
     let context =
-        crate::fixtures::context_of(action, &action.app).with_invoker(ActionInvoker::actor("ada"));
+        crate::fixtures::context_of(action, &action.app).with_invoker(ActionInvoker::person("ada"));
     // The document's own actor writes it: a fork of it is a replica of its own, and two
     // replicas' changes never share a sequence number.
     tilo_actions::apply_local_with_context(doc, action, encoded, None, context)
