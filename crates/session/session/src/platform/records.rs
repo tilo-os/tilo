@@ -387,8 +387,8 @@ fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Optio
 }
 
 /// The document `app` keeps for `record` in `workspace`, as its app last committed it. `record` is
-/// a route: the empty one is the app's own record, the workspace's document that also keeps its
-/// index ([`Changed::record`]).
+/// the key the record is kept under ([`ui::record::RecordId::storage_key`]); the empty one is the
+/// app's own record, the workspace document that also keeps its index.
 #[must_use]
 pub fn document(
     store: &dyn DurableStore,

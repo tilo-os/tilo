@@ -804,11 +804,15 @@ fn read_workspace_records(
             });
         }
         for checkout in checkouts {
-            let id = checkout.id.as_str().to_owned();
-            if !seen.insert((package.clone(), id.clone())) {
+            if !seen.insert((package.clone(), checkout.id.as_str().to_owned())) {
                 continue;
             }
-            let document = crate::platform::records::document(store, &package, workspace, &id);
+            let document = crate::platform::records::document(
+                store,
+                &package,
+                workspace,
+                &checkout.id.storage_key(),
+            );
             if let Some(document) = &document {
                 noted(document.get_actor());
             }
@@ -829,7 +833,7 @@ fn read_workspace_records(
             store,
             fs_protocol::tree::FILES_APP,
             workspace,
-            &tree_id,
+            &record_id.storage_key(),
         )
     {
         noted(document.get_actor());
@@ -1409,6 +1413,44 @@ mod tests {
             app: app.into(),
             at_ms: 0,
         }
+    }
+
+    /// A window's record is read where its app keeps it, under its storage key: a document a file
+    /// opened in Word Processor, named by the file's path, has its history like any other.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_record_named_by_a_files_path_is_read_for_its_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = app_state::FsStore::new(dir.path());
+        let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
+        let app = "so.tilo.word-processor";
+        let id = RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let kind = RecordKind::new("word-processor.document");
+        let write = |key: &StorageKey, doc: &mut ui::automerge::AutoCommit| {
+            let _lease = store.lease(key).unwrap();
+            store
+                .write(key, WriteOp::Replace(doc.save()), None)
+                .unwrap();
+            store.flush(Some(key)).unwrap();
+        };
+        let mut index = ui::automerge::AutoCommit::new();
+        assert!(ui::record::index::reference(&mut index, &id, &kind));
+        index.commit();
+        write(&StorageKey::workspace_index(app, workspace), &mut index);
+        let mut document = ui::automerge::AutoCommit::new();
+        ui::record::init(&mut document, &id, &kind, workspace);
+        write(
+            &StorageKey::document(app, workspace, id.storage_key()),
+            &mut document,
+        );
+
+        let noted: crate::platform::authors::Noted = Arc::new(|_| {});
+        let read = read_workspace_records(&store, workspace, &noted);
+        let budget = read
+            .iter()
+            .find(|record| record.checkout.id == id)
+            .expect("the index names the record");
+        assert!(budget.document.is_some(), "and its document is read");
     }
 
     #[test]

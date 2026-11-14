@@ -274,30 +274,6 @@ impl Landed {
     }
 }
 
-/// The request that shows `landed` on `workspace`'s shared layout: its app's `open` on the record,
-/// which the workspace's host answers by adding a window for it beside the work on the layout, as
-/// it does for an agent's work. Everyone in the workspace sees it arrive; nobody's view moves.
-#[must_use]
-pub fn show_request(workspace: &str, landed: &Landed) -> InvokeRequest {
-    InvokeRequest {
-        invocation: InvocationId::new(),
-        target: tilo_actions::remote::application_record_target(
-            workspace,
-            &landed.app,
-            &landed.record,
-            format!("{APPLICATION_RESOURCE_PREFIX}{}", landed.app),
-            APPLICATION_OPEN_ACTION,
-        ),
-        argument: InvokeArgument::None,
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: u32::try_from(MAX_REMOTE_WAIT.as_millis()).ok(),
-        appearance: None,
-    }
-}
-
 /// Run `request` on `host` as `caller` and wait until it settles: what it answered.
 ///
 /// # Errors
