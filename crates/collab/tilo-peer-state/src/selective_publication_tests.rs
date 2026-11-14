@@ -281,3 +281,22 @@ fn selective_publication_cannot_discard_prior_document_basis() {
         "publication must preserve the prior record basis"
     );
 }
+
+/// A replica publishes records under application ids only: a string that is
+/// not one names no app, and no member would read it as that app's record.
+#[test]
+fn a_record_publishes_only_under_an_application_id() {
+    let (mut governor, a, _b, _bc, now) = seeded();
+    let bytes = AutoCommit::new().save();
+    assert!(
+        governor
+            .publication_mut()
+            .publish_document("so.tilo.notes\n", "", bytes.clone(), &a, now)
+            .is_err(),
+        "a malformed application id is no app's record"
+    );
+    governor
+        .publication_mut()
+        .publish_document("so.tilo.notes", "", bytes, &a, now)
+        .expect("an application id publishes");
+}
