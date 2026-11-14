@@ -1394,45 +1394,265 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    /// A paragraph continuing an ordered item, indented the CommonMark way
-    /// (three spaces under `1. `), is a line of that item without a stray
-    /// leading space.
-    #[test]
-    fn a_three_space_continuation_is_a_line_of_the_item() {
-        let blocks = specs_to_blocks(&parse(
-            "1. Pack the books\n   The heavy ones first.\n2. Next\n",
-        ));
-        let texts: Vec<_> = blocks
-            .iter()
-            .map(|block| (block.text().to_owned(), block.indent()))
-            .collect();
-        assert_eq!(
-            texts,
-            [
-                ("Pack the books".to_owned(), 0),
-                ("The heavy ones first.".to_owned(), 1),
-                ("Next".to_owned(), 0),
-            ]
-        );
+    tilo_test_env::scenario! {
+        fn markdown_parses_into_blocks_marks_and_links;
+
+        phase a_three_space_continuation_is_a_line_of_the_item;
+        // A paragraph continuing an ordered item, indented the CommonMark way
+        // (three spaces under `1. `), is a line of that item without a stray
+        // leading space.
+        {
+            let blocks = specs_to_blocks(&parse(
+                "1. Pack the books\n   The heavy ones first.\n2. Next\n",
+            ));
+            let texts: Vec<_> = blocks
+                .iter()
+                .map(|block| (block.text().to_owned(), block.indent()))
+                .collect();
+            assert_eq!(
+                texts,
+                [
+                    ("Pack the books".to_owned(), 0),
+                    ("The heavy ones first.".to_owned(), 1),
+                    ("Next".to_owned(), 0),
+                ]
+            );
+        }
+
+        phase block_parsing_recognises_each_block_kind;
+        {
+            // (case, markdown, exactly the parsed blocks)
+            let exact = [
+                (
+                    "empty yields one empty paragraph",
+                    "",
+                    vec![BlockSpec::paragraph("")],
+                ),
+                (
+                    "punctuation stays paragraph text",
+                    "Hello, world.\n",
+                    vec![BlockSpec::paragraph("Hello, world.")],
+                ),
+                (
+                    "a lone hash is a paragraph, not a heading",
+                    "#\n",
+                    vec![BlockSpec::paragraph("#")],
+                ),
+                (
+                    "numbered list items",
+                    "1. first\n\n2. second\n\n3. third\n",
+                    vec![
+                        BlockSpec::numbered(0, "first"),
+                        BlockSpec::numbered(0, "second"),
+                        BlockSpec::numbered(0, "third"),
+                    ],
+                ),
+                // `7) ` is a valid ordered marker; the stored spec drops the
+                // number (it's recomputed), so it round-trips to `1. `.
+                (
+                    "paren marker with an arbitrary start",
+                    "7) lucky\n",
+                    vec![BlockSpec::numbered(0, "lucky")],
+                ),
+            ];
+            for (case, md, want) in exact {
+                assert_eq!(parse(md), want, "case {case}");
+            }
+
+            let blocks = parse("# H1\n\n## H2\n\n### H3\n");
+            match &blocks[0] {
+                BlockSpec::Heading { level, text } => {
+                    assert_eq!(*level, 1);
+                    assert_eq!(text.text, "H1");
+                }
+                _ => panic!("expected heading"),
+            }
+            assert_eq!(blocks.len(), 3);
+
+            let parsed = parse("A | B | C\n:--- | ---: | :---:\nx | y | z\n");
+            assert!(
+                matches!(parsed.as_slice(), [BlockSpec::Table { .. }]),
+                "every alignment separator is a table"
+            );
+            let parsed = parse("Use A | B when discussing alternatives.\n");
+            assert!(
+                matches!(parsed.as_slice(), [BlockSpec::Paragraph(_)]),
+                "ordinary pipe text is not promoted to a table"
+            );
+
+            let md = "![Architecture diagram](diagram.png)\n";
+            let parsed = parse(md);
+            assert_eq!(serialize(&parsed), md);
+            let [BlockSpec::Paragraph(inline)] = parsed.as_slice() else {
+                panic!("standalone image remains one paragraph-backed image block");
+            };
+            assert!(
+                inline.marks.is_empty(),
+                "a standalone image is not a link mark"
+            );
+        }
+
+        phase inline_markdown_parses_marks_and_round_trips;
+        {
+            // (source, visible text, exactly the marks)
+            let cases = [
+                ("**hello**", "hello", vec![MarkSpan::new(0..5, Mark::Bold)]),
+                ("*hi*", "hi", vec![MarkSpan::new(0..2, Mark::Italic)]),
+                ("`foo`", "foo", vec![MarkSpan::new(0..3, Mark::Code)]),
+                (
+                    "__under__ and ~~gone~~",
+                    "under and gone",
+                    vec![
+                        MarkSpan::new(0..5, Mark::Underline),
+                        MarkSpan::new(10..14, Mark::Strikethrough),
+                    ],
+                ),
+                (
+                    "hello **world** bye",
+                    "hello world bye",
+                    vec![MarkSpan::new(6..11, Mark::Bold)],
+                ),
+                (
+                    "Read [the guide](https://example.test/docs?q=notes).",
+                    "Read the guide.",
+                    vec![MarkSpan::new(
+                        5..14,
+                        Mark::ExternalLink("https://example.test/docs?q=notes".into()),
+                    )],
+                ),
+                // A lone `*` with no partner stays as plain text.
+                ("*hello world", "*hello world", vec![]),
+                (
+                    "[script](javascript:alert(1))",
+                    "[script](javascript:alert(1))",
+                    vec![],
+                ),
+                ("[local](../private)", "[local](../private)", vec![]),
+                (
+                    "[file](file:///etc/passwd)",
+                    "[file](file:///etc/passwd)",
+                    vec![],
+                ),
+            ];
+            for (md, text, marks) in cases {
+                let inline = parse_inline(md);
+                assert_eq!(inline.text, text, "text of {md:?}");
+                assert_eq!(inline.marks, marks, "marks of {md:?}");
+            }
+            assert_eq!(
+                serialize_inline(&parse_inline(
+                    "Read [the guide](https://example.test/docs?q=notes)."
+                )),
+                "Read [the guide](https://example.test/docs?q=notes).",
+                "an external link round-trips as a durable mark"
+            );
+
+            let inline = parse_inline("hello [[Welcome]] there");
+            assert_eq!(inline.text, "hello Welcome there");
+            let m = &inline.marks[0];
+            assert!(matches!(m.mark, Mark::Link(_)));
+            assert_eq!(inline.text.get(m.range.clone()), Some("Welcome"));
+
+            for md in [
+                "plain text",
+                "**bold**",
+                "*italic*",
+                "`code`",
+                "__underline__",
+                "~~strikethrough~~",
+                "__under__",
+                "~~gone~~",
+                "__under ~~and gone~~__",
+                "hello **world** bye",
+                "hello [[Page]] there",
+                "[guide](https://example.test/guide)",
+                "![[Page]]",
+                "***italic* bold**",
+                "a `b` c **d** e",
+            ] {
+                assert_eq!(
+                    serialize_inline(&parse_inline(md)),
+                    md,
+                    "round-trip failed for {md:?}"
+                );
+            }
+            // The first `**` closes the bold, so the stars left over are text,
+            // and they come back as text.
+            let ambiguous = parse_inline("**bold *italic***");
+            assert_eq!(ambiguous.text, "bold *italic*");
+            assert_eq!(serialize_inline(&ambiguous), "**bold \\*italic**\\*");
+            assert_eq!(parse_inline(&serialize_inline(&ambiguous)), ambiguous);
+        }
+
+        phase a_link_to_a_resource_keeps_the_address_it_opens;
+        {
+            let href = "tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1";
+            let md = format!("Meet on [Standup]({href}).");
+            let inline = parse_inline(&md);
+            assert_eq!(inline.text, "Meet on Standup.");
+            assert_eq!(
+                inline.marks,
+                [MarkSpan::new(8..15, Mark::ResourceLink(href.into()))],
+                "the mark carries the address, not the label"
+            );
+            assert_eq!(
+                serialize_inline(&inline),
+                md,
+                "a link to a resource round-trips through markdown"
+            );
+        }
+
+        phase links_and_transclusions_resolve_to_stable_page_ids;
+        {
+            let mut blocks = parse("See [[Welcome]] please.\n");
+            let target = Uuid::from_u128(42);
+            resolve_link_ids(&mut blocks, |title| (title == "Welcome").then_some(target));
+            match &blocks[0] {
+                BlockSpec::Paragraph(t) => {
+                    assert_eq!(t.marks.len(), 1);
+                    match &t.marks[0].mark {
+                        Mark::Link(id) => assert_eq!(*id, target),
+                        _ => panic!("expected Link"),
+                    }
+                }
+                _ => panic!("expected paragraph"),
+            }
+
+            let mut blocks = parse("![[Roadmap]]\n");
+            assert_eq!(serialize(&blocks), "![[Roadmap]]\n");
+            let target = Uuid::from_u128(0xfeed);
+            resolve_link_ids(&mut blocks, |title| (title == "Roadmap").then_some(target));
+            let BlockSpec::Paragraph(inline) = &blocks[0] else {
+                panic!("transclusion should remain a paragraph block")
+            };
+            assert_eq!(inline.text, "Roadmap");
+            assert!(matches!(
+                inline.marks[0].mark,
+                Mark::Transclusion(id) if id == target
+            ));
+        }
     }
 
-    #[test]
-    fn document_markdown_round_trips_byte_stably_and_normalises_on_save() {
-        // (case, markdown that must survive parse -> serialize unchanged)
-        let round_trips = [
-            (
-                "typical document",
-                "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n",
-            ),
-            ("paragraphs only", "alpha\n\nbeta\n\ngamma\n"),
-            ("paragraph with bold", "Hello **world** today.\n"),
-            ("heading with italic", "# A *taste* of\n"),
-            ("bullet with code", "- run `cargo build` first\n"),
-            ("paragraph with link", "See [[Welcome]] for details.\n"),
-            ("nested bold italic", "***italic* bold**\n"),
-            (
-                "mixed corpus",
-                "\
+    tilo_test_env::scenario! {
+        fn blocks_round_trip_through_markdown;
+
+        phase document_markdown_round_trips_byte_stably_and_normalises_on_save;
+        {
+            // (case, markdown that must survive parse -> serialize unchanged)
+            let round_trips = [
+                (
+                    "typical document",
+                    "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n",
+                ),
+                ("paragraphs only", "alpha\n\nbeta\n\ngamma\n"),
+                ("paragraph with bold", "Hello **world** today.\n"),
+                ("heading with italic", "# A *taste* of\n"),
+                ("bullet with code", "- run `cargo build` first\n"),
+                ("paragraph with link", "See [[Welcome]] for details.\n"),
+                ("nested bold italic", "***italic* bold**\n"),
+                (
+                    "mixed corpus",
+                    "\
 # Welcome **dear** friend
 
 This paragraph has *italic* and **bold** and `code`.
@@ -1443,310 +1663,231 @@ This paragraph has *italic* and **bold** and `code`.
 
 Last paragraph.
 ",
-            ),
-            ("numbered list", "1. first\n\n2. second\n\n3. third\n"),
-            // A nested level restarts at 1; returning to the outer level
-            // continues its own count.
-            (
-                "nested numbered list",
-                "1. one\n\n  1. inner a\n\n  2. inner b\n\n2. two\n",
-            ),
-            // A paragraph between two numbered lists breaks the run: the
-            // second list restarts at 1.
-            (
-                "numbered run resets after a paragraph",
-                "1. a\n\n2. b\n\nbreak\n\n1. c\n",
-            ),
-            (
-                "numbered with inline marks",
-                "1. run `cargo build` and **ship**\n",
-            ),
-            (
-                "gfm table",
-                "| Name | Status |\n| :--- | ---: |\n| Search | Done |\n",
-            ),
-        ];
-        for (case, md) in round_trips {
-            assert_eq!(serialize(&parse(md)), md, "case {case}");
-        }
-
-        // Source that numbers everything `1.` is normalised to 1, 2, 3 on
-        // save — ordinals track list position, not the literal digits.
-        assert_eq!(
-            serialize(&parse("1. a\n\n1. b\n\n1. c\n")),
-            "1. a\n\n2. b\n\n3. c\n"
-        );
-        let blocks = vec![BlockSpec::Heading {
-            level: 99,
-            text: InlineText::plain("x"),
-        }];
-        assert_eq!(serialize(&blocks), "### x\n", "heading level clamps");
-
-        // A matching import heading is not duplicated below the note title.
-        assert_eq!(
-            strip_matching_title_heading("# Project brief\n\nFirst paragraph\n", "Project brief"),
-            "First paragraph\n"
-        );
-        assert_eq!(
-            strip_matching_title_heading("# Different\n\nFirst paragraph\n", "Project brief"),
-            "# Different\n\nFirst paragraph\n"
-        );
-    }
-
-    #[test]
-    fn block_parsing_recognises_each_block_kind() {
-        // (case, markdown, exactly the parsed blocks)
-        let exact = [
-            (
-                "empty yields one empty paragraph",
-                "",
-                vec![BlockSpec::paragraph("")],
-            ),
-            (
-                "punctuation stays paragraph text",
-                "Hello, world.\n",
-                vec![BlockSpec::paragraph("Hello, world.")],
-            ),
-            (
-                "a lone hash is a paragraph, not a heading",
-                "#\n",
-                vec![BlockSpec::paragraph("#")],
-            ),
-            (
-                "numbered list items",
-                "1. first\n\n2. second\n\n3. third\n",
-                vec![
-                    BlockSpec::numbered(0, "first"),
-                    BlockSpec::numbered(0, "second"),
-                    BlockSpec::numbered(0, "third"),
-                ],
-            ),
-            // `7) ` is a valid ordered marker; the stored spec drops the
-            // number (it's recomputed), so it round-trips to `1. `.
-            (
-                "paren marker with an arbitrary start",
-                "7) lucky\n",
-                vec![BlockSpec::numbered(0, "lucky")],
-            ),
-        ];
-        for (case, md, want) in exact {
-            assert_eq!(parse(md), want, "case {case}");
-        }
-
-        let blocks = parse("# H1\n\n## H2\n\n### H3\n");
-        match &blocks[0] {
-            BlockSpec::Heading { level, text } => {
-                assert_eq!(*level, 1);
-                assert_eq!(text.text, "H1");
+                ),
+                ("numbered list", "1. first\n\n2. second\n\n3. third\n"),
+                // A nested level restarts at 1; returning to the outer level
+                // continues its own count.
+                (
+                    "nested numbered list",
+                    "1. one\n\n  1. inner a\n\n  2. inner b\n\n2. two\n",
+                ),
+                // A paragraph between two numbered lists breaks the run: the
+                // second list restarts at 1.
+                (
+                    "numbered run resets after a paragraph",
+                    "1. a\n\n2. b\n\nbreak\n\n1. c\n",
+                ),
+                (
+                    "numbered with inline marks",
+                    "1. run `cargo build` and **ship**\n",
+                ),
+                (
+                    "gfm table",
+                    "| Name | Status |\n| :--- | ---: |\n| Search | Done |\n",
+                ),
+            ];
+            for (case, md) in round_trips {
+                assert_eq!(serialize(&parse(md)), md, "case {case}");
             }
-            _ => panic!("expected heading"),
-        }
-        assert_eq!(blocks.len(), 3);
 
-        let parsed = parse("A | B | C\n:--- | ---: | :---:\nx | y | z\n");
-        assert!(
-            matches!(parsed.as_slice(), [BlockSpec::Table { .. }]),
-            "every alignment separator is a table"
-        );
-        let parsed = parse("Use A | B when discussing alternatives.\n");
-        assert!(
-            matches!(parsed.as_slice(), [BlockSpec::Paragraph(_)]),
-            "ordinary pipe text is not promoted to a table"
-        );
-
-        let md = "![Architecture diagram](diagram.png)\n";
-        let parsed = parse(md);
-        assert_eq!(serialize(&parsed), md);
-        let [BlockSpec::Paragraph(inline)] = parsed.as_slice() else {
-            panic!("standalone image remains one paragraph-backed image block");
-        };
-        assert!(
-            inline.marks.is_empty(),
-            "a standalone image is not a link mark"
-        );
-    }
-
-    #[test]
-    fn inline_markdown_parses_marks_and_round_trips() {
-        // (source, visible text, exactly the marks)
-        let cases = [
-            ("**hello**", "hello", vec![MarkSpan::new(0..5, Mark::Bold)]),
-            ("*hi*", "hi", vec![MarkSpan::new(0..2, Mark::Italic)]),
-            ("`foo`", "foo", vec![MarkSpan::new(0..3, Mark::Code)]),
-            (
-                "__under__ and ~~gone~~",
-                "under and gone",
-                vec![
-                    MarkSpan::new(0..5, Mark::Underline),
-                    MarkSpan::new(10..14, Mark::Strikethrough),
-                ],
-            ),
-            (
-                "hello **world** bye",
-                "hello world bye",
-                vec![MarkSpan::new(6..11, Mark::Bold)],
-            ),
-            (
-                "Read [the guide](https://example.test/docs?q=notes).",
-                "Read the guide.",
-                vec![MarkSpan::new(
-                    5..14,
-                    Mark::ExternalLink("https://example.test/docs?q=notes".into()),
-                )],
-            ),
-            // A lone `*` with no partner stays as plain text.
-            ("*hello world", "*hello world", vec![]),
-            (
-                "[script](javascript:alert(1))",
-                "[script](javascript:alert(1))",
-                vec![],
-            ),
-            ("[local](../private)", "[local](../private)", vec![]),
-            (
-                "[file](file:///etc/passwd)",
-                "[file](file:///etc/passwd)",
-                vec![],
-            ),
-        ];
-        for (md, text, marks) in cases {
-            let inline = parse_inline(md);
-            assert_eq!(inline.text, text, "text of {md:?}");
-            assert_eq!(inline.marks, marks, "marks of {md:?}");
-        }
-        assert_eq!(
-            serialize_inline(&parse_inline(
-                "Read [the guide](https://example.test/docs?q=notes)."
-            )),
-            "Read [the guide](https://example.test/docs?q=notes).",
-            "an external link round-trips as a durable mark"
-        );
-
-        let inline = parse_inline("hello [[Welcome]] there");
-        assert_eq!(inline.text, "hello Welcome there");
-        let m = &inline.marks[0];
-        assert!(matches!(m.mark, Mark::Link(_)));
-        assert_eq!(inline.text.get(m.range.clone()), Some("Welcome"));
-
-        for md in [
-            "plain text",
-            "**bold**",
-            "*italic*",
-            "`code`",
-            "__underline__",
-            "~~strikethrough~~",
-            "__under__",
-            "~~gone~~",
-            "__under ~~and gone~~__",
-            "hello **world** bye",
-            "hello [[Page]] there",
-            "[guide](https://example.test/guide)",
-            "![[Page]]",
-            "***italic* bold**",
-            "a `b` c **d** e",
-        ] {
+            // Source that numbers everything `1.` is normalised to 1, 2, 3 on
+            // save — ordinals track list position, not the literal digits.
             assert_eq!(
-                serialize_inline(&parse_inline(md)),
-                md,
-                "round-trip failed for {md:?}"
+                serialize(&parse("1. a\n\n1. b\n\n1. c\n")),
+                "1. a\n\n2. b\n\n3. c\n"
+            );
+            let blocks = vec![BlockSpec::Heading {
+                level: 99,
+                text: InlineText::plain("x"),
+            }];
+            assert_eq!(serialize(&blocks), "### x\n", "heading level clamps");
+
+            // A matching import heading is not duplicated below the note title.
+            assert_eq!(
+                strip_matching_title_heading("# Project brief\n\nFirst paragraph\n", "Project brief"),
+                "First paragraph\n"
+            );
+            assert_eq!(
+                strip_matching_title_heading("# Different\n\nFirst paragraph\n", "Project brief"),
+                "# Different\n\nFirst paragraph\n"
             );
         }
-        // The first `**` closes the bold, so the stars left over are text,
-        // and they come back as text.
-        let ambiguous = parse_inline("**bold *italic***");
-        assert_eq!(ambiguous.text, "bold *italic*");
-        assert_eq!(serialize_inline(&ambiguous), "**bold \\*italic**\\*");
-        assert_eq!(parse_inline(&serialize_inline(&ambiguous)), ambiguous);
-    }
 
-    #[test]
-    fn a_link_to_a_resource_keeps_the_address_it_opens() {
-        let href = "tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1";
-        let md = format!("Meet on [Standup]({href}).");
-        let inline = parse_inline(&md);
-        assert_eq!(inline.text, "Meet on Standup.");
-        assert_eq!(
-            inline.marks,
-            [MarkSpan::new(8..15, Mark::ResourceLink(href.into()))],
-            "the mark carries the address, not the label"
-        );
-        assert_eq!(
-            serialize_inline(&inline),
-            md,
-            "a link to a resource round-trips through markdown"
-        );
-    }
-
-    #[test]
-    fn links_and_transclusions_resolve_to_stable_page_ids() {
-        let mut blocks = parse("See [[Welcome]] please.\n");
-        let target = Uuid::from_u128(42);
-        resolve_link_ids(&mut blocks, |title| (title == "Welcome").then_some(target));
-        match &blocks[0] {
-            BlockSpec::Paragraph(t) => {
-                assert_eq!(t.marks.len(), 1);
-                match &t.marks[0].mark {
-                    Mark::Link(id) => assert_eq!(*id, target),
-                    _ => panic!("expected Link"),
-                }
+        phase every_github_alert_round_trips_as_its_callout;
+        {
+            use ui::widget::{BlockKind, CalloutKind};
+            let through_blocks = |md: &str| serialize(&blocks_to_specs(&specs_to_blocks(&parse(md))));
+            for (marker, kind) in [
+                ("NOTE", CalloutKind::Note),
+                ("TIP", CalloutKind::Tip),
+                ("IMPORTANT", CalloutKind::Important),
+                ("WARNING", CalloutKind::Warning),
+                ("CAUTION", CalloutKind::Caution),
+            ] {
+                let markdown = format!("> [!{marker}]\n> Mind the **gap**  \n> twice\n\nAfter\n");
+                let parsed = parse(&markdown);
+                let BlockSpec::Callout {
+                    kind: parsed_kind,
+                    text,
+                } = &parsed[0]
+                else {
+                    panic!("{marker} is a callout: {parsed:?}");
+                };
+                assert_eq!(*parsed_kind, kind);
+                assert_eq!(text.text, "Mind the gap\ntwice");
+                assert!(text.marks.iter().any(|mark| mark.mark == Mark::Bold));
+                assert_eq!(parsed[1], BlockSpec::paragraph("After"));
+                assert_eq!(serialize(&parsed), markdown, "{marker}");
+                assert_eq!(
+                    specs_to_blocks(&parsed)[0].kind,
+                    BlockKind::Callout(kind),
+                    "{marker}"
+                );
+                assert_eq!(through_blocks(&markdown), markdown, "{marker}");
             }
-            _ => panic!("expected paragraph"),
+            // An empty callout keeps its marker; GitHub's soft-wrapped lines
+            // join with a space; a plain quote stays a quote.
+            assert_eq!(through_blocks("> [!TIP]\n"), "> [!TIP]\n");
+            let wrapped = parse("> [!note]\n> one\n> two\n");
+            assert!(matches!(
+                &wrapped[0],
+                BlockSpec::Callout { kind: CalloutKind::Note, text } if text.text == "one two"
+            ));
+            assert!(matches!(parse("> [!NOPE] x\n")[0], BlockSpec::Quote(_)));
         }
 
-        let mut blocks = parse("![[Roadmap]]\n");
-        assert_eq!(serialize(&blocks), "![[Roadmap]]\n");
-        let target = Uuid::from_u128(0xfeed);
-        resolve_link_ids(&mut blocks, |title| (title == "Roadmap").then_some(target));
-        let BlockSpec::Paragraph(inline) = &blocks[0] else {
-            panic!("transclusion should remain a paragraph block")
-        };
-        assert_eq!(inline.text, "Roadmap");
-        assert!(matches!(
-            inline.marks[0].mark,
-            Mark::Transclusion(id) if id == target
-        ));
-    }
-
-    #[test]
-    fn every_github_alert_round_trips_as_its_callout() {
-        use ui::widget::{BlockKind, CalloutKind};
-        let through_blocks = |md: &str| serialize(&blocks_to_specs(&specs_to_blocks(&parse(md))));
-        for (marker, kind) in [
-            ("NOTE", CalloutKind::Note),
-            ("TIP", CalloutKind::Tip),
-            ("IMPORTANT", CalloutKind::Important),
-            ("WARNING", CalloutKind::Warning),
-            ("CAUTION", CalloutKind::Caution),
-        ] {
-            let markdown = format!("> [!{marker}]\n> Mind the **gap**  \n> twice\n\nAfter\n");
-            let parsed = parse(&markdown);
-            let BlockSpec::Callout {
-                kind: parsed_kind,
-                text,
-            } = &parsed[0]
-            else {
-                panic!("{marker} is a callout: {parsed:?}");
-            };
-            assert_eq!(*parsed_kind, kind);
-            assert_eq!(text.text, "Mind the gap\ntwice");
-            assert!(text.marks.iter().any(|mark| mark.mark == Mark::Bold));
-            assert_eq!(parsed[1], BlockSpec::paragraph("After"));
-            assert_eq!(serialize(&parsed), markdown, "{marker}");
+        phase a_code_block_showing_a_fence_round_trips;
+        // Code that shows a fence (Markdown about Markdown) stays one code
+        // block through export and import: its own fence is longer.
+        {
+            let specs = vec![
+                BlockSpec::code_block(
+                    Some("md".into()),
+                    "```rust\nfn main() {}\n```\n\n````\n``` ",
+                ),
+                BlockSpec::paragraph("after"),
+            ];
+            let markdown = serialize(&specs);
+            assert_eq!(parse(&markdown), specs, "markdown {markdown:?}");
+            let blocks = specs_to_blocks(&specs);
+            assert_eq!(shape(&export_import(&blocks)), shape(&blocks));
+            // A longer fence written elsewhere reads as one block too, and a
+            // fence closes on a line of at least its own backticks.
             assert_eq!(
-                specs_to_blocks(&parsed)[0].kind,
-                BlockKind::Callout(kind),
-                "{marker}"
+                parse("````md\n```\nx\n```\n`````\n\nafter\n"),
+                vec![
+                    BlockSpec::code_block(Some("md".into()), "```\nx\n```"),
+                    BlockSpec::paragraph("after"),
+                ]
             );
-            assert_eq!(through_blocks(&markdown), markdown, "{marker}");
+            assert_eq!(
+                serialize(&[BlockSpec::code_block(Some("sh".into()), "ls")]),
+                "```sh\nls\n```\n"
+            );
         }
-        // An empty callout keeps its marker; GitHub's soft-wrapped lines
-        // join with a space; a plain quote stays a quote.
-        assert_eq!(through_blocks("> [!TIP]\n"), "> [!TIP]\n");
-        let wrapped = parse("> [!note]\n> one\n> two\n");
-        assert!(matches!(
-            &wrapped[0],
-            BlockSpec::Callout { kind: CalloutKind::Note, text } if text.text == "one two"
-        ));
-        assert!(matches!(parse("> [!NOPE] x\n")[0], BlockSpec::Quote(_)));
+
+        phase a_code_block_showing_an_indented_fence_exports_a_longer_fence;
+        // A fence the code shows indented, as under a list item, would close a
+        // three-backtick fence in any Markdown reader, so the exported fence
+        // is longer than it too.
+        {
+            let specs = vec![
+                BlockSpec::code_block(Some("md".into()), "- step\n  ```sh\n  ls\n  ```\nmore"),
+                BlockSpec::paragraph("after"),
+            ];
+            let markdown = serialize(&specs);
+            assert!(
+                markdown.starts_with("````md\n- step\n  ```sh\n  ls\n  ```\nmore\n````\n"),
+                "markdown {markdown:?}"
+            );
+            assert_eq!(parse(&markdown), specs, "markdown {markdown:?}");
+        }
+
+        phase literal_markup_characters_round_trip_as_text;
+        // Text that reads like markup comes back as the same text, not marks.
+        {
+            use ui::widget::Block;
+            let texts = [
+                "*x*",
+                "**x**",
+                "a * b * c",
+                "\\",
+                "C:\\path\\",
+                "ends with a backslash \\",
+                "__x__",
+                "~~x~~",
+                "snake_case and a~b",
+                "`code`",
+                "[[Page]]",
+                "[label](https://example.test)",
+                "![[Page]]",
+                "&nbsp;",
+                "# not a heading",
+                "> not a quote",
+                "- not a bullet",
+                "- [ ] not a task",
+                "1. not a list",
+                "2) not a list",
+                "---",
+                "```",
+                "a | b\n--- | ---",
+            ];
+            for text in texts {
+                let blocks = vec![
+                    Block::paragraph(text),
+                    Block::bullet(0, text),
+                    Block::heading(2, text),
+                ];
+                assert_eq!(
+                    shape(&export_import(&blocks)),
+                    shape(&blocks),
+                    "text {text:?}"
+                );
+            }
+            assert_eq!(serialize(&[BlockSpec::paragraph("*x*")]), "\\*x\\*\n");
+            assert_eq!(serialize(&[BlockSpec::paragraph("a\\b")]), "a\\\\b\n");
+            // Markup that is meant as markup is left alone.
+            assert_eq!(
+                serialize(&parse("**bold** and `a*b`\n")),
+                "**bold** and `a*b`\n"
+            );
+            // A backslash before a letter is not an escape.
+            assert_eq!(parse_inline("a\\b").text, "a\\b");
+        }
+
+        phase leading_space_and_empty_paragraphs_round_trip;
+        // A nested line keeps the space its text starts with, and an empty
+        // paragraph between others stays a paragraph.
+        {
+            use ui::widget::Block;
+            let mut nested = Block::paragraph(" indented by a space");
+            nested.nesting = 1;
+            let mut deeper = Block::paragraph("   three spaces");
+            deeper.nesting = 2;
+            let blocks = vec![
+                Block::bullet(0, "item"),
+                nested,
+                deeper,
+                Block::paragraph(""),
+                Block::paragraph(" top level"),
+                Block::paragraph("\tleading tab"),
+                Block::paragraph("trailing spaces  "),
+                Block::paragraph("\nstarts with a break"),
+                Block::paragraph("ends with a break\n"),
+                Block::paragraph(""),
+                Block::paragraph("last"),
+            ];
+            assert_eq!(shape(&export_import(&blocks)), shape(&blocks));
+            assert_eq!(serialize(&[BlockSpec::paragraph("")]), "\n");
+            assert_eq!(
+                serialize(&[
+                    BlockSpec::paragraph("a"),
+                    BlockSpec::paragraph(""),
+                    BlockSpec::paragraph("b")
+                ]),
+                "a\n\n&nbsp;\n\nb\n"
+            );
+        }
     }
 
     #[test]
@@ -1857,139 +1998,6 @@ sum_(i=1)^n frac(1, i^2)
             .iter()
             .map(|block| format!("{:?} {:?} {}", block.kind, block.text(), block.nesting))
             .collect()
-    }
-
-    /// Code that shows a fence (Markdown about Markdown) stays one code
-    /// block through export and import: its own fence is longer.
-    #[test]
-    fn a_code_block_showing_a_fence_round_trips() {
-        let specs = vec![
-            BlockSpec::code_block(
-                Some("md".into()),
-                "```rust\nfn main() {}\n```\n\n````\n``` ",
-            ),
-            BlockSpec::paragraph("after"),
-        ];
-        let markdown = serialize(&specs);
-        assert_eq!(parse(&markdown), specs, "markdown {markdown:?}");
-        let blocks = specs_to_blocks(&specs);
-        assert_eq!(shape(&export_import(&blocks)), shape(&blocks));
-        // A longer fence written elsewhere reads as one block too, and a
-        // fence closes on a line of at least its own backticks.
-        assert_eq!(
-            parse("````md\n```\nx\n```\n`````\n\nafter\n"),
-            vec![
-                BlockSpec::code_block(Some("md".into()), "```\nx\n```"),
-                BlockSpec::paragraph("after"),
-            ]
-        );
-        assert_eq!(
-            serialize(&[BlockSpec::code_block(Some("sh".into()), "ls")]),
-            "```sh\nls\n```\n"
-        );
-    }
-
-    /// A fence the code shows indented, as under a list item, would close a
-    /// three-backtick fence in any Markdown reader, so the exported fence
-    /// is longer than it too.
-    #[test]
-    fn a_code_block_showing_an_indented_fence_exports_a_longer_fence() {
-        let specs = vec![
-            BlockSpec::code_block(Some("md".into()), "- step\n  ```sh\n  ls\n  ```\nmore"),
-            BlockSpec::paragraph("after"),
-        ];
-        let markdown = serialize(&specs);
-        assert!(
-            markdown.starts_with("````md\n- step\n  ```sh\n  ls\n  ```\nmore\n````\n"),
-            "markdown {markdown:?}"
-        );
-        assert_eq!(parse(&markdown), specs, "markdown {markdown:?}");
-    }
-
-    /// Text that reads like markup comes back as the same text, not marks.
-    #[test]
-    fn literal_markup_characters_round_trip_as_text() {
-        use ui::widget::Block;
-        let texts = [
-            "*x*",
-            "**x**",
-            "a * b * c",
-            "\\",
-            "C:\\path\\",
-            "ends with a backslash \\",
-            "__x__",
-            "~~x~~",
-            "snake_case and a~b",
-            "`code`",
-            "[[Page]]",
-            "[label](https://example.test)",
-            "![[Page]]",
-            "&nbsp;",
-            "# not a heading",
-            "> not a quote",
-            "- not a bullet",
-            "- [ ] not a task",
-            "1. not a list",
-            "2) not a list",
-            "---",
-            "```",
-            "a | b\n--- | ---",
-        ];
-        for text in texts {
-            let blocks = vec![
-                Block::paragraph(text),
-                Block::bullet(0, text),
-                Block::heading(2, text),
-            ];
-            assert_eq!(
-                shape(&export_import(&blocks)),
-                shape(&blocks),
-                "text {text:?}"
-            );
-        }
-        assert_eq!(serialize(&[BlockSpec::paragraph("*x*")]), "\\*x\\*\n");
-        assert_eq!(serialize(&[BlockSpec::paragraph("a\\b")]), "a\\\\b\n");
-        // Markup that is meant as markup is left alone.
-        assert_eq!(
-            serialize(&parse("**bold** and `a*b`\n")),
-            "**bold** and `a*b`\n"
-        );
-        // A backslash before a letter is not an escape.
-        assert_eq!(parse_inline("a\\b").text, "a\\b");
-    }
-
-    /// A nested line keeps the space its text starts with, and an empty
-    /// paragraph between others stays a paragraph.
-    #[test]
-    fn leading_space_and_empty_paragraphs_round_trip() {
-        use ui::widget::Block;
-        let mut nested = Block::paragraph(" indented by a space");
-        nested.nesting = 1;
-        let mut deeper = Block::paragraph("   three spaces");
-        deeper.nesting = 2;
-        let blocks = vec![
-            Block::bullet(0, "item"),
-            nested,
-            deeper,
-            Block::paragraph(""),
-            Block::paragraph(" top level"),
-            Block::paragraph("\tleading tab"),
-            Block::paragraph("trailing spaces  "),
-            Block::paragraph("\nstarts with a break"),
-            Block::paragraph("ends with a break\n"),
-            Block::paragraph(""),
-            Block::paragraph("last"),
-        ];
-        assert_eq!(shape(&export_import(&blocks)), shape(&blocks));
-        assert_eq!(serialize(&[BlockSpec::paragraph("")]), "\n");
-        assert_eq!(
-            serialize(&[
-                BlockSpec::paragraph("a"),
-                BlockSpec::paragraph(""),
-                BlockSpec::paragraph("b")
-            ]),
-            "a\n\n&nbsp;\n\nb\n"
-        );
     }
 
     /// A deterministic generator, so a failure names its seed.

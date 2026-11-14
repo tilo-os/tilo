@@ -149,117 +149,121 @@ pub fn count_words(body: &str) -> usize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn status_text_describes_save_state_counts_and_words() {
-        ui::i18n::I18nManager::init("en-US");
-        crate::metadata::register_messages();
-        let mut bar = StatusModel::new();
-        for (status, text) in [
-            (SaveStatus::Saved, "Saved"),
-            (SaveStatus::Saving, "Saving…"),
-            (SaveStatus::Failed, "Save failed"),
-        ] {
-            bar.set_state(StatusBarState {
-                save_status: status,
-                ..Default::default()
-            });
-            assert_eq!(bar.save_text(), text, "save status {status:?}");
+    tilo_test_env::scenario! {
+        fn the_status_model_says_the_save_state_and_the_counts;
+
+        phase status_text_describes_save_state_counts_and_words;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            crate::metadata::register_messages();
+            let mut bar = StatusModel::new();
+            for (status, text) in [
+                (SaveStatus::Saved, "Saved"),
+                (SaveStatus::Saving, "Saving…"),
+                (SaveStatus::Failed, "Save failed"),
+            ] {
+                bar.set_state(StatusBarState {
+                    save_status: status,
+                    ..Default::default()
+                });
+                assert_eq!(bar.save_text(), text, "save status {status:?}");
+            }
+
+            // (page path, pages, words, right-hand text): counts singularize and a
+            // missing word count is dropped.
+            for (page_path, page_count, word_count, text) in [
+                ("Welcome", 1, Some(1), "1 note, 1 word"),
+                ("Welcome", 4, Some(142), "4 notes, 142 words"),
+                ("", 3, None, "3 notes"),
+            ] {
+                bar.set_state(StatusBarState {
+                    save_status: SaveStatus::Saved,
+                    save_problem: None,
+                    page_path: page_path.into(),
+                    page_count,
+                    word_count,
+                });
+                assert_eq!(
+                    bar.right_text(),
+                    text,
+                    "{page_count} pages, {word_count:?} words"
+                );
+            }
+
+            // "**bold** italic and `code`" is 4 word-tokens by whitespace
+            // splitting. The status bar uses this so its count matches a human's
+            // mental model regardless of inline markdown markers (the markers
+            // count as part of the surrounding word).
+            for (text, words) in [
+                ("**bold** italic and `code`", 4),
+                ("", 0),
+                ("   ", 0),
+                ("one\ntwo\tthree", 3),
+            ] {
+                assert_eq!(count_words(text), words, "words in {text:?}");
+            }
         }
 
-        // (page path, pages, words, right-hand text): counts singularize and a
-        // missing word count is dropped.
-        for (page_path, page_count, word_count, text) in [
-            ("Welcome", 1, Some(1), "1 note, 1 word"),
-            ("Welcome", 4, Some(142), "4 notes, 142 words"),
-            ("", 3, None, "3 notes"),
-        ] {
-            bar.set_state(StatusBarState {
+        phase set_state_reports_change_only_when_observably_different;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            crate::metadata::register_messages();
+            let mut bar = StatusModel::new();
+            let s = StatusBarState {
                 save_status: SaveStatus::Saved,
-                save_problem: None,
-                page_path: page_path.into(),
-                page_count,
-                word_count,
-            });
-            assert_eq!(
-                bar.right_text(),
-                text,
-                "{page_count} pages, {word_count:?} words"
-            );
-        }
-
-        // "**bold** italic and `code`" is 4 word-tokens by whitespace
-        // splitting. The status bar uses this so its count matches a human's
-        // mental model regardless of inline markdown markers (the markers
-        // count as part of the surrounding word).
-        for (text, words) in [
-            ("**bold** italic and `code`", 4),
-            ("", 0),
-            ("   ", 0),
-            ("one\ntwo\tthree", 3),
-        ] {
-            assert_eq!(count_words(text), words, "words in {text:?}");
-        }
-    }
-
-    #[test]
-    fn set_state_reports_change_only_when_observably_different() {
-        ui::i18n::I18nManager::init("en-US");
-        crate::metadata::register_messages();
-        let mut bar = StatusModel::new();
-        let s = StatusBarState {
-            save_status: SaveStatus::Saved,
-            save_problem: None,
-            page_path: "X".into(),
-            page_count: 1,
-            word_count: Some(0),
-        };
-        assert!(bar.set_state(s.clone()), "first snapshot is a change");
-        assert!(
-            !bar.set_state(s),
-            "an identical snapshot reports no change (so the bubble is not re-poked)"
-        );
-        assert!(
-            bar.set_state(StatusBarState {
-                save_status: SaveStatus::Saving,
                 save_problem: None,
                 page_path: "X".into(),
                 page_count: 1,
                 word_count: Some(0),
-            }),
-            "a save-state flip is a change"
-        );
-    }
+            };
+            assert!(bar.set_state(s.clone()), "first snapshot is a change");
+            assert!(
+                !bar.set_state(s),
+                "an identical snapshot reports no change (so the bubble is not re-poked)"
+            );
+            assert!(
+                bar.set_state(StatusBarState {
+                    save_status: SaveStatus::Saving,
+                    save_problem: None,
+                    page_path: "X".into(),
+                    page_count: 1,
+                    word_count: Some(0),
+                }),
+                "a save-state flip is a change"
+            );
+        }
 
-    #[test]
-    fn a_note_that_is_not_durable_stays_visible_with_its_reason() {
-        ui::i18n::I18nManager::init("en-US");
-        crate::metadata::register_messages();
-        let mut bar = StatusModel::new();
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Failed,
-            save_problem: Some("record persistence unavailable".into()),
-            page_count: 1,
-            ..Default::default()
-        });
-        assert!(bar.needs_attention());
-        assert!(
-            bar.bubble_text()
-                .starts_with("Save failed: record persistence unavailable."),
-            "{}",
-            bar.bubble_text()
-        );
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::SessionOnly,
-            page_count: 1,
-            ..Default::default()
-        });
-        assert!(bar.needs_attention());
-        assert!(bar.bubble_text().contains("no storage on this device"));
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Saved,
-            page_count: 1,
-            ..Default::default()
-        });
-        assert!(!bar.needs_attention());
+        phase a_note_that_is_not_durable_stays_visible_with_its_reason;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            crate::metadata::register_messages();
+            let mut bar = StatusModel::new();
+            bar.set_state(StatusBarState {
+                save_status: SaveStatus::Failed,
+                save_problem: Some("record persistence unavailable".into()),
+                page_count: 1,
+                ..Default::default()
+            });
+            assert!(bar.needs_attention());
+            assert!(
+                bar.bubble_text()
+                    .starts_with("Save failed: record persistence unavailable."),
+                "{}",
+                bar.bubble_text()
+            );
+            bar.set_state(StatusBarState {
+                save_status: SaveStatus::SessionOnly,
+                page_count: 1,
+                ..Default::default()
+            });
+            assert!(bar.needs_attention());
+            assert!(bar.bubble_text().contains("no storage on this device"));
+            bar.set_state(StatusBarState {
+                save_status: SaveStatus::Saved,
+                page_count: 1,
+                ..Default::default()
+            });
+            assert!(!bar.needs_attention());
+        }
     }
 }

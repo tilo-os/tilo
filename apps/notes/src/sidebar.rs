@@ -1017,51 +1017,84 @@ mod tests {
     use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::NamedKey;
 
-    /// One declared command drives both of the note's menus: the page menu's
-    /// rows, in [`menu_row`] order with a separator before Delete, and the
-    /// rows the window's bar offers in its one "More" menu.
-    #[test]
-    fn the_bars_rows_are_the_page_menus_rows() {
-        let commands = note_commands();
-        assert_eq!(
-            commands
-                .iter()
-                .map(|command| command.row)
-                .collect::<Vec<_>>(),
-            vec![
-                menu_row::NEW_CHILD,
-                menu_row::RENAME,
-                menu_row::DUPLICATE,
-                menu_row::COPY_LINK,
-                menu_row::EXPORT,
-                menu_row::INSERT_IMAGE,
-                menu_row::DELETE,
-            ]
-        );
-        for command in &commands {
-            assert_eq!(note_command_row(command.id), Some(command.row));
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_notes_menu_rows_are_declared_once_and_delete_sits_apart;
+
+        phase the_bars_rows_are_the_page_menus_rows;
+        // One declared command drives both of the note's menus: the page menu's
+        // rows, in [`menu_row`] order with a separator before Delete, and the
+        // rows the window's bar offers in its one "More" menu.
+        {
+            let commands = note_commands();
+            assert_eq!(
+                commands
+                    .iter()
+                    .map(|command| command.row)
+                    .collect::<Vec<_>>(),
+                vec![
+                    menu_row::NEW_CHILD,
+                    menu_row::RENAME,
+                    menu_row::DUPLICATE,
+                    menu_row::COPY_LINK,
+                    menu_row::EXPORT,
+                    menu_row::INSERT_IMAGE,
+                    menu_row::DELETE,
+                ]
+            );
+            for command in &commands {
+                assert_eq!(note_command_row(command.id), Some(command.row));
+            }
+            assert_eq!(
+                note_menu_items().len(),
+                commands.len() + 1,
+                "the page menu holds the same rows and one separator before Delete"
+            );
+            let declared = note_menu_commands();
+            assert_eq!(declared.len(), commands.len());
+            assert!(
+                declared.iter().all(|action| action.menu),
+                "every one of them stands in the window's More menu, not in its row"
+            );
+            assert_eq!(
+                declared
+                    .iter()
+                    .map(|action| action.name.clone())
+                    .collect::<Vec<_>>(),
+                commands
+                    .iter()
+                    .map(|command| CATALOG.t(command.message))
+                    .collect::<Vec<_>>()
+            );
         }
-        assert_eq!(
-            note_menu_items().len(),
-            commands.len() + 1,
-            "the page menu holds the same rows and one separator before Delete"
-        );
-        let declared = note_menu_commands();
-        assert_eq!(declared.len(), commands.len());
-        assert!(
-            declared.iter().all(|action| action.menu),
-            "every one of them stands in the window's More menu, not in its row"
-        );
-        assert_eq!(
-            declared
+
+        phase deleting_a_note_is_the_one_danger_row_and_sits_apart_at_the_end;
+        {
+            let items = note_menu_items();
+            let danger: Vec<usize> = items
                 .iter()
-                .map(|action| action.name.clone())
-                .collect::<Vec<_>>(),
-            commands
-                .iter()
-                .map(|command| CATALOG.t(command.message))
-                .collect::<Vec<_>>()
-        );
+                .enumerate()
+                .filter(|(_, item)| {
+                    matches!(
+                        item,
+                        MenuItem::Action {
+                            destructive: true,
+                            ..
+                        }
+                    )
+                })
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(danger, vec![menu_row::DELETE]);
+            assert_eq!(menu_row::DELETE, items.len() - 1);
+            assert!(
+                matches!(items.get(menu_row::DELETE - 1), Some(MenuItem::Separator)),
+                "a separator sets the destructive row apart"
+            );
+        }
     }
 
     /// Lay the sidebar out at `rect` the way the drawer host does, over the frames a
@@ -1152,31 +1185,6 @@ mod tests {
     }
 
     use ui::synthetic_input::named_key;
-
-    #[test]
-    fn deleting_a_note_is_the_one_danger_row_and_sits_apart_at_the_end() {
-        let items = note_menu_items();
-        let danger: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| {
-                matches!(
-                    item,
-                    MenuItem::Action {
-                        destructive: true,
-                        ..
-                    }
-                )
-            })
-            .map(|(index, _)| index)
-            .collect();
-        assert_eq!(danger, vec![menu_row::DELETE]);
-        assert_eq!(menu_row::DELETE, items.len() - 1);
-        assert!(
-            matches!(items.get(menu_row::DELETE - 1), Some(MenuItem::Separator)),
-            "a separator sets the destructive row apart"
-        );
-    }
 
     #[test]
     fn heading_resolves_before_any_other_notes_widget_registers_the_catalog() {

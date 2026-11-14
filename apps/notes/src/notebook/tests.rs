@@ -85,584 +85,753 @@ fn uuid(id: &Id) -> PageId {
     page_of(id).expect("a note's id is a UUID")
 }
 
-/// A note nobody named is offered under the word for one, never under its own body's first line: a
-/// list and the tools that read it aloud then say the same name, and the record holds no title.
-#[test]
-fn an_unnamed_note_is_offered_under_the_word_for_one() {
-    let mut notebook = Replica::<Notebook>::new();
-    let made = note(&mut notebook, "", None);
-    write(
-        &mut notebook,
-        &made,
-        &[ui::widget::BlockContent::paragraph("", "Plan")],
-    );
-    let offered = notebook.state().unwrap().item_label("pages", &made);
-    assert_eq!(offered.as_deref(), Some("Untitled"));
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn the_notebook_reads_publishes_and_merges_as_one_record;
 
-/// Notes are made, placed, moved and deleted by verbs that keep the tree a
-/// tree: siblings keep their order, a move reorders within its group or
-/// files the note under another, and no note goes under itself.
-#[test]
-fn verbs_make_move_and_delete_notes_and_keep_the_tree_a_tree() {
-    let mut notebook = Replica::<Notebook>::new();
-    let a = note(&mut notebook, "A", None);
-    let b = note(&mut notebook, " B ", None);
-    let c = note(&mut notebook, "", None);
-    assert_eq!(children(&notebook, None), [a.clone(), b.clone(), c.clone()]);
-    assert!(page_of(&a).is_some(), "a note is kept under a UUID");
-    assert_eq!(page(&notebook, &b).title, "B", "titles are trimmed");
-    assert_eq!(page(&notebook, &c).title, NO_TITLE);
-
-    for (verb, note_, want) in [
-        (Notebook::MOVE_UP.with(c.clone()), &c, [&a, &c, &b]),
-        (Notebook::MOVE_DOWN.with(a.clone()), &a, [&c, &a, &b]),
-    ] {
-        apply(&mut notebook, verb).unwrap();
-        assert_eq!(
-            children(&notebook, None),
-            want.map(Clone::clone),
-            "moved {note_}"
+    phase an_unnamed_note_is_offered_under_the_word_for_one;
+    // A note nobody named is offered under the word for one, never under its own body's first line: a
+    // list and the tools that read it aloud then say the same name, and the record holds no title.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let made = note(&mut notebook, "", None);
+        write(
+            &mut notebook,
+            &made,
+            &[ui::widget::BlockContent::paragraph("", "Plan")],
         );
+        let offered = notebook.state().unwrap().item_label("pages", &made);
+        assert_eq!(offered.as_deref(), Some("Untitled"));
     }
-    assert!(
-        apply(&mut notebook, Notebook::MOVE_UP.with(c.clone())).is_err(),
-        "the first note cannot move up"
-    );
-    assert!(
-        apply(&mut notebook, Notebook::MOVE_DOWN.with(b.clone())).is_err(),
-        "the last note cannot move down"
-    );
 
-    // Notes under a note reorder within it.
-    let first = note(&mut notebook, "First", Some(&a));
-    let second = note(&mut notebook, "Second", Some(&a));
-    apply(&mut notebook, Notebook::MOVE_DOWN.with(first.clone())).unwrap();
-    assert_eq!(
-        children(&notebook, Some(&a)),
-        [second.clone(), first.clone()]
-    );
-    assert_eq!(children(&notebook, None), [c.clone(), a.clone(), b.clone()]);
+    phase two_replicas_converge;
+    // Two people working on one notebook at once end with the same notebook:
+    // each one's notes, moves and typing.
+    {
+        let mut left = Replica::<Notebook>::new();
+        let shared = note(&mut left, "Shared", None);
+        write(&mut left, &shared, &[BlockContent::paragraph("", "Start")]);
+        let mut right = left.fork();
 
-    // Before a sibling, then last again.
-    for (before, want) in [(Some(c.clone()), [&b, &c, &a]), (None, [&c, &a, &b])] {
+        let mine = note(&mut left, "Mine", None);
+        let theirs = note(&mut right, "Theirs", Some(&shared));
+        let block = page(&left, &shared).blocks()[0].id.clone();
+        let splice = |at: usize, text: &str| RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: block.clone(),
+            at,
+            del: 0,
+            ins: text.into(),
+        };
+        let body = Notebook::paths().pages.item(&shared).body;
+        edit(&mut left, &body.perform(&splice(0, "L ")).unwrap()).unwrap();
+        edit(&mut right, &body.perform(&splice(5, " R")).unwrap()).unwrap();
+
+        left.sync_with(&mut right).unwrap();
+        let (l, r) = (left.state().unwrap(), right.state().unwrap());
+        assert_eq!(l, r, "both read the same notebook");
+        assert!(l.pages.contains(&mine) && l.pages.contains(&theirs));
+        assert_eq!(texts(&left, &shared), ["L Start R"]);
+        assert_eq!(left.live().unwrap(), &l, "the live state follows the merge");
+    }
+
+    phase pictures_are_kept_by_digest_and_shown_in_their_note;
+    // A picture a note shows is kept by its digest — a small one inside the
+    // notebook — and shown in the note; anything but a picture is refused.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let page = note(&mut notebook, "Photos", None);
+        let mut png = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        png.extend_from_slice(&[0; 32]);
         apply(
             &mut notebook,
-            Notebook::MOVE_NOTE.with(notebook::MoveNote {
-                page: b.clone(),
-                parent: None,
-                before,
+            Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
+                page: page.clone(),
+                bytes: Bytes::to_keep(png.clone()),
+                alt: None,
             }),
         )
         .unwrap();
-        assert_eq!(children(&notebook, None), want.map(Clone::clone));
-    }
-
-    // Under another note, then out again right after it.
-    apply(&mut notebook, Notebook::INDENT.with(b.clone())).unwrap();
-    assert_eq!(
-        page(&notebook, &b).parent,
-        Some(a.clone()),
-        "under the note above"
-    );
-    assert_eq!(
-        children(&notebook, Some(&a)),
-        [second, first.clone(), b.clone()]
-    );
-    apply(&mut notebook, Notebook::OUTDENT.with(b.clone())).unwrap();
-    assert_eq!(children(&notebook, None), [c.clone(), a.clone(), b.clone()]);
-    assert!(
-        apply(&mut notebook, Notebook::OUTDENT.with(b.clone())).is_err(),
-        "a top-level note has nothing to come out of"
-    );
-
-    // No note goes under itself or a note under it.
-    for parent in [a.clone(), first] {
+        let digest = blake3::hash(&png).to_hex().to_string();
+        let state = notebook.state().unwrap();
+        assert_eq!(state.images.get(&digest), Some(&Bytes::of(&png)));
+        let snapshot = image_snapshot(&state.images, &tilo_content::ContentStore::memory());
+        assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(&png));
+        assert!(
+            texts(&notebook, &page)
+                .iter()
+                .any(|text| text.contains(&format!("asset:{digest}"))),
+            "{:?}",
+            texts(&notebook, &page)
+        );
         assert!(
             apply(
                 &mut notebook,
-                Notebook::MOVE_NOTE.with(notebook::MoveNote {
-                    page: a.clone(),
-                    parent: Some(parent),
-                    before: None,
+                Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
+                    page,
+                    bytes: Bytes::to_keep(b"not a picture".to_vec()),
+                    alt: None,
                 }),
             )
             .is_err()
         );
     }
-    assert_eq!(page(&notebook, &a).parent, None);
-    assert!(
-        apply(
+
+    phase the_notebook_publishes_notes_as_items_and_reads_as_its_content;
+    // The notebook publishes each note as an item offering the verbs that act
+    // on one note, the notebook's own verbs at its root, and reads as its
+    // notes and a note as its blocks.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let a = note(&mut notebook, "Alpha", None);
+        write(
             &mut notebook,
-            Notebook::NEW_NOTE.with(notebook::NewNote {
-                title: "Orphan".into(),
-                parent: Some(Id::from("gone")),
-            }),
-        )
-        .is_err(),
-        "a note's parent exists"
-    );
-
-    // Deleting a note deletes the notes under it, and nothing else; Undo
-    // takes it back, so it asks nothing.
-    apply(&mut notebook, Notebook::DELETE.with(a.clone()))
-        .expect("an undoable delete asks nothing");
-    assert_eq!(children(&notebook, None), [c, b]);
-    assert_eq!(notebook.state().unwrap().pages.len(), 2);
-}
-
-/// The title and the place in the tree change only through their verbs;
-/// the body and the tags are plain field edits.
-#[test]
-fn titles_and_parents_change_only_through_verbs() {
-    let mut notebook = Replica::<Notebook>::new();
-    let a = note(&mut notebook, "A", None);
-    let b = note(&mut notebook, "B", None);
-    let paths = Notebook::paths().pages.item(&a);
-    assert!(edit(&mut notebook, &paths.title.replace("Hacked")).is_err());
-    assert!(edit(&mut notebook, &paths.parent.set(Some(b))).is_err());
-    apply(
-        &mut notebook,
-        Notebook::RENAME.with(notebook::Rename {
-            page: a.clone(),
-            title: " Renamed ".into(),
-        }),
-    )
-    .unwrap();
-    assert_eq!(page(&notebook, &a).title, "Renamed");
-    edit(
-        &mut notebook,
-        &paths
-            .body
-            .perform(&RichTextAction::AppendParagraph {
-                text: "Hello".into(),
-            })
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(texts(&notebook, &a), ["Hello"]);
-}
-
-#[test]
-fn a_rename_relabels_the_links_to_the_note() {
-    let mut notebook = Replica::<Notebook>::new();
-    let target = note(&mut notebook, "Old", None);
-    let source = note(&mut notebook, "Source", None);
-    let mut linked = BlockContent::paragraph("", "See Old and Old.");
-    linked.marks = vec![
-        MarkSpan::new(4..7, Mark::Link(uuid(&target))),
-        MarkSpan::new(12..15, Mark::Transclusion(uuid(&target))),
-    ];
-    write(&mut notebook, &source, &[linked]);
-    apply(
-        &mut notebook,
-        Notebook::RENAME.with(notebook::Rename {
-            page: target.clone(),
-            title: "Brand new".into(),
-        }),
-    )
-    .unwrap();
-    let blocks = page(&notebook, &source).blocks();
-    assert_eq!(blocks[0].text, "See Brand new and Brand new.");
-    assert_eq!(
-        blocks[0].marks,
-        [
-            MarkSpan::new(4..13, Mark::Link(uuid(&target))),
-            MarkSpan::new(18..27, Mark::Transclusion(uuid(&target))),
-        ]
-    );
-}
-
-/// Only two of 300 pages link to the renamed note. Scanning must not copy
-/// their prose into editor blocks, or write unrelated or already-right labels.
-#[test]
-fn a_rename_scans_shared_marks_without_materializing_editor_blocks() {
-    let target = page_id(PageId::from_u128(1));
-    let other = PageId::from_u128(300);
-    let mut seed = Notebook::default();
-    for number in 1..=300 {
-        let mut page = Page::titled(if number == 1 { "Old" } else { "Source" }, None);
-        page.body = if number == 2 || number == 3 {
-            let mut linked = BlockContent::paragraph("", "é Old / Old / Néw title / other");
-            linked.marks = vec![
-                MarkSpan::new(3..6, Mark::Link(uuid(&target))),
-                MarkSpan::new(9..12, Mark::Transclusion(uuid(&target))),
-                MarkSpan::new(15..25, Mark::Link(uuid(&target))),
-                MarkSpan::new(28..33, Mark::Link(other)),
-            ];
-            written(&[linked])
-        } else {
-            RichText::from_markdown("Unrelated prose. ".repeat(128))
-        };
-        seed.pages.push(page_id(PageId::from_u128(number)), page);
-    }
-    let mut doc = tilo_resource::Doc::new();
-    seed.write_fields(&mut doc, &automerge::ROOT).unwrap();
-    tilo_resource::evolution::write_version(&mut doc, Notebook::VERSION).unwrap();
-    doc.commit();
-    let mut notebook = Replica::<Notebook>::from_doc(doc);
-    let before = notebook.state().unwrap();
-    let mut tracker = tilo_resource::Tracker::new();
-    tracker.start(notebook.doc_mut());
-    MATERIALIZED_BLOCKS.with(|count| count.set(0));
-    apply(
-        &mut notebook,
-        Notebook::RENAME.with(notebook::Rename {
-            page: target.clone(),
-            title: "Néw title".into(),
-        }),
-    )
-    .unwrap();
-    let materialized = MATERIALIZED_BLOCKS.with(std::cell::Cell::get);
-    let delta = tracker.delta(notebook.doc_mut());
-    let after = notebook.state().unwrap();
-    assert_eq!(after.pages.get(&target).unwrap().title, "Néw title");
-    for (id, page) in after.pages.iter() {
-        let body = page.body.state().unwrap();
-        if id == &page_id(PageId::from_u128(2)) || id == &page_id(PageId::from_u128(3)) {
-            let blocks = page.blocks();
-            assert_eq!(
-                blocks[0].text,
-                "é Néw title / Néw title / Néw title / other"
-            );
-            assert_eq!(
-                blocks[0].marks,
-                [
-                    MarkSpan::new(3..13, Mark::Link(uuid(&target))),
-                    MarkSpan::new(16..26, Mark::Transclusion(uuid(&target))),
-                    MarkSpan::new(29..39, Mark::Link(uuid(&target))),
-                    MarkSpan::new(42..47, Mark::Link(other)),
-                ]
-            );
-            assert!(delta.touches(&body.containers().root));
-        } else {
-            assert_eq!(page.body, before.pages.get(id).unwrap().body);
+            &a,
+            &[
+                BlockContent::paragraph("", "First line"),
+                BlockContent::paragraph("", "Second line"),
+            ],
+        );
+        let tree = notebook.published().unwrap();
+        for verb in ["new-note", "new-tag", "import-markdown", "field-edit"] {
             assert!(
-                !delta.touches(&body.containers().root),
-                "unrelated body {id}"
+                tree.actions.iter().any(|spec| spec.id == verb),
+                "the notebook offers {verb}"
             );
         }
+        let item = crate::actions::page_resource_id(uuid(&a));
+        let published =
+            Notebook::child(&notebook.state().unwrap(), &item).expect("the note is published");
+        assert_eq!(published.label, "Alpha");
+        for verb in [
+            "rename",
+            "delete",
+            "move-note",
+            "move-up",
+            "move-down",
+            "indent",
+            "outdent",
+            "duplicate",
+            "new-child",
+            "tag",
+            "place-image",
+        ] {
+            assert!(
+                published.actions.iter().any(|spec| spec.id == verb),
+                "a note offers {verb}"
+            );
+        }
+
+        let state = notebook.state().unwrap();
+        let whole = Notebook::read_content(&state, notebook.doc(), None).unwrap();
+        assert_eq!(whole["pages"][0]["title"], "Alpha");
+        assert_eq!(whole["pages"][0]["item"], item);
+        // A note reads as Markdown, one line per block, each ending in the id
+        // its body's block actions take.
+        let one = Notebook::read_content(&state, notebook.doc(), Some(&item)).unwrap();
+        let lines: Vec<(&str, &str)> = one["markdown"]
+            .as_str()
+            .expect("the body as Markdown")
+            .lines()
+            .map(|line| line.rsplit_once(" ^").expect("a block id on every line"))
+            .collect();
+        let texts: Vec<&str> = lines.iter().map(|(text, _)| *text).collect();
+        assert_eq!(texts, ["First line", "Second line"], "{one}");
+        assert_eq!(one["blocks"], 2, "{one}");
+        let (second, second_id) = lines[1];
+        assert_eq!(second, "Second line");
+        assert!(!second_id.is_empty() && second_id != lines[0].1, "{one}");
+        // Its body is the rich-text resource published beneath the note, read as
+        // the same lines.
+        let body = crate::actions::body_resource_id(uuid(&a));
+        assert_eq!(one["body"], body.as_str());
+        let published_body = Notebook::child(&state, &body).expect("the body is published");
+        assert_eq!(published_body.kind, "tilo.rich-text");
+        let read_body = Notebook::read_content(&state, notebook.doc(), Some(&body)).unwrap();
+        assert_eq!(read_body["markdown"], one["markdown"]);
+        assert!(
+            Notebook::read_content(&state, notebook.doc(), Some("notes.notebook/pages/gone")).is_err()
+        );
+
+        let hits = crate::search::entries(&state);
+        assert!(hits.iter().any(|hit| hit.title == "Alpha"));
+        assert!(hits.iter().any(|hit| hit.text == "Second line"));
     }
-    assert_eq!(
-        materialized, 0,
-        "rename copied editor blocks across the notebook"
-    );
+
+    phase an_agent_edits_a_note_body_from_a_compact_field_edit_listing;
+    // The field-edit listing stays small with a rich-text body in every note:
+    // the body's vocabulary is named by its operations rather than copied, and
+    // an agent still builds a rich edit of a note's body from the listing.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let id = note(&mut notebook, "Plan", None);
+        write(
+            &mut notebook,
+            &id,
+            &[BlockContent::paragraph("b1", "the plan")],
+        );
+        let published = notebook.published().unwrap();
+        let spec = published
+            .actions
+            .iter()
+            .find(|spec| spec.id == ui::tilo_resource::FIELD_EDIT)
+            .unwrap();
+        let params = serde_json::to_string(&spec.params()).unwrap();
+        assert!(
+            params.len() < 16 * 1024,
+            "{} bytes of field-edit params",
+            params.len()
+        );
+        let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+        let text = schema.to_string();
+        assert!(
+            text.contains("`pages.*.body`") && text.contains("SpliceText"),
+            "{text}"
+        );
+
+        let block = page(&notebook, &id).blocks()[0].id.clone();
+        let edit = serde_json::json!({
+            "path": [{"field": "pages"}, {"item": id.as_str()}, {"field": "body"}],
+            "op": "rich",
+            "rich": {"SpliceText": {"region": "Body", "block": block, "at": 0, "del": 0, "ins": "Read "}},
+        });
+        tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the listing");
+        let edit: Edit<Notebook> = serde_json::from_value(edit).unwrap();
+        self::edit(&mut notebook, &edit).unwrap();
+        assert_eq!(texts(&notebook, &id), ["Read the plan"]);
+    }
 }
 
-/// A link or embed may already carry the new title (for example after a
-/// collaborator edited it). Renaming must leave that body's CRDT untouched.
-#[test]
-fn a_rename_does_not_rewrite_labels_already_matching_the_new_title() {
-    let mut notebook = Replica::<Notebook>::new();
-    let target = note(&mut notebook, "Old", None);
-    let source = note(&mut notebook, "Source", None);
-    let mut linked = BlockContent::paragraph("", "Brand new and Brand new");
-    linked.marks = vec![
-        MarkSpan::new(0..9, Mark::Link(uuid(&target))),
-        MarkSpan::new(14..23, Mark::Transclusion(uuid(&target))),
-    ];
-    write(&mut notebook, &source, &[linked]);
-    let before = page(&notebook, &source).body;
-    let body = body_object(notebook.doc(), uuid(&source)).unwrap();
-    let mut tracker = tilo_resource::Tracker::new();
-    tracker.start(notebook.doc_mut());
-    apply(
-        &mut notebook,
-        Notebook::RENAME.with(notebook::Rename {
-            page: target.clone(),
-            title: "Brand new".into(),
-        }),
-    )
-    .unwrap();
-    let delta = tracker.delta(notebook.doc_mut());
-    assert_eq!(page(&notebook, &target).title, "Brand new");
-    assert_eq!(page(&notebook, &source).body, before);
-    assert!(!delta.touches(&body), "already-right labels were rewritten");
-}
+tilo_test_env::scenario! {
+    fn the_notebooks_verbs_change_its_notes_and_tags;
 
-/// A copy of a note copies the notes under it and their bodies; links
-/// between the copied notes lead to the copies, links out stay.
-#[test]
-fn a_duplicate_copies_the_subtree_and_its_links_follow_the_copy() {
-    let mut notebook = Replica::<Notebook>::new();
-    let source = note(&mut notebook, "Source", None);
-    let child = note(&mut notebook, "Child", Some(&source));
-    let outside = note(&mut notebook, "Outside", None);
-    let mut linked = BlockContent::paragraph("", "self and out");
-    linked.marks = vec![
-        MarkSpan::new(0..4, Mark::Link(uuid(&child))),
-        MarkSpan::new(9..12, Mark::Link(uuid(&outside))),
-    ];
-    write(&mut notebook, &source, &[linked]);
-    apply(&mut notebook, Notebook::DUPLICATE.with(source.clone())).unwrap();
+    phase verbs_make_move_and_delete_notes_and_keep_the_tree_a_tree;
+    // Notes are made, placed, moved and deleted by verbs that keep the tree a
+    // tree: siblings keep their order, a move reorders within its group or
+    // files the note under another, and no note goes under itself.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let a = note(&mut notebook, "A", None);
+        let b = note(&mut notebook, " B ", None);
+        let c = note(&mut notebook, "", None);
+        assert_eq!(children(&notebook, None), [a.clone(), b.clone(), c.clone()]);
+        assert!(page_of(&a).is_some(), "a note is kept under a UUID");
+        assert_eq!(page(&notebook, &b).title, "B", "titles are trimmed");
+        assert_eq!(page(&notebook, &c).title, NO_TITLE);
 
-    let roots = children(&notebook, None);
-    assert_eq!(roots.len(), 3);
-    assert_eq!(roots[0], source, "the copy goes right after its original");
-    let copy = roots[1].clone();
-    assert_eq!(page(&notebook, &copy).title, "Source copy");
-    let copied_children = children(&notebook, Some(&copy));
-    assert_eq!(copied_children.len(), 1);
-    let copied_child = &copied_children[0];
-    assert_eq!(page(&notebook, copied_child).title, "Child");
-    let blocks = page(&notebook, &copy).blocks();
-    assert_eq!(blocks[0].text, "self and out");
-    assert_eq!(
-        blocks[0].marks,
-        [
-            MarkSpan::new(0..4, Mark::Link(uuid(copied_child))),
-            MarkSpan::new(9..12, Mark::Link(uuid(&outside))),
-        ]
-    );
-    assert_eq!(
-        page(&notebook, &source).blocks()[0].marks[0],
-        MarkSpan::new(0..4, Mark::Link(uuid(&child))),
-        "the original is untouched"
-    );
-}
+        for (verb, note_, want) in [
+            (Notebook::MOVE_UP.with(c.clone()), &c, [&a, &c, &b]),
+            (Notebook::MOVE_DOWN.with(a.clone()), &a, [&c, &a, &b]),
+        ] {
+            apply(&mut notebook, verb).unwrap();
+            assert_eq!(
+                children(&notebook, None),
+                want.map(Clone::clone),
+                "moved {note_}"
+            );
+        }
+        assert!(
+            apply(&mut notebook, Notebook::MOVE_UP.with(c.clone())).is_err(),
+            "the first note cannot move up"
+        );
+        assert!(
+            apply(&mut notebook, Notebook::MOVE_DOWN.with(b.clone())).is_err(),
+            "the last note cannot move down"
+        );
 
-/// Tags are items with names; giving a note a tag or taking it off is a
-/// field edit of the note's tags, the same whatever the order; deleting a
-/// tag takes it off every note.
-#[test]
-fn tags_are_named_items_notes_carry_and_deleting_one_unassigns_it() {
-    let mut notebook = Replica::<Notebook>::new();
-    let a = note(&mut notebook, "A", None);
-    let b = note(&mut notebook, "B", None);
-    apply(
-        &mut notebook,
-        Notebook::NEW_TAG.with(notebook::NewTag {
-            name: " Release ".into(),
-        }),
-    )
-    .unwrap();
-    let release = notebook.state().unwrap().tag_named("Release").unwrap();
-    assert!(
+        // Notes under a note reorder within it.
+        let first = note(&mut notebook, "First", Some(&a));
+        let second = note(&mut notebook, "Second", Some(&a));
+        apply(&mut notebook, Notebook::MOVE_DOWN.with(first.clone())).unwrap();
+        assert_eq!(
+            children(&notebook, Some(&a)),
+            [second.clone(), first.clone()]
+        );
+        assert_eq!(children(&notebook, None), [c.clone(), a.clone(), b.clone()]);
+
+        // Before a sibling, then last again.
+        for (before, want) in [(Some(c.clone()), [&b, &c, &a]), (None, [&c, &a, &b])] {
+            apply(
+                &mut notebook,
+                Notebook::MOVE_NOTE.with(notebook::MoveNote {
+                    page: b.clone(),
+                    parent: None,
+                    before,
+                }),
+            )
+            .unwrap();
+            assert_eq!(children(&notebook, None), want.map(Clone::clone));
+        }
+
+        // Under another note, then out again right after it.
+        apply(&mut notebook, Notebook::INDENT.with(b.clone())).unwrap();
+        assert_eq!(
+            page(&notebook, &b).parent,
+            Some(a.clone()),
+            "under the note above"
+        );
+        assert_eq!(
+            children(&notebook, Some(&a)),
+            [second, first.clone(), b.clone()]
+        );
+        apply(&mut notebook, Notebook::OUTDENT.with(b.clone())).unwrap();
+        assert_eq!(children(&notebook, None), [c.clone(), a.clone(), b.clone()]);
+        assert!(
+            apply(&mut notebook, Notebook::OUTDENT.with(b.clone())).is_err(),
+            "a top-level note has nothing to come out of"
+        );
+
+        // No note goes under itself or a note under it.
+        for parent in [a.clone(), first] {
+            assert!(
+                apply(
+                    &mut notebook,
+                    Notebook::MOVE_NOTE.with(notebook::MoveNote {
+                        page: a.clone(),
+                        parent: Some(parent),
+                        before: None,
+                    }),
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(page(&notebook, &a).parent, None);
+        assert!(
+            apply(
+                &mut notebook,
+                Notebook::NEW_NOTE.with(notebook::NewNote {
+                    title: "Orphan".into(),
+                    parent: Some(Id::from("gone")),
+                }),
+            )
+            .is_err(),
+            "a note's parent exists"
+        );
+
+        // Deleting a note deletes the notes under it, and nothing else; Undo
+        // takes it back, so it asks nothing.
+        apply(&mut notebook, Notebook::DELETE.with(a.clone()))
+            .expect("an undoable delete asks nothing");
+        assert_eq!(children(&notebook, None), [c, b]);
+        assert_eq!(notebook.state().unwrap().pages.len(), 2);
+    }
+
+    phase titles_and_parents_change_only_through_verbs;
+    // The title and the place in the tree change only through their verbs;
+    // the body and the tags are plain field edits.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let a = note(&mut notebook, "A", None);
+        let b = note(&mut notebook, "B", None);
+        let paths = Notebook::paths().pages.item(&a);
+        assert!(edit(&mut notebook, &paths.title.replace("Hacked")).is_err());
+        assert!(edit(&mut notebook, &paths.parent.set(Some(b))).is_err());
+        apply(
+            &mut notebook,
+            Notebook::RENAME.with(notebook::Rename {
+                page: a.clone(),
+                title: " Renamed ".into(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(page(&notebook, &a).title, "Renamed");
+        edit(
+            &mut notebook,
+            &paths
+                .body
+                .perform(&RichTextAction::AppendParagraph {
+                    text: "Hello".into(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(texts(&notebook, &a), ["Hello"]);
+    }
+
+    phase tags_are_named_items_notes_carry_and_deleting_one_unassigns_it;
+    // Tags are items with names; giving a note a tag or taking it off is a
+    // field edit of the note's tags, the same whatever the order; deleting a
+    // tag takes it off every note.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let a = note(&mut notebook, "A", None);
+        let b = note(&mut notebook, "B", None);
         apply(
             &mut notebook,
             Notebook::NEW_TAG.with(notebook::NewTag {
-                name: "Release".into()
+                name: " Release ".into(),
             }),
         )
-        .is_err(),
-        "one tag per name"
-    );
-    let tags = Notebook::paths().pages.item(&a).tags;
-    edit(&mut notebook, &tags.insert(&release)).unwrap();
-    edit(&mut notebook, &tags.insert(&release)).unwrap();
-    assert_eq!(page(&notebook, &a).tags.len(), 1, "a tag is on a note once");
-    apply(
-        &mut notebook,
-        Notebook::TAG.with(notebook::Tag {
-            page: b.clone(),
-            name: "Writing".into(),
-        }),
-    )
-    .unwrap();
-    let writing = notebook.state().unwrap().tag_named("Writing").unwrap();
-    assert!(
-        page(&notebook, &b).tags.contains(&writing),
-        "tagging names a new tag"
-    );
-    apply(
-        &mut notebook,
-        Notebook::TAG.with(notebook::Tag {
-            page: b.clone(),
-            name: "Release".into(),
-        }),
-    )
-    .unwrap();
-    assert_eq!(
-        notebook.state().unwrap().tags.len(),
-        2,
-        "or finds the one named so"
-    );
+        .unwrap();
+        let release = notebook.state().unwrap().tag_named("Release").unwrap();
+        assert!(
+            apply(
+                &mut notebook,
+                Notebook::NEW_TAG.with(notebook::NewTag {
+                    name: "Release".into()
+                }),
+            )
+            .is_err(),
+            "one tag per name"
+        );
+        let tags = Notebook::paths().pages.item(&a).tags;
+        edit(&mut notebook, &tags.insert(&release)).unwrap();
+        edit(&mut notebook, &tags.insert(&release)).unwrap();
+        assert_eq!(page(&notebook, &a).tags.len(), 1, "a tag is on a note once");
+        apply(
+            &mut notebook,
+            Notebook::TAG.with(notebook::Tag {
+                page: b.clone(),
+                name: "Writing".into(),
+            }),
+        )
+        .unwrap();
+        let writing = notebook.state().unwrap().tag_named("Writing").unwrap();
+        assert!(
+            page(&notebook, &b).tags.contains(&writing),
+            "tagging names a new tag"
+        );
+        apply(
+            &mut notebook,
+            Notebook::TAG.with(notebook::Tag {
+                page: b.clone(),
+                name: "Release".into(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            notebook.state().unwrap().tags.len(),
+            2,
+            "or finds the one named so"
+        );
 
-    assert!(
+        assert!(
+            edit(
+                &mut notebook,
+                &Notebook::paths()
+                    .tags
+                    .item(&release)
+                    .name
+                    .set(Atom("  ".into()))
+            )
+            .is_err(),
+            "a tag has a name"
+        );
         edit(
             &mut notebook,
             &Notebook::paths()
                 .tags
                 .item(&release)
                 .name
-                .set(Atom("  ".into()))
+                .set(Atom("Shipped".into())),
         )
-        .is_err(),
-        "a tag has a name"
-    );
-    edit(
-        &mut notebook,
-        &Notebook::paths()
-            .tags
-            .item(&release)
-            .name
-            .set(Atom("Shipped".into())),
-    )
-    .unwrap();
-    notebook
-        .apply_confirmed(Notebook::DELETE_TAG.with(release.clone()))
         .unwrap();
-    let state = notebook.state().unwrap();
-    assert!(state.tags.get(&release).is_none());
-    assert!(!page(&notebook, &a).tags.contains(&release));
-    assert!(!page(&notebook, &b).tags.contains(&release));
-    assert!(page(&notebook, &b).tags.contains(&writing));
-    edit(&mut notebook, &tags.remove(&release)).unwrap();
-}
+        notebook
+            .apply_confirmed(Notebook::DELETE_TAG.with(release.clone()))
+            .unwrap();
+        let state = notebook.state().unwrap();
+        assert!(state.tags.get(&release).is_none());
+        assert!(!page(&notebook, &a).tags.contains(&release));
+        assert!(!page(&notebook, &b).tags.contains(&release));
+        assert!(page(&notebook, &b).tags.contains(&writing));
+        edit(&mut notebook, &tags.remove(&release)).unwrap();
+    }
 
-/// Two people working on one notebook at once end with the same notebook:
-/// each one's notes, moves and typing.
-#[test]
-fn two_replicas_converge() {
-    let mut left = Replica::<Notebook>::new();
-    let shared = note(&mut left, "Shared", None);
-    write(&mut left, &shared, &[BlockContent::paragraph("", "Start")]);
-    let mut right = left.fork();
-
-    let mine = note(&mut left, "Mine", None);
-    let theirs = note(&mut right, "Theirs", Some(&shared));
-    let block = page(&left, &shared).blocks()[0].id.clone();
-    let splice = |at: usize, text: &str| RichTextAction::SpliceText {
-        region: RegionKind::Body,
-        block: block.clone(),
-        at,
-        del: 0,
-        ins: text.into(),
-    };
-    let body = Notebook::paths().pages.item(&shared).body;
-    edit(&mut left, &body.perform(&splice(0, "L ")).unwrap()).unwrap();
-    edit(&mut right, &body.perform(&splice(5, " R")).unwrap()).unwrap();
-
-    left.sync_with(&mut right).unwrap();
-    let (l, r) = (left.state().unwrap(), right.state().unwrap());
-    assert_eq!(l, r, "both read the same notebook");
-    assert!(l.pages.contains(&mine) && l.pages.contains(&theirs));
-    assert_eq!(texts(&left, &shared), ["L Start R"]);
-    assert_eq!(left.live().unwrap(), &l, "the live state follows the merge");
-}
-
-/// Importing Markdown makes a note whose `[[Title]]` links lead to the notes
-/// of those titles; importing under an id twice is refused.
-#[test]
-fn an_import_resolves_links_and_is_not_repeated() {
-    let mut notebook = Replica::<Notebook>::new();
-    let target = note(&mut notebook, "Target", None);
-    let id = Id::from(uuid::Uuid::new_v4().to_string());
-    let import = |id: &Id| {
-        Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
-            title: "Imported".into(),
-            markdown: "See [[Target]].\n\n- one\n- two\n".into(),
-            images: Vec::new(),
-            note: Some(id.clone()),
-        })
-    };
-    apply(&mut notebook, import(&id)).unwrap();
-    let imported = page(&notebook, &id);
-    assert_eq!(imported.title, "Imported");
-    assert_eq!(imported.parent, None);
-    let blocks = imported.blocks();
-    assert_eq!(blocks[0].text, "See Target.");
-    assert_eq!(
-        blocks[0].marks,
-        [MarkSpan::new(4..10, Mark::Link(uuid(&target)))]
-    );
-    assert_eq!(blocks.len(), 3);
-    assert!(apply(&mut notebook, import(&id)).is_err());
-    let too_big = "x".repeat(MAX_MARKDOWN_IMPORT_BYTES + 1);
-    assert!(
-        apply(
-            &mut notebook,
-            Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
-                title: "Big".into(),
-                markdown: too_big,
-                images: Vec::new(),
-                note: None,
-            }),
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn importing_a_formatted_link_preserves_label_text_and_marks_on_export() {
-    let mut notebook = Replica::<Notebook>::new();
-    let id = Id::from(uuid::Uuid::new_v4().to_string());
-    let markdown = "See [Read **日本** now](https://example.com).";
-    apply(
-        &mut notebook,
-        Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
-            title: "Linked note".into(),
-            markdown: markdown.into(),
-            images: Vec::new(),
-            note: Some(id.clone()),
-        }),
-    )
-    .unwrap();
-    let blocks = page(&notebook, &id).blocks();
-    assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0].text, "See Read 日本 now.");
-    assert_eq!(
-        blocks[0].marks,
-        [
-            MarkSpan::new(4..19, Mark::ExternalLink("https://example.com".into())),
-            MarkSpan::new(9..15, Mark::Bold),
-        ]
-    );
-    assert_eq!(
-        crate::markdown::serialize_inline(&crate::markdown::InlineText::new(
-            blocks[0].text.clone(),
-            blocks[0].marks.clone(),
-        )),
-        markdown
-    );
-}
-
-#[test]
-fn exporting_imported_links_preserves_shared_start_mark_nesting() {
-    for markdown in [
-        "[**Bold** normal](https://example.com)",
-        "[*Italic* normal](https://example.com)",
-        "[**Bold *nested* text** normal](https://example.com)",
-        "**[Bold](https://example.com) normal**",
-        "**[Bold](https://example.com)**",
-        "[normal **Bold**](https://example.com)",
-    ] {
+    phase creating_a_note_reports_its_page_and_renaming_does_not;
+    // A note-creating action answers with the note it made; a rename of an
+    // existing note and a new tag answer with nothing.
+    {
         let mut notebook = Replica::<Notebook>::new();
-        let id = Id::from(uuid::Uuid::new_v4().to_string());
+        let before = notebook.heads();
+        let id = note(&mut notebook, "Fresh", None);
+        let after = notebook.heads();
+        let created = notebook.doc_mut().diff(&before, &after);
+        let result = Notebook::created_page(notebook.doc(), "new-note", &created)
+            .expect("the answer names the new note");
+        assert_eq!(result["page"], uuid(&id).to_string());
+        assert_eq!(
+            result["resource"],
+            crate::actions::page_resource_id(uuid(&id))
+        );
+
+        let before = notebook.heads();
         apply(
             &mut notebook,
-            Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
-                title: "Formatting".into(),
-                markdown: markdown.into(),
-                images: Vec::new(),
-                note: Some(id.clone()),
+            Notebook::RENAME.with(notebook::Rename {
+                page: id,
+                title: "Renamed".into(),
             }),
         )
         .unwrap();
-        let workspace = crate::read::workspace(notebook.doc());
-        let exported = crate::actions::page_markdown(&workspace, uuid(&id));
-        assert_eq!(exported.trim_end(), markdown);
+        let after = notebook.heads();
+        let renamed = notebook.doc_mut().diff(&before, &after);
         assert_eq!(
-            crate::markdown::parse(&exported),
-            crate::markdown::parse(markdown)
+            Notebook::created_page(notebook.doc(), "rename", &renamed),
+            None
+        );
+
+        let before = notebook.heads();
+        apply(
+            &mut notebook,
+            Notebook::NEW_TAG.with(notebook::NewTag {
+                name: "Work".into(),
+            }),
+        )
+        .unwrap();
+        let after = notebook.heads();
+        let tagged = notebook.doc_mut().diff(&before, &after);
+        assert_eq!(
+            Notebook::created_page(notebook.doc(), "new-tag", &tagged),
+            None,
+            "a new tag is no note"
         );
     }
 }
 
-#[test]
-fn importing_a_link_keeps_balanced_parentheses_in_its_destination() {
-    let mut notebook = Replica::<Notebook>::new();
-    for url in [
-        "https://example.com/wiki/Function_(mathematics)",
-        "https://example.com/a_(b_(c))?q=1",
-    ] {
+tilo_test_env::scenario! {
+    fn a_rename_or_a_duplicate_carries_the_links_to_the_note;
+
+    phase a_rename_relabels_the_links_to_the_note;
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let target = note(&mut notebook, "Old", None);
+        let source = note(&mut notebook, "Source", None);
+        let mut linked = BlockContent::paragraph("", "See Old and Old.");
+        linked.marks = vec![
+            MarkSpan::new(4..7, Mark::Link(uuid(&target))),
+            MarkSpan::new(12..15, Mark::Transclusion(uuid(&target))),
+        ];
+        write(&mut notebook, &source, &[linked]);
+        apply(
+            &mut notebook,
+            Notebook::RENAME.with(notebook::Rename {
+                page: target.clone(),
+                title: "Brand new".into(),
+            }),
+        )
+        .unwrap();
+        let blocks = page(&notebook, &source).blocks();
+        assert_eq!(blocks[0].text, "See Brand new and Brand new.");
+        assert_eq!(
+            blocks[0].marks,
+            [
+                MarkSpan::new(4..13, Mark::Link(uuid(&target))),
+                MarkSpan::new(18..27, Mark::Transclusion(uuid(&target))),
+            ]
+        );
+    }
+
+    phase a_rename_scans_shared_marks_without_materializing_editor_blocks;
+    // Only two of 300 pages link to the renamed note. Scanning must not copy
+    // their prose into editor blocks, or write unrelated or already-right labels.
+    {
+        let target = page_id(PageId::from_u128(1));
+        let other = PageId::from_u128(300);
+        let mut seed = Notebook::default();
+        for number in 1..=300 {
+            let mut page = Page::titled(if number == 1 { "Old" } else { "Source" }, None);
+            page.body = if number == 2 || number == 3 {
+                let mut linked = BlockContent::paragraph("", "é Old / Old / Néw title / other");
+                linked.marks = vec![
+                    MarkSpan::new(3..6, Mark::Link(uuid(&target))),
+                    MarkSpan::new(9..12, Mark::Transclusion(uuid(&target))),
+                    MarkSpan::new(15..25, Mark::Link(uuid(&target))),
+                    MarkSpan::new(28..33, Mark::Link(other)),
+                ];
+                written(&[linked])
+            } else {
+                RichText::from_markdown("Unrelated prose. ".repeat(128))
+            };
+            seed.pages.push(page_id(PageId::from_u128(number)), page);
+        }
+        let mut doc = tilo_resource::Doc::new();
+        seed.write_fields(&mut doc, &automerge::ROOT).unwrap();
+        tilo_resource::evolution::write_version(&mut doc, Notebook::VERSION).unwrap();
+        doc.commit();
+        let mut notebook = Replica::<Notebook>::from_doc(doc);
+        let before = notebook.state().unwrap();
+        let mut tracker = tilo_resource::Tracker::new();
+        tracker.start(notebook.doc_mut());
+        MATERIALIZED_BLOCKS.with(|count| count.set(0));
+        apply(
+            &mut notebook,
+            Notebook::RENAME.with(notebook::Rename {
+                page: target.clone(),
+                title: "Néw title".into(),
+            }),
+        )
+        .unwrap();
+        let materialized = MATERIALIZED_BLOCKS.with(std::cell::Cell::get);
+        let delta = tracker.delta(notebook.doc_mut());
+        let after = notebook.state().unwrap();
+        assert_eq!(after.pages.get(&target).unwrap().title, "Néw title");
+        for (id, page) in after.pages.iter() {
+            let body = page.body.state().unwrap();
+            if id == &page_id(PageId::from_u128(2)) || id == &page_id(PageId::from_u128(3)) {
+                let blocks = page.blocks();
+                assert_eq!(
+                    blocks[0].text,
+                    "é Néw title / Néw title / Néw title / other"
+                );
+                assert_eq!(
+                    blocks[0].marks,
+                    [
+                        MarkSpan::new(3..13, Mark::Link(uuid(&target))),
+                        MarkSpan::new(16..26, Mark::Transclusion(uuid(&target))),
+                        MarkSpan::new(29..39, Mark::Link(uuid(&target))),
+                        MarkSpan::new(42..47, Mark::Link(other)),
+                    ]
+                );
+                assert!(delta.touches(&body.containers().root));
+            } else {
+                assert_eq!(page.body, before.pages.get(id).unwrap().body);
+                assert!(
+                    !delta.touches(&body.containers().root),
+                    "unrelated body {id}"
+                );
+            }
+        }
+        assert_eq!(
+            materialized, 0,
+            "rename copied editor blocks across the notebook"
+        );
+    }
+
+    phase a_rename_does_not_rewrite_labels_already_matching_the_new_title;
+    // A link or embed may already carry the new title (for example after a
+    // collaborator edited it). Renaming must leave that body's CRDT untouched.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let target = note(&mut notebook, "Old", None);
+        let source = note(&mut notebook, "Source", None);
+        let mut linked = BlockContent::paragraph("", "Brand new and Brand new");
+        linked.marks = vec![
+            MarkSpan::new(0..9, Mark::Link(uuid(&target))),
+            MarkSpan::new(14..23, Mark::Transclusion(uuid(&target))),
+        ];
+        write(&mut notebook, &source, &[linked]);
+        let before = page(&notebook, &source).body;
+        let body = body_object(notebook.doc(), uuid(&source)).unwrap();
+        let mut tracker = tilo_resource::Tracker::new();
+        tracker.start(notebook.doc_mut());
+        apply(
+            &mut notebook,
+            Notebook::RENAME.with(notebook::Rename {
+                page: target.clone(),
+                title: "Brand new".into(),
+            }),
+        )
+        .unwrap();
+        let delta = tracker.delta(notebook.doc_mut());
+        assert_eq!(page(&notebook, &target).title, "Brand new");
+        assert_eq!(page(&notebook, &source).body, before);
+        assert!(!delta.touches(&body), "already-right labels were rewritten");
+    }
+
+    phase a_duplicate_copies_the_subtree_and_its_links_follow_the_copy;
+    // A copy of a note copies the notes under it and their bodies; links
+    // between the copied notes lead to the copies, links out stay.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let source = note(&mut notebook, "Source", None);
+        let child = note(&mut notebook, "Child", Some(&source));
+        let outside = note(&mut notebook, "Outside", None);
+        let mut linked = BlockContent::paragraph("", "self and out");
+        linked.marks = vec![
+            MarkSpan::new(0..4, Mark::Link(uuid(&child))),
+            MarkSpan::new(9..12, Mark::Link(uuid(&outside))),
+        ];
+        write(&mut notebook, &source, &[linked]);
+        apply(&mut notebook, Notebook::DUPLICATE.with(source.clone())).unwrap();
+
+        let roots = children(&notebook, None);
+        assert_eq!(roots.len(), 3);
+        assert_eq!(roots[0], source, "the copy goes right after its original");
+        let copy = roots[1].clone();
+        assert_eq!(page(&notebook, &copy).title, "Source copy");
+        let copied_children = children(&notebook, Some(&copy));
+        assert_eq!(copied_children.len(), 1);
+        let copied_child = &copied_children[0];
+        assert_eq!(page(&notebook, copied_child).title, "Child");
+        let blocks = page(&notebook, &copy).blocks();
+        assert_eq!(blocks[0].text, "self and out");
+        assert_eq!(
+            blocks[0].marks,
+            [
+                MarkSpan::new(0..4, Mark::Link(uuid(copied_child))),
+                MarkSpan::new(9..12, Mark::Link(uuid(&outside))),
+            ]
+        );
+        assert_eq!(
+            page(&notebook, &source).blocks()[0].marks[0],
+            MarkSpan::new(0..4, Mark::Link(uuid(&child))),
+            "the original is untouched"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn imported_links_survive_import_and_export;
+
+    phase an_import_resolves_links_and_is_not_repeated;
+    // Importing Markdown makes a note whose `[[Title]]` links lead to the notes
+    // of those titles; importing under an id twice is refused.
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let target = note(&mut notebook, "Target", None);
         let id = Id::from(uuid::Uuid::new_v4().to_string());
-        let markdown = format!("See [reference]({url}).");
+        let import = |id: &Id| {
+            Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+                title: "Imported".into(),
+                markdown: "See [[Target]].\n\n- one\n- two\n".into(),
+                images: Vec::new(),
+                note: Some(id.clone()),
+            })
+        };
+        apply(&mut notebook, import(&id)).unwrap();
+        let imported = page(&notebook, &id);
+        assert_eq!(imported.title, "Imported");
+        assert_eq!(imported.parent, None);
+        let blocks = imported.blocks();
+        assert_eq!(blocks[0].text, "See Target.");
+        assert_eq!(
+            blocks[0].marks,
+            [MarkSpan::new(4..10, Mark::Link(uuid(&target)))]
+        );
+        assert_eq!(blocks.len(), 3);
+        assert!(apply(&mut notebook, import(&id)).is_err());
+        let too_big = "x".repeat(MAX_MARKDOWN_IMPORT_BYTES + 1);
+        assert!(
+            apply(
+                &mut notebook,
+                Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+                    title: "Big".into(),
+                    markdown: too_big,
+                    images: Vec::new(),
+                    note: None,
+                }),
+            )
+            .is_err()
+        );
+    }
+
+    phase importing_a_formatted_link_preserves_label_text_and_marks_on_export;
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        let id = Id::from(uuid::Uuid::new_v4().to_string());
+        let markdown = "See [Read **日本** now](https://example.com).";
         apply(
             &mut notebook,
             Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
-                title: "Reference".into(),
-                markdown: markdown.clone(),
+                title: "Linked note".into(),
+                markdown: markdown.into(),
                 images: Vec::new(),
                 note: Some(id.clone()),
             }),
@@ -670,10 +839,13 @@ fn importing_a_link_keeps_balanced_parentheses_in_its_destination() {
         .unwrap();
         let blocks = page(&notebook, &id).blocks();
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, "See reference.");
+        assert_eq!(blocks[0].text, "See Read 日本 now.");
         assert_eq!(
             blocks[0].marks,
-            [MarkSpan::new(4..13, Mark::ExternalLink(url.into()))]
+            [
+                MarkSpan::new(4..19, Mark::ExternalLink("https://example.com".into())),
+                MarkSpan::new(9..15, Mark::Bold),
+            ]
         );
         assert_eq!(
             crate::markdown::serialize_inline(&crate::markdown::InlineText::new(
@@ -683,220 +855,72 @@ fn importing_a_link_keeps_balanced_parentheses_in_its_destination() {
             markdown
         );
     }
-}
 
-/// A picture a note shows is kept by its digest — a small one inside the
-/// notebook — and shown in the note; anything but a picture is refused.
-#[test]
-fn pictures_are_kept_by_digest_and_shown_in_their_note() {
-    let mut notebook = Replica::<Notebook>::new();
-    let page = note(&mut notebook, "Photos", None);
-    let mut png = vec![137, 80, 78, 71, 13, 10, 26, 10];
-    png.extend_from_slice(&[0; 32]);
-    apply(
-        &mut notebook,
-        Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
-            page: page.clone(),
-            bytes: Bytes::to_keep(png.clone()),
-            alt: None,
-        }),
-    )
-    .unwrap();
-    let digest = blake3::hash(&png).to_hex().to_string();
-    let state = notebook.state().unwrap();
-    assert_eq!(state.images.get(&digest), Some(&Bytes::of(&png)));
-    let snapshot = image_snapshot(&state.images, &tilo_content::ContentStore::memory());
-    assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(&png));
-    assert!(
-        texts(&notebook, &page)
-            .iter()
-            .any(|text| text.contains(&format!("asset:{digest}"))),
-        "{:?}",
-        texts(&notebook, &page)
-    );
-    assert!(
-        apply(
-            &mut notebook,
-            Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
-                page,
-                bytes: Bytes::to_keep(b"not a picture".to_vec()),
-                alt: None,
-            }),
-        )
-        .is_err()
-    );
-}
-
-/// The notebook publishes each note as an item offering the verbs that act
-/// on one note, the notebook's own verbs at its root, and reads as its
-/// notes and a note as its blocks.
-#[test]
-fn the_notebook_publishes_notes_as_items_and_reads_as_its_content() {
-    let mut notebook = Replica::<Notebook>::new();
-    let a = note(&mut notebook, "Alpha", None);
-    write(
-        &mut notebook,
-        &a,
-        &[
-            BlockContent::paragraph("", "First line"),
-            BlockContent::paragraph("", "Second line"),
-        ],
-    );
-    let tree = notebook.published().unwrap();
-    for verb in ["new-note", "new-tag", "import-markdown", "field-edit"] {
-        assert!(
-            tree.actions.iter().any(|spec| spec.id == verb),
-            "the notebook offers {verb}"
-        );
-    }
-    let item = crate::actions::page_resource_id(uuid(&a));
-    let published =
-        Notebook::child(&notebook.state().unwrap(), &item).expect("the note is published");
-    assert_eq!(published.label, "Alpha");
-    for verb in [
-        "rename",
-        "delete",
-        "move-note",
-        "move-up",
-        "move-down",
-        "indent",
-        "outdent",
-        "duplicate",
-        "new-child",
-        "tag",
-        "place-image",
-    ] {
-        assert!(
-            published.actions.iter().any(|spec| spec.id == verb),
-            "a note offers {verb}"
-        );
+    phase exporting_imported_links_preserves_shared_start_mark_nesting;
+    {
+        for markdown in [
+            "[**Bold** normal](https://example.com)",
+            "[*Italic* normal](https://example.com)",
+            "[**Bold *nested* text** normal](https://example.com)",
+            "**[Bold](https://example.com) normal**",
+            "**[Bold](https://example.com)**",
+            "[normal **Bold**](https://example.com)",
+        ] {
+            let mut notebook = Replica::<Notebook>::new();
+            let id = Id::from(uuid::Uuid::new_v4().to_string());
+            apply(
+                &mut notebook,
+                Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+                    title: "Formatting".into(),
+                    markdown: markdown.into(),
+                    images: Vec::new(),
+                    note: Some(id.clone()),
+                }),
+            )
+            .unwrap();
+            let workspace = crate::read::workspace(notebook.doc());
+            let exported = crate::actions::page_markdown(&workspace, uuid(&id));
+            assert_eq!(exported.trim_end(), markdown);
+            assert_eq!(
+                crate::markdown::parse(&exported),
+                crate::markdown::parse(markdown)
+            );
+        }
     }
 
-    let state = notebook.state().unwrap();
-    let whole = Notebook::read_content(&state, notebook.doc(), None).unwrap();
-    assert_eq!(whole["pages"][0]["title"], "Alpha");
-    assert_eq!(whole["pages"][0]["item"], item);
-    // A note reads as Markdown, one line per block, each ending in the id
-    // its body's block actions take.
-    let one = Notebook::read_content(&state, notebook.doc(), Some(&item)).unwrap();
-    let lines: Vec<(&str, &str)> = one["markdown"]
-        .as_str()
-        .expect("the body as Markdown")
-        .lines()
-        .map(|line| line.rsplit_once(" ^").expect("a block id on every line"))
-        .collect();
-    let texts: Vec<&str> = lines.iter().map(|(text, _)| *text).collect();
-    assert_eq!(texts, ["First line", "Second line"], "{one}");
-    assert_eq!(one["blocks"], 2, "{one}");
-    let (second, second_id) = lines[1];
-    assert_eq!(second, "Second line");
-    assert!(!second_id.is_empty() && second_id != lines[0].1, "{one}");
-    // Its body is the rich-text resource published beneath the note, read as
-    // the same lines.
-    let body = crate::actions::body_resource_id(uuid(&a));
-    assert_eq!(one["body"], body.as_str());
-    let published_body = Notebook::child(&state, &body).expect("the body is published");
-    assert_eq!(published_body.kind, "tilo.rich-text");
-    let read_body = Notebook::read_content(&state, notebook.doc(), Some(&body)).unwrap();
-    assert_eq!(read_body["markdown"], one["markdown"]);
-    assert!(
-        Notebook::read_content(&state, notebook.doc(), Some("notes.notebook/pages/gone")).is_err()
-    );
-
-    let hits = crate::search::entries(&state);
-    assert!(hits.iter().any(|hit| hit.title == "Alpha"));
-    assert!(hits.iter().any(|hit| hit.text == "Second line"));
-}
-
-/// The field-edit listing stays small with a rich-text body in every note:
-/// the body's vocabulary is named by its operations rather than copied, and
-/// an agent still builds a rich edit of a note's body from the listing.
-#[test]
-fn an_agent_edits_a_note_body_from_a_compact_field_edit_listing() {
-    let mut notebook = Replica::<Notebook>::new();
-    let id = note(&mut notebook, "Plan", None);
-    write(
-        &mut notebook,
-        &id,
-        &[BlockContent::paragraph("b1", "the plan")],
-    );
-    let published = notebook.published().unwrap();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == ui::tilo_resource::FIELD_EDIT)
-        .unwrap();
-    let params = serde_json::to_string(&spec.params()).unwrap();
-    assert!(
-        params.len() < 16 * 1024,
-        "{} bytes of field-edit params",
-        params.len()
-    );
-    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-    let text = schema.to_string();
-    assert!(
-        text.contains("`pages.*.body`") && text.contains("SpliceText"),
-        "{text}"
-    );
-
-    let block = page(&notebook, &id).blocks()[0].id.clone();
-    let edit = serde_json::json!({
-        "path": [{"field": "pages"}, {"item": id.as_str()}, {"field": "body"}],
-        "op": "rich",
-        "rich": {"SpliceText": {"region": "Body", "block": block, "at": 0, "del": 0, "ins": "Read "}},
-    });
-    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the listing");
-    let edit: Edit<Notebook> = serde_json::from_value(edit).unwrap();
-    self::edit(&mut notebook, &edit).unwrap();
-    assert_eq!(texts(&notebook, &id), ["Read the plan"]);
-}
-
-/// A note-creating action answers with the note it made; a rename of an
-/// existing note and a new tag answer with nothing.
-#[test]
-fn creating_a_note_reports_its_page_and_renaming_does_not() {
-    let mut notebook = Replica::<Notebook>::new();
-    let before = notebook.heads();
-    let id = note(&mut notebook, "Fresh", None);
-    let after = notebook.heads();
-    let created = notebook.doc_mut().diff(&before, &after);
-    let result = Notebook::created_page(notebook.doc(), "new-note", &created)
-        .expect("the answer names the new note");
-    assert_eq!(result["page"], uuid(&id).to_string());
-    assert_eq!(
-        result["resource"],
-        crate::actions::page_resource_id(uuid(&id))
-    );
-
-    let before = notebook.heads();
-    apply(
-        &mut notebook,
-        Notebook::RENAME.with(notebook::Rename {
-            page: id,
-            title: "Renamed".into(),
-        }),
-    )
-    .unwrap();
-    let after = notebook.heads();
-    let renamed = notebook.doc_mut().diff(&before, &after);
-    assert_eq!(
-        Notebook::created_page(notebook.doc(), "rename", &renamed),
-        None
-    );
-
-    let before = notebook.heads();
-    apply(
-        &mut notebook,
-        Notebook::NEW_TAG.with(notebook::NewTag {
-            name: "Work".into(),
-        }),
-    )
-    .unwrap();
-    let after = notebook.heads();
-    let tagged = notebook.doc_mut().diff(&before, &after);
-    assert_eq!(
-        Notebook::created_page(notebook.doc(), "new-tag", &tagged),
-        None,
-        "a new tag is no note"
-    );
+    phase importing_a_link_keeps_balanced_parentheses_in_its_destination;
+    {
+        let mut notebook = Replica::<Notebook>::new();
+        for url in [
+            "https://example.com/wiki/Function_(mathematics)",
+            "https://example.com/a_(b_(c))?q=1",
+        ] {
+            let id = Id::from(uuid::Uuid::new_v4().to_string());
+            let markdown = format!("See [reference]({url}).");
+            apply(
+                &mut notebook,
+                Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+                    title: "Reference".into(),
+                    markdown: markdown.clone(),
+                    images: Vec::new(),
+                    note: Some(id.clone()),
+                }),
+            )
+            .unwrap();
+            let blocks = page(&notebook, &id).blocks();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].text, "See reference.");
+            assert_eq!(
+                blocks[0].marks,
+                [MarkSpan::new(4..13, Mark::ExternalLink(url.into()))]
+            );
+            assert_eq!(
+                crate::markdown::serialize_inline(&crate::markdown::InlineText::new(
+                    blocks[0].text.clone(),
+                    blocks[0].marks.clone(),
+                )),
+                markdown
+            );
+        }
+    }
 }
