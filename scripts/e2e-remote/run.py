@@ -871,6 +871,7 @@ ip -o addr show dev "$dev"
             self.serve_form(b)
             self.person_opens_browser(b, res)
             self.answered_in_one_tab(b, parties, url, res)
+            self.browser_runs_on(b, [party.box for party in parties if party.box is not b], res)
         except (Failed, VmError):
             # How far each agent got and what B showed and said, for the log of a failed run.
             for party in parties:
@@ -889,6 +890,30 @@ ip -o addr show dev "$dev"
             except VmError as exc:
                 print(f"      B's session log could not be read: {exc}", flush=True)
             raise
+
+    def browser_runs_on(self, b: Box, others: list[Box], res: Result) -> None:
+        """A Browser window is a window of the device whose engine holds its page: B's desk
+        shows it, live, in its tab, and no other machine opened a Browser of its own in that
+        tab. What each desk lists is read from its session; nothing is written anywhere."""
+        def windows(box: Box) -> list:
+            return (box.vm.raw({"op": "windows"}).get("answer") or {}).get("windows") or []
+
+        live = [window for window in windows(b)
+                if window.get("app_id") == BROWSER and window.get("kind") == "Foreign"
+                and window.get("window") is not None]
+        res.facts["browser_on_b"] = live
+        if not live:
+            raise Failed("B's desk holds no live Browser window after the agents worked in its "
+                         f"tab: {json.dumps(windows(b))[:800]}")
+        tabs = {window.get("tab") for window in live}
+        for box in others:
+            own = [window for window in windows(box)
+                   if window.get("tab") in tabs and window.get("kind") in ("Foreign", "LocalApp")]
+            res.facts[f"browser_tab_on_{box.letter}"] = [window for window in windows(box)
+                                                         if window.get("tab") in tabs]
+            if own:
+                raise Failed(f"{box.name} opened a Browser of its own in the tab of the window "
+                             f"that runs on B: {json.dumps(own)[:600]}")
 
     def answered_in_one_tab(self, b: Box, parties: list[Party], url: str, res: Result) -> None:
         self.serve_form(b)
@@ -1107,13 +1132,15 @@ ip -o addr show dev "$dev"
 
     def window_watched(self, a: Box, b: Box, res: Result) -> None:
         """B's person shares the Browser's window with the workspace, naming it by its tab
-        ("Share a window with the workspace"), and A, their other device, holds its picture in a
-        tab of its own, as a window that runs on B: a share is the workspace's, so nobody asks for
-        it on A. What A's desk lists under the window's own tab is A's own view of it, opened on
-        A, and is left as it is; what B shares is what runs on B, which is what a person
-        reviewing the tab from another machine has to see, and to go on seeing: the step judges
-        by what the two sessions publish of the share, when the first picture came and again
-        some seconds later."""
+        ("Share a window with the workspace"), and A, their other device, holds its picture in
+        the tab its desk lists the window in: a share is the workspace's, so nobody asks for it
+        on A. A Browser window runs only on the device whose engine holds its page, so A's desk
+        lists B's under the window's own tab as a window that runs on B, before anything is
+        shared, and opens no Browser of its own for it; what B shares is what runs on B, which
+        is what a person reviewing the tab from another machine has to see, and to go on seeing:
+        the step judges by what the two sessions publish of the share, when the first picture
+        came and again some seconds later. When the share ends the window is still B's on both
+        desks."""
         # How long after the first picture the share is read again: longer than a plane that
         # lost its relay takes to say so, and than the wait before it asks the relay again.
         stays_live_s = 20
@@ -1213,10 +1240,24 @@ ip -o addr show dev "$dev"
         if not group or not tab or not room:
             raise Failed(f"B's desk does not hold the Browser's window in a workspace it shares: "
                          f"group {group}, tab {tab}, workspace {room}")
-        # What A lists under the window's own tab before anything is shared: its own view of the
-        # window, where the desk's record brought it. The step holds whether it is there or not.
-        res.facts["own_view_on_a_before"] = next((held.get("tile") for _, held in tabs(desk(a))
-                                                  if held.get("id") == tab), None)
+        # What A lists under the window's own tab before anything is shared: the window that
+        # runs on B, as the workspace's layout brought it, and no window of A's own.
+        b_key = (b.identity.get("this_device") or {}).get("device", "")
+
+        def listed_on_a(state: dict | None = None):
+            return next((held.get("tile") for _, held in tabs(state or desk(a))
+                         if held.get("id") == tab), None)
+
+        def runs_on_b(tile) -> bool:
+            hosted = (tile or {}).get("HostedWindow") if isinstance(tile, dict) else None
+            return bool(hosted) and bool(b_key) and hosted.get("host") == b_key
+
+        wait_until(lambda: runs_on_b(listed_on_a()), 60, 2.0)
+        res.facts["listed_on_a_before"] = listed_on_a()
+        if not runs_on_b(res.facts["listed_on_a_before"]):
+            raise Failed("A's desk does not list B's Browser window as a window that runs on B "
+                         f"({b_key[:8]}): under the window's tab it lists "
+                         f"{json.dumps(res.facts['listed_on_a_before'])[:300]}")
         # The desk's own "Share a window" (`share-window`) is another thing: it asks Chat to put a
         # window's record in a channel. The window's picture goes to the workspace's devices
         # through the session's share, which takes the tab and finds the window itself.
@@ -1257,8 +1298,8 @@ ip -o addr show dev "$dev"
 
             def hosted_on_a(state: dict) -> dict | None:
                 """The tab of A's desk that holds B's window as one running on another device: the
-                tab A's session says it pictures the window in (`shown_in`), which is a tab of its
-                own wherever A lists its own view under the window's id."""
+                tab A's session says it pictures the window in (`shown_in`), which is the tab A's
+                desk lists the window in."""
                 watched = next((row for row in shares(state, "watching")
                                 if str(row.get("tab")) == str(tab)), None) or {}
                 shown_in = str(watched.get("shown_in") or tab)
@@ -1290,10 +1331,9 @@ ip -o addr show dev "$dev"
                 "governed_on_b": governed(on_b), "governed_on_a": governed(on_a),
                 "sharing_on_b": shares(on_b, "sharing"), "starting_on_b": shares(on_b, "starting"),
                 "watching_on_a": shares(on_a, "watching"), "received_on_a": shares(on_a, "received"),
-                # What A lists under the window's own id, which is its own view of the window,
-                # and the tab that holds the window B shares.
-                "own_view_on_a": next((held.get("tile") for _, held in tabs(on_a)
-                                       if held.get("id") == tab), None),
+                # What A lists under the window's own id, which is the window that runs on B,
+                # and the tab that pictures it: the same tab.
+                "listed_on_a": listed_on_a(on_a),
                 "hosted_tab_on_a": hosted_on_a(on_a),
                 # The pictures travel the workspace's live plane: how it stands on each end.
                 "live_on_b": plane(on_b), "live_on_a": plane(on_a),
@@ -1347,12 +1387,16 @@ ip -o addr show dev "$dev"
                 elif not seen["hosted_tab_on_a"]:
                     why = ("the window's pictures reached A and its desk holds no tab for the window "
                            f"that runs on B: A received {res.facts['received_on_a'][:300]}; under "
-                           f"the window's own id A lists {res.facts['own_view_on_a'][:200]}")
+                           f"the window's own id A lists {res.facts['listed_on_a'][:200]}")
                 else:
                     why = ("the window's pictures reached A and the tab that holds the window "
                            f"pictures none of them: {res.facts['hosted_tab_on_a'][:300]}; A received "
                            f"{res.facts['received_on_a'][:300]}")
                 raise Failed(f"A's desk never pictured the window B shares: {why}")
+            if str(seen["hosted_tab_on_a"]["tab"]) != str(tab):
+                raise Failed("A pictures the window B shares in a tab of its own, "
+                             f"{seen['hosted_tab_on_a']['tab']}, and not in the tab its desk lists "
+                             f"the window in: there it lists {res.facts['listed_on_a'][:200]}")
             # A share is not a moment. Some seconds on, the window is still received and pictured
             # on A, the workspace's live plane reads open on both, and B still sends the window
             # and waits for nothing: a stream that started and died fails here, by what the two
@@ -1403,6 +1447,22 @@ ip -o addr show dev "$dev"
                 b.vm.invoke(stop["provider"], stop["id"], {"tab": str(tab)})
             except VmError as exc:
                 res.facts["unshared"] = str(exc)[:200]
+        # The share is over and the window is not: B still shows its own live window in the tab,
+        # and A still lists it there as a window that runs on B, with no picture of it.
+
+        def still_b_s() -> bool:
+            on_b = next((held.get("tile") for _, held in tabs(desk(b))
+                         if held.get("id") == tab), None)
+            return isinstance(on_b, dict) and "Foreign" in on_b and runs_on_b(listed_on_a())
+
+        stays = wait_until(still_b_s, 30, 2.0)
+        res.facts["listed_on_a_after"] = listed_on_a()
+        res.facts["listed_on_b_after"] = next((held.get("tile") for _, held in tabs(desk(b))
+                                               if held.get("id") == tab), None)
+        if not stays:
+            raise Failed("the Browser's window did not stay B's once its share ended: B lists "
+                         f"{json.dumps(res.facts['listed_on_b_after'])[:200]} in its tab, and A "
+                         f"{json.dumps(res.facts['listed_on_a_after'])[:200]}")
 
     def stranger(self, b: Box, c: Box, res: Result) -> None:
         # C runs beside B in the place of the person's other devices.
