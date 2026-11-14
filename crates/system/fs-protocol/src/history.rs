@@ -403,7 +403,11 @@ mod tests {
     }
 
     /// Write `version` and its attribution where the filesystem keeps them.
-    fn write(doc: &mut automerge::AutoCommit, version: &FileVersionV1, agent: Option<&str>) {
+    fn write(
+        doc: &mut automerge::AutoCommit,
+        version: &FileVersionV1,
+        agent: Option<crate::files::AttributedWriter>,
+    ) {
         let root = match doc.get(automerge::ROOT, HISTORY_KEY) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
             _ => doc
@@ -426,11 +430,11 @@ mod tests {
             collab_types::canonical_bytes(version).unwrap(),
         )
         .unwrap();
-        if let Some(actor) = agent {
+        if let Some(writer) = agent {
             let attributed = FileVersionAttributionV1 {
                 version_id: version.id,
                 attribution: crate::files::FileAttributionV1 {
-                    actor: actor.to_owned(),
+                    writer,
                     label: "Claude Code".into(),
                     color: [1, 2, 3],
                 },
@@ -455,13 +459,21 @@ mod tests {
         let first = version(record, 1, None);
         write(&mut doc, &first, None);
         let second = version(record, 2, Some(first.id));
-        write(&mut doc, &second, Some("agent:claude:abc"));
+        write(
+            &mut doc,
+            &second,
+            Some(crate::files::AttributedWriter::agent_session(
+                "claude", "abc",
+            )),
+        );
 
         let (latest, attribution) = latest(&doc, record).unwrap();
         assert_eq!(latest.id, second.id);
         assert_eq!(
-            attribution.map(|attributed| attributed.attribution.actor),
-            Some("agent:claude:abc".into())
+            attribution.map(|attributed| attributed.attribution.writer),
+            Some(crate::files::AttributedWriter::agent_session(
+                "claude", "abc"
+            ))
         );
         assert_eq!(records(&doc), vec![record]);
         let projection = record_history_projection(&doc, record).unwrap();

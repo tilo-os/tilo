@@ -681,7 +681,7 @@ mod folder_rows_tests {
         doc: &mut AutoCommit,
         record_id: fs_protocol::FileRecordId,
         id: u128,
-        agent: Option<&str>,
+        agent: Option<fs_protocol::AttributedWriter>,
     ) {
         let version = FileVersionV1 {
             id: FileVersionId(Uuid::from_u128(id)),
@@ -714,11 +714,11 @@ mod folder_rows_tests {
             collab_types::canonical_bytes(&version).unwrap(),
         )
         .unwrap();
-        if let Some(actor) = agent {
+        if let Some(writer) = agent {
             let attributed = FileVersionAttributionV1 {
                 version_id: version.id,
                 attribution: FileAttributionV1 {
-                    actor: actor.to_owned(),
+                    writer,
                     label: "Claude Code".into(),
                     color: [10, 20, 30],
                 },
@@ -767,8 +767,22 @@ mod folder_rows_tests {
         .unwrap();
         let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
         // One session's run: two versions, minutes apart, coalesced into one row.
-        write_version(&mut doc, record_id, 1, Some("agent:claude:abc"));
-        write_version(&mut doc, record_id, 2, Some("agent:claude:abc"));
+        write_version(
+            &mut doc,
+            record_id,
+            1,
+            Some(fs_protocol::AttributedWriter::agent_session(
+                "claude", "abc",
+            )),
+        );
+        write_version(
+            &mut doc,
+            record_id,
+            2,
+            Some(fs_protocol::AttributedWriter::agent_session(
+                "claude", "abc",
+            )),
+        );
 
         let rows = folder_rows(&doc, &authors(), 100);
         assert_eq!(rows.len(), 1, "one row for the one session's run");

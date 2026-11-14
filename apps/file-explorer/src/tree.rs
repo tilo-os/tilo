@@ -347,7 +347,7 @@ impl TreeBrowser {
             .as_deref()
             .filter(|parent| *parent != ROOT_ID)
             .map(|parent| {
-                let held = self.tree.as_ref().map(WorkspaceRecord::get);
+                let held = self.tree.as_ref().map(PersonRecord::get);
                 let path = match held.as_deref() {
                     Some(tree) => Self::path_of(tree, parent),
                     None => String::new(),
