@@ -173,7 +173,8 @@ const openApp = async app => {
   await key('Enter', 'Enter', 0, '\r');
   await sleep(3000);
 };
-const strip = seen => seen.kind === 'strip';
+// An empty place of the strip: a gap between windows, or the whole desk while none is open.
+const strip = seen => ['strip', 'desk'].includes(seen.kind);
 await dropStep('1-files-on-strip', ['plan.pdf', 'photo.png', 'notes.md', 'data.json'].map(file), strip);
 await dropStep('2-folder-on-strip', [file('docs')], strip);
 await dropStep('3-file-onto-files', [file('notes.md')], seen => /^Add to /.test(seen.note ?? ''));
