@@ -1682,6 +1682,7 @@ impl Apps {
         // there, and would not join once the host admits the device: it is not started, and
         // whoever asked is told why at once.
         if let Some(reason) = self.awaited(workspace) {
+            tracing::warn!(app = %planned.app, %workspace, %reason, "a launch was refused: this device is not admitted there yet");
             return Err(DoorError::Failed(reason));
         }
         let launches = self.state.borrow().launches.clone();
@@ -1710,6 +1711,7 @@ impl Apps {
                 if let Some(timed) = timed {
                     tilo_startup_metrics::launch_failed(timed);
                 }
+                tracing::warn!(app = %planned.app, %workspace, %error, "a launch did not start");
                 return Err(DoorError::Failed(error.to_string()));
             }
         };
