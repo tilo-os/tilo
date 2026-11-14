@@ -1332,12 +1332,25 @@ impl TileSource for Tiles {
     fn showing(&self, app: &str) -> Option<TabId> {
         let (app, record) = tilo_desktop_search::launched_record(app)?;
         let kind = application(app)?.record_kind.clone();
-        self.shared
+        let bound = self
+            .shared
             .records
             .borrow()
             .iter()
             .find(|(_, checkout)| checkout.id.route() == record && checkout.kind == kind)
-            .map(|(tab, _)| *tab)
+            .map(|(tab, _)| *tab);
+        // A window the shared desk shows on the record, whose record this page
+        // has not bound yet (its bytes are still on their way): the same
+        // window, not a second one on the same document. A record launch names
+        // a record by its own id, never the app's primary record.
+        bound.or_else(|| {
+            self.shared
+                .unbound
+                .borrow()
+                .iter()
+                .find(|(_, held)| held.as_str() == record)
+                .map(|(tab, _)| *tab)
+        })
     }
 
     fn window_record(&self, tab: TabId) -> Option<(String, String)> {
