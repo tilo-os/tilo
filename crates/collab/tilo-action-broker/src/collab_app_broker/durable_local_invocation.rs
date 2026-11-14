@@ -171,7 +171,6 @@ impl LocalCaller {
                         task_id: task.clone(),
                         agent_id: agent.clone(),
                         epoch: *epoch,
-                        revision: 0,
                         starter: None,
                         turn: None,
                         origin: None,

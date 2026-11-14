@@ -90,7 +90,7 @@ pub(super) fn child_provenance(
     )>,
     BrokerError,
 > {
-    if runtime_collab::native_task_revision(lease).is_none() {
+    if runtime_collab::native_task_lease(lease).is_none() {
         return Ok(None);
     }
     let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
@@ -250,7 +250,7 @@ impl AppBrokerState {
             .ok_or_else(|| BrokerError::failed("task action unavailable".into()))?;
         let witness = self
             .native_store_witness(
-                (&run, reask.lease, confirmation.is_some()),
+                (&run, confirmation.is_some()),
                 &offered,
                 target.argument,
                 reask.caller,
@@ -506,20 +506,7 @@ impl AppBrokerState {
             return self.native_host_observation(run, target, caller, invocation);
         };
         let requirement = caller.authorize_retained_task(self, (&record, &run.native.actor()?))?;
-        // The agent hears how its own report ending the run went: that
-        // report is what made the run inactive, so it is not judged again
-        // against the run it ended.
-        let current = self.tracker_run_of(run)?;
-        let own_ending = !current.active
-            && current.finished_by_agent
-            && super::tracker_runs::reports_on_own_issue(
-                &run.task_id,
-                (&requirement.app, &requirement.resource),
-                target.argument,
-            );
-        if !own_ending {
-            self.authorize_task_action(run, &requirement)?;
-        }
+        self.authorize_task_action(run, &requirement)?;
         let (app, record_id) = if target.provider.is_empty() {
             let offered = self
                 .surfaces
@@ -752,13 +739,5 @@ impl AppBrokerState {
             }
         };
         self.refresh_tracker_runs(&workspaces);
-    }
-
-    pub(super) fn native_task_status(
-        &self,
-        run: &PendingTaskRun,
-        lease: &str,
-    ) -> Result<runtime_collab::TaskRunStatus, String> {
-        self.tracker_status(run, lease)
     }
 }

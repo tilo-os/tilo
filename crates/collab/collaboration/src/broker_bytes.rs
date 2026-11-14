@@ -637,10 +637,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "TaskRunReportResult"
         }
-        CollabEvent::TaskRunControl { control, .. } => {
-            serialized_bytes(control, &mut meter);
-            "TaskRunControl"
-        }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
             "WorkspaceControl"

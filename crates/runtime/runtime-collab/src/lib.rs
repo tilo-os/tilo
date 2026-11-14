@@ -25,8 +25,6 @@
     )
 )]
 
-pub mod task_control;
-pub use task_control::{TaskDirection, TaskRunControl, TaskRunStatus, native_task_revision};
 use tilo_sort::CompactSort as _;
 
 pub mod browser_service_sessions;
@@ -743,15 +741,20 @@ pub struct TaskRunEnvelope {
     /// Host supports bounded typed presentation on authenticated progress reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation_version: Option<u16>,
-    /// Only the broker may mint a policy from the native task owner.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
     /// What the run's agent may spend on the day its keeper counts. Absent for
     /// a host that reads no record of the workspace's agents, and from older
     /// senders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend: Option<TaskRunSpend>,
+}
+
+/// The lease a run's agent echoes on every report, step and cancellation:
+/// `native:` and the run's digest. `None` for anything else.
+#[must_use]
+pub fn native_task_lease(lease: &str) -> Option<&str> {
+    let digest = lease.strip_prefix("native:")?;
+    (digest.len() == 32 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(digest)
 }
 
 /// What an agent may spend on one day, as its keeper's device counted it.
@@ -848,10 +851,6 @@ pub use collab_types::task_presentation::{TaskPresentation, TaskPresentationFini
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskRunUpdate {
     Accepted,
-    /// Sent only after the exact direction page entered the next planning context.
-    DirectionsApplied {
-        revision: u64,
-    },
     Progress {
         message: String,
         /// Private full model-turn snapshot. With `Some`, the native owner

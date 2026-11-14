@@ -201,10 +201,6 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         request_id: u64,
         result: Result<bool, String>,
     },
-    TaskRunControl {
-        request_id: u64,
-        control: crate::TaskRunControl,
-    },
     TaskRunReportResult {
         request_id: u64,
         result: Result<(), String>,

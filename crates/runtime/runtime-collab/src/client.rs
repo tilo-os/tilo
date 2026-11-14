@@ -26,7 +26,6 @@ use crate::{
 };
 use crate::{
     MAX_NEARBY_TRANSFER_WIRE_BYTES, MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES,
-    TaskRunControl, TaskRunStatus,
 };
 
 /// Where a connection's calls hand the host descriptors, if it can.
@@ -1172,33 +1171,10 @@ impl ChannelHandle {
     ///
     /// Returns [`NotAvailable`] if the host refuses or is unavailable.
     pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
-        Ok(self.task_run_status(run_id, lease).await?.cancelled)
-    }
-
-    /// Observe cancellation and bounded steering on this authenticated run.
-    pub async fn task_run_status(
-        &self,
-        run_id: u64,
-        lease: &str,
-    ) -> Result<TaskRunStatus, NotAvailable> {
-        let Reply::TaskCancelled { cancelled, control } =
-            self.task(run_id, lease, TaskCall::Cancelled).await?
-        else {
-            return Err(refused("unexpected task status answer"));
-        };
-        let control = match control.filter(|json| !json.is_empty()) {
-            None => None,
-            Some(json) => {
-                if json.len() > TaskRunControl::MAX_BYTES {
-                    return Err(refused("oversized task direction page"));
-                }
-                let control: TaskRunControl = serde_json::from_str(&json)
-                    .map_err(|_| refused("invalid task direction page"))?;
-                control.validate().map_err(refused)?;
-                Some(control)
-            }
-        };
-        Ok(TaskRunStatus { cancelled, control })
+        match self.task(run_id, lease, TaskCall::Cancelled).await? {
+            Reply::Cancelled(cancelled) => Ok(cancelled),
+            _ => Err(refused("unexpected task status answer")),
+        }
     }
 
     async fn invocation(&self, id: u64, call: InvocationCall) -> Result<Reply, NotAvailable> {

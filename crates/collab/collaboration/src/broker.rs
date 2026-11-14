@@ -7015,18 +7015,9 @@ async fn dispatch_sdk_request(
         } => {
             let result = route
                 .channel
-                .task_run_status(run_id, &lease)
+                .task_run_cancelled(run_id, &lease)
                 .await
-                .map_err(|error| error.to_string())
-                .map(|status| {
-                    if let Some(control) = status.control {
-                        let _ = inbound_tx.send_reply(CollabEvent::TaskRunControl {
-                            request_id,
-                            control,
-                        });
-                    }
-                    status.cancelled
-                });
+                .map_err(|error| error.to_string());
             let _ = inbound_tx.send_reply(CollabEvent::TaskRunCancellation { request_id, result });
         }
     }

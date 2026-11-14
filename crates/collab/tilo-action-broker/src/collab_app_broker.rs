@@ -766,7 +766,6 @@ struct TaskRunEnvelope {
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
-    execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     action_context: tilo_actions::ActionContext,
     spend: Option<runtime_collab::TaskRunSpend>,
 }
@@ -2788,8 +2787,6 @@ pub struct AppBrokerState {
     /// action the person has not let it take. Nobody, until the host
     /// installs its sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
-    /// The notices of runs' questions given, by handle, with their workspace.
-    run_question_notices: Mutex<HashMap<String, String>>,
     /// A conversation turn's questions, waiting for the person's answer on
     /// the system's sheet ([`conversation_ask`]).
     conversation_asks: std::sync::Arc<conversation_ask::ConversationAsks>,
@@ -3560,7 +3557,6 @@ impl AppBrokerState {
                 ),
                 app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 app_action_consent: RwLock::new(None),
-                run_question_notices: Mutex::new(HashMap::new()),
                 conversation_asks: std::sync::Arc::new(
                     conversation_ask::ConversationAsks::default(),
                 ),
@@ -6253,9 +6249,9 @@ impl AppBrokerState {
             .filter(|run| {
                 run.peer_id == peer_id
                     && run.agent_id == agent_id
-                    && runtime_collab::native_task_revision(&run.lease)
-                        .zip(runtime_collab::native_task_revision(lease))
-                        .is_some_and(|(old, new)| old.0 == new.0)
+                    && runtime_collab::native_task_lease(lease).is_some()
+                    && runtime_collab::native_task_lease(lease)
+                        == runtime_collab::native_task_lease(&run.lease)
                     && !run.terminal
             })
             .cloned()
@@ -6274,7 +6270,7 @@ impl AppBrokerState {
         lease: &str,
     ) -> Result<bool, String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        Ok(self.native_task_status(&run, lease)?.cancelled)
+        self.tracker_status(&run)
     }
 
     fn record_task_run_update(
@@ -6320,19 +6316,12 @@ impl AppBrokerState {
             .offered_by(target_peer, resource, action)
             .filter(|(surface, _)| surface.route.cluster_id == run.cluster_id)
             .ok_or("the task action is no longer published in this workspace")?;
-        self.admit_task_action(
-            &run,
-            lease,
-            target,
-            (provenance, confirmed),
-            (surface, descriptor),
-        )
+        self.admit_task_action(&run, target, (provenance, confirmed), (surface, descriptor))
     }
 
     fn admit_task_action(
         &self,
         run: &PendingTaskRun,
-        lease: &str,
         target: runtime_collab::TaskAction<'_>,
         (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
         offered: (PublishedSurface, PublishedAction),
@@ -6366,7 +6355,6 @@ impl AppBrokerState {
             .asks_for_argument(contract_argument.as_deref().or(argument));
         // A run pauses for its person where an action asks first
         // (`native_task_confirmation`).
-        let binding = run.native.clone();
         let requirement = crate::services::NativeTaskActionRequirement {
             binding: run.native.clone(),
             app: surface.app_id.clone(),
@@ -6380,10 +6368,6 @@ impl AppBrokerState {
         };
         let (caller, invocation) =
             provenance.ok_or("native task action requires authenticated original caller")?;
-        let mut current = binding;
-        current.revision = runtime_collab::native_task_revision(lease)
-            .ok_or("invalid native lease")?
-            .1;
         let mut start = || {
             self.start_native_task_invocation(
                 run,
@@ -6394,9 +6378,7 @@ impl AppBrokerState {
                 (confirmed.0 || consequential, confirmed.1),
             )
         };
-        let report =
-            tracker_runs::reports_on_own_issue(&run.task_id, (&surface.app_id, resource), argument);
-        self.admit_tracker_action(run, (&current, report), &requirement, &mut start)
+        self.admit_tracker_action(run, &requirement, &mut start)
     }
 
     fn disconnect_device_media(&self, peer_id: u64) {
@@ -6944,7 +6926,6 @@ impl AppBrokerState {
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
-            | CollabEvent::TaskRunControl { .. }
             | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
@@ -8916,7 +8897,6 @@ fn handle_signed_op_send_for_artifact(
             if envelope.kind == collab_types::OpKind::Redaction {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
-            crate::services::tracker_written(route);
             // Republishing is not vouching.
             if !state.durable_owner_required {
                 state.publisher().signed_document(route, envelope.clone());
@@ -9168,7 +9148,6 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
         presentation_version: Some(1),
         lease: run.lease,
         planning: run.planning,
-        execution_budget: run.execution_budget,
         action_context: serde_json::to_value(run.action_context)
             .map_err(|error| BrokerError::failed(error.to_string()))?,
         spend: run.spend,

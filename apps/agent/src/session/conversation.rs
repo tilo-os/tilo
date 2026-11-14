@@ -87,12 +87,9 @@ pub(super) fn validate(run: &runtime_collab::TaskRunEnvelope) -> Result<Cause, S
         || run.instruction().trim().is_empty()
         || run.instruction().len() > 32 * 1024
         || run.lease.len() > 128
-        || runtime_collab::native_task_revision(&run.lease).is_none()
+        || runtime_collab::native_task_lease(&run.lease).is_none()
     {
         return Err("The run has an invalid title, instruction, or lease".into());
-    }
-    if let Some(budget) = run.execution_budget {
-        budget.validate().map_err(str::to_owned)?;
     }
     let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
         .map_err(|_| "The run has an invalid action context".to_string())?;
@@ -158,9 +155,7 @@ impl Session {
             // Progress narrates the run to its own record; the reply shows
             // the operations it dispatched instead. What a run spent is its
             // keeper's count. Neither is a state of the turn.
-            TaskRunUpdate::Progress { .. }
-            | TaskRunUpdate::DirectionsApplied { .. }
-            | TaskRunUpdate::Spent { .. } => Ok(()),
+            TaskRunUpdate::Progress { .. } | TaskRunUpdate::Spent { .. } => Ok(()),
             TaskRunUpdate::Succeeded { .. } => {
                 let answer = self
                     .record
@@ -336,12 +331,7 @@ impl Session {
         let Some(child) = self.record_work_action(&arguments) else {
             return Ok(());
         };
-        // Recording is not part of the run's time budget: a record refused
-        // for running out of time would drop the last thing the turn has to
-        // say.
-        let deadline = self.task_deadline.take();
         let started = self.start_task_invocation(run, &child, &arguments);
-        self.task_deadline = deadline;
         match started? {
             Ok(following) if ENDS.contains(&state) => {
                 // Started, not followed: the record ends the turn, and the
@@ -450,10 +440,9 @@ mod tests {
             instruction: Some("Split the launch checklist into subtasks".into()),
             subject: None,
             run_id: 7,
-            lease: "native:00000000000000000000000000000000:0".into(),
+            lease: "native:00000000000000000000000000000000".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
             presentation_version: Some(1),
-            execution_budget: None,
             spend: None,
             action_context: Value::Null,
         };

@@ -1,4 +1,4 @@
-//! Steering on the existing native task lease. Receipt alone never acknowledges it.
+//! A native task's running steps, followed by re-asks their host holds.
 use super::{
     CollabEvent, CollabRequest, Duration, Following, Instant, Result, Session, StepOutcome,
     TaskActionStop, Uuid,
@@ -19,14 +19,9 @@ const TURN_PUMP: Duration = Duration::from_millis(100);
 #[derive(Default)]
 pub(super) struct NativeTaskState {
     pub run_id: u64,
-    pub task_id: String,
-    pub base: String,
-    pub revision: u64,
     /// How many children each request (by [`child_request_digest`]) has
     /// started in this run so far.
     pub children: std::collections::HashMap<[u8; 32], u32>,
-    pub epoch: Option<u64>,
-    pub pending: Option<runtime_collab::TaskRunControl>,
 }
 
 /// How a native task's child is observed: by re-asking for it with its
@@ -138,7 +133,7 @@ impl Session {
             request_id,
             invocation: following.invocation,
             run_id: run.run_id,
-            lease: self.task_lease(run),
+            lease: run.lease.clone(),
             peer_id: following.action.peer_id,
             provider: following.action.provider.clone(),
             resource: following.action.resource.clone(),
@@ -217,88 +212,8 @@ impl Session {
         self.link.defer(deferred);
         anyhow::bail!("native task report has no durable acknowledgement")
     }
-    pub(super) fn task_lease(&self, run: &runtime_collab::TaskRunEnvelope) -> String {
-        match self
-            .native_task
-            .as_ref()
-            .filter(|state| state.run_id == run.run_id)
-        {
-            Some(state) => format!("{}:{}", state.base, state.revision),
-            None => run.lease.clone(),
-        }
-    }
-
-    pub(super) fn observe_native_control(
-        &mut self,
-        control: runtime_collab::TaskRunControl,
-    ) -> Result<()> {
-        control.validate().map_err(anyhow::Error::msg)?;
-        let state = self
-            .native_task
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("unexpected native task control"))?;
-        if control.task_id != state.task_id
-            || state.epoch.is_some_and(|epoch| epoch != control.run_epoch)
-        {
-            anyhow::bail!("native task control belongs to another run or frontier");
-        }
-        // A poll sent before the agent took messages in is answered from
-        // the frontier it was sent at: what it holds was taken in already,
-        // and anything newer comes with the next poll from the new frontier.
-        if control.from_revision < state.revision {
-            return Ok(());
-        }
-        if control.from_revision != state.revision {
-            anyhow::bail!("native task control belongs to another instruction frontier");
-        }
-        state.epoch = Some(control.run_epoch);
-        if control.has_more {
-            anyhow::bail!(crate::i18n::t("agent-fail-direction-pages"));
-        }
-        if !control.directions.is_empty() {
-            state.pending = Some(control);
-        }
-        Ok(())
-    }
-
-    pub(super) fn incorporate_native_directions(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        conversation: &mut crate::model::Conversation,
-    ) -> Result<()> {
-        let Some(control) = self
-            .native_task
-            .as_mut()
-            .and_then(|state| state.pending.take())
-        else {
-            return Ok(());
-        };
-        // The attributed, exact source is now in the next model request. A
-        // concurrent newer direction still fences every child at the owner.
-        let text = serde_json::to_string(&control.directions)?;
-        conversation.push_user(&format!(
-            "Authenticated workspace task directions (apply before further operations):\n{text}"
-        ));
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::DirectionsApplied {
-                revision: control.latest_revision,
-            },
-        )?;
-        if let Some(state) = self.native_task.as_mut() {
-            state.revision = control.latest_revision;
-        }
-        self.step_settled();
-        // This round trip observes durable acknowledgement; logging a failed
-        // report in the SDK cannot silently mint a usable revised lease.
-        if self.task_cancelled(run)? {
-            anyhow::bail!("task cancelled while incorporating directions");
-        }
-        Ok(())
-    }
-
     /// The stable id of the native child that performs `action` with
-    /// `arguments` in `run`, at the run's instruction revision.
+    /// `arguments` in `run`.
     ///
     /// The id is derived from the request itself, plus how many identical
     /// requests this run made before it. A run delivered again after its
@@ -318,7 +233,7 @@ impl Session {
             .as_mut()
             .filter(|state| state.run_id == run.run_id)
             .ok_or_else(|| anyhow::anyhow!("a step outside the run it belongs to"))?;
-        let request = child_request_digest(run.run_id, state.revision, action, arguments);
+        let request = child_request_digest(run.run_id, action, arguments);
         let occurrence = state.children.entry(request).or_default();
         let bytes = blake3::Hasher::new_derive_key("Tilo native task child v2")
             .update(&request)
@@ -333,18 +248,15 @@ impl Session {
     }
 }
 
-/// What names one request of a native task: its run, the instruction
-/// revision, the exact target and the arguments (digested canonically, so
-/// key order does not matter).
+/// What names one request of a native task: its run, the exact target and
+/// the arguments (digested canonically, so key order does not matter).
 fn child_request_digest(
     run_id: u64,
-    revision: u64,
     action: &super::TaskAction,
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new_derive_key("Tilo native task child request v1");
+    let mut hasher = blake3::Hasher::new_derive_key("Tilo native task child request v2");
     hasher.update(&run_id.to_le_bytes());
-    hasher.update(&revision.to_le_bytes());
     hasher.update(&action.peer_id.to_le_bytes());
     for part in [&action.provider, &action.resource, &action.action] {
         hasher.update(&(part.len() as u64).to_le_bytes());

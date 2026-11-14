@@ -216,7 +216,6 @@ fn accept(
     if envelope.kind == OpKind::Redaction {
         apply_redaction_from_envelope(&envelope, artifact, channels);
     }
-    crate::services::tracker_written(route);
     fan_out(fanout, envelope, route, from_user_id);
     if first_of_the_record {
         announce_record(fanout, route);

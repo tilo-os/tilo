@@ -6,8 +6,7 @@ use super::super::*;
 use crate::certificate_authority::CertificateAuthority;
 use crate::policy_clock::{OwnerPolicyClock, PolicyOrigin};
 use crate::services::{
-    NativeTaskActionRequirement, TrackerDirection, TrackerRun, TrackerRuns, WorkspaceAuthority,
-    WorkspaceMemberships,
+    NativeTaskActionRequirement, TrackerRun, TrackerRuns, WorkspaceAuthority, WorkspaceMemberships,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_peer_state::owner_commit::{
@@ -61,8 +60,8 @@ struct Native {
     listed: Mutex<Vec<crate::services::ListedAgent>>,
 }
 
-/// The issue the fixture's agent runs.
-const ISSUE: &str = "tasks.tracker/issues/release";
+/// The run the fixture's agent works in: an agent door connection's.
+const ISSUE: &str = "so.tilo.session/agent-session/release";
 /// The grant admitting the fixture's agent to read the workspace.
 const AGENT_GRANT: &str = "agent-member:scribe";
 fn workspace_id() -> tilo_desktop_model::WorkspaceId {
@@ -507,18 +506,6 @@ impl Fixture {
         );
         self.state.refresh_native_task_delivery();
     }
-    /// The person sends the run a message.
-    fn direct(&self, text: &str) {
-        self.on_run(|run| {
-            run.directions.push(TrackerDirection {
-                id: format!("message-{}", run.directions.len().saturating_add(1)),
-                author: hex::encode(self.native.certificate.user_public_key),
-                text: text.into(),
-                at_ms: 1_000,
-                incorporated: false,
-            });
-        });
-    }
     /// The person stops the run.
     fn stop(&self) {
         self.on_run(|run| run.active = false);
@@ -573,10 +560,7 @@ impl Fixture {
                 starter: hex::encode(self.native.certificate.user_public_key),
                 active: true,
                 finished_by_agent: false,
-                paused_through: None,
-                budget: None,
                 subject: None,
-                directions: Vec::new(),
                 turn: None,
                 question: None,
                 delegation: None,
@@ -829,7 +813,7 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
             let run = delivered(&agent).await;
             let (_target, stream) = notes_target(&f).await;
             grant_notes(&f);
-            let other = "tasks.tracker/issues/other".to_owned();
+            let other = "so.tilo.session/agent-session/other".to_owned();
             f.approve_issue(&other);
             put_grant(
                 &f,
@@ -1035,8 +1019,8 @@ async fn a_native_run_is_held_to_its_issues_grants() {
         .await;
 }
 
-/// A failed run ends with its messages; the person's next approval is a new
-/// run of the issue, delivered as its own, and the old run reads as replaced.
+/// A failed run ends; the person's next approval is a new run of the issue,
+/// delivered as its own, and the old run reads as replaced.
 #[tokio::test(flavor = "current_thread")]
 async fn a_failed_run_is_replaced_by_the_next_approval_and_reads_as_replaced() {
     tokio::task::LocalSet::new()
@@ -1045,12 +1029,6 @@ async fn a_failed_run_is_replaced_by_the_next_approval_and_reads_as_replaced() {
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            f.direct("Ask me before changing the public API");
-            let control = observed_control(&agent, &run).await;
-            assert_eq!(
-                control.directions[0].text,
-                "Ask me before changing the public API"
-            );
             report(
                 &agent,
                 &run,
@@ -1070,9 +1048,7 @@ async fn a_failed_run_is_replaced_by_the_next_approval_and_reads_as_replaced() {
                     .is_err(),
                 "the replaced run no longer reads"
             );
-            let control = observed_control(&agent, &restarted).await;
-            assert_eq!(control.run_epoch, 2);
-            assert!(control.directions.is_empty(), "the new run starts afresh");
+            assert_eq!(restarted.task_id, run.task_id);
             drop(f);
         })
         .await;
@@ -1155,16 +1131,9 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
-            let budget = collab_types::task_budget::TaskExecutionBudget {
-                turn_ms: 5000,
-                total_ms: 20000,
-                max_turns: None,
-            };
             f.approve();
-            f.on_run(|run| run.budget = Some(budget));
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            assert_eq!(run.execution_budget, Some(budget));
             let replaced = delivered(&agent).await;
             assert_eq!(run, replaced);
             let (_target, _stream) = notes_target(&f).await;
@@ -1328,11 +1297,10 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
         .await;
 }
 
-/// Nothing runs until the person approves; a message to the run stays
-/// pending until its agent took it in, also across a reconnect, and an agent
-/// removed from the workspace reads its run no more.
+/// Nothing runs until the person approves; the run survives its agent's
+/// reconnect, and an agent removed from the workspace reads its run no more.
 #[tokio::test(flavor = "current_thread")]
-async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied() {
+async fn native_approved_run_survives_a_reconnect_and_ends_with_its_agent() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -1342,30 +1310,20 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
             assert_eq!(run.task_id, f.task);
-            assert_eq!(run.execution_budget, None);
             report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
                 .await
                 .unwrap();
-            f.direct("Keep compatibility examples");
-            let control = observed_control(&agent, &run).await;
-            assert_eq!(control.directions[0].text, "Keep compatibility examples");
-            assert_eq!(control.applied_revision, 0);
             let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(5100))
                     .await
-                    .is_err(),
-                "a run acts only once it took in every message to it"
+                    .is_ok()
             );
-            assert_eq!(crate::collab_app_broker::unread_invocations(200), 0);
-            f.on_run(|run| run.directions[0].incorporated = true);
             f.state.remove_connection(100);
             let reconnect = f.channel(101, true);
             let resumed = delivered(&reconnect).await;
             assert_eq!(resumed.run_id, run.run_id);
-            let control = observed_control(&reconnect, &resumed).await;
-            assert_eq!(control.applied_revision, 1);
             f.remove_agent();
             assert!(
                 invoke(&reconnect, &resumed, uuid::Uuid::from_u128(5101))
@@ -1376,18 +1334,6 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
             drop(f);
         })
         .await;
-}
-
-async fn observed_control(
-    channel: &runtime_collab::ChannelHandle,
-    run: &runtime_collab::TaskRunEnvelope,
-) -> runtime_collab::TaskRunControl {
-    channel
-        .task_run_status(run.run_id, &run.lease)
-        .await
-        .unwrap()
-        .control
-        .unwrap()
 }
 
 /// Re-ask for the child `invocation` and let the broker hold the answer for

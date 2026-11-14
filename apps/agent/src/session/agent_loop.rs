@@ -29,11 +29,9 @@
 //!   until a step moves on ([`Session::follow_native`]), not on a timer;
 //! * the catalogue survey is rebuilt only when the broker republishes it.
 //!
-//! Every bound is enforced here, not asked for: the run's budget (model
-//! turns, wall-clock time, one turn's time) as the run sets it
-//! (`execution_budget`), and the runner's default budget without one. A long
-//! turn keeps within its model's context by compacting what it read long ago
-//! ([`compaction`]).
+//! Every bound is enforced here, not asked for: one model turn's time, as
+//! the runner sets it. A long turn keeps within its model's context by
+//! compacting what it read long ago ([`compaction`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -359,18 +357,6 @@ fn streamed_call(output: &str, index: usize) -> Option<StreamedCall> {
     })
 }
 
-/// What one run may take. A run has no cap of its own: what bounds it is
-/// what its person set (its issue's budget), else it goes until it is done
-/// or stopped.
-struct RunBudget {
-    /// Its model turns; `None` when nobody limited them.
-    turns: Option<usize>,
-    /// Its whole time; `None` when nobody limited it.
-    total: Option<Duration>,
-    /// The longest one model turn may take.
-    turn: Duration,
-}
-
 /// Durable state of one task's loop.
 pub(super) struct LoopState {
     pub(super) revealed: Revealed,
@@ -392,9 +378,6 @@ pub(super) struct LoopState {
     discovery_turns: usize,
     /// The turn being run.
     turn: usize,
-    /// The most turns the run's budget gives it; `None` when its time alone
-    /// bounds it.
-    turns: Option<usize>,
     /// The item of a many-item request the person was last told the run is
     /// at ([`progress`]).
     progress: Option<progress::Progress>,
@@ -620,7 +603,6 @@ impl LoopState {
             refusals: 0,
             discovery_turns: 0,
             turn: 0,
-            turns: None,
             progress: None,
             failures: HashSet::new(),
             in_flight: Vec::new(),
@@ -1060,40 +1042,17 @@ impl Session {
             .spend
             .clone()
             .map(|allowed| Spending { allowed, run: 0 });
-        self.task_deadline = run.execution_budget.map(|budget| {
-            ui::time::now()
-                .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
-                .unwrap_or_else(ui::time::now)
-        });
         // Each run is its issue's own permission scope: nothing of one
         // reaches the model in another. The conversation holds this run's
-        // turns and authenticated steering only.
+        // turns only.
         let result = self.run_task_loop_with(run, &mut state);
-        self.task_deadline = None;
         self.spending = None;
         result
     }
 
-    /// What `run` may take: its issue's budget (its turns, none when it
-    /// limits only time, and its time). Without one the run has no turn or
-    /// time cap: it goes until it is done or its person stops it, each turn
-    /// bounded only by what one provider call may take.
-    fn run_budget(&self, run: &runtime_collab::TaskRunEnvelope) -> Result<RunBudget, String> {
-        let Some(budget) = run.execution_budget else {
-            return Ok(RunBudget {
-                turns: None,
-                total: None,
-                turn: MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
-            });
-        };
-        budget.validate()?;
-        Ok(RunBudget {
-            turns: budget
-                .max_turns
-                .map(|turns| usize::try_from(turns).unwrap_or(usize::MAX)),
-            total: Some(Duration::from_millis(u64::from(budget.total_ms))),
-            turn: Duration::from_millis(u64::from(budget.turn_ms)),
-        })
+    /// The longest one model turn may take.
+    fn turn_budget(&self) -> Duration {
+        MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1)))
     }
 
     fn run_task_loop_with(
@@ -1112,13 +1071,7 @@ impl Session {
         if let Some(refusal) = self.chooser.refuses_tasks() {
             return Ok(LoopEnd::Failed(Failure::said(refusal)));
         }
-        let (total_budget, turn_budget) = match self.run_budget(run) {
-            Ok(RunBudget { turns, total, turn }) => {
-                state.turns = turns;
-                (total, turn)
-            }
-            Err(error) => return Ok(LoopEnd::Failed(Failure::said(error))),
-        };
+        let turn_budget = self.turn_budget();
         // The answer's own room comes out of the context, so a model whose
         // declared limit is small is compacted harder and one with a large
         // limit is not made to overflow by its answer.
@@ -1126,7 +1079,6 @@ impl Session {
             self.chooser.context_tokens(),
             self.chooser.output_tokens(),
         );
-        let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
@@ -1178,7 +1130,7 @@ impl Session {
         // wrong place can be told apart from one that was never told where.
         tracing::info!(task_id = %run.task_id, %request, "task request");
         self.program_world(run, state)?;
-        let place = program_steps::where_section(run, &state.programs, state.turns);
+        let place = program_steps::where_section(run, &state.programs);
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
             task: format!("{place}\nThe request:\n\n{request}"),
@@ -1193,23 +1145,8 @@ impl Session {
         }
         let mut turn = 0;
         loop {
-            if state.turns.is_some_and(|turns| turn >= turns) {
-                return Ok(LoopEnd::Failed(Failure::said(crate::i18n::t_args(
-                    "agent-fail-turns",
-                    &[("turns", turn.into()), ("actions", state.completed.into())],
-                ))));
-            }
-            let left = total_budget.map(|total| total.saturating_sub(began.elapsed()));
-            if left.is_some_and(|left| left.is_zero()) {
-                return Ok(LoopEnd::Failed(Failure::said(crate::i18n::t(
-                    "agent-fail-time",
-                ))));
-            }
-            // This explicit caller budget comes only from the broker-minted
-            // owner policy; the gateway still enforces its selected-model ceiling.
-            let timeout = left.map_or(turn_budget, |left| left.min(turn_budget));
             state.turn = turn;
-            if let Some(end) = self.run_turn(run, &mut conversation, state, turn, timeout)? {
+            if let Some(end) = self.run_turn(run, &mut conversation, state, turn, turn_budget)? {
                 return Ok(end);
             }
             // What the next turn is sent stays within the model's context:
@@ -1379,7 +1316,6 @@ impl Session {
         if let Some(message) = self.spend_exhausted() {
             return Ok(Some(LoopEnd::Failed(Failure::said(message))));
         }
-        self.incorporate_native_directions(run, conversation)?;
         let body = conversation.body(&tools::typed_loop_definitions());
         // The model starts first. The cancellation poll is a round trip to
         // the host and is not waited for: its answer is read while the model
@@ -1397,14 +1333,6 @@ impl Session {
                 "agent-run-cancelled-before-step",
             ))));
         }
-        if self
-            .native_task
-            .as_ref()
-            .is_some_and(|state| state.pending.is_some())
-        {
-            self.turn = None;
-            return Ok(None);
-        }
         let mut results: HashMap<String, String> = HashMap::new();
         let mut finish: Option<Finishing> = None;
         let mut failed = false;
@@ -1414,15 +1342,6 @@ impl Session {
         let mut stepping = Duration::ZERO;
         let mut validated = false;
         let (body, refused_turn) = loop {
-            if self.task_budget_expired() {
-                let message = self.interrupt_turn_presentation(
-                    run,
-                    &crate::i18n::t("agent-fail-budget"),
-                    &crate::i18n::t("agent-fail-time"),
-                    false,
-                )?;
-                return Ok(Some(LoopEnd::Failed(message)));
-            }
             self.pump_turn_waiting(Duration::from_millis(50));
             self.publish_turn_presentation(run)?;
             self.absorb_catalogue_updates();
@@ -1436,24 +1355,6 @@ impl Session {
                     true,
                 )?;
                 return Ok(Some(LoopEnd::Cancelled(reason.detail().to_owned())));
-            }
-            if self
-                .native_task
-                .as_ref()
-                .is_some_and(|state| state.pending.is_some())
-            {
-                // New directions take the next turn. Steps already running
-                // settle first, as a step in progress always has.
-                self.interrupt_turn_presentation(
-                    run,
-                    &crate::i18n::t("agent-cancel-superseded"),
-                    &crate::i18n::t("agent-failure-cancelled"),
-                    true,
-                )?;
-                if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
-                    return Ok(Some(LoopEnd::Cancelled(message)));
-                }
-                return Ok(None);
             }
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
             // Streamed calls are presentation only. Dispatch the complete batch,
@@ -1505,12 +1406,6 @@ impl Session {
                 }
             }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
-                if self.task_budget_expired() {
-                    self.turn = None;
-                    return Ok(Some(LoopEnd::Failed(Failure::said(crate::i18n::t(
-                        "agent-fail-budget",
-                    )))));
-                }
                 let handling = ui::time::now();
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
                 stepping += handling.elapsed();
@@ -2102,16 +1997,10 @@ impl Session {
                 let catalogue = self.task_catalogue();
                 let mut answer = tools::answer(name, &call.input, &catalogue, &mut state.revealed);
                 if state.discovery_turns >= DISCOVERY_NUDGE {
-                    let left = state.turns.map_or_else(String::new, |turns| {
-                        format!(
-                            " and have {} turn(s) left",
-                            turns.saturating_sub(state.turn + 1)
-                        )
-                    });
                     let _ = std::fmt::Write::write_fmt(
                         &mut answer,
                         format_args!(
-                            "\n(You have spent {} turns only looking things up{left}. Act now: \
+                            "\n(You have spent {} turns only looking things up. Act now: \
                              invoke the operations you need with ids already shown, or finish \
                              with plan listing what you cannot do under `unable`.)",
                             state.discovery_turns

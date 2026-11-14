@@ -188,7 +188,7 @@ async fn plan_step<R: Resource>(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn native_cross_app_approval_steering_stop_and_grants() {
+async fn native_cross_app_approval_run_and_grants() {
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let f = Fixture::new();
@@ -203,9 +203,9 @@ async fn native_cross_app_approval_steering_stop_and_grants() {
             )
             .await;
             let agent = f.channel(100, true);
-            let mut run = approve_journey(&f, &agent, &writer, &settings).await;
-            // Deterministic planner: one Writer operation, a person direction, then
-            // a Settings edit on the revised lease. No model credentials or server.
+            let run = approve_journey(&f, &agent, &writer, &settings).await;
+            // Deterministic planner: one Writer operation, then a Settings edit.
+            // No model credentials or server.
             let first_args = serde_json::json!({
                 "text": "Release checklist: preserve compatibility examples."
             })
@@ -225,7 +225,7 @@ async fn native_cross_app_approval_steering_stop_and_grants() {
                 &edit.arguments,
             )
             .await;
-            steering_journey(&f, &agent, &mut run, &mut settings, &edit.arguments).await;
+            settings_journey(&f, &agent, &run, &mut settings, &edit.arguments).await;
             assert_reopened_resources(&writer, &settings);
             stop_journey(
                 &f,
@@ -302,32 +302,15 @@ async fn writer_journey(
     writer.assert_no_delivery();
 }
 
-async fn steering_journey(
+async fn settings_journey(
     f: &Fixture,
     agent: &runtime_collab::ChannelHandle,
-    run: &mut runtime_collab::TaskRunEnvelope,
+    run: &runtime_collab::TaskRunEnvelope,
     settings: &mut Worker<DesktopControls>,
     settings_args: &serde_json::Map<String, serde_json::Value>,
 ) {
-    let direction = "Keep the compatibility checklist; enable Vim desktop controls for review.";
-    f.direct(direction);
-    let control = observed_control(agent, run).await;
-    assert_eq!(control.directions[0].text, direction);
-    assert_eq!(control.applied_revision, 0);
     permission(f, settings.app, true);
     let second = uuid::Uuid::from_u128(4102);
-    assert!(
-        plan_step(agent, run, settings, second, settings_args)
-            .await
-            .is_err(),
-        "saved direction fences the old plan"
-    );
-    settings.assert_no_delivery();
-    // The agent takes the message in, on the issue.
-    f.on_run(|run| run.directions[0].incorporated = true);
-    assert_eq!(observed_control(agent, run).await.applied_revision, 1);
-    let original_id = run.run_id;
-    run.lease = format!("{}:1", run.lease.rsplit_once(':').unwrap().0);
     let accepted = plan_step(agent, run, settings, second, settings_args)
         .await
         .unwrap();
@@ -339,7 +322,6 @@ async fn steering_journey(
             .1,
         tilo_actions::InvocationUpdate::Succeeded { .. }
     ));
-    assert_eq!(run.run_id, original_id, "steering must not start a new run");
 }
 
 fn assert_reopened_resources(writer: &Worker<Document>, settings: &Worker<DesktopControls>) {

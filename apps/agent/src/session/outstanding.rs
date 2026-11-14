@@ -13,7 +13,7 @@
 use ui::time::{Duration, Instant};
 
 use anyhow::Result;
-use ui::collaboration::{CollabEvent, CollabRequest};
+use ui::collaboration::CollabRequest;
 
 use super::Session;
 use crate::wire::Detached;
@@ -93,7 +93,7 @@ impl Session {
             .send_detached(&CollabRequest::TaskRunCancellation {
                 request_id,
                 run_id: run.run_id,
-                lease: self.task_lease(run),
+                lease: run.lease.clone(),
             })?;
         let cancel = &mut self.outstanding.cancel;
         cancel.polls.push((request_id, cancel.settled));
@@ -107,7 +107,7 @@ impl Session {
         let polls = std::mem::take(&mut self.outstanding.cancel.polls);
         for (request_id, at) in polls {
             match self.link.take_detached(request_id) {
-                Some(reply) => self.settle_cancellation_poll(request_id, reply, at)?,
+                Some(reply) => self.outstanding.cancel.settle(reply, at),
                 None => self.outstanding.cancel.polls.push((request_id, at)),
             }
         }
@@ -128,7 +128,7 @@ impl Session {
                 ));
             };
             self.outstanding.cancel.polls.remove(0);
-            self.settle_cancellation_poll(request_id, reply, at)?;
+            self.outstanding.cancel.settle(reply, at);
         }
         self.cancellation_known()
     }
@@ -137,7 +137,7 @@ impl Session {
     /// settled step: a poll sent since then is reused (waited for if it is
     /// still out), otherwise one is sent and waited for.
     pub(super) fn task_cancelled(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<bool> {
-        let deadline = self.task_wait_deadline(CANCELLATION_WAIT);
+        let deadline = Session::task_wait_deadline(CANCELLATION_WAIT);
         loop {
             if self.cancellation_known()? {
                 return Ok(true);
@@ -161,32 +161,8 @@ impl Session {
         if self.outstanding.cancel.polls.is_empty() {
             return self.cancellation_known();
         }
-        let deadline = self.task_wait_deadline(CANCELLATION_WAIT);
+        let deadline = Session::task_wait_deadline(CANCELLATION_WAIT);
         self.await_cancellation_polls(deadline)
-    }
-
-    fn settle_cancellation_poll(
-        &mut self,
-        request_id: u64,
-        reply: Detached,
-        at: u64,
-    ) -> Result<()> {
-        let controls = self.link.take_queued(|event| {
-            matches!(event, CollabEvent::TaskRunControl { request_id: id, .. } if *id == request_id)
-        });
-        let observed = !controls.is_empty();
-        for event in controls {
-            if let CollabEvent::TaskRunControl { control, .. } = event {
-                self.observe_native_control(control)?;
-            }
-        }
-        if matches!(reply, Detached::Cancellation(Ok(false))) && !observed {
-            return Err(anyhow::anyhow!(
-                "native task control unavailable; refusing further actions"
-            ));
-        }
-        self.outstanding.cancel.settle(reply, at);
-        Ok(())
     }
 }
 

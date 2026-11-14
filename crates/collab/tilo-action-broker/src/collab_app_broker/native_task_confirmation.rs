@@ -45,7 +45,6 @@ impl AppBrokerState {
             .ok_or("the task action is no longer published in this workspace")?;
         self.native_confirmation_for(
             &run,
-            reask.lease,
             (&surface.app_id, &offered),
             (target.resource, target.action),
             target.argument,
@@ -62,7 +61,6 @@ impl AppBrokerState {
     pub(super) fn native_confirmation_for(
         &self,
         run: &PendingTaskRun,
-        lease: &str,
         offered: (&str, &PublishedAction),
         target: (&str, &str),
         argument: Option<&str>,
@@ -71,8 +69,8 @@ impl AppBrokerState {
             // A turn has no issue to hang a question on: its question goes to
             // the person on the system's own sheet
             // ([`super::conversation_ask`]).
-            return self.conversation_confirmation(run, lease, offered, target, argument);
+            return self.conversation_confirmation(run, offered, target, argument);
         }
-        self.tracker_confirmation(run, lease, offered, target, argument)
+        self.tracker_confirmation(run, offered, target, argument)
     }
 }

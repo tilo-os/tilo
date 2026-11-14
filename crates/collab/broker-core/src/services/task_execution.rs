@@ -12,7 +12,6 @@ pub struct NativeTaskBinding {
     pub task_id: String,
     pub agent_id: String,
     pub epoch: u64,
-    pub revision: u64,
     /// The person whose approval started the run, as the owner recorded it
     /// from their device's certificate: the run's actions are admitted as
     /// the agent acting for them. `None` where only a record of an earlier
@@ -259,23 +258,6 @@ fn not_allowed(kind: tilo_action_policy::ActionKind, whose: &str) -> String {
     )
 }
 
-/// The resource prefix of an issue in the Tasks app's tracker. A run whose
-/// task id is an issue's address is that issue's run, kept in the Tasks
-/// app's record ([`TrackerRuns`]) rather than in the workspace's task records.
-pub const TRACKER_ISSUE_PREFIX: &str = "tasks.tracker/issues/";
-/// The application that keeps the tracker.
-pub const TRACKER_APP: &str = "so.tilo.tasks";
-/// The tracker's own resource, where its verbs are invoked with the issue
-/// they act on.
-pub const TRACKER_RESOURCE: &str = "tasks.tracker";
-/// The tracker's record: the app's one record of a workspace, its package primary.
-pub const TRACKER_RECORD: &str = "";
-
-#[must_use]
-pub fn is_tracker_issue(task_id: &str) -> bool {
-    task_id.starts_with(TRACKER_ISSUE_PREFIX)
-}
-
 /// The id prefix of the answers a person gave for `issue`'s runs: what the
 /// sheet records on the issue, and what its runs are decided by.
 #[must_use]
@@ -346,18 +328,6 @@ pub fn is_agent_session(task_id: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
-}
-
-/// A message to a run, in the issue's thread: steering the run reads.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TrackerDirection {
-    /// The message's id in the thread.
-    pub id: String,
-    pub author: String,
-    pub text: String,
-    pub at_ms: i64,
-    /// Its run's agent already took it in.
-    pub incorporated: bool,
 }
 
 /// What a person answered a run's question.
@@ -456,10 +426,10 @@ pub fn issue_answer_scope(
     }
 }
 
-/// An agent's run of one issue, as the Tasks app's record holds it.
+/// An agent's run, as the tracker that holds it names it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackerRun {
-    /// The issue's resource address (`tasks.tracker/issues/<id>`).
+    /// The run's address: the conversation turn's message it answers.
     pub issue: String,
     pub title: String,
     /// What the agent is asked: the issue's title and description.
@@ -475,15 +445,9 @@ pub struct TrackerRun {
     /// rather than by its person's Stop or a newer run: its agent may still
     /// hear how its own last steps ended, and acts no more.
     pub finished_by_agent: bool,
-    /// Where a person paused it: the messages to it its agent had taken in
-    /// then. Its agent takes no new step until a person lets it go on.
-    pub paused_through: Option<u64>,
-    pub budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     /// What the issue is about, when it was asked about a selection: where
     /// to act, granting nothing.
     pub subject: Option<tilo_actions::SelectionSubject>,
-    /// The messages to this run, in thread order.
-    pub directions: Vec<TrackerDirection>,
     /// What the run asks or last asked its person.
     pub question: Option<TrackerQuestion>,
     /// The turn the run's agent acts inside: the person's message in a
@@ -509,24 +473,6 @@ impl TrackerRun {
                 "the run's agent certificate does not decode: {error}"
             )),
         }
-    }
-
-    /// How many of the run's messages its agent took in: messages are taken
-    /// in in order, so this is the revision the agent's steering reached.
-    #[must_use]
-    pub fn applied_revision(&self) -> u64 {
-        let applied = self
-            .directions
-            .iter()
-            .take_while(|direction| direction.incorporated)
-            .count();
-        u64::try_from(applied).unwrap_or(u64::MAX)
-    }
-
-    /// The revision of the run's newest message.
-    #[must_use]
-    pub fn latest_revision(&self) -> u64 {
-        u64::try_from(self.directions.len()).unwrap_or(u64::MAX)
     }
 }
 
@@ -620,9 +566,8 @@ pub trait TrackerRuns: Send + Sync {
     }
 
     /// Whether `run` asks its person on this host's own sheet
-    /// (the host's consent prompter) and keeps its
-    /// question itself ([`Self::keep_question`]), rather than on its Tasks
-    /// issue: a run with no issue to ask on, as an agent door connection's.
+    /// (the host's consent prompter) and keeps its question itself
+    /// ([`Self::keep_question`]), as an agent door connection's run does.
     /// Its caller is asked through [`tilo_actions::remote::ActionHost::confirm`].
     fn asks_on_host(&self, _workspace: &str, _run: &TrackerRun) -> bool {
         false

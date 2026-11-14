@@ -7,22 +7,12 @@
 
 use serde_json::json;
 
-use super::{answered, control_of, reports_on_own_issue};
-use crate::services::{TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun};
-
-fn direction(id: &str, incorporated: bool) -> TrackerDirection {
-    TrackerDirection {
-        id: id.into(),
-        author: "ada".into(),
-        text: format!("message {id}"),
-        at_ms: 5_000,
-        incorporated,
-    }
-}
+use super::answered;
+use crate::services::{TrackerAnswer, TrackerQuestion, TrackerRun};
 
 fn run() -> TrackerRun {
     TrackerRun {
-        issue: "tasks.tracker/issues/one".into(),
+        issue: "chat.workspace/channels/loop/messages/one".into(),
         title: "Tidy the docs".into(),
         instruction: "Tidy the docs".into(),
         agent: "claude".into(),
@@ -30,10 +20,7 @@ fn run() -> TrackerRun {
         starter: "ada".into(),
         active: true,
         finished_by_agent: false,
-        paused_through: None,
-        budget: None,
         subject: None,
-        directions: vec![direction("a", true), direction("b", false)],
         turn: None,
         question: None,
         delegation: None,
@@ -70,23 +57,7 @@ fn asked(answer: TrackerAnswer, shown: &str) -> TrackerRun {
 }
 
 tilo_test_env::scenario! {
-    fn a_tracker_run_resumes_and_admits_only_what_its_person_saw;
-
-    phase steering_is_the_messages_to_the_run_its_agent_has_not_taken_in;
-    {
-        let run = run();
-        assert_eq!((run.applied_revision(), run.latest_revision()), (1, 2));
-        let control = control_of(&run, 1).unwrap();
-        assert_eq!(control.from_revision, 1);
-        assert_eq!(control.directions.len(), 1);
-        assert_eq!(control.directions[0].revision, 2);
-        assert_eq!(control.directions[0].text, "message b");
-        assert!(!control.has_more);
-        assert!(
-            control_of(&run, 2).is_err(),
-            "a lease cannot claim a message the agent never took in"
-        );
-    }
+    fn a_tracker_run_admits_only_what_its_person_saw;
 
     phase a_confirmation_admits_only_the_arguments_and_draft_the_person_saw;
     {
@@ -127,29 +98,5 @@ tilo_test_env::scenario! {
         );
         let error = answered(&declined, target, &arguments(), &draft("Send")).unwrap_err();
         assert!(error.contains(tilo_actions::draft::DECLINED) && error.contains("not today"));
-    }
-
-    phase only_a_tracker_verb_naming_the_runs_own_issue_is_its_report;
-    {
-        let task = "tasks.tracker/issues/i1";
-        let own = json!({ "issue": "i1", "through": 1 }).to_string();
-        let prefixed = format!("{}{own}", tilo_actions::ARGUMENTS_JSON_PREFIX);
-        let other = json!({ "issue": "i2" }).to_string();
-        let tracker = ("so.tilo.tasks", "tasks.tracker");
-        assert!(reports_on_own_issue(task, tracker, Some(&own)));
-        assert!(reports_on_own_issue(task, tracker, Some(&prefixed)));
-        assert!(!reports_on_own_issue(task, tracker, Some(&other)));
-        assert!(!reports_on_own_issue(task, tracker, None));
-        assert!(!reports_on_own_issue(
-            task,
-            ("so.tilo.mail", "tasks.tracker"),
-            Some(&own)
-        ));
-        assert!(!reports_on_own_issue(
-            task,
-            ("so.tilo.tasks", "mail.inbox"),
-            Some(&own)
-        ));
-        assert!(!reports_on_own_issue("workspace-task", tracker, Some(&own)));
     }
 }

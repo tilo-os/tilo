@@ -160,9 +160,8 @@ in the person's History.
   - The quick composer's "Open as chat" moves the request into it.
   - Use the existing records: issue, thread and run. Don't add a new store.
 - **Budget:**
-  - Remove the hard 30-turn cap. A run's limit is its budget: turns, time and
-    tokens. The issue's `execution_budget` sets it, and the chat picks a
-    default sized for the task.
+  - Remove the hard 30-turn cap. A run goes until it is done or its person
+    stops it, each model turn bounded by what one provider call may take.
   - Long runs keep going by compacting: old tool results are replaced by their
     `read_result` page handles and a summary. The model can re-read any handle.
   - Progress is posted per item ("3 of 8: reviewed Jane Doe").

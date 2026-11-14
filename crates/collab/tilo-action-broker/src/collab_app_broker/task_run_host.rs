@@ -264,13 +264,9 @@ impl TaskRunHost {
     ) -> Result<(), ActionHostError> {
         self.check(caller)?;
         let refused = |reason: String| ActionHostError::Refused { reason };
-        let (run, lease) = self.pending_run().map_err(refused)?;
-        let mut binding = run.native.clone();
-        binding.revision = runtime_collab::native_task_revision(&lease)
-            .ok_or_else(|| refused("invalid native task lease".into()))?
-            .1;
+        let run = self.pending_run().map_err(refused)?;
         let requirement = crate::services::NativeTaskActionRequirement {
-            binding: binding.clone(),
+            binding: run.native.clone(),
             app: app.to_owned(),
             resource_kind: String::new(),
             resource: resource.to_owned(),
@@ -286,7 +282,7 @@ impl TaskRunHost {
         };
         self.0
             .state
-            .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
+            .admit_task_launch(&run, &requirement, &mut || Ok(()))
             .map_err(|reason| {
                 if crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
                     ActionHostError::confirmation_required()
@@ -334,19 +330,14 @@ impl TaskRunHost {
         self.0.state.session_still_goes(self.workspace(), cert)
     }
 
-    /// The run as the broker holds it for this connection, with its lease
-    /// at the messages the agent took in.
-    fn pending_run(&self) -> Result<(PendingTaskRun, String), String> {
-        let run = self.0.state.task_run_for(
+    /// The run as the broker holds it for this connection.
+    fn pending_run(&self) -> Result<PendingTaskRun, String> {
+        self.0.state.task_run_for(
             self.0.peer,
             &self.0.agent,
             self.0.run.run_id,
             &self.0.run.lease,
-        )?;
-        let applied = self.0.state.applied_task_revision(&run)?;
-        let (base, _) = runtime_collab::native_task_revision(&self.0.run.lease)
-            .ok_or("invalid native task lease")?;
-        Ok((run, format!("{base}:{applied}")))
+        )
     }
 
     fn local_caller(&self) -> Result<LocalCaller, String> {
@@ -392,17 +383,13 @@ impl TaskRunHost {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let refused = |reason: String| ActionHostError::Refused { reason };
-        let (run, lease) = self.pending_run().map_err(refused)?;
+        let run = self.pending_run().map_err(refused)?;
         let argument = request.argument.to_slot();
         let descriptor = steps
             .invocation(&request.target.address, argument.as_deref())
             .ok_or(ActionHostError::UnknownAction)?;
-        let mut binding = run.native.clone();
-        binding.revision = runtime_collab::native_task_revision(&lease)
-            .ok_or_else(|| refused("invalid native task lease".into()))?
-            .1;
         let requirement = crate::services::NativeTaskActionRequirement {
-            binding: binding.clone(),
+            binding: run.native.clone(),
             app: steps.app_id().to_owned(),
             resource_kind: descriptor.resource_kind.clone(),
             resource: descriptor.address.resource.clone(),
@@ -416,10 +403,10 @@ impl TaskRunHost {
         // asks first raises the turn's question on the person's sheet
         // (`host_steps::admit_turn_step`): its ask is not a refusal here, and asking twice
         // would raise the question twice.
-        if let Err(reason) =
-            self.0
-                .state
-                .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
+        if let Err(reason) = self
+            .0
+            .state
+            .admit_task_launch(&run, &requirement, &mut || Ok(()))
             && !(steps.for_turns()
                 && crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason))
         {
@@ -437,7 +424,7 @@ impl TaskRunHost {
         let turn = self
             .pending_run()
             .ok()
-            .and_then(|(run, _)| self.0.state.tracker_run_of(&run).ok())
+            .and_then(|run| self.0.state.tracker_run_of(&run).ok())
             .and_then(|run| run.turn);
         let receipt = self.0.state.invoke_host_step_in_turn(
             &self.0.caller,
@@ -532,7 +519,7 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
                 }
                 // An application's launch is kept under the activation's own identity, not the
                 // child's: read back as the run reads its children, as a launched agent does.
-                let (run, _) = self.pending_run().ok()?;
+                let run = self.pending_run().ok()?;
                 let caller = self.local_caller().ok()?;
                 let target = runtime_collab::TaskAction {
                     peer_id: asked.peer_id,
@@ -674,14 +661,14 @@ impl TaskRunHost {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let refused = |reason: String| ActionHostError::Refused { reason };
-        let (run, lease) = self.pending_run().map_err(refused)?;
+        let run = self.pending_run().map_err(refused)?;
         let caller = self.local_caller().map_err(refused)?;
         let argument = request.argument.to_slot();
         let reask = ChildReask {
             peer_id: self.0.peer,
             agent_id: &self.0.agent,
             run_id: self.0.run.run_id,
-            lease: &lease,
+            lease: &self.0.run.lease,
             invocation: request.invocation,
             target: runtime_collab::TaskAction {
                 peer_id,
@@ -703,27 +690,17 @@ impl TaskRunHost {
             Err(error) => {
                 let error = error.to_string();
                 self.remember(request.invocation, Started::Refused(error.clone()));
-                let asks =
-                    crate::services::NativeTaskActionRequirement::awaits_confirmation(&error);
-                // A run with no issue to ask on asks its person on this host's sheet: its caller
+                // A run whose grants ask first asks its person on this host's sheet: its caller
                 // is told the step needs confirming, and asks through `confirm`.
-                if asks && self.asks_on_host() {
-                    return Err(ActionHostError::confirmation_required());
-                }
-                // The run pauses for its person: the question goes on its
-                // issue, as a launched agent puts it there, and the agent
-                // asks again with the same arguments once they answered.
-                if asks
-                    && let Err(why) = self
-                        .ask_on_issue(peer_id, request, argument.as_deref())
-                        .await
+                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&error)
+                    && self.asks_on_host()
                 {
-                    tracing::warn!(%why, "agent door: the run's question could not be put on its issue");
+                    return Err(ActionHostError::confirmation_required());
                 }
                 return Err(refused(error));
             }
         };
-        if let Err(why) = self.settle_on_issue(request, argument.as_deref()).await {
+        if let Err(why) = self.settle_question(request, argument.as_deref()) {
             tracing::warn!(%why, "agent door: the run's answered question could not be settled");
         }
         self.remember(
@@ -747,138 +724,31 @@ impl TaskRunHost {
         Ok(InvocationState::new(request.invocation, update).receipt())
     }
 
-    /// The tracker's own action `action` on the run's issue, taken as a
-    /// report of the run (a child of it, as a launched agent reports).
-    async fn tracker_step(
-        &self,
-        action: &str,
-        arguments: &serde_json::Value,
-        invocation: tilo_actions::InvocationId,
-    ) -> Result<(), String> {
-        use crate::services::{TRACKER_APP, TRACKER_RESOURCE};
-        let workspace = self.workspace().to_owned();
-        let (peer_id, resource) = self
-            .0
-            .state
-            .surfaces
-            .lock()
-            .map_err(|_| "task surface unavailable")?
-            .values()
-            .filter(|surface| {
-                surface.live
-                    && surface.app_id == TRACKER_APP
-                    && surface.route.cluster_id == workspace
-            })
-            .find_map(|surface| {
-                surface
-                    .actions
-                    .iter()
-                    .find(|offered| {
-                        offered.action == action
-                            && tilo_actions::selection::logical_resource_id(&offered.resource)
-                                == TRACKER_RESOURCE
-                    })
-                    .map(|offered| (surface.peer_id, offered.resource.clone()))
-            })
-            .ok_or("Tasks does not offer the run's issue here")?;
-        let (_, lease) = self.pending_run()?;
-        let caller = self.local_caller()?;
-        let argument = arguments.to_string();
-        let reask = ChildReask {
-            peer_id: self.0.peer,
-            agent_id: &self.0.agent,
-            run_id: self.0.run.run_id,
-            lease: &lease,
-            invocation,
-            target: runtime_collab::TaskAction {
-                peer_id,
-                provider: "",
-                resource: &resource,
-                action,
-                argument: Some(&argument),
-            },
-            caller: &caller,
-        };
-        self.0
-            .state
-            .invoke_native_task_child(&reask, None, (&self.0.route, &self.0.admitted))
-            .await
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    /// Put the question `request` waits on on the run's issue: its draft,
-    /// as the action live on `peer_id` renders these arguments, for the
-    /// person to answer there.
-    async fn ask_on_issue(
-        &self,
-        peer_id: u64,
-        request: &InvokeRequest,
-        argument: Option<&str>,
-    ) -> Result<(), String> {
-        let address = &request.target.address;
-        let (surface, offered) = self
-            .0
-            .state
-            .offered_by(peer_id, &address.resource, &address.action)
-            .ok_or("the action asked about is no longer published")?;
-        let app = surface.app_id;
-        let arguments = arguments_of(argument)?;
-        let draft = tilo_actions::Draft::render(
-            &offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal),
-            &arguments,
-        );
-        let id = question_id(request, &arguments);
-        let question = serde_json::json!({
-            "id": id,
-            "app": app,
-            "resource": tilo_actions::selection::logical_resource_id(&request.target.address.resource),
-            "action": request.target.address.action,
-            "arguments_digest": hex::encode(tilo_actions::draft::arguments_digest(&arguments)),
-            "draft": draft,
-        });
-        self.tracker_step(
-            "ask-confirmation",
-            &serde_json::json!({ "issue": issue_id(self.issue()), "question": question }),
-            derived_invocation("ask", &id),
-        )
-        .await
-    }
-
     /// Spend the person's answer to the run's question about `request`, now
     /// that the confirmed step started. Nothing when it asked nothing.
-    async fn settle_on_issue(
+    fn settle_question(
         &self,
         request: &InvokeRequest,
         argument: Option<&str>,
     ) -> Result<(), String> {
-        let (run, _) = self.pending_run()?;
+        let run = self.pending_run()?;
         let current = self.0.state.tracker_run_of(&run)?;
-        let on_host = self
-            .0
-            .state
-            .tracker_runs(self.workspace())
-            .filter(|tracker| tracker.asks_on_host(self.workspace(), &current))
-            .cloned();
         let arguments = arguments_of(argument)?;
         let digest = hex::encode(tilo_actions::draft::arguments_digest(&arguments));
-        let Some(question) = current.question.filter(|question| {
+        let answered = current.question.as_ref().is_some_and(|question| {
             question.action == request.target.address.action
                 && question.arguments_digest == digest
                 && question.answer != crate::services::TrackerAnswer::Waiting
-        }) else {
+        });
+        if !answered {
             return Ok(());
-        };
-        // A question the host asked is spent where it is kept.
-        if let Some(tracker) = on_host {
-            return tracker.keep_question(self.workspace(), self.issue(), None);
         }
-        self.tracker_step(
-            "settle-confirmation",
-            &serde_json::json!({ "issue": issue_id(self.issue()), "id": question.id }),
-            derived_invocation("settle", &question.id),
-        )
-        .await
+        self.0
+            .state
+            .tracker_runs(self.workspace())
+            .filter(|tracker| tracker.asks_on_host(self.workspace(), &current))
+            .ok_or("the run's tracker is unavailable")?
+            .keep_question(self.workspace(), self.issue(), None)
     }
 }
 
@@ -893,13 +763,6 @@ fn arguments_of(
         .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
         .unwrap_or(text);
     serde_json::from_str(json).map_err(|_| "the action's arguments are not a JSON map".into())
-}
-
-/// The issue's id, as the tracker's actions name it.
-fn issue_id(issue: &str) -> &str {
-    issue
-        .strip_prefix(crate::services::TRACKER_ISSUE_PREFIX)
-        .unwrap_or(issue)
 }
 
 /// The id of the question about `request` with `arguments`: the same each
@@ -920,13 +783,4 @@ fn question_id(
         .chars()
         .take(32)
         .collect()
-}
-
-/// A stable invocation id for the run's report `what` about question `id`,
-/// so asking or settling twice is one report.
-fn derived_invocation(what: &str, id: &str) -> tilo_actions::InvocationId {
-    let digest = blake3::hash(format!("agent-door-{what}\0{id}").as_bytes());
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest.as_bytes()[..16]);
-    tilo_actions::InvocationId(uuid::Builder::from_random_bytes(bytes).into_uuid())
 }

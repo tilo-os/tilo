@@ -981,19 +981,7 @@ impl JoinedChannel {
             .state
             .task_run_cancelled(self.peer_id, agent_id, run_id, lease)
             .map_err(BrokerError::failed)?;
-        let run = self
-            .state
-            .task_run_for(self.peer_id, agent_id, run_id, lease)
-            .map_err(BrokerError::failed)?;
-        let control = self
-            .state
-            .native_task_status(&run, lease)
-            .map_err(BrokerError::failed)?
-            .control
-            .map(|control| serde_json::to_string(&control))
-            .transpose()
-            .map_err(|error| BrokerError::failed(error.to_string()))?;
-        Ok(Reply::TaskCancelled { cancelled, control })
+        Ok(Reply::Cancelled(cancelled))
     }
 
     /// Start `step` for the task run, as a native task's re-ask when it
@@ -1089,10 +1077,6 @@ impl JoinedChannel {
         Box::pin(async move { encode(answer.await?) })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one admission: caller, door, grants and the person's questions, in order"
-    )]
     fn remote_action_answer(
         &self,
         frame: &[u8],
@@ -1168,20 +1152,6 @@ impl JoinedChannel {
             }
             _ => None,
         };
-        // A person's answer to what an issue's run asks them is theirs to
-        // give on the host's sheet, never the app's.
-        let question = match &request.message {
-            tilo_actions::remote::RemoteActionMessage::Invoke(invoke) => {
-                match self.state.run_question(&route.app_id, &caller, invoke) {
-                    run_question::AnswerStep::Serve => None,
-                    run_question::AnswerStep::Refuse => {
-                        return refusal(&request.message);
-                    }
-                    run_question::AnswerStep::Ask(question) => Some(question),
-                }
-            }
-            _ => None,
-        };
         let admitting_person = current.principal_id.clone();
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
@@ -1192,14 +1162,6 @@ impl JoinedChannel {
                 admitted: Box::new(current),
             }),
         };
-        if let Some(question) = question {
-            return Ok(super::run_question::serve_answered(
-                Arc::clone(&self.state),
-                question,
-                (host, caller),
-                request.message,
-            ));
-        }
         if let Some(consent) = consent {
             return Ok(super::app_consent::serve_after_consent(
                 Arc::clone(&self.state),

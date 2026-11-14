@@ -307,3 +307,8 @@ reason = "`Room` is renamed `Workspace` at the same index: the browser page writ
 file = "crates/platform/tilo-render-protocol/src/patch.rs"
 enum = "ToApp"
 reason = "a window and the instance it shows speak it over a live connection and keep none of it; the batch's version is bumped, so an end of the old version refuses the other's batches instead of reading them by the wrong position"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/lib.rs"
+enum = "TaskRunUpdate"
+reason = "each update travels as JSON, named by its `kind`, on the authenticated task channel between a session and the agent app it hands the run to, and both ship together; the variant named a steering page nothing writes or reads now, so no bytes name it"

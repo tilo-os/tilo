@@ -300,13 +300,9 @@ fn kept_resource(kept: &Value, naming: &Naming<'_>, title: &str) -> Option<Resou
 }
 
 /// Where the task is, said once in its first message (agents.md, "What the agent knows from the
-/// start"): who it acts for, its limits, what `this` is when the person pointed at a tilolang
-/// resource, and the apps its programs can use.
-pub(super) fn where_section(
-    run: &runtime_collab::TaskRunEnvelope,
-    world: &ProgramWorld,
-    most_turns: Option<usize>,
-) -> String {
+/// start"): who it acts for, what `this` is when the person pointed at a tilolang resource, and
+/// the apps its programs can use.
+pub(super) fn where_section(run: &runtime_collab::TaskRunEnvelope, world: &ProgramWorld) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let context =
@@ -318,22 +314,6 @@ pub(super) fn where_section(
     {
         let _ = writeln!(out, "You act for {person}.");
     }
-    let seconds = run
-        .execution_budget
-        .map(|budget| u64::from(budget.total_ms) / 1000);
-    // The run's budget, as the loop enforces it: its turns and its time when
-    // its person limited them, and nothing when they did not.
-    let _ = match (most_turns, seconds) {
-        (Some(turns), Some(seconds)) => writeln!(
-            out,
-            "Limits: at most {turns} model turns and {seconds} seconds for the whole task."
-        ),
-        (Some(turns), None) => writeln!(out, "Limits: at most {turns} model turns."),
-        (None, Some(seconds)) => {
-            writeln!(out, "Limits: at most {seconds} seconds for the whole task.")
-        }
-        (None, None) => Ok(()),
-    };
     if let Some(subject) = run
         .subject
         .as_ref()

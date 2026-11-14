@@ -124,16 +124,11 @@ impl AppBrokerState {
     pub(super) fn conversation_confirmation(
         &self,
         run: &PendingTaskRun,
-        lease: &str,
         (app, offered): (&str, &PublishedAction),
         (resource, action): (&str, &str),
         argument: Option<&str>,
     ) -> Result<NativeGate, String> {
         let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
-        let mut current_binding = run.native.clone();
-        current_binding.revision = runtime_collab::native_task_revision(lease)
-            .ok_or("invalid native lease")?
-            .1;
         let app = app.to_owned();
         let gate = self.conversation_gate(
             &run.task_id,
@@ -143,7 +138,7 @@ impl AppBrokerState {
             |contract_argument| {
                 let current = self.tracker_run_of(run)?;
                 let requirement = crate::services::NativeTaskActionRequirement {
-                    binding: current_binding.clone(),
+                    binding: run.native.clone(),
                     app: app.clone(),
                     resource_kind: descriptor.resource_kind.clone(),
                     resource: tilo_actions::selection::logical_resource_id(resource).into_owned(),

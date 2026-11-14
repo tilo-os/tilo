@@ -51,26 +51,20 @@ agent-step-program = ein Programm
 ## Ein Lauf, der angehalten wurde
 
 agent-run-needs-decision = Braucht deine Entscheidung, um weiterzumachen
-agent-run-directions-require-review = Neue Anweisungen brauchen eine Modellplanung oder deine Prüfung; bestätigt wurde keine
 agent-run-cancelled-before-planning = Vor der Planung abgebrochen
 agent-run-cancelled-before-action = Vor der nächsten Aktion abgebrochen
 agent-run-cancelled-before-step = Vor dem nächsten Schritt abgebrochen
 agent-run-cancelled-in-action = Während einer laufenden Aktion abgebrochen
 agent-cancel-task-center = Im Task-Center abgebrochen
 agent-cancel-thinking = Während des Nachdenkens abgebrochen
-agent-cancel-superseded = Durch neue Anweisungen ersetzt
 
 ## Ein Lauf, der fehlgeschlagen ist, und was die Person tun kann
 
 agent-fail-no-terminal-state = Die Aktion der Aufgabe hat ihr Zeitlimit erreicht, ohne zu enden.
 agent-fail-local-only = Aufgaben können keine Aktion ausführen, die nur auf diesem Gerät läuft.
 agent-fail-arguments = Die Argumente der geplanten Aktion passen nicht: { $error }
-agent-fail-turns = Die Aufgabe hat alle { $turns } Modellzüge ihres Budgets verbraucht, bevor sie fertig war ({ $actions } Aktionen abgeschlossen). Erhöhe die Zahl der Züge und starte sie erneut.
-agent-fail-time = Der Aufgabe ging die Zeit aus, bevor sie fertig war.
-agent-fail-budget = Das Zeitbudget der Aufgabe ist abgelaufen.
 agent-fail-turn-not-finished = Der Modellzug war nicht rechtzeitig fertig
 agent-fail-native-outcome = Das Ergebnis der Aktion ist weiterhin unbekannt; prüfe den Verlauf, bevor du es erneut versuchst.
-agent-fail-direction-pages = Mehr als eine Seite neuer Anweisungen braucht deine Prüfung; bestätigt wurde keine.
 
 # Was ein fehlgeschlagener Modellaufruf in der Antwort hinterlässt, die eine
 # Person liest: ein Satz dazu, was geschehen ist, in ihren Worten, und wenn es

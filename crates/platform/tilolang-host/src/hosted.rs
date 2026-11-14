@@ -1659,7 +1659,6 @@ impl Hosted {
             }
             CollabEvent::TaskRun(_)
             | CollabEvent::TaskRunCancellation { .. }
-            | CollabEvent::TaskRunControl { .. }
             | CollabEvent::WorkspaceControl { .. } => {
                 tracing::warn!(
                     app = self.spec.app,

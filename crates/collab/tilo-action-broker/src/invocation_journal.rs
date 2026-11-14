@@ -153,11 +153,10 @@ impl InvocationOwner {
                 || agent.chars().any(char::is_control)
                 || task.is_empty()
                 || task.len() > 256
-                // An issue's run, a conversation turn's answer, an agent door
-                // connection's run, or a workspace task's in a journal kept
-                // from before tasks were issues.
+                // A conversation turn's answer, an agent door connection's
+                // run, or a workspace task's in a journal kept from before
+                // tasks were turns.
                 || !(task.starts_with("task:")
-                    || crate::services::is_tracker_issue(task)
                     || crate::services::is_conversation_turn(task)
                     || crate::services::is_agent_session(task))
                 || *epoch == 0)

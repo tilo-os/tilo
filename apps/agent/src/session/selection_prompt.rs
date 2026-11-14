@@ -242,7 +242,6 @@ mod tests {
             run_id: 1,
             lease: "lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
-            execution_budget: None,
             spend: None,
             action_context: serde_json::to_value(context).unwrap(),
         }

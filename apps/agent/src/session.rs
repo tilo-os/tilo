@@ -202,8 +202,6 @@ pub struct Session {
     link: Link,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
-    /// Monotonic deadline from an explicit broker-minted owner task policy.
-    task_deadline: Option<Instant>,
     native_task: Option<native_task::NativeTaskState>,
     /// The broker's pushed, permission-filtered live action directory the
     /// task loop surveys.
@@ -306,7 +304,6 @@ impl Session {
             cfg,
             link,
             chooser,
-            task_deadline: None,
             native_task: None,
             broker_catalogue: ui::collaboration::ActionCatalogue::default(),
             next_broker_request: 1,
@@ -439,19 +436,10 @@ impl Session {
         // What this run says is the person's language as it stands now: they
         // may have changed it since the app started.
         crate::i18n::follow();
-        self.task_deadline = run.execution_budget.and_then(|budget| {
-            ui::time::now().checked_add(Duration::from_millis(u64::from(budget.total_ms)))
+        self.native_task = Some(native_task::NativeTaskState {
+            run_id: run.run_id,
+            ..Default::default()
         });
-        self.native_task =
-            runtime_collab::native_task_revision(&run.lease).map(|(base, revision)| {
-                native_task::NativeTaskState {
-                    run_id: run.run_id,
-                    task_id: run.task_id.clone(),
-                    base: base.into(),
-                    revision,
-                    ..Default::default()
-                }
-            });
         let cause = match conversation::validate(run) {
             Ok(cause) => cause,
             Err(message) => {
@@ -519,14 +507,6 @@ impl Session {
                 agent_loop::LoopEnd::Failed(failure) => self.fail_task(run, &failure),
                 agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
             };
-        }
-        if self
-            .native_task
-            .as_ref()
-            .is_some_and(|state| state.pending.is_some())
-        {
-            return self
-                .fail_task_said(run, &crate::i18n::t("agent-run-directions-require-review"));
         }
         // The rules-only planner has no model call to overlap: settle the
         // poll already out before planning, as before.
@@ -620,7 +600,7 @@ impl Session {
         self.link.send(&CollabRequest::ReportTaskRun {
             request_id: Some(request_id),
             run_id: run.run_id,
-            lease: self.task_lease(run),
+            lease: run.lease.clone(),
             update,
         })?;
         self.wait_for_native_report(request_id)
@@ -665,8 +645,7 @@ impl Session {
     }
 
     fn wait_for_task_catalogue(&mut self) {
-        let wait = self
-            .task_wait_deadline(TASK_CATALOGUE_WAIT)
+        let wait = Self::task_wait_deadline(TASK_CATALOGUE_WAIT)
             .saturating_duration_since(ui::time::now());
         let since = self.broker_revision;
         self.await_catalogue(wait, |session| {
@@ -674,22 +653,9 @@ impl Session {
         });
     }
 
-    fn task_wait_deadline(&self, maximum: Duration) -> Instant {
+    fn task_wait_deadline(maximum: Duration) -> Instant {
         let now = ui::time::now();
-        let ordinary = now.checked_add(maximum).unwrap_or(now);
-        self.task_deadline
-            .map_or(ordinary, |task| ordinary.min(task))
-    }
-
-    /// The run's own budget deadline, where it has one: what a step that
-    /// waits on the person is bounded by, and nothing else.
-    fn task_budget_deadline(&self) -> Option<Instant> {
-        self.task_deadline
-    }
-
-    fn task_budget_expired(&self) -> bool {
-        self.task_deadline
-            .is_some_and(|deadline| ui::time::now() >= deadline)
+        now.checked_add(maximum).unwrap_or(now)
     }
 
     /// The rules-only planner: one surveyed action matched by the words of
@@ -753,18 +719,13 @@ impl Session {
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<Following, TaskActionStop>> {
-        if self.task_budget_expired() {
-            return Ok(Err(TaskActionStop::Failed(
-                "Task time budget expired before invoking an action".into(),
-            )));
-        }
         let request_id = self.next_request_id();
         let invocation = self.task_child_id(run, action, arguments)?;
         self.link.send(&CollabRequest::InvokeTaskAction {
             request_id,
             invocation,
             run_id: run.run_id,
-            lease: self.task_lease(run),
+            lease: run.lease.clone(),
             peer_id: action.peer_id,
             provider: action.provider.clone(),
             resource: action.resource.clone(),
@@ -791,13 +752,8 @@ impl Session {
             }
         };
         // A child that asks the person waits on their answer, in their own
-        // time: only the run's own budget can cut the wait short, never the
-        // step's ordinary wait.
-        let deadline = if asks_person {
-            self.task_budget_deadline()
-        } else {
-            Some(self.task_wait_deadline(TASK_ACTION_WAIT))
-        };
+        // time; every other step has its ordinary wait.
+        let deadline = (!asks_person).then(|| Self::task_wait_deadline(TASK_ACTION_WAIT));
         Ok(Ok(Following {
             action: action.clone(),
             arguments: arguments.clone(),
@@ -813,7 +769,7 @@ impl Session {
         &mut self,
         request_id: u64,
     ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
-        let deadline = self.task_wait_deadline(Duration::from_secs(10));
+        let deadline = Self::task_wait_deadline(Duration::from_secs(10));
         self.task_action_result_until(request_id, Some(deadline))
     }
 

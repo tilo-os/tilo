@@ -270,10 +270,7 @@ pub(crate) fn mint(
         starter,
         active: true,
         finished_by_agent: false,
-        paused_through: None,
-        budget: None,
         subject: None,
-        directions: Vec::new(),
         question: None,
         // The person's admission at the door is its cause, not a message: the run acts on the
         // person's grants capped at an agent's, as every run without a turn does.

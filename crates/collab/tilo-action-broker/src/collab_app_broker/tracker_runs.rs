@@ -1,27 +1,24 @@
-//! Runs of issues in the Tasks app's tracker.
+//! Runs a tracker holds for its agents.
 //!
-//! An issue assigned to an agent is that agent's task, and a person's
-//! `approve-run` on it starts a run (`apps/tasks`). The broker delivers the
-//! run to its agent as it delivers a workspace task's, under the same native lease
-//! and binding, and reads everything else about it from the tracker:
+//! A run answers a person's message in a conversation, or serves an agent
+//! door's connection. The broker delivers the run to its agent as it
+//! delivers a workspace task's, under the same native lease and binding, and
+//! reads everything else about it from the tracker:
 //!
 //! - **Delivery**: every going run whose agent is subscribed in the workspace.
-//! - **Steering**: the issue's messages to the run, in thread order; the
-//!   revision an agent reached is how many of them it took in.
 //! - **Stopping**: a run the tracker no longer holds as going is cancelled.
 //! - **Admission**: the agent acting for the run's starter, on the starter's
-//!   live grants and the agent's ([`TrackerRuns::authorize_action`]), with
-//!   no new message unread.
+//!   live grants and the agent's ([`TrackerRuns::authorize_action`]).
 //! - **Asking first**: an action that asks first waits for the person's
-//!   answer to the run's question in the tracker. A confirmation admits
-//!   exactly the arguments asked about, and only when the draft the person
-//!   saw is the one these arguments render: what the agent recorded is
-//!   matched against, never trusted.
+//!   answer to the run's question, where the run keeps one. A confirmation
+//!   admits exactly the arguments asked about, and only when the draft the
+//!   person saw is the one these arguments render: what the agent recorded
+//!   is matched against, never trusted.
 //!
 //! The broker writes nothing into the tracker. The agent reports, asks and
 //! settles through the tracker's own actions, as children of its run, so
-//! each step is an action the agent's grants decide and the issue's history
-//! records.
+//! each step is an action the agent's grants decide and the run's record
+//! keeps.
 
 use std::sync::Arc;
 
@@ -35,8 +32,7 @@ use crate::services::{
 #[path = "tracker_runs_tests.rs"]
 mod tests;
 
-/// The run of `binding` among `runs`: the issue's run of the same epoch and
-/// agent.
+/// The run of `binding` among `runs`: the same epoch and agent.
 fn run_of<'a>(runs: &'a [TrackerRun], binding: &NativeTaskBinding) -> Option<&'a TrackerRun> {
     runs.iter()
         .find(|run| run.issue == binding.task_id && run.agent == binding.agent_id)
@@ -55,91 +51,6 @@ fn spend_of(
         .agents
         .as_deref()?
         .spend(workspace, &run.agent)
-}
-
-/// Whether invoking `action` of `app` on `resource` with `argument` is the
-/// run of issue `task`'s report on that issue: one of the tracker's own
-/// verbs, naming the run's issue.
-pub(super) fn reports_on_own_issue(
-    task: &str,
-    (app, resource): (&str, &str),
-    argument: Option<&str>,
-) -> bool {
-    use crate::services::{TRACKER_APP, TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE};
-    let Some(issue) = task.strip_prefix(TRACKER_ISSUE_PREFIX) else {
-        return false;
-    };
-    let json = argument.map(|text| {
-        text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-            .unwrap_or(text)
-    });
-    app == TRACKER_APP
-        && tilo_actions::selection::logical_resource_id(resource) == TRACKER_RESOURCE
-        && json
-            .and_then(|text| {
-                tilo_failure::ignored!(
-                    "an argument that is no JSON map names no issue",
-                    serde_json::from_str::<serde_json::Value>(text).ok()
-                )
-            })
-            .is_some_and(|arguments| arguments.get("issue").and_then(|v| v.as_str()) == Some(issue))
-}
-
-/// The steering page of `run` for an agent whose lease reached `revision`.
-pub(super) fn control_of(
-    run: &TrackerRun,
-    revision: u64,
-) -> Result<runtime_collab::TaskRunControl, String> {
-    let applied = run.applied_revision();
-    if revision > applied {
-        return Err("task lease claims an unacknowledged direction".into());
-    }
-    // A paused run's agent takes no step, so it is handed none of the
-    // messages after the boundary a person paused it at: the run resumed
-    // hands them over then, and no message is read twice.
-    let latest = run
-        .paused_through
-        .map_or_else(|| run.latest_revision(), |through| through.min(revision));
-    let skip = usize::try_from(revision).unwrap_or(usize::MAX);
-    let directions = run
-        .directions
-        .iter()
-        .enumerate()
-        .skip(skip)
-        .take(runtime_collab::TaskRunControl::MAX_DIRECTIONS)
-        .map(|(index, direction)| runtime_collab::TaskDirection {
-            revision: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-            author: direction.author.clone(),
-            text: direction.text.clone(),
-            issued_at: direction.at_ms / 1000,
-        })
-        .collect::<Vec<_>>();
-    let last = directions
-        .last()
-        .map_or(revision, |direction| direction.revision);
-    let control = runtime_collab::TaskRunControl {
-        version: 1,
-        task_id: run.issue.clone(),
-        run_epoch: run.epoch,
-        from_revision: revision,
-        applied_revision: applied,
-        latest_revision: latest,
-        directions,
-        has_more: last < latest,
-    };
-    control.validate()?;
-    Ok(control)
-}
-
-/// What an agent is told about a run a person paused: it takes no further
-/// step, and what it already did stays. `stopped` for the run that ended
-/// instead.
-fn paused_at(stopped: bool) -> String {
-    if stopped {
-        "the person paused this task and it stopped".into()
-    } else {
-        "the person paused this task: it takes no further step until they let it go on".into()
-    }
 }
 
 /// The arguments a person confirmed (with their edits) and the question's id.
@@ -214,7 +125,7 @@ impl AppBrokerState {
             .filter(|service| service.requires_workspace(workspace))
     }
 
-    /// The tracker's current record of `run`, a run of one of its issues.
+    /// The tracker's current record of `run`.
     pub(super) fn tracker_run_of(&self, run: &PendingTaskRun) -> Result<TrackerRun, String> {
         let binding = &run.native;
         let runs = self
@@ -223,7 +134,7 @@ impl AppBrokerState {
             .runs(&run.cluster_id)?;
         run_of(&runs, binding)
             .cloned()
-            .ok_or_else(|| "the issue's run was replaced or the issue deleted".into())
+            .ok_or_else(|| "the run was replaced".into())
     }
 
     /// Deliver every going run of the subscribed workspaces' trackers to its
@@ -239,13 +150,12 @@ impl AppBrokerState {
             let Ok(runs) = service.runs(workspace) else {
                 continue;
             };
-            self.notify_run_questions(workspace, &runs);
             // A turn's ask whose turn ended stands on nobody's screen: the
             // sheet that showed it is withdrawn with it.
             self.prune_conversation_asks(&runs);
             for run in runs.iter().filter(|run| run.active) {
                 if let Err(error) = self.dispatch_tracker_run(workspace, run) {
-                    tracing::warn!(%error, issue = %run.issue, "approved issue run not delivered");
+                    tracing::warn!(%error, run = %run.issue, "an approved run was not delivered");
                 }
             }
         }
@@ -276,7 +186,7 @@ impl AppBrokerState {
         ) | (1 << 63);
         let hex = digest.to_hex();
         let lease = format!(
-            "native:{}:0",
+            "native:{}",
             hex.as_str().get(..32).ok_or("invalid run digest")?
         );
         let context = tilo_actions::ActionContext::default()
@@ -292,7 +202,6 @@ impl AppBrokerState {
                 task_id: run.issue.clone(),
                 agent_id: run.agent.clone(),
                 epoch: run.epoch,
-                revision: run.paused_through.unwrap_or(0),
                 starter: Some(run.starter.clone()),
                 turn: run.turn.clone(),
                 origin: run.origin.clone(),
@@ -305,7 +214,6 @@ impl AppBrokerState {
                 run_id,
                 lease,
                 planning: runtime_collab::TaskRunPlanning::Model,
-                execution_budget: run.budget,
                 action_context: context,
                 spend: spend_of(self, workspace, run),
             },
@@ -313,17 +221,9 @@ impl AppBrokerState {
         )
     }
 
-    /// What an agent polling `run` is told: cancelled once the tracker no
-    /// longer holds it as going, else the messages to it it has not taken
-    /// in.
-    pub(super) fn tracker_status(
-        &self,
-        run: &PendingTaskRun,
-        lease: &str,
-    ) -> Result<runtime_collab::TaskRunStatus, String> {
+    /// Whether `run` was cancelled: the tracker no longer holds it as going.
+    pub(super) fn tracker_status(&self, run: &PendingTaskRun) -> Result<bool, String> {
         let binding = &run.native;
-        let (_, revision) =
-            runtime_collab::native_task_revision(lease).ok_or("invalid native task lease")?;
         let runs = self
             .tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
@@ -333,18 +233,12 @@ impl AppBrokerState {
             // its person ended it — so the run is over too: its agent stops
             // and the steps it left running stop with it.
             self.cancel_native_children(run)?;
-            return Ok(runtime_collab::TaskRunStatus {
-                cancelled: true,
-                control: None,
-            });
+            return Ok(true);
         };
         if current.epoch != binding.epoch {
             // A later turn of the same conversation replaced this one.
             self.cancel_native_children(run)?;
-            return Ok(runtime_collab::TaskRunStatus {
-                cancelled: true,
-                control: None,
-            });
+            return Ok(true);
         }
         self.tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
@@ -355,22 +249,13 @@ impl AppBrokerState {
         // how it ended. Reading that as a cancellation cancelled the report
         // itself, so a run that answered at once could not say it had.
         if !current.active && current.finished_by_agent {
-            return Ok(runtime_collab::TaskRunStatus {
-                cancelled: false,
-                control: None,
-            });
+            return Ok(false);
         }
         if !current.active {
             self.cancel_native_children(run)?;
-            return Ok(runtime_collab::TaskRunStatus {
-                cancelled: true,
-                control: None,
-            });
+            return Ok(true);
         }
-        Ok(runtime_collab::TaskRunStatus {
-            cancelled: false,
-            control: Some(control_of(&current, revision)?),
-        })
+        Ok(false)
     }
 
     /// An agent's report on its run of an issue. The tracker is told by the
@@ -432,37 +317,17 @@ impl AppBrokerState {
         Ok(())
     }
 
-    /// Admit `run`'s child under `requirement`: the run still going, every
-    /// message to it taken in (`binding.revision`), and the agent allowed it
-    /// for the run's starter.
-    ///
-    /// A `report` on the run's own issue (that it started, its progress, the
-    /// messages it took in, how it ended) acts on nothing a message could
-    /// change and is how the agent takes a message in, so unread messages
-    /// do not hold it back; a pause still does.
+    /// Admit `run`'s child under `requirement`, then start it.
     ///
     /// # Errors
-    /// As [`TrackerRuns::authorize_action`], or the run has unread messages.
+    /// As [`TrackerRuns::authorize_action`].
     pub(super) fn admit_tracker_action(
         &self,
         run: &PendingTaskRun,
-        (binding, report): (&NativeTaskBinding, bool),
         requirement: &NativeTaskActionRequirement,
         action: &mut dyn FnMut() -> Result<StagedJob, String>,
     ) -> Result<StagedJob, String> {
-        let current = self.tracker_run_of(run)?;
-        if current.paused_through.is_some() {
-            return Err(paused_at(false));
-        }
-        if !report
-            && (current.applied_revision() != binding.revision
-                || current.latest_revision() != binding.revision)
-        {
-            return Err("read the run's new messages before acting".into());
-        }
-        self.tracker_runs(&run.cluster_id)
-            .ok_or("the tracker is unavailable")?
-            .authorize_action(&run.cluster_id, &current, requirement)?;
+        self.authorize_task_action(run, requirement)?;
         action()
     }
 
@@ -472,7 +337,6 @@ impl AppBrokerState {
     pub(super) fn tracker_confirmation(
         &self,
         run: &PendingTaskRun,
-        lease: &str,
         (app, offered): (&str, &PublishedAction),
         (resource, action): (&str, &str),
         argument: Option<&str>,
@@ -506,12 +370,8 @@ impl AppBrokerState {
         let consequential = descriptor
             .contract
             .asks_for_argument(contract_argument.as_deref());
-        let mut current_binding = binding;
-        current_binding.revision = runtime_collab::native_task_revision(lease)
-            .ok_or("invalid native lease")?
-            .1;
         let requirement = NativeTaskActionRequirement {
-            binding: current_binding,
+            binding,
             app: app.to_owned(),
             resource_kind: descriptor.resource_kind.clone(),
             resource: resource.into(),
@@ -534,7 +394,7 @@ impl AppBrokerState {
         }
     }
 
-    /// Authorize `requirement` for `run`'s agent on its issue's tracker.
+    /// Authorize `requirement` for `run`'s agent on its tracker.
     pub(super) fn authorize_task_action(
         &self,
         run: &PendingTaskRun,
@@ -551,28 +411,14 @@ impl AppBrokerState {
     pub(super) fn admit_task_launch(
         &self,
         run: &PendingTaskRun,
-        binding: &NativeTaskBinding,
         requirement: &NativeTaskActionRequirement,
         launch: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         let current = self.tracker_run_of(run)?;
-        if current.paused_through.is_some() {
-            return Err(paused_at(false));
-        }
-        if current.applied_revision() != binding.revision
-            || current.latest_revision() != binding.revision
-        {
-            return Err("read the run's new messages before acting".into());
-        }
         self.tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
             .authorize_action(&run.cluster_id, &current, requirement)?;
         launch()
-    }
-
-    /// The revision of steering `run`'s agent has applied.
-    pub(super) fn applied_task_revision(&self, run: &PendingTaskRun) -> Result<u64, String> {
-        Ok(self.tracker_run_of(run)?.applied_revision())
     }
 
     /// Whether the workspace's tracker serves runs here: a task agent may

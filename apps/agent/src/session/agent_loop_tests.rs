@@ -254,8 +254,6 @@ struct World {
     /// Cancel after this many successful status surveys (zero disables).
     cancel_after_checks: usize,
     cancellation_checks: usize,
-    native_control: Option<runtime_collab::TaskRunControl>,
-    native_applied_revision: u64,
     /// Cancel once this many steps have been applied.
     cancel_after_steps: Option<usize>,
     /// How long the host takes to answer a cancellation poll; steps are
@@ -853,8 +851,8 @@ impl Broker {
         self.held.push((ui::time::now() + delay, polls, event));
     }
 
-    fn answer_cancellation(&mut self, request_id: u64, lease: &str) {
-        let (cancelled, delay, control) = {
+    fn answer_cancellation(&mut self, request_id: u64) {
+        let (cancelled, delay) = {
             let mut world = self.world.borrow_mut();
             world.cancellation_checks += 1;
             let cancelled = (world.cancel_after_checks != 0
@@ -862,30 +860,11 @@ impl Broker {
                 || world
                     .cancel_after_steps
                     .is_some_and(|steps| world.steps.len() >= steps);
-            let control = world.native_control.clone().map(|mut control| {
-                let (_, revision) = runtime_collab::native_task_revision(lease).unwrap();
-                control.from_revision = revision;
-                control.applied_revision = world.native_applied_revision;
-                control
-                    .directions
-                    .retain(|direction| direction.revision > revision);
-                control
-            });
             if cancelled {
                 cancel_native_children(&mut world);
             }
-            (
-                cancelled,
-                (world.cancel_delay, world.cancel_delay_polls),
-                control,
-            )
+            (cancelled, (world.cancel_delay, world.cancel_delay_polls))
         };
-        if let Some(control) = control {
-            self.events.push(CollabEvent::TaskRunControl {
-                request_id,
-                control,
-            });
-        }
         self.answer_after(
             delay.0,
             delay.1,
@@ -989,17 +968,10 @@ impl ui::collaboration::PeerTransport for Broker {
                     }
                 }
             }
-            CollabRequest::TaskRunCancellation {
-                request_id, lease, ..
-            } => {
-                self.answer_cancellation(*request_id, lease);
+            CollabRequest::TaskRunCancellation { request_id, .. } => {
+                self.answer_cancellation(*request_id);
             }
-            CollabRequest::ReportTaskRun {
-                request_id, update, ..
-            } => {
-                if let runtime_collab::TaskRunUpdate::DirectionsApplied { revision } = update {
-                    self.world.borrow_mut().native_applied_revision = *revision;
-                }
+            CollabRequest::ReportTaskRun { request_id, .. } => {
                 // A native report awaits its receipt; a Task Center
                 // run's report is sent without one.
                 if let Some(request_id) = request_id {
@@ -1305,7 +1277,7 @@ fn paced_fixture(
     turns: Vec<Vec<TurnEvent>>,
     pace: Option<Duration>,
 ) -> Fixture {
-    execution_fixture(title, world, turns, pace, None)
+    execution_fixture(title, world, turns, pace)
 }
 
 /// The catalogue that publishes Chat's message late, when `world` publishes it so.
@@ -1363,23 +1335,8 @@ fn execution_fixture(
     world: World,
     turns: Vec<Vec<TurnEvent>>,
     pace: Option<Duration>,
-    budget: Option<collab_types::task_budget::TaskExecutionBudget>,
 ) -> Fixture {
-    let mut world = world;
-    // The host answers every cancellation poll with the run's control
-    // frontier, as the broker does for an issue's run.
-    world
-        .native_control
-        .get_or_insert_with(|| runtime_collab::TaskRunControl {
-            version: 1,
-            task_id: "chat.workspace/channels/loop/messages/asked".into(),
-            run_epoch: 1,
-            from_revision: 0,
-            applied_revision: 0,
-            latest_revision: 0,
-            directions: Vec::new(),
-            has_more: false,
-        });
+    let world = world;
     let emitted = Arc::clone(&world.emitted);
     let world = Rc::new(RefCell::new(world));
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -1398,10 +1355,9 @@ fn execution_fixture(
         instruction: None,
         subject: None,
         run_id: 7,
-        lease: "native:00000000000000000000000000000000:0".into(),
+        lease: "native:00000000000000000000000000000000".into(),
         planning: runtime_collab::TaskRunPlanning::Model,
         presentation_version: Some(1),
-        execution_budget: budget,
         action_context: serde_json::Value::Null,
         spend: None,
     };
@@ -1432,7 +1388,6 @@ fn execution_fixture(
             agent_provider_config::ProviderProtocol::OpenAiCompatible,
             Arc::new(Scripted(script.clone())),
         ),
-        task_deadline: None,
         native_task: None,
         broker_catalogue: catalogue_of(&surfaces),
         next_broker_request: 1,
@@ -1487,8 +1442,6 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
 mod anthropic_dialect;
 #[path = "agent_loop/tests/catalogue_waits.rs"]
 mod catalogue_waits;
-#[path = "agent_loop/tests/follow_up.rs"]
-mod follow_up;
 #[path = "agent_loop/tests/long_run.rs"]
 mod long_run;
 #[path = "agent_loop/tests/malformed_calls.rs"]
@@ -1510,61 +1463,20 @@ mod web;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 
-fn native_fixture(latest: u64) -> Fixture {
-    let control = runtime_collab::TaskRunControl {
-        version: 1,
-        task_id: "chat.workspace/channels/loop/messages/asked".into(),
-        run_epoch: 1,
-        from_revision: 0,
-        applied_revision: 0,
-        latest_revision: latest,
-        directions: (1..=latest.min(8))
-            .map(|revision| runtime_collab::TaskDirection {
-                revision,
-                author: "person:reviewer".into(),
-                text: "Keep compatibility examples".into(),
-                issued_at: 42,
-            })
-            .collect(),
-        has_more: latest > 8,
-    };
+fn native_fixture() -> Fixture {
     fixture(
         "Prepare release notes",
-        World {
-            native_control: Some(control),
-            ..Default::default()
-        },
+        World::default(),
         vec![turn(&[finish("Reviewed instructions", true)], 24)],
     )
 }
 
 tilo_test_env::scenario! {
-    fn a_native_task_reads_its_instruction_and_directions_before_acting;
-
-    phase native_directions_enter_the_actual_model_request_before_actions;
-    {
-        let mut fixture = native_fixture(1);
-        fixture.session.run_task(&fixture.run).unwrap();
-        let bodies = fixture.script.bodies.lock().unwrap();
-        assert_eq!(bodies.len(), 1);
-        let request = bodies[0].to_string();
-        drop(bodies);
-        assert!(request.contains("Keep compatibility examples"));
-        assert!(request.contains("person:reviewer"));
-        assert!(request.contains("issued_at"));
-        assert_eq!(fixture.world.borrow().native_applied_revision, 1);
-        assert!(fixture.sent.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::ReportTaskRun {
-                update: runtime_collab::TaskRunUpdate::Succeeded { .. },
-                ..
-            }
-        )));
-    }
+    fn a_native_task_reads_its_instruction_before_acting;
 
     phase native_model_receives_the_full_private_instruction_not_a_truncated_title;
     {
-        let mut fixture = native_fixture(0);
+        let mut fixture = native_fixture();
         let instruction =
             "Inspect every release-note section and preserve the complete compatibility matrix. "
                 .repeat(6);
@@ -1578,7 +1490,7 @@ tilo_test_env::scenario! {
 
     phase one_issues_run_reaches_the_model_without_another_issues;
     {
-        let mut fixture = native_fixture(0);
+        let mut fixture = native_fixture();
         let first_instruction = "first-native-private-instruction-secret";
         fixture.run.instruction = Some(first_instruction.into());
         *fixture.script.turns.lock().unwrap() = vec![turn(
@@ -1596,13 +1508,6 @@ tilo_test_env::scenario! {
                 .with_group(fixture.run.group(), fixture.run.title.as_str(), "task"),
         )
         .unwrap();
-        fixture
-            .world
-            .borrow_mut()
-            .native_control
-            .as_mut()
-            .unwrap()
-            .task_id = fixture.run.task_id.clone();
         let second_instruction = "second-native-private-instruction-secret";
         fixture.run.instruction = Some(second_instruction.into());
         *fixture.script.turns.lock().unwrap() = vec![turn(
@@ -1623,24 +1528,9 @@ tilo_test_env::scenario! {
         assert!(!second.contains("first-native-private-result-secret"));
     }
 
-    phase native_overflow_requires_review_without_acknowledging_any_direction;
-    {
-        let mut fixture = native_fixture(9);
-        assert!(fixture.session.run_task(&fixture.run).is_err());
-        assert_eq!(fixture.world.borrow().native_applied_revision, 0);
-        assert!(fixture.script.bodies.lock().unwrap().is_empty());
-        assert!(!fixture.sent.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::ReportTaskRun {
-                update: runtime_collab::TaskRunUpdate::DirectionsApplied { .. },
-                ..
-            }
-        )));
-    }
-
     phase native_unfinished_answer_requests_review_instead_of_claiming_completion;
     {
-        let mut fixture = native_fixture(0);
+        let mut fixture = native_fixture();
         *fixture.script.turns.lock().unwrap() =
             vec![turn(&[finish("I need the owner's decision", false)], 24)].into();
         fixture.session.run_task(&fixture.run).unwrap();
@@ -2060,74 +1950,11 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase explicit_owner_task_budget_reaches_transport_and_keeps_the_default;
-    {
-        let turns = vec![turn(&[finish("Done", true)], 64)];
-        let mut unbounded = fixture("finish", World::default(), turns.clone());
-        unbounded.session.run_task(&unbounded.run).unwrap();
-        assert_eq!(
-            unbounded.script.timeouts.lock().unwrap()[0],
-            Duration::from_secs(5)
-        );
-        let mut bounded = execution_fixture(
-            "finish",
-            World::default(),
-            turns,
-            None,
-            Some(collab_types::task_budget::TaskExecutionBudget {
-                turn_ms: 20_000,
-                total_ms: 60_000,
-                max_turns: None,
-            }),
-        );
-        bounded.session.run_task(&bounded.run).unwrap();
-        assert_eq!(
-            bounded.script.timeouts.lock().unwrap()[0],
-            Duration::from_secs(20)
-        );
-        assert!(bounded.session.task_deadline.is_none());
-    }
 
-    phase explicit_total_task_deadline_stops_silent_transport_before_any_step;
-    {
-        let mut f = execution_fixture(
-            "write",
-            World::default(),
-            vec![turn(
-                &[
-                    invoke("append-paragraph", &serde_json::json!({"text":"late"})),
-                    finish("Done", true),
-                ],
-                64,
-            )],
-            // A provider silent for as long as the test may run: only the
-            // task's own deadline ends the run.
-            Some(tilo_test_env::hang_bound()),
-            Some(collab_types::task_budget::TaskExecutionBudget {
-                turn_ms: 100,
-                total_ms: 100,
-                max_turns: None,
-            }),
-        );
-        f.session.run_task(&f.run).unwrap();
-        assert_eq!(
-            f.script.emitted.load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-        assert!(f.world.borrow().steps.is_empty());
-        assert!(f.session.turn.is_none());
-        assert!(f.session.task_deadline.is_none());
-        assert!(
-            matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
-            if message == crate::i18n::t("agent-fail-time")),
-            "the person reads that the task ran out of time: {:?}",
-            terminal(&f.sent.borrow())
-        );
-    }
 
-    phase a_run_without_a_budget_goes_past_thirty_turns_until_it_is_done;
-    // A run has no turn cap of its own: one whose issue sets no budget goes on
-    // past the 30 turns the runner used to allow until it is done.
+    phase a_run_goes_on_past_thirty_turns_until_it_is_done;
+    // A run has no turn cap of its own: it goes on past the 30 turns the
+    // runner used to allow until it is done.
     {
         let mut turns: Vec<Vec<TurnEvent>> = (0..45)
             .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
@@ -2139,36 +1966,6 @@ tilo_test_env::scenario! {
         assert!(matches!(
             terminal(&f.sent.borrow()),
             runtime_collab::TaskRunUpdate::Succeeded { message } if message == "Looked everywhere."
-        ));
-        assert!(f.session.task_deadline.is_none(), "no time cap either");
-    }
-
-    phase a_loop_that_never_finishes_stops_at_its_budgets_turns;
-    // A model that never finishes is stopped at the turns its issue's budget
-    // sets: the limit is the person's.
-    {
-        let wander = |count: usize| -> Vec<Vec<TurnEvent>> {
-            (0..count)
-                .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
-                .collect()
-        };
-        let turns = 65;
-        let mut f = execution_fixture(
-            "wander",
-            World::default(),
-            wander(turns + 2),
-            None,
-            Some(collab_types::task_budget::TaskExecutionBudget {
-                turn_ms: 20_000,
-                total_ms: 600_000,
-                max_turns: Some(u32::try_from(turns).unwrap()),
-            }),
-        );
-        f.session.run_task(&f.run).unwrap();
-        assert_eq!(f.script.bodies.lock().unwrap().len(), turns);
-        assert!(matches!(
-            terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Failed { message } if message.contains(&format!("all {turns} model turns"))
         ));
     }
 }

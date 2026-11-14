@@ -63,17 +63,13 @@ pub(super) struct NativeLaunch {
 }
 
 impl NativeLaunch {
-    fn binding(&self) -> Result<crate::services::NativeTaskBinding, String> {
-        let mut binding = self.run.native.clone();
-        binding.revision = runtime_collab::native_task_revision(&self.lease)
-            .ok_or("invalid native launch lease")?
-            .1;
-        Ok(binding)
+    fn binding(&self) -> crate::services::NativeTaskBinding {
+        self.run.native.clone()
     }
 
-    fn requirement(&self) -> Result<NativeTaskActionRequirement, String> {
-        Ok(NativeTaskActionRequirement {
-            binding: self.binding()?,
+    fn requirement(&self) -> NativeTaskActionRequirement {
+        NativeTaskActionRequirement {
+            binding: self.binding(),
             app: self.app.clone(),
             resource_kind: "applications.app".into(),
             resource: format!("app.{}", self.app),
@@ -84,7 +80,7 @@ impl NativeLaunch {
             // Opening the application is part of the action the person
             // confirmed, not a second question.
             confirmed: self.confirmed,
-        })
+        }
     }
 
     pub(super) fn check(&self, state: &AppBrokerState) -> Result<(), String> {
@@ -113,7 +109,7 @@ impl NativeLaunch {
             state.authorize_task_action(
                 &self.run,
                 &NativeTaskActionRequirement {
-                    binding: self.binding()?,
+                    binding: self.binding(),
                     app: self.app.clone(),
                     resource_kind: retained.resource_kind.clone(),
                     resource: self.resource.clone(),
@@ -128,7 +124,7 @@ impl NativeLaunch {
         // A ready app does not need launch authority. Its action still takes
         // the exact current task admission below, including starter revocation.
         if self.bootstrap || self.ready(state).is_none() {
-            state.authorize_task_action(&self.run, &self.requirement()?)?;
+            state.authorize_task_action(&self.run, &self.requirement())?;
         }
         Ok(())
     }
@@ -194,17 +190,16 @@ impl NativeLaunch {
         _destination: &LaunchDestination,
         place: &LaunchPlace,
     ) -> Result<(), String> {
-        let binding = self.binding()?;
+        let binding = self.binding();
         state
             .admit_task_launch(
                 &self.run,
-                &binding,
-                &self.requirement()?,
+                &self.requirement(),
                 &mut || {
                     self.caller.authorize_host_action(
                         state,
                         &self.run.cluster_id,
-                        &self.requirement()?,
+                        &self.requirement(),
                     )?;
                     let key = self.launch_key(state)?;
                     let intent = serde_json::json!({"host_activation":true,"app_id":self.app,
@@ -212,7 +207,7 @@ impl NativeLaunch {
                     "resource":format!("app.{}", self.app),"resource_kind":"applications.app","action":"open",
                     "contract":tilo_actions::ActionContract::default(),
                     "bootstrap":self.bootstrap,"confirmed":self.confirmed,
-                    "task":binding.task_id,"epoch":binding.epoch,"revision":binding.revision,
+                    "task":binding.task_id,"epoch":binding.epoch,
                     "caller":self.caller.owner(),
                     "retained_contract":self.retained.as_ref().map(|action| &action.contract),
                     "retained_params":self.retained.as_ref().map(|action| &action.params),
@@ -260,7 +255,7 @@ impl NativeLaunch {
                         )?;
                         self.check_action_policy(state)?;
                         let spent = self.caller.authorize_host_action(
-                            state, &self.run.cluster_id, &self.requirement()?,
+                            state, &self.run.cluster_id, &self.requirement(),
                         )?;
                         let workspace = state
                             .membership
@@ -425,7 +420,6 @@ impl NativeLaunch {
                     confirmation: _,
                 } = state.native_confirmation_for(
                     &self.run,
-                    &self.lease,
                     (&self.app, &offered.1),
                     (&self.resource, &self.action),
                     self.argument.as_deref(),
@@ -436,7 +430,7 @@ impl NativeLaunch {
             }
             admitted.witness = state
                 .native_store_witness(
-                    (&admitted.run, &admitted.lease, admitted.confirmed),
+                    (&admitted.run, admitted.confirmed),
                     &offered,
                     admitted.argument.as_deref(),
                     &admitted.caller,
@@ -448,7 +442,6 @@ impl NativeLaunch {
         }
         let job = state.admit_task_action(
             &admitted.run,
-            &admitted.lease,
             runtime_collab::TaskAction {
                 peer_id: peer,
                 provider: &self.provider,
@@ -537,10 +530,9 @@ impl AppBrokerState {
         {
             return Err("host activation request changed or its outcome is uncertain".into());
         }
-        let mut binding = run.native.clone();
-        binding.revision = self.applied_task_revision(run)?;
+        let binding = run.native.clone();
         let requirement = NativeTaskActionRequirement {
-            binding: binding.clone(),
+            binding,
             app: app.into(),
             resource_kind: "applications.app".into(),
             resource: target.resource.into(),
@@ -551,7 +543,7 @@ impl AppBrokerState {
             attended: false,
             confirmed: false,
         };
-        self.admit_task_launch(run, &binding, &requirement, &mut || {
+        self.admit_task_launch(run, &requirement, &mut || {
             caller.authorize_host_action(self, &run.cluster_id, &requirement)?;
             Ok(())
         })?;
@@ -634,7 +626,6 @@ impl AppBrokerState {
                 confirmation: _,
             } = self.native_confirmation_for(
                 &native.run,
-                reask.lease,
                 (&native.app, &retained),
                 (target.resource, target.action),
                 target.argument,

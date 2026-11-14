@@ -14,10 +14,9 @@ tilo_test_env::scenario! {
             instruction: Some("Review the complete proposal and list every blocker".into()),
             subject: None,
             run_id: 7,
-            lease: "broker-lease".into(),
+            lease: "native:00000000000000000000000000000000".into(),
             planning: TaskRunPlanning::RulesOnly,
             presentation_version: None,
-            execution_budget: None,
             spend: None,
             action_context: serde_json::json!({"purpose": "Review proposal"}),
         };
@@ -74,9 +73,8 @@ tilo_test_env::scenario! {
             instruction: Some("Tighten the opening sentence".into()),
             subject: Some(subject.clone()),
             run_id: 8,
-            lease: "broker-lease".into(),
+            lease: "native:00000000000000000000000000000000".into(),
             planning: TaskRunPlanning::Model,
-            execution_budget: None,
             spend: None,
             action_context: serde_json::json!({"purpose": "Tighten this"}),
         };
@@ -112,9 +110,8 @@ tilo_test_env::scenario! {
             instruction: Some(instruction.into()),
             subject: None,
             run_id: 9,
-            lease: "broker-lease".into(),
+            lease: "native:00000000000000000000000000000000".into(),
             planning: TaskRunPlanning::Model,
-            execution_budget: None,
             spend: None,
             action_context: serde_json::json!({}),
         };

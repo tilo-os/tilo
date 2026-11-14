@@ -42,13 +42,6 @@ tilo_test_env::scenario! {
             task.title = title.into();
             task.run_id = 100 + u64::try_from(index).unwrap();
             bind_context(&mut task);
-            f.world
-                .borrow_mut()
-                .native_control
-                .as_mut()
-                .unwrap()
-                .task_id
-                .clone_from(&task.task_id);
             f.session.run_task(&task).unwrap();
         }
         let terminals: Vec<runtime_collab::TaskRunUpdate> = f

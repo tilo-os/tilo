@@ -520,8 +520,6 @@ tilo_test_env::scenario! {
             let mut f = fixture("ids", World::default(), Vec::new());
             f.session.native_task = Some(crate::session::native_task::NativeTaskState {
                 run_id: f.run.run_id,
-                task_id: f.run.task_id.clone(),
-                base: "00000000000000000000000000000000".into(),
                 ..Default::default()
             });
             let offers = f.session.task_catalogue();

@@ -247,7 +247,6 @@ impl AppBrokerState {
                 task_id: run.issue.clone(),
                 agent_id: run.agent.clone(),
                 epoch: run.epoch,
-                revision: run.applied_revision(),
                 starter: Some(run.starter.clone()),
                 turn: run.turn.clone(),
                 origin: run.origin.clone(),

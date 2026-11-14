@@ -79,24 +79,14 @@ fn letters() -> World {
     }
 }
 
-/// A budget for a long chat task.
-fn long_budget(turns: u32) -> collab_types::task_budget::TaskExecutionBudget {
-    collab_types::task_budget::TaskExecutionBudget {
-        turn_ms: 20_000,
-        total_ms: 600_000,
-        max_turns: Some(turns),
-    }
-}
-
 /// A fixture whose model is `decide`, declaring `model`.
 fn reading_fixture(
     title: &str,
     world: World,
-    budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     model: agent_provider_config::ModelDescriptor,
     decide: Box<Decide>,
 ) -> (Fixture, Arc<Reading>) {
-    let mut f = execution_fixture(title, world, Vec::new(), None, budget);
+    let mut f = execution_fixture(title, world, Vec::new(), None);
     let reading = Arc::new(Reading {
         decide,
         bodies: Mutex::new(Vec::new()),
@@ -194,7 +184,6 @@ fn a_150_turn_run_of_8_items_stays_within_its_models_context() {
     let (mut f, reading) = reading_fixture(
         "Go through today's applications and review each",
         letters(),
-        Some(long_budget(200)),
         model_with_context(),
         Box::new(move |turn, body| {
             match turn {
@@ -268,7 +257,6 @@ fn a_model_without_tool_calling_is_refused_by_name() {
     let (mut f, reading) = reading_fixture(
         "Go through today's applications",
         World::default(),
-        Some(long_budget(200)),
         agent_provider_config::ModelDescriptor {
             tool_calling: false,
             ..agent_provider_config::ModelDescriptor::new("tiny-chat")

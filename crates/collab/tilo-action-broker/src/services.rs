@@ -6,16 +6,6 @@ pub use tilo_broker_core::services::*;
 mod published;
 pub use published::{Caller, PublishedResources, Reading, ResourceWatch};
 
-/// A write on `route` was admitted to this device's channels. Where it is a
-/// workspace's tracker, its readers (the broker's runs, the composer following
-/// one) are told to read it again, as the owner's publication tells them in
-/// a workspace it commits: a sealed workspace's tracker changes only here.
-pub fn tracker_written(route: &tilo_broker_core::route::CrdtRoute) {
-    if route.app_id == TRACKER_APP && route.record_id == TRACKER_RECORD {
-        tilo_identity_host::policy_change::announce();
-    }
-}
-
 use std::sync::Arc;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 

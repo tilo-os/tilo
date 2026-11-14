@@ -244,7 +244,7 @@ impl AppBrokerState {
     /// Dispatch consumes the returned witness, and revalidates task authority.
     pub(super) async fn native_store_witness(
         &self,
-        (run, lease, confirmed): (&super::PendingTaskRun, &str, bool),
+        (run, confirmed): (&super::PendingTaskRun, bool),
         publication: &(super::PublishedSurface, super::PublishedAction),
         argument: Option<&str>,
         caller: &super::durable_local_invocation::LocalCaller,
@@ -255,10 +255,7 @@ impl AppBrokerState {
         if !requires_store_witness(app, &offered.action) {
             return Ok(None);
         }
-        let mut binding = run.native.clone();
-        binding.revision = runtime_collab::native_task_revision(lease)
-            .ok_or("invalid native lease")?
-            .1;
+        let binding = run.native.clone();
         let actor = binding.actor()?;
         self.authorize_task_action(
             run,

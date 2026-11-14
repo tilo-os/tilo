@@ -207,7 +207,7 @@ pub struct Invocation {
 pub enum TaskCall {
     /// The run's progress, as `TaskRunUpdate` JSON.
     Report(String),
-    /// Whether the run was cancelled, answered as [`Reply::TaskCancelled`].
+    /// Whether the run was cancelled, answered as [`Reply::Cancelled`].
     Cancelled,
     /// Run an action as a step of the run, answered as [`Reply::Invoked`].
     Invoke(TaskStep),
@@ -467,14 +467,8 @@ pub enum Reply {
     /// What the call opened.
     Opened(Handle),
     Workspace(WorkspaceStatus),
-    /// Whether an invocation's cancellation was asked.
+    /// Whether an invocation's cancellation was asked, or a task run's.
     Cancelled(bool),
-    /// Whether a task run was cancelled, and the control it shows now as
-    /// JSON, if any.
-    TaskCancelled {
-        cancelled: bool,
-        control: Option<String>,
-    },
     /// The invocation a task step or launch started, and its state now as
     /// `InvocationUpdate` JSON.
     Invoked {

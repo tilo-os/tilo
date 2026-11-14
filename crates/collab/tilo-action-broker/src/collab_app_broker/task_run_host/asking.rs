@@ -61,7 +61,7 @@ impl Drop for Asking {
 impl TaskRunHost {
     /// Whether this connection's run asks its person on this host rather than on an issue.
     pub(super) fn asks_on_host(&self) -> bool {
-        let Ok((run, _)) = self.pending_run() else {
+        let Ok(run) = self.pending_run() else {
             return false;
         };
         let Ok(current) = self.0.state.tracker_run_of(&run) else {
@@ -83,7 +83,7 @@ impl TaskRunHost {
         let state = Arc::clone(&self.0.state);
         let workspace = self.workspace().to_owned();
         let issue = self.issue().to_owned();
-        let (run, _) = self.pending_run().map_err(refused)?;
+        let run = self.pending_run().map_err(refused)?;
         let current = state.tracker_run_of(&run).map_err(refused)?;
         let tracker = state
             .tracker_runs(&workspace)

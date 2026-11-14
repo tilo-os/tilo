@@ -49,26 +49,20 @@ agent-step-program = a program
 ## A run that stopped
 
 agent-run-needs-decision = Needs your decision before continuing
-agent-run-directions-require-review = Directions need model planning or your review; none were acknowledged
 agent-run-cancelled-before-planning = Cancelled before planning
 agent-run-cancelled-before-action = Cancelled before the next action
 agent-run-cancelled-before-step = Cancelled before the next step
 agent-run-cancelled-in-action = Cancelled while an action was running
 agent-cancel-task-center = Cancelled from Task Center
 agent-cancel-thinking = Cancelled while thinking
-agent-cancel-superseded = Superseded by new directions
 
 ## A run that failed, and what the person can do about it
 
 agent-fail-no-terminal-state = The task's action hit its deadline without ending.
 agent-fail-local-only = Tasks can't run an action that only works on this device.
 agent-fail-arguments = The planned action's arguments don't fit: { $error }
-agent-fail-turns = The task used all { $turns } model turns of its budget before it finished ({ $actions } action(s) completed). Raise its turns and run it again.
-agent-fail-time = The task ran out of time before it finished.
-agent-fail-budget = The task's time budget ran out.
 agent-fail-turn-not-finished = The model turn did not finish in time
 agent-fail-native-outcome = The action's outcome is still unknown; check the history before trying again.
-agent-fail-direction-pages = More than one page of new directions needs your review; none were acknowledged.
 
 # What a failed model call leaves in the reply a person reads: one sentence
 # of what happened, in their own terms, and where there is a setting to look
