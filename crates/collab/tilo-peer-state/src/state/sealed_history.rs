@@ -49,9 +49,12 @@ pub(super) fn restore(
         // names it ([`sealed_compaction::check_stored`]).
         let admitted = DocumentAdmission::from_op(&core.workspace, &route.app, &route.record, op)
             .map_err(err)?;
-        if !collab_types::is_compaction_segment(op)
-            && core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id)
-        {
+        // A compaction is numbered as a write of its author it folds, and its
+        // evidence is the mark that fold leaves rather than an entry.
+        let exact = core.exact_admissions.get(&admitted.key) == Some(&admitted.operation_id);
+        let folded = op.kind == collab_types::OpKind::Compaction
+            && core.exact_admissions.covers(&admitted.key);
+        if !collab_types::is_compaction_segment(op) && !exact && !folded {
             return Err("sealed history lacks exact admission evidence".into());
         }
         if document

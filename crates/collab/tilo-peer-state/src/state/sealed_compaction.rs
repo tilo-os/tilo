@@ -56,14 +56,19 @@ impl<'peer> PeerPublication<'peer> {
         now: SystemTime,
     ) -> Result<Vec<SignedOp>, String> {
         let document = self.document((app, record))?;
+        // Numbered under the writes it folds: the last of this author's own, 0 when it folds
+        // none of them. The device that signs a compaction writes the record as well (a host
+        // does what its agents and callers do), numbering each write after its last one of the
+        // record, and a reader refuses a write numbered at or below one it took as a replay: a
+        // page that opens the record by the fold would refuse every write the author makes
+        // next if the fold were numbered past them.
         let seq = document
-            .channel
-            .last_seq_per_author
-            .get(&Ed25519PublicKey::from_bytes(author))
-            .copied()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or("sequence exhausted")?;
+            .sealed
+            .iter()
+            .filter(|write| *write.author.as_bytes() == author)
+            .map(|write| write.seq)
+            .max()
+            .unwrap_or(0);
         self.draft(
             (app, record),
             document,
@@ -1206,6 +1211,11 @@ pub(super) fn supersede(
     segments: Vec<SignedOp>,
 ) -> Result<Vec<SignedOp>, String> {
     let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
+    if !numbered_under_its_folds(compaction, &wrapper) {
+        return Err(
+            "sealed compaction is not numbered as the last write of its author it folds".into(),
+        );
+    }
     if history.is_empty() {
         // Nothing of this route is here to supersede: its key holder's
         // compaction is the whole record, the first thing a replica that
@@ -1262,6 +1272,12 @@ pub(super) fn check_stored(history: &[SignedOp], floors: &Floors) -> Result<(), 
             return Err("a sealed compaction is only ever first in a record's history".into());
         }
         let wrapper = SealedCompaction::parse(op).map_err(err)?;
+        if !numbered_under_its_folds(op, &wrapper) {
+            return Err(
+                "stored sealed compaction is not numbered as the last write of its author it folds"
+                    .into(),
+            );
+        }
         if covers_beyond(&wrapper, floors) {
             return Err("stored sealed compaction is ahead of the record's watermark".into());
         }
@@ -1274,6 +1290,14 @@ pub(super) fn check_stored(history: &[SignedOp], floors: &Floors) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// Whether `compaction` is numbered as the last write of its author it folds,
+/// 0 when it folds none of theirs: the number its readers' floor then takes,
+/// so a page that opens the record by the fold still takes the author's next
+/// write.
+fn numbered_under_its_folds(compaction: &SignedOp, wrapper: &SealedCompaction) -> bool {
+    compaction.seq == wrapper.covered(&compaction.author).unwrap_or(0)
 }
 
 fn covers_beyond(wrapper: &SealedCompaction, floors: &Floors) -> bool {

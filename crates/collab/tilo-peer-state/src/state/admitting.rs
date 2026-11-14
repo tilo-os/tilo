@@ -670,18 +670,25 @@ impl StatePeer {
         let folded = (envelope.kind == OpKind::Compaction)
             .then(|| sealed_compaction::covered(&envelope))
             .transpose()?;
+        // The number the compaction takes is its author's too: it stands for
+        // that write of theirs now.
+        let own = (*envelope.author.as_bytes(), envelope.seq);
         let segments = self.compaction_segments(&route, &envelope)?;
         let gathered = !segments.is_empty();
         Self::retain_sealed(&mut candidate, envelope, segments)?;
         let primary = if self.core.admission_v5 {
-            self.core.exact_admissions.insert(&admitted)?;
-            // The writes the compaction folded are in its snapshot now:
-            // their exact evidence becomes one mark per writer.
-            if let Some(folded) = folded {
+            // The writes the compaction folded are in its snapshot now, and
+            // the number it took with them: their exact evidence becomes one
+            // mark per writer, the compaction's own included. This goes first,
+            // so the compaction's number is covered by that mark rather than
+            // taken as free.
+            if let Some(mut folded) = folded {
+                folded.push(own);
                 self.core
                     .exact_admissions
                     .cover((&self.core.workspace, &route.app, &route.record), folded)?;
             }
+            self.core.exact_admissions.insert(&admitted)?;
             InputDisposition::Accepted(admitted)
         } else {
             InputDisposition::MetadataOnly

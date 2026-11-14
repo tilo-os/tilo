@@ -423,9 +423,15 @@ fn validate_authorized_op(
         check_redact_payload(op, state)?;
     }
 
-    // Replay defence: seq must strictly increase per author.
+    // Replay defence: seq must strictly increase per author. A compaction is
+    // numbered as the last write of its author it folds, so it restates
+    // history rather than following it: taking it in place of exactly those
+    // writes is what refuses a stale or partial one. Numbering it past them
+    // would make every reader that opened the record by the fold refuse the
+    // author's next write as a replay.
     let last = state.last_seq_per_author.get(&op.author).copied();
-    if let Some(prev) = last
+    if op.kind != OpKind::Compaction
+        && let Some(prev) = last
         && op.seq <= prev
     {
         return Err(ValidationError::ReplaySeq {
@@ -452,8 +458,11 @@ fn validate_authorized_op(
         }
     }
 
-    // All checks passed. Bump replay sequence.
-    state.last_seq_per_author.insert(op.author, op.seq);
+    // All checks passed. Bump replay sequence. Never lower it: a compaction
+    // is numbered as a write it folds, so its author's mark is already past
+    // it.
+    let floor = state.last_seq_per_author.entry(op.author).or_insert(0);
+    *floor = (*floor).max(op.seq);
     Ok(())
 }
 

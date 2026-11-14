@@ -211,8 +211,13 @@ impl StatePeer {
         // cost every entry the index held since it last settled.
         let evidence = DocumentAdmission::from_op(&self.core.workspace, app, record, &envelope)
             .map_err(|error| error.to_string())?;
-        let held = self.core.exact_admissions.get(&evidence.key).is_some()
-            || self.core.exact_admissions.covers(&evidence.key);
+        // A compaction takes the number of the last write of its author it
+        // folds, so that number is held already; what is new is the compaction
+        // itself, and its evidence is the mark its fold leaves.
+        let compaction = envelope.kind == collab_types::OpKind::Compaction;
+        let held = !compaction
+            && (self.core.exact_admissions.get(&evidence.key).is_some()
+                || self.core.exact_admissions.covers(&evidence.key));
         let report = self.admit_local(app, record, envelope, now)?;
         let outcome = &report.summary;
         if outcome.duplicate {
@@ -233,10 +238,9 @@ impl StatePeer {
                 "native local document was deferred, incomplete or rejected, not newly admitted{waiting}{incomplete}"
             ));
         }
-        if held
-            || !self.core.admission_v5
-            || self.core.exact_admissions.get(&evidence.key) != Some(&evidence.operation_id)
-        {
+        let settled = self.core.exact_admissions.get(&evidence.key) == Some(&evidence.operation_id)
+            || (compaction && self.core.exact_admissions.covers(&evidence.key));
+        if held || !self.core.admission_v5 || !settled {
             return Err("native local document has no exact admission evidence".into());
         }
         Ok(())

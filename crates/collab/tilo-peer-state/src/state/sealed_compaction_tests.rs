@@ -373,15 +373,22 @@ fn wrapper(
     )
 }
 
+/// A correctly numbered compaction, so each forgery is refused for what it
+/// forges and not for its author's sequence.
 fn forged(
-    peer: &StatePeer,
+    _peer: &StatePeer,
     key: &SigningKey,
     (wrapper, metadata): &(SealedCompaction, EncryptionMetadata),
     now: SystemTime,
 ) -> NeighbourMsg {
+    let seq = wrapper
+        .covered(&Ed25519PublicKey::from_bytes(
+            key.verifying_key().to_bytes(),
+        ))
+        .unwrap_or(0);
     message(signed(
         key,
-        next_seq(peer, key),
+        seq,
         OpKind::Compaction,
         wrapper.encode().unwrap(),
         Some(*metadata),
@@ -1075,6 +1082,70 @@ fn a_compaction_founds_a_route_a_replica_holds_none_of() {
     assert_eq!(held(&fresh), vec![envelope_of(&compaction)]);
 }
 
+/// The device that signs a compaction writes the record as well (a relay's host does what its
+/// agents do), numbering each write after its last one. A page that opens the record takes the
+/// compaction first and then refuses every write of its author numbered at or below it as a
+/// replay, so a compaction numbered past the writes it folds would stop the page at the fold.
+/// It is numbered as the last of its author's own writes that it folds.
+#[test]
+fn a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    for index in 0..6 {
+        let message = write(
+            &f.host,
+            &f.owner,
+            &keys,
+            &author.edit("value", &format!("own-{index}")),
+            now,
+        );
+        admit(&mut f.host, &f.owner, message, now);
+    }
+    let plain = write(
+        &f.host,
+        &f.other,
+        &keys,
+        &author.edit("value", "a member's"),
+        now,
+    );
+    admit(&mut f.host, &f.other, plain, now);
+    let last = floor(&f.host, &f.owner);
+    let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+    assert_eq!(
+        envelope_of(&compaction).seq,
+        last,
+        "the host's last write it folds"
+    );
+
+    // A page that opens the record takes the compaction first, then the
+    // host's next write.
+    let mut fresh = StatePeer::new(
+        WORKSPACE,
+        f.authority.clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    fresh.select_admission_v5().unwrap();
+    fresh
+        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+        .unwrap();
+    admit(&mut fresh, &f.owner, compaction, now);
+    assert_eq!(floor(&fresh, &f.owner), last);
+    let next = write(
+        &f.host,
+        &f.owner,
+        &keys,
+        &author.edit("value", "after the fold"),
+        now,
+    );
+    admit(&mut f.host, &f.owner, next.clone(), now);
+    admit(&mut fresh, &f.owner, next, now);
+}
+
 #[test]
 fn a_sealed_checkpoint_founds_the_route_its_deltas_change() {
     let mut f = fixture();
@@ -1162,12 +1233,14 @@ fn a_replayed_or_superseded_compaction_is_refused() {
 
     admit(&mut lagging, &f.other, second, now);
     let owner = f.owner.clone();
+    // Its history is not the one the newer fold replaces: it never took the
+    // fold that came between.
     refused_with(
         &mut lagging,
         &owner,
         newer,
         now,
-        "covers writes this replica has not admitted",
+        "does not cover exactly this replica's writes",
     );
 }
 
@@ -1301,10 +1374,10 @@ fn a_compacted_record_restores_and_a_tampered_stored_compaction_does_not() {
         ),
         (
             rewrite(&|history| {
-                history[0].timestamp += Duration::from_secs(1);
+                history[0].seq += 1;
                 collab_types::sign_op(&mut history[0], &owner).unwrap();
             }),
-            "a compaction without exact admission evidence",
+            "a compaction numbered past the writes it folds",
         ),
         (
             rewrite(&|history| {
@@ -1885,12 +1958,13 @@ fn a_compaction_folds_its_writes_exact_evidence_into_one_mark_per_writer() {
         mint(&mut f.host, &keys, &f.owner, now).unwrap();
         sizes.push(f.host.core.exact_admissions.len());
     }
-    // The first round also keeps the owner's seeded checkpoint; the next
-    // compaction, by the same owner, folds that as well.
+    // A compaction is numbered as a write it folds, so its evidence is the
+    // mark of that fold, never an entry: what stays is the owner's seeded
+    // checkpoint, above the number the owner's first fold takes.
     assert_eq!(
         sizes,
-        vec![2, 1, 1],
-        "only the latest compaction stays exact"
+        vec![1, 1, 1],
+        "a fold adds marks, and the index does not grow"
     );
     let index = &f.host.core.exact_admissions;
     for writer in [&f.other, &f.editor] {
@@ -2393,7 +2467,6 @@ fn a_keyless_replica_refuses_a_compaction_set_past_its_bound() {
 
     // A set of `count` segments of the key holder, over `before`: a keyless replica cannot
     // open them.
-    let seq = next_seq(&f.host, &owner);
     let forge = |count: usize| -> Vec<SignedOp> {
         let segments: Vec<(EncryptionMetadata, Vec<u8>)> = (0..count)
             .map(|index| {
@@ -2417,6 +2490,13 @@ fn a_keyless_replica_refuses_a_compaction_set_past_its_bound() {
             .map(|(_, payload)| payload.clone())
             .collect();
         let (wrapper, metadata) = wrapper(&f.host, &keys, &before);
+        // Numbered as the last write of its author the set folds: the history
+        // is the editor's, so none of it is the owner's.
+        let seq = wrapper
+            .covered(&Ed25519PublicKey::from_bytes(
+                owner.verifying_key().to_bytes(),
+            ))
+            .unwrap_or(0);
         let head = signed(
             &owner,
             seq,

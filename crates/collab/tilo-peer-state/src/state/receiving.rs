@@ -2,7 +2,7 @@
 
 use super::{
     AdmissionError, AdmissionReport, DeviceCert, DocumentAdmission, Held, InputDisposition,
-    MembershipError, MissingPrerequisite, NeighbourMsg, ReceiveOutcome, SignedOp, StatePeer,
+    MembershipError, MissingPrerequisite, NeighbourMsg, ReceiveOutcome, Route, SignedOp, StatePeer,
     SystemTime, TransportOrigin, VerifiedCertificate, backend, covered_records, err, now_ns,
     peer_handle, workspace, written_route,
 };
@@ -144,13 +144,50 @@ impl StatePeer {
             .map_err(err)?;
         collab_types::verify_op(op).map_err(err)?;
         let admission = DocumentAdmission::from_op(workspace, app, record, op)?;
+        let compaction = op.kind == collab_types::OpKind::Compaction;
         match self.core.exact_admissions.get(&admission.key) {
             Some(id) if id == &admission.operation_id => Ok(Some(admission)),
+            // A compaction takes the number of a write of its author it folds,
+            // so that number being held is the history it restates, not a
+            // conflict: taking it in place of exactly those writes decides it.
+            Some(_) if compaction => Ok(None),
             Some(_) => Err(AdmissionError::ConflictingSequence),
-            // A compaction folded it: decided, and ignored like a retry.
-            None if self.core.exact_admissions.covers(&admission.key) => Ok(Some(admission)),
+            None if self.core.exact_admissions.covers(&admission.key) => {
+                // A mark covers it: decided, and ignored like a retry — unless
+                // it is a fold that still has a write of the history to fold.
+                // A later fold may take the same number, and a segment of one
+                // is never evidence itself: it is gathered into its set.
+                if collab_types::is_compaction_segment(op)
+                    || (compaction && self.folds_held(app, record, op))
+                {
+                    Ok(None)
+                } else {
+                    Ok(Some(admission))
+                }
+            }
             None => Ok(None),
         }
+    }
+
+    /// Whether `compaction` folds a write this replica still holds as history:
+    /// a fold of nothing held restates what an earlier fold already did.
+    fn folds_held(&self, app: &str, record: &str, compaction: &SignedOp) -> bool {
+        let Ok(wrapper) = collab_types::SealedCompaction::parse(compaction) else {
+            return false;
+        };
+        self.core
+            .documents
+            .get(&Route {
+                app: app.into(),
+                record: record.into(),
+            })
+            .is_some_and(|document| {
+                document
+                    .sealed
+                    .iter()
+                    .filter(|write| write.kind != collab_types::OpKind::Compaction)
+                    .any(|write| wrapper.covers(write))
+            })
     }
 
     /// Exact new candidate admissions for local multi-record owner commits.
