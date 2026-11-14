@@ -83,6 +83,12 @@ struct Card {
 }
 
 impl Widget for Card {
+    /// A section of the page holding the band's rows, laid out where the card stands.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("section");
+        cx.children();
+    }
+
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         self.band.update(state, path)
     }
