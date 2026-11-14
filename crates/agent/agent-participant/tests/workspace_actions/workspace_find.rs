@@ -155,3 +155,69 @@ async fn an_agent_finds_a_note_by_its_title_and_by_its_words_and_reads_that_note
         "{lines:?}"
     );
 }
+
+/// The path a `tilo_ls` line names, before the type and label it shows.
+fn line_path(line: &str) -> &str {
+    line.split("  ").next().unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_finds_a_conversation_by_its_name() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let browser = Browser::open(&hosted, &browser_device, &host).await;
+
+    // Chat's record, with a conversation of its own beside the starter ones.
+    let mut chat = crate::common::open_in(
+        &browser.cluster_id,
+        "so.tilo.chat",
+        "ada",
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let mut doc = chat.read(Clone::clone).unwrap();
+    crate::common::add_channel(&mut doc, "ada", "design crit", None);
+    chat.apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
+        .unwrap();
+    let route = DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: browser.cluster_id.clone(),
+        record: chat.wire_record().into(),
+    };
+    browser
+        .peer
+        .write(route, &chat.take_mutation().unwrap().unwrap())
+        .unwrap();
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-find", "Claude Code");
+
+    // The conversation, named by the path a read takes, and read back.
+    let (lines, _) = find(&server, "design crit").await;
+    let conversation = lines
+        .iter()
+        .find(|line| line.contains("design crit"))
+        .unwrap_or_else(|| panic!("the conversation is found by its name: {lines:?}"));
+    let read = call(
+        &server,
+        "tilo_read",
+        json!({"path": line_path(conversation)}),
+    )
+    .await;
+    assert!(read.contains("design crit"), "{read}");
+}
