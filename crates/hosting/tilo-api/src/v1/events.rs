@@ -165,13 +165,7 @@ pub fn stream(mut watch: Watch, run: Option<String>) -> crate::Body {
             }
         }
     });
-    let frames = futures_util::stream::unfold(receiver, |mut receiver| async move {
-        receiver
-            .recv()
-            .await
-            .map(|bytes| (Ok(hyper::body::Frame::data(bytes)), receiver))
-    });
-    http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(frames))
+    super::chunked_body(receiver)
 }
 
 fn frame(id: Option<&str>, kind: &str, data: &Value) -> Bytes {

@@ -52,14 +52,32 @@ pub const SURFACE_HEADER: &str = "tilo-surface";
 const DEFAULT_WAIT_SECONDS: u64 = 10;
 /// The longest any call is held.
 const MAX_WAIT_SECONDS: u64 = 60;
+/// How many resources of one export are read at once. Bigger than this only
+/// moves the wait to the workspace that answers the reads.
+const EXPORT_READS_AT_ONCE: usize = 8;
+/// How many exports one server runs at once; the rest wait their turn.
+const EXPORTS_AT_ONCE: usize = 8;
 
 /// What the API keeps besides the server's store.
-#[derive(Default)]
 pub struct State {
     pub(crate) remembered: idempotency::Remembered,
     pub(crate) deliveries: webhooks::Deliveries,
     /// Each app's surface version per workspace, as last read.
     surfaces: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// How many exports run at once; a burst waits its turn here instead of
+    /// taking the server's other calls down with it.
+    exports: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            remembered: idempotency::Remembered::default(),
+            deliveries: webhooks::Deliveries::default(),
+            surfaces: std::sync::Mutex::default(),
+            exports: Arc::new(tokio::sync::Semaphore::new(EXPORTS_AT_ONCE)),
+        }
+    }
 }
 
 /// Whether `path` is the API's.
@@ -99,14 +117,16 @@ enum Answer {
         body: Value,
         location: Option<String>,
     },
-    Stream(Body),
+    /// A body written as it is made, a piece at a time: server-sent events,
+    /// or a JSON document whose arrays are filled as their members are read.
+    Stream {
+        content_type: &'static str,
+        body: Body,
+    },
     /// A file's bytes as they come: a piece fetched is a piece sent, so a
     /// file of hundreds of megabytes costs the server no more memory than
     /// one of its pieces.
-    File {
-        content_type: String,
-        body: Body,
-    },
+    File { content_type: String, body: Body },
     /// Part of a file's bytes, from `range.0` to `range.1`, answered `206`.
     Partial {
         content_type: String,
@@ -361,24 +381,7 @@ impl<'a> Caller<'a> {
         arguments: Value,
     ) -> Result<(Value, Option<String>), ApiError> {
         let workspace = Some(self.workspace()).filter(|workspace| !workspace.is_empty());
-        let answer = self
-            .session
-            .call(Call {
-                workspace,
-                tool,
-                arguments,
-                run: self.run.clone(),
-            })
-            .await?;
-        let said = answer
-            .pointer("/content/0/text")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let typed = typed_answer(&answer)?;
-        if typed.get("status").and_then(Value::as_str) == Some("failed") {
-            return Err(ApiError::of_answer(typed.get("error"), typed.get("action")));
-        }
-        Ok((typed, said))
+        call_in(&self.session, workspace, self.run.clone(), tool, arguments).await
     }
 
     /// An account action: its `result`.
@@ -561,16 +564,23 @@ impl<'a> Caller<'a> {
                 let args = json!({"invocation_id": run, "undo": true});
                 action_answer(self.call("tilo_status", args).await?, &ws)
             }
-            _ => Ok(Answer::Stream(events::stream(
-                events::Watch::new(Arc::clone(&self.session), ws, None, None),
-                Some(run.to_owned()),
-            ))),
+            _ => Ok(Answer::Stream {
+                content_type: "text/event-stream",
+                body: events::stream(
+                    events::Watch::new(Arc::clone(&self.session), ws, None, None),
+                    Some(run.to_owned()),
+                ),
+            }),
         }
     }
 
     /// Everything the workspace holds, read by walking it from its apps as
     /// an agent would: each listing page by page, each resource read whole.
     /// A resource that does not read is named with why, and the walk goes on.
+    ///
+    /// The document is written as the walk finds it, so the server holds no
+    /// more than the reads in flight, however much a workspace holds. Some
+    /// exports run side by side; the rest wait their turn.
     async fn export(&self) -> Result<Answer, ApiError> {
         let ws = self.workspace();
         let workspace = self
@@ -580,86 +590,23 @@ impl<'a> Caller<'a> {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::new("not_found", "no such workspace"))?;
-        let mut resources = Vec::new();
-        let mut unread = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut pending: std::collections::VecDeque<Option<String>> =
-            std::collections::VecDeque::from([None]);
-        while let Some(path) = pending.pop_front() {
-            let mut cursor: Option<String> = None;
-            loop {
-                let args = with(
-                    with(json!({}), "path", path.as_ref()),
-                    "cursor",
-                    cursor.as_ref(),
-                );
-                // A listing that answers why it has nothing (an app installed
-                // but not running holds nothing to list) is named like a
-                // resource that does not read, and the walk goes on.
-                let listed = self
-                    .call("tilo_ls", args)
-                    .await
-                    .and_then(parsed::<answers::Listing>);
-                let listing = match listed {
-                    Ok(listing) => listing,
-                    Err(refused) => {
-                        unread.push(answers::Unread {
-                            path: path.clone().unwrap_or_default(),
-                            error: refused.body.message.clone(),
-                        });
-                        break;
-                    }
-                };
-                for row in listing.rows {
-                    if !seen.insert(row.path.clone()) {
-                        continue;
-                    }
-                    match self.read_whole(&row.path).await {
-                        Ok(read) => resources.push(read),
-                        Err(refused) => unread.push(answers::Unread {
-                            path: row.path.clone(),
-                            error: refused.body.message.clone(),
-                        }),
-                    }
-                    if row.has_children {
-                        pending.push_back(Some(row.path));
-                    }
-                }
-                match listing.next_cursor {
-                    Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
-                    _ => break,
-                }
-            }
-        }
-        shaped::<answers::WorkspaceExport>(json!({
-            "workspace": workspace,
-            "exported_at_ms": crate::now_ms(),
-            "resources": resources,
-            "unread": unread,
-        }))
-        .map(Answer::ok)
-    }
-
-    /// `path` read with every page of what it holds.
-    async fn read_whole(&self, path: &str) -> Result<answers::Resource, ApiError> {
-        let mut whole: Option<answers::Resource> = None;
-        let mut cursor: Option<String> = None;
-        loop {
-            let args = with(json!({"path": path}), "cursor", cursor.as_ref());
-            let page = parsed::<answers::Resource>(self.call("tilo_read", args).await?)?;
-            let next = page.cursor.clone();
-            match &mut whole {
-                None => whole = Some(page),
-                Some(whole) => whole.children.extend(page.children),
-            }
-            match next {
-                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
-                _ => break,
-            }
-        }
-        let mut whole = whole.ok_or_else(|| ApiError::new("not_found", "nothing to read"))?;
-        whole.cursor = None;
-        Ok(whole)
+        let workspace = parsed::<answers::Workspace>(
+            serde_json::to_value(&workspace)
+                .map_err(|error| ApiError::new("unavailable", error.to_string()))?,
+        )?;
+        let running = Arc::clone(&self.server.v1.exports)
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::new("unavailable", "the server is stopping"))?;
+        let source = SessionExport {
+            session: Arc::clone(&self.session),
+            workspace: Some(ws).filter(|ws| !ws.is_empty()),
+            run: self.run.clone(),
+        };
+        Ok(Answer::Stream {
+            content_type: "application/json",
+            body: export_body(source, workspace, crate::now_ms(), running),
+        })
     }
 
     /// The workspace's people, programs, files and events.
@@ -776,10 +723,13 @@ impl<'a> Caller<'a> {
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned);
                 let path = self.query("path").map(str::to_owned);
-                Ok(Answer::Stream(events::stream(
-                    events::Watch::new(Arc::clone(&self.session), ws, path, from),
-                    None,
-                )))
+                Ok(Answer::Stream {
+                    content_type: "text/event-stream",
+                    body: events::stream(
+                        events::Watch::new(Arc::clone(&self.session), ws, path, from),
+                        None,
+                    ),
+                })
             }
             other => Err(ApiError::new("not_found", format!("{other} is not served"))),
         }
@@ -1052,6 +1002,249 @@ impl<'a> Caller<'a> {
     }
 }
 
+/// `tool` with `arguments` in `workspace` (`None` for the account), as
+/// `run`: its typed answer and what it said in words, a refusal when it says
+/// it failed.
+async fn call_in(
+    session: &Session,
+    workspace: Option<String>,
+    run: Option<Value>,
+    tool: &'static str,
+    arguments: Value,
+) -> Result<(Value, Option<String>), ApiError> {
+    let answer = session
+        .call(Call {
+            workspace,
+            tool,
+            arguments,
+            run,
+        })
+        .await?;
+    let said = answer
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let typed = typed_answer(&answer)?;
+    if typed.get("status").and_then(Value::as_str) == Some("failed") {
+        return Err(ApiError::of_answer(typed.get("error"), typed.get("action")));
+    }
+    Ok((typed, said))
+}
+
+/// Where an export reads: a key's session ([`SessionExport`]), or a test's
+/// own workspace.
+trait ExportSource: Send + Sync {
+    /// One page of the listing at `path` (`None` for the apps).
+    fn list(
+        &self,
+        path: Option<String>,
+        cursor: Option<String>,
+    ) -> impl Future<Output = Result<answers::Listing, ApiError>> + Send;
+
+    /// One page of the resource at `path`.
+    fn read(
+        &self,
+        path: String,
+        cursor: Option<String>,
+    ) -> impl Future<Output = Result<answers::Resource, ApiError>> + Send;
+
+    /// `path` read with every page of what it holds.
+    fn read_whole(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<answers::Resource, ApiError>> + Send {
+        async move {
+            let mut whole: Option<answers::Resource> = None;
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = self.read(path.to_owned(), cursor.clone()).await?;
+                let next = page.cursor.clone();
+                match &mut whole {
+                    None => whole = Some(page),
+                    Some(whole) => whole.children.extend(page.children),
+                }
+                match next {
+                    Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                    _ => break,
+                }
+            }
+            let mut whole = whole.ok_or_else(|| ApiError::new("not_found", "nothing to read"))?;
+            whole.cursor = None;
+            Ok(whole)
+        }
+    }
+}
+
+/// An export's reads: `tilo_ls` and `tilo_read` calls of one key's session
+/// in one workspace.
+struct SessionExport {
+    session: Arc<Session>,
+    workspace: Option<String>,
+    run: Option<Value>,
+}
+
+impl ExportSource for SessionExport {
+    async fn list(
+        &self,
+        path: Option<String>,
+        cursor: Option<String>,
+    ) -> Result<answers::Listing, ApiError> {
+        let args = with(
+            with(json!({}), "path", path.as_ref()),
+            "cursor",
+            cursor.as_ref(),
+        );
+        // A listing that answers why it has nothing (an app installed
+        // but not running holds nothing to list) is named like a
+        // resource that does not read, and the walk goes on.
+        call_in(
+            &self.session,
+            self.workspace.clone(),
+            self.run.clone(),
+            "tilo_ls",
+            args,
+        )
+        .await
+        .and_then(|(typed, _)| parsed::<answers::Listing>(typed))
+    }
+
+    async fn read(
+        &self,
+        path: String,
+        cursor: Option<String>,
+    ) -> Result<answers::Resource, ApiError> {
+        let args = with(json!({"path": path}), "cursor", cursor.as_ref());
+        let (typed, _) = call_in(
+            &self.session,
+            self.workspace.clone(),
+            self.run.clone(),
+            "tilo_read",
+            args,
+        )
+        .await?;
+        parsed::<answers::Resource>(typed)
+    }
+}
+
+/// The export's body: `workspace`'s document, each resource written as the
+/// walk reads it. `permit` is held until the last byte is written, so a
+/// burst of exports queues instead of running the server out of room.
+fn export_body<S: ExportSource + 'static>(
+    source: S,
+    workspace: answers::Workspace,
+    exported_at_ms: u64,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Body {
+    let (sender, chunks) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(async move {
+        let _running = permit;
+        write_export(&source, &workspace, exported_at_ms, sender).await;
+    });
+    chunked_body(chunks)
+}
+
+/// Write the export's document into `sender` as the walk finds it: the
+/// workspace and when, then each resource in the order a walk finds it,
+/// then what did not read. Stops when the reader is gone.
+async fn write_export<S: ExportSource>(
+    source: &S,
+    workspace: &answers::Workspace,
+    exported_at_ms: u64,
+    sender: tokio::sync::mpsc::Sender<Bytes>,
+) {
+    use futures_util::StreamExt as _;
+
+    let open = format!(
+        "{{\"workspace\":{},\"exported_at_ms\":{exported_at_ms},\"resources\":[",
+        json_of(workspace),
+    );
+    if sender.send(open.into()).await.is_err() {
+        return;
+    }
+    let mut first = true;
+    let mut unread = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut pending: std::collections::VecDeque<Option<String>> =
+        std::collections::VecDeque::from([None]);
+    while let Some(path) = pending.pop_front() {
+        let mut cursor: Option<String> = None;
+        loop {
+            let listing = match source.list(path.clone(), cursor.clone()).await {
+                Ok(listing) => listing,
+                Err(refused) => {
+                    unread.push(answers::Unread {
+                        path: path.clone().unwrap_or_default(),
+                        error: refused.body.message.clone(),
+                    });
+                    break;
+                }
+            };
+            // The page's rows are read side by side, and written in the
+            // order the listing names them, so a workspace's export reads
+            // the same however fast each resource answers.
+            let fresh = listing
+                .rows
+                .into_iter()
+                .filter(|row| seen.insert(row.path.clone()));
+            let mut reads = futures_util::stream::iter(fresh)
+                .map(|row| async move {
+                    let read = source.read_whole(&row.path).await;
+                    (row, read)
+                })
+                .buffered(EXPORT_READS_AT_ONCE);
+            while let Some((row, read)) = reads.next().await {
+                match read {
+                    Ok(resource) => {
+                        let mut piece = String::new();
+                        if !first {
+                            piece.push(',');
+                        }
+                        first = false;
+                        piece.push_str(&json_of(&resource));
+                        if sender.send(piece.into()).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(refused) => unread.push(answers::Unread {
+                        path: row.path.clone(),
+                        error: refused.body.message.clone(),
+                    }),
+                }
+                if row.has_children {
+                    pending.push_back(Some(row.path));
+                }
+            }
+            match listing.next_cursor {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => break,
+            }
+        }
+    }
+    let rest = format!("],\"unread\":{}}}", json_of(&unread));
+    let _ = sender.send(rest.into()).await;
+}
+
+/// `chunks` as a body, each frame sent as it comes.
+fn chunked_body(chunks: tokio::sync::mpsc::Receiver<Bytes>) -> Body {
+    let frames = futures_util::stream::unfold(chunks, |mut chunks| async move {
+        chunks.recv().await.map(|bytes| {
+            (
+                Ok::<_, std::convert::Infallible>(Frame::data(bytes)),
+                chunks,
+            )
+        })
+    });
+    http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(frames))
+}
+
+/// `value` as the JSON text the export's document carries for it.
+fn json_of<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|why| {
+        tracing::error!(%why, "an export's answer is not JSON");
+        "null".to_owned()
+    })
+}
+
 fn webhook_row(hook: &crate::store::Webhook, with_secret: bool) -> Value {
     let row = with(
         json!({"id": hook.id, "url": hook.url, "events": hook.events}),
@@ -1227,12 +1420,12 @@ fn reply(answered: Result<Answer, ApiError>) -> Reply {
             body,
             location,
         }) => json_reply(status, &body, location.as_deref()),
-        Ok(Answer::Stream(body)) => {
+        Ok(Answer::Stream { content_type, body }) => {
             let mut reply = hyper::Response::new(body);
             let headers = reply.headers_mut();
             headers.insert(
                 header::CONTENT_TYPE,
-                header::HeaderValue::from_static("text/event-stream"),
+                header::HeaderValue::from_static(content_type),
             );
             headers.insert(
                 header::CACHE_CONTROL,
@@ -1290,6 +1483,253 @@ pub(crate) fn refusal(refused: &ApiError) -> Reply {
         reply.headers_mut().insert(header::RETRY_AFTER, value);
     }
     reply
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    use http_body_util::BodyExt as _;
+    use serde_json::Map;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// A workspace a test scripts: the rows each listing answers, what each
+    /// read answers, and which of them refuse.
+    #[derive(Default)]
+    struct Fake {
+        listings: HashMap<Option<String>, Vec<answers::Row>>,
+        refusals: HashMap<String, String>,
+        unlistable: HashSet<String>,
+        /// Reads that wait for [`Self::gate`], so a test can see what was
+        /// written before the walk ended.
+        held: HashSet<String>,
+        gate: Option<Arc<tokio::sync::Semaphore>>,
+        /// How long every read takes, so a page's reads overlap.
+        delay: Duration,
+        in_flight: Arc<AtomicUsize>,
+        most_in_flight: Arc<AtomicUsize>,
+    }
+
+    impl ExportSource for Fake {
+        async fn list(
+            &self,
+            path: Option<String>,
+            _cursor: Option<String>,
+        ) -> Result<answers::Listing, ApiError> {
+            if let Some(name) = path
+                .as_ref()
+                .filter(|name| self.unlistable.contains(name.as_str()))
+            {
+                return Err(ApiError::new("failed", format!("{name} holds nothing")));
+            }
+            Ok(answers::Listing {
+                path: path.clone().unwrap_or_else(|| "apps".to_owned()),
+                kind: None,
+                rows: self.listings.get(&path).cloned().unwrap_or_default(),
+                actions: Vec::new(),
+                next_cursor: None,
+                text: None,
+            })
+        }
+
+        async fn read(
+            &self,
+            path: String,
+            _cursor: Option<String>,
+        ) -> Result<answers::Resource, ApiError> {
+            let running = self
+                .in_flight
+                .fetch_add(1, Ordering::SeqCst)
+                .saturating_add(1);
+            self.most_in_flight.fetch_max(running, Ordering::SeqCst);
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            if self.held.contains(&path)
+                && let Some(gate) = &self.gate
+            {
+                let _ = gate.acquire().await;
+            }
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            if let Some(why) = self.refusals.get(&path) {
+                return Err(ApiError::new("failed", why.clone()));
+            }
+            Ok(resource(&path))
+        }
+    }
+
+    fn row(path: &str, has_children: bool) -> answers::Row {
+        answers::Row {
+            path: path.to_owned(),
+            name: path.to_owned(),
+            label: path.to_owned(),
+            kind: "page".to_owned(),
+            has_children,
+            actions: Vec::new(),
+            state: None,
+        }
+    }
+
+    fn resource(path: &str) -> answers::Resource {
+        answers::Resource {
+            path: path.to_owned(),
+            kind: Some("page".to_owned()),
+            fields: Map::new(),
+            children: Vec::new(),
+            cursor: None,
+            app: None,
+            surface: None,
+            surface_version: None,
+            text: None,
+        }
+    }
+
+    fn workspace() -> answers::Workspace {
+        answers::Workspace {
+            id: "ws".to_owned(),
+            name: "Workspace".to_owned(),
+            host: None,
+            role: Some("owner".to_owned()),
+            labels: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// A permit as the server hands one out, held for the export's life.
+    async fn permit() -> tokio::sync::OwnedSemaphorePermit {
+        let exports = Arc::new(tokio::sync::Semaphore::new(1));
+        exports.acquire_owned().await.unwrap()
+    }
+
+    /// `source`'s export as a client reads it: the body, whole, as the
+    /// document it describes.
+    async fn exported(source: Fake) -> answers::WorkspaceExport {
+        let body = export_body(source, workspace(), 7, permit().await);
+        let bytes = body.collect().await.unwrap().to_bytes();
+        parse(&bytes)
+    }
+
+    fn parse(bytes: &[u8]) -> answers::WorkspaceExport {
+        serde_json::from_slice(bytes)
+            .unwrap_or_else(|why| panic!("{why}: {}", String::from_utf8_lossy(bytes)))
+    }
+
+    fn paths(export: &answers::WorkspaceExport) -> Vec<&str> {
+        export
+            .resources
+            .iter()
+            .map(|resource| resource.path.as_str())
+            .collect()
+    }
+
+    /// A workspace with several resources and child listings exports them in
+    /// the order a walk finds them: a page's rows, then what those hold.
+    #[tokio::test]
+    async fn an_export_walks_child_listings_in_order() {
+        let mut fake = Fake::default();
+        fake.listings
+            .insert(None, vec![row("notes", true), row("files", true)]);
+        fake.listings.insert(
+            Some("notes".to_owned()),
+            vec![row("notes/a", false), row("notes/b", false)],
+        );
+        fake.listings
+            .insert(Some("files".to_owned()), vec![row("files/x", false)]);
+        let export = exported(fake).await;
+        assert_eq!(export.workspace.id, "ws");
+        assert_eq!(export.exported_at_ms, 7);
+        assert_eq!(
+            paths(&export),
+            ["notes", "files", "notes/a", "notes/b", "files/x"]
+        );
+        assert!(export.unread.is_empty(), "{:?}", export.unread);
+    }
+
+    /// A page's resources are read side by side, within the bound, and
+    /// written in the order the listing names them.
+    #[tokio::test]
+    async fn an_export_reads_a_page_side_by_side_and_writes_it_in_order() {
+        let named: Vec<String> = (0..20).map(|at| format!("notes/{at:02}")).collect();
+        let mut fake = Fake::default();
+        fake.listings.insert(
+            None,
+            named
+                .iter()
+                .map(|path| row(path, false))
+                .collect::<Vec<_>>(),
+        );
+        fake.delay = Duration::from_millis(20);
+        let most = Arc::clone(&fake.most_in_flight);
+        let export = exported(fake).await;
+        assert_eq!(
+            paths(&export),
+            named.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        let most = most.load(Ordering::SeqCst);
+        assert!(most > 1, "the page was read one after another: {most}");
+        assert!(
+            most <= EXPORT_READS_AT_ONCE,
+            "{most} reads ran at once, more than {EXPORT_READS_AT_ONCE}"
+        );
+    }
+
+    /// A resource or a listing that does not read is named with why, and the
+    /// walk goes on with the rest.
+    #[tokio::test]
+    async fn an_export_names_what_does_not_read_and_walks_on() {
+        let mut fake = Fake::default();
+        fake.listings.insert(
+            None,
+            vec![row("notes", true), row("bad", false), row("files", true)],
+        );
+        fake.listings
+            .insert(Some("notes".to_owned()), vec![row("notes/a", false)]);
+        fake.listings
+            .insert(Some("files".to_owned()), vec![row("files/x", false)]);
+        fake.unlistable.insert("notes".to_owned());
+        fake.refusals
+            .insert("bad".to_owned(), "bad is a page of nothing".to_owned());
+        let export = exported(fake).await;
+        assert_eq!(paths(&export), ["notes", "files", "files/x"]);
+        let unread: Vec<(&str, &str)> = export
+            .unread
+            .iter()
+            .map(|unread| (unread.path.as_str(), unread.error.as_str()))
+            .collect();
+        assert_eq!(
+            unread,
+            [
+                ("bad", "bad is a page of nothing"),
+                ("notes", "notes holds nothing")
+            ]
+        );
+    }
+
+    /// The document is written as it is read: a resource is sent before the
+    /// walk has read the one after it. The chunks read as one document.
+    #[tokio::test]
+    async fn an_export_sends_what_it_read_before_the_walk_ends() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut fake = Fake::default();
+        fake.listings
+            .insert(None, vec![row("early", false), row("late", false)]);
+        fake.held.insert("late".to_owned());
+        fake.gate = Some(Arc::clone(&gate));
+        let mut body = export_body(fake, workspace(), 7, permit().await);
+        let mut text = String::new();
+        while !text.contains("\"early\"") {
+            let frame = body.frame().await.unwrap().unwrap();
+            if let Some(data) = frame.data_ref() {
+                text.push_str(&String::from_utf8_lossy(data));
+            }
+        }
+        assert!(!text.contains("\"late\""), "{text}");
+        gate.add_permits(1);
+        let rest = body.collect().await.unwrap().to_bytes();
+        text.push_str(&String::from_utf8_lossy(&rest));
+        let export = parse(text.as_bytes());
+        assert_eq!(paths(&export), ["early", "late"]);
+    }
 }
 
 #[cfg(test)]

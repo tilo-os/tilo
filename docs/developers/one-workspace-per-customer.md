@@ -241,7 +241,10 @@ done
 ```
 
 An export is every resource of every app in the workspace, each read whole as `tilo_read` reads it, with the
-workspace's listing and labels; a resource that does not read is named in `unread` with why. The files the
+workspace's listing and labels; a resource that does not read is named in `unread` with why. A page's resources
+are read side by side and written in the order a walk finds them, and the document streams out as it is read, so
+the server holds no more than the reads in flight however much a workspace holds. Exports of many workspaces run
+side by side up to a bound; the rest wait their turn rather than fail. The files the
 resources name are `tilo.content:` references: download each with `files.download` (`GET
 /v1/workspaces/<workspace>/content/<content>`) while the workspace still exists. From a shell,
 `tilo account workspaces create "Applicant cus_8121" --label customer_id=cus_8121` and
