@@ -2693,11 +2693,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // `notes#open` is what the listing of a stopped app says to
             // call; once the app runs, it answers what is in it.
             let opens = parsed.segments.is_empty() && arguments.is_empty();
+            // There it names the app's own verb, never an action whose id only begins with it
+            // (Notes' `open-link`): one by its whole id was asked above.
+            if opens && starts_app(&action) {
+                return Ok(self.running(&resolved, &action).await);
+            }
             match self.pick_action_in(&action, &resolved).await {
                 Ok(found) => found,
-                Err(_) if opens && starts_app(&action) => {
-                    return Ok(self.running(&resolved, &action).await);
-                }
                 Err(_) if parsed.segments.is_empty() && starts_app(&action) => {
                     let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
                     return self.launched(opening, arguments, invocation, wait_ms).await;
