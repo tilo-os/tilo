@@ -474,11 +474,35 @@ async fn the_persons_new_device_catches_up_once_its_certificate_is_admitted() {
 }
 
 /// A device whose certificate runs out while its link is open caught up as
-/// the person's device, and is sent nothing of what is written from then on.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_device_whose_certificate_runs_out_is_sent_nothing_more() {
+/// the person's device, is sent what is written until the certificate's last
+/// millisecond, and nothing of what is written from then on.
+#[test]
+fn a_device_whose_certificate_runs_out_is_sent_nothing_more() {
+    // The certificate runs out because this test moves the process's wall
+    // clock past its expiry, which the store reads on its own threads each
+    // time it hands a device a frame: the test takes the process to itself,
+    // with a runtime of its own, and waits for no second to pass.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_device_whose_certificate_runs_out_is_sent_nothing_more",
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime for this test alone")
+                .block_on(a_certificate_runs_out_on_an_open_link(process));
+        },
+    );
+}
+
+async fn a_certificate_runs_out_on_an_open_link(process: tilo_clock::testing::OwnProcess) {
+    let started = tilo_clock::wall();
+    let held = tilo_clock::testing::hold_wall_everywhere(process, started);
     let person = Person::new().await;
-    let ends = SystemTime::now() + Duration::from_secs(5);
+    let ends = started
+        .checked_add(Duration::from_secs(5))
+        .expect("a wall time five seconds on");
     let (key, cert) = certified(&person.root, 4, Some(ns(ends)));
     let mut short = Dialer::dial(&key, &person).await;
     short.shows(&cert).await;
@@ -488,8 +512,25 @@ async fn a_device_whose_certificate_runs_out_is_sent_nothing_more() {
             |frame| carries(frame, "theme").as_deref() == Some("dark"),
         )
         .await;
-    let still = ends.duration_since(SystemTime::now()).unwrap_or_default();
-    tokio::time::sleep(still + Duration::from_millis(500)).await;
+    // A millisecond before the certificate ends, what is written still reaches it.
+    drop(held);
+    let last = ends
+        .checked_sub(Duration::from_millis(1))
+        .expect("a wall time before the certificate's end");
+    let holding = tilo_clock::testing::hold_wall_everywhere(process, last);
+    person.writes("volume", "low").await;
+    short
+        .hears_until(
+            "a device whose certificate still holds was not sent a live write",
+            |frame| carries(frame, "volume").as_deref() == Some("low"),
+        )
+        .await;
+    // Half a second past the certificate's last moment.
+    drop(holding);
+    let past = ends
+        .checked_add(Duration::from_millis(500))
+        .expect("a wall time past the certificate's end");
+    let _ran_out = tilo_clock::testing::hold_wall_everywhere(process, past);
     // Whatever was on its way while the certificate held has arrived.
     short.hears().await;
     person.writes("accent", "blue").await;
