@@ -638,9 +638,16 @@ def branch_said(ctx, name: str, room: str) -> dict:
                         check=False)
     shown = []
     if any("is not complete" in n for n in notices):
+        # The desk's notices, as its state says them: the one about this branch, its body
+        # naming what did not come along.
+        try:
+            toasts = (ctx.state().get("chrome") or {}).get("notifications") or []
+        except VmError:
+            toasts = []
+        shown += [json.dumps(t)[:1500] for t in toasts if name in json.dumps(t)][-3:]
         # The notice's body lists what did not come along, one part a line ("<record> of <app>:
         # <why>", "… did not reach this device"), where the desk shows it.
-        shown = sorted({str(t.get("name")) for t in ctx.vm.targets()
+        shown += sorted({str(t.get("name")) for t in ctx.vm.targets()
                         if re.search(r" of [a-z0-9-]+\.[a-z0-9.-]+|did not reach|keys|could not|this device",
                                      str(t.get("name", "")))})[:20]
         why += "\n" + ctx.vm.exec("journalctl --user --no-pager 2>/dev/null | grep -ac 'Suppressed' ; "
