@@ -29,8 +29,8 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_agent_participant::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
 use tilo_agent_participant::{
@@ -200,7 +200,7 @@ impl RelayWitness {
             .delegate
             .agent_id()
             .ok_or(ActionHostError::NotPermitted)?;
-        let its_own = caller.principal() == &CallerPrincipal::Agent(agent_id.to_owned())
+        let its_own = caller.acting().agent_id() == Some(agent_id)
             && caller.user_public_key() == Some(&agent.user_public_key)
             && caller.device_public_key() == Some(&agent.device_public_key);
         if !its_own {
@@ -664,10 +664,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         question: tilo_actions::remote::ConfirmationQuestion,
     ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionHostError>>> {
         let person = *caller.user_public_key()?;
-        let agent_id = match caller.principal() {
-            CallerPrincipal::Agent(agent) => agent.clone(),
-            _ => String::new(),
-        };
+        let agent_id = caller.acting().agent_id().unwrap_or_default().to_owned();
         let pending = PendingConfirmation {
             id: question.id,
             agent_id,

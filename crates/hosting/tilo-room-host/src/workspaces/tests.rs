@@ -497,7 +497,7 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
         assert!(
             !workspaces.admits(created.workspace_id, &stranger).await,
             "{:?} is nobody this workspace admits",
-            stranger.principal()
+            stranger.acting()
         );
     }
     assert!(

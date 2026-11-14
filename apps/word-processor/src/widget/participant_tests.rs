@@ -786,7 +786,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
         tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
         tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
     ];
-    assert_eq!(callers[0].principal(), callers[1].principal());
+    assert_eq!(callers[0].acting(), callers[1].acting());
     assert_ne!(callers[0].execution_id(), callers[1].execution_id());
     let participants =
         callers.map(|caller| ParticipantId::for_execution(caller.execution_id().unwrap()));

@@ -17,9 +17,9 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
+    CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending,
 };
 use tilo_actions::{
     ActionContract, ActionOutput, Collects, ExecutionLocus, InvocationId, InvocationUpdate,
@@ -1318,8 +1318,7 @@ impl AgentSupervisor {
     /// Whether `caller` may steer agents here: a device of the delegating
     /// user, never an agent.
     fn authorized(&self, caller: &Caller) -> bool {
-        matches!(caller.principal(), CallerPrincipal::Person(_))
-            && caller.user_public_key() == Some(&self.user_public_key)
+        caller.acting().is_person() && caller.user_public_key() == Some(&self.user_public_key)
     }
 
     fn run(&self, request: &InvokeRequest) -> Result<ActionOutput, ActionHostError> {

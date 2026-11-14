@@ -93,10 +93,10 @@ use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, ActorPlace, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
-    application_provider_record, pending, provider_workspace,
+    ActionHostError, ActorPlace, Caller, CataloguePage, CatalogueQuery, CatalogueRow, Completer,
+    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_record, pending,
+    provider_workspace,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -1263,13 +1263,13 @@ fn stale_revision(revision: Option<&str>, current: &str) -> bool {
 /// Whether `caller` is `person`, or an agent a device of theirs handed its
 /// session to.
 fn acts_for(caller: &Caller, person: &str) -> bool {
-    match caller.principal() {
-        CallerPrincipal::Person(id) => id == person,
-        CallerPrincipal::Agent(_) => caller.delegating_person().is_some_and(|delegating| {
-            delegating.principal() == &CallerPrincipal::Person(person.to_owned())
-        }),
-        CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
+    if let Some(id) = caller.acting().person_id() {
+        return id == person;
     }
+    caller.acting().is_agent()
+        && caller
+            .delegating_person()
+            .is_some_and(|delegating| delegating.acting().person_id() == Some(person))
 }
 
 /// What a held record publishes that its door runs now.
@@ -2518,7 +2518,7 @@ impl Worker {
 
     /// Whether `caller` is the host's own person, whom the service acts for.
     fn serves_as_owner(&self, caller: &Caller) -> bool {
-        matches!(caller.principal(), CallerPrincipal::Person(person) if *person == self.participant)
+        caller.acting().person_id() == Some(self.participant.as_str())
     }
 
     /// Whether `caller` is the host's own person or an agent one of their
@@ -2955,16 +2955,16 @@ fn exact_view_query(
 /// workspace grants that agent. The workspace's governance still decides
 /// whether it admits them.
 fn speaks_for_a_member(caller: &Caller) -> bool {
-    match caller.principal() {
-        CallerPrincipal::Person(_) => true,
-        CallerPrincipal::Agent(_) if caller.is_session_delegated() => {
-            caller.acting_for_person().is_some()
-        }
-        CallerPrincipal::Agent(_) => {
-            caller.user_public_key().is_some() && caller.device_public_key().is_some()
-        }
-        _ => false,
+    if caller.acting().is_person() {
+        return true;
     }
+    if !caller.acting().is_agent() {
+        return false;
+    }
+    if caller.is_session_delegated() {
+        return caller.acting_for_person().is_some();
+    }
+    caller.user_public_key().is_some() && caller.device_public_key().is_some()
 }
 
 /// The receipt of an invocation the host turns away outright, with why.

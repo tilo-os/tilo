@@ -325,9 +325,9 @@ pub(super) fn is_local_host_caller(
                         original.native_projection_verified
                             && original.delegated.is_none()
                             && caller.user_public_key().is_none()
-                            && caller.principal()
-                                == &tilo_actions::remote::CallerPrincipal::Person(
-                                    super::person_id_for_root(certificate.user_public_key),
+                            && caller.acting().person_id()
+                                == Some(
+                                    super::person_id_for_root(certificate.user_public_key).as_str(),
                                 )
                     } else {
                         caller.user_public_key() == Some(&certificate.user_public_key)
@@ -1703,9 +1703,9 @@ mod identity_admin_tests {
         assert_eq!(
             state
                 .app_door(&person, "so.tilo.settings", &list)
-                .map(|caller| caller.principal().clone())
+                .map(|caller| caller.acting().clone())
                 .ok(),
-            Some(person.principal().clone())
+            Some(person.acting().clone())
         );
         assert!(state.app_door(&person, "so.tilo.notes", &list).is_err());
 

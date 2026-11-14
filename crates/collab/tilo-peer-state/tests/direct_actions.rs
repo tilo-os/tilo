@@ -21,8 +21,8 @@ use neighbour_wire::actions::{DeviceAction, PlaneFrame, SignedDeviceAction};
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CatalogueQuery, InvokeArgument,
-    InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget, TestHost,
+    ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, TestHost,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane, Bounds, RemoteDevice};
@@ -251,10 +251,10 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
         Some(WORKSPACE),
         "confined to the workspace it named"
     );
-    assert!(matches!(
-        answered_as.principal(),
-        CallerPrincipal::Person(person) if *person == hex::encode(root.verifying_key().to_bytes())
-    ));
+    assert_eq!(
+        answered_as.acting().person_id(),
+        Some(hex::encode(root.verifying_key().to_bytes()).as_str())
+    );
     assert!(!answered_as.is_foreign_device());
 
     // An invocation is run where the device holds it, and its receipt comes
@@ -583,8 +583,8 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
     assert_eq!(queried(&remote, &caller).await, Ok(()));
     let answered_as = dispatcher.callers()[0].clone();
     assert_eq!(
-        answered_as.principal(),
-        &CallerPrincipal::Agent("scribe".into()),
+        answered_as.acting().member_id(),
+        Some(&tilo_action_policy::MemberId::agent("scribe")),
         "the agent is the agent, never its person"
     );
     assert_eq!(

@@ -1027,8 +1027,8 @@ mod tests {
         assert!(!callers.is_empty());
         for caller in callers.iter() {
             assert_eq!(
-                caller.principal(),
-                &tilo_actions::remote::CallerPrincipal::Agent("claude-code".into())
+                caller.acting().member_id(),
+                Some(&tilo_action_policy::MemberId::agent("claude-code"))
             );
             assert_eq!(caller.workspace(), Some("workspace"));
             assert!(caller.execution_id().is_some());

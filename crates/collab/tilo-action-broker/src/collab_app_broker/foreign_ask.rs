@@ -11,8 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, CallerPrincipal, Confirmation, ConfirmationQuestion, InvokeRequest,
-    Pending,
+    ActionHostError, Caller, Confirmation, ConfirmationQuestion, InvokeRequest, Pending,
 };
 
 use super::{AppBrokerState, WitnessBinding};
@@ -27,7 +26,7 @@ impl AppBrokerState {
     /// nobody's to answer on.
     pub(super) fn asks_on_own_device(caller: &Caller) -> bool {
         caller.is_foreign_device()
-            && matches!(caller.principal(), CallerPrincipal::Person(_))
+            && caller.acting().is_person()
             && caller.user_public_key().is_some()
     }
 

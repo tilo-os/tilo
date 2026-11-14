@@ -1434,7 +1434,7 @@ mod tests {
         invoke(&state, &client, "5", "new-window", None).unwrap();
         let delivered = app.try_recv().unwrap();
         let accepted = events.try_recv().unwrap();
-        assert_eq!(accepted.principal, "agent:mcp-1");
+        assert_eq!(accepted.actor, "agent:mcp-1");
         assert!(matches!(
             heard.try_recv().unwrap(),
             CollabEvent::RemotePresenceUpdate {

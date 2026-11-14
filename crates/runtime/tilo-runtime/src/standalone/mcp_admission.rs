@@ -148,7 +148,7 @@ impl Joined {
                 // including when a signed certificate permits a stronger device.
                 .from_foreign_device(true)
                 .in_new_execution();
-        if caller.principal() != &tilo_actions::remote::CallerPrincipal::Person(actor.into()) {
+        if caller.acting().person_id() != Some(actor) {
             caller.retire_execution();
             return Err(
                 "selected workspace identity differs from the runtime profile actor".into(),

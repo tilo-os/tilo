@@ -1,7 +1,7 @@
 //! Exact-source discovery using the governor's already-owned channel state.
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
 use tilo_action_policy::Standing;
-use tilo_actions::remote::{Caller, CallerPrincipal};
+use tilo_actions::remote::Caller;
 use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
@@ -15,7 +15,7 @@ impl GovernedWorkspace {
     /// none. What a member may do with what they find is decided per action, by
     /// this standing.
     fn admitted(&self, caller: &Caller) -> Option<Standing> {
-        if !matches!(caller.principal(), CallerPrincipal::Person(_)) {
+        if !caller.acting().is_person() {
             return None;
         }
         let device = *caller.device_public_key()?;

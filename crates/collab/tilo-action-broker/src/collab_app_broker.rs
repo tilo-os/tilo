@@ -1373,12 +1373,12 @@ impl AppBrokerState {
             caller.is_foreign_device(),
             caller.device_public_key(),
         ));
-        match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::App(app) => match self.app_resource_kinds(app) {
+        match caller.acting().app() {
+            Some(app) => match self.app_resource_kinds(app.as_str()) {
                 Some(kinds) => actor.in_app(app.clone(), kinds),
                 None => actor.through_app(app.clone()),
             },
-            _ => actor,
+            None => actor,
         }
     }
 

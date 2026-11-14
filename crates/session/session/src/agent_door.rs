@@ -1386,7 +1386,7 @@ enum DoorAsk {
     /// as `actor` , on the pass: its answer as the door gives it, or `None` when no service keeps
     /// that app's record.
     Change {
-        actor: tilo_actions::remote::CallerPrincipal,
+        actor: tilo_action_policy::Acting,
         change: tilo_actions::remote::RecordChange,
         done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionHostError>>>,
     },
@@ -1988,10 +1988,7 @@ impl Host {
         // actions on the loop: the broker is the gate for a caller on another's word, and the
         // person at this seat is nobody's delegate.
         let own = request.target.provider == wire_provider();
-        let person = matches!(
-            caller.principal(),
-            tilo_actions::remote::CallerPrincipal::Person(_)
-        );
+        let person = caller.acting().is_person();
         // An agent works in one workspace: a desk window of another is not its to read or act on,
         // whatever it names it by.
         if !person
@@ -2054,10 +2051,10 @@ impl Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        let actor = match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::Agent(agent) => format!("agent:{agent}"),
-            _ => return Pending::ready(Err(ActionHostError::NotPermitted)),
+        let Some(agent) = caller.acting().agent_id() else {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
         };
+        let actor = format!("agent:{agent}");
         self.invoke_step_at(actor, request, caller.turn())
     }
 
@@ -2086,10 +2083,10 @@ impl Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        let actor = match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::Person(person) => person.clone(),
-            _ => return Pending::ready(Err(ActionHostError::NotPermitted)),
+        let Some(person) = caller.acting().person_id() else {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
         };
+        let actor = person.to_owned();
         self.invoke_step_at(actor, request, caller.turn())
     }
 
@@ -2143,9 +2140,10 @@ impl ActionHost for Host {
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         // An agent works in one workspace: the desk's windows of another (each listed by the title
         // of what it shows) are not its to read or act on. The person's own catalogue is theirs.
-        let confined = match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::Person(_) => None,
-            _ => caller.workspace().map(str::to_owned),
+        let confined = if caller.acting().is_person() {
+            None
+        } else {
+            caller.workspace().map(str::to_owned)
         };
         if let Some(workspace) = confined {
             let session = Arc::clone(&self.session);
@@ -2251,10 +2249,7 @@ impl ActionHost for Host {
         // An admitted agent's step is its run's to ask about: its person answers on this desk's
         // sheet ([`crate::run_questions`]).
         if let Some(run) = &self.run
-            && !matches!(
-                caller.principal(),
-                tilo_actions::remote::CallerPrincipal::Person(_)
-            )
+            && !caller.acting().is_person()
         {
             return run.host.confirm(caller, request);
         }

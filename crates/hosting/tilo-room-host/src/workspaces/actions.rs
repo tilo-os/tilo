@@ -55,11 +55,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
-    CatalogueQuery, CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account,
-    workspace_governance_resource,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
+    WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -817,7 +816,7 @@ type Governed = Arc<AsyncMutex<GovernedWorkspace>>;
 /// Whether `caller` is a person acting themselves: an agent or a bot
 /// governs nothing and holds no workspace's business of its own.
 fn speaks_for_themselves(caller: &Caller) -> bool {
-    matches!(caller.principal(), CallerPrincipal::Person(_))
+    caller.acting().is_person()
 }
 
 /// Whether `caller` asks the host's own operations as the person
@@ -828,7 +827,7 @@ fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
     speaks_for_themselves(caller)
         || (certificate.capabilities.agent.is_some()
             && caller.is_session_delegated()
-            && matches!(caller.principal(), CallerPrincipal::Agent(_)))
+            && caller.acting().is_agent())
 }
 
 /// Whether `caller` is the person's server key `certificate` certifies,

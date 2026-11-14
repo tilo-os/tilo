@@ -584,11 +584,10 @@ pub(super) fn session_caller(
     };
     // An agent's (or a key's) requests on this connection are one run, the
     // host's to name.
-    Ok(match caller.principal() {
-        tilo_actions::remote::CallerPrincipal::Agent(_) => {
-            caller.in_execution(session.execution.clone())
-        }
-        _ => caller,
+    Ok(if caller.acting().is_agent() {
+        caller.in_execution(session.execution.clone())
+    } else {
+        caller
     })
 }
 

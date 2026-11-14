@@ -20,9 +20,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig,
@@ -228,8 +227,8 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         let asked = person.asked.lock().unwrap();
         let (caller, request) = &asked[0];
         assert_eq!(
-            caller.principal(),
-            &CallerPrincipal::Agent("careful".into()),
+            caller.acting().member_id(),
+            Some(&tilo_action_policy::MemberId::agent("careful")),
             "the agent asks as itself"
         );
         assert_eq!(

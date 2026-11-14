@@ -869,8 +869,8 @@ fn continued_history_and_client_names_cannot_select_execution_identity() {
             "both connections act for the same person"
         );
         assert_ne!(
-            callers[0].principal(),
-            callers[1].principal(),
+            callers[0].acting(),
+            callers[1].acting(),
             "each connection is its own agent"
         );
         assert_ne!(callers[0].execution_id(), callers[1].execution_id());

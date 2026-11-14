@@ -573,7 +573,7 @@ impl AppBrokerState {
                     if self.services.native_certificates.as_ref().is_some_and(|authority|
                         uuid::Uuid::parse_str(&workspace_id).is_ok_and(|workspace|
                             authority.governs(workspace, Some(device))))))
-                && caller.shortcut().is_none()
+                && !caller.acting().is_automation()
                 && caller.acting_for_person().is_none()
                 && request.on_behalf_of.is_none(),
             execution_lease: caller.execution_lease(),

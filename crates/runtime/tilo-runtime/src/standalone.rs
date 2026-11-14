@@ -609,7 +609,7 @@ impl AdmittedRuntimeSession {
                 .unwrap_or_else(|| self.admission.caller())
         {
             tracing::warn!(
-                caller = ?caller.principal(),
+                caller = ?caller.acting(),
                 "a caller this run was not admitted for tried to act as it"
             );
             return Err(Refusal::Stranger);
@@ -705,7 +705,7 @@ impl RuntimeActionHost {
         else {
             return true;
         };
-        let tilo_actions::remote::CallerPrincipal::Person(actor) = caller.principal() else {
+        let Some(actor) = caller.acting().person_id() else {
             return false;
         };
         self.joined.action_workspace(actor, workspace).is_ok()

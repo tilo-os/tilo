@@ -37,6 +37,22 @@ impl MemberId {
         }
     }
 
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        match self {
+            Self::Agent(id) => Some(id),
+            Self::Person(_) | Self::Bot(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn bot_id(&self) -> Option<&str> {
+        match self {
+            Self::Bot(id) => Some(id),
+            Self::Person(_) | Self::Agent(_) => None,
+        }
+    }
+
     /// The person this is, when it is one.
     #[must_use]
     pub fn person_id(&self) -> Option<&str> {
@@ -49,6 +65,16 @@ impl MemberId {
     #[must_use]
     pub const fn is_person(&self) -> bool {
         matches!(self, Self::Person(_))
+    }
+
+    #[must_use]
+    pub const fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent(_))
+    }
+
+    #[must_use]
+    pub const fn is_bot(&self) -> bool {
+        matches!(self, Self::Bot(_))
     }
 
     /// The spelling a stored id uses: a person's root key as it is, an agent's
@@ -210,6 +236,15 @@ impl Actor {
             Self::Automation(_) => None,
         }
     }
+
+    /// The id inside the actor: a member's, or an automation's.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Member(member) => member.id(),
+            Self::Automation(id) => id.as_str(),
+        }
+    }
 }
 
 impl From<Actor> for Acting {
@@ -364,6 +399,62 @@ impl Acting {
             return None;
         };
         Some(person)
+    }
+
+    /// The app the change went through.
+    #[must_use]
+    pub fn app(&self) -> Option<&AppId> {
+        self.app.as_ref()
+    }
+
+    /// The actor, when it is a member.
+    #[must_use]
+    pub fn member_id(&self) -> Option<&MemberId> {
+        self.by.member_id()
+    }
+
+    #[must_use]
+    pub fn is_person(&self) -> bool {
+        self.by.member_id().is_some_and(MemberId::is_person)
+    }
+
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        self.by.member_id().is_some_and(MemberId::is_agent)
+    }
+
+    #[must_use]
+    pub fn is_bot(&self) -> bool {
+        self.by.member_id().is_some_and(MemberId::is_bot)
+    }
+
+    #[must_use]
+    pub fn is_automation(&self) -> bool {
+        matches!(self.by, Actor::Automation(_))
+    }
+
+    #[must_use]
+    pub fn person_id(&self) -> Option<&str> {
+        self.by.member_id().and_then(MemberId::person_id)
+    }
+
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        self.by.member_id().and_then(MemberId::agent_id)
+    }
+
+    #[must_use]
+    pub fn bot_id(&self) -> Option<&str> {
+        self.by.member_id().and_then(MemberId::bot_id)
+    }
+
+    /// The person this acting is for, when it is not the actor itself.
+    #[must_use]
+    pub fn acted_for_person(&self) -> Option<&str> {
+        self.acted_for
+            .first()
+            .and_then(|node| node.by.member_id())
+            .and_then(MemberId::person_id)
     }
 
     /// Every member in the tree, the actor first.

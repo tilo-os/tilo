@@ -5,7 +5,7 @@
 //! execution UUIDs and these public values alone grant no authority.
 use super::{BrokerActor, CrdtRoute, PublishedAction, PublishedSurface};
 use std::sync::{Arc, Mutex};
-use tilo_actions::remote::{Caller, CallerPrincipal, ExecutionLease};
+use tilo_actions::remote::{Caller, ExecutionLease};
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use tokio::sync::broadcast;
@@ -32,10 +32,10 @@ pub struct ExecutionActivity {
     /// Strict emission order within `epoch`; lag is reported by the receiver.
     pub sequence: u64,
     pub source_time_ms: u64,
-    /// Host-minted run subordinate to `principal`, never a device identity.
+    /// Host-minted run subordinate to `actor`, never a device identity.
     pub execution: uuid::Uuid,
     pub invocation: InvocationId,
-    pub principal: String,
+    pub actor: String,
     pub peer_id: u64,
     pub route: CrdtRoute,
     pub address: ActionAddress,
@@ -54,7 +54,7 @@ impl ExecutionActivity {
 #[derive(Clone)]
 pub(super) struct ExecutionScope {
     lifetime: ExecutionLease,
-    principal: String,
+    actor: String,
     /// The run is an agent's its person's device handed it to.
     agent: bool,
     execution: uuid::Uuid,
@@ -63,19 +63,17 @@ pub(super) struct ExecutionScope {
 impl ExecutionScope {
     pub(super) fn for_call(caller: &Caller, invocation: InvocationId) -> Option<Self> {
         // A person's run, or an agent's their own device handed it to.
-        let (principal, agent) = match caller.principal() {
-            CallerPrincipal::Person(principal) => (principal.clone(), false),
-            CallerPrincipal::Agent(_) if caller.acting_for_person().is_some() => {
-                (BrokerActor::for_caller(caller).id().to_owned(), true)
-            }
-            CallerPrincipal::Agent(_) | CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => {
-                return None;
-            }
+        let (actor, agent) = if let Some(person) = caller.acting().person_id() {
+            (person.to_owned(), false)
+        } else if caller.acting().is_agent() && caller.acting_for_person().is_some() {
+            (BrokerActor::for_caller(caller).id().to_owned(), true)
+        } else {
+            return None;
         };
         let lifetime = caller.execution_lease()?;
         Some(Self {
             lifetime,
-            principal,
+            actor,
             agent,
             execution: caller.execution_id()?,
             invocation,
@@ -97,8 +95,8 @@ impl ExecutionScope {
         if !self.lifetime.is_live() {
             return Err("execution session ended".into());
         }
-        if actor.is_agent != self.agent || actor.id != self.principal {
-            return Err("execution principal mismatch".into());
+        if actor.is_agent != self.agent || actor.id != self.actor {
+            return Err("execution actor mismatch".into());
         }
         Ok(tilo_actions::ParticipantId::for_execution(self.execution))
     }
@@ -110,7 +108,7 @@ impl ExecutionScope {
 #[derive(Clone)]
 pub(super) struct ActivityTarget {
     scope: Option<ExecutionScope>,
-    principal: String,
+    actor: String,
     peer_id: u64,
     route: CrdtRoute,
     address: ActionAddress,
@@ -475,7 +473,7 @@ impl ActivityTarget {
         }
         Some(Self {
             scope,
-            principal: actor.id.clone(),
+            actor: actor.id.clone(),
             peer_id: surface.peer_id,
             route: surface.route.clone(),
             address: ActionAddress::new(action.resource.clone(), action.action.clone()),
@@ -585,7 +583,7 @@ impl ActivityBus {
             source_time_ms,
             execution: scope.execution,
             invocation: scope.invocation,
-            principal: target.principal.clone(),
+            actor: target.actor.clone(),
             peer_id: target.peer_id,
             route: target.route.clone(),
             address: target.address.clone(),

@@ -11,7 +11,7 @@
 use crate::BrokerError;
 use std::sync::Arc;
 
-use tilo_actions::remote::{Caller, CallerPrincipal, InvokeRequest, RemoteActionMessage};
+use tilo_actions::remote::{Caller, InvokeRequest, RemoteActionMessage};
 
 use super::AppBrokerState;
 use super::action_host::{ConnectionActionHost, RowScope};
@@ -122,9 +122,7 @@ impl AppBrokerState {
         app_id: &str,
         request: &InvokeRequest,
     ) -> Option<AppActionConsentRequest> {
-        let CallerPrincipal::Person(person_id) = person.principal() else {
-            return None;
-        };
+        let person_id = person.acting().person_id()?;
         let workspace = person.workspace()?;
         let consents = self.services.app_consents.as_ref()?;
         let offer = self.offer(person, request)?;
@@ -170,7 +168,7 @@ impl AppBrokerState {
         Some(AppActionConsentRequest {
             handle: format!("app-action:{}", request.invocation.0),
             workspace: workspace.to_string(),
-            person: person_id.clone(),
+            person: person_id.to_owned(),
             app_id: app_id.to_string(),
             target_app,
             resource: action.address.resource.clone(),

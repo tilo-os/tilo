@@ -24,9 +24,9 @@
 //! or anything a viewer's action wrote, is never saved.
 
 use super::{
-    ActionHostError, Arc, Caller, CallerPrincipal, ConfinedReplica, Confirmation, DocumentMutation,
-    DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome,
-    Seed, Worker, WorkspaceState, reads,
+    ActionHostError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
+    HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
+    WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::door::ActionAddress;
@@ -277,12 +277,12 @@ pub(super) fn question(
 ) -> Result<ConfirmationQuestion, String> {
     let mut id = [0_u8; 32];
     getrandom::fill(&mut id).map_err(|error| error.to_string())?;
-    let agent = match caller.principal() {
-        // An agent by the name its key goes by, as History names its
-        // changes; else its id.
-        CallerPrincipal::Agent(agent) => caller.agent_name().unwrap_or(agent).to_owned(),
-        _ => "One of your devices".into(),
-    };
+    // An agent by the name its key goes by, as History names its
+    // changes; else its id.
+    let agent = caller.acting().agent_id().map_or_else(
+        || "One of your devices".into(),
+        |agent| caller.agent_name().unwrap_or(agent).to_owned(),
+    );
     // The run as the agent titled it (`_meta` run.title); a run that goes
     // by the agent's own name says nothing more.
     let run = super::said_run_title(request)
@@ -316,7 +316,7 @@ pub(super) fn bounded_standing(
     policy
         .standing
         .clone()
-        .as_acting(who.caller.acting())
+        .as_acting(who.caller.acting().clone())
         .map(|standing| standing.granted(granted))
         .ok_or(ActionHostError::NotPermitted)
 }
@@ -354,43 +354,39 @@ impl Worker {
     /// or an agent device a person certified. `None` for the host's own person, and for anyone the host acts for
     /// in no person's name.
     pub(super) fn bounded(&self, caller: &Caller) -> Option<Bounded> {
-        match caller.principal() {
-            CallerPrincipal::Person(person) if *person == self.participant => None,
-            CallerPrincipal::Person(person) => Some(Bounded {
+        if let Some(person) = caller.acting().person_id() {
+            if person == self.participant {
+                return None;
+            }
+            return Some(Bounded {
                 caller: caller.clone(),
                 person_caller: caller.clone(),
-                person: person.clone(),
+                person: person.to_owned(),
                 agent: None,
                 agent_name: None,
-            }),
-            CallerPrincipal::Agent(agent) => {
-                // An agent the person's device handed its session to acts on
-                // that device's admission; an agent device the person
-                // certified, on its own device's: either is bounded by the
-                // person it acts for, as `Caller::invoker` reads it.
-                let person_caller = caller.delegating_person().or_else(|| {
-                    let person = Caller::authenticated(
-                        *caller.user_public_key()?,
-                        *caller.device_public_key()?,
-                    );
-                    Some(match caller.workspace() {
-                        Some(workspace) => person.in_workspace(workspace),
-                        None => person,
-                    })
-                })?;
-                let CallerPrincipal::Person(person) = person_caller.principal() else {
-                    return None;
-                };
-                Some(Bounded {
-                    caller: caller.clone(),
-                    person: person.clone(),
-                    agent: Some(agent.clone()),
-                    agent_name: caller.agent_name().map(str::to_owned),
-                    person_caller,
-                })
-            }
-            CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => None,
+            });
         }
+        let agent = caller.acting().agent_id()?;
+        // An agent the person's device handed its session to acts on
+        // that device's admission; an agent device the person
+        // certified, on its own device's: either is bounded by the
+        // person it acts for.
+        let person_caller = caller.delegating_person().or_else(|| {
+            let person =
+                Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
+            Some(match caller.workspace() {
+                Some(workspace) => person.in_workspace(workspace),
+                None => person,
+            })
+        })?;
+        let person = person_caller.acting().person_id()?.to_owned();
+        Some(Bounded {
+            caller: caller.clone(),
+            person,
+            agent: Some(agent.to_owned()),
+            agent_name: caller.agent_name().map(str::to_owned),
+            person_caller,
+        })
     }
 
     /// The person's standing in the workspace `cluster` as its policy gives

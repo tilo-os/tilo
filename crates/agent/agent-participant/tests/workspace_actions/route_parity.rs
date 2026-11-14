@@ -25,8 +25,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_action_policy::{Answer, Role};
 use tilo_actions::remote::{
-    Caller, CallerPrincipal, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer,
-    ContentPutStep, Pending,
+    Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
 };
 use tilo_agent_participant::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
 use tilo_broker_core::{BrokerActor, CrdtRoute, PublishedAction, PublishedInput, PublishedSurface};
@@ -58,7 +57,7 @@ impl Member {
             && caller
                 .device_public_key()
                 .is_some_and(|device| self.devices.contains(device))
-            && matches!(caller.principal(), CallerPrincipal::Person(_)))
+            && caller.acting().is_person())
         .then(|| {
             let person = hex::encode(self.person);
             tilo_action_policy::Standing::person(workspace_policy(&person), person)

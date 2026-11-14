@@ -774,7 +774,7 @@ impl ActionPlane {
 
     /// Spend one of `caller`'s changes, or say the caller has none left.
     fn spend(&self, caller: &Caller) -> Result<(), tilo_actions::remote::ActionHostError> {
-        let CallerPrincipalKey::Person(person) = CallerPrincipalKey::of(caller) else {
+        let Some(person) = caller.user_public_key().copied() else {
             return Ok(());
         };
         let now = tilo_clock::now();
@@ -863,20 +863,6 @@ impl ProtocolHandler for ActionPlane {
         self.serve(connection)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
-    }
-}
-
-/// The person a caller acts for, when it acts for one.
-enum CallerPrincipalKey {
-    Person([u8; 32]),
-    Other,
-}
-
-impl CallerPrincipalKey {
-    fn of(caller: &Caller) -> Self {
-        caller
-            .user_public_key()
-            .map_or(Self::Other, |person| Self::Person(*person))
     }
 }
 

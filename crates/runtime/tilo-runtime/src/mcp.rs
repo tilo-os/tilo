@@ -650,7 +650,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The host has already bound this exact authenticated run to its action
     /// door. This constructor does not mint or replace the execution identity.
     pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
-        let tilo_actions::remote::CallerPrincipal::Person(actor) = caller.principal() else {
+        let Some(actor) = caller.acting().person_id() else {
             return Err(std::io::Error::other(
                 "MCP requires an admitted person execution",
             ));
@@ -665,8 +665,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             return Err(std::io::Error::other("MCP certified execution unavailable"));
         }
-        let actor = actor.clone();
-        Ok(Self::from_caller(host, workspace, actor, caller))
+        Ok(Self::from_caller(host, workspace, actor.to_owned(), caller))
     }
 
     fn from_caller(host: H, workspace: String, actor: String, caller: Caller) -> Self {

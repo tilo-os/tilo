@@ -134,37 +134,6 @@ pub const MAX_CONTENT_FRAME_BYTES: usize = 384 * 1024;
 /// Default number of invocations an [`InvocationLedger`] remembers.
 pub const DEFAULT_LEDGER_CAPACITY: usize = 1024;
 
-/// Who a request is from, as the host's policy knows them.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum CallerPrincipal {
-    /// A person, by their policy principal id. For a remote device this is
-    /// the hex encoding of the user root its certificate chains to, so two
-    /// devices of one person are the same principal.
-    Person(String),
-    Agent(String),
-    /// An application, by its package id, acting under its own identity
-    /// rather than borrowing the authority of the person using it.
-    App(String),
-    /// An installed bot, by installation id. It acts for the person who
-    /// installed it and is never that person.
-    Bot(String),
-}
-
-impl CallerPrincipal {
-    /// The grantee this principal is decided as, when it is a member: an app
-    /// acts as the person whose session runs it.
-    #[must_use]
-    pub fn grantee(&self) -> Option<tilo_action_policy::Grantee> {
-        use tilo_action_policy::Grantee;
-        match self {
-            Self::Person(id) => Some(Grantee::person(id.clone())),
-            Self::Agent(id) => Some(Grantee::agent(id.clone())),
-            Self::Bot(id) => Some(Grantee::bot(id.clone())),
-            Self::App(_) => None,
-        }
-    }
-}
-
 /// Host-owned execution lifetime. Clones share closure, never authority.
 /// Equality and hashing use the immutable minted identity, not liveness.
 #[derive(Clone, Debug)]
@@ -1741,42 +1710,33 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_caller_keeps_its_identity_and_authority;
 
-        phase a_bot_is_its_own_principal_acting_for_its_installer;
+        phase a_bot_is_its_own_member_acting_for_its_installer;
         {
             let installer = [7u8; 32];
             let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
             assert_eq!(
-                caller.principal().grantee(),
-                Some(tilo_action_policy::Grantee::bot(
+                caller.acting().member_id(),
+                Some(&tilo_action_policy::MemberId::bot(
                     "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6"
                 ))
             );
-            let actor = caller.actor();
-            assert_eq!(actor.id, "bot:6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
-            assert_eq!(actor.kind, crate::ActorKind::Bot);
             assert_eq!(
-                actor.for_person.as_deref(),
+                caller.acting().acted_for_person(),
                 Some(hex::encode(installer).as_str())
             );
-            assert!(crate::ActorKind::Bot.acts_for_someone());
+            assert!(caller.acting().is_bot());
+            assert!(caller.acting().delegated());
         }
 
-        phase a_member_principal_maps_to_its_grantee;
+        phase an_app_caller_acts_as_the_person_whose_session_runs_it;
         {
-            use tilo_action_policy::Grantee;
+            let caller = Caller::local_app("so.tilo.example").acting_for("ada");
+            assert_eq!(caller.acting().person_id(), Some("ada"));
             assert_eq!(
-                CallerPrincipal::Person("p".into()).grantee(),
-                Some(Grantee::person("p"))
+                caller.acting().app().map(ToString::to_string).as_deref(),
+                Some("so.tilo.example")
             );
-            assert_eq!(
-                CallerPrincipal::Agent("a".into()).grantee(),
-                Some(Grantee::agent("a"))
-            );
-            assert_eq!(
-                CallerPrincipal::Bot("b".into()).grantee(),
-                Some(Grantee::bot("b"))
-            );
-            assert_eq!(CallerPrincipal::App("x.y".into()).grantee(), None);
+            assert_eq!(caller.acting_for_person(), Some("ada"));
         }
 
         phase execution_lifetime_is_shared_without_changing_caller_identity;
@@ -2539,13 +2499,16 @@ mod tests {
     fn a_remote_device_is_the_person_its_root_names() {
         let caller = Caller::authenticated([0xAB; 32], [1; 32]);
         assert_eq!(
-            caller.principal(),
-            &CallerPrincipal::Person("ab".repeat(32)),
-            "every device of one person is the same principal"
+            caller.acting().member_id(),
+            Some(&tilo_action_policy::MemberId::person("ab".repeat(32))),
+            "every device of one person is the same member"
         );
         assert_eq!(caller.workspace(), None);
         let agent = Caller::local_agent("helper").in_workspace("workspace-1");
-        assert_eq!(agent.principal(), &CallerPrincipal::Agent("helper".into()));
+        assert_eq!(
+            agent.acting().member_id(),
+            Some(&tilo_action_policy::MemberId::agent("helper"))
+        );
         assert_eq!(agent.workspace(), Some("workspace-1"));
         assert_eq!(agent.device_public_key(), None);
     }
@@ -2748,7 +2711,7 @@ mod tests {
         {
             let first = alice().in_new_execution();
             let second = alice().in_new_execution();
-            assert_eq!(first.principal(), second.principal());
+            assert_eq!(first.acting(), second.acting());
             assert_eq!(first.workspace(), second.workspace());
             assert_ne!(first.execution_id(), second.execution_id());
             let host = CountingHost::new();

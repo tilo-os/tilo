@@ -215,8 +215,8 @@ pub fn admit(
     allows_personas: impl FnOnce(&str) -> bool,
     avatar: impl FnOnce(&str) -> Option<Vec<u8>>,
 ) -> Result<Appearance, crate::remote::ActionHostError> {
-    use crate::remote::{ActionHostError, CallerPrincipal};
-    let CallerPrincipal::Bot(installation) = caller.principal() else {
+    use crate::remote::ActionHostError;
+    let Some(installation) = caller.acting().bot_id() else {
         return Err(ActionHostError::Refused {
             reason: "only a bot allowed to post under other names may carry an appearance".into(),
         });

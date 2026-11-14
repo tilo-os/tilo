@@ -1727,10 +1727,7 @@ fn question(
     let _ = getrandom::fill(&mut id);
     let address = &request.target.address;
     let context = request.context.as_ref();
-    let agent_id = match caller.principal() {
-        tilo_actions::remote::CallerPrincipal::Agent(agent) => agent.clone(),
-        _ => String::new(),
-    };
+    let agent_id = caller.acting().agent_id().unwrap_or_default().to_owned();
     PendingConfirmation {
         id,
         agent_id,

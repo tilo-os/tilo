@@ -25,9 +25,9 @@ use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
-    CatalogueQuery, CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState,
-    InvokeRequest, Pending, ReceiptStatus,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ReceiptStatus,
 };
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::remote_door::{
@@ -458,8 +458,8 @@ async fn an_agent_on_one_device_lists_and_acts_on_another_as_an_agent_via_the_fi
     assert!(!callers.is_empty());
     for caller in &callers {
         assert_eq!(
-            caller.principal(),
-            &CallerPrincipal::Agent(expected.clone()),
+            caller.acting().member_id(),
+            Some(&tilo_action_policy::MemberId::agent(expected.clone())),
             "everything the agent asked of B is the agent's, via A"
         );
         assert_eq!(caller.workspace(), Some("workspace"));

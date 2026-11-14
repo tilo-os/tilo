@@ -23,9 +23,9 @@ use serde_json::{Map, Value, json};
 use tilo_actions::context::Cause;
 use tilo_actions::door::{ActionAddress, DoorError};
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
-    CatalogueQuery, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, RecordAddress, RecordCopy, RecordReads, RecordWake,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, RecordAddress, RecordCopy, RecordReads, RecordWake,
 };
 use tilo_actions::{
     ActionContext, ActionFailure, ActionInvoker, ActionOutput, ActorKind, InvocationId,
@@ -480,7 +480,7 @@ impl<P: DoorParticipant> BotDoor<P> {
 
 /// Whether `caller` is the bot of `installation`.
 fn is_bot(caller: &Caller, installation: &str) -> bool {
-    matches!(caller.principal(), CallerPrincipal::Bot(id) if id == installation)
+    caller.acting().bot_id() == Some(installation)
 }
 
 /// The bot's record reads: what its runs read of the records it follows,

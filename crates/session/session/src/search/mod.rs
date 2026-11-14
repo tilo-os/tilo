@@ -1336,9 +1336,10 @@ impl ResourceSearch for SearchThrough {
     ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionHostError>> {
         // An agent finds what the workspace it works in holds: the search is the person's, over
         // every workspace they see, and an agent is in one.
-        let workspace = match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::Person(_) => None,
-            _ => match caller.workspace() {
+        let workspace = if caller.acting().is_person() {
+            None
+        } else {
+            match caller.workspace() {
                 Some(workspace) => Some(workspace.to_owned()),
                 None => {
                     return tilo_actions::remote::Pending::ready(Err(
@@ -1349,7 +1350,7 @@ impl ResourceSearch for SearchThrough {
                         },
                     ));
                 }
-            },
+            }
         };
         let (done, answer) = tilo_actions::remote::pending();
         self.ask(needle.trim().to_owned(), workspace, done);

@@ -243,9 +243,7 @@ impl LateFeedback {
         shared: &Shared,
         startup: tilo_feedback_transport::Startup,
     ) -> Result<(), String> {
-        if startup.reporter().principal()
-            != &tilo_actions::remote::CallerPrincipal::Person(self.author.clone())
-        {
+        if startup.reporter().acting().person_id() != Some(self.author.as_str()) {
             return Err("feedback reporter does not own this profile".into());
         }
         if shared.feedback.borrow().is_some() {

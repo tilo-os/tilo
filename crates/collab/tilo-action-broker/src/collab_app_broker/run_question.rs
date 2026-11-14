@@ -24,7 +24,7 @@ use crate::BrokerError;
 use std::sync::Arc;
 
 use tilo_action_policy::{Answer, Grant, Grantee};
-use tilo_actions::remote::{Caller, CallerPrincipal, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 
 use super::AppBrokerState;
 use super::action_host::ConnectionActionHost;
@@ -78,9 +78,7 @@ impl AppBrokerState {
     }
 
     fn ask_run_question(&self, caller: &Caller, invoke: &InvokeRequest) -> Option<PendingAnswer> {
-        let CallerPrincipal::Person(person) = caller.principal() else {
-            return None;
-        };
+        let person = caller.acting().person_id()?;
         let workspace = caller.workspace()?;
         let InvokeArgument::Json(arguments) = &invoke.argument else {
             return None;

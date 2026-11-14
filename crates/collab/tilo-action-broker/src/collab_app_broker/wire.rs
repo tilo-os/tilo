@@ -1156,17 +1156,16 @@ impl JoinedChannel {
         }
         // An application reaching for another app's action it holds no
         // grant for: the person using it is asked first, or it is refused.
-        let consent = match (caller.principal(), &request.message) {
-            (
-                tilo_actions::remote::CallerPrincipal::App(app_id),
-                tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
-            ) => match self.state.app_action_consent(&person, app_id, invoke) {
-                app_consent::ConsentStep::Serve => None,
-                app_consent::ConsentStep::Refuse => {
-                    return refusal(&request.message);
+        let consent = match (caller.acting().app(), &request.message) {
+            (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) => {
+                match self.state.app_action_consent(&person, app_id, invoke) {
+                    app_consent::ConsentStep::Serve => None,
+                    app_consent::ConsentStep::Refuse => {
+                        return refusal(&request.message);
+                    }
+                    app_consent::ConsentStep::Ask(consent) => Some(consent),
                 }
-                app_consent::ConsentStep::Ask(consent) => Some(consent),
-            },
+            }
             _ => None,
         };
         // A person's answer to what an issue's run asks them is theirs to

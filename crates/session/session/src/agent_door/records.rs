@@ -107,7 +107,7 @@ impl tilo_actions::remote::RecordChanges for ServiceRecords {
         if let Some((seats, seat)) = &self.seat {
             seats.changed(*seat, &change.app, &change.record);
         }
-        let asked = (caller.principal().clone(), change.clone());
+        let asked = (caller.acting().clone(), change.clone());
         if let Some(answer) = self.on_pass(&change.app, |done| DoorAsk::Change {
             actor: asked.0,
             change: asked.1,

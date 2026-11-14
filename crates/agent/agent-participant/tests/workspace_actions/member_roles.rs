@@ -39,10 +39,7 @@ impl Membership {
         (!self.revoked.load(Ordering::SeqCst)
             && caller.user_public_key() == Some(&self.person)
             && caller.device_public_key() == Some(&self.device)
-            && matches!(
-                caller.principal(),
-                tilo_actions::remote::CallerPrincipal::Person(_)
-            ))
+            && caller.acting().is_person())
         .then(|| {
             ui::permissions::PermissionContext::member_of(WORKSPACE, hex::encode(self.person), role)
                 .standing()
