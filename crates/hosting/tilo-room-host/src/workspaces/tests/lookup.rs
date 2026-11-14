@@ -10,7 +10,6 @@ use super::*;
 /// governs: the lookup is by id, not by looking through the rest. A
 /// workspace deleted here answers nothing by its id, and the ones left still
 /// answer theirs.
-#[cfg(feature = "agents")]
 #[tokio::test]
 async fn a_host_answers_each_governed_workspace_by_its_own_id() {
     use tilo_actions::remote::Caller;

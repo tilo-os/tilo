@@ -18,6 +18,7 @@ pub(crate) mod admission_cost;
 pub(crate) mod bots;
 mod host_address;
 pub(crate) mod large_record;
+#[cfg(feature = "agents")]
 mod lookup;
 
 #[tokio::test]
