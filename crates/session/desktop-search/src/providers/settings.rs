@@ -243,14 +243,6 @@ impl Settings {
             target: Target::Invoke(Box::new(opening(&self.workspace, &row.anchor))),
         }
     }
-
-    /// The row `id` names (`page:network`, `setting:keyboard.layout`),
-    /// whatever was typed.
-    #[must_use]
-    pub fn resolve(&self, id: &str) -> Option<Hit> {
-        let row = self.rows.iter().find(|row| row.id == id)?;
-        Some(self.hit(row, ui::search::system::MAX_PROVIDER_SCORE))
-    }
 }
 
 /// Settings' `open` in `workspace`, showing `anchor`: a page, a setting.
@@ -372,12 +364,6 @@ mod tests {
                     .iter()
                     .all(|hit| hit.id != "setting:network.wifi"),
                 "a quick action answers Wi-Fi"
-            );
-            assert_eq!(
-                settings
-                    .resolve("setting:keyboard.layout")
-                    .map(|hit| hit.id),
-                Some("setting:keyboard.layout".into())
             );
         }
 

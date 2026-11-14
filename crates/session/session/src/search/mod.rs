@@ -2357,7 +2357,6 @@ mod tests {
             workspace: workspace.into(),
             tab: 4,
             label: label.into(),
-            value: String::new(),
             at: 1,
             device: None,
         }

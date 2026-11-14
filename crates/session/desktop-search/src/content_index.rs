@@ -113,6 +113,24 @@ impl Inner {
         self.secrets.get(app).copied() == Some(true)
     }
 
+    /// Each entry of `workspace` a person may find now that opens its
+    /// resource, with its app.
+    fn opening<'a>(
+        &'a self,
+        workspace: &'a str,
+    ) -> impl Iterator<Item = (&'a str, &'a IndexEntry)> + 'a {
+        self.slots
+            .iter()
+            .filter(move |(slot, _)| slot.workspace == workspace)
+            .flat_map(move |(slot, entries)| {
+                let unlocked = self.unlocked(&slot.app);
+                entries
+                    .values()
+                    .filter(move |entry| entry.opens_its_resource() && (!entry.secret || unlocked))
+                    .map(move |entry| (slot.app.as_str(), entry))
+            })
+    }
+
     /// What every resource a person may find is called now, by the entry
     /// that opens it.
     fn titles(&self) -> Titles<'_> {
@@ -337,17 +355,9 @@ impl AppContentIndex {
     pub fn title(&self, workspace: &str, resource: &str) -> Option<String> {
         let inner = self.inner.lock_recover();
         inner
-            .slots
-            .iter()
-            .filter(|(slot, _)| slot.workspace == workspace)
-            .flat_map(|(slot, entries)| {
-                let unlocked = inner.unlocked(&slot.app);
-                entries
-                    .values()
-                    .filter(move |entry| !entry.secret || unlocked)
-            })
-            .find(|entry| entry.resource == resource && entry.opens_its_resource())
-            .map(|entry| entry.title.clone())
+            .opening(workspace)
+            .find(|(_, entry)| entry.resource == resource)
+            .map(|(_, entry)| entry.title.clone())
     }
 
     /// Every resource `workspace`'s apps published an entry opening, with the
@@ -355,16 +365,8 @@ impl AppContentIndex {
     pub fn resources(&self, workspace: &str) -> Vec<(String, String)> {
         let inner = self.inner.lock_recover();
         let mut resources: Vec<(String, String)> = inner
-            .slots
-            .iter()
-            .filter(|(slot, _)| slot.workspace == workspace)
-            .flat_map(|(slot, entries)| {
-                let unlocked = inner.unlocked(&slot.app);
-                entries
-                    .values()
-                    .filter(move |entry| entry.opens_its_resource() && (!entry.secret || unlocked))
-                    .map(|entry| (slot.app.clone(), entry.resource.clone()))
-            })
+            .opening(workspace)
+            .map(|(app, entry)| (app.to_owned(), entry.resource.clone()))
             .collect();
         drop(inner);
         resources.sort();
@@ -378,22 +380,8 @@ impl AppContentIndex {
     pub fn titled(&self, workspace: &str) -> Vec<(String, String, String)> {
         let inner = self.inner.lock_recover();
         let mut titled: Vec<(String, String, String)> = inner
-            .slots
-            .iter()
-            .filter(|(slot, _)| slot.workspace == workspace)
-            .flat_map(|(slot, entries)| {
-                let unlocked = inner.unlocked(&slot.app);
-                entries
-                    .values()
-                    .filter(move |entry| entry.opens_its_resource() && (!entry.secret || unlocked))
-                    .map(|entry| {
-                        (
-                            slot.app.clone(),
-                            entry.resource.clone(),
-                            entry.title.clone(),
-                        )
-                    })
-            })
+            .opening(workspace)
+            .map(|(app, entry)| (app.to_owned(), entry.resource.clone(), entry.title.clone()))
             .collect();
         drop(inner);
         titled.sort();

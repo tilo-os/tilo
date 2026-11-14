@@ -1335,7 +1335,6 @@ mod tests {
                 workspace: "workspace".into(),
                 tab: 9,
                 label: "Home".into(),
-                value: String::new(),
                 at: 3,
                 device: None,
             });

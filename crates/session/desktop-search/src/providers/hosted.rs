@@ -14,12 +14,11 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tilo_actions::ActionAddress;
 use tilo_actions::remote::{Caller, Found, ResourceSearch};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 use ui::time::{Duration, Instant};
 
-use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
+use crate::model::{Hit, InvokeTarget, Source, Target};
 
 /// How long a search waits on the host's answer before it no longer counts it as coming.
 pub const PATIENCE: Duration = Duration::from_secs(2);
@@ -77,19 +76,10 @@ impl HostSearch {
         let app = found.app.clone()?;
         let target = match &found.open {
             Some(action) => InvokeTarget {
-                app: app.clone(),
-                workspace: self.workspace.clone(),
-                address: ActionAddress::new(found.resource.clone(), action.clone()),
                 arguments: found.arguments.clone(),
-                descriptor: None,
-                place: LaunchPlace::Focus,
+                ..InvokeTarget::action(&app, &self.workspace, &found.resource, action)
             },
-            None => InvokeTarget::open(
-                app.clone(),
-                self.workspace.clone(),
-                found.resource.clone(),
-                found.resource.clone(),
-            ),
+            None => InvokeTarget::open(&app, &self.workspace, &found.resource, &found.resource),
         };
         let rank = i32::try_from(rank).unwrap_or(MAX_PROVIDER_SCORE);
         Some(Hit {

@@ -116,7 +116,6 @@ impl Shared {
                 workspace: workspace_id.clone(),
                 tab: *tab,
                 label: title.clone(),
-                value: String::new(),
                 at: now,
                 device: None,
             });

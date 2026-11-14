@@ -31,9 +31,6 @@ pub struct Place {
     pub tab: u64,
     /// What the window bar showed: the document, the page, the folder.
     pub label: String,
-    /// Its whole address, when the app gave one.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub value: String,
     /// When the window was last there, in seconds since the epoch.
     pub at: u64,
     /// The other device it was on, by name; `None` for this one.
@@ -42,21 +39,13 @@ pub struct Place {
 }
 
 impl Place {
-    fn names(&self) -> &str {
-        if self.value.is_empty() {
-            &self.label
-        } else {
-            &self.value
-        }
-    }
-
-    /// The same place again: its app, its workspace, its device and what it
-    /// names.
+    /// The same place again: its app, its workspace, its device and its
+    /// label.
     fn same_as(&self, other: &Self) -> bool {
         self.app == other.app
             && self.workspace == other.workspace
             && self.device == other.device
-            && self.names() == other.names()
+            && self.label == other.label
     }
 
     fn row_id(&self) -> String {
@@ -65,7 +54,7 @@ impl Place {
             self.app,
             self.workspace,
             self.device.as_deref().unwrap_or_default(),
-            self.names()
+            self.label
         )
     }
 }
@@ -292,7 +281,6 @@ mod tests {
             workspace: "workspace".into(),
             tab: 4,
             label: label.into(),
-            value: String::new(),
             at,
             device: None,
         }

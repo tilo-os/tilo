@@ -1076,13 +1076,6 @@ impl Answers {
         }
         out
     }
-
-    /// The row `id` names (`sum:12*7`).
-    #[must_use]
-    pub fn resolve(&self, id: &str) -> Option<Hit> {
-        let (_, typed) = id.split_once(':')?;
-        self.answers(typed).into_iter().find(|hit| hit.id == id)
-    }
 }
 
 impl Source for Answers {
@@ -1264,24 +1257,6 @@ impl WebSearch {
             icon: Some(service.icon),
             target,
         }
-    }
-
-    /// The row `id` names: what it answers is in its address
-    /// (`search:cats`, `query:youtube:cats`).
-    #[must_use]
-    pub fn resolve(&self, id: &str) -> Option<Hit> {
-        use crate::answers::web::Service;
-        let (row, rest) = id.split_once(':')?;
-        let found = match row {
-            "search" if !rest.trim().is_empty() => self.web_search_row(rest),
-            "service" => self.service_row(Service::by_id(rest)?),
-            "query" => {
-                let (service, query) = rest.split_once(':')?;
-                self.service_search_row(Service::by_id(service)?, query)
-            }
-            _ => return None,
-        };
-        (found.id == id).then_some(found)
     }
 }
 
@@ -2608,22 +2583,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_row_resolves_from_its_address_and_says_each_thing_once;
-
-        phase rows_resolve_from_their_address;
-        {
-            let web = WebSearch::default();
-            for id in ["search:cats", "service:youtube", "query:youtube:cats"] {
-                assert_eq!(web.resolve(id).map(|row| row.id).as_deref(), Some(id));
-            }
-            assert_eq!(
-                Answers::default()
-                    .resolve("sum:2+2")
-                    .map(|row| row.title)
-                    .as_deref(),
-                Some("4")
-            );
-        }
+        fn a_row_says_each_thing_once;
 
         phase a_row_never_says_the_same_thing_twice;
         {

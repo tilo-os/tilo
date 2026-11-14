@@ -725,21 +725,6 @@ impl IndexedContent {
         };
         Some(recipient)
     }
-
-    /// The row `id` names, as an empty query scores it.
-    #[must_use]
-    pub fn resolve(&self, id: &str, needle: &str) -> Option<Hit> {
-        if let Some(app) = unlock_app(id) {
-            let snapshot = self.current();
-            return snapshot
-                .locked
-                .iter()
-                .any(|indexed| indexed.slot.app == app)
-                .then(|| self.unlock_row(app, needle, MAX_PROVIDER_SCORE));
-        }
-        self.entry(id)
-            .map(|indexed| self.row(&indexed, MAX_PROVIDER_SCORE, needle))
-    }
 }
 
 /// A person's or an agent's identity as the app that keeps them spells it,
@@ -922,13 +907,6 @@ mod tests {
             );
             assert_eq!(target.arguments[OPEN_ANCHOR], "n1");
             assert!(content.covers("so.tilo.notes", "workspace", "n1"));
-            assert_eq!(
-                content
-                    .resolve(&hits[0].id, "")
-                    .map(|hit| hit.title)
-                    .as_deref(),
-                Some("Groceries")
-            );
         }
 
         phase an_entry_that_names_an_item_carries_its_reference;

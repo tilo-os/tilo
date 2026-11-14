@@ -2368,11 +2368,6 @@ impl Session {
         )
     }
 
-    /// A window was at `place`: where search's Continue reopens it.
-    pub fn record_place(&self, place: tilo_desktop_search::providers::places::Place) {
-        self.shared.search.record_place(place);
-    }
-
     /// Invoke the published action `action` of resource `resource`, as
     /// any caller of the action protocol does, and carry out what it asked
     /// of the session. A service's action that runs on the device is
