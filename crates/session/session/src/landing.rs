@@ -79,6 +79,29 @@ impl Landings {
         }));
     }
 
+    /// Run what waits on answers that land while the session ends, for up to `patience`: a
+    /// workspace made on this desk is founded off the loop, and the writes that end the session
+    /// need it held.
+    pub(crate) fn settle(&self, patience: std::time::Duration) {
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = patience;
+            self.land();
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let deadline = std::time::Instant::now().checked_add(patience);
+            while !self.waiting.borrow().is_empty() {
+                self.land();
+                let overdue = deadline.is_none_or(|deadline| std::time::Instant::now() >= deadline);
+                if self.waiting.borrow().is_empty() || overdue {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
     /// Run what waits on an answer that landed since the last pass: called once per pass.
     pub(crate) fn land(&self) {
         let mut waiting = std::mem::take(&mut *self.waiting.borrow_mut());

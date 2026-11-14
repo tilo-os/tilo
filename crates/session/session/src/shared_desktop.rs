@@ -584,6 +584,35 @@ impl SharedDesktops {
         self.wait_writes(patience);
     }
 
+    /// Wait until this device has the keys of every workspace `tree` shows, or `patience` runs
+    /// out: a workspace made on this desk is founded off the loop, and its channel's keys reach
+    /// this device after that. A session ending before they arrive cannot write the desk it made
+    /// there.
+    pub(crate) fn settle_keys(engine: &Engine, tree: &Layout, patience: std::time::Duration) {
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = (engine, tree, patience);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let deadline = std::time::Instant::now().checked_add(patience);
+            loop {
+                let waiting = tree
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| !workspace.id().is_nil())
+                    .any(|workspace| {
+                        matches!(engine.seal_keys(workspace.id()), Ok(SealKeys::Waiting))
+                    });
+                let overdue = deadline.is_none_or(|deadline| std::time::Instant::now() >= deadline);
+                if !waiting || overdue {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    }
+
     /// Wait for the writes under way, `patience` each.
     fn wait_writes(&self, patience: std::time::Duration) {
         for key in self.keys() {

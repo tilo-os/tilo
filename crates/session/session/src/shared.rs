@@ -24,6 +24,16 @@ impl Shared {
 
     /// [`Self::keep_desk`], and wait for what was written: what ends the session.
     pub(crate) fn keep_desk_now(&self) {
+        // A workspace made on this desk is founded off the loop, and the desk's own writes need
+        // it held: what ends the session waits for it first.
+        self.landings.settle(std::time::Duration::from_secs(5));
+        if let Some(engine) = &self.engine {
+            crate::shared_desktop::SharedDesktops::settle_keys(
+                engine,
+                &self.handle.read(Clone::clone),
+                std::time::Duration::from_secs(5),
+            );
+        }
         if crate::termination::asked() {
             tilo_durable_writer::global().flush();
             return;
