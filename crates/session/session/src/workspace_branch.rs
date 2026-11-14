@@ -875,35 +875,39 @@ impl crate::Shared {
             missing = branched.missing.len(),
             "a workspace was branched"
         );
-        let (urgency, title, body) = if branched.missing.is_empty() {
-            (
-                1,
-                tilo_desktop_surface::i18n::t_args(
-                    "session-branched-workspace",
-                    &[("branch", name.to_owned().into())],
-                ),
-                tilo_desktop_surface::i18n::t_args(
-                    "session-branched-workspace-body",
-                    &[("name", source_name.to_owned().into())],
-                ),
-            )
-        } else {
-            for missing in &branched.missing {
-                tracing::warn!(%workspace, %missing, "a branch of a workspace is not complete");
-            }
-            (
-                1,
-                tilo_desktop_surface::i18n::t_args(
-                    "session-branch-failed",
-                    &[("branch", name.to_owned().into())],
-                ),
-                branched.missing.join("\n"),
-            )
-        };
+        for missing in &branched.missing {
+            tracing::warn!(%workspace, %missing, "a branch of a workspace is not complete");
+        }
+        let (title, body) = told(branched, name, source_name);
         self.telling().show(
-            &Notice::new(String::new(), urgency, title, body)
-                .about(NotificationIconKind::Workspace),
+            &Notice::new(String::new(), 1, title, body).about(NotificationIconKind::Workspace),
         );
+    }
+}
+
+/// What the person is told of the branch `name` of `source_name`: that it is ready, or that it is
+/// not complete, the notice's body then naming every part that did not come along and why, one
+/// a line (the same lines the session logs at warn).
+fn told(branched: &Branched, name: &str, source_name: &str) -> (String, String) {
+    if branched.missing.is_empty() {
+        (
+            tilo_desktop_surface::i18n::t_args(
+                "session-branched-workspace",
+                &[("branch", name.to_owned().into())],
+            ),
+            tilo_desktop_surface::i18n::t_args(
+                "session-branched-workspace-body",
+                &[("name", source_name.to_owned().into())],
+            ),
+        )
+    } else {
+        (
+            tilo_desktop_surface::i18n::t_args(
+                "session-branch-failed",
+                &[("branch", name.to_owned().into())],
+            ),
+            branched.missing.join("\n"),
+        )
     }
 }
 
@@ -1368,6 +1372,118 @@ mod tests {
             met.get(automerge::ROOT, "body").unwrap(),
             Some((automerge::Value::Scalar(body), _)) if body.as_str() == Some("party-parrot")
         ));
+    }
+
+    /// A branch that could not take a record along says which, and why, in the notice the person
+    /// gets: never only that it is not complete.
+    #[test]
+    fn a_branch_that_misses_a_record_names_it_in_its_notice() {
+        let branched = Branched {
+            missing: vec![
+                "uuid-plan of so.tilo.notes did not reach this device".to_owned(),
+                "the Terminal environments: no runtime here".to_owned(),
+            ],
+            ..Branched::default()
+        };
+        let (title, body) = told(&branched, "Question B", "Research");
+        assert!(
+            title.contains("Question B") && title.contains("not complete"),
+            "{title}"
+        );
+        assert!(
+            body.contains("uuid-plan of so.tilo.notes did not reach this device"),
+            "{body}"
+        );
+        assert!(
+            body.contains("the Terminal environments: no runtime here"),
+            "{body}"
+        );
+        let (title, _) = told(&Branched::default(), "Question A", "Research");
+        assert!(title.contains("is ready"), "{title}");
+    }
+
+    /// One workspace branched three times back to back, as the e2e box does (two through the
+    /// desk's action, the third through the CLI): each branch holds all the source holds, its
+    /// records, what its apps keep and its tree of files with a large file and many small ones,
+    /// and none is reported not complete. The first branch leaves nothing in the source that the
+    /// next ones cannot read.
+    #[test]
+    fn a_workspace_branched_three_times_in_a_row_gives_each_branch_all_of_it() {
+        let state = tempfile::tempdir().unwrap();
+        let identity = identity();
+        let engine = reopened(&state, &identity);
+        let from = ids().0;
+        let targets = [
+            "7a6b5c4d-0000-4000-8000-000000000003",
+            "7a6b5c4d-0000-4000-8000-000000000004",
+            "7a6b5c4d-0000-4000-8000-000000000005",
+        ]
+        .map(|id| WorkspaceId::parse(id).unwrap());
+        pollster::block_on(engine.found(from, "Research", None));
+        let channel = collab_types::WorkspaceId::parse(FROM).unwrap();
+        let keys =
+            key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
+                .unwrap()
+                .content_keys()
+                .unwrap();
+        for held in targets {
+            engine.hand_keys(held, keys.clone());
+        }
+        let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+        write(
+            &engine,
+            &keys,
+            from,
+            ("so.tilo.notes", "uuid-plan"),
+            &mut record(FROM, "plan"),
+        );
+        write(
+            &engine,
+            &keys,
+            from,
+            (CHAT, &emoji),
+            &mut record(FROM, "party-parrot"),
+        );
+
+        let home = tempfile::tempdir().unwrap();
+        let data = home.path().join("data");
+        let files = home.path().join("files");
+        let notes = data
+            .join("tilo-workspaces")
+            .join(FROM)
+            .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
+            .join(FROM)
+            .join("documents/uuid-plan");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(notes.join("state.automerge"), record(FROM, "plan").save()).unwrap();
+        let tree = files.join(".workspaces").join(FROM);
+        std::fs::create_dir_all(tree.join("small")).unwrap();
+        std::fs::write(tree.join("bulk.bin"), vec![7_u8; 8 << 20]).unwrap();
+        for n in 0..400 {
+            std::fs::write(tree.join(format!("small/{n}.txt")), format!("file {n}")).unwrap();
+        }
+        let places = Places {
+            data_home: Some(data),
+            files: Some(files.clone()),
+            runtime: None,
+        };
+
+        for (n, to) in targets.into_iter().enumerate() {
+            pollster::block_on(engine.found(to, &format!("Question {n}"), None));
+            let branched = branch(Some(&engine), places.clone(), from, to);
+            assert!(
+                branched.missing.is_empty(),
+                "branch {n} is not complete: {:?}",
+                branched.missing
+            );
+            assert_eq!(branched.records, 2, "branch {n}");
+            assert_eq!(branched.files.files, 401, "branch {n}");
+            let copied = files.join(".workspaces").join(to.to_string());
+            assert_eq!(
+                std::fs::metadata(copied.join("bulk.bin")).unwrap().len(),
+                8 << 20
+            );
+        }
     }
 
     /// A workspace with notes, the workspace's emoji and a conversation, branched: the branch
