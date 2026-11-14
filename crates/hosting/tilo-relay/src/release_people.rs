@@ -670,7 +670,11 @@ pub async fn import(
         .members
         .iter()
         .find(|member| member.role.eq_ignore_ascii_case("owner"));
-    let inviter = owner.map(|owner| owner.name.clone());
+    // The name the invitations say asked for them: the owner's, when the
+    // release knew one.
+    let inviter = owner
+        .map(|owner| owner.name.clone())
+        .filter(|name| name != "Guest");
     for waiting in &people.wait_list {
         if !keeps {
             imported.refused.push(format!(
