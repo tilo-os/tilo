@@ -1757,11 +1757,9 @@ imager-setup-home-consumer-unavailable = This Tilo release cannot bring your fil
 
 installer-service-sessions-title = Website sign-ins
 installer-logins-source-body = Slack and Discord sign-ins only. You may still be asked to sign in again.
+installer-logins-group-count = { $selected } of { $total } selected
+installer-logins-group-selectable-count = { $selected } of { $total } available sign-ins selected
 installer-logins-group-unselectable = No sign-ins can be selected
-installer-logins-select-group = { $count ->
-    [one] Select the 1 sign-in
-   *[other] Select all { $count } sign-ins
-}
 
 installer-service-sessions-body = Bring your Slack or Discord sign-ins from a browser you use. You may still need to sign in again.
 

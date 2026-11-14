@@ -1105,11 +1105,9 @@ installer-belongings-provider-other = einen Dienst
 imager-setup-home-consumer-unavailable = Diese Tilo-Version kann deine Dateien und App-Daten nicht übernehmen. Wähle eine neuere Version, bevor du fortfährst.
 installer-service-sessions-title = Anmeldungen bei Websites
 installer-logins-source-body = Nur Anmeldungen bei Slack und Discord. Vielleicht wirst du trotzdem gebeten, dich erneut anzumelden.
+installer-logins-group-count = { $selected } von { $total } ausgewählt
+installer-logins-group-selectable-count = { $selected } von { $total } verfügbaren Anmeldungen ausgewählt
 installer-logins-group-unselectable = Keine Anmeldungen können ausgewählt werden
-installer-logins-select-group = { $count ->
-    [one] Die 1 Anmeldung auswählen
-   *[other] Alle { $count } Anmeldungen auswählen
-}
 installer-service-sessions-body = Nimm deine Anmeldungen bei Slack oder Discord aus einem Browser mit, den du verwendest. Vielleicht musst du dich trotzdem erneut anmelden.
 installer-review-service-session-body = Vielleicht musst du dich erneut anmelden.
 installer-service-source-slack = Slack-Anmeldung aus { $source }

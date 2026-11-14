@@ -124,6 +124,14 @@ impl Selection {
                         && self.included.contains(&(source.id.clone(), *service))
                 })
                 .count();
+            let summary = super::super::t_args(
+                if count == detected.len() {
+                    "installer-logins-group-count"
+                } else {
+                    "installer-logins-group-selectable-count"
+                },
+                &[("selected", selected.into()), ("total", count.into())],
+            );
             let mut items: Vec<Element> = Vec::new();
             let chosen = ui::LocalState::new(count > 0 && selected == count);
             let id = source.id.clone();
@@ -136,10 +144,7 @@ impl Selection {
                     .with_label(if count == 0 {
                         super::super::t("installer-logins-group-unselectable")
                     } else {
-                        super::super::t_args(
-                            "installer-logins-select-group",
-                            &[("count", count.into())],
-                        )
+                        summary.clone()
                     }),
                 super::super::InstallerPreviewEffect::SET_PREVIEW_SERVICE_SESSION_GROUP
                     .map(move |included: bool| (id.clone(), included)),
