@@ -1443,9 +1443,18 @@ impl NotesApp {
         if self.main.page_id().is_none() {
             return false;
         }
-        let bytes = crate::files::read_bounded(path, ui::clipboard::MAX_PASTED_IMAGE_BYTES as u64)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| bytes.ok_or_else(|| CATALOG.t("notes-image-too-big")));
+        // Its bytes where it has no path to read (a browser page hands them over with the drop),
+        // else read from where it is.
+        let limit = ui::clipboard::MAX_PASTED_IMAGE_BYTES;
+        let bytes = match ui::portal::dropped() {
+            Some(ui::portal::Dropped::Contents(file)) if file.bytes.len() <= limit => {
+                Ok(file.bytes)
+            }
+            Some(_) => Err(CATALOG.t("notes-image-too-big")),
+            None => crate::files::read_bounded(path, limit as u64)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| bytes.ok_or_else(|| CATALOG.t("notes-image-too-big"))),
+        };
         match bytes {
             Ok(bytes) => {
                 let alt = path

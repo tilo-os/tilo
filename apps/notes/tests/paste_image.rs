@@ -219,6 +219,33 @@ fn a_dropped_image_file_goes_into_the_note() {
     assert_eq!(dropped[0].1, bytes);
 }
 
+#[test]
+fn an_image_a_page_drops_goes_into_the_note_from_its_bytes() {
+    // A browser page has no path to read: it hands the dropped file's bytes over with the drop.
+    let (mut app, page) = note();
+    let bytes = png(5, 5, false);
+    let dropped = ui::portal::Dropped::Contents(ui::portal::PickedContents {
+        name: "sketch.png".into(),
+        media_type: Some("image/png".into()),
+        bytes: bytes.clone(),
+        location: None,
+    });
+    ui::portal::dropping(dropped, || {
+        app.harness()
+            .dispatch_to_root(&ui::winit::event::WindowEvent::DroppedFile(
+                "sketch.png".into(),
+            ));
+    });
+    let inserted = images(&app, page);
+    assert_eq!(inserted.len(), 1, "{inserted:?}");
+    assert!(
+        inserted[0].0.starts_with("![sketch](asset:"),
+        "{}",
+        inserted[0].0
+    );
+    assert_eq!(inserted[0].1, bytes);
+}
+
 /// Pasting one picture after another, writing a line under each, keeps every
 /// picture and every line in the order they were put there, whether the
 /// paste is made at the end of a line or on a fresh empty one: after a paste
