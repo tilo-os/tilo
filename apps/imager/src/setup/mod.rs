@@ -35,6 +35,8 @@ pub mod import_actions;
 #[cfg(feature = "installation")]
 mod import_rows;
 #[cfg(feature = "installation")]
+mod import_services;
+#[cfg(feature = "installation")]
 pub mod import_view;
 #[cfg(all(target_os = "linux", feature = "installation"))]
 pub mod installed_migration_helper;

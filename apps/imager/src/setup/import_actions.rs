@@ -91,6 +91,42 @@ pub enum ImportEffect {
         #[param("Id of the saved folder choice")]
         folder_id: String,
     },
+    /// Open the form where the person types an Outline, Linear or mail account's address and
+    /// key; the key is never an argument.
+    #[effect(attended, returns)]
+    #[effect(label = "imager-import-action-connect-service")]
+    ConnectService {
+        #[param("outline, linear or mail")]
+        service: String,
+    },
+    /// List what a connected source holds, for the person to choose from.
+    #[effect(returns)]
+    #[effect(label = "imager-import-action-review-service")]
+    ReviewService {
+        #[param("Id of the connected source")]
+        account: String,
+    },
+    /// Bring a reviewed group (a collection, a team, a mail account) over, or leave it out.
+    #[effect(returns)]
+    #[effect(label = "imager-import-action-choose-service-group")]
+    ChooseServiceGroup {
+        #[param("Id of the reviewed source")]
+        source: String,
+        #[param("Id of the group")]
+        group: String,
+        #[param("Whether it comes over")]
+        chosen: bool,
+    },
+    /// Bring the chosen groups of a reviewed source over; a stopped run continues.
+    #[effect(returns)]
+    #[effect(label = "imager-import-action-start-service")]
+    StartService {
+        #[param("Id of the reviewed source")]
+        source: String,
+    },
+    #[effect(returns)]
+    #[effect(label = "imager-import-action-stop-service")]
+    StopService,
     #[effect(returns)]
     #[effect(label = "imager-import-action-folder-mode")]
     SetFolderMode {

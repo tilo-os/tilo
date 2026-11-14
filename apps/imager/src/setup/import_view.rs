@@ -182,6 +182,7 @@ pub struct ImportApp {
     reply: Option<EffectReply>,
     opens_when_live: bool,
     published: Rc<RefCell<Published>>,
+    services: super::import_services::Services,
 
     dirty: bool,
 }
@@ -252,6 +253,7 @@ impl ImportApp {
             reply: None,
             opens_when_live: false,
             published: Rc::default(),
+            services: super::import_services::Services::at(None, None, None),
         }
     }
 
@@ -324,6 +326,15 @@ impl ImportApp {
             }
             "import-partial" => app.seed_partial_shot(&source, &destination_parent)?,
             "import-conflict" => app.seed_conflict_shot(&source, &destination_parent)?,
+            "import-services" => {
+                // Beside a folder the person copied, the sources they connected.
+                std::fs::write(source.join("Welcome.txt"), b"verified import")
+                    .map_err(|error| error.to_string())?;
+                app.prepare_and_start_shot(&source, &destination_parent)?;
+                app.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
+                let store = app.store.clone().ok_or("shot store unavailable")?;
+                app.services = super::import_services::Services::staged_for_shot(store);
+            }
             "import-issue-pages" => {
                 std::fs::write(source.join("Welcome.txt"), b"verified bytes")
                     .map_err(|e| e.to_string())?;
@@ -576,7 +587,7 @@ impl ImportApp {
             gate_request: None,
             review_request: None,
             batch: Vec::new(),
-            store: Some(store),
+            store: Some(Arc::clone(&store)),
             writer: Some(writer),
             pending_saves,
             detail_request: None,
@@ -600,6 +611,7 @@ impl ImportApp {
             reply: None,
             opens_when_live: false,
             published: Rc::default(),
+            services: super::import_services::Services::new(Some(Arc::clone(&store))),
         })
     }
 
@@ -852,6 +864,7 @@ impl ImportApp {
             "destination": destination,
             "status": self.status,
         });
+        value["services"] = self.services.value();
         for (index, operation) in self.operations.iter().enumerate() {
             value["operations"][index]["source"] = serde_json::json!(
                 operation
@@ -943,6 +956,26 @@ impl ImportApp {
                     value: Some(self.local_status_value()),
                     resources: Vec::new(),
                 });
+            }
+            ImportEffect::ConnectService { service } => {
+                return self.service_step(super::import_services::Step::Connect(service));
+            }
+            ImportEffect::ReviewService { account } => {
+                return self.service_step(super::import_services::Step::Review(account));
+            }
+            ImportEffect::ChooseServiceGroup {
+                source,
+                group,
+                chosen,
+            } => {
+                return self
+                    .service_step(super::import_services::Step::Choose(source, group, chosen));
+            }
+            ImportEffect::StartService { source } => {
+                return self.service_step(super::import_services::Step::Start(source));
+            }
+            ImportEffect::StopService => {
+                return self.service_step(super::import_services::Step::Cancel);
             }
             ImportEffect::ChooseSource => {
                 if self.picker.is_some() || self.store.is_none() {
@@ -1148,6 +1181,18 @@ impl ImportApp {
         self.apply_semantic_command(command)?;
         Ok(tilo_actions::ActionOutput {
             value: Some(self.import_projection().value()),
+            resources: Vec::new(),
+        })
+    }
+
+    fn service_step(
+        &mut self,
+        step: super::import_services::Step,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let value = self.services.invoke(step)?;
+        self.composed.invalidate();
+        Ok(tilo_actions::ActionOutput {
+            value: Some(value),
             resources: Vec::new(),
         })
     }
@@ -2083,10 +2128,15 @@ impl ImportApp {
 
     fn drain_commands(&mut self) -> bool {
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
-        let changed = !commands.is_empty();
+        let mut changed = !commands.is_empty();
         for command in commands {
             self.apply_command(command);
         }
+        let services = self.services.drain() | self.services.poll();
+        if services {
+            self.composed.invalidate();
+        }
+        changed |= services;
         changed
     }
 
@@ -2582,6 +2632,7 @@ impl ImportApp {
             body = body.push(Box::new(self.journey_choices()));
         }
         body = body.push(Box::new(self.selection_card()));
+        body = body.push(Box::new(self.services.section()));
         let on_a_row = self.operations.iter().any(|operation| {
             state_summary(operation.state()) == self.status
                 || operation.failure() == Some(self.status.as_str())
@@ -2694,6 +2745,7 @@ impl Widget for ImportApp {
             || self.pending_prepare_invocation.is_some()
             || !self.pending_saves.is_empty()
             || self.detail_request.is_some()
+            || self.services.busy()
     }
 }
 
@@ -3060,6 +3112,7 @@ pub const SCENARIOS: &[&str] = &[
     "import-conflict",
     "import-complete",
     "import-issue-pages",
+    "import-services",
 ];
 
 impl ImportApp {
