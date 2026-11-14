@@ -1369,10 +1369,13 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
     link.publish(DeskReading {
         here: "overview".to_owned(),
         windows,
-        workspaces: vec![WorkspaceReading {
+        // The workspace in front, as the session publishes it: the overview places a window by
+        // the workspace its fields name current.
+        rooms: vec![RoomReading {
             key: "1".to_owned(),
             name: "Desk".to_owned(),
             current: true,
+            ..RoomReading::default()
         }],
         ..reading()
     });
