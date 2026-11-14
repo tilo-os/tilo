@@ -899,9 +899,107 @@ fn an_endpoint_hears_of_its_admission_and_removal() {
     ));
 }
 
+/// A request for a workspace's keys waits for its group without holding the
+/// service: the identity host's ask and a read of the keys this device holds
+/// answer at once meanwhile, and the wait ends with the group.
+#[test]
+fn a_request_waiting_for_keys_leaves_the_other_asks_answered() {
+    use runtime_identity::wire::ChannelAccess as Wire;
+    use tilo_identity_host::sources::ChannelKeySource as _;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let workspace = Arc::new(Workspace::default());
+    let held = WorkspaceId::new();
+    let awaited = WorkspaceId::new();
+    let held_channel = collab_types::workspace_scope(&held.to_string());
+    let awaited_channel = collab_types::workspace_scope(&awaited.to_string());
+    let policy = Policy::readers([1, 2]);
+    let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut owner = device(&workspace, held, 0, 1, &policy, owner_dir.path());
+    let laptop = device(&workspace, held, 1, 2, &policy, laptop_dir.path());
+    let keys = ChannelKeyProvider::default();
+    keys.set(Some(ChannelKeyAccess::new(laptop.service)));
+    let laptop_at = |workspace_id| Endpoint::join(&workspace, workspace_id, 1);
+    let held_at = laptop_at(held);
+    let awaited_at = laptop_at(awaited);
+    let (held_route, awaited_route) = (
+        ChannelRoute::new("so.tilo.word-processor", "held"),
+        ChannelRoute::new("so.tilo.word-processor", "awaited"),
+    );
+
+    // The laptop holds `held`'s keys, and has only asked for `awaited`'s.
+    assert!(ready_epoch(&create(&mut owner, held, held_channel, now)).is_some());
+    tilo_test_env::wait_until("the laptop holds the workspace's keys", || {
+        now = now.checked_add(Duration::from_millis(250)).unwrap();
+        owner.service.pump(&owner.endpoint, now, 1_000);
+        let laptop = keys.get().unwrap();
+        laptop.pump_at(&held_at, now);
+        ready_epoch(&laptop.access(held).0).is_some()
+    });
+    assert!(matches!(
+        keys.get().unwrap().access(awaited).0,
+        ChannelAccess::Waiting
+    ));
+
+    // The host asks for `awaited`'s keys, waiting for its group.
+    let _entered = runtime.enter();
+    let asking = keys.clone();
+    let (workspace_name, route) = (awaited.to_string(), awaited_route.clone());
+    let mut waiting = Waiting::new(async move {
+        asking
+            .channel_keys(&workspace_name, &route, true, Duration::from_secs(30))
+            .await
+    });
+    assert!(
+        waiting.poll().is_none(),
+        "a request for keys waits for the group"
+    );
+
+    // The service answers the other asks while that one waits: the identity
+    // host's for the same workspace, and a read of the keys this device holds.
+    let (answered, replies) = std::sync::mpsc::channel();
+    let answering = keys.clone();
+    let asked = std::thread::spawn(move || {
+        let ready = answering.access(held, &held_route, 0);
+        let still_waiting = answering.access(awaited, &awaited_route, 0);
+        let stored = answering.get().unwrap().record_keys(held, &held_route);
+        let _ = answered.send((ready, still_waiting, stored));
+    });
+    let (ready, still_waiting, stored) = replies
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the service answers while a request waits for keys");
+    asked.join().unwrap();
+    assert!(matches!(ready, Some(Ok((Wire::Ready, _, _)))), "{ready:?}");
+    assert!(
+        matches!(still_waiting, Some(Ok((Wire::Waiting, _, _)))),
+        "{still_waiting:?}"
+    );
+    assert!(matches!(stored, Some(Ok(_))), "{stored:?}");
+    assert!(
+        waiting.poll().is_none(),
+        "the waiting request has not run: its group is not there"
+    );
+
+    // Its group arrives, and the request answers with its keys.
+    assert!(ready_epoch(&create(&mut owner, awaited, awaited_channel, now)).is_some());
+    let owner_at = Endpoint::join(&workspace, awaited, 0);
+    for _ in 0..40 {
+        now = now.checked_add(Duration::from_millis(250)).unwrap();
+        owner.service.pump(&owner_at, now, 1_000);
+        keys.get().unwrap().pump_at(&awaited_at, now);
+    }
+    assert!(
+        matches!(waiting.poll(), Some(Some(Ok(_)))),
+        "the request answers once its group's keys arrive"
+    );
+}
+
 /// A future polled by hand, which counts the wakes it asks for.
-struct Waiting {
-    future: std::pin::Pin<Box<dyn std::future::Future<Output = u64>>>,
+struct Waiting<T> {
+    future: std::pin::Pin<Box<dyn Future<Output = T>>>,
     wakes: Arc<WakeCount>,
 }
 
@@ -914,8 +1012,8 @@ impl std::task::Wake for WakeCount {
     }
 }
 
-impl Waiting {
-    fn new(future: impl std::future::Future<Output = u64> + 'static) -> Self {
+impl<T> Waiting<T> {
+    fn new(future: impl Future<Output = T> + 'static) -> Self {
         Self {
             future: Box::pin(future),
             wakes: Arc::default(),
@@ -927,7 +1025,7 @@ impl Waiting {
         self.wakes.0.load(Ordering::SeqCst) > 0
     }
 
-    fn poll(&mut self) -> Option<u64> {
+    fn poll(&mut self) -> Option<T> {
         self.wakes.0.store(0, Ordering::SeqCst);
         let waker = std::task::Waker::from(Arc::clone(&self.wakes));
         match self
@@ -935,7 +1033,7 @@ impl Waiting {
             .as_mut()
             .poll(&mut std::task::Context::from_waker(&waker))
         {
-            std::task::Poll::Ready(change) => Some(change),
+            std::task::Poll::Ready(settled) => Some(settled),
             std::task::Poll::Pending => None,
         }
     }
