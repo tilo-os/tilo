@@ -908,19 +908,37 @@ mod tests {
         }
     }
 
-    /// `resource` as inert data, children included: what agents, the
+    /// A resource as inert data, children included: what agents, the
     /// palette and accessibility read.
-    fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
-        json!({
-            "id": resource.id.as_str(),
-            "kind": resource.kind,
-            "label": resource.label,
-            "presentation": format!("{:?}", resource.presentation),
-            "identity": format!("{:?}", resource.semantic_identity),
-            "actions": tilo_actions::door::survey(&[super::super::without_children(resource)]),
-            "views": format!("{:?}", resource.views),
-            "children": resource.children.iter().map(outline).collect::<Vec<_>>(),
-        })
+    ///
+    /// Two outlines are compared for every tree of every step, so its
+    /// actions stay the survey's own descriptors, which compare field by
+    /// field, rather than the JSON they serialise to: descriptors that are
+    /// equal serialise alike, and building that JSON took most of a step.
+    #[derive(Debug, PartialEq)]
+    struct Outline {
+        id: String,
+        kind: String,
+        label: String,
+        presentation: String,
+        identity: String,
+        actions: Vec<tilo_actions::door::ActionDescriptor>,
+        views: String,
+        children: Vec<Outline>,
+    }
+
+    /// `resource`'s [`Outline`].
+    fn outline(resource: &tilo_actions::ResourceSpec) -> Outline {
+        Outline {
+            id: resource.id.as_str().to_owned(),
+            kind: resource.kind.clone(),
+            label: resource.label.clone(),
+            presentation: format!("{:?}", resource.presentation),
+            identity: format!("{:?}", resource.semantic_identity),
+            actions: tilo_actions::door::survey(&[super::super::without_children(resource)]),
+            views: format!("{:?}", resource.views),
+            children: resource.children.iter().map(outline).collect(),
+        }
     }
 
     /// The view operation types anywhere beneath `resources`.
