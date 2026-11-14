@@ -10,7 +10,8 @@ both, and `stack.sh help` covers the commands.
 | File | What it is |
 | --- | --- |
 | `stack.sh` | the one command: `up`, `restart`, `env`, `status`, `logs`, `browser`, `check`, `down` |
-| `cargo.sh` | how the native stack compiles: `t build` (or the cargo drop-in `TILO_SH_CARGO` names), also the cargo the web bundle's build script gets |
+| `cargo.sh` | how the native stack compiles: rcargo (or the cargo drop-in `TILO_SH_CARGO` names), also the cargo the web bundle's build script gets |
+| `build-on-builder.sh` | the programs and the bundle's module built at once on the build server, in one rcargo command |
 | `Caddyfile` | production's relay routing (tilo/infra `apps/tilo-sh-relay/Caddyfile`) on loopback ports |
 | `owner-link.mjs` | `stack.sh owner`'s link: a page under the site's own origin, which reads the user key that browser made for the Lounge and hands it over |
 | `check.sh` | the startup identity, the visa flow, a fresh visitor's timed entry and a passkey, as steps of one check (`stack.sh check`) or as flows beside the page's (`t test e2e`, `check.sh --flow`) |

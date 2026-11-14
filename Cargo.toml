@@ -1401,6 +1401,15 @@ inherits = "wasm-split"
 lto = false
 codegen-units = 16
 
+# `wasm-split-gate` compiled incrementally: the local stack's desktop bundle
+# (build.sh --profile local), built in a build directory that stays, as
+# `lounge-local` is to `lounge-gate`, in as many codegen units.
+[profile.wasm-split-local]
+inherits = "wasm-split-gate"
+incremental = true
+codegen-units = 256
+lto = "off"
+
 # `wasm-release` with the assertions the qualification surface is behind. A
 # measured release-speed bundle must still refuse what a dev build refuses
 # (`debug_assertions`, `cfg!(debug_assertions)` and the diagnostics that read
@@ -1529,6 +1538,22 @@ debug-assertions = true
 inherits = "release"
 lto = false
 codegen-units = 16
+
+# `lounge-gate` compiled incrementally: the local tilo.sh stack's programs
+# (os/containers/tilo-sh/stack.sh), built in a build directory that stays, so
+# a one-line change recompiles the parts of the crate it touched rather than
+# the whole crate. The same code at the same opt-level, in rustc's 256
+# codegen units for incremental builds and without the ThinLTO pass across
+# them, so a change re-optimises the units it touched and nothing those units
+# were inlined into: with sixteen units and that pass, a one-line change to
+# the relay's library took 48 s of rustc, without it 21 s. A build that
+# starts from an empty directory (a check's) gains nothing from it and keeps
+# `lounge-gate`, whose crates the compiler cache stores.
+[profile.lounge-local]
+inherits = "lounge-gate"
+incremental = true
+codegen-units = 256
+lto = "off"
 
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.

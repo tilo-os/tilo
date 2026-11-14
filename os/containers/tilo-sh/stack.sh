@@ -4,8 +4,9 @@
 # with production's entrypoints and the environment production's manifests
 # give them (tilo/infra apps/tilo-sh-relay, apps/tilo-api,
 # apps/tilo-web, apps/tilo-sh-vm-host), with only the public names turned
-# into this machine's loopback ports. By default the programs t builds run as
-# plain processes; `up --images` runs the release images instead.
+# into this machine's loopback ports. By default its programs, built on the
+# build server, run as plain processes; `up --images` runs the release images
+# instead.
 #
 # Run `stack.sh help` for what it does and how to use it.
 set -euo pipefail
@@ -19,11 +20,13 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
 
   stack.sh up [--images] [--seed] [--discord] [--fresh]
       Start everything and print where it is. By default this checkout's
-      programs and web bundle, built by t's checks (tilo-sh-programs,
-      web-desktop-gate-bundle: cached by what they read, so
-      a change reruns only what it touches, and fetched file by file, only
-      what changed), run as plain processes, each with its own state and
-      runtime directory under the stack's state. Each takes
+      programs and web bundle, built on the build server in a build
+      directory that stays (rcargo: a change recompiles what it touches,
+      incrementally, and only the files that changed come back), run as
+      plain processes, each with its own state and runtime directory under
+      the stack's state. TILO_SH_BUILD=t builds them with t's checks
+      instead (tilo-sh-programs, web-desktop-gate-bundle): what the checks
+      run, wasm-opt and all, slower. Each takes
       its environment from the same place its image does: the image's
       entrypoint and ENV, and the manifest's variables below.
       --images runs the release images instead (t test image-lounge
@@ -101,12 +104,16 @@ A running stack belongs to the checkout that started it: up, down and restart
 from another checkout refuse (TILO_SH_TAKE_OVER=1 takes it over). Give each
 checkout its own TILO_SH_STATE and TILO_SH_PORT_BASE instead.
 
-Natively: the programs are t's lounge-gate build (the release's code and
-opt-level without its whole-program link) and the bundle t's
-web-desktop-gate-bundle (the shipped bundle's build without its
-whole-program link: compiled, bound, split and optimized on t), fetched into
-the state; or both built into ./target by the cargo drop-in TILO_SH_CARGO
-names (the bundle's build.sh then runs here); Caddy is
+Natively: the programs are Cargo's lounge-local build (the release's code and
+opt-level without its whole-program link, compiled incrementally) and the
+bundle build.sh's local one (the same for the desktop bundle, bound and split
+as the shipped one, without wasm-opt), both built on the build server by the
+cargo drop-in TILO_SH_CARGO names (default rcargo) in a build directory that
+stays, and only what changed brought back; a drop-in that runs no program
+there has the bundle bound and split here. TILO_SH_BUILD=t takes them from
+t's checks instead (tilo-sh-programs, lounge-gate; web-desktop-gate-bundle,
+optimized), which start from an empty build directory: what the checks
+run, for a rehearsal of it. Caddy is
 the one TILO_SH_CADDY names, else the one on PATH, else a pinned release
 fetched once. The
 relay and the API server trust the local Caddy's CA through the fixed bundle path
@@ -134,9 +141,10 @@ the registry.tilo.so/tilo/lounge@sha256:… production pins).
 TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
 root through sudo). TILO_SH_OWNER=0 declares no owner on up.
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
-Needs t, bwrap, curl and python3 (with TILO_SH_CARGO, also wasm-bindgen and
-wasm-opt for the bundle); with --images, podman (rootless is fine) instead of
-bwrap.
+Needs rcargo (or the drop-in TILO_SH_CARGO names; with TILO_SH_BUILD=t,
+t), bwrap, curl and python3 (with a drop-in that runs no program on its
+build server, also wasm-bindgen for the bundle); with --images, t and podman
+(rootless is fine) instead of bwrap.
 Docs: docs/testing-tilo-sh.md.
 EOF
 }
@@ -188,19 +196,33 @@ commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)
 
 native=$state/native   # what the native stack builds and lays out
 runs=$state/run         # each native process's runtime directory and pid
-# The programs t builds for it: the release's code and opt-level without the
-# whole-program link (Cargo.toml's lounge-gate, which the Lounge's own checks
-# run), so a change relinks in a minute instead of LTO's many. By default they
-# are the outputs of t's checks (from_t, below), copied out of what t fetched;
-# with a cargo drop-in (TILO_SH_CARGO) it leaves them in ./target. A caller that
-# built them already names their directory (TILO_SH_PROGRAMS, TILO_SH_LOUNGE).
-profile='lounge-gate'
+# Where the programs and the bundle are built: on the build server by the
+# cargo drop-in TILO_SH_CARGO names (`builder`, the default), or by t's checks
+# (`t`, from_t below).
+build=${TILO_SH_BUILD:-builder}
+case $build in
+  builder|t) ;;
+  *) echo "tilo-sh: TILO_SH_BUILD is builder or t, not $build" >&2; exit 2 ;;
+esac
+# The cargo drop-in that builds: rcargo where there is one, else this
+# machine's cargo.
+cargo=${TILO_SH_CARGO:-}
+if [[ -z $cargo ]]; then
+  if command -v rcargo >/dev/null; then cargo=rcargo; else cargo=cargo; fi
+fi
+# The programs: the release's code and opt-level without the whole-program
+# link, so a change relinks in seconds instead of LTO's minutes. Built here
+# incrementally (Cargo.toml's lounge-local) into ./target, or by t's
+# tilo-sh-programs as the Lounge's checks build them (lounge-gate). Either
+# way the services run a copy (copy_programs), never the build's own files,
+# which the next build rewrites. A caller that built them already names their
+# directory (TILO_SH_PROGRAMS, TILO_SH_LOUNGE).
+profile=lounge-local
+[[ $build != t ]] || profile=lounge-gate
 if [[ -n ${TILO_SH_PROGRAMS:-} ]]; then
   programs=$TILO_SH_PROGRAMS
-elif [[ ${TILO_SH_CARGO:-t} == t ]]; then
-  programs=$native/programs
 else
-  programs=$repo/target/$profile
+  programs=$native/programs
 fi
 # The relay's laid-out context, as lounge-context.sh makes it (below).
 lounge=${TILO_SH_LOUNGE:-}
@@ -889,20 +911,90 @@ build_programs() {
   fi
   if from_t; then
     t_build programs tilo-sh-programs lounge-fonts
-    t_programs
+    copy_programs "$t_fetched/target/publish/tilo-sh-programs"
     say "programs built ($((SECONDS - began))s)"
     return
   fi
-  say "building the programs ($TILO_SH_CARGO build --profile $profile; only what changed compiles)"
-  (cd "$repo" && "$here/cargo.sh" build --profile "$profile" --features tilo-relay/agents \
-    -p tilo-relay -p discord-worker -p tilo-api -p fake-discord -p tilo-cli \
-    --bin tilo-relay --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo >&2) \
-    || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
-  local program
-  for program in tilo-relay discord-worker tilo-api fake-discord tilo; do
-    [[ -x $programs/$program ]] || die "the build left no $programs/$program; TILO_SH_CARGO names another cargo drop-in to build with"
-  done
+  local from=$repo/target/$profile
+  if on_builder; then
+    builder_build programs
+    from=$repo/target/$builder_stage/programs
+  else
+    say "building the programs ($cargo build --profile $profile; only what changed compiles)"
+    (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-relay/agents \
+      -p tilo-relay -p discord-worker -p tilo-api -p fake-discord -p tilo-cli \
+      --bin tilo-relay --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo >&2) \
+      || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
+  fi
+  copy_programs "$from"
   say "programs built ($((SECONDS - began))s)"
+}
+
+# Whether the cargo drop-in builds on a build server and runs a program there,
+# bringing files of its build directory back (`$cargo exec --fetch`, as
+# rcargo does): the builds then run there in one command (builder_build).
+on_builder() {
+  if [[ -z ${builder_capable:-} ]]; then
+    local help
+    builder_capable=0
+    if help=$($cargo exec --help 2>/dev/null) && [[ $help == *--fetch* ]]; then builder_capable=1; fi
+  fi
+  [[ $builder_capable == 1 ]]
+}
+
+# builder_build programs|bundle…: one command on the build server
+# (build-on-builder.sh) that builds what is named, at once, and stages the
+# programs and the bundle's module in one directory of this checkout's build
+# directory there, which one fetch mirrors into ./target/tilo-sh: only the
+# files that changed travel. What one bring-up built already is not built
+# again by it.
+built_on_builder=
+builder_stage=tilo-sh
+builder_build() {
+  local what=() item began=$SECONDS run
+  for item in "$@"; do
+    [[ " $built_on_builder " == *" $item "* ]] || what+=("$item")
+  done
+  [[ ${#what[@]} -gt 0 ]] || return 0
+  run=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  local args=("$run" "$builder_stage" "${what[@]}")
+  [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || args+=(--names)
+  say "building the ${what[*]} on the build server ($cargo exec build-on-builder.sh; only what changed compiles)"
+  (cd "$repo" && $cargo --fetch "$builder_stage" exec bash os/containers/tilo-sh/build-on-builder.sh "${args[@]}" >&2) \
+    || die "the build on the build server failed (above)"
+  [[ $(cat "$repo/target/$builder_stage/run" 2>/dev/null) == "$run" ]] \
+    || die "$repo/target/$builder_stage is not what this build made on the build server: did the fetch bring it back?"
+  built_on_builder+=" ${what[*]}"
+  say "${what[*]} built on the build server and fetched ($((SECONDS - began))s)"
+}
+
+# Where the fetch leaves the bundle's module.
+bundle_stage() {
+  if [[ ${TILO_SH_BUNDLE_NAMES:-0} == 1 ]]; then echo "$builder_stage/bundle-names"; else echo "$builder_stage/bundle"; fi
+}
+
+# The programs every service runs: a copy of the build's, not its files
+# themselves, since the next build rewrites the files it changed in place
+# while a service runs from these. Copy-on-write where the file system shares
+# blocks. A program that did not change keeps its file, so what is laid out
+# from it (the relay's context, the CLI's release) is kept too; one that did
+# is renamed into place, and a service running the old one keeps it.
+copy_programs() {
+  local from=$1 file
+  mkdir -p "$programs"
+  for file in tilo-relay discord-worker tilo-api fake-discord tilo; do
+    [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
+    cmp -s "$from/$file" "$programs/$file" && continue
+    cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
+    mv -f "$programs/.$file.next" "$programs/$file"
+  done
+}
+
+# What a layout made from FILEs (and this checkout's commit) was made from:
+# their identities, which copy_programs keeps for a program that did not
+# change.
+made_from() {
+  { printf '%s\n' "$commit"; stat -L -c '%n %s %Y %i' "$@"; } | sha256sum | cut -c1-16
 }
 
 # The relay's files as the image's context lays them out (lounge-context.sh,
@@ -922,8 +1014,18 @@ lay_out_lounge() {
       say 'fetching the product font catalog (tools/ci/publish/lounge-fonts.sh, once)'
       bash "$repo/tools/ci/publish/lounge-fonts.sh" "$native/fonts" >&2 || die 'could not prepare the fonts'
     fi
-    bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
-      || die 'could not lay out the relay (lounge-context.sh)'
+    # Laid out again only when what it is made from changed: the relay's
+    # programs, the catalog, the files the image's context takes and this
+    # commit, whose history the app surfaces come from.
+    local stamp container=$repo/os/containers/tilo-lounge
+    stamp=$(made_from "$programs/tilo-relay" "$programs/discord-worker" "$fonts/manifest.toml" \
+      "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
+      "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
+    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-relay ]]; then
+      bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
+        || die 'could not lay out the relay (lounge-context.sh)'
+      printf '%s\n' "$stamp" > "$native/lounge.made-from"
+    fi
     lounge=$native/lounge
   fi
   [[ -x $lounge/bin/tilo-relay ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-relay"
@@ -938,30 +1040,39 @@ lay_out_lounge() {
   if [[ -w $lounge/bin ]]; then ln -sfn ../fonts "$lounge/bin/fonts"; fi
 }
 
-# The desktop bundle the web entry serves (build.sh --bundle desktop, the
-# web-desktop-bundle check's build), its compile on t; TILO_SH_BUNDLE names a
-# built one instead. Built into a directory of its own and swapped in, so a
-# build that stops halfway, or another one, never leaves a half bundle served.
-# TILO_SH_BUNDLE_NAMES=1 builds it with its function names kept (build.sh
-# --names), for profiling the page: otherwise the bundle that ships.
+# The desktop bundle the web entry serves (build.sh --bundle desktop);
+# TILO_SH_BUNDLE names a built one instead. By default build.sh's local
+# profile, compiled, bound and split on the build server and brought up to
+# date in place (--update): a module that did not change is neither bound nor
+# split again, and only the files that changed come back. The site the web
+# entry serves is laid out from it afterwards (lay_out_web), so a build that
+# stops halfway is never served. With TILO_SH_BUILD=t, t's
+# web-desktop-gate-bundle. TILO_SH_BUNDLE_NAMES=1 builds it with its function
+# names kept (build.sh --names), for profiling the page.
 build_bundle() {
   if [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]]; then return; fi
-  local began=$SECONDS next names=()
+  local began=$SECONDS names=() out=$native/bundle-local
   if from_t && [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]]; then
     t_build 'the desktop bundle' web-desktop-gate-bundle
     t_bundle
     say "bundle built ($((SECONDS - began))s)"
     return
   fi
-  [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || names=(--names)
-  say "building the desktop bundle (build.sh --bundle desktop ${names[*]}, compiled by ${TILO_SH_CARGO:-t})"
-  mkdir -p "${native:?}"
-  rm -rf "$native"/bundle.next.*
-  next=$(mktemp -d "$native/bundle.next.XXXXXX")
-  CARGO=$here/cargo.sh "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$next" --bundle desktop "${names[@]}" >&2 \
-    || { rm -rf "$next"; die 'the desktop bundle did not build (above)'; }
-  rm -rf "${native:?}/bundle"
-  mv "$next" "$native/bundle"
+  if [[ ${TILO_SH_BUNDLE_NAMES:-0} == 1 ]]; then names=(--names) out+=-names; fi
+  local from=()
+  if on_builder; then
+    builder_build bundle
+    from=(--wasm-from "$repo/target/$(bundle_stage)")
+    say 'laying out the desktop bundle around the module the build server made (build.sh --wasm-from)'
+  else
+    say "building the desktop bundle (build.sh --bundle desktop --profile local --update ${names[*]}, compiled by $cargo)"
+  fi
+  mkdir -p "$out"
+  CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$out" \
+    --bundle desktop --profile local --update "${names[@]}" "${from[@]}" >&2 \
+    || die 'the desktop bundle did not build (above)'
+  [[ -L $native/bundle ]] || rm -rf "${native:?}/bundle"
+  ln -sfn "${out##*/}" "$native/bundle"
   say "bundle built ($((SECONDS - began))s)"
 }
 
@@ -972,15 +1083,15 @@ bundle_whole() {
 }
 
 # -- t's builds ---------------------------------------------------------------
-# By default (no TILO_SH_CARGO) the programs and the desktop bundle are what
-# t's checks build: tilo-sh-programs (every program, in one lounge-gate
+# With TILO_SH_BUILD=t the programs and the desktop bundle are what t's
+# checks build: tilo-sh-programs (every program, in one lounge-gate
 # build), lounge-fonts (the relay's font catalog) and web-desktop-gate-bundle
 # (the bundle without its whole-program link: the compile, wasm-bindgen, the
 # split and wasm-opt, all on t). Each check is cached by what it read, so a
 # change reruns the checks it reaches and nothing else, and this machine only
 # fetches: into the same directory each time, where t brings only the files
 # that changed.
-from_t() { [[ -z ${TILO_SH_PROGRAMS:-} && ${TILO_SH_CARGO:-t} == t ]]; }
+from_t() { [[ -z ${TILO_SH_PROGRAMS:-} && $build == t ]]; }
 t_fetched=$native/t
 
 # t_build WHAT CHECK…: one t run of the CHECKs for this checkout, and what the
@@ -1006,21 +1117,6 @@ t_build() {
   (cd "$repo" && t outputs "$1" --run "$run" --to "$t_fetched" > "$log" 2>&1) \
     || { tail -5 "$log" >&2; die "t could not give run $run's outputs ($log)"; }
   say "$what fetched: $(grep -cv ' (unchanged)$' "$log") files new or changed, $(grep -c ' (unchanged)$' "$log") kept ($((SECONDS - began))s)"
-}
-
-# The programs every service runs: a copy of t's, not t's files themselves,
-# since t's next fetch rewrites the files it changed in place and a service
-# runs from these meanwhile. Copy-on-write where the file system shares blocks.
-t_programs() {
-  local from=$t_fetched/target/publish/tilo-sh-programs next=$native/programs.next file
-  rm -rf "$next"
-  mkdir -p "$next"
-  for file in tilo-relay discord-worker tilo-api fake-discord tilo; do
-    [[ -x $from/$file ]] || die "t's outputs hold no $file ($from)"
-    cp --reflink=auto "$from/$file" "$next/" || die "could not copy $file"
-  done
-  rm -rf "$programs"
-  mv "$next" "$programs"
 }
 
 # The bundle as its build.json lists it: t's fetch keeps files an earlier
@@ -1073,7 +1169,11 @@ lay_out_web() {
     python3 -I "$container/layout.py" "$bundle" "$native/web/site" >&2 || die 'layout.py failed'
     if command -v brotli >/dev/null && command -v zstd >/dev/null; then
       local began=$SECONDS
-      sh "$container/compress.sh" "$native/web/site" fast || die 'compress.sh failed'
+      # Each file's compressed forms are kept by its content's hash: only
+      # the modules that changed are compressed again. What the site no longer
+      # links is dropped.
+      sh "$container/compress.sh" "$native/web/site" fast "$native/compressed" || die 'compress.sh failed'
+      find "$native/compressed" -type f -links 1 -delete
       say "site precompressed ($((SECONDS - began))s)"
     else
       say 'no brotli or zstd here: the site is served uncompressed (the image serves it precompressed)'
@@ -1105,8 +1205,13 @@ lay_out_releases() {
   if [[ -n ${TILO_SH_CLI_DIR:-} ]]; then
     cp "$TILO_SH_CLI_DIR"/tilo-* "$dir/" || die "TILO_SH_CLI_DIR holds no tilo-* release files"
   else
-    bash "$repo/tools/ci/publish/cli-release.sh" pack "$programs/tilo" "$dir/tilo-linux-x86_64.tar.gz" \
-      || die 'could not pack the tilo command'
+    local stamp
+    stamp=$(made_from "$programs/tilo")
+    if [[ $(cat "$dir/.made-from" 2>/dev/null) != "$stamp" || ! -s $dir/tilo-linux-x86_64.tar.gz ]]; then
+      bash "$repo/tools/ci/publish/cli-release.sh" pack "$programs/tilo" "$dir/tilo-linux-x86_64.tar.gz" \
+        || die 'could not pack the tilo command'
+      printf '%s\n' "$stamp" > "$dir/.made-from"
+    fi
   fi
   sign_releases "$dir"
 }
@@ -1289,7 +1394,8 @@ native_preflight() {
   [[ $EUID != 0 || -n ${TILO_SH_STATE:-} ]] \
     || die 'run it as a regular user, or name the state it may own (TILO_SH_STATE)'
   if [[ -z ${TILO_SH_PROGRAMS:-} ]]; then
-    command -v "${TILO_SH_CARGO:-t}" >/dev/null || die "needs ${TILO_SH_CARGO:-t}, which builds the programs"
+    if from_t; then command -v t >/dev/null || die 'needs t, which builds the programs (TILO_SH_BUILD=t)'
+    else command -v "${cargo%% *}" >/dev/null || die "needs $cargo, which builds the programs (TILO_SH_CARGO names another cargo drop-in)"; fi
   fi
   command -v bwrap >/dev/null \
     || die 'needs bwrap (bubblewrap: dnf install bubblewrap), which gives the relay and the API server the local trust bundle'
@@ -1311,14 +1417,17 @@ up_native() {
   local discord=$1 began=$SECONDS phase=$SECONDS
   native_preflight
   mkdir -p "$state"/{logs,relay,secrets,api,tls/caddy,tls/config} "$native" "$runs"
-  # The bundle builds beside the programs. From t it is asked for on every
-  # bring-up (t answers at once when this commit's is built, and the fetch
-  # brings only what changed); a cargo drop-in builds it when there is none,
-  # or `restart web`.
+  # The bundle builds beside the programs, on every bring-up: what did not
+  # change is kept, so an unchanged one takes seconds. On the build server both
+  # are one command; from t, two runs of checks at once.
   local bundle_pid=
-  if [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]] && { from_t || ! bundle_whole "$native/bundle"; }; then
-    build_bundle > "$state/logs/bundle.log" 2>&1 &
-    bundle_pid=$!
+  if [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]]; then
+    if [[ -z ${TILO_SH_PROGRAMS:-} ]] && ! from_t && on_builder; then
+      builder_build programs bundle
+    else
+      build_bundle > "$state/logs/bundle.log" 2>&1 &
+      bundle_pid=$!
+    fi
   fi
   build_programs
   lay_out_lounge
@@ -1326,6 +1435,8 @@ up_native() {
   if [[ -n $bundle_pid ]]; then
     say "waiting for the desktop bundle (stack.sh logs bundle)"
     wait "$bundle_pid" || { tail -30 "$state/logs/bundle.log" >&2; die 'the desktop bundle did not build'; }
+  elif [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]]; then
+    build_bundle
   fi
   lay_out_web
   say "built and laid out ($((SECONDS - began))s)"
@@ -1453,6 +1564,9 @@ up() {
   # One stack at a time: what the other mode left running goes first.
   if [[ -f $state/mode ]]; then down >/dev/null 2>&1 || true; fi
   mkdir -p "$state/logs"
+  # The operator's key is one the API server's state approved: an API server
+  # starting without its state knows none, so the key is minted again.
+  [[ -e $state/api/api.json ]] || rm -f "$state/operator.env"
   if [[ -n $images ]]; then
     up_images "$discord"
   else
@@ -1630,7 +1744,7 @@ down() {
     # account's user namespace: only that namespace removes them.
     podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner" 2>/dev/null \
       || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner"
-    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission"
+    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission" "$state/operator.env"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"

@@ -10,17 +10,30 @@ os/containers/tilo-sh/stack.sh up
 ```
 
 By default the stack runs this checkout's programs and web bundle as plain
-processes, built by t's checks: `tilo-sh-programs` (every program in one build
-of the release's code without its whole-program link) and `web-desktop-gate-bundle`
-(the shipped bundle's build without its whole-program link; compiled, bound,
-split and optimized on t). A clean checkout is built as its commit, one with
-changes as t finds it when the run starts. Each check is cached by what it
-read, so a change reruns only the checks it reaches, and the stack fetches
-into the same directory each time, where t brings only the files that changed:
-nothing but the fetch, the relay's and the site's layout and the site's
-precompression (at faster levels than the image's) runs on your machine. Each service gets its own state
-and runtime directory under the stack's state. `stack.sh help` lists every
-command.
+processes, built on the build server by rcargo in one command
+(`os/containers/tilo-sh/build-on-builder.sh`), in this checkout's build
+directory there, which stays from one bring-up to the next: every program in
+one incremental build of the release's code without its whole-program link
+(Cargo's `lounge-local`), and beside it the desktop bundle's module
+(`build.sh --profile local`: the same for the bundle, bound and split as the
+shipped bundle is, without wasm-opt). A change recompiles the parts of the
+crates it touched; a module that did not change is neither bound nor split
+again; only the files that changed come back. Nothing but the fetch, the
+relay's and the site's layout and the site's precompression (at faster levels
+than the image's, each file compressed once per content) runs on your
+machine. Each service gets its own state and runtime directory under the
+stack's state. `stack.sh help` lists every command.
+
+`TILO_SH_BUILD=t` takes the programs and the bundle from t's checks instead:
+`tilo-sh-programs` (`lounge-gate`) and `web-desktop-gate-bundle` (compiled,
+bound, split and wasm-opt'd on t), the builds the checks run. They start from
+an empty build directory, so they take minutes where the default takes
+seconds; use them to rehearse exactly what the checks build. A clean checkout
+is built as its commit, one with changes as t finds it when the run starts.
+
+`stack.sh down --wipe` deletes the operator's key with the rest of the state:
+the API server's new state never approved it. `up` also mints a new one
+whenever the API server starts without its state.
 
 `stack.sh up --images` runs the release images instead: `image-lounge`,
 `image-api` and `image-web-entry`, built by `t` for this commit, under rootless
@@ -69,8 +82,10 @@ With `--images`, the first three are the images themselves.
   because a passkey's relying party is the page's host name. Over plain HTTP a
   browser speaks HTTP/1.1, so the page's modules arrive over six connections and
   an entry-speed measurement here reads slower than tilo.sh.
-- **Natively, the build profile** is `lounge-gate`: the release's code and
-  opt-level without the whole-program link. The image carries the release build.
+- **Natively, the build profile** is `lounge-local`: the release's code and
+  opt-level without the whole-program link, compiled incrementally. The
+  bundle is not wasm-opt'd, so its modules are larger than the shipped ones.
+  The image carries the release build.
 - **Natively, the trust bundle:** Tilo's programs read one fixed bundle path and
   no variable redirects it; `bwrap` mounts this machine's roots over that path
   for the relay and the API server alone.
@@ -151,13 +166,12 @@ on the same machine.
 
 ## Other builds
 
-`TILO_SH_CARGO=<command>` builds the programs and the bundle's WebAssembly with
-that cargo drop-in instead of t's checks, with the bundle's build script
-(`build.sh --bundle desktop`, the shipped profile) run here. It must leave what
-it builds in `./target` as cargo would. A
-drop-in that also runs a program on its builder and brings a directory of its
-target dir back (`<command> --fetch PATH exec PROGRAM ARGS…`) gets the bundle's
-WebAssembly steps too.
+`TILO_SH_CARGO=<command>` builds with that cargo drop-in instead of rcargo. It
+must leave what it builds in `./target` as cargo would. A drop-in that also
+runs a program on its builder and brings files of its target dir back
+(`<command> --fetch PATH exec PROGRAM ARGS…`) gets the builds in one command
+there, as rcargo does; with any other (`cargo`), the bundle's build script
+binds and splits here and needs wasm-bindgen.
 
 `TILO_SH_BUNDLE` names a desktop bundle built elsewhere (`build.sh OUT --bundle
 desktop`) for the native stack to serve. `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`,

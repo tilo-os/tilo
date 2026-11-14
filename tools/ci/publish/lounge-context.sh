@@ -25,13 +25,22 @@ if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
   die 'the Lounge publishes its app surfaces from the apps history: a shallow checkout has none of it'
 fi
 mkdir -p "$out/surfaces"
-for surface in apps/*/surface.toml; do
+# Each app's history is walked on its own, all at once: one after the other
+# they took fourteen seconds of every local bring-up.
+surface_versions() {
+  local surface=$1 app commit
   app=${surface#apps/}
   app=${app%/surface.toml}
   while read -r commit; do
     git cat-file -p "$commit:$surface" > "$out/surfaces/$app.$commit.toml"
   done < <(git log --format=%H -- "$surface")
+}
+pids=()
+for surface in apps/*/surface.toml; do
+  surface_versions "$surface" &
+  pids+=("$!")
 done
+for pid in "${pids[@]}"; do wait "$pid" || die 'could not read the app surfaces from the apps history'; done
 [[ $(ls "$out/surfaces" | wc -l) -gt 0 ]] \
   || die 'the app surfaces are not in the checkout: the Lounge would read its history with the newest of them alone'
 echo "surfaces: $(ls "$out/surfaces" | wc -l) versions of the built-in apps' surface.toml"
