@@ -93,225 +93,351 @@ fn red((rgba, width): &(Vec<u8>, usize), x: usize, y: usize) -> u8 {
     rgba[(y * width + x) * 4]
 }
 
-/// Inverting and growing in one step grows what ends up selected: the
-/// subject a wand's background leaves, shrunk clear of that background's
-/// edge, rather than the background grown before it is turned inside out.
-#[test]
-fn invert_comes_before_grow() {
-    let mut art = Replica::<Artwork>::new();
-    select(
-        &mut art,
-        Select {
-            rect: Some([100.0, 100.0, 200.0, 100.0]),
-            ..Select::default()
-        },
-    );
-    select(
-        &mut art,
-        Select {
-            invert: Some(true),
-            grow: Some(-10.0),
-            ..Select::default()
-        },
-    );
-    let area = selected(&art.state().unwrap());
-    assert!(
-        !area.contains(Point::new(95.0, 150.0)),
-        "within 10 of the old edge"
-    );
-    assert!(area.contains(Point::new(80.0, 150.0)));
-    assert!(!area.contains(Point::new(150.0, 150.0)));
-}
+tilo_test_env::scenario! {
+    /// Selecting an area and using it, on a replica of the artwork.
+    /// Each case was a test of its own and builds its own fixture; a failure names its phase.
+    fn areas_are_selected_refined_used_and_combined;
 
-/// Shapes, lassos and marks select; add, subtract and intersect change the
-/// selection; grow, feather and invert refine it; none clears it. Each is
-/// one step, undone like any other.
-#[test]
-fn a_selection_is_made_of_shapes_and_refined() {
-    let mut art = Replica::<Artwork>::new();
-    select(
-        &mut art,
-        Select {
-            rect: Some([100.0, 100.0, 200.0, 100.0]),
-            ..Select::default()
-        },
-    );
-    let area = |art: &Replica<Artwork>| selected(&art.state().unwrap()).area();
-    assert!((area(&art) - 20_000.0).abs() < 1.0, "{}", area(&art));
-    select(
-        &mut art,
-        Select {
-            ellipse: Some([300.0, 100.0, 100.0, 100.0]),
-            mode: Some("add".into()),
-            ..Select::default()
-        },
-    );
-    let disc = std::f64::consts::PI * 50.0 * 50.0;
-    assert!(
-        (area(&art) - 20_000.0 - disc).abs() < 10.0,
-        "{}",
-        area(&art)
-    );
-    select(
-        &mut art,
-        Select {
-            points: Some(vec![[100.0, 100.0], [200.0, 100.0], [100.0, 200.0]]),
-            mode: Some("subtract".into()),
-            ..Select::default()
-        },
-    );
-    assert!(
-        (area(&art) - 15_000.0 - disc).abs() < 10.0,
-        "{}",
-        area(&art)
-    );
-    select(
-        &mut art,
-        Select {
-            rect: Some([0.0, 0.0, 250.0, 900.0]),
-            mode: Some("intersect".into()),
-            ..Select::default()
-        },
-    );
-    assert!((area(&art) - 10_000.0).abs() < 1.0, "{}", area(&art));
-
-    select(
-        &mut art,
-        Select {
-            grow: Some(10.0),
-            feather: Some(6.0),
-            ..Select::default()
-        },
-    );
-    let state = art.state().unwrap();
-    assert_eq!(state.selection.as_ref().unwrap().feather, 6.0);
-    let bounds = selected(&state).bounds().unwrap();
-    assert!((bounds.x0 - 90.0).abs() < 0.5 && (bounds.y1 - 210.0).abs() < 0.5);
-
-    select(
-        &mut art,
-        Select {
-            invert: Some(true),
-            ..Select::default()
-        },
-    );
-    let state = art.state().unwrap();
-    let inverted = selected(&state);
-    assert!(!inverted.contains(Point::new(150.0, 150.0)));
-    assert!(inverted.contains(Point::new(600.0, 600.0)));
-    assert_eq!(state.selection.as_ref().unwrap().feather, 6.0, "kept");
-
-    // A selection outside the artwork is cut to it.
-    select(
-        &mut art,
-        Select {
-            rect: Some([-50.0, -50.0, 100.0, 100.0]),
-            ..Select::default()
-        },
-    );
-    assert!((area(&art) - 2_500.0).abs() < 1.0);
-
-    select(
-        &mut art,
-        Select {
-            mode: Some("none".into()),
-            ..Select::default()
-        },
-    );
-    assert!(art.state().unwrap().selection.is_none());
-    let error = apply(&mut art, Artwork::SELECT.with(Select::default())).unwrap_err();
-    assert!(error.contains("give rect"), "{error}");
-}
-
-/// Marks select by their shape: a filled shape its inside, a brush stroke
-/// its ink; a group all of its members.
-#[test]
-fn marks_select_by_their_shape() {
-    let mut art = Replica::<Artwork>::new();
-    draw(
-        &mut art,
-        None,
-        vec![
-            NewMark {
-                group: Some("pair".into()),
-                ..rect("a", [0.0, 0.0, 100.0, 100.0], "#ff0000")
+    phase invert_comes_before_grow;
+    // Inverting and growing in one step grows what ends up selected: the
+    // subject a wand's background leaves, shrunk clear of that background's
+    // edge, rather than the background grown before it is turned inside out.
+    {
+        let mut art = Replica::<Artwork>::new();
+        select(
+            &mut art,
+            Select {
+                rect: Some([100.0, 100.0, 200.0, 100.0]),
+                ..Select::default()
             },
-            NewMark {
-                group: Some("pair".into()),
-                ..rect("b", [200.0, 0.0, 100.0, 100.0], "#00ff00")
+        );
+        select(
+            &mut art,
+            Select {
+                invert: Some(true),
+                grow: Some(-10.0),
+                ..Select::default()
             },
-        ],
-    );
-    select(
-        &mut art,
-        Select {
-            marks: Some(vec!["pair".into()]),
-            ..Select::default()
-        },
-    );
-    assert!((selected(&art.state().unwrap()).area() - 20_000.0).abs() < 1.0);
-    let error = apply(
-        &mut art,
-        Artwork::SELECT.with(Select {
-            marks: Some(vec!["nothing".into()]),
-            ..Select::default()
-        }),
-    )
-    .unwrap_err();
-    assert!(error.contains("no mark or group"), "{error}");
-}
+        );
+        let area = selected(&art.state().unwrap());
+        assert!(
+            !area.contains(Point::new(95.0, 150.0)),
+            "within 10 of the old edge"
+        );
+        assert!(area.contains(Point::new(80.0, 150.0)));
+        assert!(!area.contains(Point::new(150.0, 150.0)));
+    }
 
-/// The selection becomes ordinary marks: a fill, feathered as the
-/// selection is, or an outline.
-#[test]
-fn a_selection_fills_and_outlines_as_marks() {
-    let mut art = Replica::<Artwork>::new();
-    let error = apply(
-        &mut art,
-        Artwork::USE_SELECTION.with(UseSelection {
-            what: "fill".into(),
-            ..UseSelection::default()
-        }),
-    )
-    .unwrap_err();
-    assert!(error.contains("nothing is selected"), "{error}");
-    select(
-        &mut art,
-        Select {
-            ellipse: Some([100.0, 100.0, 200.0, 200.0]),
-            feather: Some(8.0),
-            ..Select::default()
-        },
-    );
-    for (what, id) in [("fill", "glow"), ("stroke", "ring")] {
-        apply(
+    phase a_selection_is_made_of_shapes_and_refined;
+    // Shapes, lassos and marks select; add, subtract and intersect change the
+    // selection; grow, feather and invert refine it; none clears it. Each is
+    // one step, undone like any other.
+    {
+        let mut art = Replica::<Artwork>::new();
+        select(
+            &mut art,
+            Select {
+                rect: Some([100.0, 100.0, 200.0, 100.0]),
+                ..Select::default()
+            },
+        );
+        let area = |art: &Replica<Artwork>| selected(&art.state().unwrap()).area();
+        assert!((area(&art) - 20_000.0).abs() < 1.0, "{}", area(&art));
+        select(
+            &mut art,
+            Select {
+                ellipse: Some([300.0, 100.0, 100.0, 100.0]),
+                mode: Some("add".into()),
+                ..Select::default()
+            },
+        );
+        let disc = std::f64::consts::PI * 50.0 * 50.0;
+        assert!(
+            (area(&art) - 20_000.0 - disc).abs() < 10.0,
+            "{}",
+            area(&art)
+        );
+        select(
+            &mut art,
+            Select {
+                points: Some(vec![[100.0, 100.0], [200.0, 100.0], [100.0, 200.0]]),
+                mode: Some("subtract".into()),
+                ..Select::default()
+            },
+        );
+        assert!(
+            (area(&art) - 15_000.0 - disc).abs() < 10.0,
+            "{}",
+            area(&art)
+        );
+        select(
+            &mut art,
+            Select {
+                rect: Some([0.0, 0.0, 250.0, 900.0]),
+                mode: Some("intersect".into()),
+                ..Select::default()
+            },
+        );
+        assert!((area(&art) - 10_000.0).abs() < 1.0, "{}", area(&art));
+
+        select(
+            &mut art,
+            Select {
+                grow: Some(10.0),
+                feather: Some(6.0),
+                ..Select::default()
+            },
+        );
+        let state = art.state().unwrap();
+        assert_eq!(state.selection.as_ref().unwrap().feather, 6.0);
+        let bounds = selected(&state).bounds().unwrap();
+        assert!((bounds.x0 - 90.0).abs() < 0.5 && (bounds.y1 - 210.0).abs() < 0.5);
+
+        select(
+            &mut art,
+            Select {
+                invert: Some(true),
+                ..Select::default()
+            },
+        );
+        let state = art.state().unwrap();
+        let inverted = selected(&state);
+        assert!(!inverted.contains(Point::new(150.0, 150.0)));
+        assert!(inverted.contains(Point::new(600.0, 600.0)));
+        assert_eq!(state.selection.as_ref().unwrap().feather, 6.0, "kept");
+
+        // A selection outside the artwork is cut to it.
+        select(
+            &mut art,
+            Select {
+                rect: Some([-50.0, -50.0, 100.0, 100.0]),
+                ..Select::default()
+            },
+        );
+        assert!((area(&art) - 2_500.0).abs() < 1.0);
+
+        select(
+            &mut art,
+            Select {
+                mode: Some("none".into()),
+                ..Select::default()
+            },
+        );
+        assert!(art.state().unwrap().selection.is_none());
+        let error = apply(&mut art, Artwork::SELECT.with(Select::default())).unwrap_err();
+        assert!(error.contains("give rect"), "{error}");
+    }
+
+    phase marks_select_by_their_shape;
+    // Marks select by their shape: a filled shape its inside, a brush stroke
+    // its ink; a group all of its members.
+    {
+        let mut art = Replica::<Artwork>::new();
+        draw(
+            &mut art,
+            None,
+            vec![
+                NewMark {
+                    group: Some("pair".into()),
+                    ..rect("a", [0.0, 0.0, 100.0, 100.0], "#ff0000")
+                },
+                NewMark {
+                    group: Some("pair".into()),
+                    ..rect("b", [200.0, 0.0, 100.0, 100.0], "#00ff00")
+                },
+            ],
+        );
+        select(
+            &mut art,
+            Select {
+                marks: Some(vec!["pair".into()]),
+                ..Select::default()
+            },
+        );
+        assert!((selected(&art.state().unwrap()).area() - 20_000.0).abs() < 1.0);
+        let error = apply(
+            &mut art,
+            Artwork::SELECT.with(Select {
+                marks: Some(vec!["nothing".into()]),
+                ..Select::default()
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("no mark or group"), "{error}");
+    }
+
+    phase a_selection_fills_and_outlines_as_marks;
+    // The selection becomes ordinary marks: a fill, feathered as the
+    // selection is, or an outline.
+    {
+        let mut art = Replica::<Artwork>::new();
+        let error = apply(
             &mut art,
             Artwork::USE_SELECTION.with(UseSelection {
-                what: what.into(),
-                colour: Some("#ffcc00".into()),
-                id: Some(id.into()),
+                what: "fill".into(),
                 ..UseSelection::default()
             }),
         )
-        .unwrap();
+        .unwrap_err();
+        assert!(error.contains("nothing is selected"), "{error}");
+        select(
+            &mut art,
+            Select {
+                ellipse: Some([100.0, 100.0, 200.0, 200.0]),
+                feather: Some(8.0),
+                ..Select::default()
+            },
+        );
+        for (what, id) in [("fill", "glow"), ("stroke", "ring")] {
+            apply(
+                &mut art,
+                Artwork::USE_SELECTION.with(UseSelection {
+                    what: what.into(),
+                    colour: Some("#ffcc00".into()),
+                    id: Some(id.into()),
+                    ..UseSelection::default()
+                }),
+            )
+            .unwrap();
+        }
+        let state = art.state().unwrap();
+        let glow = state.mark("glow").unwrap();
+        assert_eq!(glow.style.fill.as_deref(), Some("#ffcc00"));
+        assert_eq!(glow.style.feather, Some(8.0));
+        assert!(glow.hit(Point::new(200.0, 200.0)));
+        let ring = state.mark("ring").unwrap();
+        assert_eq!(ring.style.stroke.as_deref(), Some("#ffcc00"));
+        assert_eq!(ring.style.stroke_width, 2.0);
+        let error = apply(
+            &mut art,
+            Artwork::USE_SELECTION.with(UseSelection {
+                what: "smudge".into(),
+                ..UseSelection::default()
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("fill, stroke, mask or clear"), "{error}");
     }
-    let state = art.state().unwrap();
-    let glow = state.mark("glow").unwrap();
-    assert_eq!(glow.style.fill.as_deref(), Some("#ffcc00"));
-    assert_eq!(glow.style.feather, Some(8.0));
-    assert!(glow.hit(Point::new(200.0, 200.0)));
-    let ring = state.mark("ring").unwrap();
-    assert_eq!(ring.style.stroke.as_deref(), Some("#ffcc00"));
-    assert_eq!(ring.style.stroke_width, 2.0);
-    let error = apply(
-        &mut art,
-        Artwork::USE_SELECTION.with(UseSelection {
-            what: "smudge".into(),
-            ..UseSelection::default()
-        }),
-    )
-    .unwrap_err();
-    assert!(error.contains("fill, stroke, mask or clear"), "{error}");
+
+    phase keeping_inside_no_selection_is_refused;
+    // With nothing selected, `clip: "selection"` is refused and says why.
+    {
+        let mut art = Replica::<Artwork>::new();
+        draw(
+            &mut art,
+            None,
+            vec![rect("base", [0.0, 0.0, 10.0, 10.0], "#ff0000")],
+        );
+        let refused = apply(
+            &mut art,
+            Artwork::PAINT.with(Paint {
+                layer: None,
+                strokes: vec![NewStroke {
+                    points: vec![vec![20.0, 150.0], vec![380.0, 150.0]],
+                    size: 30.0,
+                    colour: "#0000ff".into(),
+                    clip: Some("selection".into()),
+                    ..NewStroke::default()
+                }],
+                group: None,
+            }),
+        )
+        .unwrap_err();
+        assert!(refused.contains("nothing is selected"), "{refused}");
+    }
+
+    phase shapes_combine_into_one_path;
+    // Shapes combine into one path mark in one step, in the bottom shape's
+    // place and style.
+    {
+        let cases = [
+            ("union", 100.0 * 100.0 * 2.0 - 50.0 * 100.0),
+            ("subtract", 50.0 * 100.0),
+            ("intersect", 50.0 * 100.0),
+            ("exclude", 100.0 * 100.0),
+        ];
+        for (op, area) in cases {
+            let mut art = Replica::<Artwork>::new();
+            draw(
+                &mut art,
+                None,
+                vec![
+                    rect("left", [0.0, 0.0, 100.0, 100.0], "#ff0000"),
+                    rect("right", [50.0, 0.0, 100.0, 100.0], "#00ff00"),
+                    rect("other", [300.0, 0.0, 10.0, 10.0], "#0000ff"),
+                ],
+            );
+            let steps = art.log().len();
+            apply(
+                &mut art,
+                Artwork::COMBINE.with(Combine {
+                    ids: vec!["right".into(), "left".into()],
+                    op: op.into(),
+                }),
+            )
+            .unwrap();
+            let state = art.state().unwrap();
+            assert_eq!(art.log().len(), steps + 1, "one step");
+            assert!(state.mark("right").is_none());
+            let left = state.mark("left").unwrap();
+            assert_eq!(
+                left.style.fill.as_deref(),
+                Some("#ff0000"),
+                "the bottom's style"
+            );
+            assert!(
+                (area_of(&state, "left") - area).abs() < 1.0,
+                "{op}: {}",
+                area_of(&state, "left")
+            );
+            assert_eq!(state.marks.first().unwrap().id, "left", "in its place");
+        }
+        // Curves are fitted again: a disc stays a few curves, not a polygon.
+        let mut art = Replica::<Artwork>::new();
+        draw(
+            &mut art,
+            None,
+            vec![
+                NewMark {
+                    id: Some("o".into()),
+                    fill: Some("#000000".into()),
+                    ..NewMark::new(Shape::Ellipse {
+                        cx: 100.0,
+                        cy: 100.0,
+                        rx: 80.0,
+                        ry: 80.0,
+                    })
+                },
+                rect("cut", [0.0, 90.0, 200.0, 20.0], "#000000"),
+            ],
+        );
+        apply(
+            &mut art,
+            Artwork::COMBINE.with(Combine {
+                ids: vec!["o".into(), "cut".into()],
+                op: "subtract".into(),
+            }),
+        )
+        .unwrap();
+        let state = art.state().unwrap();
+        let Shape::Path { d } = &state.mark("o").unwrap().shape else {
+            panic!("a path")
+        };
+        assert!(d.matches('C').count() >= 4 && d.len() < 1500, "{d}");
+        let disc = std::f64::consts::PI * 80.0 * 80.0;
+        let area = area_of(&state, "o");
+        assert!(area < disc - 2_000.0 && area > disc - 4_000.0, "{area}");
+
+        let error = apply(
+            &mut art,
+            Artwork::COMBINE.with(Combine {
+                ids: vec!["o".into()],
+                op: "union".into(),
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("two or more"), "{error}");
+    }
 }
 
 /// A layer's mask is a layer of grey marks: masking to the selection shows
@@ -573,33 +699,6 @@ fn paint_kept_inside_the_selection_carries_its_area() {
     assert!(alpha(&pixels(&state), 90, 150) > 200, "whole again");
 }
 
-/// With nothing selected, `clip: "selection"` is refused and says why.
-#[test]
-fn keeping_inside_no_selection_is_refused() {
-    let mut art = Replica::<Artwork>::new();
-    draw(
-        &mut art,
-        None,
-        vec![rect("base", [0.0, 0.0, 10.0, 10.0], "#ff0000")],
-    );
-    let refused = apply(
-        &mut art,
-        Artwork::PAINT.with(Paint {
-            layer: None,
-            strokes: vec![NewStroke {
-                points: vec![vec![20.0, 150.0], vec![380.0, 150.0]],
-                size: 30.0,
-                colour: "#0000ff".into(),
-                clip: Some("selection".into()),
-                ..NewStroke::default()
-            }],
-            group: None,
-        }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("nothing is selected"), "{refused}");
-}
-
 /// A layer clipped to the one below shows only where that one has paint.
 #[test]
 fn a_clipped_layer_shows_only_over_the_layer_below() {
@@ -651,99 +750,6 @@ fn area_of(art: &Artwork, id: &str) -> f64 {
         panic!("{id} is a path");
     };
     Region::of_path(&BezPath::from_svg(d).unwrap()).area()
-}
-
-/// Shapes combine into one path mark in one step, in the bottom shape's
-/// place and style.
-#[test]
-fn shapes_combine_into_one_path() {
-    let cases = [
-        ("union", 100.0 * 100.0 * 2.0 - 50.0 * 100.0),
-        ("subtract", 50.0 * 100.0),
-        ("intersect", 50.0 * 100.0),
-        ("exclude", 100.0 * 100.0),
-    ];
-    for (op, area) in cases {
-        let mut art = Replica::<Artwork>::new();
-        draw(
-            &mut art,
-            None,
-            vec![
-                rect("left", [0.0, 0.0, 100.0, 100.0], "#ff0000"),
-                rect("right", [50.0, 0.0, 100.0, 100.0], "#00ff00"),
-                rect("other", [300.0, 0.0, 10.0, 10.0], "#0000ff"),
-            ],
-        );
-        let steps = art.log().len();
-        apply(
-            &mut art,
-            Artwork::COMBINE.with(Combine {
-                ids: vec!["right".into(), "left".into()],
-                op: op.into(),
-            }),
-        )
-        .unwrap();
-        let state = art.state().unwrap();
-        assert_eq!(art.log().len(), steps + 1, "one step");
-        assert!(state.mark("right").is_none());
-        let left = state.mark("left").unwrap();
-        assert_eq!(
-            left.style.fill.as_deref(),
-            Some("#ff0000"),
-            "the bottom's style"
-        );
-        assert!(
-            (area_of(&state, "left") - area).abs() < 1.0,
-            "{op}: {}",
-            area_of(&state, "left")
-        );
-        assert_eq!(state.marks.first().unwrap().id, "left", "in its place");
-    }
-    // Curves are fitted again: a disc stays a few curves, not a polygon.
-    let mut art = Replica::<Artwork>::new();
-    draw(
-        &mut art,
-        None,
-        vec![
-            NewMark {
-                id: Some("o".into()),
-                fill: Some("#000000".into()),
-                ..NewMark::new(Shape::Ellipse {
-                    cx: 100.0,
-                    cy: 100.0,
-                    rx: 80.0,
-                    ry: 80.0,
-                })
-            },
-            rect("cut", [0.0, 90.0, 200.0, 20.0], "#000000"),
-        ],
-    );
-    apply(
-        &mut art,
-        Artwork::COMBINE.with(Combine {
-            ids: vec!["o".into(), "cut".into()],
-            op: "subtract".into(),
-        }),
-    )
-    .unwrap();
-    let state = art.state().unwrap();
-    let Shape::Path { d } = &state.mark("o").unwrap().shape else {
-        panic!("a path")
-    };
-    assert!(d.matches('C').count() >= 4 && d.len() < 1500, "{d}");
-    let disc = std::f64::consts::PI * 80.0 * 80.0;
-    let area = area_of(&state, "o");
-    assert!(area < disc - 2_000.0 && area > disc - 4_000.0, "{area}");
-
-    let error = apply(
-        &mut art,
-        Artwork::COMBINE.with(Combine {
-            ids: vec!["o".into()],
-            op: "union".into(),
-        }),
-    )
-    .unwrap_err();
-    assert!(error.contains("two or more"), "{error}");
 }
 
 /// The app with `marks` drawn on its first layer.

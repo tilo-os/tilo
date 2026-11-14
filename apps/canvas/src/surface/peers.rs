@@ -229,6 +229,33 @@ mod tests {
             assert!(views.is_empty(), "nothing is created for it");
         }
 
+        phase old_and_excess_views_are_evicted_so_a_stale_binding_finds_none;
+        {
+            let now = Instant::now();
+            let mut views = PeerViews::default();
+            let stale = participant("agent-task:stale");
+            views.join(&stale, now.checked_sub(PEER_VIEW_TTL).unwrap());
+            views.join(&participant("agent-task:fresh"), now);
+            views.evict(now);
+            assert!(!views.contains(&stale));
+            assert!(
+                !views.set(&stale, PeerView::new(0, 1, 4), now),
+                "an expired binding cannot be written back"
+            );
+
+            for index in 0..MAX_PEER_VIEWS {
+                views.join(&participant(&format!("agent-task:{index:03}")), now);
+            }
+            assert!(views.len() <= MAX_PEER_VIEWS, "{} views held", views.len());
+            assert!(
+                views.contains(&participant(&format!(
+                    "agent-task:{:03}",
+                    MAX_PEER_VIEWS - 1
+                ))),
+                "the views joined most recently survive"
+            );
+        }
+
         phase a_long_label_is_cut_to_its_bound;
         {
             let now = Instant::now();
@@ -239,32 +266,5 @@ mod tests {
             let (_, _, label) = views.iter().next().unwrap();
             assert!(label.unwrap().len() <= MAX_PEER_LABEL_BYTES);
         }
-    }
-
-    #[test]
-    fn old_and_excess_views_are_evicted_so_a_stale_binding_finds_none() {
-        let now = Instant::now();
-        let mut views = PeerViews::default();
-        let stale = participant("agent-task:stale");
-        views.join(&stale, now.checked_sub(PEER_VIEW_TTL).unwrap());
-        views.join(&participant("agent-task:fresh"), now);
-        views.evict(now);
-        assert!(!views.contains(&stale));
-        assert!(
-            !views.set(&stale, PeerView::new(0, 1, 4), now),
-            "an expired binding cannot be written back"
-        );
-
-        for index in 0..MAX_PEER_VIEWS {
-            views.join(&participant(&format!("agent-task:{index:03}")), now);
-        }
-        assert!(views.len() <= MAX_PEER_VIEWS, "{} views held", views.len());
-        assert!(
-            views.contains(&participant(&format!(
-                "agent-task:{:03}",
-                MAX_PEER_VIEWS - 1
-            ))),
-            "the views joined most recently survive"
-        );
     }
 }
