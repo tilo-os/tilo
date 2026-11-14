@@ -41,10 +41,18 @@ pub(crate) struct DevReload {
     pub load: std::time::Duration,
 }
 
+/// What stands for this copy of `ui`: a static has one address in a linked copy.
+static DEV_STAMP: u8 = 0;
+
 /// Address of this copy of `ui`. A library linked to the same copy returns
 /// the same address; a second copy returns a different one and is not adopted.
+///
+/// It is a static's address, not this function's own: optimised, the compiler
+/// gives each codegen unit and each crate that calls a function this small a
+/// private copy of it, and each copy answered with its own address, so a
+/// library linked to this very `ui` was refused.
 pub fn dev_stamp_addr() -> *const () {
-    dev_stamp_addr as *const ()
+    std::ptr::from_ref(&DEV_STAMP).cast()
 }
 
 thread_local! {
