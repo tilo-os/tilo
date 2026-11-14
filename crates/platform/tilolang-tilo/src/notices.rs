@@ -163,9 +163,10 @@ impl Held {
             .as_ref()
             .and_then(|package| crate::own_record(&package.meta, person))
             .unwrap_or_default();
-        let app = package
-            .as_ref()
-            .map_or_else(|| schema.app.clone(), |package| package.meta.title.clone());
+        let app = package.as_ref().map_or_else(
+            || schema.app.clone(),
+            |package| crate::publish::app_name(&*host.runtime().words(), &package.meta),
+        );
         let place = Place {
             app: schema.app.clone(),
             record,

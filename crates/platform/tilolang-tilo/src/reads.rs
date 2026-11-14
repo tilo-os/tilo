@@ -1013,7 +1013,8 @@ pub struct RecordItems<'a> {
 ///
 /// A channel called "design" whose messages hold text is "design", not the first of its
 /// messages (a milestone's tasks are not its name either); only a record that is nothing but
-/// its list is named by its first item.
+/// its list is named by its first item — and never a root, which is named by a text of its own
+/// alone ([`crate::store`]'s `named_by`).
 #[must_use]
 pub fn first_text(
     doc: &Doc,

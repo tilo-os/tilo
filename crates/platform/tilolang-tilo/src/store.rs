@@ -580,7 +580,17 @@ impl Snapshot {
         let (app, ty) = self.index.get(&at.doc)?;
         let view = self.view(app)?;
         let schema = lookup(&at.ty).or_else(|| lookup(ty))?;
-        view.first_text(&at.id_string(), schema).ok().flatten()
+        named_by(at, view.first_text(&at.id_string(), schema).ok().flatten())
+    }
+}
+
+/// The text that names `at`: one it holds itself. A root is the app's one resource, named by the
+/// app's name when it holds no text of its own, never by a record inside it (a notebook's first
+/// note is not the notebook's name).
+fn named_by(at: &ResourceRef, found: Option<(FieldValue, String)>) -> Option<(FieldValue, String)> {
+    match at.item {
+        Some(_) => found,
+        None => found.filter(|(_, held)| held == &at.doc),
     }
 }
 
@@ -1436,7 +1446,8 @@ impl TiloStore {
 
     /// The first text of the resource at `at`, in the order of [`DynRecord`]'s text collection,
     /// as the store's reader reads it ([`crate::reading`]), and the path of the resource that
-    /// holds it: what names a resource.
+    /// holds it: what names a resource. A root is named by a text of its own alone
+    /// (`named_by`).
     #[must_use]
     pub fn first_text(&self, at: &ResourceRef) -> Option<(String, String)> {
         let (value, held) = self.first_stored(at)?;
@@ -1460,7 +1471,7 @@ impl TiloStore {
             let (app, ty) = inner.locate(at).ok()?;
             let view = inner.view(&app)?;
             let schema = lookup(&at.ty).or_else(|| lookup(&ty))?;
-            view.first_text(&at.id_string(), schema).ok().flatten()
+            named_by(at, view.first_text(&at.id_string(), schema).ok().flatten())
         };
         if let Some(found) = indexed {
             return Some(found);
@@ -1470,7 +1481,7 @@ impl TiloStore {
         let (app, ty) = inner.locate(at).ok()?;
         if let Some(view) = inner.view(&app) {
             let schema = lookup(&at.ty).or_else(|| lookup(&ty))?;
-            return view.first_text(&at.id_string(), schema).ok().flatten();
+            return named_by(at, view.first_text(&at.id_string(), schema).ok().flatten());
         }
         let mirror = inner.chunks.doc(&at.doc)?;
         let located =
@@ -1482,13 +1493,16 @@ impl TiloStore {
             items: &items,
             resolved: &resolved,
         };
-        crate::reads::first_text(
-            source,
-            &located.obj?,
-            located.schema,
-            (&at.id_string(), &record),
+        named_by(
+            at,
+            crate::reads::first_text(
+                source,
+                &located.obj?,
+                located.schema,
+                (&at.id_string(), &record),
+            )
+            .map(|(text, held)| (FieldValue::Text(text), held)),
         )
-        .map(|(text, held)| (FieldValue::Text(text), held))
     }
 
     /// How many items of the collection `field` of `at` hold each value of their column

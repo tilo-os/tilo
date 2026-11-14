@@ -125,12 +125,6 @@ fn collect(
     }
 }
 
-/// The kind a package's types are published under, for grouping hits by app.
-#[must_use]
-pub fn group_of(meta: &Meta) -> String {
-    meta.title.clone()
-}
-
 /// Every hit of the workspace, by package and path, read from the indexes now: what a window
 /// publishes to the session's search index, which is what search finds things through. One pass
 /// over each package's index. Each text is as the window's person reads it: the index matches a
@@ -140,14 +134,20 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
     hits_of(&host.store().snapshot(), &catalogue(host))
 }
 
-/// The apps the host runs a package of, each with the title people call it: what a hit is
-/// grouped by and what it opens through. What a read off the frame takes with it, beside the
-/// snapshot it reads.
+/// The apps the host runs a package of, each with the name people call it in their language: what
+/// a hit is grouped by and what it opens through. What a read off the frame takes with it, beside
+/// the snapshot it reads.
 #[must_use]
 pub fn catalogue(host: &Host) -> Vec<(String, String)> {
+    let words = host.runtime().words();
     host.packages()
         .iter()
-        .map(|package| (package.meta.app.clone(), package.meta.title.clone()))
+        .map(|package| {
+            (
+                package.meta.app.clone(),
+                crate::publish::app_name(&*words, &package.meta),
+            )
+        })
         .collect()
 }
 
@@ -226,11 +226,12 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
         .filter_map(|text| reader.said(&held.path, text))
         .collect();
     let resource = resource_id(&meta.app, &held.path);
+    let app_title = crate::publish::app_name(&*host.runtime().words(), meta);
     entry(
         &resource,
         texts.first()?,
         &held.schema.name,
-        &meta.title,
+        &app_title,
         &texts,
         &held.references,
     )

@@ -209,6 +209,15 @@ tilo_test_env::scenario! {
                 .any(|row| row.kind.ends_with(".Note") && row.label == "Q3 plan"),
             "typed first, its title names it instead: {rows:#?}"
         );
+        assert_eq!(
+            ada.host.label_of(&root),
+            "Notes",
+            "a note's title names the note, never the notebook"
+        );
+        assert_eq!(
+            rows[0].label, "Notes",
+            "and the published notebook reads the same words: {rows:#?}"
+        );
     }
 
     phase a_draft_is_named_by_its_subject_not_the_address_it_goes_from;

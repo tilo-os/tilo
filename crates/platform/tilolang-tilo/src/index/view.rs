@@ -356,8 +356,10 @@ impl View<'_> {
     /// The first non-empty text of the resource at `path` (of `schema`, unless the index holds
     /// another type for it), as stored (a text or rich text, [`crate::reads::text_value`]), and
     /// the path of the resource holding it: its own texts name it before its items' do, its
-    /// first text field first, and only a resource holding no text of its own falls back to its
-    /// items ([`crate::reads::first_text`]). The text names it by its first non-blank line.
+    /// first text field first, and only a record holding no text of its own falls back to its
+    /// items ([`crate::reads::first_text`]). The text names it by its first non-blank line. A
+    /// root is named by a text of its own alone: what it holds names that, never the app's one
+    /// resource ([`crate::store`]'s `named_by`).
     pub fn first_text(
         &self,
         path: &str,

@@ -1006,8 +1006,8 @@ tilo_test_env::scenario! {
             "the title names the record, not its first item"
         );
 
-        // Clear it: the record holds no title now, and its first item names it, as reading it
-        // anew finds — never the id order, which would pick another text.
+        // Clear it: the record holds no title now, and it is the app's one list, so the app's
+        // name stands — as reading it anew finds.
         ada.apply(&DynAction {
             app: APP.to_owned(),
             kind: "tl.so.tilo.todo.TodoList".to_owned(),
@@ -1028,14 +1028,14 @@ tilo_test_env::scenario! {
         check(&ada, &published, "clearing the title");
         assert_eq!(
             title(&published),
-            "milk",
-            "with no title, the first item names the list"
+            "Todo",
+            "with no title, the app's name stands, never its first item"
         );
     }
 
     phase the_label_follows_whatever_names_the_record;
-    // What names a record is a text of its own (a `title` field, or its `body`'s first line),
-    // and only a record that holds none is named by its items.
+    // What names a record is a text of its own (a `title` field, or its `body`'s first line); its
+    // items name it only where it is not its app's root.
     // A republish reads it again only where a change can move it, and gets it right each time.
     {
         let (mut ada, meta, root) = workspace();
@@ -1043,7 +1043,7 @@ tilo_test_env::scenario! {
         let mut published = Publications::new(&ada.host);
         published.settle(&ada.host, &planner);
         let label = |published: &Publications| published.trees()[&root].label.clone();
-        assert_eq!(label(&published), "milk");
+        assert_eq!(label(&published), "Todo");
 
         let ids = item_ids(&ada, &meta, &root);
         let check = |ada: &Replica, published: &Publications, step: &str| {
@@ -1055,13 +1055,17 @@ tilo_test_env::scenario! {
         };
         retype(&mut ada, &meta, &root, &ids[0], "almond milk");
         published.update(&ada.host, &planner);
-        check(&ada, &published, "retyping the item that names the list");
-        assert_eq!(label(&published), "almond milk");
+        check(&ada, &published, "retyping an item");
+        assert_eq!(
+            label(&published),
+            "Todo",
+            "an item's text names the item, never the app's list"
+        );
 
         retype(&mut ada, &meta, &root, &ids[0], "");
         published.update(&ada.host, &planner);
         check(&ada, &published, "emptying it");
-        assert_eq!(label(&published), "eggs", "the next item names the list");
+        assert_eq!(label(&published), "Todo", "the list keeps the app's name");
 
         retype(&mut ada, &meta, &root, &ids[2], "rye bread");
         published.update(&ada.host, &planner);
@@ -1111,8 +1115,8 @@ tilo_test_env::scenario! {
     }
 
     phase a_retyped_item_moves_only_labels_and_a_reader_learns_them_alone;
-    // An item retyped moves its label, and the record's when it names it, and nothing else: a
-    // reader holding an earlier revision learns those labels alone, until an item is added.
+    // An item retyped moves its own label and nothing else: a reader holding an earlier revision
+    // learns that label alone, until an item is added.
     {
         let (mut ada, meta, root) = workspace();
         let planner: Arc<dyn Planner> = Arc::new(Refusing);
@@ -1145,7 +1149,7 @@ tilo_test_env::scenario! {
         retype(&mut ada, &meta, &root, &ids[0], "almond milk");
         published.update(&ada.host, &planner);
         let first = moved(&published, &before);
-        assert_eq!(first.len(), 2, "the item and the list it names: {first:?}");
+        assert_eq!(first.len(), 1, "the item alone: {first:?}");
         assert_eq!(learned(&published, start), first);
 
         let middle = published.revision();

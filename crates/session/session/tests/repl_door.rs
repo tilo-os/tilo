@@ -418,8 +418,8 @@ fn everything(session: &Session) -> Vec<tilo_actions::ResourceSpec> {
 }
 
 /// A seeded app's catalogue is the app's words on the desk: with the interface in German, the
-/// session names what the notes app's notebook is and its actions in German, and its search
-/// matches the German word for what it holds.
+/// session names the notes app's notebook and its actions in German, and its search matches the
+/// German word for what it holds.
 #[test]
 fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     let _settled = ui::motion::testing::settled();
@@ -431,8 +431,8 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     // The apps come from the run's store, which the session reads as a device reads its own.
     let root = private_home();
     let mut session = seeded_session(root.path());
-    // The notebook is called by its first note's title; what it is, is said in the catalogue's
-    // words.
+    // The notebook is called by the app's name, whatever it holds; what it is, is said in the
+    // catalogue's words.
     let nouns = |session: &Session| -> Vec<tilo_actions::Noun> {
         everything(session)
             .into_iter()
@@ -446,6 +446,17 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         nouns(&session).contains(&tilo_actions::Noun::new("Notiz", "Notizen")),
         "the notes' nouns are the catalogue's, in the reader's language: {:?}",
         nouns(&session)
+    );
+    let labelled = |session: &Session| -> Vec<String> {
+        everything(session)
+            .into_iter()
+            .map(|resource| resource.label)
+            .collect()
+    };
+    assert!(
+        labelled(&session).iter().any(|label| label == "Notizen"),
+        "the notebook is labelled in German: {:?}",
+        labelled(&session)
     );
     let offered: Vec<String> = everything(&session)
         .into_iter()

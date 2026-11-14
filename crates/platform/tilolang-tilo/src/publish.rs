@@ -144,8 +144,8 @@ pub fn app_of(resource: &str) -> Option<&str> {
 
 /// What a resource of `schema` in the package `meta` is called while none of its own text names
 /// it: what its type declares (`(untitled: "Untitled")`, in the reader's words), else a
-/// package's root by the app's title in the reader's words ("Notes"), anything else by its type
-/// ("Todo list").
+/// package's root by the app's name ("Notes", "Notizen"), anything else by its type ("Todo
+/// list").
 #[must_use]
 pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Words) -> String {
     meta.types
@@ -154,7 +154,7 @@ pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Wor
         .map_or_else(
             || {
                 if meta.roots.contains(&schema.id) {
-                    label_of(words, &meta.app, &meta.title)
+                    app_name(words, meta)
                 } else {
                     schema.untitled()
                 }
@@ -164,16 +164,22 @@ pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema, words: &dyn Wor
 }
 
 /// What a record of `declared` is called while its title is empty: the words its type declares,
-/// translated; else an app's root by the app's title, translated; else its type's name.
+/// translated; else an app's root by the app's name, translated; else its type's name.
 fn untitled_of(meta: &Meta, declared: &tilolang::meta::TypeMeta, words: &dyn Words) -> String {
     if let Some(untitled) = &declared.untitled {
         return said_of(words, &declared.id, "untitled", None, untitled);
     }
     if meta.roots.contains(&declared.id) {
-        label_of(words, &meta.app, &meta.title)
+        app_name(words, meta)
     } else {
         crate::schema::spoken(&declared.name)
     }
+}
+
+/// What the app `meta` is called in the reader's language: its title, in the words the package's
+/// own catalogue writes for it.
+pub(crate) fn app_name(words: &dyn Words, meta: &Meta) -> String {
+    label_of(words, &meta.app, &meta.title)
 }
 
 /// The id of a package's own resource, for its record-less actions.
@@ -439,8 +445,10 @@ impl ActionTypes {
                             said_of(words, &declared.id, "noun", Some("1"), &declared.noun()),
                             said_of(words, &declared.id, "noun", Some("2"), &declared.plural()),
                         ),
+                        // The app's name in the reader's words, and its title in the package's
+                        // own, which a search in the source language still matches.
                         app: Noun::new(
-                            meta.title.clone(),
+                            app_name(words, meta),
                             tilolang::meta::plural(&meta.title.to_lowercase()),
                         ),
                         // A root is the app's one resource of its type.
@@ -2553,7 +2561,11 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
 #[must_use]
 pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> ResourceSpec {
     let kind = meta.package_kind();
-    let mut resource = ResourceSpec::new(package_resource_id(&meta.app), kind.clone(), &meta.title);
+    let mut resource = ResourceSpec::new(
+        package_resource_id(&meta.app),
+        kind.clone(),
+        app_name(words, meta),
+    );
     for action in meta.offered_actions() {
         if meta.subject_of(&action.params).is_none() {
             resource = resource

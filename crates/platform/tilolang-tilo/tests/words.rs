@@ -360,8 +360,8 @@ fn a_packages_words_are_published_without_a_record() {
     let words = host.runtime().words();
     let published = publish_package(&package.meta, &planner, &*words);
     assert_eq!(
-        published.label, "Notes",
-        "the package is called by its title"
+        published.label, "Notizen",
+        "the package is called by the app's name in the reader's words"
     );
     assert!(
         published
@@ -372,13 +372,26 @@ fn a_packages_words_are_published_without_a_record() {
     );
 }
 
-/// A notebook with no note yet has no text to be called by: a German reader reads it by the app's
-/// name in their words, as everything nobody named is.
+/// A notebook is called by the app's name in the reader's words, whether it holds notes or none:
+/// a note's title names the note, never the notebook.
 #[test]
-fn an_empty_notebook_is_called_by_the_apps_name_in_the_readers_words() {
-    let (host, _) = notes("de-DE");
+fn a_root_reads_as_the_apps_name_not_what_it_holds() {
+    let (host, package) = notes("de-DE");
     let notebook = host.root_of(NOTES).expect("the notebook");
-    assert_eq!(host.label_at(&notebook), "Notizen");
+    assert_eq!(host.label_at(&notebook), "Notizen", "an empty notebook");
+    let scenario = package
+        .meta
+        .scenarios
+        .first()
+        .expect("Notes declares a scenario");
+    host.runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .expect("the scenario runs");
+    assert_eq!(
+        host.label_at(&notebook),
+        "Notizen",
+        "a notebook whose first note says Q3 plan"
+    );
 }
 
 /// A German desktop's palette lists a native app's actions and a tilolang app's in German: each
