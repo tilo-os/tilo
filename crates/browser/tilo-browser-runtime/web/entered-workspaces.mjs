@@ -36,9 +36,23 @@ const validEntry = entry => {
 /** A remembered workspace names the host that held it: one that does not is not
  * offered, as nothing could ever tell whether it still exists. */
 const keptEntry = entry => validEntry(entry) && HOST_DEVICE.test(entry.hostDevice ?? '');
+// The runtime's rules name a workspace `workspace`, and so does the list they
+// write; this page names it `room` (`{origin, room}`). Lists a browser wrote
+// before the runtime's rename still say `room`, and are read as they are.
+const fromStored = entry => {
+  if (!entry || typeof entry !== 'object') return entry;
+  const {workspace, ...rest} = entry;
+  return typeof workspace === 'string' ? {...rest, room: workspace} : entry;
+};
+const toRuntime = entry => {
+  if (!entry || typeof entry !== 'object') return entry;
+  const {room, ...rest} = entry;
+  return typeof room === 'string' ? {...rest, workspace: room} : entry;
+};
+const placeJson = (origin, room) => JSON.stringify({origin, workspace: room});
 const readEntered = store => {
   const list = readJson(store, ENTERED, []);
-  return Array.isArray(list) ? list.filter(keptEntry) : [];
+  return Array.isArray(list) ? list.map(fromStored).filter(keptEntry) : [];
 };
 const writeEntered = (store, list) => store?.setItem(ENTERED, JSON.stringify(list));
 
@@ -73,7 +87,8 @@ function unchoose(store, entry) {
 /** The stored list, as the runtime's rules read it (they drop what is no
  * entry). */
 const stored = store => {
-  try { return store?.getItem(ENTERED) ?? '[]'; } catch { return '[]'; }
+  const list = readJson(store, ENTERED, []);
+  return JSON.stringify(Array.isArray(list) ? list.map(entry => toRuntime(fromStored(entry))) : []);
 };
 
 /** Keep what one of the runtime's rules answered (`{entered, unchoose}`):
@@ -82,7 +97,8 @@ const stored = store => {
 function keep(store, text) {
   const answer = JSON.parse(text);
   writeEntered(store, answer.entered);
-  for (const place of answer.unchoose ?? []) unchoose(store, place);
+  answer.unchoose = (answer.unchoose ?? []).map(fromStored);
+  for (const place of answer.unchoose) unchoose(store, place);
   return answer;
 }
 
@@ -95,7 +111,7 @@ export function rememberEntered(runtime, {origin, room, hostDevice, name = null}
   let at;
   try { at = originOf(origin); } catch { return; }
   if (typeof room !== 'string' || typeof hostDevice !== 'string') return;
-  keep(store, runtime.rememberEntered(stored(store), JSON.stringify({origin: at, room, hostDevice, ...(name ? {name} : {})})));
+  keep(store, runtime.rememberEntered(stored(store), JSON.stringify({origin: at, workspace: room, hostDevice, ...(name ? {name} : {})})));
 }
 
 /** Name a remembered workspace after the workspace it showed, if it has no name yet. */
@@ -103,7 +119,7 @@ export function nameEntered(runtime, {origin, room, name}, store = globalThis.lo
   if (typeof name !== 'string' || !name) return;
   let at;
   try { at = originOf(origin); } catch { return; }
-  keep(store, runtime.nameEntered(stored(store), JSON.stringify({origin: at, room}), name));
+  keep(store, runtime.nameEntered(stored(store), placeJson(at, room), name));
 }
 
 /** The last attempt to open the remembered workspace `{origin, room}` failed: say
@@ -111,7 +127,7 @@ export function nameEntered(runtime, {origin, room, name}, store = globalThis.lo
 export function markUnavailable(runtime, {origin, room}, store = globalThis.localStorage) {
   let at;
   try { at = originOf(origin); } catch { return; }
-  keep(store, runtime.markEnteredUnavailable(stored(store), JSON.stringify({origin: at, room})));
+  keep(store, runtime.markEnteredUnavailable(stored(store), placeJson(at, room)));
 }
 
 /** The host of the remembered workspace `{origin, room}` said its owner deleted
@@ -121,7 +137,7 @@ export function forgetDeletedWorkspace(runtime, {origin, room}, store = globalTh
   let at;
   try { at = originOf(origin); } catch { return; }
   if (typeof room !== 'string') return;
-  keep(store, runtime.forgetDeletedWorkspace(stored(store), JSON.stringify({origin: at, room})));
+  keep(store, runtime.forgetDeletedWorkspace(stored(store), placeJson(at, room)));
 }
 
 /**
@@ -157,7 +173,7 @@ export async function settleFailedWorkspace(runtime, {origin, room}, {hostInfo, 
     Promise.resolve().then(() => hostInfo?.(at)).then(hostDeviceOf, () => null),
     Promise.resolve().then(() => deleted?.(at, room)).then(said => said === true, () => false),
   ]);
-  const {settled} = keep(store, runtime.settleFailedWorkspace(stored(store), JSON.stringify({origin: at, room}), answering ?? undefined, gone));
+  const {settled} = keep(store, runtime.settleFailedWorkspace(stored(store), placeJson(at, room), answering ?? undefined, gone));
   return settled === 'unknown' ? null : settled;
 }
 

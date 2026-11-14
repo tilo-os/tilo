@@ -78,16 +78,17 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       const gone = entry => entry.origin === origin && entry.hostDevice !== hostDevice;
       return JSON.stringify({entered: all.filter(entry => !gone(entry)), unchoose: all.filter(gone)});
     },
+    // They name a workspace `workspace`, as the runtime does.
     rememberEntered: (list, entry) => {
-      const {origin, room, hostDevice} = JSON.parse(entry);
+      const {origin, workspace, hostDevice} = JSON.parse(entry);
       const {entered, unchoose} = JSON.parse(runtime.forgetGoneWorkspaces(list, origin, hostDevice));
-      const same = kept => kept.origin === origin && kept.room === room;
+      const same = kept => kept.origin === origin && kept.workspace === workspace;
       const name = JSON.parse(entry).name ?? entered.find(same)?.name;
-      return JSON.stringify({entered: [{origin, room, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
+      return JSON.stringify({entered: [{origin, workspace, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
     },
     nameEntered: (list, place, name) => {
-      const {origin, room} = JSON.parse(place);
-      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.room === room && !entry.name ? {...entry, name} : entry), unchoose: []});
+      const {origin, workspace} = JSON.parse(place);
+      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.workspace === workspace && !entry.name ? {...entry, name} : entry), unchoose: []});
     },
   });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
@@ -303,14 +304,14 @@ test('workspaces another host held at the origin of the page host are no longer 
     {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
     {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace']);
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'People', 'Join a workspace']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
 });
 
 test('the page keeps switch actions together and dispatches them', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace']);
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'People', 'Join a workspace']);
   diagnostics.onHostAction(actions.find(action => action.title === 'Open Other').id);
   await tick();
   assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
