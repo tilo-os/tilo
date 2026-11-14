@@ -18,6 +18,10 @@ use serde_json::{Value, json};
 
 /// How long one action may take before the run gives up on it.
 const ACTION_WAIT: Duration = Duration::from_secs(120);
+/// How long a step waits for its person to allow it in their tab.
+const PERSON_WAIT: Duration = Duration::from_secs(6 * 60);
+/// How often a step waiting for its person is asked how it stands.
+const STATUS_EVERY: Duration = Duration::from_secs(2);
 /// How often a step the workspace was too slow to answer is asked again.
 const ACTION_TRIES: u32 = 4;
 /// The largest piece of an upload one call carries (the session's own bound).
@@ -166,6 +170,28 @@ impl Held {
     }
 }
 
+impl Held {
+    /// How `invocation` of `action` ended, asked again until it did: it waits on its person,
+    /// who allows or refuses it in their tab, for at most [`PERSON_WAIT`].
+    fn answered(&mut self, invocation: &str, action: &str) -> Result<String> {
+        let until = std::time::Instant::now()
+            .checked_add(PERSON_WAIT)
+            .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
+        loop {
+            std::thread::sleep(STATUS_EVERY);
+            let status = self.tool("tilo_status", &json!({"invocation_id": invocation}), None)?;
+            if !status.starts_with("pending") {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= until {
+                bail!(
+                    "{action} waits for the person to allow it in their tab; start this again once they did"
+                );
+            }
+        }
+    }
+}
+
 /// Whether the workspace said it was too slow to answer, rather than that it refused.
 fn slow(error: &anyhow::Error) -> bool {
     let said = format!("{error:#}");
@@ -197,6 +223,13 @@ impl Workspace for Held {
                 }
                 other => break other?,
             }
+        };
+        // An action the person allows first (an outside one, as adding an account is) is
+        // pending while their tab asks them: the run waits for their answer.
+        let answer = if answer.starts_with("pending") {
+            self.answered(&invocation, action)?
+        } else {
+            answer
         };
         if let Some(why) = answer.strip_prefix("failed:") {
             bail!("{action}: {}", why.trim());
