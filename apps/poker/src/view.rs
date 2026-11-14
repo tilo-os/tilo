@@ -611,12 +611,20 @@ impl ui::widget::Decorator for Grace {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         let children = Widget::next_wake_deadline(self.inner());
-        if ui::time::wall_frozen() {
-            // A capture's clock does not move: its one frame shows the count as it is, and nothing waits for a second that never comes.
-            return children;
-        }
         let left = self.opens_ms.saturating_sub(ui::time::unix_now_ms_i64());
         if left <= 0 {
+            // The instant passed while no frame ran (a window that was suspended, or a host
+            // that skipped wakes): the frame that opens the move is still owed, and it is the
+            // last one asked for. A held wall clock does not excuse it, since it may have been
+            // held past the instant.
+            return if self.open.with(|open| *open) {
+                children
+            } else {
+                Some(ui::time::now())
+            };
+        }
+        if ui::time::wall_frozen() {
+            // A capture's clock does not move: its one frame shows the count as it is, and nothing waits for a second that never comes.
             return children;
         }
         let left = u64::try_from(left).unwrap_or(u64::MAX);
