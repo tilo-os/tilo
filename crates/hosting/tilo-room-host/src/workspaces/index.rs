@@ -23,6 +23,7 @@ pub(super) struct IdIndex {
 
 impl IdIndex {
     /// Where `workspace_id` is held, when it was noted.
+    #[cfg(feature = "agents")]
     pub(super) fn get(&self, workspace_id: WorkspaceId) -> Option<String> {
         self.ids.lock_recover().get(&workspace_id).cloned()
     }
