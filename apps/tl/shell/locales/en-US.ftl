@@ -24,8 +24,6 @@ d-5mipdtxu = Switcher scope
 d-foayl4ai = Spotlight
     .doc = What the person typed in the shell's search, which opens the launcher where they left off.
 
-d-7bs5q4ht = Clock
-
 d-rlrql4ir = Timer
     .doc = The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or `Stopwatch` when the app named none; empty when none floats.
 
@@ -47,10 +45,6 @@ d-zqu6ku2o = Ask answer
 
 d-eewsi53q = Ask open
     .doc = Whether the question stands open on the person's avatar.
-
-d-gi7d6wct = Weekday
-
-d-5cs3vm3f = Date
 
 d-c5k5ua2t = Workspace
 

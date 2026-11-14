@@ -26,8 +26,8 @@ use crate::desk_windows::{reaching, windows};
 /// again.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DeskKey {
-    /// The revisions, the minute, the signals and the names the reading is made of.
-    reading: (u64, i64, u64, u64, u64, u64, u64, String),
+    /// The revisions and the names the reading is made of.
+    reading: (u64, u64, u64, u64, u64, u64, String),
     /// The agents seated at the person's agent door.
     agents: u64,
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
@@ -462,7 +462,6 @@ impl Desk {
         DeskKey {
             reading: (
                 self.handle.revision(),
-                ui::clock::local_now().timestamp().div_euclid(60),
                 self.sync
                     .as_ref()
                     .map_or(0, |sync| sync.here().borrow().revision()),
@@ -488,20 +487,9 @@ impl Desk {
     }
 
     /// When the desk has something to draw that it has not drawn yet, without a frame in between:
-    /// the instant the switcher's panel comes up while Alt is held on it, or the minute the bar's
-    /// clock shows next.
+    /// the instant the switcher's panel comes up while Alt is held on it.
     pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
-        let now = std::time::Instant::now();
-        let second = ui::clock::local_now().timestamp().rem_euclid(60);
-        let minute = now
-            .checked_add(std::time::Duration::from_secs(
-                60_u64.saturating_sub(u64::try_from(second).unwrap_or(0)),
-            ))
-            .unwrap_or(now);
-        [self.surfaces.overlays.deadline(now), Some(minute)]
-            .into_iter()
-            .flatten()
-            .min()
+        self.surfaces.overlays.deadline(std::time::Instant::now())
     }
 
     /// The desk's windows, with the one the switcher's walk has reached marked focused while its
@@ -530,7 +518,6 @@ impl Desk {
 
     /// The desk now.
     pub(crate) fn reading(&self) -> DeskReading {
-        let now = ui::clock::local_now();
         let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
@@ -547,7 +534,6 @@ impl Desk {
         });
         self.handle.read(|tree| DeskReading {
             person: self.person.clone(),
-            clock: ui::clock::time_of_day(&now),
             timer: self.timer(),
             ask: self.handle.personal_ask().map(|ask| shell::AskReading {
                 question: ask.title,
@@ -555,8 +541,6 @@ impl Desk {
                 answer: ask.action.title,
                 open: ask.open,
             }),
-            weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
-            date: ui::format::month_day(now.date_naive()),
             // A workspace is named the one way every reading of it names it: the name the person
             // gave, or the desk's own word for one they have not named yet.
             workspace: workspace_in_front(tree),

@@ -11,7 +11,6 @@ use tilo_session_core::door::Published;
 fn reading() -> DeskReading {
     DeskReading {
         person: "Pat".to_owned(),
-        clock: "4:28 PM".to_owned(),
         workspace: "Desk".to_owned(),
         strip: "Main".to_owned(),
         workspaces: vec![
@@ -33,7 +32,9 @@ fn reading() -> DeskReading {
     }
 }
 
-use crate::shell_part::tests_support::{compiled, part_of, part_with, publish_notices};
+use crate::shell_part::tests_support::{
+    compiled, part_of, part_with, publish_notices, publish_time,
+};
 
 fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
@@ -390,7 +391,7 @@ fn each_change_is_one_turn() {
     }
     let mut now = reading();
     let changes: [Change; 3] = [
-        ("minute", |r, _| r.clock = "4:29 PM".to_owned()),
+        ("minute", |_, link| publish_time(link, "4:29 PM")),
         ("notification", |_, link| {
             publish_notices(
                 link,
@@ -543,10 +544,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     // The runtime committed the pin: the part applies it to the record its views read, as a
     // press in the shell's settings does, and the next turn draws the dock over it.
     part.apply_committed_for_test();
-    link.publish(DeskReading {
-        clock: "4:29 PM".to_owned(),
-        ..reading()
-    });
+    publish_time(&link, "4:29 PM");
     for _ in 0..6 {
         part.prepare_frame();
     }

@@ -9,6 +9,16 @@ pub(super) fn publish_platform_roots(link: &SessionLink) {
     for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
         link.publish_reading(resource, &ty, serde_json::json!({}));
     }
+    publish_time(link, "4:28 PM");
+}
+
+/// The time the session publishes, to the minute.
+pub(super) fn publish_time(link: &SessionLink, clock: &str) {
+    link.publish_reading(
+        "session:time",
+        "so.tilo.device#Time",
+        serde_json::json!({ "clock": clock }),
+    );
 }
 
 /// The notification centre the session publishes, holding `notices`.
@@ -45,7 +55,6 @@ pub(super) fn shipped_styles() -> Vec<DeskStyleReading> {
 pub(super) fn reading_with_windows() -> DeskReading {
     DeskReading {
         person: "Pat".to_owned(),
-        clock: "4:28 PM".to_owned(),
         workspace: "Desk".to_owned(),
         strip: "Main".to_owned(),
         workspaces: vec![WorkspaceReading {

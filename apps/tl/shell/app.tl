@@ -18,7 +18,6 @@ type Desk (origin: session.desk) {
     switcher_scope: Text merge register
     /// What the person typed in the shell's search, which opens the launcher where they left off.
     spotlight: Text merge register
-    clock: Text merge register
     /// The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or `Stopwatch`
     /// when the app named none; empty when none floats.
     timer: Text merge register
@@ -34,8 +33,6 @@ type Desk (origin: session.desk) {
     ask_answer: Text merge register
     /// Whether the question stands open on the person's avatar.
     ask_open: Bool
-    weekday: Text merge register
-    date: Text merge register
     workspace: Text merge register
     strip: Text merge register
     workspaces: Collection<Workspace>
@@ -241,7 +238,7 @@ fn loads_style(d: Desk, chosen: Text) -> Bool {
 /// so.
 view clock(d: Desk) {
     row(gap: .tight, align: .center) {
-        ui.Text(d.clock, role: .subheading, numeric: true)
+        ui.Text(device.time.clock, role: .subheading, numeric: true)
         if d.timer != "" {
             ui.Text(d.timer, role: .caption)
             if d.timer_paused {

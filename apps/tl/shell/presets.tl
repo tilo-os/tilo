@@ -8,9 +8,7 @@
 scenario "the default shell on a desk" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -40,9 +38,7 @@ scenario "the default shell on a desk" {
 scenario "a full dock" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -90,9 +86,7 @@ scenario "a full dock" {
 scenario "the dock on the left" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -115,9 +109,7 @@ scenario "the dock on the left" {
 scenario "the dock on the right" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -139,9 +131,7 @@ scenario "the dock on the right" {
 scenario "moving an item on the dock" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -162,9 +152,7 @@ scenario "moving an item on the dock" {
 scenario "a rearranged bar" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -185,9 +173,7 @@ scenario "a rearranged bar" {
 scenario "the Tilo preset" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -207,9 +193,7 @@ scenario "the Tilo preset" {
 scenario "the macos preset" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -229,9 +213,7 @@ scenario "the macos preset" {
 scenario "the windows preset" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -251,9 +233,7 @@ scenario "the windows preset" {
 scenario "the gnome preset" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -268,9 +248,7 @@ scenario "the gnome preset" {
 scenario "the minimal preset" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"

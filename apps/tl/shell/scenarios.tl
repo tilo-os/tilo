@@ -15,9 +15,7 @@ use so.tilo.lang.tasks as tasks
 scenario "an afternoon at the desk" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -279,7 +277,7 @@ scenario "an afternoon at the desk" {
 scenario "the overview" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:31 PM"
+    stage(device.time, device.Time(clock: "4:31 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "overview"
@@ -424,7 +422,7 @@ scenario "the overview" {
 scenario "the overview, searching" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:31 PM"
+    stage(device.time, device.Time(clock: "4:31 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "overview"
@@ -1306,7 +1304,7 @@ scenario "an empty notification centre" {
 scenario "the workspaces" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "9:12 AM"
+    stage(device.time, device.Time(clock: "9:12 AM"))
     d.workspace = "Studio"
     d.here = "workspaces"
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
@@ -1321,7 +1319,7 @@ scenario "the workspaces" {
 scenario "a banner" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "2:04 PM"
+    stage(device.time, device.Time(clock: "2:04 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -1368,9 +1366,7 @@ scenario "a banner" {
 scenario "the bar's status" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -1817,9 +1813,7 @@ scenario "resources standing as content" -> Arrangement {
 scenario "the traditional desktop" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
@@ -1960,9 +1954,7 @@ scenario "the traditional desktop" {
 scenario "the traditional desktop, a terminal in front" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
-    d.weekday = "Thursday"
-    d.date = "October 30"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Desk"
     d.here = "none"
@@ -2008,7 +2000,7 @@ scenario "the traditional desktop, a terminal in front" {
 scenario "the agents on the bar" {
     let d = root Desk
     d.person = "Ada Lovelace"
-    d.clock = "4:28 PM"
+    stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"

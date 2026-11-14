@@ -58,6 +58,21 @@ fn session() -> Session {
     session
 }
 
+fn time(session: &Session) -> Time {
+    serde_json::from_value(
+        session
+            .read("session:time")
+            .expect("the session publishes the time"),
+    )
+    .expect("the time reads as the shell's time")
+}
+
+/// The time the session publishes.
+#[derive(serde::Deserialize)]
+struct Time {
+    clock: String,
+}
+
 fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre {
     serde_json::from_value(
         session
@@ -171,7 +186,7 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
     let mut session = session();
     until(&mut session, |session| {
         let desk = desk(session);
-        says(session, &desk.clock)
+        says(session, &time(session).clock)
             && says(session, &desk.workspace)
             && (desk.strip.is_empty() || says(session, &desk.strip))
             && says(session, PERSON)
@@ -185,7 +200,8 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
             .any(|workspace| workspace.current && workspace.name == desk.workspace),
         "the workspace in front is the one named: {desk:?}"
     );
-    for words in [desk.clock.as_str(), desk.workspace.as_str(), PERSON] {
+    let clock = time(&session).clock;
+    for words in [clock.as_str(), desk.workspace.as_str(), PERSON] {
         assert!(
             says(&session, words),
             "the bar says {words:?}: {:?}",
@@ -312,7 +328,7 @@ fn the_workspaces_menu_stands_while_the_desk_changes_under_it() {
 fn with_nothing_changing_the_bar_does_no_work() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     // What the first frames started has landed.
     for _ in 0..20 {
         session.step(Duration::from_millis(1)).unwrap();
@@ -381,7 +397,7 @@ fn with_nothing_changing_the_bar_does_no_work() {
 fn a_new_workspace_frame_is_measured() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     for _ in 0..20 {
         session.step(Duration::from_millis(1)).unwrap();
     }
@@ -495,7 +511,7 @@ fn an_apps_notification_is_counted_on_the_bar() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     assert!(says(&session, "Notifications"), "nothing unread: the bell");
     desktop.runtime().block_on(async {
         let app = zbus::connection::Builder::address(bus.address.as_str())
@@ -590,7 +606,7 @@ fn here(session: &Session) -> String {
 fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     let first = open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
     until(&mut session, |session| desk(session).windows.len() == 2);
@@ -656,7 +672,7 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
 fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_one() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     let behind = open_window(&mut session, "so.tilo.notes");
     until(&mut session, |session| desk(session).windows.len() == 1);
     let first = desk(&session);
@@ -731,7 +747,7 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
 fn the_overviews_search_finds_a_window_of_another_workspace() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     let notes = open_window(&mut session, "so.tilo.notes");
     until(&mut session, |session| desk(session).windows.len() == 1);
     let behind = desk(&session).workspace;
@@ -800,7 +816,7 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
 fn the_launcher_opens_from_the_bar_and_searches_windows() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
     until(&mut session, |session| desk(session).windows.len() == 1);
     // The shell's actions reach the desk's surface through its door.
@@ -839,7 +855,7 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
 fn the_notification_centre_lists_a_notice_and_it_dismisses() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     // The session posts a notice of its own, as an app's would arrive.
     session.notices().post(
         tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
@@ -879,7 +895,7 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
 fn a_press_on_the_centres_dismiss_takes_the_notice_away() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     session.notices().post(
         tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
             .with_app_name("Settings"),
@@ -926,7 +942,7 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_away() {
 fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
     until(&mut session, |session| desk(session).windows.len() == 2);
@@ -1057,7 +1073,7 @@ fn lifted(session: &Session) -> String {
 fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
     until(&mut session, |session| desk(session).windows.len() == 2);
@@ -1129,7 +1145,7 @@ fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
 fn alt_backtick_walks_only_the_front_apps_windows() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     for app in [
         "so.tilo.notes",
         "so.tilo.notes",
@@ -1202,7 +1218,7 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
 fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     // Nobody here: the people door alone.
     let door = crate::common::wait_for(&mut session, "the people door", |session| {
         bar_control(session, "People")
@@ -1377,7 +1393,7 @@ fn an_apps_open_the_shell_calls_starts_it() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     session
         .shell_link()
         .expect("the shell runs")
@@ -1503,7 +1519,7 @@ fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bo
 fn a_press_on_the_docks_launcher_shows_the_launcher() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     until(&mut session, |session| {
         session.shell_control("Launcher").is_some()
     });
@@ -1547,7 +1563,7 @@ fn the_bars_status_shows_the_sounds_published_level() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = session_with_devices(WIDTH, HEIGHT);
-    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
     until_settled(&mut session, |session| says(session, "Volume, 40%"));
     keep(&mut session, "shell-bar-status");
     session
@@ -1568,7 +1584,7 @@ fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = device_session_over(width, height, Device { charging: false });
-    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
     // The status opens the settings: the sound's control on a desk, the charge's on a phone,
     // where the sound gives way and the bell is the notification centre's door.
     let opener = if width < 480 { "61%" } else { "Volume, 40%" };
@@ -1618,7 +1634,7 @@ fn quick_settings_volume_slider_sets_the_published_volume() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = session_with_devices(WIDTH, HEIGHT);
-    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
     let volume = |session: &Session| {
         session
             .read("sound")
@@ -1672,7 +1688,7 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = session_with_the_panel(WIDTH, HEIGHT);
-    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
     let desk_only = keep(&mut session, "quick-settings-closed");
     // The press is the chrome's own verb: it takes the stack's slot, and the session starts the
     // panel's app where the stack placed it.
@@ -1757,7 +1773,7 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = session_with_the_panel(WIDTH, HEIGHT);
-    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
     session
         .invoke(
             tilo_surface_host::shell_part::CHROME_RESOURCE,
@@ -1947,7 +1963,7 @@ fn window_menu(session: &mut Session, item: &str) {
 fn a_press_on_a_launcher_row_brings_its_window_front() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
     until(&mut session, |session| desk(session).windows.len() == 2);
@@ -1976,7 +1992,7 @@ fn a_press_on_a_launcher_row_brings_its_window_front() {
 fn a_press_on_a_launcher_door_shows_that_surface() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     show(&mut session, "launcher");
     until(&mut session, |session| {
         session.shell_control("Workspaces").is_some()
@@ -1996,7 +2012,7 @@ fn a_press_on_a_launcher_door_shows_that_surface() {
 fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     show(&mut session, "launcher");
     until(&mut session, |session| {
         session.shell_control(LAUNCHER_SEARCH).is_some()
@@ -2029,7 +2045,7 @@ fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query(
 fn closing_a_window_from_the_overview_takes_it_off_the_desk() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     let notes = open_window(&mut session, "so.tilo.notes");
     until(&mut session, |session| desk(session).windows.len() == 1);
     show(&mut session, "overview");
@@ -2049,7 +2065,7 @@ fn closing_a_window_from_the_overview_takes_it_off_the_desk() {
 fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     let notes = open_window(&mut session, "so.tilo.notes");
     let mail = second_strip(&mut session, "Main", "Research", "so.tilo.mail");
     until(&mut session, |session| desk(session).windows.len() == 2);
@@ -2087,7 +2103,7 @@ fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
 fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     let first = desk(&session);
     let first_key = first
         .workspaces
@@ -2144,7 +2160,7 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
 fn a_press_on_the_centres_clear_all_empties_it() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     for (title, body) in [
         ("Backup finished", "12 GB safe"),
         ("Update ready", "Restart"),
@@ -2174,7 +2190,7 @@ fn a_press_on_the_centres_clear_all_empties_it() {
 fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     show(&mut session, "workspaces");
     until(&mut session, |session| {
         session.shell_control(WORKSPACE_NAME).is_some()
@@ -2439,7 +2455,7 @@ fn changed_in(
 fn the_bells_count_stands_inside_the_bar() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     let before = keep(&mut session, "shell-bar-bell");
     session
         .notices()
@@ -2470,7 +2486,7 @@ fn the_bells_count_stands_inside_the_bar() {
 fn the_trailing_group_stands_in_order_and_ends_with_the_persons_face() {
     let _settled = ui::motion::testing::settled();
     let mut session = device_session(WIDTH, HEIGHT);
-    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
     set_here(&session, 2);
     until_settled(&mut session, |session| says(session, "are here"));
     let people = bar_control(&session, "are here").expect("who is here");
@@ -2524,7 +2540,7 @@ fn the_trailing_group_stands_in_order_and_ends_with_the_persons_face() {
 fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     let _settled = ui::motion::testing::settled();
     let mut session = device_session(WIDTH, HEIGHT);
-    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
     set_here(&session, 2);
     until_settled(&mut session, |session| says(session, "are here"));
     // The desk's first frames draw every translucent body before the compositor has handed it what
@@ -2565,7 +2581,7 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     let back = keep(&mut session, "shell-bar-calm-again");
     // The clock may turn its minute between the two frames; nothing else may differ.
     let mut allowed = vec![];
-    allowed.extend(bar_control(&session, &desk(&session).clock));
+    allowed.extend(bar_control(&session, &time(&session).clock));
     let (_, outside) = changed_by(&calm, &back, (0.0, 0.0, 0.0, 0.0), &allowed, 1);
     assert_eq!(outside, 0, "the same style draws the same bar");
 }
@@ -2595,7 +2611,7 @@ fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     // them, and its digits are not the charge.
     // The reading is the minute's, and the pass that draws it comes after the minute the desk now
     // says: wait for the bar to show it rather than take the minute the last frame drew.
-    let drawn_clock = |session: &mut Session| bar_control(session, &desk(session).clock);
+    let drawn_clock = |session: &mut Session| bar_control(session, &time(session).clock);
     let clock = crate::common::wait_for(&mut taking, "the bar's clock", drawn_clock);
     let plain_clock =
         crate::common::wait_for(&mut draining, "the bar's clock, draining", drawn_clock);
@@ -2624,10 +2640,10 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
     let _settled = ui::motion::testing::settled();
     for (width, height) in [(320, 568), (390, 844)] {
         let mut session = device_session(width, height);
-        until_settled(&mut session, |session| says(session, &desk(session).clock));
+        until_settled(&mut session, |session| says(session, &time(session).clock));
         set_here(&session, 4);
         until_settled(&mut session, |session| desk(session).people.len() == 4);
-        let clock = desk(&session).clock;
+        let clock = time(&session).clock;
         for words in [
             clock.as_str(),
             "Wi-Fi",
@@ -2682,7 +2698,7 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
             // Who is here first, on a bar of the plain theme: a person is told who is here before
             // they change how the bar looks, and the frames kept are that bar.
             let mut session = device_session(width, height);
-            until_settled(&mut session, |session| says(session, &desk(session).clock));
+            until_settled(&mut session, |session| says(session, &time(session).clock));
             set_here(&session, count);
             let who = if count == 1 { "is here" } else { "are here" };
             until_settled(&mut session, |session| {
@@ -2761,7 +2777,7 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
             &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
         )
         .expect("session");
-        until_settled(&mut session, |session| says(session, &desk(session).clock));
+        until_settled(&mut session, |session| says(session, &time(session).clock));
         session
             .invoke(
                 tilo_surface_host::shell_part::CHROME_RESOURCE,
@@ -2854,7 +2870,7 @@ fn the_shell_loads_from_the_package_store_and_not_the_builds_copy() {
         "the installed shell runs its own signed module, not the build's compiled copy"
     );
     let mut session = session();
-    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| says(session, &time(session).clock));
     assert!(
         session.shell_apps().is_empty(),
         "a place shows no app yet: the shell alone runs"

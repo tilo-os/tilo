@@ -108,11 +108,6 @@ pub const KINDS: &[OriginKind] = &[
                 "The person at this device, by their name.",
             ),
             field(
-                "clock",
-                "Text",
-                "The time of day in the person's style, to the minute.",
-            ),
-            field(
                 "timer",
                 "Text",
                 "The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or \
@@ -149,16 +144,6 @@ pub const KINDS: &[OriginKind] = &[
                 "ask_open",
                 "Bool",
                 "Whether the question stands open on the person's avatar.",
-            ),
-            field(
-                "weekday",
-                "Text",
-                "Today's weekday, short, in the person's language.",
-            ),
-            field(
-                "date",
-                "Text",
-                "Today's month and day, in the person's language.",
             ),
             field("workspace", "Text", "The name of the workspace in front."),
             field(

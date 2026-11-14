@@ -206,6 +206,7 @@ session-bluetooth-target-unknown = The other device is not one of yours.
 session-bluetooth-timed-out = The move took too long.
 session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
+session-time = Time
 session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre

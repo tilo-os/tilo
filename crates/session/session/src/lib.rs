@@ -390,6 +390,7 @@ mod task_undo;
 pub mod termination;
 #[cfg(target_os = "linux")]
 pub mod test_control;
+mod time;
 #[cfg(target_os = "linux")]
 mod tools;
 #[cfg(target_os = "linux")]

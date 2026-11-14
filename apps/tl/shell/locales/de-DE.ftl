@@ -23,8 +23,6 @@ d-5mipdtxu = Bereich des Wechslers
 d-foayl4ai = Suche
     .doc = Was die Person in die Suche der Shell getippt hat, die den Launcher dort öffnet, wo sie aufgehört hat.
 
-d-7bs5q4ht = Uhr
-
 d-rlrql4ir = Timer
     .doc = Der Timer oder die Stoppuhr, die Clocks laufen lässt, nach ihrem Namen: ihrer Beschriftung, oder `Timer` bzw. `Stoppuhr`, wenn die App keine nannte; leer, wenn keiner schwimmt.
 
@@ -46,10 +44,6 @@ d-zqu6ku2o = Antwort auf die Frage
 
 d-eewsi53q = Frage offen
     .doc = Ob die Frage auf dem Avatar der Person offen steht.
-
-d-gi7d6wct = Wochentag
-
-d-5cs3vm3f = Datum
 
 d-c5k5ua2t = Arbeitsbereich
 

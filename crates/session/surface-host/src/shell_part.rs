@@ -572,9 +572,6 @@ impl SessionOrigin {
         let ask = reading.ask.clone().unwrap_or_default();
         let fields = [
             ("person", text(&reading.person)),
-            ("clock", text(&reading.clock)),
-            ("weekday", text(&reading.weekday)),
-            ("date", text(&reading.date)),
             ("workspace", text(&reading.workspace)),
             ("strip", text(&reading.strip)),
             // What the screen says of the edges a bar or dock that shows only sometimes follows.

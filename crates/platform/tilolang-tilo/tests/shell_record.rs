@@ -110,8 +110,7 @@ fn workspace() -> Replica {
             .expect("the shell record is made");
     }
     replica.host.migrate();
-    // What the session publishes on the desk: the time, who is here and the workspaces. The
-    // views read it as the session writes it, so the test writes it the same way.
+    // The desk's root the session writes, as the session makes it.
     let desk_ty = meta
         .roots
         .iter()
@@ -120,7 +119,7 @@ fn workspace() -> Replica {
     if let Some(ty) = desk_ty {
         let root = replica.host.root_record(APP, &ty).unwrap();
         let meta = replica.host.package(APP).unwrap().meta;
-        let clock = crate::fixtures::field_id(&meta, "Desk", "clock");
+        let person = crate::fixtures::field_id(&meta, "Desk", "person");
         replica
             .host
             .runtime()
@@ -128,12 +127,19 @@ fn workspace() -> Replica {
                 "session",
                 vec![OriginWrite::Set {
                     target: root,
-                    fields: vec![(clock, Value::Text("4:28 PM".to_owned()))],
+                    fields: vec![(person, Value::Text("Ada".to_owned()))],
                 }],
                 None,
             )
-            .expect("the session's clock is written on the desk");
+            .expect("the session writes the desk");
     }
+    publish_platform(&replica);
+    replica.commit();
+    replica
+}
+
+/// The readings the desk's views read of the device and Settings.
+fn publish_platform(replica: &Replica) {
     // The device's and Settings' readings the desk's views read: published as the session
     // publishes them, an empty reading until a service says more. A view that reads a
     // resource with no reading at all traps as the desk opens.
@@ -141,8 +147,13 @@ fn workspace() -> Replica {
         let target = tilolang_tilo::runtime::ResourceRef::parse_id(resource, ty).unwrap();
         replica.host.runtime().set_reading(&target, "{}").unwrap();
     }
-    replica.commit();
+    let time = tilolang_tilo::runtime::ResourceRef::parse_id("session:time", "so.tilo.device#Time")
+        .unwrap();
     replica
+        .host
+        .runtime()
+        .set_reading(&time, r#"{"clock":"4:28 PM"}"#)
+        .unwrap();
 }
 
 /// Ada runs `action` with `args` on the shell, as pressing it in the settings does.

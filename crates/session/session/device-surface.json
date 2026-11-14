@@ -1914,6 +1914,20 @@
       ]
     },
     {
+      "kind": "time",
+      "label": "Time",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "clock",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "desk",
       "label": "Desk",
       "version": 1,

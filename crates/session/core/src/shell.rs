@@ -138,7 +138,6 @@ pub struct TimerReading {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeskReading {
     pub person: String,
-    pub clock: String,
     /// The timer or stopwatch Clocks shows, when one runs: what the bar's clock reads beside
     /// the time, and the controls pressed on it name.
     #[serde(default)]
@@ -147,8 +146,6 @@ pub struct DeskReading {
     /// avatar until they answer it or put it off.
     #[serde(default)]
     pub ask: Option<AskReading>,
-    pub weekday: String,
-    pub date: String,
     pub workspace: String,
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
