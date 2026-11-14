@@ -17,7 +17,8 @@ pub const MAX_ENTERED: usize = 32;
 pub struct Entered {
     /// The origin its host is reached at.
     pub origin: String,
-    /// The workspace's id.
+    /// The workspace's id, which the page's list keeps as the entry's `room`.
+    #[serde(rename = "room")]
     pub workspace: String,
     /// The device key (hex) of the host that held it when it was entered.
     pub host_device: String,
@@ -29,10 +30,12 @@ pub struct Entered {
     pub unavailable: bool,
 }
 
-/// A workspace by where it is: its host's origin and its id.
+/// A workspace by where it is: its host's origin and its id, which the page's list keeps as
+/// `room` (as [`Entered`] does).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Place {
     pub origin: String,
+    #[serde(rename = "room")]
     pub workspace: String,
 }
 
@@ -282,6 +285,36 @@ mod tests {
             again,
             "a damaged entry is never remembered"
         );
+    }
+
+    #[test]
+    fn the_page_reads_what_it_stored() {
+        // The page keeps this list in its browser's storage and hands it back as JSON, entry
+        // for entry: the workspace's id is the entry's `room`, and the host's key the entry's
+        // `hostDevice`. A list it wrote must come back with what it needs to reach the
+        // workspace again, and what these rules answer must be a list it can read.
+        let stored = serde_json::json!({
+            "origin": "https://a",
+            "room": "1",
+            "hostDevice": HOST,
+            "name": "Acme",
+        });
+        let entry: Entered = serde_json::from_value(stored).expect("an entry the page wrote");
+        assert_eq!(
+            (entry.workspace.as_str(), entry.host_device.as_str()),
+            ("1", HOST)
+        );
+        let answered = serde_json::to_value(remember(Vec::new(), entry)).expect("a list");
+        let first = &answered["entered"][0];
+        assert_eq!(
+            first["room"], "1",
+            "the page reads the workspace's id as `room`"
+        );
+        assert_eq!(first["hostDevice"], HOST);
+        let place: Place =
+            serde_json::from_value(serde_json::json!({"origin": "https://a", "room": "1"}))
+                .expect("a place the page wrote");
+        assert_eq!(place.workspace, "1");
     }
 
     #[test]
