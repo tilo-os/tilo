@@ -171,30 +171,54 @@ fn publish_write(fixture: &Fixture, workspace: crate::owner::WorkspaceId, key: &
         .unwrap();
 }
 
+/// The chat record as the owner holds it, loaded as its app holds it: under
+/// one actor, as the app's store keeps it across writes and restarts.
+fn app_record(fixture: &Fixture, workspace: crate::owner::WorkspaceId) -> automerge::AutoCommit {
+    let held = fixture
+        .owner
+        .with_current(workspace, |view| {
+            view.peer()
+                .document("so.tilo.chat", "")
+                .ok_or_else(|| "no chat record".to_owned())
+        })
+        .unwrap();
+    automerge::AutoCommit::load(&held)
+        .unwrap()
+        .with_actor(automerge::ActorId::from(b"so.tilo.chat".as_slice()))
+}
+
 /// A write of `key` to the chat record as its app signs it, before the
-/// owner's turn admits it. The app writes under one actor, as its store
-/// keeps it across writes and restarts.
+/// owner's turn admits it.
 fn signed_write(
     fixture: &Fixture,
     workspace: crate::owner::WorkspaceId,
     key: &str,
 ) -> crate::owner_commit::OwnerCommitRequest {
+    signed_write_to(fixture, workspace, &mut app_record(fixture, workspace), key)
+}
+
+/// [`signed_write`] by an app that keeps `record` open between its writes:
+/// the write is the change `key` makes to `record`, which holds it from then
+/// on, as the owner does once it committed the write.
+fn signed_write_to(
+    fixture: &Fixture,
+    workspace: crate::owner::WorkspaceId,
+    record: &mut automerge::AutoCommit,
+    key: &str,
+) -> crate::owner_commit::OwnerCommitRequest {
     use automerge::transaction::Transactable as _;
+    let before = record.get_heads();
+    record.put(automerge::ROOT, key, key).unwrap();
+    record.commit_edit("fixture", key);
+    let changes = record.save_after(&before);
     let message = fixture
         .owner
         .with_current(workspace, |view| {
-            let mut document =
-                automerge::AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap())
-                    .unwrap()
-                    .with_actor(automerge::ActorId::from(b"so.tilo.chat".as_slice()));
-            let before = document.get_heads();
-            document.put(automerge::ROOT, key, key).unwrap();
-            document.commit_edit("fixture", key);
             view.peer()
                 .prepare_signed_mutation(
                     "so.tilo.chat",
                     "",
-                    crate::DocumentMutation::Incremental(document.save_after(&before)),
+                    crate::DocumentMutation::Incremental(changes),
                     &fixture.key,
                     fixture.now,
                 )
@@ -358,12 +382,16 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
             .unwrap()
             .len()
     };
+    // The app keeps its record open between its keystrokes: read back from
+    // the owner before each one, the record's whole history was loaded 2,050
+    // times, none of it part of what a write costs the owner.
+    let mut record = app_record(&fixture, workspace);
     let mut wholes = Vec::new();
     let mut costs = Vec::with_capacity(WRITES);
     let mut reads = Vec::with_capacity(WRITES);
     let mut times = Vec::with_capacity(WRITES);
     for n in 0..WRITES {
-        let request = signed_write(&fixture, workspace, &format!("k{n}"));
+        let request = signed_write_to(&fixture, workspace, &mut record, &format!("k{n}"));
         let before = written();
         crate::write_work::take();
         let started = std::time::Instant::now();
@@ -410,6 +438,11 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
             "writes past 1,000 changes {what} {after} bytes each on average, before {before}"
         );
     }
+    assert_eq!(
+        app_record(&fixture, workspace).get_heads(),
+        record.get_heads(),
+        "the owner holds the record as the app that wrote it does"
+    );
     reopens_as_it_was_stored(fixture.owner, &path, WRITES);
 }
 
