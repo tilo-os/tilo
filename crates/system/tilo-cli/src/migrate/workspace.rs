@@ -179,7 +179,8 @@ impl Held {
             .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
         loop {
             std::thread::sleep(STATUS_EVERY);
-            let status = self.tool("tilo_status", &json!({"invocation_id": invocation}), None)?;
+            let status =
+                pending_or(self.tool("tilo_status", &json!({"invocation_id": invocation}), None))?;
             if !status.starts_with("pending") {
                 return Ok(status);
             }
@@ -189,6 +190,15 @@ impl Held {
                 );
             }
         }
+    }
+}
+
+/// `answer`, or the `pending …` the workspace marked an error: a step still running (waiting
+/// for its person, say) is no failure, and is asked about again.
+pub(super) fn pending_or(answer: Result<String>) -> Result<String> {
+    match answer {
+        Err(error) if format!("{error:#}").starts_with("pending") => Ok(format!("{error:#}")),
+        other => other,
     }
 }
 
@@ -221,7 +231,7 @@ impl Workspace for Held {
                     tries = tries.saturating_add(1);
                     std::thread::sleep(Duration::from_secs(2));
                 }
-                other => break other?,
+                other => break pending_or(other)?,
             }
         };
         // An action the person allows first (an outside one, as adding an account is) is

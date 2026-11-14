@@ -342,3 +342,16 @@ fn a_run_counts_one_thing_in_the_singular() {
     assert_eq!(super::services::counted(3, "issues"), "3 issues");
     assert_eq!(super::services::counted(0, "messages"), "0 messages");
 }
+
+#[test]
+fn a_step_the_workspace_answers_pending_is_waited_on_not_failed() {
+    let pending = super::workspace::pending_or(Err(anyhow::anyhow!(
+        "pending 9c19: not finished yet; tilo_status {{invocation_id}} says how it went"
+    )));
+    assert!(pending.unwrap().starts_with("pending 9c19"));
+    assert!(super::workspace::pending_or(Err(anyhow::anyhow!("failed: refused"))).is_err());
+    assert_eq!(
+        super::workspace::pending_or(Ok("ok".to_owned())).unwrap(),
+        "ok"
+    );
+}
