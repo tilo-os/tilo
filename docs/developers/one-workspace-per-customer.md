@@ -248,15 +248,20 @@ resources name are `tilo.content:` references: download each with `files.downloa
 `tilo account workspaces ls --label customer_id=cus_8121` do the same.
 
 [`sdk/typescript/examples/workspace_per_customer.ts`](../../sdk/typescript/examples/workspace_per_customer.ts)
-is all of this at a backend's scale: it makes 300 labelled workspaces at once, mints a key for each, has
-300 agents work over MCP at once, each with its own token, checks that no token reaches its neighbour's
-workspace, revokes a third of the keys, exports and deletes everything, and prints the timings and the
-host's memory and CPU:
+is all of this at a backend's scale: it makes 300 labelled workspaces at once, finds each by its customer
+id, mints a key for each, has every customer's agent work over MCP at once with its own token (list, read,
+an action, a file put), checks that no token reaches its neighbour's workspace over MCP or REST, revokes a
+third of the keys, exports and deletes everything, and prints the timings, every failure with why, and the
+host's memory and CPU. Against a local tilo.sh:
 
 ```sh
-eval "$(os/containers/tilo-sh/stack.sh env)"          # a local tilo.sh: TILO_API_URL, TILO_API_KEY
-CUSTOMERS=300 bun sdk/typescript/examples/workspace_per_customer.ts
+eval "$(os/containers/tilo-sh/stack.sh env)"                  # TILO_API_URL: the local API server
+eval "$(head -1 ~/.local/state/tilo-sh-local/operator.env)"  # TILO_API_KEY: the stack operator's server key
+CUSTOMERS=300 SAMPLE_PIDS=relay:$(cat ~/.local/state/tilo-sh-local/run/relay.pid) \
+  bun sdk/typescript/examples/workspace_per_customer.ts
 ```
+
+(`TILO_SH_STATE` moves the stack's state from `~/.local/state/tilo-sh-local`.)
 
 ## What the agent's key reaches
 

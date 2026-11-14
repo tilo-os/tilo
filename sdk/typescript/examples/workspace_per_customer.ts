@@ -20,8 +20,12 @@
  * children; `host:parent` names the process that started this one), their
  * memory and CPU through the run.
  *
- *     eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_API_URL, TILO_API_KEY
+ *     eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_API_URL
+ *     eval "$(head -1 "$TILO_SH_STATE/operator.env")"  # TILO_API_KEY: the stack's operator's server key
  *     CUSTOMERS=300 bun sdk/typescript/examples/workspace_per_customer.ts
+ *
+ * Every step runs for every customer, whatever happened to the others: what
+ * failed is counted with why, and the run exits non-zero if anything did.
  *
  * `CUSTOMERS` sets how many (300); `REVOKE_EVERY` revokes every nth
  * customer's key (3).
@@ -68,6 +72,41 @@ async function timed<T, R>(
     }),
   );
   return { results, ms, wallMs: performance.now() - began };
+}
+
+/** Why `work` failed, or `null` when it did not. */
+async function attempt(work: () => Promise<unknown>): Promise<string | null> {
+  try {
+    await work();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** Every failure of a step, counted by why. */
+const failed = new Map<string, Map<string, number>>();
+
+/** Count the failures of `step` in `results` (`null` for each that worked), and say them. */
+function failures(step: string, results: (string | null)[]): number {
+  const why = new Map<string, number>();
+  for (const failure of results) {
+    if (failure !== null) {
+      const reason = failure
+        .replace(/cus_\S+?([:' ])/g, "<customer>$1")
+        .replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, "<id>")
+        .replace(/\d+ ms/g, "<n> ms")
+        .slice(0, 300);
+      why.set(reason, (why.get(reason) ?? 0) + 1);
+    }
+  }
+  for (const [reason, count] of why) {
+    say(`${step}: ${count} failed`, reason);
+  }
+  if (why.size > 0) {
+    failed.set(step, why);
+  }
+  return results.filter((failure) => failure !== null).length;
 }
 
 function report(step: string, run: { ms: number[]; wallMs: number }): Record<string, number> {
@@ -467,38 +506,24 @@ async function main(): Promise<void> {
   say("working", "every customer's agent at once, over MCP with its own token");
   // Every agent's run is kept, worked or not: what failed is reported with
   // why, and the rest of the run goes on with the agents that worked.
-  const working = await timed(customers, (customer) =>
-    works(customer).then(
-      () => null,
-      (error: unknown) => (error instanceof Error ? error.message : String(error)),
-    ),
-  );
+  const working = await timed(customers, (customer) => attempt(() => works(customer)));
   timings.agents_work = report("agents worked in their own workspaces", working);
-  const failures = new Map<string, number>();
-  for (const failure of working.results) {
-    if (failure !== null) {
-      const why = failure.replace(/cus_\S+?:/, "<customer>:").replace(/[0-9a-f-]{36}/g, "<id>").slice(0, 300);
-      failures.set(why, (failures.get(why) ?? 0) + 1);
-    }
-  }
-  const failed = working.results.filter((failure) => failure !== null).length;
-  timings.agents_failed = failed;
-  for (const [why, count] of failures) {
-    say(`${count} agents failed`, why);
-  }
+  timings.agents_failed = failures("agents", working.results);
   const active = customers.filter((_, index) => working.results[index] === null);
 
   say("isolating", "each token against its neighbour's workspace, over MCP and REST");
   const isolation = await timed(active, (customer) =>
-    isolated(customer, customers[(customer.index + 1) % customers.length] as Customer, url),
+    attempt(() => isolated(customer, customers[(customer.index + 1) % customers.length] as Customer, url)),
   );
   timings.isolation = report("no token reached another workspace", isolation);
+  timings.isolation_failed = failures("isolation", isolation.results);
 
   const revoking = active.filter((customer) => customer.index % REVOKE_EVERY === 0);
   say("revoking", `${revoking.length} customers' keys`);
-  const revoked = await timed(revoking, (customer) => backend.keys.revoke(customer.key.grant));
+  const revoked = await timed(revoking, (customer) => attempt(() => backend.keys.revoke(customer.key.grant)));
   timings.revoke = report("revoked", revoked);
-  const stopped = await timed(revoking, async (customer) => {
+  timings.revoke_failed = failures("revoke", revoked.results);
+  const stopped = await timed(revoking, (customer) => attempt(async () => {
     const midSession = await customer.agent.call("tilo_ls", {});
     check(refused(midSession), `${customer.id}: its open session still answers after revocation`);
     const reopened = await customer.agent.initialize();
@@ -513,44 +538,49 @@ async function main(): Promise<void> {
         (error: { code?: unknown }) => String(error?.code ?? error),
       );
     check(rest === "key_revoked", `${customer.id}: a revoked key lists: ${rest}`);
-  });
+  }));
   timings.revoked_stop = report("revoked keys stopped working", stopped);
+  timings.revoked_stop_failed = failures("revoked keys stop", stopped.results);
   const kept = active.filter((customer) => customer.index % REVOKE_EVERY !== 0);
-  const still = await timed(kept, async (customer) => {
+  const still = await timed(kept, (customer) => attempt(async () => {
     const listed = await customer.agent.call("tilo_ls", {});
-    check(ran(listed), `${customer.id}: an unrevoked key stopped: ${JSON.stringify(listed.body)}`);
-  });
+    check(ran(listed), `${customer.id}: an unrevoked key stopped: ${JSON.stringify(listed.body).slice(0, 300)}`);
+  }));
   timings.kept_work = report("the other keys still work", still);
+  timings.kept_work_failed = failures("unrevoked keys", still.results);
 
   say("exporting", "each workspace before it goes");
-  const exported = await timed(customers, (customer) => backend.workspace(customer.workspace.id).export());
+  const exported = await timed(customers, (customer, index) => attempt(async () => {
+    const bundle = await backend.workspace(customer.workspace.id).export();
+    check(bundle.workspace.labels.customer_id === ids[index], `${customer.id}: its export carries its labels`);
+    check(
+      working.results[index] !== null || JSON.stringify(bundle.resources).includes(`Visa checklist for ${ids[index]}`),
+      `${customer.id}: its export holds the page its agent wrote`,
+    );
+  }));
   timings.export = report("exported", exported);
-  check(
-    exported.results.every(
-      (bundle, index) =>
-        bundle.workspace.labels.customer_id === ids[index] &&
-        (working.results[index] !== null ||
-          JSON.stringify(bundle.resources).includes(`Visa checklist for ${ids[index]}`)),
-    ),
-    "each export holds its customer's labels and the page its agent wrote",
-  );
+  timings.export_failed = failures("export", exported.results);
 
   say("deleting", `all ${CUSTOMERS} at once`);
-  const deleted = await timed(customers, (customer) => backend.workspaces.delete(customer.workspace.id));
+  const deleted = await timed(customers, (customer) => attempt(() => backend.workspaces.delete(customer.workspace.id)));
   timings.delete = report("deleted", deleted);
+  timings.delete_failed = failures("delete", deleted.results);
   const left = await backend.workspaces.list({ labels: { batch: RUN } });
-  check(left.length === 0, `none of the batch is left: ${left.length}`);
-  const gone = await timed(kept, async (customer) => {
+  timings.left = left.length;
+  failures("left after deleting", left.workspaces.map((ws) => `${ws.id} is still there`));
+  const gone = await timed(kept, (customer) => attempt(async () => {
     const reopened = await customer.agent.initialize();
     check(reopened.status === 401, `${customer.id}: its key outlived its workspace: ${reopened.status}`);
-  });
+  }));
   timings.deleted_keys_stop = report("every key of a deleted workspace stopped", gone);
+  timings.deleted_keys_stop_failed = failures("keys of deleted workspaces", gone.results);
 
   const host = sampler.stop();
-  console.log(JSON.stringify({ customers: CUSTOMERS, batch: RUN, timings, host }, null, 2));
+  const why = Object.fromEntries([...failed].map(([step, reasons]) => [step, Object.fromEntries(reasons)]));
+  console.log(JSON.stringify({ customers: CUSTOMERS, batch: RUN, timings, failures: why, host }, null, 2));
   backend.close();
-  if (failed > 0) {
-    throw new Error(`${failed} of ${CUSTOMERS} agents did not work in their workspace (above)`);
+  if (failed.size > 0) {
+    throw new Error(`steps failed for some customers: ${[...failed.keys()].join(", ")} (above)`);
   }
 }
 

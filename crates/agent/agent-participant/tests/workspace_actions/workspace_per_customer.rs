@@ -1,14 +1,21 @@
 //! A backend keeps a workspace per customer through the API server on the
-//! relay, as tilo.sh runs them, labelled with its own id for the customer,
-//! and mints a key per workspace for that customer's agent. The agent, over
-//! MCP with only its own key, works in its own workspace; no tool and no
-//! `/v1` route takes its key into another customer's workspace, or the
-//! account.
+//! relay, as tilo.sh runs them: it makes them at once, each labelled with its
+//! own id for the customer, finds each again by that id, mints a key per
+//! workspace for that customer's agent, revokes some, exports and deletes
+//! them. Each agent, over MCP with only its own key, works in its own
+//! workspace; no tool and no `/v1` route takes a key into another
+//! customer's workspace, or the account.
 use super::api::{ISSUER, Mcp};
 use super::api_on_relay::{OnRelay, api_on_relay, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
 use tilo_api::Server;
+
+/// How many customers the backend serves here at once: enough that their
+/// workspaces are made, joined and worked in side by side on the one relay.
+/// `sdk/typescript/examples/workspace_per_customer.ts` runs the same day at a
+/// backend's scale (hundreds) against a whole host.
+const CUSTOMERS: usize = 8;
 
 /// A server key of a new person's on `on_relay`, approved on a page of theirs.
 async fn server_key(on_relay: &OnRelay, name: &str) -> String {
@@ -121,15 +128,9 @@ fn answered(reply: &Value, field: &str) -> Value {
 async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (String, String) {
     let path = mcp_url.strip_prefix(ISSUER).unwrap();
     let mut agent = mcp(api, path, token);
-    let began = Instant::now();
     let (status, opened) = agent.initialize().await;
     assert_eq!(status, 200, "{opened}");
-    let entered = began.elapsed();
     let (status, apps) = call(&mut agent, "tilo_ls", json!({})).await;
-    eprintln!(
-        "{title}: entered in {entered:?}, first catalogue in {:?}",
-        began.elapsed().saturating_sub(entered)
-    );
     assert_eq!(status, 200, "{apps}");
     assert_eq!(apps["result"]["isError"], false, "{apps}");
     done(
@@ -164,6 +165,238 @@ async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (St
         .unwrap_or_else(|| panic!("a put finishes: {finished}"))
         .to_owned();
     (page, content)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let key = server_key(&on_relay, "Ada").await;
+
+    // Every customer's workspace at once, each labelled with its id.
+    let mut making = tokio::task::JoinSet::new();
+    for customer in 0..CUSTOMERS {
+        let (api, key) = (Arc::clone(&api), key.clone());
+        making.spawn(async move {
+            let id = format!("cus_{customer}");
+            let body = json!({"name": format!("Applicant {customer}"),
+                              "labels": {"customer_id": id, "batch": "spring"}});
+            let retry = format!("workspace-for-{id}");
+            let (status, made) = rest(
+                &api,
+                &key,
+                hyper::Method::POST,
+                "/v1/workspaces",
+                body.to_string().as_bytes(),
+                &[("idempotency-key", retry.as_str())],
+            )
+            .await;
+            assert_eq!(status, 201, "{made}");
+            assert_eq!(made["labels"]["customer_id"], id.as_str(), "{made}");
+            (customer, made["id"].as_str().unwrap().to_owned())
+        });
+    }
+    let mut workspaces = vec![String::new(); CUSTOMERS];
+    while let Some(made) = making.join_next().await {
+        let (customer, workspace) = made.unwrap();
+        workspaces[customer] = workspace;
+    }
+
+    // Asked again under the same key, a create answers the workspace made.
+    let (status, again) = rest(
+        &api,
+        &key,
+        hyper::Method::POST,
+        "/v1/workspaces",
+        json!({"name": "Applicant 0", "labels": {"customer_id": "cus_0", "batch": "spring"}})
+            .to_string()
+            .as_bytes(),
+        &[("idempotency-key", "workspace-for-cus_0")],
+    )
+    .await;
+    assert!(status < 300, "{again}");
+    assert_eq!(again["id"], workspaces[0].as_str(), "{again}");
+
+    // The batch lists whole; each customer's id finds its one workspace; a
+    // label nobody has finds none.
+    let batch = listed(&api, &key, "?label%5Bbatch%5D=spring").await;
+    assert_eq!(batch.len(), CUSTOMERS, "{batch:?}");
+    for (customer, workspace) in workspaces.iter().enumerate() {
+        let found = listed(&api, &key, &format!("?label[customer_id]=cus_{customer}")).await;
+        assert_eq!(found, std::slice::from_ref(workspace));
+    }
+    assert!(
+        listed(&api, &key, "?label[customer_id]=cus_x")
+            .await
+            .is_empty()
+    );
+    // Over MCP the account finds them by label the same way.
+    let mut account = mcp(&api, "/mcp", &key);
+    assert_eq!(account.initialize().await.0, 200);
+    let found = account
+        .did(
+            "account/workspaces#list",
+            json!({"labels": {"customer_id": "cus_3"}}),
+        )
+        .await;
+    assert_eq!(
+        found["workspaces"][0]["id"],
+        workspaces[3].as_str(),
+        "{found}"
+    );
+    assert_eq!(found["workspaces"].as_array().unwrap().len(), 1, "{found}");
+    // A label no workspace keeps is refused, saying why.
+    let (status, bad) = rest(
+        &api,
+        &key,
+        hyper::Method::POST,
+        "/v1/workspaces",
+        br#"{"name": "x", "labels": {"Customer ID": "1"}}"#,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 400, "{bad}");
+    assert_eq!(bad["error"]["code"], "invalid_arguments", "{bad}");
+
+    // A key per workspace, and every customer's agent at work at once.
+    let mut minted = Vec::with_capacity(CUSTOMERS);
+    for workspace in &workspaces {
+        let (status, key) = rest(
+            &api,
+            &key,
+            hyper::Method::POST,
+            "/v1/keys",
+            json!({"workspace": workspace}).to_string().as_bytes(),
+            &[],
+        )
+        .await;
+        assert_eq!(status, 201, "{key}");
+        assert_eq!(
+            key["mcp_url"],
+            format!("{ISSUER}/w/{workspace}/mcp").as_str(),
+            "{key}"
+        );
+        minted.push(key);
+    }
+    let mut working = tokio::task::JoinSet::new();
+    for (customer, key) in minted.iter().cloned().enumerate() {
+        let api = Arc::clone(&api);
+        working.spawn(async move {
+            let token = key["token"].as_str().unwrap().to_owned();
+            let url = key["mcp_url"].as_str().unwrap().to_owned();
+            work(&api, &url, &token, &format!("Checklist of cus_{customer}")).await;
+            // Its key lists its own workspace, and no other.
+            let own = listed(&api, &token, "").await;
+            assert_eq!(own, [key["workspace"].as_str().unwrap()]);
+        });
+    }
+    while let Some(worked) = working.join_next().await {
+        worked.unwrap();
+    }
+
+    // Revoked keys stop at once, mid-session; the rest go on.
+    let mut open = Vec::new();
+    for key in &minted {
+        let path = key["mcp_url"]
+            .as_str()
+            .unwrap()
+            .strip_prefix(ISSUER)
+            .unwrap()
+            .to_owned();
+        let mut agent = mcp(&api, &path, key["token"].as_str().unwrap());
+        assert_eq!(agent.initialize().await.0, 200);
+        open.push(agent);
+    }
+    for revoking in minted.iter().step_by(3) {
+        let grant = revoking["grant"].as_str().unwrap();
+        let (status, revoked) = rest(
+            &api,
+            &key,
+            hyper::Method::DELETE,
+            &format!("/v1/keys/{grant}"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(status, 200, "{revoked}");
+        assert_eq!(revoked["revoked"], grant, "{revoked}");
+    }
+    for (customer, agent) in open.iter_mut().enumerate() {
+        let (status, listed) = call(agent, "tilo_ls", json!({})).await;
+        if customer % 3 == 0 {
+            assert!(
+                status == 401
+                    || listed["result"]["isError"] == true
+                    || listed.get("error").is_some(),
+                "cus_{customer}'s revoked key still lists: {status} {listed}"
+            );
+            let (status, refused) = agent.initialize().await;
+            assert_eq!(status, 401, "{refused}");
+            assert_eq!(refused["error"]["code"], "key_revoked", "{refused}");
+        } else {
+            assert_eq!(status, 200, "{listed}");
+            assert_eq!(
+                listed["result"]["isError"], false,
+                "cus_{customer}: {listed}"
+            );
+        }
+    }
+
+    // Each workspace exports whole, with its labels and its agent's page.
+    for (customer, workspace) in workspaces.iter().enumerate() {
+        let (status, export) = rest(
+            &api,
+            &key,
+            hyper::Method::GET,
+            &format!("/v1/workspaces/{workspace}/export"),
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(status, 200, "{export}");
+        let id = format!("cus_{customer}");
+        assert_eq!(export["workspace"]["labels"]["customer_id"], id.as_str());
+        assert!(
+            export["resources"]
+                .to_string()
+                .contains(&format!("Checklist of {id}")),
+            "{id}'s export holds its page: {export}"
+        );
+    }
+
+    // All of them go, and every key still minted for them with them.
+    let mut deleting = tokio::task::JoinSet::new();
+    for workspace in workspaces.clone() {
+        let (api, key) = (Arc::clone(&api), key.clone());
+        deleting.spawn(async move {
+            let (status, deleted) = rest(
+                &api,
+                &key,
+                hyper::Method::DELETE,
+                &format!("/v1/workspaces/{workspace}"),
+                b"",
+                &[],
+            )
+            .await;
+            assert_eq!(status, 200, "{deleted}");
+        });
+    }
+    while let Some(deleted) = deleting.join_next().await {
+        deleted.unwrap();
+    }
+    assert!(listed(&api, &key, "?label[batch]=spring").await.is_empty());
+    for key in &minted {
+        let (status, refused) = rest(
+            &api,
+            key["token"].as_str().unwrap(),
+            hyper::Method::GET,
+            "/v1/workspaces",
+            b"",
+            &[],
+        )
+        .await;
+        assert_eq!(status, 401, "{refused}");
+    }
 }
 
 /// What a tool is asked with, naming `other`'s workspace and what is in it:
