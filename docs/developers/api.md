@@ -92,14 +92,16 @@ same id is one run, one undo step per app (`POST …/runs/{run}/undo` takes it b
 
 | | |
 |---|---|
-| `GET /v1/workspaces/{workspace}/resources?path=&cursor=&limit=&kind=` | what is under `path` (the apps without one): `{"path", "kind", "rows": [...], "actions": [...], "next_cursor"}` |
-| `GET /v1/workspaces/{workspace}/resources/{path}?cursor=` | one resource: `{"path", "kind", "fields": {...}, "children": [...], "cursor"}` |
+| `GET /v1/workspaces/{workspace}/resources?path=&cursor=&limit=&kind=` | what is under `path` (the apps without one): `{"path", "kind", "rows": [...], "actions": [...], "next_cursor", "text"}` |
+| `GET /v1/workspaces/{workspace}/resources/{path}?cursor=` | one resource: `{"path", "kind", "fields": {...}, "children": [...], "cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/search?q=&limit=` | `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
 | `GET /v1/workspaces/{workspace}/links?path=&mode=` | `{"path", "link"}`: the link a person opens it with (invite them first) |
 
 A row of `rows` is `{"path", "name", "label", "kind", "has_children", "actions"}`; an action row
 is `{"id", "label", "params": [{"name", "ty", "required", "description", "choices", "schema"}],
-"kind": "read"|"undoable"|"outside"}`.
+"kind": "read"|"undoable"|"outside"}`. `text` is the same listing or read as a person reads it,
+one line per row: what `tilo ls` and `tilo read` print, and what an MCP client's `tilo_ls` and
+`tilo_read` answer.
 
 ## Actions
 

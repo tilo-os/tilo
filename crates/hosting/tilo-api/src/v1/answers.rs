@@ -246,6 +246,10 @@ pub struct Listing {
     /// Passed back as `cursor` for the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// The listing as a person reads it, one line per row: the same lines an
+    /// MCP client's `tilo_ls` prints, for a caller with no surface of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A list of what a resource holds, one entry of it.
@@ -281,6 +285,10 @@ pub struct Resource {
     /// For an app: its surface's version, `<app>@<digest>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_version: Option<String>,
+    /// The read as a person reads it: the same text an MCP client's
+    /// `tilo_read` prints, for a caller with no surface of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// What the person is asked before an action runs.

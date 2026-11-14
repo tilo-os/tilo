@@ -86,6 +86,12 @@ struct Cli {
     #[arg(
         long,
         global = true,
+        help = "The answer as JSON, typed as the SDK gets it"
+    )]
+    json: bool,
+    #[arg(
+        long,
+        global = true,
         hide = true,
         help = "The API server (also TILO_API_URL; https://mcp.tilo.sh by default)"
     )]
@@ -102,6 +108,7 @@ impl Cli {
             workspace: None,
             key_file: None,
             api: None,
+            json: false,
             cmd,
         }
     }
@@ -174,7 +181,6 @@ enum Cmd {
     },
     /// Do one thing this desktop, or a hosted workspace (-w), can do.
     #[command(
-        hide = true,
         after_help = "Examples:\n  tilo do new-terminal-window\n  tilo do rename-note title=Groceries\n  tilo do set-volume 40\n  \
                       tilo -w jane-doe do pdf-viewer/application.pdf#read-form-fields\n\n\
                       `tilo actions` lists what there is. Options are written name=value; a single\n\
@@ -189,6 +195,30 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// List what a hosted workspace (-w) holds: its apps, or what a path holds.
+    #[command(
+        after_help = "Examples:\n  tilo ls -w jane-doe\n  tilo ls notes -w jane-doe\n  \
+                      tilo ls notes/Notebook -w jane-doe\n\n\
+                      Each line is a path the other hosted commands take: `tilo read`, `tilo do`,\n\
+                      and `tilo ls` again."
+    )]
+    Ls {
+        /// What to list: an app, a resource or an action, as `tilo ls` printed it.
+        path: Option<String>,
+    },
+    /// Read one resource of a hosted workspace (-w).
+    #[command(
+        after_help = "Example:\n  tilo read notes/Notebook/Todo -w jane-doe\n\n\
+                      A long read ends with a cursor: `tilo read PATH --cursor <cursor> -w` reads\n\
+                      the rest."
+    )]
+    Read {
+        /// The resource to read: an app, a record, or what a listing printed.
+        path: String,
+        /// The cursor a long read ended with, for the rest of it.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
     /// Your workspaces on this desktop.
     Workspace {
         #[command(subcommand)]
@@ -202,9 +232,6 @@ enum Cmd {
                             tilo keys revoke grant-…           Revokes the keys it minted too"
     )]
     Keys {
-        /// The answer as JSON, typed as the SDK gets it.
-        #[arg(long)]
-        json: bool,
         #[command(subcommand)]
         cmd: hosted::KeysCmd,
     },
@@ -215,9 +242,6 @@ enum Cmd {
                             tilo members name \"Quinten Wolff\" -w jane-doe   What its people and your invitations call you"
     )]
     Members {
-        /// The answer as JSON, typed as the SDK gets it.
-        #[arg(long)]
-        json: bool,
         #[command(subcommand)]
         cmd: hosted::MembersCmd,
     },
@@ -226,9 +250,6 @@ enum Cmd {
         after_help = "Examples:\n  tilo account workspaces create \"Applicant: Jane Doe\"\n  tilo account workspaces ls"
     )]
     Account {
-        /// The answer as JSON, typed as the SDK gets it.
-        #[arg(long)]
-        json: bool,
         #[command(subcommand)]
         cmd: hosted::AccountCmd,
     },
@@ -240,9 +261,6 @@ enum Cmd {
                             tilo files get tilo.content:… -w jane-doe -o cover-letter.docx"
     )]
     Files {
-        /// The answer as JSON, typed as the SDK gets it.
-        #[arg(long)]
-        json: bool,
         #[command(subcommand)]
         cmd: hosted::FilesCmd,
     },
@@ -251,9 +269,6 @@ enum Cmd {
     Run {
         /// The program to run, by its path here.
         file: std::path::PathBuf,
-        /// The answer as JSON, typed as the SDK gets it.
-        #[arg(long)]
-        json: bool,
     },
     /// Write the SDK's types for a workspace's apps, from their surfaces.
     Sdk {
@@ -524,7 +539,9 @@ fn command_here(here: Here) -> clap::Command {
 /// The tree completion offers: every noun and verb, the shortcuts too.
 fn completing(here: Here) -> clap::Command {
     command_here(here).mut_subcommands(|sub| match sub.get_name() {
-        "open" | "do" | "actions" | "update" | "status" | "rollback" => sub.hide(false),
+        "open" | "do" | "ls" | "read" | "actions" | "update" | "status" | "rollback" => {
+            sub.hide(false)
+        }
         _ => sub,
     })
 }
@@ -640,6 +657,7 @@ fn examples(here: Here) -> String {
             "tilo keys mint -w jane-doe",
             "An MCP URL and token for an agent in that workspace alone",
         ),
+        ("tilo ls notes -w jane-doe", "What a hosted workspace holds"),
     ]);
     render_examples(&lines)
 }
@@ -892,30 +910,37 @@ fn completions(shell: Shell) -> Result<ExitCode> {
 fn run_hosted(
     api: Option<&str>,
     key_file: Option<&std::path::Path>,
+    json: bool,
     workspace: Option<String>,
     cmd: Cmd,
     spelling: &tilo_control::front::Spelling,
 ) -> Result<Result<ExitCode>, Cmd> {
     let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
-    let reach = |json: bool| api::Reach {
+    let reach = api::Reach {
         api,
         key_file,
         json,
     };
     Ok(match cmd {
-        Cmd::Do { action, args } => Ok(run_do(reach(false), workspace, action, args, spelling)),
-        Cmd::Keys { json, cmd } => Ok(hosted::keys(reach(json), workspace.as_deref(), cmd)),
-        Cmd::Members { json, cmd } => workspace
+        Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
+        Cmd::Ls { path } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::members(reach(json), &workspace, cmd)),
-        Cmd::Account { json, cmd } => Ok(hosted::account(reach(json), cmd)),
-        Cmd::Files { json, cmd } => workspace
+            .map(|workspace| hosted::ls(reach, &workspace, path.as_deref())),
+        Cmd::Read { path, cursor } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::files(reach(json), &workspace, cmd)),
-        Cmd::Run { file, json } => workspace
+            .map(|workspace| hosted::read(reach, &workspace, &path, cursor.as_deref())),
+        Cmd::Keys { cmd } => Ok(hosted::keys(reach, workspace.as_deref(), cmd)),
+        Cmd::Members { cmd } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::program(reach(json), &workspace, &file)),
-        Cmd::Sdk { cmd } => Ok(sdk::generate(reach(false), workspace.as_deref(), cmd)),
+            .map(|workspace| hosted::members(reach, &workspace, cmd)),
+        Cmd::Account { cmd } => Ok(hosted::account(reach, cmd)),
+        Cmd::Files { cmd } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::files(reach, &workspace, cmd)),
+        Cmd::Run { file } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::program(reach, &workspace, &file)),
+        Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
         other => return Err(other),
     })
 }
@@ -925,6 +950,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     let cmd = match run_hosted(
         cli.api.as_deref(),
         cli.key_file.as_deref(),
+        cli.json,
         cli.workspace,
         cli.cmd,
         &spelling,
@@ -934,6 +960,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
     };
     match cmd {
         Cmd::Do { .. }
+        | Cmd::Ls { .. }
+        | Cmd::Read { .. }
         | Cmd::Keys { .. }
         | Cmd::Members { .. }
         | Cmd::Account { .. }
@@ -1656,6 +1684,72 @@ mod tests {
     use clap::{CommandFactory, FromArgMatches};
 
     tilo_test_env::scenario! {
+        fn the_command_takes_json_anywhere_and_shows_what_it_does;
+
+        phase json_is_taken_after_a_verb_and_its_arguments;
+        {
+            // `tilo keys --json mint` worked and `tilo keys mint --json` did
+            // not: the answer's shape is the command's, wherever it is typed.
+            for args in [
+                &["tilo", "keys", "mint", "-w", "jane-doe", "--json"][..],
+                &["tilo", "--json", "keys", "mint"][..],
+                &["tilo", "files", "put", "a.json", "--json"][..],
+                &["tilo", "ls", "notes", "-w", "jane-doe", "--json"][..],
+                &["tilo", "read", "notes/Todo", "-w", "jane-doe", "--json"][..],
+                &["tilo", "run", "visa.tl", "-w", "jane-doe", "--json"][..],
+            ] {
+                let cli = Cli::try_parse_from(args)
+                    .unwrap_or_else(|error| panic!("tilo {args:?}: {error}"));
+                assert!(cli.json, "tilo {args:?} names JSON");
+            }
+            // A `do` takes its options after the action, `--json` among them:
+            // wherever the parser puts it, the call asks for JSON.
+            let cli = Cli::try_parse_from(["tilo", "-w", "jane-doe", "do", "tasks#create", "--json"])
+                .expect("do takes --json after the action");
+            let Cmd::Do { args, .. } = cli.cmd else {
+                panic!("do");
+            };
+            assert!(
+                cli.json || args.iter().any(|arg| arg == "--json"),
+                "do asks for JSON: json={} args={args:?}",
+                cli.json
+            );
+
+            // A command with a meaning of its own for --json keeps it: the
+            // system's record, the health check, a new identity.
+            let cli = Cli::try_parse_from(["tilo", "status", "--json"]).expect("status --json");
+            assert!(
+                matches!(cli.cmd, Cmd::Status { json: true }),
+                "status --json still asks for the system's record"
+            );
+            let cli = Cli::try_parse_from(["tilo", "login", "--new-identity", "--json"])
+                .expect("login --json");
+            assert!(
+                matches!(cli.cmd, Cmd::Login { json: true, .. }),
+                "login --json still asks for the identity as one line"
+            );
+        }
+
+        phase the_help_lists_do_ls_and_read;
+        {
+            let everything = Here {
+                desktop: true,
+                apps: true,
+                system: true,
+                has: |_| true,
+            };
+            let command = command_here(everything);
+            for name in ["do", "ls", "read", "files"] {
+                let sub = command
+                    .get_subcommands()
+                    .find(|sub| sub.get_name() == name)
+                    .unwrap_or_else(|| panic!("{name} is in the command tree"));
+                assert!(!sub.is_hide_set(), "{name} is listed by --help");
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
         fn a_failed_deployment_keeps_the_units_failure_and_its_journal;
 
         phase failed_deployment_preserves_the_job_reason_journal_and_exit_status;
@@ -1893,6 +1987,9 @@ mod tests {
                 [
                     "app",
                     "action",
+                    "do",
+                    "ls",
+                    "read",
                     "workspace",
                     "keys",
                     "members",
@@ -1916,6 +2013,9 @@ mod tests {
                     "Commands:\n",
                     "  app        Find, get, update and remove apps\n",
                     "  action     See what this desktop can do, and do it\n",
+                    "  do         Do one thing this desktop, or a hosted workspace (-w), can do\n",
+                    "  ls         List what a hosted workspace (-w) holds: its apps, or what a path holds\n",
+                    "  read       Read one resource of a hosted workspace (-w)\n",
                     "  workspace  Your workspaces on this desktop\n",
                     "  keys       Keys to your hosted workspaces, for your code and its agents\n",
                     "  members    The people in a hosted workspace, inviting more, and how it names you\n",
@@ -1931,6 +2031,7 @@ mod tests {
                     "Options:\n",
                     "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id\n",
                     "      --key-file <FILE>        A key this computer holds (`tilo keys export`), instead of TILO_API_KEY\n",
+                    "      --json                   The answer as JSON, typed as the SDK gets it\n",
                     "  -h, --help                   Print help\n",
                     "  -V, --version                Print version\n",
                     "\n",
@@ -1949,6 +2050,7 @@ mod tests {
                     "  tilo keys create \"Visa backend\"            A key for your own backend: you approve it in your Tilo\n",
                     "  tilo account workspaces create \"Jane Doe\"  A hosted workspace, one per customer\n",
                     "  tilo keys mint -w jane-doe                 An MCP URL and token for an agent in that workspace alone\n",
+                    "  tilo ls notes -w jane-doe                  What a hosted workspace holds\n",
                 )
             );
         }
@@ -1967,17 +2069,13 @@ mod tests {
             assert_eq!(
                 listed(elsewhere),
                 [
-                    "app", "keys", "members", "account", "files", "run", "sdk", "login"
+                    "app", "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
+                    "login"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
-            for absent in [
-                "tilo open",
-                "tilo do",
-                "tilo actions",
-                "device update",
-                "status",
-            ] {
+            // `do` stays: acting in a hosted workspace (-w) needs no desktop.
+            for absent in ["tilo open", "tilo actions", "device update", "status"] {
                 assert!(!help.contains(absent), "{absent} in:\n{help}");
             }
             let nothing = Here {

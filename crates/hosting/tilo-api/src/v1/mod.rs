@@ -18,6 +18,7 @@ pub mod answers;
 pub mod errors;
 pub mod events;
 pub mod idempotency;
+pub mod names;
 pub mod openapi;
 pub mod operations;
 pub mod routing;
@@ -347,6 +348,18 @@ impl<'a> Caller<'a> {
     /// `tool` with `arguments`, in the route's workspace (`None` for the
     /// account): its typed answer, a refusal when it says it failed.
     async fn call(&self, tool: &'static str, arguments: Value) -> Result<Value, ApiError> {
+        self.call_said(tool, arguments)
+            .await
+            .map(|(typed, _)| typed)
+    }
+
+    /// [`Self::call`], with what the tool said in words beside its typed
+    /// answer: the lines a listing or a read puts on a person's screen.
+    async fn call_said(
+        &self,
+        tool: &'static str,
+        arguments: Value,
+    ) -> Result<(Value, Option<String>), ApiError> {
         let workspace = Some(self.workspace()).filter(|workspace| !workspace.is_empty());
         let answer = self
             .session
@@ -357,11 +370,15 @@ impl<'a> Caller<'a> {
                 run: self.run.clone(),
             })
             .await?;
+        let said = answer
+            .pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let typed = typed_answer(&answer)?;
         if typed.get("status").and_then(Value::as_str) == Some("failed") {
             return Err(ApiError::of_answer(typed.get("error"), typed.get("action")));
         }
-        Ok(typed)
+        Ok((typed, said))
     }
 
     /// An account action: its `result`.
@@ -483,8 +500,10 @@ impl<'a> Caller<'a> {
                 for name in ["path", "cursor", "kind"] {
                     args = with(args, name, self.query(name));
                 }
-                let listed = self.call("tilo_ls", with(args, "limit", limit)).await?;
-                shaped::<answers::Listing>(listed).map(Answer::ok)
+                let (listed, said) = self
+                    .call_said("tilo_ls", with(args, "limit", limit))
+                    .await?;
+                shaped::<answers::Listing>(with(listed, "text", said)).map(Answer::ok)
             }
             "readResource" => {
                 let args = with(
@@ -492,13 +511,18 @@ impl<'a> Caller<'a> {
                     "cursor",
                     self.query("cursor"),
                 );
-                let read = self.call("tilo_read", args).await?;
+                let (read, said) = self.call_said("tilo_read", args).await?;
                 let version = read
                     .get("app")
                     .and_then(Value::as_str)
                     .zip(read.get("surface").and_then(Value::as_str))
                     .map(|(app, surface)| surface_version(app, surface));
-                shaped::<answers::Resource>(with(read, "surface_version", version)).map(Answer::ok)
+                shaped::<answers::Resource>(with(
+                    with(read, "surface_version", version),
+                    "text",
+                    said,
+                ))
+                .map(Answer::ok)
             }
             "search" => {
                 let query = self

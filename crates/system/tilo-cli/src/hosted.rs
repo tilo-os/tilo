@@ -152,10 +152,13 @@ pub enum WorkspacesCmd {
 #[derive(Subcommand)]
 pub enum FilesCmd {
     /// Upload files, or whole folders, into a workspace: each file lands in
-    /// the app that opens it, and prints that record's path.
+    /// the app that opens it and prints that record's path, or prints the
+    /// reference of bytes no app opens.
     #[command(
         after_help = "A folder goes up whole, keeping its structure: `tilo files put notes/` \
-                      keeps `notes/2026/plan.md` called `2026/plan.md`. A file larger than one \
+                      keeps `notes/2026/plan.md` called `2026/plan.md`. Each file lands in the app \
+                      that opens its bytes: a PDF in PDF Viewer, a picture in Photos, any text \
+                      file (a note, JSON, a shell script) in Notes. A file larger than one \
                       request carries goes up in pieces, and a connection that fails resumes \
                       where it stopped. `--store` puts the bytes only, with no record."
     )]
@@ -340,6 +343,17 @@ fn action_text(answer: &Value) -> String {
     if let Some(result) = answer.get("result").filter(|result| !result.is_null()) {
         let _ = write!(said, "\n{}", compact(result));
     }
+    // What the action answered it made or changed, as the workspace names it:
+    // the path the next command can take as it is.
+    for resource in answer
+        .get("resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let _ = write!(said, "\n-> {resource}");
+    }
     let links = answer
         .get("links")
         .and_then(Value::as_array)
@@ -349,6 +363,102 @@ fn action_text(answer: &Value) -> String {
         .chain(answer.get("link").and_then(Value::as_str));
     for link in links {
         let _ = write!(said, "\n{link}");
+    }
+    said
+}
+
+/// `tilo ls [path] -w <workspace>`: what the workspace holds, or what `path`
+/// holds, as `tilo_ls` lists it.
+pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>) -> ExitCode {
+    run(async {
+        let client = Client::open(reach)?;
+        let workspace = workspace_id(&client, workspace).await?;
+        let mut route = format!("/v1/workspaces/{workspace}/resources");
+        if let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) {
+            let _ = write!(route, "?path={}", api::encode_query(path));
+        }
+        let listed = client.get(&route).await?;
+        Ok(show(reach.json, &listed, &listing_text(&listed)))
+    })
+}
+
+/// `tilo read <path> -w <workspace>`: one resource, as `tilo_read` reads it.
+pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>) -> ExitCode {
+    run(async {
+        let client = Client::open(reach)?;
+        let workspace = workspace_id(&client, workspace).await?;
+        let mut route = format!(
+            "/v1/workspaces/{workspace}/resources/{}",
+            api::encode_path(path.trim())
+        );
+        if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
+            let _ = write!(route, "?cursor={}", api::encode_query(cursor));
+        }
+        let read = client.get(&route).await?;
+        Ok(show(reach.json, &read, &resource_text(&read)))
+    })
+}
+
+/// A listing as a person reads it: the lines `tilo_ls` prints, or the same
+/// built from its rows when the host sent no text.
+fn listing_text(listed: &Value) -> String {
+    if let Some(text) = listed
+        .get("text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        return text.to_owned();
+    }
+    let mut said = text(listed, "path").to_owned();
+    if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
+        let _ = write!(said, "  ({kind})");
+    }
+    for row in listed
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let _ = write!(
+            said,
+            "\n{}  {}  {}",
+            text(row, "path"),
+            text(row, "label"),
+            text(row, "kind")
+        );
+    }
+    said
+}
+
+/// A read as a person reads it: the text `tilo_read` prints, or its fields
+/// and children when the host sent no text.
+fn resource_text(read: &Value) -> String {
+    if let Some(text) = read
+        .get("text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        return text.to_owned();
+    }
+    let mut said = text(read, "path").to_owned();
+    if let Some(kind) = read.get("kind").and_then(Value::as_str) {
+        let _ = write!(said, "  ({kind})");
+    }
+    for (name, value) in read
+        .get("fields")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let _ = write!(said, "\n  {name}: {value}");
+    }
+    for child in read
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let _ = write!(said, "\n  {}", text(child, "path"));
     }
     said
 }
@@ -608,7 +718,8 @@ async fn put_files(
                 (Some(record), _) => println!("{record}  {name}"),
                 (None, true) => println!("{}  {name}", text(row, "content")),
                 (None, false) => println!(
-                    "{}  {name}  (no app opened it: its bytes are in the workspace)",
+                    "{}  {name}  (no app opens its bytes: they are in the workspace under that \
+                     reference)",
                     text(row, "content")
                 ),
             }
@@ -1230,11 +1341,20 @@ mod tests {
             ),
             ("POST", route) if route.ends_with("/actions/open") => json_reply(
                 200,
-                json!({"status": "ok", "path": "pdf-viewer#open", "run": "run-1"}),
+                json!({"status": "ok", "path": "pdf-viewer#open", "run": "run-1",
+                    "result": {"provider": "record-1"}}),
             ),
             ("GET", route) if route.contains("/content/") => {
                 Some(test_http::Reply::status(200).body(b"hello".to_vec()))
             }
+            ("GET", route) if route.contains("/resources?path=") => json_reply(
+                200,
+                json!({"path": "notes", "rows": [], "text": "notes  (notes.notebook)"}),
+            ),
+            ("GET", route) if route.contains("/resources/") => json_reply(
+                200,
+                json!({"path": "notes/Notebook/Todo", "text": "# Todo"}),
+            ),
             _ => json_reply(
                 404,
                 json!({"error": {"code": "not_found", "message": "no such route"}}),
@@ -1317,7 +1437,10 @@ mod tests {
                 },
             );
             let put = api_server.drain_requests();
-            let upload = put.last().expect("the upload");
+            let upload = put
+                .iter()
+                .find(|request| request.target.ends_with("/uploads"))
+                .expect("the upload");
             assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/uploads"));
             assert_eq!(upload.method, "POST");
             assert_eq!(upload.body, b"hello");
@@ -1326,6 +1449,17 @@ mod tests {
                 Some("application/octet-stream")
             );
             assert!(upload.header("idempotency-key").is_some());
+            // Its bytes are text, so it lands in Notes: the host opens a
+            // record for it with the reference the upload answered.
+            let landed = put.last().expect("the landing");
+            assert_eq!(
+                landed.target,
+                format!("/v1/workspaces/{WORKSPACE}/resources/notes/actions/open")
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&landed.body).unwrap(),
+                json!({"content": "tilo.content:abc", "name": "passport.png"})
+            );
 
             // An action is `POST …/resources/{path}/actions/{action}`: its
             // arguments are the body, and its run is named.
@@ -1352,6 +1486,30 @@ mod tests {
             assert_eq!(
                 serde_json::from_slice::<Value>(&action.body).unwrap(),
                 json!({})
+            );
+
+            // A listing and a read are the routes `tilo_ls` and `tilo_read`
+            // answer: the same call, in the words a person's command takes.
+            ls(reach, "applicant-jane-doe", Some("notes/Todo"));
+            let listed = api_server.drain_requests();
+            let listing = listed.last().expect("the listing");
+            assert_eq!(listing.method, "GET");
+            assert_eq!(
+                listing.target,
+                format!("/v1/workspaces/{WORKSPACE}/resources?path=notes%2FTodo")
+            );
+            read(
+                reach,
+                "applicant-jane-doe",
+                "notes/Notebook/Todo",
+                Some("12"),
+            );
+            let read_requests = api_server.drain_requests();
+            assert_eq!(
+                read_requests.last().expect("the read").target,
+                format!(
+                    "/v1/workspaces/{WORKSPACE}/resources/notes/Notebook/Todo?cursor=12"
+                )
             );
 
             // A file comes back by the reference, its bytes as they were.
@@ -1467,6 +1625,14 @@ mod tests {
                 action_text(&done),
                 "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
             );
+            // What it made or changed, as a path the next command takes as it
+            // is: the answer an agent's create prints is not lost.
+            let created = serde_json::json!({"status": "ok", "path": "tasks#create",
+                "resources": ["tasks.tracker/issues/7"]});
+            assert_eq!(
+                action_text(&created),
+                "ok tasks#create\n-> tasks.tracker/issues/7"
+            );
             let pending = serde_json::json!({"status": "pending", "run": "run-2",
                 "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
             assert_eq!(
@@ -1474,6 +1640,36 @@ mod tests {
                 "pending run-2: it waits for you, at https://tilo.sh/approve/1 \
              (pdf-viewer#import-pdf-content)"
             );
+        }
+
+        phase a_listing_and_a_read_print_what_the_host_said;
+        {
+            // The host's own text, when it sent one: the lines `tilo_ls` and
+            // `tilo_read` print to an agent.
+            let listed = serde_json::json!({"path": "notes", "kind": "notes.notebook",
+                "rows": [{"path": "notes/Notebook", "label": "Notebook", "kind": "notes.notebook"}],
+                "text": "notes  (notes.notebook)\nNotebook  notes.notebook"});
+            assert_eq!(
+                listing_text(&listed),
+                "notes  (notes.notebook)\nNotebook  notes.notebook"
+            );
+            // A host that sent none: the same, built from its rows.
+            let rows_only = serde_json::json!({"path": "notes", "kind": "notes.notebook",
+                "rows": [{"path": "notes/Notebook", "label": "Notebook",
+                    "kind": "notes.notebook"}]});
+            assert_eq!(
+                listing_text(&rows_only),
+                "notes  (notes.notebook)\nnotes/Notebook  Notebook  notes.notebook"
+            );
+            let read = serde_json::json!({"path": "notes/Notebook/Todo",
+                "kind": "notes.page", "fields": {"title": "Todo"},
+                "children": [{"path": "notes/Notebook/Todo/body"}]});
+            assert_eq!(
+                resource_text(&read),
+                "notes/Notebook/Todo  (notes.page)\n  title: \"Todo\"\n  notes/Notebook/Todo/body"
+            );
+            let said = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
+            assert_eq!(resource_text(&said), "# Todo\n");
         }
 
         phase the_people_of_a_workspace_are_a_line_each;

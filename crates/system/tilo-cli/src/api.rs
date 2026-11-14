@@ -121,6 +121,9 @@ impl Answer {
                 said.push_str(step);
             }
         }
+        // The server names its own routes and an agent's tools; a person at
+        // this command types neither.
+        let said = tilo_api::v1::names::said(&said, tilo_api::v1::names::Surface::Cli);
         anyhow!("{said}")
     }
 
@@ -675,6 +678,12 @@ pub fn encode_path(path: &str) -> String {
         .map(|segment| percent_encoding::utf8_percent_encode(segment, SEGMENT).to_string())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// `value` percent-encoded for a query: everything but letters, digits and
+/// `-._~`, `/` and `#` included, so the host reads it whole.
+pub fn encode_query(value: &str) -> String {
+    percent_encoding::utf8_percent_encode(value, SEGMENT).to_string()
 }
 
 #[cfg(test)]
