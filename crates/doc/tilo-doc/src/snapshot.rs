@@ -266,24 +266,18 @@ impl BlockView {
 ///
 /// # Errors
 ///
-/// Returns [`DocError`](crate::DocError) if Automerge rejects the replayed prefix, or the rebuilt
-/// replica has no readable document root.
+/// Returns [`DocError`](crate::DocError) if the document had no readable root then.
 pub fn at(doc: &mut automerge::AutoCommit, version: usize) -> Result<DocSnapshot, crate::DocError> {
-    let rebuilt = tilo_resource::history::replay_prefix(doc, version)
-        .map_err(|e| crate::DocError::Invalid(format!("apply_changes: {e}")))?;
-    let c = crate::model::open(&rebuilt, &automerge::ROOT)?;
-    Ok(crate::model::materialize(&rebuilt, &c))
+    let heads = tilo_resource::history::prefix_heads(doc, version);
+    doc.read_at(&heads, |doc| {
+        let c = crate::model::open(doc, &automerge::ROOT)?;
+        Ok(crate::model::materialize(doc, &c))
+    })
 }
 
 pub fn of(doc: &automerge::AutoCommit) -> Option<DocSnapshot> {
     let c = crate::model::open(doc, &automerge::ROOT).ok()?;
     Some(crate::model::materialize(doc, &c))
-}
-
-/// The document as of each of `versions`, from one replay of the change log. A version Automerge
-/// rejects, and every later one, is `None`.
-pub fn series(doc: &mut automerge::AutoCommit, versions: &[usize]) -> Vec<Option<DocSnapshot>> {
-    tilo_resource::history::replay_series(doc, versions, of)
 }
 
 #[cfg(test)]
@@ -322,31 +316,6 @@ mod version_tests {
         assert!(
             saw_one,
             "an intermediate version should have a single block"
-        );
-
-        // One replay of the change log gives what materializing each version gives.
-        let count = d.versions().len();
-        let every: Vec<usize> = (0..count).collect();
-        let series = super::series(&mut d.doc, &every);
-        assert_eq!(series.len(), count, "one snapshot per version asked for");
-        for (version, snapshot) in every.iter().zip(&series) {
-            assert_eq!(
-                snapshot.as_ref(),
-                Some(&d.materialize_at(*version).unwrap()),
-                "version {version}"
-            );
-        }
-        let window = [1, count - 1, count + 3];
-        let series = super::series(&mut d.doc, &window);
-        assert_eq!(
-            series[0].as_ref(),
-            Some(&d.materialize_at(1).unwrap()),
-            "a window's first version"
-        );
-        assert_eq!(
-            series[2].as_ref(),
-            Some(&d.materialize_at(count - 1).unwrap()),
-            "a version past the log reads as the last one"
         );
 
         // Time travel shows a text growing.

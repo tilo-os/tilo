@@ -515,3 +515,13 @@ patches. A diff of the current state (`ClockRange::Current`) walks
 everything, as it must. Pinned by
 `crates/doc/tilo-automerge/tests/diff_walks_what_differs.rs`, and what an undo
 pays for it by `collaboration`'s `undo_of_a_small_step_costs_the_step_not_the_record`.
+
+# Tilo patch: read a past version without moving the view
+
+`AutoCommit::read_at(heads, read)` hands `read` the document as an isolated
+document reads it at `heads`, and puts the view back. `isolate` and
+`integrate` do the same reads but log the patches between the two views,
+which a diff cursor's index then holds: a reader of history that peeks at a
+past version must not hand a rendering host's `diff_incremental` the way
+there and back. The marked spot is `TILO(read-at)` in `autocommit.rs`. Used
+by `tilo-ui`'s history log to read a change's before and after.

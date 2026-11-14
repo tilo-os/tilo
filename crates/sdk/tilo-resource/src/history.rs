@@ -8,8 +8,8 @@
 //!
 //! Versions are addressed two ways: by heads (a set of change hashes, what a
 //! collaborator can name) and by position in [`versions`]' causal order (what
-//! a scrubber counts). [`prefix_heads`] turns a position into heads, and
-//! [`replay_prefix`] rebuilds the document a position names.
+//! a scrubber counts). [`prefix_heads`] turns a position into heads, which
+//! the document is read at.
 
 use std::collections::{BinaryHeap, HashMap};
 use tilo_sort::CompactSort as _;
@@ -17,7 +17,6 @@ use tilo_sort::CompactSort as _;
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
 use tilo_actions::ActionContext;
-use tilo_automerge::ApplyIncoming;
 
 use crate::model::{Doc, ModelError};
 use crate::resource::Resource;
@@ -56,7 +55,7 @@ pub fn version_of(doc: &automerge::Automerge, meta: &automerge::ChangeMetadata<'
 }
 
 /// Every change in causal order, oldest first. A change's position in this
-/// list is the address [`prefix_heads`] and [`replay_prefix`] take.
+/// list is the address [`prefix_heads`] takes.
 ///
 /// Reads every change's metadata (never its operations). For a long history
 /// shown a screen at a time, [`page`] reads only the page.
@@ -187,50 +186,6 @@ pub fn prefix_heads(doc: &mut Doc, upto: usize) -> Vec<ChangeHash> {
         .iter()
         .map(|meta| meta.hash)
         .filter(|hash| !depended_on.contains(hash))
-        .collect()
-}
-
-/// The document as of position `version` of [`versions`], rebuilt by
-/// replaying that prefix of the change log into a fresh replica.
-pub fn replay_prefix(doc: &mut Doc, version: usize) -> Result<Doc, ModelError> {
-    let changes = doc.get_changes(&[]);
-    let take = version.saturating_add(1).min(changes.len());
-    let mut rebuilt = Doc::new();
-    rebuilt.apply_incoming(changes.into_iter().take(take))?;
-    Ok(rebuilt)
-}
-
-/// `read` of the document at each of `versions` (ascending positions of
-/// [`versions`]), from one replay of the change log: equivalent to
-/// [`replay_prefix`] per version without replaying the prefix again each
-/// time. A version Automerge rejects, and every later one, is `None`.
-pub fn replay_series<T>(
-    doc: &mut Doc,
-    versions: &[usize],
-    mut read: impl FnMut(&Doc) -> Option<T>,
-) -> Vec<Option<T>> {
-    let mut changes = doc.get_changes(&[]).into_iter();
-    let total = changes.len();
-    let mut rebuilt = Doc::new();
-    let mut applied = 0usize;
-    let mut failed = false;
-    versions
-        .iter()
-        .map(|&version| {
-            let take = version.saturating_add(1).min(total);
-            if !failed && take > applied {
-                let batch: Vec<_> = changes
-                    .by_ref()
-                    .take(take.saturating_sub(applied))
-                    .collect();
-                failed = rebuilt.apply_incoming(batch).is_err();
-                applied = take;
-            }
-            if failed {
-                return None;
-            }
-            read(&rebuilt)
-        })
         .collect()
 }
 
@@ -726,6 +681,7 @@ pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::St
 mod tests {
     use super::*;
     use automerge::{ActorId, ROOT, ReadDoc};
+    use tilo_automerge::ApplyIncoming as _;
 
     #[test]
     fn one_act_is_one_step_and_a_person_alone_is_one_step_beside_their_changes() {
@@ -1008,23 +964,17 @@ mod tests {
             .map(automerge::Change::hash)
             .collect();
         assert_eq!(listed, replayed, "metadata and changes list in one order");
+        let changes = doc.get_changes(&[]);
         for position in 0..listed.len() {
-            let mut rebuilt = replay_prefix(&mut doc, position).unwrap();
+            let mut rebuilt = Doc::new();
+            rebuilt
+                .apply_incoming(changes[..=position].to_vec())
+                .unwrap();
             let mut heads = rebuilt.get_heads();
             heads.compact_sort();
             let mut expected = prefix_heads(&mut doc, position);
             expected.compact_sort();
             assert_eq!(heads, expected, "position {position}");
         }
-        let last = listed.len() - 1;
-        let series = replay_series(&mut doc, &[0, 3, last], |doc| {
-            doc.get(ROOT, "left")
-                .ok()
-                .flatten()
-                .map(|(value, _)| value.to_string())
-        });
-        assert_eq!(series.len(), 3);
-        assert_eq!(series[0], None);
-        assert!(series[2].is_some());
     }
 }

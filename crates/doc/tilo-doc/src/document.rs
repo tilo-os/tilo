@@ -592,8 +592,7 @@ impl Document {
     ///
     /// # Errors
     ///
-    /// Returns [`DocError`] if `version` is out of range or the historical state cannot be
-    /// replayed.
+    /// Returns [`DocError`] if the document had no readable root at `version`.
     pub fn materialize_at(
         &mut self,
         version: usize,

@@ -507,6 +507,19 @@ impl AutoCommit {
         self.isolation = Some(heads.to_vec());
     }
 
+    /// TILO(read-at): `read` the document as of `heads`, as an isolated
+    /// document reads, without moving its view: unlike [`Self::isolate`] and
+    /// [`Self::integrate`] it logs no patches, so a diff cursor's index is left
+    /// as it was (vendor/automerge/TILO-PATCH.md). Commits an open transaction
+    /// first, as `isolate` does.
+    pub fn read_at<R>(&mut self, heads: &[ChangeHash], read: impl FnOnce(&Self) -> R) -> R {
+        self.ensure_transaction_closed();
+        let view = self.isolation.replace(heads.to_vec());
+        let read = read(self);
+        self.isolation = view;
+        read
+    }
+
     pub fn integrate(&mut self) {
         self.ensure_transaction_closed();
         self.patch_to(self.doc.get_heads().as_slice());

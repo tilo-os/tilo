@@ -12,10 +12,10 @@
 //! change, or a write that names no finer action than the document) says so
 //! in the framework's words, never by guessing from its content. Its op class
 //! and text delta are read from the change itself: **structural**, which
-//! materialises the window with [`tilo_doc::snapshot::series`] and diffs
+//! materialises the document before and after the change and diffs the
 //! snapshots for real per-paragraph insert/delete counts on documents carrying
-//! the `tilo-doc` schema; and **patch**, which reads the change's own patch
-//! set via `AutoCommit::diff`.
+//! the `tilo-doc` schema; and **patch**, which diffs the document between the
+//! heads before and after the change.
 //!
 //! [`HistoryEntry::id`] is the first sixteen bytes of the change hash, so
 //! it's content-addressed and stable across peers, letting
@@ -181,8 +181,18 @@ impl HistorySource {
         self
     }
 
-    fn passes_over(&self, change: &automerge::Change) -> bool {
-        self.pass_over.is_some_and(|pass_over| pass_over(change))
+    /// Whether it passes over each of the `count` changes `doc` has after
+    /// `have_deps`, in log order.
+    fn passed_over(
+        &self,
+        doc: &mut AutoCommit,
+        have_deps: &[ChangeHash],
+        count: usize,
+    ) -> Vec<bool> {
+        match self.pass_over {
+            Some(pass_over) => doc.get_changes(have_deps).iter().map(pass_over).collect(),
+            None => vec![false; count],
+        }
     }
 
     /// Leave out a record's genesis: the change that created it with its
@@ -403,15 +413,7 @@ fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
     sa == sb && a != b
 }
 
-/// [`patch_effect`] of the patches `before -> after` reads. For documents
-/// that don't carry the tilo-doc schema.
-fn diff_effect(doc: &mut AutoCommit, before: &[ChangeHash], after: &[ChangeHash]) -> Effect {
-    let patches = doc.diff(before, after);
-    patch_effect(doc, &patches)
-}
-
-/// What patches already read did; `doc` is a replica holding the objects
-/// they touch.
+/// What patches a diff read did; `doc` holds the objects they touch.
 fn patch_effect(doc: &AutoCommit, patches: &[automerge::Patch]) -> Effect {
     // A change that only named a version or recorded a run shows nothing,
     // so the caller drops the row.

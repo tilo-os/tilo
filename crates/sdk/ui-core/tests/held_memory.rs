@@ -11,8 +11,9 @@
 )]
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ROOT};
+use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use tilo_automerge::heap::{self, ThreadCounting};
+use tilo_ui::history_source::{HistoryLog, HistorySource};
 use tilo_ui::state::{DocumentReplica, State};
 
 #[global_allocator]
@@ -87,5 +88,56 @@ fn a_metadata_replica_holds_what_its_saved_document_holds() {
         grown < loaded * 2,
         "a replica fed {} remote ops holds {grown} bytes against {loaded} loaded",
         rounds.len() * OPS_PER_ROUND
+    );
+}
+
+/// A history that follows a record holding a mebibyte of text holds what it lists, not a second
+/// copy of the record, and reading one more small change costs that change.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the cost compared is real elapsed time"
+)]
+fn a_followed_history_holds_its_rows_and_reads_a_small_change_for_what_it_changed() {
+    const MEBIBYTE: usize = 1 << 20;
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(b"grace".as_slice()));
+    let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+    doc.splice_text(&body, 0, 0, &"pasted ".repeat(MEBIBYTE / 7 + 1))
+        .unwrap();
+    doc.commit();
+    // Reading the text once: what a reading that walked the record would cost at least.
+    let reading = std::time::Instant::now();
+    assert!(doc.text(&body).unwrap().len() > MEBIBYTE);
+    let read = reading.elapsed();
+    let source = HistorySource::new();
+    let mut log = HistoryLog::default();
+    let first = heap::held_by(|| source.follow(&mut doc, &mut log));
+    doc.set_actor(ActorId::from(b"ada".as_slice()));
+    doc.put(ROOT, "title", "Draft").unwrap();
+    doc.commit();
+
+    let following = std::time::Instant::now();
+    let mut cost = 0;
+    let more = heap::held_by(|| cost = heap::allocated_by(|| source.follow(&mut doc, &mut log)));
+    let took = following.elapsed();
+    // Counted on both the log and the document: what reading leaves behind is held for the record.
+    let held = first + more;
+    eprintln!(
+        "history of a mebibyte record: holds {held} bytes; one more change allocated {cost} bytes in {took:?} (reading the text {read:?})"
+    );
+
+    assert_eq!(log.changes_read(), 2);
+    assert!(
+        held < (MEBIBYTE / 8).try_into().unwrap(),
+        "following the record holds {held} bytes"
+    );
+    assert!(
+        cost < MEBIBYTE / 8,
+        "reading a one-field change allocated {cost} bytes"
+    );
+    assert!(
+        took < read,
+        "reading a one-field change took {took:?}, reading the text {read:?}"
     );
 }

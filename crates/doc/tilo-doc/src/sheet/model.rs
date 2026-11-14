@@ -421,10 +421,9 @@ impl Workbook {
     }
 
     pub fn materialize_at(&mut self, version: usize) -> Result<WorkbookSnapshot, DocError> {
-        let rebuilt = tilo_resource::history::replay_prefix(&mut self.doc, version)
-            .map_err(|e| DocError::Invalid(format!("apply_changes: {e}")))?;
-        let c = open(&rebuilt, &ROOT)?;
-        Ok(materialize(&rebuilt, &c))
+        let heads = tilo_resource::history::prefix_heads(&mut self.doc, version);
+        self.doc
+            .read_at(&heads, |doc| Ok(materialize(doc, &open(doc, &ROOT)?)))
     }
 
     pub fn diff_versions(
