@@ -112,45 +112,14 @@ impl SegmentedFace<'_> {
 }
 
 impl ToggleGroup {
-    /// The folded strip as a reader meets it: one picker, whose menu holds the choices while it
-    /// is open. Its bounds are the picker's face, never the shares the folded segments no longer
-    /// paint.
+    /// The folded strip as a reader meets it: one picker that says what it holds, and, while its
+    /// menu is open, the choices that menu offers. Its bounds are the picker's face, never the
+    /// shares the folded segments no longer paint.
     pub(super) fn folded_accessibility(&self, name: Option<String>) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.menu.is_open();
-        let count = self.segments.len();
-        let items: Vec<AccessNode> = self
-            .segments
-            .iter()
-            .enumerate()
-            .map(|(i, segment)| {
-                let rect = open
-                    .then(|| self.menu.item_rect(i))
-                    .flatten()
-                    .unwrap_or(self.rect);
-                AccessNode::new(Role::MenuItem)
-                    .with_name(segment.label.clone())
-                    .with_action_target(self.segment_id(i))
-                    .with_bounds(rect)
-                    .with_position(i.saturating_add(1), count)
-                    .with_state(AccessState {
-                        focusable: self.is_enabled() && !segment.disabled && open,
-                        disabled: !self.is_enabled() || segment.disabled,
-                        checked: Some(i == self.selected),
-                        hidden: !open,
-                        ..Default::default()
-                    })
-            })
-            .collect();
-        let menu = AccessNode::new(Role::Menu)
+        let picker = AccessNode::new(Role::ComboBox)
             .with_optional_name(name.clone())
-            .with_children(items)
-            .with_state(AccessState {
-                hidden: !open,
-                ..Default::default()
-            });
-        AccessNode::new(Role::ComboBox)
-            .with_optional_name(name)
             .with_optional_value(Some(self.folded_label().into_owned()))
             .with_action_target(self.fold_target())
             .with_bounds(self.target_rect(self.rect))
@@ -160,8 +129,34 @@ impl ToggleGroup {
                     .focused(self.is_focused())
                     .disabled(!self.is_enabled())
                     .expanded(open),
-            )
-            .with_children(vec![menu])
+            );
+        if !open {
+            return picker;
+        }
+        let count = self.segments.len();
+        let items: Vec<AccessNode> = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, segment)| {
+                let rect = self.menu.item_rect(i).unwrap_or(self.rect);
+                AccessNode::new(Role::MenuItem)
+                    .with_name(segment.label.clone())
+                    .with_action_target(self.segment_id(i))
+                    .with_bounds(rect)
+                    .with_position(i.saturating_add(1), count)
+                    .with_state(AccessState {
+                        focusable: self.is_enabled() && !segment.disabled,
+                        disabled: !self.is_enabled() || segment.disabled,
+                        checked: Some(i == self.selected),
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        let menu = AccessNode::new(Role::Menu)
+            .with_optional_name(name)
+            .with_children(items);
+        picker.with_children(vec![menu])
     }
 
     /// What the folded strip says: the chosen segment's label, or that one is to be chosen.
@@ -374,6 +369,19 @@ mod tests {
             let mut narrow = chooser(160.0, Rc::clone(&chosen));
             assert!(narrow.is_folded(), "too narrow: a picker, not cut labels");
             frame(&mut narrow);
+            let closed = Widget::accessibility(&narrow).expect("the strip reaches assistive technology");
+            assert_eq!(closed.role, crate::a11y::Role::ComboBox, "one picker");
+            assert_eq!(
+                closed.value.as_deref(),
+                Some("Dissolve"),
+                "closed, the picker says what it holds"
+            );
+            assert_eq!(closed.state.expanded, Some(false));
+            assert!(
+                closed.children.is_empty(),
+                "a closed picker offers no choices: {:?}",
+                closed.children
+            );
             let center = narrow.rect.center();
             click(&mut narrow, center);
             assert!(narrow.menu_is_open(), "a press opens the menu");
@@ -387,10 +395,14 @@ mod tests {
             assert_eq!(narrow.menu.items()[1].checked(), Some(true));
             let node = Widget::accessibility(&narrow).expect("the strip reaches assistive technology");
             assert_eq!(node.state.expanded, Some(true));
-            // Folded, the strip paints one picker, but to a reader it is still the same choices:
-            // every segment keeps its node, so each one's binding has a control, and the one it
-            // holds is the checked one.
-            let spoken: Vec<_> = node
+            // Open, the picker offers the choices its menu lists, each one a control of its own
+            // so its binding has one, and the one the strip holds checked.
+            let [menu] = node.children.as_slice() else {
+                panic!("the open picker offers one menu: {:?}", node.children);
+            };
+            assert_eq!(menu.role, crate::a11y::Role::Menu);
+            assert!(!menu.state.hidden, "the menu a reader opened is offered");
+            let spoken: Vec<_> = menu
                 .children
                 .iter()
                 .map(|child| (child.name.as_deref(), child.state.checked))

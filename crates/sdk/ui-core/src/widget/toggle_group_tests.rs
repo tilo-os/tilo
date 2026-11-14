@@ -921,15 +921,11 @@ tilo_test_env::scenario! {
                 bounds.width() >= side && bounds.height() >= side,
                 "the picker is a target: {bounds:?}"
             );
-            let [menu] = node.children.as_slice() else {
-                panic!("one menu under the picker: {:?}", node.children);
-            };
-            assert_eq!(menu.role, Role::Menu);
-            assert!(menu.state.hidden, "the menu is closed until asked");
-            assert_eq!(menu.children.len(), 4);
+            assert_eq!(node.state.expanded, Some(false));
             assert!(
-                menu.children.iter().all(|item| item.state.hidden),
-                "a closed menu offers no choices"
+                node.children.is_empty(),
+                "a closed picker offers no choices: {:?}",
+                node.children
             );
 
             let target = g.fold_target();
@@ -942,12 +938,13 @@ tilo_test_env::scenario! {
             ));
             let node = g.accessibility().expect("semantics");
             assert_eq!(node.state.expanded, Some(true));
-            let menu = &node.children[0];
-            assert!(!menu.state.hidden, "the menu a reader opened is offered");
+            let [menu] = node.children.as_slice() else {
+                panic!("one menu under the open picker: {:?}", node.children);
+            };
+            assert_eq!(menu.role, Role::Menu);
+            assert_eq!(menu.children.len(), 4);
             assert!(
-                menu.children
-                    .iter()
-                    .all(|item| !item.state.hidden && item.bounds.is_some()),
+                menu.children.iter().all(|item| item.bounds.is_some()),
                 "every choice stands in the open menu where it is drawn"
             );
         }
