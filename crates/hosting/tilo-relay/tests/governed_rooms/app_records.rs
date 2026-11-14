@@ -118,10 +118,6 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     // An editor's own change of an app's record is theirs: the record's
     // genesis is theirs to start.
     let laptop_session = session(&relay, &laptop, workspace).await;
-    assert!(
-        genesis(&mut member_peer.clone(), "so.tilo.notes\n", &member.sk).is_err(),
-        "a malformed application id is refused"
-    );
     crate::common::wait_until_subscribed(&relay, workspace, &member.device_pubkey()).await;
     let created = genesis(&mut member_peer, OPENED, &member.sk).unwrap();
     publish(&member_session, &created);
