@@ -9,8 +9,13 @@
 //! who is here asks for, the emoji catalogue, which the first picker,
 //! reaction name or `:name:` completion asks for, History, which the
 //! first window that registers it asks for, desktop search, which the
-//! desktop asks for as it first lays out, the notification centre,
-//! which opening it asks for, the HTML presenter, which a page mounted
+//! desktop asks for as it first lays out, the jobs band, which the first
+//! job that runs asks for, the file drops, which the first drag onto the
+//! desk asks for and the page fetches once its first frame is up, the
+//! document codecs, which a workspace's first document asks for, the
+//! notification centre,
+//! which opening it asks for, the people roster, which the bar's faces
+//! open, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets and the
 //! shortcut guide, which opening one asks for, a hosted window's page, which
 //! the first page to reach the desk asks for, and the renderer's maker, which
@@ -206,6 +211,32 @@ split_code! {
 }
 
 split_code! {
+    /// What a page does with files dropped on the desk or uploaded from its menu: the first drag
+    /// that reaches the desk asks for it.
+    mod page_drops: tilo_browser_runtime::MakeDrops = tilo_browser_runtime::builtin_drops()
+        => tilo_browser_runtime::DROPS, module = "page_drops", hash = "e94b71d0c3a58f26";
+}
+
+split_code! {
+    /// The codecs that read a workspace's document (a `.md`, an `.odt`) for
+    /// search: the first tree that names one asks for them.
+    mod document_files: tilo_browser_runtime::DocumentFiles = tilo_browser_runtime::builtin_document_files()
+        => tilo_browser_runtime::DOCUMENT_FILES, module = "document_files", hash = "7a2f63c8e1b95d04";
+}
+
+split_code! {
+    /// The jobs band the desk's card shows: the first job that runs asks for it.
+    mod jobs_band: ui::jobs::MakeBand = ui::jobs::builtin_band() => ui::jobs::BAND,
+        module = "jobs_band", hash = "c1b8e04f7a2d9635";
+}
+
+split_code! {
+    /// The people roster: the first time the bar's faces open it asks for it.
+    mod people: tilo_desktop::people::MakePeopleOverlay = tilo_desktop::people::builtin_people_overlay()
+        => tilo_desktop::people::PEOPLE, module = "people", hash = "a7d4f2c10b95e863";
+}
+
+split_code! {
     /// The action palette: the first window to lay out asks for it.
     mod action_palette: tilo_ui::action_palette::MakeActionPalette = tilo_ui::action_palette::builtin_action_palette()
         => tilo_ui::action_palette::ACTION_PALETTE, module = "action_palette", hash = "a26d9f4c1e0b8573";
@@ -321,6 +352,10 @@ pub(crate) fn register() {
     feedback_code::register();
     dom_presenter::register();
     profile_card::register();
+    people::register();
+    jobs_band::register();
+    page_drops::register();
+    document_files::register();
     sheets::register();
     questions::register();
     desktop_search::register();
@@ -333,6 +368,25 @@ pub(crate) fn register() {
     renderer::register();
     pdf_words::register();
     prepare_settings_keeper_after_first_frame();
+    prepare_page_drops_after_first_frame();
+}
+
+/// Once the page has drawn its first frame, fetch what a file dropped on the
+/// desk or picked from its menu needs.
+///
+/// A drag asks for it as it starts over the desk; a person who picks files
+/// with the menu instead picks them before anything asks, so the module goes
+/// after the first frame and is in before their choice comes back. Nothing of
+/// it is needed for that frame.
+fn prepare_page_drops_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            let _ = tilo_browser_runtime::DROPS.get();
+        } else {
+            prepare_page_drops_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
 }
 
 /// Fetch desktop search's module, which holds the session's search sources

@@ -30,6 +30,11 @@ lazy-profile-card = []
 # then the bar shows as a picture of its paint. The browser desktop uses this
 # to keep it out of its start module.
 lazy-topbar-html = []
+# The people roster is not linked into the desktop that holds it: the program
+# fetches its code the first time the roster opens and hands it over
+# (`people::PEOPLE`). The browser desktop uses this to keep it out of its start
+# module.
+lazy-people = []
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web

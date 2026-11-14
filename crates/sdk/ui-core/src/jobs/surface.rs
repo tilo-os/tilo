@@ -350,6 +350,44 @@ impl Default for Band {
     }
 }
 
+/// What a program that holds a band asks of it, as the trait object [`BAND`] makes.
+pub trait BandApi: Widget {
+    fn presses(&self) -> &Presses;
+    fn is_empty(&self) -> bool;
+}
+
+impl BandApi for Band {
+    fn presses(&self) -> &Presses {
+        Band::presses(self)
+    }
+    fn is_empty(&self) -> bool {
+        Band::is_empty(self)
+    }
+}
+
+/// The band's code, as a program that fetches it on first use hands it over.
+#[derive(Clone, Copy)]
+pub struct MakeBand(fn(Presses) -> Box<dyn BandApi>);
+
+impl MakeBand {
+    /// A band sharing `presses` with the code that reads them.
+    #[must_use]
+    pub fn make(self, presses: Presses) -> Box<dyn BandApi> {
+        (self.0)(presses)
+    }
+}
+
+/// The band this build links.
+#[must_use]
+pub fn builtin_band() -> MakeBand {
+    MakeBand(|presses| Box::new(Band::with_presses(presses)))
+}
+
+crate::lazy_code! {
+    /// The band's code: linked, or with `lazy-jobs-band` fetched the first time a job runs.
+    pub static BAND: MakeBand = builtin_band, feature = "lazy-jobs-band";
+}
+
 fn bare(presses: Presses, shape: Shape) -> Column {
     match shape {
         Shape::Band => band(&presses),

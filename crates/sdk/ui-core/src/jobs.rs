@@ -46,7 +46,7 @@ pub use record::{
     Job, JobId, Outcome, Progress, Running, Spec, Subject, Summary, Unit, clear, dismiss, finished,
     is_active, revision, rows, running, show, start, stop, summary,
 };
-pub use surface::{Band, Press, Presses, apply, band, pane};
+pub use surface::{BAND, Band, BandApi, MakeBand, Press, Presses, apply, band, builtin_band, pane};
 
 use crate::wake::WakeHandle;
 

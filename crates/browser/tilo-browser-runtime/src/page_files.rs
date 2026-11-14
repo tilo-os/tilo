@@ -107,8 +107,12 @@ impl WorkspaceFiles {
         let heads = record.heads();
         let mut read = self.read.borrow_mut();
         if read.heads != heads {
-            read.heads = heads;
-            self.keep_documents(&record, &mut tree);
+            let kept = self.keep_documents(&record, &mut tree);
+            // Walks again next frame while the code that writes them is on its
+            // way; a fetch that failed leaves the files found by name alone.
+            if kept || !DOCUMENT_FILES.fetching() {
+                read.heads = heads;
+            }
             self.source.set_files(files_of(&tree));
         }
         for node in tree.nodes.values() {
@@ -150,8 +154,9 @@ impl WorkspaceFiles {
     /// Name each text document of `tree` (a `.md`, an `.odt`, whose content
     /// the tree holds as a document of its own) by its file's hash: the file is
     /// written from the record into the page's content, so a search reads its
-    /// words and opens it as it does any other file.
-    fn keep_documents(&self, record: &StoredRecord, tree: &mut Tree) {
+    /// words and opens it as it does any other file. Whether every one was
+    /// written: `false` while the code that writes them is still to come.
+    fn keep_documents(&self, record: &StoredRecord, tree: &mut Tree) -> bool {
         let documents: Vec<String> = tree
             .nodes
             .iter()
@@ -159,16 +164,17 @@ impl WorkspaceFiles {
             .map(|(id, _)| id.clone())
             .collect();
         for id in documents {
-            let file = record
-                .read(|doc| fs_protocol::tree::document_file(doc, &id, &self.content))
-                .flatten();
-            let Some(hash) = file.and_then(|file| self.content.put(&file).ok()) else {
+            let Some(files) = DOCUMENT_FILES.get() else {
+                return false;
+            };
+            let Some(hash) = (files.write)(record, &id, &self.content) else {
                 continue;
             };
             if let Some(node) = tree.nodes.get_mut(&id) {
                 node.hash = Some(hash);
             }
         }
+        true
     }
 }
 
@@ -251,6 +257,43 @@ pub fn builtin_pdf_words() -> PdfWords {
 ui::lazy_code! {
     /// The code that reads a PDF's words.
     pub static PDF_WORDS: PdfWords = builtin_pdf_words, feature = "deferred-pdf-words";
+}
+
+/// The code that writes a file the tree keeps as a document (a `.md`, an
+/// `.odt`) into the page's content, so a search reads its words and an app
+/// opens it as any other file: the codecs that read them are large, and only a
+/// workspace holding one needs them, so the browser desktop fetches it as its
+/// own module the first time the tree names one (`deferred-document-files`;
+/// linked otherwise).
+#[derive(Clone, Copy)]
+pub struct DocumentFiles {
+    write: fn(&StoredRecord, &str, &tilo_content::ContentStore) -> Option<String>,
+}
+
+/// The document writer this build links.
+#[must_use]
+pub fn builtin_document_files() -> DocumentFiles {
+    DocumentFiles {
+        write: write_document,
+    }
+}
+
+ui::lazy_code! {
+    /// The code that writes a tree's document into the page's content.
+    pub static DOCUMENT_FILES: DocumentFiles = builtin_document_files,
+        feature = "deferred-document-files";
+}
+
+/// `id`'s file as the content store keeps it, by the hash it was written under.
+fn write_document(
+    record: &StoredRecord,
+    id: &str,
+    content: &tilo_content::ContentStore,
+) -> Option<String> {
+    let file = record
+        .read(|doc| fs_protocol::tree::document_file(doc, id, content))
+        .flatten()?;
+    content.put(&file).ok()
 }
 
 /// A PDF's pages' words, through the engine the viewer draws with.

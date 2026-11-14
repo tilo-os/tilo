@@ -4,6 +4,16 @@
 //! visibility, frame metrics).
 
 use super::{MOUNTS, admit_runtime, error, refresh_mounts, with_mount, with_mount_quietly};
+
+/// The drops' code, once it is in: the first drop asks for it.
+fn drops_code() -> Result<Box<dyn crate::drops_code::DropsApi>, JsValue> {
+    crate::drops_code::DROPS
+        .get()
+        .map(crate::drops_code::MakeDrops::make)
+        .ok_or_else(|| {
+            error("The desk is still getting ready for files; drop them again in a moment")
+        })
+}
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
 use winit::event::WindowEvent;
@@ -255,27 +265,38 @@ pub fn drop_target(id: u64, x: f64, y: f64) -> Result<JsValue, JsValue> {
             set("width", (rect.width() * px).into());
             set("height", (rect.height() * px).into());
         };
-        match desktop.drop_target(point, size) {
-            super::drops::DropTarget::Window { rect, app, tab } => {
+        let Some(drops) = crate::drops_code::DROPS
+            .get()
+            .map(crate::drops_code::MakeDrops::make)
+        else {
+            // The drag asks for the drops' code; the next move over the desk finds it in.
+            set("kind", "refused".into());
+            set("why", "Reading the desk for files…".into());
+            return Ok(answer.into());
+        };
+        match drops.drop_target(desktop, point, size) {
+            crate::drops_code::DropTarget::Window { rect, app, tab } => {
                 set("kind", "window".into());
                 if app.as_deref() == Some(fs_protocol::tree::FILES_APP) {
                     set("label", desktop.files_label(tab).into());
                 }
-                let takes = app.as_deref().is_some_and(super::drops::takes_files);
+                let takes = app.as_deref().is_some_and(crate::drops_code::takes_files);
                 set("takes", takes.into());
                 set(
                     "hands",
-                    app.as_deref().is_some_and(super::drops::hands_files).into(),
+                    app.as_deref()
+                        .is_some_and(crate::drops_code::hands_files)
+                        .into(),
                 );
                 let name = app.as_deref().and_then(crate::desktop::known_application);
                 set("app", name.map_or(JsValue::NULL, JsValue::from_str));
                 place(rect);
             }
-            super::drops::DropTarget::Strip { area, .. } => {
+            crate::drops_code::DropTarget::Strip { area, .. } => {
                 set("kind", "strip".into());
                 place(area);
             }
-            super::drops::DropTarget::Refused(why) => {
+            crate::drops_code::DropTarget::Refused(why) => {
                 set("kind", "refused".into());
                 set("why", why.into());
             }
@@ -307,10 +328,11 @@ pub fn desktop_drop(
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
+        let drops = drops_code()?;
         let (point, _) = desk_point(m, x, y);
-        let target = desktop.drop_target(point, desk_size(m));
-        desktop
-            .drop_files(files, &target, progress)
+        let target = drops.drop_target(desktop, point, desk_size(m));
+        drops
+            .drop_files(desktop, files, &target, progress)
             .map_err(error)?;
         m.pending = true;
         m.window.request_redraw();
@@ -330,10 +352,12 @@ pub fn desktop_drop(
 pub fn desktop_upload(id: u64, files: &JsValue, progress: js_sys::Function) -> Result<(), JsValue> {
     let files = super::uploads::Picked::all(files);
     with_mount(id, |m| {
-        m.desktop
+        let desktop = m
+            .desktop
             .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?
-            .upload(files, progress)
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        drops_code()?
+            .upload(desktop, files, progress)
             .map_err(error)?;
         m.pending = true;
         m.window.request_redraw();

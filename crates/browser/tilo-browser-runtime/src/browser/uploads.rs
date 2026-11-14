@@ -16,7 +16,7 @@ pub(crate) const UPLOAD_FOLDER: &str = "upload-folder";
 
 /// One file the page hands over: its bytes where the browser keeps them (a `File` or `Blob`),
 /// and its path in what was dropped or chosen (`docs/2026/plan.md`).
-pub(super) struct Picked {
+pub(crate) struct Picked {
     blob: JsValue,
     path: String,
     size: u64,

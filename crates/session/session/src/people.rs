@@ -16,7 +16,9 @@ use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
-use tilo_desktop::people::{PeopleHit, PeopleModel, PeopleOverlay, RosterRow, roster_rows_named};
+use tilo_desktop::people::{
+    LazyPeopleOverlay, PeopleHit, PeopleModel, RosterRow, roster_rows_named,
+};
 use tilo_desktop::profile_card::{
     LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
@@ -205,7 +207,7 @@ impl Pinned {
 /// What the panel shows and where it stands, kept at rest between frames.
 #[derive(Default)]
 struct Shown {
-    overlay: PeopleOverlay,
+    overlay: LazyPeopleOverlay,
     rows: Vec<RosterRow>,
     /// Each person's screen as their presence says it, by roster id, `None` for someone who keeps
     /// where they are to themselves.

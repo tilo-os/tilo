@@ -526,6 +526,7 @@ draw_child_of_dyn!(
     AppWidget,
     crate::history_mode::host::HistoryChromeApi,
     crate::action_palette::api::ActionPaletteApi,
+    crate::jobs::BandApi,
 );
 
 /// What a gated, presence-publishing widget draws over itself once drawn:

@@ -17,6 +17,7 @@ use wasm_bindgen::prelude::*;
 use super::Desktop;
 use super::uploads::Picked;
 use crate::dropped_files::{self, DESK_FOLDER, Kept};
+use crate::drops_code::{DropTarget, DropsApi, hands_files};
 use crate::page_files::WorkspaceFiles;
 
 /// How far the outline of a drop's place keeps from the desk's edges.
@@ -47,42 +48,32 @@ async fn tree_here(files: &WorkspaceFiles) -> Result<ui::record::StoredRecord, S
 const TREE_WAITS: u32 = 120;
 const TREE_WAIT_MS: u32 = 250;
 
-/// The apps whose windows take the bytes of a file dropped on them, where a page hands them over
-/// (`ui::portal::dropped`): a note takes a picture, a conversation shares a file, an edit takes a
-/// clip. Another app that opens files takes one as its launch's Import, beside its window.
-const TAKES_WINDOW_DROPS: [&str; 3] = ["so.tilo.notes", "so.tilo.chat", "so.tilo.video-editor"];
+/// The drops a page asks of the desk's own code.
+pub(crate) struct Drops;
 
-/// Whether a window of `app` takes the bytes of files dropped on it itself, as its window's drop
-/// does: the page hands them to it besides copying them into the workspace's files.
-pub(crate) fn hands_files(app: &str) -> bool {
-    TAKES_WINDOW_DROPS.contains(&app)
-}
+impl DropsApi for Drops {
+    fn drop_target(&self, desktop: &Desktop, point: Point, size: (f64, f64)) -> DropTarget {
+        desktop.drop_target(point, size)
+    }
 
-/// Whether a window of `app` takes files dropped on it: by its own window's drop, or opened beside
-/// it in the app as its Import takes a file.
-pub(crate) fn takes_files(app: &str) -> bool {
-    app == FILES_APP
-        || TAKES_WINDOW_DROPS.contains(&app)
-        || tilo_content_types::landing_in(app).is_some()
-}
+    fn drop_files(
+        &self,
+        desktop: &Desktop,
+        files: Vec<Picked>,
+        target: &DropTarget,
+        progress: js_sys::Function,
+    ) -> Result<(), String> {
+        desktop.drop_files(files, target, progress)
+    }
 
-/// Where files dropped at a point of the desk go.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum DropTarget {
-    /// The window of `tab`, standing at `rect`, whose app is `app`.
-    Window {
-        tab: u64,
-        rect: Rect,
-        app: Option<String>,
-    },
-    /// Between the strip's windows, or anywhere on a desk with none: a window opens at `slot`,
-    /// and `area` is what the page outlines (a bar in the gap, or the whole empty desk).
-    Strip {
-        slot: tilo_desktop_surface::StripSlot,
-        area: Rect,
-    },
-    /// Nothing there takes files, and why.
-    Refused(String),
+    fn upload(
+        &self,
+        desktop: &Desktop,
+        files: Vec<Picked>,
+        progress: js_sys::Function,
+    ) -> Result<(), String> {
+        desktop.upload(files, progress)
+    }
 }
 
 impl Desktop {

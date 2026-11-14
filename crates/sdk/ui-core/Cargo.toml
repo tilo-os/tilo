@@ -108,6 +108,11 @@ lazy-history = []
 # shows once it is in. The browser shell uses this to keep it out of its
 # start module.
 lazy-palettes = []
+# A jobs band (`jobs::Band`) is not linked into the program that shows it: the
+# program fetches its code the first time a job runs and hands it over
+# (`jobs::BAND`); until then the band shows nothing. The browser shell uses
+# this to keep it out of its start module.
+lazy-jobs-band = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests

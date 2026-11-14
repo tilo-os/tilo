@@ -37,7 +37,8 @@ impl JobsCard {
         use tilo_session::platform::surfaces::{Heard, Placement, Surfaces as _};
         let presses = ui::jobs::Presses::new();
         let card = Card {
-            band: ui::jobs::Band::with_presses(presses.clone()),
+            presses: presses.clone(),
+            band: None,
             rect: Rect::ZERO,
             shown: false,
         };
@@ -76,10 +77,24 @@ impl JobsCard {
 
 /// The card itself, on its layer: the band in a floating card at the desk's bottom right.
 struct Card {
-    band: ui::jobs::Band,
+    presses: ui::jobs::Presses,
+    /// The band, made once its code is in.
+    band: Option<Box<dyn ui::jobs::BandApi>>,
     rect: Rect,
     /// Whether any job is there to show: with none, the card neither draws nor takes input.
     shown: bool,
+}
+
+impl Card {
+    /// The band, made once its code is in; `None` until then.
+    fn band(&mut self) -> Option<&mut Box<dyn ui::jobs::BandApi>> {
+        if self.band.is_none() {
+            self.band = ui::jobs::BAND
+                .get()
+                .map(|make| make.make(self.presses.clone()));
+        }
+        self.band.as_mut()
+    }
 }
 
 impl Widget for Card {
@@ -90,7 +105,9 @@ impl Widget for Card {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.band.update(state, path)
+        self.band
+            .as_mut()
+            .is_some_and(|band| band.update(state, path))
     }
 
     fn build_layout(
@@ -100,11 +117,23 @@ impl Widget for Card {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The registry moved since the rows were made: they are made again from it.
-        if self.band.presses().changed() {
-            self.band = ui::jobs::Band::with_presses(self.band.presses().clone());
+        if self
+            .band
+            .as_ref()
+            .is_some_and(|band| band.presses().changed())
+        {
+            self.band = None;
         }
-        self.shown = !self.band.is_empty();
-        let inner = self.band.build_layout(taffy, theme, map);
+        let (inner, shown) = match self.band() {
+            Some(band) => (band.build_layout(taffy, theme, map), !band.is_empty()),
+            None => (
+                taffy
+                    .new_leaf(ui::taffy::Style::default())
+                    .unwrap_or_else(|_| NodeId::from(0_u64)),
+                false,
+            ),
+        };
+        self.shown = shown;
         let margin = theme.tokens.spacing.s4;
         let padding = LengthPercentage::length(theme.tokens.spacing.s3);
         let style = Style {
@@ -138,8 +167,10 @@ impl Widget for Card {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: ui::kurbo::Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
-        if let Some(inner) = taffy.children(node).unwrap_or_default().first().copied() {
-            self.band.apply_layout(taffy, inner, self.rect.origin());
+        if let Some(inner) = taffy.children(node).unwrap_or_default().first().copied()
+            && let Some(band) = self.band.as_mut()
+        {
+            band.apply_layout(taffy, inner, self.rect.origin());
         }
     }
 
@@ -154,9 +185,12 @@ impl Widget for Card {
         if !self.shown {
             return;
         }
+        let Some(band) = self.band.as_mut() else {
+            return;
+        };
         ui::widget::floating_surface::paint_card(scene, transform, self.rect, theme);
-        self.band
-            .draw_child(scene, transform, text, theme, presence);
+        let band: &mut dyn ui::jobs::BandApi = &mut **band;
+        band.draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -166,32 +200,33 @@ impl Widget for Card {
         let Some(&inner) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first() else {
             return;
         };
-        self.band
-            .handle_event(event, &mut ctx.reborrow(ctx.path, inner));
+        if let Some(band) = self.band.as_mut() {
+            band.handle_event(event, &mut ctx.reborrow(ctx.path, inner));
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        if self.shown {
-            vec![&self.band]
-        } else {
-            Vec::new()
+        match (self.shown, self.band.as_ref()) {
+            (true, Some(band)) => vec![&**band],
+            _ => Vec::new(),
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.shown {
-            vec![&mut self.band]
-        } else {
-            Vec::new()
+        match (self.shown, self.band.as_mut()) {
+            (true, Some(band)) => vec![&mut **band],
+            _ => Vec::new(),
         }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.band.take_structure_dirty()
+        self.band
+            .as_mut()
+            .is_some_and(|band| band.take_structure_dirty())
     }
 
     fn needs_redraw(&self) -> bool {
-        self.band.needs_redraw()
+        self.band.as_ref().is_some_and(|band| band.needs_redraw())
     }
 
     fn name(&self) -> &'static str {

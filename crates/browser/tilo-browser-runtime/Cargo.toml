@@ -171,6 +171,20 @@ deferred-renderer = []
 # (`PDF_WORDS`), which the browser desktop fetches as its own module the first
 # time a workspace's file is a PDF. Without it the PDF engine is linked in.
 deferred-pdf-words = []
+# The bundling crate supplies the jobs band the page's card shows (`BAND`),
+# which the browser desktop fetches as its own module the first time a job
+# runs. Without it the band is linked in.
+deferred-jobs-band = ["ui/lazy-jobs-band"]
+# The bundling crate supplies what a page does with files dropped on the desk
+# or uploaded from its menu (`DROPS`), which the browser desktop fetches as its
+# own module the first time a drag reaches the desk. Without it the drops are
+# linked in.
+deferred-drops = []
+# The bundling crate supplies the code that writes a workspace's document (a
+# `.md`, an `.odt`) into the page's content for search (`DOCUMENT_FILES`), which
+# the browser desktop fetches as its own module the first time the tree names
+# one. Without it the document codecs are linked in.
+deferred-document-files = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.
