@@ -632,8 +632,18 @@ def branch_said(ctx, name: str, room: str) -> dict:
     audit = ctx.vm.exec("cat \"$HOME\"/.local/share/ush/audit/* \"$HOME\"/.local/share/ush/*/audit/* 2>/dev/null "
                         f"| grep -a branch-workspace | grep -a {shlex.quote(room)} | tail -n 2 | cut -c1-600",
                         check=False)
+    shown = []
+    if any("is not complete" in n for n in notices):
+        # The notice's body lists what did not come along, one part a line ("<record> of <app>:
+        # <why>", "… did not reach this device"), where the desk shows it.
+        shown = sorted({str(t.get("name")) for t in ctx.vm.targets()
+                        if re.search(r" of [a-z0-9-]+\.[a-z0-9.-]+|did not reach|keys|could not|this device",
+                                     str(t.get("name", "")))})[:20]
+        why += "\n" + ctx.vm.exec("journalctl --user --no-pager 2>/dev/null | grep -ac 'Suppressed' ; "
+                                   "journalctl --no-pager 2>/dev/null | grep -a 'Suppressed' | tail -n 3",
+                                   timeout=60, check=False)
     return {"ready": [n for n in notices if "is ready" in n], "missing": [n for n in notices if "is not complete" in n],
-            "why": [l for l in why.splitlines() if l.strip()],
+            "why": [l for l in why.splitlines() if l.strip()], "shown": shown,
             "runtime": [l for l in audit.splitlines() if l.strip()]}
 
 
@@ -832,7 +842,9 @@ def post_chat(ctx, ws: dict, text: str) -> None:
             # at the crashed offset of its code segment, and what it links.
             crash += "\n" + ctx.vm.root_exec(
                 f"o=$(find / \\( -path /proc -o -path /sys -o -path /dev -o -path /run/user \\) -prune -o "
-                f"-type f -name '{digest[2:]}*' -print 2>/dev/null | head -1); "
+                f"-name '*{digest[8:40]}*' -print 2>/dev/null | head -1); "
+                f"[ -n \"$o\" ] || o=$(timeout 120 find /run/user -xdev -name '*{digest[8:40]}*' -print 2>/dev/null "
+                "| head -1); "
                 "echo \"object $o\"; [ -n \"$o\" ] || exit 0; file -L \"$o\" | cut -c1-300; "
                 "readelf -dW \"$o\" 2>/dev/null | grep -aE 'SONAME|NEEDED' | head -n 12; n=$(stat -c %s \"$o\"); "
                 "find /usr /opt -xdev -type f -size ${n}c 2>/dev/null | while read -r f; do "
@@ -884,7 +896,8 @@ def verity(path):
     desc = bytes([1, 2, 12, 0]) + bytes(4) + size.to_bytes(8, "little") + root.ljust(64, b"\0") + bytes(32 + 144)
     return hashlib.sha512(desc).hexdigest()
 found = 0
-for top in ("/usr/lib/tilo-runtime", "/usr/lib64", "/usr/lib", "/usr/libexec", "/var/lib/tilo", "/opt"):
+for top in ("/usr/lib/tilo-runtime", "/usr/lib64", "/usr/lib", "/usr/libexec", "/var/lib/tilo", "/opt", "/home",
+            "/var/home"):
     for base, dirs, files in os.walk(top):
         for name in files:
             path = os.path.join(base, name)
@@ -915,7 +928,10 @@ def app_processes(ctx, app: str) -> str:
         "done | sort | uniq -c | sort -rn | head -n 25; done; u=$(basename \"$c\"); "
         "journalctl --no-pager -o short-precise _SYSTEMD_USER_UNIT=$u 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' "
         "| grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 60 | cut -c1-300; done",
-        timeout=180, check=False) + "\n== its scopes' logs, ended ones too\n" + ctx.vm.exec(
+        timeout=180, check=False) + "\n== its processes by name\n" + ctx.vm.root_exec(
+        f"ps -eo pid,ppid,etimes,stat,wchan:20,cgroup:60,args | grep -a '{app.rsplit('.', 1)[-1]}' "
+        "| grep -av grep | cut -c1-300 | head -n 20", timeout=60, check=False
+    ) + "\n== its scopes' logs, ended ones too\n" + ctx.vm.exec(
         f"journalctl --user --no-pager -o short-precise -u 'app-tilo-{app}-*' 2>&1 "
         "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 80 | cut -c1-300",
         timeout=180, check=False)
