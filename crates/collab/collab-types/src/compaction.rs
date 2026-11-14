@@ -39,8 +39,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use crate::artifact::ArtifactId;
+use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use crate::crypto::Ed25519PublicKey;
 use crate::op::{ContentRetention, SignedOp};
 use crate::role::OpKind;
