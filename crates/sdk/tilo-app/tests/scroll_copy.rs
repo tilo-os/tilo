@@ -517,7 +517,53 @@ fn cases() -> Vec<Case> {
             a_strip: false,
         },
     });
+    cases.extend(edge_cases());
     cases
+}
+
+/// The windows at the edges of what the rows of [`cases`] scroll: a display
+/// whose scale is not a whole number, and a list short enough to be
+/// scrolled from one of its ends to the other.
+fn edge_cases() -> Vec<Case> {
+    vec![
+        // At 150 % the rows and the viewport's edges fall between device
+        // pixels, and a step of 40 logical pixels is still 60 whole device
+        // pixels (one of 24 is 36): it copies.
+        Case {
+            name: "dark 1.5x: a long list".into(),
+            list: List::Long,
+            theme: Theme::dark,
+            surface: Surface {
+                scale: 1.5,
+                copying: true,
+                peer: None,
+            },
+            scrolls: &[(40.0, 12), (-24.0, 8)],
+            expect: Expect {
+                copies: Copies::Most,
+                never_whole: false,
+                a_strip: true,
+            },
+        },
+        // The list stops at its end part of a step in, turns round there,
+        // and stops again at its top.
+        Case {
+            name: "light: a short list scrolled past its end and back past its top".into(),
+            list: List::Short,
+            theme: Theme::light,
+            surface: Surface {
+                scale: 1.0,
+                copying: true,
+                peer: None,
+            },
+            scrolls: &[(90.0, 22), (-90.0, 22)],
+            expect: Expect {
+                copies: Copies::Any,
+                never_whole: true,
+                a_strip: false,
+            },
+        },
+    ]
 }
 
 /// The case's window, opened in its theme and scrolled through each of its
