@@ -981,6 +981,72 @@ debug = 2
 debug-assertions = true
 overflow-checks = true
 
+# The toolkit and the crates every app's tests run through, optimised in the
+# test profile only. An app's tests spend their time in these, not in the app:
+# sampled, Contacts' reach walk was 45% tilo-ui (taffy's generics instantiate
+# inside it, so taffy's own level above never reached them) and 13% tilo-app,
+# tilo-actions, tilo-resource, collaboration and color. On 2,092 CPU-seconds
+# of app, tilo-app and tilo-ui tests these tables took 37% off (tilo-ui's
+# alone 27%) and every test of that sample kept its outcome, the visual goldens
+# included. A test that passed only while the toolkit was slow does not: one
+# that counts frames for work done off the frame, or reads the clock after a
+# motion began, waits for what it reads instead.
+# Level 2 rather than 1: the two cost the same to compile and 1 took off 19%,
+# because rustc shares generic instantiations with unoptimised crates up to
+# level 1. What it costs is tilo-ui's compile, about three times the CPU (some
+# 250 core-seconds unoptimised, 730 at level 2), in the runs that recompile
+# it; a run whose build is cached pays nothing. Debug assertions and overflow
+# checks stay on.
+# The dev profile is unchanged: `cargo build`, `cargo run` and the desktop
+# compile these crates as before, and what the paragraph above tilo-compositor
+# says of application and toolkit code still holds there. Only `cargo test` and
+# nextest build the optimised ones, so a build and a test run no longer share
+# these crates or what depends on them.
+# Each table names `strip` because a package table drops the profile-wide one:
+# cargo resets `strip` in every table that leaves it out, so CI's
+# `CARGO_PROFILE_TEST_STRIP` (t.toml) stopped reaching these packages' own test
+# executables, and tilo-ui's unit tests grew from 294 MB to 344 MB. Written
+# here it holds outside CI too: for a backtrace that names its functions in
+# one of these packages' own tests, run them with
+# `--config 'profile.test.package.tilo-ui.strip=false'`.
+[profile.test.package.tilo-ui]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-app]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-resource]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-actions]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-action-policy]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.collaboration]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-paint]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.color]
+opt-level = 3
+
 # Optimise the CRDT dependencies in development and test builds; their generic
 # data structures are otherwise disproportionately slow in workspace tests.
 [profile.dev.package.tilo-automerge-fork]
