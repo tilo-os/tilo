@@ -655,6 +655,33 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
+    /// Check what a window says it calls people ([`ToApp::Names`]).
+    fn names(
+        &self,
+        me: &str,
+        others: &[(String, String)],
+        persons: &[(String, String)],
+    ) -> Result<(), Refused> {
+        self.string(me)?;
+        if others.len() > self.limits.messages as usize
+            || persons.len() > self.limits.messages as usize
+        {
+            return Err(Refused::invalid(concat!(
+                "over the limit of ",
+                "names in a message"
+            )));
+        }
+        for (id, name) in others {
+            self.key(id)?;
+            self.string(name)?;
+        }
+        for (participant, person) in persons {
+            self.key(participant)?;
+            self.key(person)?;
+        }
+        Ok(())
+    }
+
     /// Check one message the host sent an app.
     fn to_app_message(&self, message: &ToApp) -> Result<(), Refused> {
         match message {
@@ -714,19 +741,11 @@ impl<'a> Validator<'a> {
                     self.key(key)?;
                 }
             }
-            ToApp::Names { me, others } => {
-                self.string(me)?;
-                if others.len() > self.limits.messages as usize {
-                    return Err(Refused::invalid(concat!(
-                        "over the limit of ",
-                        "names in a message"
-                    )));
-                }
-                for (id, name) in others {
-                    self.key(id)?;
-                    self.string(name)?;
-                }
-            }
+            ToApp::Names {
+                me,
+                others,
+                persons,
+            } => self.names(me, others, persons)?,
             ToApp::Space { width, height, .. } => {
                 if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0) {
                     return Err(Refused::invalid("a space is no size"));

@@ -1486,8 +1486,16 @@ impl Instance {
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
-            ToApp::Names { me, others } => {
-                if self.told.tell(me, others) {
+            ToApp::Names {
+                me,
+                others,
+                persons,
+            } => {
+                // Both are taken, whichever changed.
+                let named = self.told.tell(me, others);
+                let people = crate::members::People::new(&self.me, persons);
+                if named || people != self.people {
+                    self.people = people;
                     self.person_changed = true;
                 }
             }

@@ -174,6 +174,7 @@ impl ResourceApp for TlApp {
             if cx.mode() == ui::framework::RunMode::Live {
                 live_origins(&mut window, cx.storage().config_root());
             }
+            window.follow_standing(cx.standing());
             // A search hit, or an agent's `open`, shows the resource it names.
             if let Some(reveals) = window.reveals() {
                 cx.on_open(move |anchor: &str| reveals.borrow_mut().push(anchor.to_owned()));

@@ -749,11 +749,13 @@ pub enum ToApp {
     /// An input method is composing in the focused control, or stopped.
     Composing(bool),
     /// What the window calls the room's participants now: `me` for the person at the window,
-    /// and each of `others` by id. An app whose instance runs out of the window's process names
-    /// people only by these.
+    /// and each of `others` by id; and the person each participant `persons` pairs is a device
+    /// of, by id. An app whose instance runs out of the window's process names people, and finds
+    /// the members a workspace's policy names, only by these.
     Names {
         me: String,
         others: Vec<(String, String)>,
+        persons: Vec<(String, String)>,
     },
     /// The view of `lane` has `width` by `height` of the window, in `rem` (the body text size
     /// after the person's setting): what its `space` reads (layout.md, "Responding to space").

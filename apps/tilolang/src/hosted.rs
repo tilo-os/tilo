@@ -278,14 +278,30 @@ const STAGE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// The host a window runs in its own process ([`start`]), and what wakes it.
 struct InProcess {
     host: TilolangHost,
+    /// The app the instance runs.
+    app: String,
     woken: Arc<Woken>,
     /// What a search hit or an agent's `open` asked the window to show, for its instance.
     reveals: Rc<RefCell<Vec<String>>>,
+    /// The person's standing in the workspace as the window's host keeps it, read each turn,
+    /// and what the instance was last told of it: it offers and invokes by that.
+    standing: Option<StandingSource>,
+    told_standing: Option<ui::permissions::Standing>,
 }
+
+/// Where a window running its instance in this process reads the person's standing from.
+type StandingSource = Box<dyn Fn() -> Option<ui::permissions::Standing>>;
 
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
     fn turn(&mut self) -> bool {
+        if let Some(source) = &self.standing {
+            let standing = source();
+            if standing != self.told_standing {
+                self.host.set_standing(&self.app, standing.as_ref());
+                self.told_standing = standing;
+            }
+        }
         for anchor in self.reveals.borrow_mut().drain(..) {
             if let Some(hosted) = self.host.instances_mut().next() {
                 hosted.reveal(anchor);
@@ -349,7 +365,7 @@ pub struct HostedWindow {
     /// Shown until the patch connection arrives: the platform's loading state.
     waiting: ui::widget::Element,
     /// What the window last told the instance it calls people (`ToApp::Names`).
-    told: Option<(String, Vec<(String, String)>)>,
+    told: Option<crate::names::Said>,
     /// The host running the window's instance in this process, without a session.
     in_process: Option<InProcess>,
 }
@@ -442,15 +458,31 @@ impl HostedWindow {
                 .wake();
         });
         let phrases = Rc::new(Phrases::from_env());
+        let app = spec.app.clone();
         let (host, channel) = start(spec, record, bundle, &phrases, storage, waker)?;
         let mut window = Self::unconnected();
         window.take_channel(channel, wake);
         window.in_process = Some(InProcess {
             host,
+            app,
             woken,
             reveals: Rc::default(),
+            standing: None,
+            told_standing: None,
         });
         Ok(window)
+    }
+
+    /// Have the instance running in this process offer and invoke by the person's standing in
+    /// the workspace, as `source` reads it when the window turns: what a session tells a hosted
+    /// window on its launch and whenever the workspace's policy changes.
+    pub fn follow_standing(
+        &mut self,
+        source: impl Fn() -> Option<ui::permissions::Standing> + 'static,
+    ) {
+        if let Some(running) = &mut self.in_process {
+            running.standing = Some(Box::new(source));
+        }
     }
 
     /// Where a search hit or an agent's `open` asks the window to show what it names: its
@@ -730,10 +762,18 @@ impl ui::widget::Decorator for HostedWindow {
         if let Some(connected) = &mut self.connected {
             let said = crate::names::said(presence);
             if self.told.as_ref() != Some(&said) {
-                let (me, others) = said.clone();
+                let crate::names::Said {
+                    me,
+                    others,
+                    persons,
+                } = said.clone();
                 connected
                     .view
-                    .tell(tilo_render_protocol::patch::ToApp::Names { me, others });
+                    .tell(tilo_render_protocol::patch::ToApp::Names {
+                        me,
+                        others,
+                        persons,
+                    });
                 connected.view.flush();
                 self.told = Some(said);
             }
