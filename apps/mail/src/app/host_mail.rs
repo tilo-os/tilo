@@ -616,6 +616,46 @@ mod tests {
         assert_eq!(fetched.1.messages[0].server.map(|at| at.uid), Some(42));
     }
 
+    /// An account a page takes in — added in Settings or moved in by another
+    /// mail program — is the host's to keep, with the sign-in and the other
+    /// names it sends as that travelled with it.
+    #[test]
+    fn a_page_hands_the_account_it_takes_in_to_the_host() {
+        let serving = Arc::new(host());
+        let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
+        let (_handle, mut mail) = engine();
+        let config = crate::model::AccountConfig {
+            display_name: "Ada".into(),
+            email: "ada@example.test".into(),
+            username: "ada@example.test".into(),
+            imap_host: "imap.example.test".into(),
+            imap_port: 993,
+            smtp_host: "smtp.example.test".into(),
+            smtp_port: 465,
+            identities: vec!["Ada at work <ada@work.example.test>".into()],
+            password: "thunderbird-secret".into(),
+            ..crate::model::AccountConfig::default()
+        };
+        mail.add_account(&config);
+        assert!(mail.poll());
+
+        let asked = serving.asked();
+        let adding = asked
+            .iter()
+            .rev()
+            .find(|request| request.target.address.action == person_accounts::ADD_MAIL)
+            .expect("the host is asked to keep the account");
+        let InvokeArgument::Json(argument) = &adding.argument else {
+            panic!("the account is an argument");
+        };
+        assert_eq!(argument["address"], json!("ada@example.test"));
+        assert_eq!(argument["password"], json!("thunderbird-secret"));
+        assert_eq!(
+            argument["identities"],
+            json!(["Ada at work <ada@work.example.test>"])
+        );
+    }
+
     /// A send written in the page names the account and whom it goes to,
     /// and carries no secret: the host signs in with the one it keeps.
     #[test]

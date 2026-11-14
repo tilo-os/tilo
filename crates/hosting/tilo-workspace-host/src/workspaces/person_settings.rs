@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_account_probe::{AccountTester as _, LiveAccountTester, LiveMailSession};
+use tilo_account_probe::{AccountTester, LiveAccountTester, LiveMailSession};
 use tilo_actions::remote::person_accounts::{AddMailAccount, MailAccount, MailAccounts};
 use tilo_actions::remote::person_accounts::{FetchMail, FetchedMail, MarkMail, SendMail};
 use tilo_actions::remote::person_models::{
@@ -253,6 +253,16 @@ fn port(account: &accounts::Account, name: &str, default: u16) -> u16 {
 /// workspace's vault first, then the account into the shared store, so an
 /// account never shows without the sign-in it needs.
 async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, String> {
+    add_mail_with(Arc::new(LiveAccountTester), root, adding).await
+}
+
+/// [`add_mail`] through `tester`, so a test proves the store's side without
+/// a server.
+async fn add_mail_with(
+    tester: Arc<dyn AccountTester>,
+    root: &Path,
+    adding: AddMailAccount,
+) -> Result<MailAccount, String> {
     let config = accounts::email::AccountConfig {
         display_name: adding.display_name.trim().to_owned(),
         username: adding
@@ -268,11 +278,12 @@ async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, St
         smtp_tls: true,
         auth: accounts::email::AuthMethod::Password,
         // An account another mail program moved in arrives with its servers
-        // and its identities and no password: it is kept, waiting for the
+        // and its identities. With the sign-in that program saved it is
+        // proved and kept at once; without one it is kept waiting for the
         // sign-in its person completes in Settings.
         import_pending: adding.password.is_empty(),
         password: String::new(),
-        identities: Vec::new(),
+        identities: accounts::email::sender_identities(adding.identities)?,
     };
     if let Some((_, problem)) = config.validate().first() {
         return Err(problem.clone());
@@ -291,7 +302,7 @@ async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, St
     if !adding.password.is_empty() {
         let checking = account.clone();
         let secret = accounts::Secret::password(adding.password.clone());
-        tokio::task::spawn_blocking(move || LiveAccountTester.test(&checking, &secret))
+        tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
             .await
             .map_err(|_| "the mail server check did not finish".to_string())??;
         let mut vault = credentials(root)?;
@@ -945,6 +956,144 @@ mod mail_session_tests {
             ))
             .unwrap_err();
         assert!(unknown.contains("not kept here"), "{unknown}");
+    }
+
+    /// A tester that accepts every sign-in, and counts what it was asked.
+    #[derive(Default)]
+    struct Accepting {
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl AccountTester for Accepting {
+        fn test(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+        ) -> Result<String, String> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push(format!("{} with {}", account.id, secret.password));
+            Ok("signed in".into())
+        }
+    }
+
+    /// An account another mail program moved in lands in the workspace's
+    /// store with the other names it sends as and the sign-in it carried,
+    /// proved before anything keeps it: the sign-in is in the vault and
+    /// nowhere in the clear.
+    #[test]
+    fn a_migrated_account_keeps_its_identities_and_its_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let tester = Arc::new(Accepting::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let kept = runtime
+            .block_on(add_mail_with(
+                tester.clone(),
+                root,
+                AddMailAccount {
+                    address: "ada@example.test".into(),
+                    display_name: "Ada".into(),
+                    username: None,
+                    incoming_host: "imap.example.test".into(),
+                    incoming_port: 993,
+                    outgoing_host: "smtp.example.test".into(),
+                    outgoing_port: 465,
+                    password: "thunderbird-secret".into(),
+                    identities: vec!["Ada at work <ada@work.example.test>".into()],
+                },
+            ))
+            .unwrap();
+        assert!(kept.has_secret);
+        assert_eq!(kept.address, "ada@example.test");
+        assert_eq!(
+            tester.asked.lock().unwrap().clone(),
+            vec!["ada@example.test with thunderbird-secret".to_owned()],
+            "the sign-in is proved before the account is kept"
+        );
+
+        let store = accounts::AccountStore::load_in(root);
+        let account = store
+            .get(&accounts::AccountId::from("ada@example.test"))
+            .expect("the account is kept");
+        let config = accounts::email::AccountConfig::from_value(account.config.clone()).unwrap();
+        assert_eq!(
+            config.identities,
+            vec!["Ada at work <ada@work.example.test>".to_owned()]
+        );
+        assert!(!config.import_pending);
+
+        for path in walk(root) {
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(
+                !bytes
+                    .windows(19)
+                    .any(|window| window == b"thunderbird-secret"),
+                "{} carries the sign-in in the clear",
+                path.display()
+            );
+        }
+    }
+
+    /// An account moved in without a saved sign-in is kept waiting for it,
+    /// and no session is opened with nothing.
+    #[test]
+    fn an_account_moved_in_without_a_sign_in_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let tester = Arc::new(Accepting::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let kept = runtime
+            .block_on(add_mail_with(
+                tester.clone(),
+                root,
+                AddMailAccount {
+                    address: "ada@example.test".into(),
+                    display_name: String::new(),
+                    username: None,
+                    incoming_host: "imap.example.test".into(),
+                    incoming_port: 993,
+                    outgoing_host: "smtp.example.test".into(),
+                    outgoing_port: 465,
+                    password: String::new(),
+                    identities: Vec::new(),
+                },
+            ))
+            .unwrap();
+        assert!(!kept.has_secret);
+        assert!(tester.asked.lock().unwrap().is_empty());
+        let store = accounts::AccountStore::load_in(root);
+        let account = store
+            .get(&accounts::AccountId::from("ada@example.test"))
+            .expect("the account is kept");
+        let config = accounts::email::AccountConfig::from_value(account.config.clone()).unwrap();
+        assert!(config.import_pending);
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut waiting = vec![dir.to_path_buf()];
+        while let Some(dir) = waiting.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                match std::fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_dir() => waiting.push(path),
+                    Ok(metadata) if metadata.is_file() => files.push(path),
+                    _ => {}
+                }
+            }
+        }
+        files
     }
 
     /// An account kept without its sign-in reads nothing and sends nothing:
