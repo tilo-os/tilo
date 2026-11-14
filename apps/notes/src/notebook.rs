@@ -136,6 +136,41 @@ pub fn imported_page_id(source: &str, key: &str) -> Id {
     Id::from(Uuid::from_bytes(bytes).to_string())
 }
 
+/// `markdown` with every line that shows the picture `shown` taken out,
+/// answering the pictures it showed (their alt and digest) for the body to
+/// hold as pictures, in the order they read.
+fn take_pictures(
+    markdown: &str,
+    shown: &str,
+    digest: &str,
+    pictures: &mut Vec<(String, String)>,
+) -> String {
+    let mut output = String::with_capacity(markdown.len());
+    for segment in markdown.split_inclusive('\n') {
+        let (line, newline) = segment
+            .strip_suffix('\n')
+            .map_or((segment, ""), |line| (line, "\n"));
+        let Some((alt, destination)) = picture_line(line) else {
+            output.push_str(segment);
+            continue;
+        };
+        if destination != shown {
+            output.push_str(segment);
+            continue;
+        }
+        pictures.push((alt.to_owned(), digest.to_owned()));
+        let _ = newline;
+    }
+    output
+}
+
+/// A line that is one picture: its alt text and the address it names.
+fn picture_line(line: &str) -> Option<(&str, &str)> {
+    let body = line.trim().strip_prefix("![")?;
+    let (alt, destination) = body.split_once("](")?;
+    Some((alt, destination.strip_suffix(')')?.trim()))
+}
+
 /// A named tag notes carry.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 #[model(check = Tag::valid)]
@@ -742,12 +777,18 @@ impl Notebook {
             check_markdown_import(&imported.markdown).map_err(Refusal::new)?;
             let id = imported_page_id(&imported.source, &imported.key);
             let mut markdown = imported.markdown.clone();
+            // Each picture is placed the way the notebook places its own
+            // (`place-image`): a paragraph the body holds as written, so the
+            // editor draws it. The line the source showed it on comes out of
+            // the words, since a line of Markdown seeds text, not a picture.
+            let mut pictures = Vec::new();
             for image in &imported.images {
                 let digest = self.store_image(&image.bytes)?;
                 let shown = image.url.trim();
-                if !shown.is_empty() {
-                    markdown = markdown.replace(shown, &format!("asset:{digest}"));
+                if shown.is_empty() {
+                    continue;
                 }
+                markdown = take_pictures(&markdown, shown, &digest, &mut pictures);
             }
             let title = if imported.title.trim().is_empty() {
                 fallback.clone()
@@ -787,6 +828,13 @@ impl Notebook {
                         ..Page::titled(&title, None).made(cx)
                     },
                 );
+            }
+            if let Some(page) = self.pages.get_mut(&id) {
+                for (alt, digest) in &pictures {
+                    page.body.perform(RichTextAction::AppendParagraph {
+                        text: format!("![{alt}](asset:{digest})"),
+                    });
+                }
             }
             for name in &imported.tags {
                 let name = name.trim();

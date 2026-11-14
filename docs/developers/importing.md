@@ -17,7 +17,7 @@ made is updated where it is.
 | Linear | `tilo import linear --token-file … -w …` | Tasks: issues with body, state, labels, assignee, comments and links |
 | Forgejo | `tilo import forgejo --url … --token-file … --repo owner/name -w …` | Tasks: the repository's issues, `#42` as a link to the issue |
 | Files | `tilo import files ./folder ./doc.md -w …` | The workspace: folders and files as notes, pictures in Photos, PDFs in PDF Viewer, Markdown as the note's body |
-| Mail | `tilo import mail --imap-host … --smtp-host … --user … --password-file …` | Mail: the account is set up in Mail, which syncs its mail into the workspace |
+| Mail | `tilo import mail --imap-host … --smtp-host … --user …` | Mail: the account is set up in Mail, which syncs its mail into the workspace |
 
 A key for the source goes in a file given to `--token-file`, or in
 `TILO_IMPORT_TOKEN` with `--token-env`. It is never written into the
@@ -57,8 +57,10 @@ and its note names its `tilo.content:` reference.
 every device the person signs in on, and Mail syncs each account's messages
 into the workspace where agents read them. `tilo import mail` therefore runs on
 the computer whose Tilo runs Mail, and adds the account through Mail's own
-save-account action. Gmail and Outlook block password sign-in: pass
-`--auth oauth` and finish the sign-in in Mail.
+save-account action. No password is passed on the command line: the account is
+added waiting for its sign-in, and Mail asks for the password once, the first
+time it opens the account, and keeps it in your vault. Gmail and Outlook block
+password sign-in: pass `--auth oauth` and finish that sign-in in Mail.
 
 ## What an app needed first
 

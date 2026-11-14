@@ -959,9 +959,9 @@ fn an_imported_wiki_keeps_its_tree_tags_and_pictures_and_updates_in_place() {
     let expenses = imported_page_id("outline", "b");
     assert_eq!(children(&notebook, None), [handbook.clone()]);
     assert_eq!(children(&notebook, Some(&handbook)), [expenses.clone()]);
-    let page = page(&notebook, &expenses);
-    assert_eq!(page.title, "Expenses");
-    assert_eq!(page.tags.len(), 2);
+    let expenses_page = page(&notebook, &expenses);
+    assert_eq!(expenses_page.title, "Expenses");
+    assert_eq!(expenses_page.tags.len(), 2);
     let digest = blake3::hash(&png).to_hex().to_string();
     assert!(
         notebook.state().unwrap().images.contains_key(&digest),
@@ -971,6 +971,15 @@ fn an_imported_wiki_keeps_its_tree_tags_and_pictures_and_updates_in_place() {
     assert!(
         shown.iter().any(|text| text.contains("Receipt")),
         "the picture is placed where the Markdown showed it: {shown:?}"
+    );
+    let picture = page(&notebook, &expenses)
+        .blocks()
+        .into_iter()
+        .find(|block| block.text.contains("Receipt"))
+        .expect("the picture's block");
+    assert!(
+        picture.marks.is_empty(),
+        "a picture is a paragraph the body holds as written, never text a Markdown link marked"
     );
 
     // The same wiki again follows what changed, without a second copy.

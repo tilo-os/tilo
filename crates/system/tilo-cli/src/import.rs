@@ -65,12 +65,13 @@ pub enum ImportCmd {
     /// Set up the company's mail accounts in Mail.
     #[command(
         after_help = "Example:\n  tilo import mail --imap-host imap.example --smtp-host smtp.example \
-                      --user ops@example --password-file ops.password\n\n\
+                      --user ops@example\n\n\
                       The account is added through Mail's own save-account action on this \
                       computer, so Mail syncs its mail into the workspace it opens in, where agents \
                       read it. Accounts are the person's: they reach every device, and no -w names \
-                      one. Gmail and Outlook need an app password or OAuth: pass --auth oauth and \
-                      finish the sign-in in Mail."
+                      one. The password is never passed on the command line: Mail asks for it once, \
+                      the first time it opens the account, and keeps it in your vault. Pass \
+                      --auth oauth for a provider that blocks password sign-in."
     )]
     Mail(MailArgs),
 }
@@ -147,9 +148,6 @@ pub struct MailArgs {
     /// Its port: 465 unless given.
     #[arg(long)]
     smtp_port: Option<u16>,
-    /// A file holding the password; without one, it is asked for.
-    #[arg(long)]
-    password_file: Option<PathBuf>,
     /// password, or oauth for a provider that blocks password sign-in.
     #[arg(long, default_value = "password")]
     auth: String,
@@ -1241,23 +1239,15 @@ fn mail(args: MailArgs) -> Result<ExitCode> {
 
 /// The arguments Mail's save-account action takes for this account.
 fn mail_account(args: &MailArgs) -> Result<Value> {
-    let password = match &args.password_file {
-        Some(path) => Some(
-            std::fs::read_to_string(path)
-                .with_context(|| format!("reading {}", path.display()))?
-                .trim_end_matches(['\n', '\r'])
-                .to_owned(),
-        ),
-        None => None,
-    };
     let auth = match args.auth.as_str() {
         "password" => "password",
         "oauth" => "oauth",
         other => bail!("--auth is password or oauth, not {other:?}"),
     };
-    if auth == "password" && password.is_none() {
-        bail!("--password-file holds the account's password (or pass --auth oauth)");
-    }
+    // The secret never travels with the account: it lives in the person's
+    // vault, which Mail writes when the person finishes the sign-in there.
+    // The account says so, so Mail asks for it the first time rather than
+    // trying the connection without one.
     let config = json!({
         "display_name": args.name.clone().unwrap_or_default(),
         "email": args.user,
@@ -1269,22 +1259,19 @@ fn mail_account(args: &MailArgs) -> Result<Value> {
         "smtp_tls": true,
         "username": args.user,
         "auth": auth,
+        "import_pending": true,
     });
     // The account's id is its address, so running the import again updates
     // the account it made instead of adding another.
     let id = format!("mail-{}", crate::hosted::slug(&args.user));
-    let mut account = json!({
+    Ok(json!({
         "id": id,
         "type_id": "email",
         "display_name": args.name.clone().unwrap_or_else(|| args.user.clone()),
         "config": config,
         "enabled": true,
         "tint": 0,
-    });
-    if let Some(password) = password {
-        account["config"]["password"] = json!(password);
-    }
-    Ok(account)
+    }))
 }
 
 // ---- shared ------------------------------------------------------------------
@@ -1664,7 +1651,6 @@ mod tests {
             imap_port: None,
             smtp_host: "smtp.example".to_owned(),
             smtp_port: None,
-            password_file: None,
             auth: "oauth".to_owned(),
             dry_run: false,
         };
@@ -1674,5 +1660,6 @@ mod tests {
         assert_eq!(account["config"]["auth"], "oauth");
         assert_eq!(account["config"]["imap_port"], 993);
         assert_eq!(account["config"]["smtp_port"], 465);
+        assert_eq!(account["config"]["import_pending"], true);
     }
 }

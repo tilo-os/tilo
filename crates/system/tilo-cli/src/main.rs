@@ -924,9 +924,10 @@ fn run_hosted(
         Cmd::Run { file, json } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::program(reach(json), &workspace, &file)),
-        Cmd::Import { cmd } => workspace
-            .ok_or_else(needs_workspace)
-            .and_then(|workspace| import::run(reach(false), Some(workspace), cmd)),
+        Cmd::Import { cmd } => {
+            drop(needs_workspace);
+            import::run(reach(false), workspace, cmd)
+        }
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach(false), workspace.as_deref(), cmd)),
         other => return Err(other),
     })
