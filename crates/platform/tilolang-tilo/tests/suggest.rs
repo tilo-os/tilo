@@ -104,198 +104,202 @@ fn proposed(ada: &Replica, task: &Value) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn a_proposed_change_waits_until_a_person_accepts_it() {
-    let (mut ada, task) = workspace();
-    let (inv, record) = suggest(&ada, "agent:scout", &schedule_source(&task));
-    assert_eq!(record.state, "suggested");
-    assert_eq!(
-        record.subject.as_ref().map(ResourceRef::id_string),
-        Some(target(&task).id_string())
-    );
-    ada.commit();
-    // Nothing has changed: the task still has no day.
-    assert_eq!(read(&ada, &task, "due"), Value::none());
-    assert!(proposed(&ada, &task).is_empty());
-    // Accepting it applies the change as Ada's, saying who proposed it.
-    assert_eq!(
+tilo_test_env::scenario! {
+    fn a_proposed_change_waits_for_its_own_decision;
+
+    phase a_proposed_change_waits_until_a_person_accepts_it;
+    {
+        let (mut ada, task) = workspace();
+        let (inv, record) = suggest(&ada, "agent:scout", &schedule_source(&task));
+        assert_eq!(record.state, "suggested");
+        assert_eq!(
+            record.subject.as_ref().map(ResourceRef::id_string),
+            Some(target(&task).id_string())
+        );
+        ada.commit();
+        // Nothing has changed: the task still has no day.
+        assert_eq!(read(&ada, &task, "due"), Value::none());
+        assert!(proposed(&ada, &task).is_empty());
+        // Accepting it applies the change as Ada's, saying who proposed it.
+        assert_eq!(
+            ada.host
+                .runtime()
+                .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
+                .unwrap(),
+            "done"
+        );
+        ada.commit();
+        assert_eq!(
+            read(&ada, &task, "due"),
+            Value::some(Value::text("2026-10-31"))
+        );
+        assert_eq!(proposed(&ada, &task), ["agent:scout".to_owned()]);
+        let due = ada
+            .host
+            .store()
+            .versions(&target(&task))
+            .unwrap()
+            .into_iter()
+            .rfind(|v| v.suggested_by.is_some())
+            .unwrap();
+        assert_eq!(due.who, "ada");
+    }
+
+    phase a_dismissed_proposal_changes_nothing_and_asks_once;
+    {
+        let (mut ada, task) = workspace();
+        let (inv, _) = suggest(&ada, "agent:scout", &schedule_source(&task));
+        ada.commit();
+        let before = ada.host.store().versions(&target(&task)).unwrap().len();
+        assert_eq!(
+            ada.host
+                .runtime()
+                .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Decline)
+                .unwrap(),
+            "declined"
+        );
+        ada.commit();
+        assert_eq!(read(&ada, &task, "due"), Value::none());
+        // The refusal is a record of its own, not a change of the task.
+        assert_eq!(
+            ada.host.store().versions(&target(&task)).unwrap().len(),
+            before
+        );
+        assert_eq!(
+            ada.host.runtime().read_invocation(&inv).unwrap().state,
+            "declined"
+        );
+        assert!(proposed(&ada, &task).is_empty());
+        // Decided already: a second decision is refused.
+        assert!(
+            ada.host
+                .runtime()
+                .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
+                .is_err()
+        );
+    }
+
+    phase two_agents_propose_on_one_task_and_each_card_waits_for_its_own_decision;
+    {
+        let (mut ada, task) = workspace();
+        let priority = read(&ada, &task, "priority");
+        let due = suggest(&ada, "agent:scout", &schedule_source(&task));
+        let assign = suggest(
+            &ada,
+            "agent:helper",
+            &format!(
+                "suggest tasks.set_priority_high(@tasks.Task:{})",
+                target(&task).id_string()
+            ),
+        );
+        ada.commit();
+        // Both wait on the task, each naming who proposed it.
+        let waiting = ada.host.runtime().proposals_of(&target(&task));
+        let mut who: Vec<String> = waiting
+            .iter()
+            .map(|(_, rec)| rec.author.0.clone())
+            .collect();
+        who.sort();
+        assert_eq!(who, ["agent:helper".to_owned(), "agent:scout".to_owned()]);
+        // Accepting one applies only it; the other still waits.
+        assert_eq!(
+            ada.host
+                .runtime()
+                .resolve_invocation(&due.0, &Principal::new("ada"), Resolution::Approve)
+                .unwrap(),
+            "done"
+        );
+        ada.commit();
+        assert_eq!(
+            read(&ada, &task, "due"),
+            Value::some(Value::text("2026-10-31"))
+        );
+        assert_eq!(
+            ada.host.runtime().proposals_of(&target(&task)).len(),
+            1,
+            "the other proposal still waits"
+        );
+        // A proposal of nobody changes nothing when dismissed.
+        assert_eq!(
+            ada.host
+                .runtime()
+                .resolve_invocation(&assign.0, &Principal::new("ada"), Resolution::Decline)
+                .unwrap(),
+            "declined"
+        );
+        ada.commit();
+        assert_eq!(
+            read(&ada, &task, "priority"),
+            priority,
+            "the dismissed proposal changed nothing"
+        );
+        assert!(ada.host.runtime().proposals_of(&target(&task)).is_empty());
+        assert_eq!(proposed(&ada, &task), ["agent:scout".to_owned()]);
+    }
+
+    phase the_task_shows_what_waits_on_it_and_who_proposed_it;
+    {
+        let (mut ada, task) = workspace();
+        // The task page and the row draw nothing while nothing waits.
+        let page = ada.host.open_resource(&target(&task), None).unwrap();
+        assert!(cards(page.tree()).is_empty(), "{:?}", texts(page.tree()));
+        assert!(rows_with_note(card_view(&ada, &task).tree()).is_empty());
+        let (inv, _) = suggest(&ada, "agent:scout", &schedule_source(&task));
+        ada.commit();
+        let page = ada.host.open_resource(&target(&task), None).unwrap();
+        let shown = cards(page.tree());
+        assert_eq!(shown.len(), 1, "{:?}", texts(page.tree()));
+        let card = shown[0];
+        assert_eq!(card.props.get("proposed"), Some(&Value::Bool(true)));
+        assert_eq!(
+            card.props.get("state"),
+            Some(&Value::text("suggested")),
+            "the card asks"
+        );
+        // The card says which record deciding it resolves, and that Ada may decide: what the
+        // window's accept and dismiss buttons answer with.
+        assert_eq!(card.props.get("invocation"), Some(&Value::resource(&inv)));
+        assert_eq!(card.props.get("can_resolve"), Some(&Value::Bool(true)));
+        // The card says what the change would be, and who proposed it: the words a change to the
+        // field reads with, the value as its type shows it, and the proposer the host draws the
+        // face and the name from.
+        let said = texts(page.tree());
+        assert!(
+            said.iter().any(|text| text == "set the due date to"),
+            "what it would do: {said:?}"
+        );
+        assert!(
+            said.iter().any(|text| text == "2026-10-31"),
+            "the day it would set: {said:?}"
+        );
+        assert_eq!(
+            card.props.get("author"),
+            Some(&Value::Principal(Principal::new("agent:scout"))),
+            "who proposes it"
+        );
+        // The row of the task says it quietly, on a line of its own, in the same sentence.
+        let rows = rows_with_note(card_view(&ada, &task).tree());
+        assert_eq!(rows.len(), 1, "{:?}", texts(card_view(&ada, &task).tree()));
+        assert!(
+            rows[0].contains("suggests: set the due date to"),
+            "{}",
+            rows[0]
+        );
+        assert!(!rows[0].contains("schedule"), "{}", rows[0]);
+        // Decided, the card and the row's line go away.
         ada.host
             .runtime()
             .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
-            .unwrap(),
-        "done"
-    );
-    ada.commit();
-    assert_eq!(
-        read(&ada, &task, "due"),
-        Value::some(Value::text("2026-10-31"))
-    );
-    assert_eq!(proposed(&ada, &task), ["agent:scout".to_owned()]);
-    let due = ada
-        .host
-        .store()
-        .versions(&target(&task))
-        .unwrap()
-        .into_iter()
-        .rfind(|v| v.suggested_by.is_some())
-        .unwrap();
-    assert_eq!(due.who, "ada");
-}
-
-#[test]
-fn a_dismissed_proposal_changes_nothing_and_asks_once() {
-    let (mut ada, task) = workspace();
-    let (inv, _) = suggest(&ada, "agent:scout", &schedule_source(&task));
-    ada.commit();
-    let before = ada.host.store().versions(&target(&task)).unwrap().len();
-    assert_eq!(
-        ada.host
-            .runtime()
-            .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Decline)
-            .unwrap(),
-        "declined"
-    );
-    ada.commit();
-    assert_eq!(read(&ada, &task, "due"), Value::none());
-    // The refusal is a record of its own, not a change of the task.
-    assert_eq!(
-        ada.host.store().versions(&target(&task)).unwrap().len(),
-        before
-    );
-    assert_eq!(
-        ada.host.runtime().read_invocation(&inv).unwrap().state,
-        "declined"
-    );
-    assert!(proposed(&ada, &task).is_empty());
-    // Decided already: a second decision is refused.
-    assert!(
-        ada.host
-            .runtime()
-            .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
-            .is_err()
-    );
-}
-
-#[test]
-fn two_agents_propose_on_one_task_and_each_card_waits_for_its_own_decision() {
-    let (mut ada, task) = workspace();
-    let priority = read(&ada, &task, "priority");
-    let due = suggest(&ada, "agent:scout", &schedule_source(&task));
-    let assign = suggest(
-        &ada,
-        "agent:helper",
-        &format!(
-            "suggest tasks.set_priority_high(@tasks.Task:{})",
-            target(&task).id_string()
-        ),
-    );
-    ada.commit();
-    // Both wait on the task, each naming who proposed it.
-    let waiting = ada.host.runtime().proposals_of(&target(&task));
-    let mut who: Vec<String> = waiting
-        .iter()
-        .map(|(_, rec)| rec.author.0.clone())
-        .collect();
-    who.sort();
-    assert_eq!(who, ["agent:helper".to_owned(), "agent:scout".to_owned()]);
-    // Accepting one applies only it; the other still waits.
-    assert_eq!(
-        ada.host
-            .runtime()
-            .resolve_invocation(&due.0, &Principal::new("ada"), Resolution::Approve)
-            .unwrap(),
-        "done"
-    );
-    ada.commit();
-    assert_eq!(
-        read(&ada, &task, "due"),
-        Value::some(Value::text("2026-10-31"))
-    );
-    assert_eq!(
-        ada.host.runtime().proposals_of(&target(&task)).len(),
-        1,
-        "the other proposal still waits"
-    );
-    // A proposal of nobody changes nothing when dismissed.
-    assert_eq!(
-        ada.host
-            .runtime()
-            .resolve_invocation(&assign.0, &Principal::new("ada"), Resolution::Decline)
-            .unwrap(),
-        "declined"
-    );
-    ada.commit();
-    assert_eq!(
-        read(&ada, &task, "priority"),
-        priority,
-        "the dismissed proposal changed nothing"
-    );
-    assert!(ada.host.runtime().proposals_of(&target(&task)).is_empty());
-    assert_eq!(proposed(&ada, &task), ["agent:scout".to_owned()]);
-}
-
-#[test]
-fn the_task_shows_what_waits_on_it_and_who_proposed_it() {
-    let (mut ada, task) = workspace();
-    // The task page and the row draw nothing while nothing waits.
-    let page = ada.host.open_resource(&target(&task), None).unwrap();
-    assert!(cards(page.tree()).is_empty(), "{:?}", texts(page.tree()));
-    assert!(rows_with_note(card_view(&ada, &task).tree()).is_empty());
-    let (inv, _) = suggest(&ada, "agent:scout", &schedule_source(&task));
-    ada.commit();
-    let page = ada.host.open_resource(&target(&task), None).unwrap();
-    let shown = cards(page.tree());
-    assert_eq!(shown.len(), 1, "{:?}", texts(page.tree()));
-    let card = shown[0];
-    assert_eq!(card.props.get("proposed"), Some(&Value::Bool(true)));
-    assert_eq!(
-        card.props.get("state"),
-        Some(&Value::text("suggested")),
-        "the card asks"
-    );
-    // The card says which record deciding it resolves, and that Ada may decide: what the
-    // window's accept and dismiss buttons answer with.
-    assert_eq!(card.props.get("invocation"), Some(&Value::resource(&inv)));
-    assert_eq!(card.props.get("can_resolve"), Some(&Value::Bool(true)));
-    // The card says what the change would be, and who proposed it: the words a change to the
-    // field reads with, the value as its type shows it, and the proposer the host draws the
-    // face and the name from.
-    let said = texts(page.tree());
-    assert!(
-        said.iter().any(|text| text == "set the due date to"),
-        "what it would do: {said:?}"
-    );
-    assert!(
-        said.iter().any(|text| text == "2026-10-31"),
-        "the day it would set: {said:?}"
-    );
-    assert_eq!(
-        card.props.get("author"),
-        Some(&Value::Principal(Principal::new("agent:scout"))),
-        "who proposes it"
-    );
-    // The row of the task says it quietly, on a line of its own, in the same sentence.
-    let rows = rows_with_note(card_view(&ada, &task).tree());
-    assert_eq!(rows.len(), 1, "{:?}", texts(card_view(&ada, &task).tree()));
-    assert!(
-        rows[0].contains("suggests: set the due date to"),
-        "{}",
-        rows[0]
-    );
-    assert!(!rows[0].contains("schedule"), "{}", rows[0]);
-    // Decided, the card and the row's line go away.
-    ada.host
-        .runtime()
-        .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
-        .unwrap();
-    ada.commit();
-    let page = ada.host.open_resource(&target(&task), None).unwrap();
-    assert!(cards(page.tree()).is_empty());
-    assert!(rows_with_note(card_view(&ada, &task).tree()).is_empty());
-    assert_eq!(
-        read(&ada, &task, "due"),
-        Value::some(Value::text("2026-10-31"))
-    );
+            .unwrap();
+        ada.commit();
+        let page = ada.host.open_resource(&target(&task), None).unwrap();
+        assert!(cards(page.tree()).is_empty());
+        assert!(rows_with_note(card_view(&ada, &task).tree()).is_empty());
+        assert_eq!(
+            read(&ada, &task, "due"),
+            Value::some(Value::text("2026-10-31"))
+        );
+    }
 }
 
 /// The project the task stands under, as its card's view takes it: the row a board draws leaves

@@ -564,49 +564,173 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_persons_view_state_and_seen_marks_read_back_as_they_were_kept() {
-        let doc = kept(&[
-            (
-                "ada",
-                view("ada", "tasks", "place", Json::String("today".to_owned())),
-            ),
-            ("ada", view("ada", "tasks", "scroll", Json::from(120))),
-            (
-                "ada",
-                seen(
+    tilo_test_env::scenario! {
+        fn kept_state_reads_back_wherever_it_was_kept;
+
+        phase a_persons_view_state_and_seen_marks_read_back_as_they_were_kept;
+        {
+            let doc = kept(&[
+                (
                     "ada",
-                    "tl:so.tilo.lang.tasks:inbox",
-                    Some(SeenMark {
-                        change: "ab".repeat(32),
-                        at: "2026-11-04T12:00:00Z".to_owned(),
-                    }),
+                    view("ada", "tasks", "place", Json::String("today".to_owned())),
                 ),
-            ),
-            (
+                ("ada", view("ada", "tasks", "scroll", Json::from(120))),
+                (
+                    "ada",
+                    seen(
+                        "ada",
+                        "tl:so.tilo.lang.tasks:inbox",
+                        Some(SeenMark {
+                            change: "ab".repeat(32),
+                            at: "2026-11-04T12:00:00Z".to_owned(),
+                        }),
+                    ),
+                ),
+                (
+                    "ada",
+                    Keep::Runs {
+                        person: "ada".to_owned(),
+                        runs: vec!["run-7".to_owned()],
+                    },
+                ),
+            ]);
+            let state = Personal::read(&doc).expect("the record reads");
+            let theirs = state.of("ada");
+            assert_eq!(theirs.slots.len(), 2);
+            assert_eq!(
+                theirs.slots[0].key(),
+                StateKey::view("tasks", "ada", "place")
+            );
+            assert_eq!(theirs.slots[0].value, Value::text("today"));
+            assert_eq!(
+                theirs.slots[1].key(),
+                StateKey::view("tasks", "ada", "scroll")
+            );
+            assert_eq!(theirs.seen.len(), 1);
+            assert_eq!(theirs.seen[0].resource, "tl:so.tilo.lang.tasks:inbox");
+            assert_eq!(theirs.seen[0].mark.change, "ab".repeat(32));
+            assert_eq!(theirs.runs[0].run, "run-7");
+        }
+
+        phase state_a_record_kept_under_the_two_old_maps_still_reads;
+        {
+            let mut doc = Doc::new();
+            kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
+            kept_under_the_split(&mut doc, "ada", "tasks", "lens", "draft", "\"hi\"");
+            let state = Personal::read(&doc).expect("the record reads");
+            let theirs = state.of("ada");
+            assert_eq!(theirs.slots.len(), 2);
+            let value = |name: &str| {
+                theirs
+                    .slots
+                    .iter()
+                    .find(|slot| slot.state == name)
+                    .map(|slot| slot.value.clone())
+            };
+            assert_eq!(value("order"), Some(Value::text("due")));
+            assert_eq!(value("draft"), Some(Value::text("hi")));
+            assert_eq!(
+                theirs.slots[0].key(),
+                StateKey::view("tasks", "ada", theirs.slots[0].state.clone())
+            );
+        }
+
+        phase the_place_this_build_keeps_a_state_at_wins_over_the_old_maps;
+        {
+            let mut doc = Doc::new();
+            kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
+            apply_as(
+                &mut doc,
                 "ada",
-                Keep::Runs {
-                    person: "ada".to_owned(),
-                    runs: vec!["run-7".to_owned()],
-                },
-            ),
-        ]);
-        let state = Personal::read(&doc).expect("the record reads");
-        let theirs = state.of("ada");
-        assert_eq!(theirs.slots.len(), 2);
-        assert_eq!(
-            theirs.slots[0].key(),
-            StateKey::view("tasks", "ada", "place")
-        );
-        assert_eq!(theirs.slots[0].value, Value::text("today"));
-        assert_eq!(
-            theirs.slots[1].key(),
-            StateKey::view("tasks", "ada", "scroll")
-        );
-        assert_eq!(theirs.seen.len(), 1);
-        assert_eq!(theirs.seen[0].resource, "tl:so.tilo.lang.tasks:inbox");
-        assert_eq!(theirs.seen[0].mark.change, "ab".repeat(32));
-        assert_eq!(theirs.runs[0].run, "run-7");
+                &view("ada", "tasks", "order", Json::from("created")),
+            )
+            .expect("the change applies");
+            let state = Personal::read(&doc).expect("the record reads");
+            assert_eq!(state.slots.len(), 1, "one state, read once");
+            assert_eq!(state.slots[0].value, Value::text("created"));
+        }
+
+        phase a_slot_kept_twice_reads_back_once_as_it_is_now;
+        {
+            let doc = kept(&[
+                ("ada", view("ada", "tasks", "place", Json::from("inbox"))),
+                ("ada", view("ada", "tasks", "place", Json::from("today"))),
+            ]);
+            let state = Personal::read(&doc).expect("the record reads");
+            assert_eq!(state.of("ada").slots.len(), 1);
+            assert_eq!(state.of("ada").slots[0].value, Value::text("today"));
+        }
+
+        phase a_record_that_kept_no_state_reads_as_none;
+        {
+            let state = Personal::read(&Doc::new()).expect("an empty record reads");
+            assert!(state.is_empty(), "{state:?}");
+        }
+
+        phase the_state_each_device_kept_before_they_met_reads_on_both;
+        // Every entry ada's devices kept before they met reads, and her next change keeps the one
+        // map there is.
+        {
+            let mut doc = kept_apart(
+                &[view("ada", "tasks", "place", Json::from("today"))],
+                &[
+                    view("ada", "tasks", "scroll", Json::from(120)),
+                    seen(
+                        "ada",
+                        "tl:so.tilo.lang.tasks:inbox",
+                        Some(SeenMark {
+                            change: "ab".repeat(32),
+                            at: "2026-11-04T12:00:00Z".to_owned(),
+                        }),
+                    ),
+                    Keep::Runs {
+                        person: "ada".to_owned(),
+                        runs: vec!["run-7".to_owned()],
+                    },
+                ],
+            );
+            assert_eq!(
+                crate::containers::maps(&doc, &ROOT, PERSONAL).len(),
+                2,
+                "the devices made a map each"
+            );
+            let state = Personal::read(&doc).expect("the record reads");
+            let theirs = state.of("ada");
+            let mut places: Vec<String> = theirs
+                .slots
+                .iter()
+                .map(|slot| format!("{}={:?}", slot.state, slot.value))
+                .collect();
+            places.sort();
+            assert_eq!(places, ["place=Text(\"today\")", "scroll=Int(120)"]);
+            assert_eq!(theirs.seen.len(), 1, "the seen mark her other device kept");
+            assert_eq!(theirs.runs[0].run, "run-7");
+
+            // Her next change keeps the state of both in the one map, and nothing is lost.
+            apply_as(
+                &mut doc,
+                "ada",
+                &view("ada", "tasks", "lens", Json::from(2)),
+            )
+            .expect("the change applies");
+            assert_eq!(
+                holding(&doc, &ROOT, PERSONAL),
+                1,
+                "one map of her state from that change on"
+            );
+            assert_eq!(
+                crate::containers::reach(&doc, &ROOT, &[PERSONAL, "ada", VIEWS, "tasks"])
+                    .iter()
+                    .filter(|place| doc.keys(place).next().is_some())
+                    .count(),
+                1,
+                "her window's state is in one map from that change on"
+            );
+            let state = Personal::read(&doc).expect("the record reads");
+            assert_eq!(state.of("ada").slots.len(), 3);
+            assert_eq!(state.of("ada").seen.len(), 1);
+            assert_eq!(state.of("ada").runs.len(), 1);
+        }
     }
 
     /// The maps a record kept a window's state in before a view's state was one kind.
@@ -626,145 +750,94 @@ mod tests {
         doc.put(&slots, state, value).expect("the value keeps");
     }
 
-    #[test]
-    fn state_a_record_kept_under_the_two_old_maps_still_reads() {
-        let mut doc = Doc::new();
-        kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
-        kept_under_the_split(&mut doc, "ada", "tasks", "lens", "draft", "\"hi\"");
-        let state = Personal::read(&doc).expect("the record reads");
-        let theirs = state.of("ada");
-        assert_eq!(theirs.slots.len(), 2);
-        let value = |name: &str| {
-            theirs
-                .slots
-                .iter()
-                .find(|slot| slot.state == name)
-                .map(|slot| slot.value.clone())
-        };
-        assert_eq!(value("order"), Some(Value::text("due")));
-        assert_eq!(value("draft"), Some(Value::text("hi")));
-        assert_eq!(
-            theirs.slots[0].key(),
-            StateKey::view("tasks", "ada", theirs.slots[0].state.clone())
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_persons_state_is_theirs_and_changed_by_them_alone;
 
-    #[test]
-    fn the_place_this_build_keeps_a_state_at_wins_over_the_old_maps() {
-        let mut doc = Doc::new();
-        kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
-        apply_as(
-            &mut doc,
-            "ada",
-            &view("ada", "tasks", "order", Json::from("created")),
-        )
-        .expect("the change applies");
-        let state = Personal::read(&doc).expect("the record reads");
-        assert_eq!(state.slots.len(), 1, "one state, read once");
-        assert_eq!(state.slots[0].value, Value::text("created"));
-    }
+        phase one_persons_state_is_nobodys_else_and_two_people_keep_theirs_side_by_side;
+        {
+            let doc = kept(&[
+                ("ada", view("ada", "tasks", "place", Json::from("today"))),
+                ("bo", view("bo", "tasks", "place", Json::from("inbox"))),
+            ]);
+            let state = Personal::read(&doc).expect("the record reads");
+            assert_eq!(state.slots.len(), 2, "one record holds both");
+            assert_eq!(
+                state.of("ada").slots[0].value,
+                Value::text("today"),
+                "ada's is hers"
+            );
+            assert_eq!(state.of("bo").slots[0].value, Value::text("inbox"));
+            assert!(state.of("cy").is_empty());
+        }
 
-    #[test]
-    fn one_persons_state_is_nobodys_else_and_two_people_keep_theirs_side_by_side() {
-        let doc = kept(&[
-            ("ada", view("ada", "tasks", "place", Json::from("today"))),
-            ("bo", view("bo", "tasks", "place", Json::from("inbox"))),
-        ]);
-        let state = Personal::read(&doc).expect("the record reads");
-        assert_eq!(state.slots.len(), 2, "one record holds both");
-        assert_eq!(
-            state.of("ada").slots[0].value,
-            Value::text("today"),
-            "ada's is hers"
-        );
-        assert_eq!(state.of("bo").slots[0].value, Value::text("inbox"));
-        assert!(state.of("cy").is_empty());
-    }
+        phase a_change_for_another_person_is_refused_and_keeps_nothing;
+        {
+            let mut doc = Doc::new();
+            let error = apply_as(
+                &mut doc,
+                "bo",
+                &view("ada", "tasks", "place", Json::from("today")),
+            )
+            .expect_err("bo keeps no state of ada's");
+            assert!(error.contains("their own state"), "{error}");
+            assert!(
+                Personal::read(&doc).expect("the record reads").is_empty(),
+                "nothing was kept"
+            );
+        }
 
-    #[test]
-    fn a_change_for_another_person_is_refused_and_keeps_nothing() {
-        let mut doc = Doc::new();
-        let error = apply_as(
-            &mut doc,
-            "bo",
-            &view("ada", "tasks", "place", Json::from("today")),
-        )
-        .expect_err("bo keeps no state of ada's");
-        assert!(error.contains("their own state"), "{error}");
-        assert!(
-            Personal::read(&doc).expect("the record reads").is_empty(),
-            "nothing was kept"
-        );
-    }
+        phase a_change_no_person_invoked_is_refused;
+        {
+            let mut doc = Doc::new();
+            let keep = view("ada", "tasks", "place", Json::from("today"));
+            let mut plain = Doc::new();
+            assert!(keep.apply(&mut plain).is_err(), "nobody's action");
+            let encoded = tilo_resource::encode::<Personal>(&keep).expect("the change encodes");
+            let error = tilo_actions::apply_local_with_context(
+                &mut doc,
+                &keep,
+                encoded,
+                None,
+                ActionContext::for_resource(KIND, KIND, Personal::LABEL),
+            )
+            .expect_err("no invoker");
+            assert!(error.to_string().contains("their own state"), "{error}");
+        }
 
-    #[test]
-    fn a_change_no_person_invoked_is_refused() {
-        let mut doc = Doc::new();
-        let keep = view("ada", "tasks", "place", Json::from("today"));
-        let mut plain = Doc::new();
-        assert!(keep.apply(&mut plain).is_err(), "nobody's action");
-        let encoded = tilo_resource::encode::<Personal>(&keep).expect("the change encodes");
-        let error = tilo_actions::apply_local_with_context(
-            &mut doc,
-            &keep,
-            encoded,
-            None,
-            ActionContext::for_resource(KIND, KIND, Personal::LABEL),
-        )
-        .expect_err("no invoker");
-        assert!(error.to_string().contains("their own state"), "{error}");
-    }
+        phase a_verb_builds_the_change_of_its_own_kind_and_no_other;
+        {
+            let decl = declaration(SEEN, "Keep what is seen");
+            let keep = serde_json::to_value(seen("ada", "tl:x", None)).expect("the change serializes");
+            let args = tilo_actions::ActionArgs::bind(
+                &decl.params,
+                [(
+                    KEEP.to_owned(),
+                    tilo_actions::ArgValue::Object(keep.as_object().unwrap().clone()),
+                )],
+            )
+            .expect("the argument binds");
+            assert_eq!(decl.build_action(&args, 0), Ok(seen("ada", "tl:x", None)));
+            let other = serde_json::to_value(view("ada", "tasks", "place", Json::from("today")))
+                .expect("the change serializes");
+            let args = tilo_actions::ActionArgs::bind(
+                &decl.params,
+                [(
+                    KEEP.to_owned(),
+                    tilo_actions::ArgValue::Object(other.as_object().unwrap().clone()),
+                )],
+            )
+            .expect("the argument binds");
+            assert!(
+                decl.build_action(&args, 0).is_err(),
+                "a seen verb builds no view"
+            );
+        }
 
-    #[test]
-    fn a_verb_builds_the_change_of_its_own_kind_and_no_other() {
-        let decl = declaration(SEEN, "Keep what is seen");
-        let keep = serde_json::to_value(seen("ada", "tl:x", None)).expect("the change serializes");
-        let args = tilo_actions::ActionArgs::bind(
-            &decl.params,
-            [(
-                KEEP.to_owned(),
-                tilo_actions::ArgValue::Object(keep.as_object().unwrap().clone()),
-            )],
-        )
-        .expect("the argument binds");
-        assert_eq!(decl.build_action(&args, 0), Ok(seen("ada", "tl:x", None)));
-        let other = serde_json::to_value(view("ada", "tasks", "place", Json::from("today")))
-            .expect("the change serializes");
-        let args = tilo_actions::ActionArgs::bind(
-            &decl.params,
-            [(
-                KEEP.to_owned(),
-                tilo_actions::ArgValue::Object(other.as_object().unwrap().clone()),
-            )],
-        )
-        .expect("the argument binds");
-        assert!(
-            decl.build_action(&args, 0).is_err(),
-            "a seen verb builds no view"
-        );
-    }
-
-    #[test]
-    fn a_slot_kept_twice_reads_back_once_as_it_is_now() {
-        let doc = kept(&[
-            ("ada", view("ada", "tasks", "place", Json::from("inbox"))),
-            ("ada", view("ada", "tasks", "place", Json::from("today"))),
-        ]);
-        let state = Personal::read(&doc).expect("the record reads");
-        assert_eq!(state.of("ada").slots.len(), 1);
-        assert_eq!(state.of("ada").slots[0].value, Value::text("today"));
-    }
-
-    #[test]
-    fn a_reading_the_platform_keeps_is_not_the_persons_state_and_is_not_kept() {
-        let key = StateKey::runtime("tasks", None, "present");
-        assert!(Keep::view(&key, &Value::text("ada")).is_err());
-    }
-
-    #[test]
-    fn a_record_that_kept_no_state_reads_as_none() {
-        let state = Personal::read(&Doc::new()).expect("an empty record reads");
-        assert!(state.is_empty(), "{state:?}");
+        phase a_reading_the_platform_keeps_is_not_the_persons_state_and_is_not_kept;
+        {
+            let key = StateKey::runtime("tasks", None, "present");
+            assert!(Keep::view(&key, &Value::text("ada")).is_err());
+        }
     }
 
     #[test]
@@ -839,70 +912,5 @@ mod tests {
         mine.merge_incoming(&mut theirs).expect("the devices meet");
         theirs.merge_incoming(&mut mine).expect("and meet again");
         mine
-    }
-
-    /// Every entry ada's devices kept before they met reads, and her next change keeps the one
-    /// map there is.
-    #[test]
-    fn the_state_each_device_kept_before_they_met_reads_on_both() {
-        let mut doc = kept_apart(
-            &[view("ada", "tasks", "place", Json::from("today"))],
-            &[
-                view("ada", "tasks", "scroll", Json::from(120)),
-                seen(
-                    "ada",
-                    "tl:so.tilo.lang.tasks:inbox",
-                    Some(SeenMark {
-                        change: "ab".repeat(32),
-                        at: "2026-11-04T12:00:00Z".to_owned(),
-                    }),
-                ),
-                Keep::Runs {
-                    person: "ada".to_owned(),
-                    runs: vec!["run-7".to_owned()],
-                },
-            ],
-        );
-        assert_eq!(
-            crate::containers::maps(&doc, &ROOT, PERSONAL).len(),
-            2,
-            "the devices made a map each"
-        );
-        let state = Personal::read(&doc).expect("the record reads");
-        let theirs = state.of("ada");
-        let mut places: Vec<String> = theirs
-            .slots
-            .iter()
-            .map(|slot| format!("{}={:?}", slot.state, slot.value))
-            .collect();
-        places.sort();
-        assert_eq!(places, ["place=Text(\"today\")", "scroll=Int(120)"]);
-        assert_eq!(theirs.seen.len(), 1, "the seen mark her other device kept");
-        assert_eq!(theirs.runs[0].run, "run-7");
-
-        // Her next change keeps the state of both in the one map, and nothing is lost.
-        apply_as(
-            &mut doc,
-            "ada",
-            &view("ada", "tasks", "lens", Json::from(2)),
-        )
-        .expect("the change applies");
-        assert_eq!(
-            holding(&doc, &ROOT, PERSONAL),
-            1,
-            "one map of her state from that change on"
-        );
-        assert_eq!(
-            crate::containers::reach(&doc, &ROOT, &[PERSONAL, "ada", VIEWS, "tasks"])
-                .iter()
-                .filter(|place| doc.keys(place).next().is_some())
-                .count(),
-            1,
-            "her window's state is in one map from that change on"
-        );
-        let state = Personal::read(&doc).expect("the record reads");
-        assert_eq!(state.of("ada").slots.len(), 3);
-        assert_eq!(state.of("ada").seen.len(), 1);
-        assert_eq!(state.of("ada").runs.len(), 1);
     }
 }

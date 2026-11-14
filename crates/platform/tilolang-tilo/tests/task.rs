@@ -191,67 +191,71 @@ fn a_destructive_action_is_previewed_first() {
     assert_eq!(task.said("tasks.tasks.items.len()"), "2");
 }
 
-#[test]
-fn a_refused_invocation_is_never_done() {
-    let task = task(vec!["edit-text"]);
-    let answer = task.run(
-        "let n = notes.new_note(notes.notebook)\nn.title = \"x\"",
-        true,
-    );
-    assert_eq!(answer["state"], "failed", "{answer:#}");
-    assert!(
-        answer["detail"].as_str().unwrap().contains("denied"),
-        "{answer:#}"
-    );
-    let tried = task.run(
-        "match try tasks.new_task(tasks.tasks, title: \"Read the letter\") { .ok(t) => print(t.title), .err(why) => print(why) }",
-        true,
-    );
-    assert_eq!(tried["state"], "done", "{tried:#}");
-    assert_eq!(tried["output"], json!(["Read the letter"]), "{tried:#}");
-}
+tilo_test_env::scenario! {
+    fn a_program_stops_at_what_is_refused_or_cannot_be_read;
 
-#[test]
-fn what_cannot_be_read_is_an_error_never_nothing() {
-    let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
-    apps.unreachable = vec![(TODO_APP, "todo is not open")];
-    let door = Rc::new(apps);
-    let session = door.task();
-    for source in [
-        "tasks.tasks.items.len()",
-        "print(tasks.tasks.items.len())",
-        "tasks.tasks.items",
-        "tasks.tasks.items.filter(t -> t.done)",
-        "tasks.tasks.items.filter(t -> t.done).len()",
-    ] {
-        let answer = session.run(source, false, &agent());
-        assert_eq!(answer["state"], "failed", "{source}: {answer:#}");
+    phase a_refused_invocation_is_never_done;
+    {
+        let task = task(vec!["edit-text"]);
+        let answer = task.run(
+            "let n = notes.new_note(notes.notebook)\nn.title = \"x\"",
+            true,
+        );
+        assert_eq!(answer["state"], "failed", "{answer:#}");
         assert!(
-            answer["detail"]
-                .as_str()
-                .unwrap()
-                .contains("todo is not open"),
-            "{source}: {answer:#}"
+            answer["detail"].as_str().unwrap().contains("denied"),
+            "{answer:#}"
+        );
+        let tried = task.run(
+            "match try tasks.new_task(tasks.tasks, title: \"Read the letter\") { .ok(t) => print(t.title), .err(why) => print(why) }",
+            true,
+        );
+        assert_eq!(tried["state"], "done", "{tried:#}");
+        assert_eq!(tried["output"], json!(["Read the letter"]), "{tried:#}");
+    }
+
+    phase what_cannot_be_read_is_an_error_never_nothing;
+    {
+        let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
+        apps.unreachable = vec![(TODO_APP, "todo is not open")];
+        let door = Rc::new(apps);
+        let session = door.task();
+        for source in [
+            "tasks.tasks.items.len()",
+            "print(tasks.tasks.items.len())",
+            "tasks.tasks.items",
+            "tasks.tasks.items.filter(t -> t.done)",
+            "tasks.tasks.items.filter(t -> t.done).len()",
+        ] {
+            let answer = session.run(source, false, &agent());
+            assert_eq!(answer["state"], "failed", "{source}: {answer:#}");
+            assert!(
+                answer["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("todo is not open"),
+                "{source}: {answer:#}"
+            );
+        }
+    }
+
+    phase a_refused_action_stops_the_program_unless_it_tries;
+    {
+        let task = task(vec!["new_task"]);
+        let answer = task.run(
+            "tasks.new_task(tasks.tasks, title: \"milk\")\nprint(\"went on\")",
+            true,
+        );
+        assert_eq!(answer["state"], "failed", "{answer:#}");
+        assert!(
+            answer["detail"].as_str().unwrap().contains("denied"),
+            "{answer:#}"
+        );
+        assert!(
+            answer["output"].as_array().unwrap().is_empty(),
+            "{answer:#}"
         );
     }
-}
-
-#[test]
-fn a_refused_action_stops_the_program_unless_it_tries() {
-    let task = task(vec!["new_task"]);
-    let answer = task.run(
-        "tasks.new_task(tasks.tasks, title: \"milk\")\nprint(\"went on\")",
-        true,
-    );
-    assert_eq!(answer["state"], "failed", "{answer:#}");
-    assert!(
-        answer["detail"].as_str().unwrap().contains("denied"),
-        "{answer:#}"
-    );
-    assert!(
-        answer["output"].as_array().unwrap().is_empty(),
-        "{answer:#}"
-    );
 }
 
 #[test]

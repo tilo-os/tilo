@@ -2894,39 +2894,43 @@ pub fn cases(host: &Host, id: &str) -> Vec<wire::Case> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn names_read_in_sentence_case() {
-        assert_eq!(sentence("new_note"), "New note");
-        assert_eq!(sentence("NewNote"), "New note");
-        assert_eq!(sentence("toggle_pin"), "Toggle pin");
-        assert_eq!(sentence("Note"), "Note");
-        assert_eq!(sentence(""), "");
-    }
+    tilo_test_env::scenario! {
+        fn a_control_is_named_in_words_a_person_reads;
 
-    /// A control bound to view state is not announced by that state's name in the code, which
-    /// a person never says; it is announced by what the view says it is for.
-    #[test]
-    fn a_bound_control_is_not_named_by_a_name_in_the_code() {
-        let state = Binding {
-            target: BindTarget::State {
-                key: crate::runtime::StateKey::view("w", "person:me", "draft"),
-                name: "draft".to_owned(),
-                ty: "Text".to_owned(),
-            },
-            author: crate::runtime::ModuleHash(String::new()),
-        };
-        assert_eq!(
-            announced(&state, |_, _| "should not be asked".to_owned()),
-            ""
-        );
-        let field = Binding {
-            target: BindTarget::Field {
-                target: ResourceRef::parse_id("r1", String::new()).expect("a resource id"),
-                field: "due".to_owned(),
-            },
-            author: crate::runtime::ModuleHash(String::new()),
-        };
-        assert_eq!(announced(&field, |_, field| sentence(field)), "Due");
+        phase names_read_in_sentence_case;
+        {
+            assert_eq!(sentence("new_note"), "New note");
+            assert_eq!(sentence("NewNote"), "New note");
+            assert_eq!(sentence("toggle_pin"), "Toggle pin");
+            assert_eq!(sentence("Note"), "Note");
+            assert_eq!(sentence(""), "");
+        }
+
+        phase a_bound_control_is_not_named_by_a_name_in_the_code;
+        // A control bound to view state is not announced by that state's name in the code, which
+        // a person never says; it is announced by what the view says it is for.
+        {
+            let state = Binding {
+                target: BindTarget::State {
+                    key: crate::runtime::StateKey::view("w", "person:me", "draft"),
+                    name: "draft".to_owned(),
+                    ty: "Text".to_owned(),
+                },
+                author: crate::runtime::ModuleHash(String::new()),
+            };
+            assert_eq!(
+                announced(&state, |_, _| "should not be asked".to_owned()),
+                ""
+            );
+            let field = Binding {
+                target: BindTarget::Field {
+                    target: ResourceRef::parse_id("r1", String::new()).expect("a resource id"),
+                    field: "due".to_owned(),
+                },
+                author: crate::runtime::ModuleHash(String::new()),
+            };
+            assert_eq!(announced(&field, |_, field| sentence(field)), "Due");
+        }
     }
 
     #[test]

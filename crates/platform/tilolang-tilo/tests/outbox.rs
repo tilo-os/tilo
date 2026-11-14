@@ -45,102 +45,191 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     (ada, resource)
 }
 
-#[test]
-fn two_replicas_approving_the_same_suggestion_deliver_the_letter_once() {
-    let (mut ada, invocation) = suggested_workspace();
-    let mut grace = ada.fork("grace", &[(LETTERS, LETTERS_IDS)]);
-    let (sent_by_ada, sent_by_grace) = (MemorySink::new(), MemorySink::new());
-    ada.host.runtime().set_sink(sent_by_ada.clone());
-    grace.host.runtime().set_sink(sent_by_grace.clone());
-    // Both approve while apart.
-    for (who, replica) in [("ada", &mut ada), ("grace", &mut grace)] {
-        replica
-            .host
+tilo_test_env::scenario! {
+    fn what_the_outbox_holds_leaves_once;
+
+    phase two_replicas_approving_the_same_suggestion_deliver_the_letter_once;
+    {
+        let (mut ada, invocation) = suggested_workspace();
+        let mut grace = ada.fork("grace", &[(LETTERS, LETTERS_IDS)]);
+        let (sent_by_ada, sent_by_grace) = (MemorySink::new(), MemorySink::new());
+        ada.host.runtime().set_sink(sent_by_ada.clone());
+        grace.host.runtime().set_sink(sent_by_grace.clone());
+        // Both approve while apart.
+        for (who, replica) in [("ada", &mut ada), ("grace", &mut grace)] {
+            replica
+                .host
+                .runtime()
+                .resolve_invocation(&invocation, &Principal::new(who), Resolution::Approve)
+                .unwrap();
+            replica.commit();
+        }
+        ada.sync_with(&mut grace);
+        // Each carries out what it owns: the entry has one owner, whichever device's approval won.
+        for replica in [&mut ada, &mut grace] {
+            replica.host.settle_outbox().unwrap();
+            replica.commit();
+        }
+        ada.sync_with(&mut grace);
+        for replica in [&mut ada, &mut grace] {
+            replica.host.settle_outbox().unwrap();
+            replica.commit();
+        }
+        let delivered = sent_by_ada.delivered().len() + sent_by_grace.delivered().len();
+        assert_eq!(
+            delivered,
+            1,
+            "{:?} {:?}",
+            sent_by_ada.delivered(),
+            sent_by_grace.delivered()
+        );
+        // Settled in the record: no device has anything left to carry out.
+        assert_eq!(ada.host.store().outbox_pending_count(), 0);
+        assert_eq!(grace.host.store().outbox_pending_count(), 0);
+    }
+
+    phase approving_one_suggestion_twice_on_one_replica_queues_it_once;
+    {
+        let (mut ada, invocation) = suggested_workspace();
+        let sink = MemorySink::new();
+        ada.host.runtime().set_sink(sink.clone());
+        let approve = |ada: &Replica| {
+            ada.host.runtime().resolve_invocation(
+                &invocation,
+                &Principal::new("ada"),
+                Resolution::Approve,
+            )
+        };
+        approve(&ada).unwrap();
+        // Decided already: a second approval is refused, and nothing is queued twice.
+        assert!(approve(&ada).is_err());
+        ada.commit();
+        assert_eq!(ada.host.store().outbox_pending_count(), 1);
+        // Marked as being handed over first, a change of its own; handed over once that is in.
+        ada.host.settle_outbox().unwrap();
+        ada.commit();
+        assert!(sink.delivered().is_empty());
+        ada.host.settle_outbox().unwrap();
+        ada.commit();
+        assert_eq!(sink.delivered().len(), 1);
+    }
+
+    phase a_letter_another_process_was_handing_over_is_outcome_unknown_and_never_sent_twice;
+    {
+        use tilolang_runtime::store::{ChangeNote, OutboxState, Store as _};
+        let (mut ada, invocation) = suggested_workspace();
+        let sink = MemorySink::new();
+        ada.host.runtime().set_sink(sink.clone());
+        ada.host
             .runtime()
-            .resolve_invocation(&invocation, &Principal::new(who), Resolution::Approve)
+            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
             .unwrap();
-        replica.commit();
+        ada.commit();
+        // Another process of this device marked it as being handed over, and stopped.
+        let entry = ada.host.runtime().pending_outbox().remove(0);
+        let mut store = ada.host.store().clone();
+        let gone = OutboxState::Sending {
+            by: "a process that stopped".to_owned(),
+        };
+        store
+            .outbox_mark(&entry, &gone, &ChangeNote::default())
+            .unwrap();
+        ada.commit();
+        ada.host.settle_outbox().unwrap();
+        ada.commit();
+        ada.host.settle_outbox().unwrap();
+        ada.commit();
+        assert!(sink.delivered().is_empty(), "never handed over twice");
+        assert_eq!(ada.host.store().outbox_pending_count(), 0);
+        let states = ada.host.store().outbox_states();
+        let (_, state) = states.iter().find(|(doc, _)| *doc == entry.doc).unwrap();
+        assert_eq!(state.state, "unknown");
     }
-    ada.sync_with(&mut grace);
-    // Each carries out what it owns: the entry has one owner, whichever device's approval won.
-    for replica in [&mut ada, &mut grace] {
-        replica.host.settle_outbox().unwrap();
-        replica.commit();
-    }
-    ada.sync_with(&mut grace);
-    for replica in [&mut ada, &mut grace] {
-        replica.host.settle_outbox().unwrap();
-        replica.commit();
-    }
-    let delivered = sent_by_ada.delivered().len() + sent_by_grace.delivered().len();
-    assert_eq!(
-        delivered,
-        1,
-        "{:?} {:?}",
-        sent_by_ada.delivered(),
-        sent_by_grace.delivered()
-    );
-    // Settled in the record: no device has anything left to carry out.
-    assert_eq!(ada.host.store().outbox_pending_count(), 0);
-    assert_eq!(grace.host.store().outbox_pending_count(), 0);
-}
 
-#[test]
-fn approving_one_suggestion_twice_on_one_replica_queues_it_once() {
-    let (mut ada, invocation) = suggested_workspace();
-    let sink = MemorySink::new();
-    ada.host.runtime().set_sink(sink.clone());
-    let approve = |ada: &Replica| {
-        ada.host.runtime().resolve_invocation(
-            &invocation,
-            &Principal::new("ada"),
-            Resolution::Approve,
-        )
-    };
-    approve(&ada).unwrap();
-    // Decided already: a second approval is refused, and nothing is queued twice.
-    assert!(approve(&ada).is_err());
-    ada.commit();
-    assert_eq!(ada.host.store().outbox_pending_count(), 1);
-    // Marked as being handed over first, a change of its own; handed over once that is in.
-    ada.host.settle_outbox().unwrap();
-    ada.commit();
-    assert!(sink.delivered().is_empty());
-    ada.host.settle_outbox().unwrap();
-    ada.commit();
-    assert_eq!(sink.delivered().len(), 1);
-}
+    phase a_commit_needs_what_the_action_it_carries_is;
+    {
+        use tilo_actions::ActionKind::{Outside, Undoable};
+        let (ada, invocation) = suggested_workspace();
+        // Creating the root is a change of the record. The host offers its commit as one, which a
+        // workspace whose grants let the app author the record allows.
+        let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
+        fresh.host.root_of("test.letters").unwrap();
+        let created = fresh.host.take_committed();
+        assert_eq!(created.len(), 1);
+        assert_eq!(commit_need(&fresh, created[0].ticket), (Undoable, Undoable));
+        // Approving the send queues the letter: committing that reaches outside the record.
+        ada.host
+            .runtime()
+            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+            .unwrap();
+        let approved = ada.host.take_committed();
+        assert!(
+            approved
+                .iter()
+                .any(|committed| commit_need(&ada, committed.ticket) == (Undoable, Outside)),
+            "{approved:?}"
+        );
+    }
 
-#[test]
-fn a_letter_another_process_was_handing_over_is_outcome_unknown_and_never_sent_twice() {
-    use tilolang_runtime::store::{ChangeNote, OutboxState, Store as _};
-    let (mut ada, invocation) = suggested_workspace();
-    let sink = MemorySink::new();
-    ada.host.runtime().set_sink(sink.clone());
-    ada.host
-        .runtime()
-        .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
-        .unwrap();
-    ada.commit();
-    // Another process of this device marked it as being handed over, and stopped.
-    let entry = ada.host.runtime().pending_outbox().remove(0);
-    let mut store = ada.host.store().clone();
-    let gone = OutboxState::Sending {
-        by: "a process that stopped".to_owned(),
-    };
-    store
-        .outbox_mark(&entry, &gone, &ChangeNote::default())
-        .unwrap();
-    ada.commit();
-    ada.host.settle_outbox().unwrap();
-    ada.commit();
-    ada.host.settle_outbox().unwrap();
-    ada.commit();
-    assert!(sink.delivered().is_empty(), "never handed over twice");
-    assert_eq!(ada.host.store().outbox_pending_count(), 0);
-    let states = ada.host.store().outbox_states();
-    let (_, state) = states.iter().find(|(doc, _)| *doc == entry.doc).unwrap();
-    assert_eq!(state.state, "unknown");
+    phase a_post_that_went_out_before_the_ask_leaves_once_when_both_replicas_run_it;
+    {
+        let (mut ada, mut grace, invocation) = relay_workspace();
+        let (by_ada, by_grace) = (MemorySink::new(), MemorySink::new());
+        ada.host.runtime().set_sink(by_ada.clone());
+        grace.host.runtime().set_sink(by_grace.clone());
+        // Ada answers: the run goes on from its journal, and the post it already queued stays one.
+        assert_eq!(
+            ada.host
+                .runtime()
+                .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+                .unwrap(),
+            "done"
+        );
+        ada.commit();
+        // Grace holds no journal of the run: she runs the whole action again, posting once more,
+        // and reaches the same ask. Answering that goes on from the journal she made.
+        assert_eq!(
+            grace
+                .host
+                .runtime()
+                .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
+                .unwrap(),
+            "suggested"
+        );
+        grace.commit();
+        assert_eq!(
+            grace
+                .host
+                .runtime()
+                .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
+                .unwrap(),
+            "done"
+        );
+        grace.commit();
+        ada.sync_with(&mut grace);
+        for replica in [&mut ada, &mut grace] {
+            replica.host.settle_outbox().unwrap();
+            replica.commit();
+        }
+        ada.sync_with(&mut grace);
+        for replica in [&mut ada, &mut grace] {
+            replica.host.settle_outbox().unwrap();
+            replica.commit();
+        }
+        let mut posted = Vec::new();
+        let mut sealed = Vec::new();
+        for (capability, payload) in by_ada.delivered().into_iter().chain(by_grace.delivered()) {
+            match capability.as_str() {
+                "post" => posted.push(payload),
+                "smtp.send" => sealed.push(payload),
+                other => panic!("nothing else leaves: {other}"),
+            }
+        }
+        assert_eq!(posted.len(), 1, "the post leaves once: {posted:?}");
+        assert_eq!(sealed.len(), 1, "the letter is sealed once: {sealed:?}");
+        assert_eq!(ada.host.store().outbox_pending_count(), 0);
+        assert_eq!(grace.host.store().outbox_pending_count(), 0);
+    }
 }
 
 /// What committing the action queued under `ticket` through the host's resource needs of a
@@ -162,31 +251,6 @@ fn commit_need(
         commit.contract.kind,
         commit.need_for(arguments.as_object(), None).kind,
     )
-}
-
-#[test]
-fn a_commit_needs_what_the_action_it_carries_is() {
-    use tilo_actions::ActionKind::{Outside, Undoable};
-    let (ada, invocation) = suggested_workspace();
-    // Creating the root is a change of the record. The host offers its commit as one, which a
-    // workspace whose grants let the app author the record allows.
-    let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
-    fresh.host.root_of("test.letters").unwrap();
-    let created = fresh.host.take_committed();
-    assert_eq!(created.len(), 1);
-    assert_eq!(commit_need(&fresh, created[0].ticket), (Undoable, Undoable));
-    // Approving the send queues the letter: committing that reaches outside the record.
-    ada.host
-        .runtime()
-        .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
-        .unwrap();
-    let approved = ada.host.take_committed();
-    assert!(
-        approved
-            .iter()
-            .any(|committed| commit_need(&ada, committed.ticket) == (Undoable, Outside)),
-        "{approved:?}"
-    );
 }
 
 /// A relay app: a post that goes out at once, and the ask for who records it.
@@ -329,64 +393,4 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     )
     .0;
     (ada, grace, invocation)
-}
-
-#[test]
-fn a_post_that_went_out_before_the_ask_leaves_once_when_both_replicas_run_it() {
-    let (mut ada, mut grace, invocation) = relay_workspace();
-    let (by_ada, by_grace) = (MemorySink::new(), MemorySink::new());
-    ada.host.runtime().set_sink(by_ada.clone());
-    grace.host.runtime().set_sink(by_grace.clone());
-    // Ada answers: the run goes on from its journal, and the post it already queued stays one.
-    assert_eq!(
-        ada.host
-            .runtime()
-            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
-            .unwrap(),
-        "done"
-    );
-    ada.commit();
-    // Grace holds no journal of the run: she runs the whole action again, posting once more,
-    // and reaches the same ask. Answering that goes on from the journal she made.
-    assert_eq!(
-        grace
-            .host
-            .runtime()
-            .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
-            .unwrap(),
-        "suggested"
-    );
-    grace.commit();
-    assert_eq!(
-        grace
-            .host
-            .runtime()
-            .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
-            .unwrap(),
-        "done"
-    );
-    grace.commit();
-    ada.sync_with(&mut grace);
-    for replica in [&mut ada, &mut grace] {
-        replica.host.settle_outbox().unwrap();
-        replica.commit();
-    }
-    ada.sync_with(&mut grace);
-    for replica in [&mut ada, &mut grace] {
-        replica.host.settle_outbox().unwrap();
-        replica.commit();
-    }
-    let mut posted = Vec::new();
-    let mut sealed = Vec::new();
-    for (capability, payload) in by_ada.delivered().into_iter().chain(by_grace.delivered()) {
-        match capability.as_str() {
-            "post" => posted.push(payload),
-            "smtp.send" => sealed.push(payload),
-            other => panic!("nothing else leaves: {other}"),
-        }
-    }
-    assert_eq!(posted.len(), 1, "the post leaves once: {posted:?}");
-    assert_eq!(sealed.len(), 1, "the letter is sealed once: {sealed:?}");
-    assert_eq!(ada.host.store().outbox_pending_count(), 0);
-    assert_eq!(grace.host.store().outbox_pending_count(), 0);
 }

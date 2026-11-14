@@ -114,130 +114,92 @@ fn text(v: Value) -> String {
     }
 }
 
-#[test]
-fn versions_name_who_made_them_when_and_by_which_action_on_every_replica() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
-    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
-    ada.commit();
-    ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
-    let line = call(
-        &ada,
-        "ada",
-        "write",
-        vec![Value::resource(&talk), Value::text("hello")],
-    );
-    ada.commit();
-    ada.host.set_clock(|| "2026-10-28T09:05:00Z".to_owned());
-    call(
-        &ada,
-        "ada",
-        "reword",
-        vec![line.clone(), Value::text("hello there")],
-    );
-    ada.commit();
-    let described = text(call(&ada, "ada", "describe", vec![line.clone()]));
-    assert_eq!(
-        described,
-        "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:05:00Z Reword 2"
-    );
-    // Another replica reads the same versions from the record.
-    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-    ben.host.sync_from(&ben.doc);
-    ben.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
-    call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
-    ben.commit();
-    assert_eq!(
-        text(call(&ben, "ben", "describe", vec![line.clone()])),
-        "ada 2026-10-28T09:00:00Z ben 2026-10-28T10:00:00Z Reword 3"
-    );
-    ada.sync_with(&mut ben);
-    assert_eq!(
-        text(call(&ada, "ada", "describe", vec![line])),
-        "ada 2026-10-28T09:00:00Z ben 2026-10-28T10:00:00Z Reword 3"
-    );
-}
+tilo_test_env::scenario! {
+    fn versions_read_the_same_on_every_replica;
 
-#[test]
-fn a_scenario_records_each_block_as_its_person_at_its_time() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
-    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
-    ada.commit();
-    ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
-    let scenario = loaded[0].meta.scenarios[0].action.clone();
-    ada.host
-        .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
-        .unwrap();
-    ada.commit();
-    let lines = match ada.host.runtime().read(&talk, "lines").unwrap() {
-        Value::List(items) => items,
-        other => panic!("{other:?}"),
-    };
-    let described: Vec<String> = lines
-        .iter()
-        .map(|l| text(call(&ada, "ada", "describe", vec![l.clone()])))
-        .collect();
-    assert_eq!(
-        described,
-        [
-            // Each row names the action the call ran, as every change does, and the person and
-            // moment the scenario's `invoke` gave it.
-            "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z Write 1",
-            "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z Write 1",
-        ]
-    );
-    // The window shows them as the log has them.
-    let view = ada.view("so.tilo.lang.talk");
-    let shown = format!("{:?}", view.tree());
-    assert!(
-        shown.contains("Morning! (scenario:Mia at 2026-06-29T07:02:00Z)"),
-        "{shown}"
-    );
-}
+    phase versions_name_who_made_them_when_and_by_which_action_on_every_replica;
+    {
+        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+        ada.commit();
+        ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+        let line = call(
+            &ada,
+            "ada",
+            "write",
+            vec![Value::resource(&talk), Value::text("hello")],
+        );
+        ada.commit();
+        ada.host.set_clock(|| "2026-10-28T09:05:00Z".to_owned());
+        call(
+            &ada,
+            "ada",
+            "reword",
+            vec![line.clone(), Value::text("hello there")],
+        );
+        ada.commit();
+        let described = text(call(&ada, "ada", "describe", vec![line.clone()]));
+        assert_eq!(
+            described,
+            "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:05:00Z Reword 2"
+        );
+        // Another replica reads the same versions from the record.
+        let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+        ben.host.sync_from(&ben.doc);
+        ben.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
+        call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
+        ben.commit();
+        assert_eq!(
+            text(call(&ben, "ben", "describe", vec![line.clone()])),
+            "ada 2026-10-28T09:00:00Z ben 2026-10-28T10:00:00Z Reword 3"
+        );
+        ada.sync_with(&mut ben);
+        assert_eq!(
+            text(call(&ada, "ada", "describe", vec![line])),
+            "ada 2026-10-28T09:00:00Z ben 2026-10-28T10:00:00Z Reword 3"
+        );
+    }
 
-#[test]
-fn the_last_version_is_the_latest_on_every_replica_whichever_order_they_arrive_in() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
-    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
-    ada.commit();
-    ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
-    let line = call(
-        &ada,
-        "ada",
-        "write",
-        vec![Value::resource(&talk), Value::text("hello")],
-    );
-    ada.commit();
-    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-    ben.host.sync_from(&ben.doc);
-    // Each changes the line apart: Ada later than Ben, though Ben's change reaches Ada after
-    // her own, and Ada's reaches Ben after his.
-    ada.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
-    call(
-        &ada,
-        "ada",
-        "reword",
-        vec![line.clone(), Value::text("hi all")],
-    );
-    ada.commit();
-    ben.host.set_clock(|| "2026-10-28T09:30:00Z".to_owned());
-    call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
-    ben.commit();
-    ada.sync_with(&mut ben);
-    let want = "ada 2026-10-28T09:00:00Z ada 2026-10-28T10:00:00Z Reword 3";
-    assert_eq!(
-        text(call(&ada, "ada", "describe", vec![line.clone()])),
-        want
-    );
-    assert_eq!(text(call(&ben, "ben", "describe", vec![line])), want);
-}
+    phase a_scenario_records_each_block_as_its_person_at_its_time;
+    {
+        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+        ada.commit();
+        ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+        let scenario = loaded[0].meta.scenarios[0].action.clone();
+        ada.host
+            .runtime()
+            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .unwrap();
+        ada.commit();
+        let lines = match ada.host.runtime().read(&talk, "lines").unwrap() {
+            Value::List(items) => items,
+            other => panic!("{other:?}"),
+        };
+        let described: Vec<String> = lines
+            .iter()
+            .map(|l| text(call(&ada, "ada", "describe", vec![l.clone()])))
+            .collect();
+        assert_eq!(
+            described,
+            [
+                // Each row names the action the call ran, as every change does, and the person and
+                // moment the scenario's `invoke` gave it.
+                "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z Write 1",
+                "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z Write 1",
+            ]
+        );
+        // The window shows them as the log has them.
+        let view = ada.view("so.tilo.lang.talk");
+        let shown = format!("{:?}", view.tree());
+        assert!(
+            shown.contains("Morning! (scenario:Mia at 2026-06-29T07:02:00Z)"),
+            "{shown}"
+        );
+    }
 
-/// The same two changes reaching each replica in either order: each person's change arrives
-/// before or after the other replica's own, and both read the one made later as the last
-/// version either way.
-#[test]
-fn the_last_version_is_the_same_whichever_change_reaches_a_replica_first() {
-    for ada_first in [true, false] {
+    phase the_last_version_is_the_latest_on_every_replica_whichever_order_they_arrive_in;
+    {
         let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
         let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
         ada.commit();
@@ -251,6 +213,8 @@ fn the_last_version_is_the_same_whichever_change_reaches_a_replica_first() {
         ada.commit();
         let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
         ben.host.sync_from(&ben.doc);
+        // Each changes the line apart: Ada later than Ben, though Ben's change reaches Ada after
+        // her own, and Ada's reaches Ben after his.
         ada.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
         call(
             &ada,
@@ -262,36 +226,168 @@ fn the_last_version_is_the_same_whichever_change_reaches_a_replica_first() {
         ben.host.set_clock(|| "2026-10-28T09:30:00Z".to_owned());
         call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
         ben.commit();
-        // Ada's change reaches Ben first, or his reaches her first.
-        if ada_first {
-            ada.send_to(&mut ben);
-            ben.send_to(&mut ada);
-        } else {
-            ben.send_to(&mut ada);
-            ada.send_to(&mut ben);
-        }
+        ada.sync_with(&mut ben);
         let want = "ada 2026-10-28T09:00:00Z ada 2026-10-28T10:00:00Z Reword 3";
         assert_eq!(
             text(call(&ada, "ada", "describe", vec![line.clone()])),
-            want,
-            "ada's change first: {ada_first}"
+            want
         );
-        assert_eq!(
-            text(call(&ben, "ben", "describe", vec![line])),
-            want,
-            "ada's change first: {ada_first}"
-        );
+        assert_eq!(text(call(&ben, "ben", "describe", vec![line])), want);
     }
-}
 
-/// One line changed by three changes made apart, reaching the replica that holds none of them
-/// in either order: every replica reads one history, folds one set of steps, and counts what
-/// is unseen the same.
-#[test]
-fn every_replica_reads_one_history_and_its_steps_whichever_order_changes_arrive_in() {
-    for ada_first in [true, false] {
+    phase the_last_version_is_the_same_whichever_change_reaches_a_replica_first;
+    // The same two changes reaching each replica in either order: each person's change arrives
+    // before or after the other replica's own, and both read the one made later as the last
+    // version either way.
+    {
+        for ada_first in [true, false] {
+            let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+            let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+            ada.commit();
+            ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+            let line = call(
+                &ada,
+                "ada",
+                "write",
+                vec![Value::resource(&talk), Value::text("hello")],
+            );
+            ada.commit();
+            let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+            ben.host.sync_from(&ben.doc);
+            ada.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
+            call(
+                &ada,
+                "ada",
+                "reword",
+                vec![line.clone(), Value::text("hi all")],
+            );
+            ada.commit();
+            ben.host.set_clock(|| "2026-10-28T09:30:00Z".to_owned());
+            call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
+            ben.commit();
+            // Ada's change reaches Ben first, or his reaches her first.
+            if ada_first {
+                ada.send_to(&mut ben);
+                ben.send_to(&mut ada);
+            } else {
+                ben.send_to(&mut ada);
+                ada.send_to(&mut ben);
+            }
+            let want = "ada 2026-10-28T09:00:00Z ada 2026-10-28T10:00:00Z Reword 3";
+            assert_eq!(
+                text(call(&ada, "ada", "describe", vec![line.clone()])),
+                want,
+                "ada's change first: {ada_first}"
+            );
+            assert_eq!(
+                text(call(&ben, "ben", "describe", vec![line])),
+                want,
+                "ada's change first: {ada_first}"
+            );
+        }
+    }
+
+    phase every_replica_reads_one_history_and_its_steps_whichever_order_changes_arrive_in;
+    // One line changed by three changes made apart, reaching the replica that holds none of them
+    // in either order: every replica reads one history, folds one set of steps, and counts what
+    // is unseen the same.
+    {
+        for ada_first in [true, false] {
+            let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+            let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+            ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+            let line = call(
+                &ada,
+                "ada",
+                "write",
+                vec![Value::resource(&talk), Value::text("hello")],
+            );
+            ada.commit();
+            let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+            let mut cy = ada.fork("cy", &[(TALK, &loaded[0].ids)]);
+            ben.host.sync_from(&ben.doc);
+            cy.host.sync_from(&cy.doc);
+            // Ben changes the line twice, one on top of the other, and Ada once between them in
+            // time, made apart from both.
+            ada.host.set_clock(|| "2026-10-28T09:30:00Z".to_owned());
+            call(
+                &ada,
+                "ada",
+                "reword",
+                vec![line.clone(), Value::text("hi all")],
+            );
+            ada.commit();
+            ben.host.set_clock(|| "2026-10-28T09:20:00Z".to_owned());
+            call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
+            ben.commit();
+            ben.host.set_clock(|| "2026-10-28T09:40:00Z".to_owned());
+            call(
+                &ben,
+                "ben",
+                "reword",
+                vec![line.clone(), Value::text("hello")],
+            );
+            ben.commit();
+            // Cy holds none of them and receives them in one order or the other; the two authors
+            // exchange theirs.
+            if ada_first {
+                ada.send_to(&mut cy);
+                ben.send_to(&mut cy);
+            } else {
+                ben.send_to(&mut cy);
+                ada.send_to(&mut cy);
+            }
+            ada.sync_with(&mut ben);
+            ada.sync_with(&mut cy);
+            ben.sync_with(&mut cy);
+            let readers = [("ada", &ada), ("ben", &ben), ("cy", &cy)];
+            let history = "ada 2026-10-28T09:00:00Z Write | ben 2026-10-28T09:20:00Z Reword \
+                       | ada 2026-10-28T09:30:00Z Reword | ben 2026-10-28T09:40:00Z Reword";
+            for (who, replica) in readers {
+                assert_eq!(
+                    text(call(replica, who, "trail", vec![line.clone()])),
+                    history,
+                    "{who} reads one history; ada's change first: {ada_first}"
+                );
+            }
+            // Four versions, four steps, newest first: each step holds one change's versions, and
+            // no step folds changes made apart, however the changes reached the replica.
+            for (who, replica) in readers {
+                assert_eq!(
+                    text(call(replica, who, "folds", vec![line.clone()])),
+                    "ben 1 | ada 1 | ben 1 | ada 1",
+                    "{who} folds one set of steps; ada's change first: {ada_first}"
+                );
+            }
+            // What is unseen is the versions after the person's own, oldest first, in the one order
+            // every replica keeps.
+            for (who, replica, unread) in [
+                ("ada", &ada, "ben 2026-10-28T09:40:00Z"),
+                ("ben", &ben, ""),
+                (
+                    "cy",
+                    &cy,
+                    "ada 2026-10-28T09:00:00Z | ben 2026-10-28T09:20:00Z \
+                 | ada 2026-10-28T09:30:00Z | ben 2026-10-28T09:40:00Z",
+                ),
+            ] {
+                assert_eq!(
+                    text(call(replica, who, "unread", vec![line.clone()])),
+                    unread,
+                    "{who} counts what is unseen; ada's change first: {ada_first}"
+                );
+            }
+        }
+    }
+
+    phase of_changes_within_one_second_the_last_version_is_the_one_made_last;
+    // Changes made one on top of another within one second: each is the last version once it is
+    // made, before and after it is committed, and on a replica that receives them all at once;
+    // never the one it was made on, whichever change's hash is smaller.
+    {
         let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
         let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+        ada.commit();
         ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
         let line = call(
             &ada,
@@ -301,128 +397,36 @@ fn every_replica_reads_one_history_and_its_steps_whichever_order_changes_arrive_
         );
         ada.commit();
         let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-        let mut cy = ada.fork("cy", &[(TALK, &loaded[0].ids)]);
         ben.host.sync_from(&ben.doc);
-        cy.host.sync_from(&cy.doc);
-        // Ben changes the line twice, one on top of the other, and Ada once between them in
-        // time, made apart from both.
-        ada.host.set_clock(|| "2026-10-28T09:30:00Z".to_owned());
-        call(
-            &ada,
-            "ada",
-            "reword",
-            vec![line.clone(), Value::text("hi all")],
-        );
-        ada.commit();
-        ben.host.set_clock(|| "2026-10-28T09:20:00Z".to_owned());
-        call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
-        ben.commit();
-        ben.host.set_clock(|| "2026-10-28T09:40:00Z".to_owned());
-        call(
-            &ben,
-            "ben",
-            "reword",
-            vec![line.clone(), Value::text("hello")],
-        );
-        ben.commit();
-        // Cy holds none of them and receives them in one order or the other; the two authors
-        // exchange theirs.
-        if ada_first {
-            ada.send_to(&mut cy);
-            ben.send_to(&mut cy);
-        } else {
-            ben.send_to(&mut cy);
-            ada.send_to(&mut cy);
+        // Two changes' hashes order either way half the time: twelve rewords in one second
+        // would each come out first by hash about once.
+        for round in 0..12 {
+            let who = if round % 2 == 0 { "mia" } else { "ada" };
+            call(
+                &ada,
+                who,
+                "reword",
+                vec![line.clone(), Value::text(format!("hello {round}"))],
+            );
+            let want = format!("ada 2026-10-28T09:00:00Z {who} 2026-10-28T09:00:00Z Reword");
+            let provisional = text(call(&ada, "ada", "describe", vec![line.clone()]));
+            assert!(
+                provisional.starts_with(&want),
+                "round {round}, before the record holds it: {provisional}"
+            );
+            ada.commit();
+            let committed = text(call(&ada, "ada", "describe", vec![line.clone()]));
+            assert!(
+                committed.starts_with(&want),
+                "round {round}, once the record holds it: {committed}"
+            );
         }
         ada.sync_with(&mut ben);
-        ada.sync_with(&mut cy);
-        ben.sync_with(&mut cy);
-        let readers = [("ada", &ada), ("ben", &ben), ("cy", &cy)];
-        let history = "ada 2026-10-28T09:00:00Z Write | ben 2026-10-28T09:20:00Z Reword \
-                       | ada 2026-10-28T09:30:00Z Reword | ben 2026-10-28T09:40:00Z Reword";
-        for (who, replica) in readers {
-            assert_eq!(
-                text(call(replica, who, "trail", vec![line.clone()])),
-                history,
-                "{who} reads one history; ada's change first: {ada_first}"
-            );
-        }
-        // Four versions, four steps, newest first: each step holds one change's versions, and
-        // no step folds changes made apart, however the changes reached the replica.
-        for (who, replica) in readers {
-            assert_eq!(
-                text(call(replica, who, "folds", vec![line.clone()])),
-                "ben 1 | ada 1 | ben 1 | ada 1",
-                "{who} folds one set of steps; ada's change first: {ada_first}"
-            );
-        }
-        // What is unseen is the versions after the person's own, oldest first, in the one order
-        // every replica keeps.
-        for (who, replica, unread) in [
-            ("ada", &ada, "ben 2026-10-28T09:40:00Z"),
-            ("ben", &ben, ""),
-            (
-                "cy",
-                &cy,
-                "ada 2026-10-28T09:00:00Z | ben 2026-10-28T09:20:00Z \
-                 | ada 2026-10-28T09:30:00Z | ben 2026-10-28T09:40:00Z",
-            ),
-        ] {
-            assert_eq!(
-                text(call(replica, who, "unread", vec![line.clone()])),
-                unread,
-                "{who} counts what is unseen; ada's change first: {ada_first}"
-            );
-        }
-    }
-}
-
-/// Changes made one on top of another within one second: each is the last version once it is
-/// made, before and after it is committed, and on a replica that receives them all at once;
-/// never the one it was made on, whichever change's hash is smaller.
-#[test]
-fn of_changes_within_one_second_the_last_version_is_the_one_made_last() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
-    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
-    ada.commit();
-    ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
-    let line = call(
-        &ada,
-        "ada",
-        "write",
-        vec![Value::resource(&talk), Value::text("hello")],
-    );
-    ada.commit();
-    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-    ben.host.sync_from(&ben.doc);
-    // Two changes' hashes order either way half the time: twelve rewords in one second
-    // would each come out first by hash about once.
-    for round in 0..12 {
-        let who = if round % 2 == 0 { "mia" } else { "ada" };
-        call(
-            &ada,
-            who,
-            "reword",
-            vec![line.clone(), Value::text(format!("hello {round}"))],
-        );
-        let want = format!("ada 2026-10-28T09:00:00Z {who} 2026-10-28T09:00:00Z Reword");
-        let provisional = text(call(&ada, "ada", "describe", vec![line.clone()]));
-        assert!(
-            provisional.starts_with(&want),
-            "round {round}, before the record holds it: {provisional}"
-        );
-        ada.commit();
-        let committed = text(call(&ada, "ada", "describe", vec![line.clone()]));
-        assert!(
-            committed.starts_with(&want),
-            "round {round}, once the record holds it: {committed}"
+        assert_eq!(
+            text(call(&ben, "ben", "describe", vec![line])),
+            "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:00:00Z Reword 13"
         );
     }
-    ada.sync_with(&mut ben);
-    assert_eq!(
-        text(call(&ben, "ben", "describe", vec![line])),
-        "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:00:00Z Reword 13"
-    );
 }
 
 /// Topics, each with its notes, listed by when each last changed, the latest first.
@@ -555,22 +559,104 @@ fn call_in(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
     }
 }
 
-#[test]
-fn a_list_sorted_by_when_each_last_changed_reads_its_order_from_the_index() {
-    let (mut ada, _, made) = topics(3);
-    let mut view = ada.view("so.tilo.lang.topics");
-    assert_eq!(rows(&mut view, 3), ["topic 2", "topic 1", "topic 0"]);
-    // A note posted in the oldest topic is its latest change: it comes first.
-    ada.host.set_clock(|| "2026-10-28T12:00:00Z".to_owned());
-    call_in(
-        &ada,
-        "so.tilo.lang.topics",
-        "post",
-        vec![made[0].clone(), Value::text("news")],
-    );
-    ada.commit();
-    view.poll_patches().unwrap();
-    assert_eq!(rows(&mut view, 3), ["topic 0", "topic 2", "topic 1"]);
+tilo_test_env::scenario! {
+    fn a_field_and_a_list_read_the_version_that_last_changed;
+
+    phase a_list_sorted_by_when_each_last_changed_reads_its_order_from_the_index;
+    {
+        let (mut ada, _, made) = topics(3);
+        let mut view = ada.view("so.tilo.lang.topics");
+        assert_eq!(rows(&mut view, 3), ["topic 2", "topic 1", "topic 0"]);
+        // A note posted in the oldest topic is its latest change: it comes first.
+        ada.host.set_clock(|| "2026-10-28T12:00:00Z".to_owned());
+        call_in(
+            &ada,
+            "so.tilo.lang.topics",
+            "post",
+            vec![made[0].clone(), Value::text("news")],
+        );
+        ada.commit();
+        view.poll_patches().unwrap();
+        assert_eq!(rows(&mut view, 3), ["topic 0", "topic 2", "topic 1"]);
+    }
+
+    phase a_field_names_the_version_that_last_changed_it;
+    {
+        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+        ada.commit();
+        ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+        let line = call(
+            &ada,
+            "ada",
+            "write",
+            vec![Value::resource(&talk), Value::text("hello")],
+        );
+        ada.commit();
+        assert_eq!(
+            text(call(&ada, "ada", "changed_by", vec![line.clone()])),
+            "ada 2026-10-28T09:00:00Z Write",
+            "the version that made it set every field it was made with"
+        );
+        ada.host.set_clock(|| "2026-10-28T09:05:00Z".to_owned());
+        call(
+            &ada,
+            "ada",
+            "reword",
+            vec![line.clone(), Value::text("hello there")],
+        );
+        ada.commit();
+        assert_eq!(
+            text(call(&ada, "ada", "changed_by", vec![line.clone()])),
+            "ada 2026-10-28T09:05:00Z Reword"
+        );
+        // Somebody else's change of it names them, on every replica.
+        let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+        ben.host.sync_from(&ben.doc);
+        ben.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
+        call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
+        ben.commit();
+        let want = "ben 2026-10-28T10:00:00Z Reword";
+        assert_eq!(
+            text(call(&ben, "ben", "changed_by", vec![line.clone()])),
+            want
+        );
+        ada.sync_with(&mut ben);
+        assert_eq!(text(call(&ada, "ada", "changed_by", vec![line])), want);
+    }
+
+    phase a_list_sorted_by_when_a_field_last_changed_reads_that_field_from_the_index;
+    {
+        let (mut ada, _, made) = topics(3);
+        let mut view = lately(&ada);
+        assert_eq!(
+            rows(&mut view, 3),
+            ["topic 2", "topic 1", "topic 0"],
+            "made one a minute apart"
+        );
+        // A note posted in the oldest topic changes the topic, its title no more than any other.
+        ada.host.set_clock(|| "2026-10-28T12:00:00Z".to_owned());
+        call_in(
+            &ada,
+            "so.tilo.lang.topics",
+            "post",
+            vec![made[0].clone(), Value::text("news")],
+        );
+        ada.commit();
+        view.poll_patches().unwrap();
+        assert_eq!(rows(&mut view, 3), ["topic 2", "topic 1", "topic 0"]);
+        // Retitling it makes its title the latest change of the three.
+        ada.host.set_clock(|| "2026-10-28T13:00:00Z".to_owned());
+        call_in(
+            &ada,
+            "so.tilo.lang.topics",
+            "retitle",
+            vec![made[0].clone(), Value::text("topic 0 again")],
+        );
+        ada.commit();
+        view.poll_patches().unwrap();
+        assert_eq!(rows(&mut view, 3), ["topic 0 again", "topic 2", "topic 1"]);
+    }
 }
 
 /// `r`'s person takes their last step back, as their window's Undo does.
@@ -604,51 +690,6 @@ fn undo(r: &mut Replica) {
     .expect("undo is never refused");
     r.doc.commit();
     r.host.sync_from(&r.doc);
-}
-
-#[test]
-fn a_field_names_the_version_that_last_changed_it() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
-    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
-    ada.commit();
-    ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
-    let line = call(
-        &ada,
-        "ada",
-        "write",
-        vec![Value::resource(&talk), Value::text("hello")],
-    );
-    ada.commit();
-    assert_eq!(
-        text(call(&ada, "ada", "changed_by", vec![line.clone()])),
-        "ada 2026-10-28T09:00:00Z Write",
-        "the version that made it set every field it was made with"
-    );
-    ada.host.set_clock(|| "2026-10-28T09:05:00Z".to_owned());
-    call(
-        &ada,
-        "ada",
-        "reword",
-        vec![line.clone(), Value::text("hello there")],
-    );
-    ada.commit();
-    assert_eq!(
-        text(call(&ada, "ada", "changed_by", vec![line.clone()])),
-        "ada 2026-10-28T09:05:00Z Reword"
-    );
-    // Somebody else's change of it names them, on every replica.
-    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-    ben.host.sync_from(&ben.doc);
-    ben.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
-    call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
-    ben.commit();
-    let want = "ben 2026-10-28T10:00:00Z Reword";
-    assert_eq!(
-        text(call(&ben, "ben", "changed_by", vec![line.clone()])),
-        want
-    );
-    ada.sync_with(&mut ben);
-    assert_eq!(text(call(&ada, "ada", "changed_by", vec![line])), want);
 }
 
 /// A change taken back is no change of the field: what last changed it is the version still in
@@ -687,39 +728,6 @@ fn undo_puts_a_field_back_to_the_version_that_last_changed_it() {
         described.starts_with("ada 2026-10-28T09:00:00Z ada ") && described.ends_with(" History 3"),
         "while the line has a version for the undo itself: {described}"
     );
-}
-
-#[test]
-fn a_list_sorted_by_when_a_field_last_changed_reads_that_field_from_the_index() {
-    let (mut ada, _, made) = topics(3);
-    let mut view = lately(&ada);
-    assert_eq!(
-        rows(&mut view, 3),
-        ["topic 2", "topic 1", "topic 0"],
-        "made one a minute apart"
-    );
-    // A note posted in the oldest topic changes the topic, its title no more than any other.
-    ada.host.set_clock(|| "2026-10-28T12:00:00Z".to_owned());
-    call_in(
-        &ada,
-        "so.tilo.lang.topics",
-        "post",
-        vec![made[0].clone(), Value::text("news")],
-    );
-    ada.commit();
-    view.poll_patches().unwrap();
-    assert_eq!(rows(&mut view, 3), ["topic 2", "topic 1", "topic 0"]);
-    // Retitling it makes its title the latest change of the three.
-    ada.host.set_clock(|| "2026-10-28T13:00:00Z".to_owned());
-    call_in(
-        &ada,
-        "so.tilo.lang.topics",
-        "retitle",
-        vec![made[0].clone(), Value::text("topic 0 again")],
-    );
-    ada.commit();
-    view.poll_patches().unwrap();
-    assert_eq!(rows(&mut view, 3), ["topic 0 again", "topic 2", "topic 1"]);
 }
 
 /// The topics' board, through its view of when each title last changed.

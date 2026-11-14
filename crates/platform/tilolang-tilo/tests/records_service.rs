@@ -93,158 +93,162 @@ fn texts(node: &UiNode) -> Vec<String> {
     out
 }
 
-/// A published resource's own `open` is answered, never refused: opening is the system's
-/// (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes views; it
-/// opens nothing"). The record publishes the `open` so an agent reading the catalogue finds it,
-/// and invoking it changes nothing of the record — the place it asks for waits for the session to
-/// stand through its arrangement, beside the place the asking step was in.
-#[test]
-fn a_resources_own_open_is_answered_and_changes_no_record() {
-    let (mut service, _) = service();
-    let note = new_note(&mut service);
-    // The note publishes its own `open`: the effect a search hit and an agent invoke.
-    let published = service
-        .resources()
-        .into_iter()
-        .flat_map(|resource| std::iter::once(resource.clone()).chain(resource.children))
-        .find(|resource| resource.id.as_str() == note)
-        .expect("the note is published");
-    let open = published
-        .actions
-        .iter()
-        .find(|action| action.id == "open")
-        .expect("the note publishes its own open");
-    assert!(open.encode_immediate().is_some(), "its open takes no input");
+tilo_test_env::scenario! {
+    fn the_record_service_answers_for_a_packages_resources;
 
-    let before = service.record().clone().get_heads();
-    // Invoked as an agent answering in a conversation, the open is answered with nothing done to
-    // the record: the session places the note beside that conversation.
-    let agent =
-        tilo_actions::ActionInvoker::actor("agent:tide").with_kind(tilo_actions::ActorKind::Agent);
-    service.note_beside("chat.workspace/channels/c_tide");
-    let started = service
-        .invoke_as(&agent, &note, "open", &Map::new())
-        .unwrap_or_else(|error| panic!("the resource's open is answered: {error}"));
-    assert_eq!(
-        started,
-        Started::Done(tilo_actions::ActionOutput::default()),
-        "it changed nothing of the record"
-    );
-    assert_eq!(
-        service.record().clone().get_heads(),
-        before,
-        "the record did not change"
-    );
-    // What it asked stands for the session to place: the note, beside the conversation that asked,
-    // and the actor that asked is the agent's.
-    let opened = service.take_open();
-    assert_eq!(opened.len(), 1, "one place asked for");
-    let (invoker, place) = &opened[0];
-    assert_eq!(invoker.actor, "agent:tide", "asked as the agent");
-    assert_eq!(place.resource, note, "the note the invocation addressed");
-    assert_eq!(place.view, "", "its primary view: its own default `open`");
-    assert_eq!(
-        place.beside, "chat.workspace/channels/c_tide",
-        "beside the conversation of the turn that asked"
-    );
-    // Nothing is left to take: the place asked for once.
-    assert!(service.take_open().is_empty(), "the ask is taken once");
-}
+    phase a_resources_own_open_is_answered_and_changes_no_record;
+    // A published resource's own `open` is answered, never refused: opening is the system's
+    // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes views; it
+    // opens nothing"). The record publishes the `open` so an agent reading the catalogue finds it,
+    // and invoking it changes nothing of the record — the place it asks for waits for the session to
+    // stand through its arrangement, beside the place the asking step was in.
+    {
+        let (mut service, _) = service();
+        let note = new_note(&mut service);
+        // The note publishes its own `open`: the effect a search hit and an agent invoke.
+        let published = service
+            .resources()
+            .into_iter()
+            .flat_map(|resource| std::iter::once(resource.clone()).chain(resource.children))
+            .find(|resource| resource.id.as_str() == note)
+            .expect("the note is published");
+        let open = published
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("the note publishes its own open");
+        assert!(open.encode_immediate().is_some(), "its open takes no input");
 
-#[test]
-fn a_note_made_through_its_action_is_a_session_resource_with_its_fields() {
-    let (mut service, meta) = service();
-    let note = new_note(&mut service);
-    assert!(
-        note.starts_with(&resource_id(APP, "")),
-        "the note is named by its published id: {note}"
-    );
-    assert!(
-        service.resources().iter().any(|resource| {
-            resource
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == note)
-        }),
-        "the note stands in the published catalogue"
-    );
+        let before = service.record().clone().get_heads();
+        // Invoked as an agent answering in a conversation, the open is answered with nothing done to
+        // the record: the session places the note beside that conversation.
+        let agent =
+            tilo_actions::ActionInvoker::actor("agent:tide").with_kind(tilo_actions::ActorKind::Agent);
+        service.note_beside("chat.workspace/channels/c_tide");
+        let started = service
+            .invoke_as(&agent, &note, "open", &Map::new())
+            .unwrap_or_else(|error| panic!("the resource's open is answered: {error}"));
+        assert_eq!(
+            started,
+            Started::Done(tilo_actions::ActionOutput::default()),
+            "it changed nothing of the record"
+        );
+        assert_eq!(
+            service.record().clone().get_heads(),
+            before,
+            "the record did not change"
+        );
+        // What it asked stands for the session to place: the note, beside the conversation that asked,
+        // and the actor that asked is the agent's.
+        let opened = service.take_open();
+        assert_eq!(opened.len(), 1, "one place asked for");
+        let (invoker, place) = &opened[0];
+        assert_eq!(invoker.actor, "agent:tide", "asked as the agent");
+        assert_eq!(place.resource, note, "the note the invocation addressed");
+        assert_eq!(place.view, "", "its primary view: its own default `open`");
+        assert_eq!(
+            place.beside, "chat.workspace/channels/c_tide",
+            "beside the conversation of the turn that asked"
+        );
+        // Nothing is left to take: the place asked for once.
+        assert!(service.take_open().is_empty(), "the ask is taken once");
+    }
 
-    service.poll();
-    service
-        .invoke(&note, "retitle", &args(json!({ "title": "Groceries" })))
-        .unwrap();
-    assert!(service.poll(), "a retitled note moves its reading");
-    let reading = service.read(&note).expect("the note reads");
-    assert_eq!(
-        reading[field_id(&meta, "Note", "title")],
-        json!("Groceries")
-    );
-    assert_eq!(reading[field_id(&meta, "Note", "pinned")], json!(false));
+    phase a_note_made_through_its_action_is_a_session_resource_with_its_fields;
+    {
+        let (mut service, meta) = service();
+        let note = new_note(&mut service);
+        assert!(
+            note.starts_with(&resource_id(APP, "")),
+            "the note is named by its published id: {note}"
+        );
+        assert!(
+            service.resources().iter().any(|resource| {
+                resource
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == note)
+            }),
+            "the note stands in the published catalogue"
+        );
 
-    service.invoke(&note, "pin", &Map::new()).unwrap();
-    assert!(
-        service.poll(),
-        "a field no published tree shows moves the reading too"
-    );
-    let reading = service.read(&note).unwrap();
-    assert_eq!(reading[field_id(&meta, "Note", "pinned")], json!(true));
-    assert!(!service.poll(), "nothing changed since");
-}
+        service.poll();
+        service
+            .invoke(&note, "retitle", &args(json!({ "title": "Groceries" })))
+            .unwrap();
+        assert!(service.poll(), "a retitled note moves its reading");
+        let reading = service.read(&note).expect("the note reads");
+        assert_eq!(
+            reading[field_id(&meta, "Note", "title")],
+            json!("Groceries")
+        );
+        assert_eq!(reading[field_id(&meta, "Note", "pinned")], json!(false));
 
-#[test]
-fn another_app_reads_the_published_note_through_the_notes_package() {
-    let (mut service, _) = service();
-    let note = new_note(&mut service);
-    service
-        .invoke(&note, "retitle", &args(json!({ "title": "Groceries" })))
-        .unwrap();
-    let reading = service.read(&note).unwrap();
+        service.invoke(&note, "pin", &Map::new()).unwrap();
+        assert!(
+            service.poll(),
+            "a field no published tree shows moves the reading too"
+        );
+        let reading = service.read(&note).unwrap();
+        assert_eq!(reading[field_id(&meta, "Note", "pinned")], json!(true));
+        assert!(!service.poll(), "nothing changed since");
+    }
 
-    // The shell's side: notes is another app's package here, its records read from the session.
-    let shell = Host::new(&AutoCommit::new(), Principal::new("ada"), || None).unwrap();
-    let discussion =
-        tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &[])
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-    let notes = tilolang::compile_package(
-        NOTES.0,
-        &IdsLock::parse(NOTES.1).unwrap(),
-        std::slice::from_ref(&discussion.meta),
-    )
-    .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-    shell
-        .load_foreign_package(&notes.wasm, &notes.meta)
-        .unwrap();
-    let card = tilolang::compile_package(CARD, &IdsLock::new(), std::slice::from_ref(&notes.meta))
+    phase another_app_reads_the_published_note_through_the_notes_package;
+    {
+        let (mut service, _) = service();
+        let note = new_note(&mut service);
+        service
+            .invoke(&note, "retitle", &args(json!({ "title": "Groceries" })))
+            .unwrap();
+        let reading = service.read(&note).unwrap();
+
+        // The shell's side: notes is another app's package here, its records read from the session.
+        let shell = Host::new(&AutoCommit::new(), Principal::new("ada"), || None).unwrap();
+        let discussion =
+            tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &[])
+                .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+        let notes = tilolang::compile_package(
+            NOTES.0,
+            &IdsLock::parse(NOTES.1).unwrap(),
+            std::slice::from_ref(&discussion.meta),
+        )
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-    shell.load_compiled(&card).unwrap();
-    let kind = service
-        .resources()
-        .iter()
-        .flat_map(|resource| resource.children.iter())
-        .find(|child| child.id.as_str() == note)
-        .map(|child| child.kind.clone())
-        .expect("the note is published");
-    let ty = reading_type(&kind).expect("a tilolang record's kind");
-    assert_eq!(ty, format!("{APP}#Note"));
-    let target = ResourceRef::parse_id(&note, ty).expect("a resource id");
-    shell
-        .runtime()
-        .set_reading(&target, &reading.to_string())
-        .unwrap();
-    let card_view = card
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == "note_card")
-        .unwrap()
-        .id
-        .clone();
-    let view = shell.open_resource(&target, Some(&card_view)).unwrap();
-    assert!(
-        texts(view.tree()).contains(&"Groceries".to_owned()),
-        "the notes app's row shows the published note: {:#?}",
-        view.tree()
-    );
+        shell
+            .load_foreign_package(&notes.wasm, &notes.meta)
+            .unwrap();
+        let card = tilolang::compile_package(CARD, &IdsLock::new(), std::slice::from_ref(&notes.meta))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+        shell.load_compiled(&card).unwrap();
+        let kind = service
+            .resources()
+            .iter()
+            .flat_map(|resource| resource.children.iter())
+            .find(|child| child.id.as_str() == note)
+            .map(|child| child.kind.clone())
+            .expect("the note is published");
+        let ty = reading_type(&kind).expect("a tilolang record's kind");
+        assert_eq!(ty, format!("{APP}#Note"));
+        let target = ResourceRef::parse_id(&note, ty).expect("a resource id");
+        shell
+            .runtime()
+            .set_reading(&target, &reading.to_string())
+            .unwrap();
+        let card_view = card
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == "note_card")
+            .unwrap()
+            .id
+            .clone();
+        let view = shell.open_resource(&target, Some(&card_view)).unwrap();
+        assert!(
+            texts(view.tree()).contains(&"Groceries".to_owned()),
+            "the notes app's row shows the published note: {:#?}",
+            view.tree()
+        );
+    }
 }
 
 /// Ada's workspace with its tasks, as the session runs them: a `RecordService` over the record,

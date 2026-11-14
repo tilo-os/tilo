@@ -1360,39 +1360,104 @@ impl Host {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_stored_field_reads_back_as_it_was() {
-        let values = [
-            FieldValue::Absent,
-            FieldValue::Scalar(Scalar::Bool(true)),
-            FieldValue::Scalar(Scalar::Int(-3)),
-            FieldValue::Scalar(Scalar::Float(1.5)),
-            FieldValue::Scalar(Scalar::Text("a".into())),
-            FieldValue::Scalar(Scalar::Json(json!({"case": "x"}))),
-            FieldValue::Counter(7),
-            FieldValue::Text("plain".into()),
-            FieldValue::Rich(RichValue::from_text("one\ntwo")),
-            FieldValue::Items(vec!["i1".into(), "i2".into()]),
-            FieldValue::Keys(vec!["k".into()]),
-            FieldValue::Entries(vec![("k".into(), Scalar::Int(1))]),
-        ];
-        for value in values {
-            assert_eq!(field_of(&field_json(&value)).unwrap(), value);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_task_reads_previews_and_names_what_apps_offer;
 
-    #[test]
-    fn many_resources_or_a_destructive_one_is_previewed() {
-        let few = vec![json!({"resources": ["a", "b"], "destructive": false})];
-        assert!(!wants_preview(&few));
-        let many: Vec<Json> = ["a", "b", "c", "d"]
-            .iter()
-            .map(|r| json!({"resources": [r], "destructive": false}))
-            .collect();
-        assert!(wants_preview(&many));
-        assert!(wants_preview(&[
-            json!({"resources": ["a"], "destructive": true})
-        ]));
+        phase every_stored_field_reads_back_as_it_was;
+        {
+            let values = [
+                FieldValue::Absent,
+                FieldValue::Scalar(Scalar::Bool(true)),
+                FieldValue::Scalar(Scalar::Int(-3)),
+                FieldValue::Scalar(Scalar::Float(1.5)),
+                FieldValue::Scalar(Scalar::Text("a".into())),
+                FieldValue::Scalar(Scalar::Json(json!({"case": "x"}))),
+                FieldValue::Counter(7),
+                FieldValue::Text("plain".into()),
+                FieldValue::Rich(RichValue::from_text("one\ntwo")),
+                FieldValue::Items(vec!["i1".into(), "i2".into()]),
+                FieldValue::Keys(vec!["k".into()]),
+                FieldValue::Entries(vec![("k".into(), Scalar::Int(1))]),
+            ];
+            for value in values {
+                assert_eq!(field_of(&field_json(&value)).unwrap(), value);
+            }
+        }
+
+        phase many_resources_or_a_destructive_one_is_previewed;
+        {
+            let few = vec![json!({"resources": ["a", "b"], "destructive": false})];
+            assert!(!wants_preview(&few));
+            let many: Vec<Json> = ["a", "b", "c", "d"]
+                .iter()
+                .map(|r| json!({"resources": [r], "destructive": false}))
+                .collect();
+            assert!(wants_preview(&many));
+            assert!(wants_preview(&[
+                json!({"resources": ["a"], "destructive": true})
+            ]));
+        }
+
+        phase a_catalogue_of_apps_names_each_ones_verbs_by_its_app;
+        {
+            // Chat and the session both publish a `share-window` verb: in one catalogue they are
+            // two actions, and each app's own door takes its verb back.
+            let chat = chat();
+            let session = crate::platform_apps::session_package().expect("the session's reads");
+            assert!(
+                chat.actions
+                    .iter()
+                    .any(|action| action.id == "so.tilo.chat#share-window"),
+                "{:?}",
+                chat.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+            );
+            assert!(
+                session
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "share-window"),
+                "{:?}",
+                session.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+            );
+            for (app, id, verb) in [
+                ("so.tilo.chat", "so.tilo.chat#share-window", "share-window"),
+                ("so.tilo.chat", "create-channel", "create-channel"),
+                ("so.tilo.chat", "a1b2c3", "a1b2c3"),
+            ] {
+                assert_eq!(crate::catalogue::published_verb(app, id), verb);
+            }
+        }
+
+        phase a_native_apps_field_is_its_own_field_edit;
+        {
+            let meta = chat();
+            let door = Rc::new(Asked::default());
+            let (invoker, _) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
+            let invocation = Invocation::Edit {
+                app: tilolang_runtime::ids::AppId::from("so.tilo.chat"),
+                target: ResourceRef {
+                    doc: "chat.workspace".to_owned(),
+                    item: None,
+                    ty: "so.tilo.chat#Workspace".to_owned(),
+                },
+                field: "agent_names".to_owned(),
+                field_id: "Workspace.agent_names".to_owned(),
+                value: Value::Text("Reviewer".to_owned()),
+            };
+            assert!(matches!(invoker.invoke(&invocation), Invoked::Done(_)));
+            assert_eq!(
+                door.0.borrow().as_slice(),
+                [json!({
+                    "app": "so.tilo.chat",
+                    "resource": "chat.workspace",
+                    "action": "field-edit",
+                    "arguments": {"edit": {
+                        "path": [{"field": "agent_names"}],
+                        "op": {"op": "replace", "text": "Reviewer"},
+                    }},
+                })]
+            );
+        }
     }
 
     /// Chat, as its session hands the app's package to a task: its verbs named by the catalogue
@@ -1405,36 +1470,6 @@ mod tests {
         }
         .package()
         .expect("Chat's surface reads")
-    }
-
-    #[test]
-    fn a_catalogue_of_apps_names_each_ones_verbs_by_its_app() {
-        // Chat and the session both publish a `share-window` verb: in one catalogue they are
-        // two actions, and each app's own door takes its verb back.
-        let chat = chat();
-        let session = crate::platform_apps::session_package().expect("the session's reads");
-        assert!(
-            chat.actions
-                .iter()
-                .any(|action| action.id == "so.tilo.chat#share-window"),
-            "{:?}",
-            chat.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
-        );
-        assert!(
-            session
-                .actions
-                .iter()
-                .any(|action| action.id == "share-window"),
-            "{:?}",
-            session.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
-        );
-        for (app, id, verb) in [
-            ("so.tilo.chat", "so.tilo.chat#share-window", "share-window"),
-            ("so.tilo.chat", "create-channel", "create-channel"),
-            ("so.tilo.chat", "a1b2c3", "a1b2c3"),
-        ] {
-            assert_eq!(crate::catalogue::published_verb(app, id), verb);
-        }
     }
 
     /// A door that records the calls it is sent, and answers each as a done action.
@@ -1520,37 +1555,6 @@ mod tests {
             steps.history,
             [json!({"app": "so.tilo.chat", "resource": "chat.workspace", "published": false})],
             "the step is taken back on the record the app keeps it in"
-        );
-    }
-
-    #[test]
-    fn a_native_apps_field_is_its_own_field_edit() {
-        let meta = chat();
-        let door = Rc::new(Asked::default());
-        let (invoker, _) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
-        let invocation = Invocation::Edit {
-            app: tilolang_runtime::ids::AppId::from("so.tilo.chat"),
-            target: ResourceRef {
-                doc: "chat.workspace".to_owned(),
-                item: None,
-                ty: "so.tilo.chat#Workspace".to_owned(),
-            },
-            field: "agent_names".to_owned(),
-            field_id: "Workspace.agent_names".to_owned(),
-            value: Value::Text("Reviewer".to_owned()),
-        };
-        assert!(matches!(invoker.invoke(&invocation), Invoked::Done(_)));
-        assert_eq!(
-            door.0.borrow().as_slice(),
-            [json!({
-                "app": "so.tilo.chat",
-                "resource": "chat.workspace",
-                "action": "field-edit",
-                "arguments": {"edit": {
-                    "path": [{"field": "agent_names"}],
-                    "op": {"op": "replace", "text": "Reviewer"},
-                }},
-            })]
         );
     }
 }

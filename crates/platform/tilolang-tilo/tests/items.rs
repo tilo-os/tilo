@@ -342,69 +342,201 @@ fn shape(resource: &tilo_actions::ResourceSpec) -> String {
     )
 }
 
-#[test]
-fn a_cards_place_is_read_of_the_collections_index_not_its_items() {
-    let mut r = workspace();
-    let todo = r.column("ada", "To do");
-    let doing = r.column("ada", "Doing");
-    let first = r.card("ada", &todo, "first");
-    let second = r.card("ada", &todo, "second");
-    let elsewhere = r.card("ada", &doing, "elsewhere");
-    let todo_at = r.at(&todo);
-    let walked = |r: &Replica| r.host.store().read_stats().doc.entries;
-    let stands = |r: &Workspace, card: &str| -> Option<i64> {
-        let card_at = r.at(card);
-        let value = call(r, "where_it_stands", &todo_at, &card_at);
-        match value {
-            Value::Opt(Some(inner)) => match *inner {
-                Value::Int(at) => Some(at),
+tilo_test_env::scenario! {
+    fn a_moved_card_is_read_where_it_went;
+
+    phase a_cards_place_is_read_of_the_collections_index_not_its_items;
+    {
+        let mut r = workspace();
+        let todo = r.column("ada", "To do");
+        let doing = r.column("ada", "Doing");
+        let first = r.card("ada", &todo, "first");
+        let second = r.card("ada", &todo, "second");
+        let elsewhere = r.card("ada", &doing, "elsewhere");
+        let todo_at = r.at(&todo);
+        let walked = |r: &Replica| r.host.store().read_stats().doc.entries;
+        let stands = |r: &Workspace, card: &str| -> Option<i64> {
+            let card_at = r.at(card);
+            let value = call(r, "where_it_stands", &todo_at, &card_at);
+            match value {
+                Value::Opt(Some(inner)) => match *inner {
+                    Value::Int(at) => Some(at),
+                    other => panic!("{other:?}"),
+                },
+                Value::Opt(None) => None,
                 other => panic!("{other:?}"),
+            }
+        };
+        let holds = |r: &Workspace, card: &str| -> bool {
+            let card_at = r.at(card);
+            match call(r, "holds", &todo_at, &card_at) {
+                Value::Bool(held) => held,
+                other => panic!("{other:?}"),
+            }
+        };
+        // Where a card stands, and whether the column holds it, are read of the column's index:
+        // what the record would be walked for — its entries — stays where it was.
+        let before = walked(&r.ada);
+        assert_eq!(stands(&r, &first), Some(0), "the first card's place");
+        assert_eq!(stands(&r, &second), Some(1), "the second card's place");
+        assert_eq!(
+            stands(&r, &elsewhere),
+            None,
+            "a card of another column stands in this one nowhere"
+        );
+        assert!(holds(&r, &first), "the column holds its first card");
+        assert!(holds(&r, &second), "the column holds its second card");
+        assert!(
+            !holds(&r, &elsewhere),
+            "the column does not hold a card of another column"
+        );
+        assert_eq!(
+            walked(&r.ada),
+            before,
+            "reading a card's place walked the record's entries"
+        );
+        // A card that leaves is one the column no longer holds, and the one after it stands where
+        // the one before it did.
+        r.file("ada", &doing, &first);
+        assert!(!holds(&r, &first), "the card moved out is not held");
+        assert_eq!(stands(&r, &second), Some(0), "the card moved up");
+        r.act(
+            "ada",
+            ("Column", &todo_at),
+            "place",
+            json!({ "card": r.at(&first), "at": 0 }),
+        );
+        assert_eq!(stands(&r, &first), Some(0), "the card moved back");
+        assert_eq!(stands(&r, &second), Some(1), "and the other after it");
+    }
+
+    phase what_is_published_follows_a_card_to_its_new_column;
+    {
+        use std::sync::Arc;
+        use tilolang_tilo::publish::{ActionTypes, Planner, Publications, publish_tree};
+
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let card = r.card("ada", &todo, "card");
+        r.card("ada", &todo, "other");
+        let planner: Arc<dyn Planner> = Arc::new(Refusing);
+        let mut published = Publications::new(&r.ada.host);
+        published.settle(&r.ada.host, &planner);
+        r.file("ada", &doing, &card);
+        published.settle(&r.ada.host, &planner);
+        let record = r.ada.host.store().record(&r.root).unwrap();
+        let label = r.ada.host.label_of(&r.root);
+        let anew = publish_tree(
+            &ActionTypes::new(&r.meta, &planner, &SourceWords),
+            &record,
+            "Board",
+            &r.root,
+            &label,
+        );
+        let kept = shape(&published.trees()[&r.root]);
+        assert_eq!(kept, shape(&anew));
+        assert!(kept.contains(&format!("{}|card", r.at(&card))), "{kept}");
+    }
+
+    phase a_card_moves_within_its_column_and_into_another_at_a_place;
+    {
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let first = r.card("ada", &todo, "first");
+        let second = r.card("ada", &todo, "second");
+        let third = r.card("ada", &doing, "third");
+        let fourth = r.card("ada", &doing, "fourth");
+        let todo_at = r.at(&todo);
+        let doing_at = r.at(&doing);
+        let second_at = r.at(&second);
+        r.act(
+            "ada",
+            ("Column", &todo_at),
+            "place",
+            json!({ "card": second_at, "at": 0 }),
+        );
+        assert_eq!(r.cards("ada", &todo), [second.clone(), first.clone()]);
+        let first_at = r.at(&first);
+        r.act(
+            "ada",
+            ("Column", &doing_at),
+            "place",
+            json!({ "card": first_at, "at": 1 }),
+        );
+        assert_eq!(r.cards("ada", &todo), [second]);
+        assert_eq!(r.cards("ada", &doing), [third, first, fourth]);
+    }
+
+    phase a_card_that_left_its_column_is_gone_in_a_window_opened_over_the_index_kept;
+    {
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let stays = r.card("ada", &todo, "stays");
+        let leaves = r.card("ada", &todo, "leaves");
+        r.file("ada", &doing, &leaves);
+        r.sync();
+        let card = r
+            .meta
+            .types
+            .iter()
+            .find(|t| t.name == "Card")
+            .unwrap()
+            .id
+            .clone();
+        let stays = ResourceRef::parse_id(&r.at(&stays), card).unwrap();
+        let root = r.root.clone();
+        let todo_at = r.at(&todo);
+        // The column goes, and the card in it: the record still holds what the card held, so a copy
+        // of it answers the card's fields, and only the index says the card is gone.
+        r.act(
+            "ada",
+            ("Board", &root),
+            "drop_column",
+            json!({ "c": todo_at }),
+        );
+        assert!(
+            r.ada.host.store().type_of(&stays).is_err(),
+            "the card went with its column"
+        );
+        // The indexes a window of that record keeps, and the record itself: a window opened over
+        // them answers what they name, before it reads the record.
+        let dir = std::env::temp_dir().join(format!("tilolang-kept-index-card-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (doc, lock) = (r.ada.doc.clone(), r.lock.clone());
+        drop(kept_index(&doc, &lock, &dir));
+        // Done reading, the window closes, and its index is the disk's.
+        drop(r);
+        let host = Host::open(
+            tilolang_tilo::host::Opening {
+                record: None,
+                chunks: None,
+                index_dir: Some(dir.clone()),
+                device: None,
+                wake: None,
             },
-            Value::Opt(None) => None,
-            other => panic!("{other:?}"),
-        }
-    };
-    let holds = |r: &Workspace, card: &str| -> bool {
-        let card_at = r.at(card);
-        match call(r, "holds", &todo_at, &card_at) {
-            Value::Bool(held) => held,
-            other => panic!("{other:?}"),
-        }
-    };
-    // Where a card stands, and whether the column holds it, are read of the column's index:
-    // what the record would be walked for — its entries — stays where it was.
-    let before = walked(&r.ada);
-    assert_eq!(stands(&r, &first), Some(0), "the first card's place");
-    assert_eq!(stands(&r, &second), Some(1), "the second card's place");
-    assert_eq!(
-        stands(&r, &elsewhere),
-        None,
-        "a card of another column stands in this one nowhere"
-    );
-    assert!(holds(&r, &first), "the column holds its first card");
-    assert!(holds(&r, &second), "the column holds its second card");
-    assert!(
-        !holds(&r, &elsewhere),
-        "the column does not hold a card of another column"
-    );
-    assert_eq!(
-        walked(&r.ada),
-        before,
-        "reading a card's place walked the record's entries"
-    );
-    // A card that leaves is one the column no longer holds, and the one after it stands where
-    // the one before it did.
-    r.file("ada", &doing, &first);
-    assert!(!holds(&r, &first), "the card moved out is not held");
-    assert_eq!(stands(&r, &second), Some(0), "the card moved up");
-    r.act(
-        "ada",
-        ("Column", &todo_at),
-        "place",
-        json!({ "card": r.at(&first), "at": 0 }),
-    );
-    assert_eq!(stands(&r, &first), Some(0), "the card moved back");
-    assert_eq!(stands(&r, &second), Some(1), "and the other after it");
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(KANBAN, &lock).unwrap();
+        host.store().set_loader(Box::new(move || Some(doc.clone())));
+        assert!(
+            host.index_ready(),
+            "the window opens over the index it kept"
+        );
+        assert!(!host.store().has_record(), "before its record");
+        let read = host.runtime().read(&stays, "title");
+        assert!(read.is_err(), "the card went with its column: {read:?}");
+        assert!(
+            !host.store().has_record(),
+            "the record is not read for a card the workspace no longer holds"
+        );
+        assert!(
+            host.store().type_of(&stays).is_err(),
+            "and its window says it is gone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// What the action `name` answers for the card `card` of the column `column`, run as `ada`.
@@ -448,291 +580,238 @@ fn call(r: &Workspace, name: &str, column: &str, card: &str) -> Value {
     }
 }
 
-#[test]
-fn what_is_published_follows_a_card_to_its_new_column() {
-    use std::sync::Arc;
-    use tilolang_tilo::publish::{ActionTypes, Planner, Publications, publish_tree};
+tilo_test_env::scenario! {
+    fn concurrent_moves_and_removals_of_cards_converge;
 
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let card = r.card("ada", &todo, "card");
-    r.card("ada", &todo, "other");
-    let planner: Arc<dyn Planner> = Arc::new(Refusing);
-    let mut published = Publications::new(&r.ada.host);
-    published.settle(&r.ada.host, &planner);
-    r.file("ada", &doing, &card);
-    published.settle(&r.ada.host, &planner);
-    let record = r.ada.host.store().record(&r.root).unwrap();
-    let label = r.ada.host.label_of(&r.root);
-    let anew = publish_tree(
-        &ActionTypes::new(&r.meta, &planner, &SourceWords),
-        &record,
-        "Board",
-        &r.root,
-        &label,
-    );
-    let kept = shape(&published.trees()[&r.root]);
-    assert_eq!(kept, shape(&anew));
-    assert!(kept.contains(&format!("{}|card", r.at(&card))), "{kept}");
-}
-
-#[test]
-fn a_card_moves_within_its_column_and_into_another_at_a_place() {
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let first = r.card("ada", &todo, "first");
-    let second = r.card("ada", &todo, "second");
-    let third = r.card("ada", &doing, "third");
-    let fourth = r.card("ada", &doing, "fourth");
-    let todo_at = r.at(&todo);
-    let doing_at = r.at(&doing);
-    let second_at = r.at(&second);
-    r.act(
-        "ada",
-        ("Column", &todo_at),
-        "place",
-        json!({ "card": second_at, "at": 0 }),
-    );
-    assert_eq!(r.cards("ada", &todo), [second.clone(), first.clone()]);
-    let first_at = r.at(&first);
-    r.act(
-        "ada",
-        ("Column", &doing_at),
-        "place",
-        json!({ "card": first_at, "at": 1 }),
-    );
-    assert_eq!(r.cards("ada", &todo), [second]);
-    assert_eq!(r.cards("ada", &doing), [third, first, fourth]);
-}
-
-#[test]
-fn concurrent_moves_of_a_card_leave_it_where_the_last_put_it() {
-    let mut r = workspace();
-    let (todo, doing, done) = (
-        r.column("ada", "To do"),
-        r.column("ada", "Doing"),
-        r.column("ada", "Done"),
-    );
-    let card = r.card("ada", &todo, "card");
-    r.sync();
-    r.file("ada", &doing, &card);
-    r.file("grace", &done, &card);
-    r.sync();
-    let (in_doing, in_done) = (r.cards("ada", &doing), r.cards("ada", &done));
-    assert!(r.cards("ada", &todo).is_empty());
-    assert_eq!(
-        in_doing.len() + in_done.len(),
-        1,
-        "one card in one column: {in_doing:?} {in_done:?}"
-    );
-    assert_eq!(r.cards("grace", &doing), in_doing);
-    assert_eq!(r.cards("grace", &done), in_done);
-}
-
-#[test]
-fn an_edit_made_while_the_card_moved_is_kept() {
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let card = r.card("ada", &todo, "draft");
-    r.sync();
-    let card_at = r.at(&card);
-    r.act(
-        "ada",
-        ("Card", &card_at),
-        "retitle",
-        json!({ "title": "final" }),
-    );
-    r.file("grace", &doing, &card);
-    r.sync();
-    for who in ["ada", "grace"] {
-        assert_eq!(r.cards(who, &doing), std::slice::from_ref(&card));
-        assert!(r.cards(who, &todo).is_empty());
-        assert_eq!(r.title(who, &card).unwrap(), "final");
-    }
-}
-
-#[test]
-fn removing_a_column_removes_its_cards_and_not_one_moved_out_before() {
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let stays = r.card("ada", &todo, "stays");
-    let leaves = r.card("ada", &todo, "leaves");
-    r.file("ada", &doing, &leaves);
-    let root = r.root.clone();
-    let todo_at = r.at(&todo);
-    r.act(
-        "ada",
-        ("Board", &root),
-        "drop_column",
-        json!({ "c": todo_at }),
-    );
-    assert_eq!(
-        r.listed("ada", ("Board", "columns"), None),
-        std::slice::from_ref(&doing)
-    );
-    assert_eq!(r.cards("ada", &doing), std::slice::from_ref(&leaves));
-    assert!(
-        r.title("ada", &stays).is_err(),
-        "the card went with its column"
-    );
-    assert_eq!(r.title("ada", &leaves).unwrap(), "leaves");
-    r.sync();
-    assert!(r.title("grace", &stays).is_err());
-    assert_eq!(r.cards("grace", &doing), [leaves]);
-}
-
-#[test]
-fn a_card_moved_out_while_its_column_is_removed_stays_where_it_was_moved() {
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let rescued = r.card("ada", &todo, "rescued");
-    let gone = r.card("ada", &todo, "gone");
-    r.sync();
-    let root = r.root.clone();
-    let todo_at = r.at(&todo);
-    r.act(
-        "ada",
-        ("Board", &root),
-        "drop_column",
-        json!({ "c": todo_at }),
-    );
-    r.file("grace", &doing, &rescued);
-    r.sync();
-    for who in ["ada", "grace"] {
+    phase concurrent_moves_of_a_card_leave_it_where_the_last_put_it;
+    {
+        let mut r = workspace();
+        let (todo, doing, done) = (
+            r.column("ada", "To do"),
+            r.column("ada", "Doing"),
+            r.column("ada", "Done"),
+        );
+        let card = r.card("ada", &todo, "card");
+        r.sync();
+        r.file("ada", &doing, &card);
+        r.file("grace", &done, &card);
+        r.sync();
+        let (in_doing, in_done) = (r.cards("ada", &doing), r.cards("ada", &done));
+        assert!(r.cards("ada", &todo).is_empty());
         assert_eq!(
-            r.listed(who, ("Board", "columns"), None),
+            in_doing.len() + in_done.len(),
+            1,
+            "one card in one column: {in_doing:?} {in_done:?}"
+        );
+        assert_eq!(r.cards("grace", &doing), in_doing);
+        assert_eq!(r.cards("grace", &done), in_done);
+    }
+
+    phase an_edit_made_while_the_card_moved_is_kept;
+    {
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let card = r.card("ada", &todo, "draft");
+        r.sync();
+        let card_at = r.at(&card);
+        r.act(
+            "ada",
+            ("Card", &card_at),
+            "retitle",
+            json!({ "title": "final" }),
+        );
+        r.file("grace", &doing, &card);
+        r.sync();
+        for who in ["ada", "grace"] {
+            assert_eq!(r.cards(who, &doing), std::slice::from_ref(&card));
+            assert!(r.cards(who, &todo).is_empty());
+            assert_eq!(r.title(who, &card).unwrap(), "final");
+        }
+    }
+
+    phase removing_a_column_removes_its_cards_and_not_one_moved_out_before;
+    {
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let stays = r.card("ada", &todo, "stays");
+        let leaves = r.card("ada", &todo, "leaves");
+        r.file("ada", &doing, &leaves);
+        let root = r.root.clone();
+        let todo_at = r.at(&todo);
+        r.act(
+            "ada",
+            ("Board", &root),
+            "drop_column",
+            json!({ "c": todo_at }),
+        );
+        assert_eq!(
+            r.listed("ada", ("Board", "columns"), None),
             std::slice::from_ref(&doing)
         );
-        assert_eq!(
-            r.cards(who, &doing),
-            std::slice::from_ref(&rescued),
-            "{who}"
+        assert_eq!(r.cards("ada", &doing), std::slice::from_ref(&leaves));
+        assert!(
+            r.title("ada", &stays).is_err(),
+            "the card went with its column"
+        );
+        assert_eq!(r.title("ada", &leaves).unwrap(), "leaves");
+        r.sync();
+        assert!(r.title("grace", &stays).is_err());
+        assert_eq!(r.cards("grace", &doing), [leaves]);
+    }
+
+    phase a_card_moved_out_while_its_column_is_removed_stays_where_it_was_moved;
+    {
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let rescued = r.card("ada", &todo, "rescued");
+        let gone = r.card("ada", &todo, "gone");
+        r.sync();
+        let root = r.root.clone();
+        let todo_at = r.at(&todo);
+        r.act(
+            "ada",
+            ("Board", &root),
+            "drop_column",
+            json!({ "c": todo_at }),
+        );
+        r.file("grace", &doing, &rescued);
+        r.sync();
+        for who in ["ada", "grace"] {
+            assert_eq!(
+                r.listed(who, ("Board", "columns"), None),
+                std::slice::from_ref(&doing)
+            );
+            assert_eq!(
+                r.cards(who, &doing),
+                std::slice::from_ref(&rescued),
+                "{who}"
+            );
+            assert!(
+                r.title(who, &gone).is_err(),
+                "{who}: the card left in it went with it"
+            );
+        }
+    }
+
+    phase a_card_moved_into_a_column_removed_meanwhile_goes_with_the_column;
+    {
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let card = r.card("ada", &todo, "card");
+        r.sync();
+        let root = r.root.clone();
+        let doing_at = r.at(&doing);
+        r.act(
+            "ada",
+            ("Board", &root),
+            "drop_column",
+            json!({ "c": doing_at }),
+        );
+        r.file("grace", &doing, &card);
+        r.sync();
+        for who in ["ada", "grace"] {
+            assert_eq!(
+                r.listed(who, ("Board", "columns"), None),
+                std::slice::from_ref(&todo)
+            );
+            assert!(r.cards(who, &todo).is_empty(), "{who}");
+            assert!(r.title(who, &card).is_err(), "{who}");
+        }
+    }
+
+    phase concurrent_moves_into_each_other_hold_the_later_back;
+    {
+        let mut r = workspace();
+        let root = r.root.clone();
+        let made = |r: &mut Workspace, name: &str| {
+            Workspace::made(&r.act("ada", ("Board", &root), "add_node", json!({ "name": name })))
+        };
+        let (one, two) = (made(&mut r, "one"), made(&mut r, "two"));
+        r.sync();
+        let (one_at, two_at) = (r.at(&one), r.at(&two));
+        r.act(
+            "ada",
+            ("Node", &two_at),
+            "nest",
+            json!({ "n": one_at.clone() }),
+        );
+        r.act("grace", ("Node", &one_at), "nest", json!({ "n": two_at }));
+        r.sync();
+        let kids = |r: &Workspace, who: &str, id: &str| r.listed(who, ("Node", "kids"), Some(id));
+        for who in ["ada", "grace"] {
+            let top = r.listed(who, ("Board", "nodes"), None);
+            assert_eq!(top.len(), 1, "{who}: one node holds the other: {top:?}");
+            let held = if top[0] == one { &two } else { &one };
+            assert_eq!(kids(&r, who, &top[0]), std::slice::from_ref(held), "{who}");
+            assert!(kids(&r, who, held).is_empty(), "{who}");
+        }
+        // Moving the one on top into the other is refused: it would hold itself.
+        let top = r.listed("ada", ("Board", "nodes"), None)[0].clone();
+        let held = if top == one { two } else { one };
+        let action = r
+            .meta
+            .actions
+            .iter()
+            .find(|a| a.name == "nest")
+            .unwrap()
+            .id
+            .clone();
+        let ty = r.meta.types.iter().find(|t| t.name == "Node").unwrap();
+        let node = |id: &str| {
+            Value::resource(&ResourceRef::parse_id(&format!("{root}/{id}"), ty.id.clone()).unwrap())
+        };
+        let refused = r.ada.host.runtime().invoke_action(
+            &Principal::new("ada"),
+            (action.as_str(), vec![node(&held), node(&top)]),
+        );
+        assert!(refused.is_err(), "{refused:?}");
+    }
+
+    phase a_card_removed_with_its_column_has_no_type_in_either_copy;
+    {
+        let mut r = workspace();
+        let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+        let stays = r.card("ada", &todo, "stays");
+        let leaves = r.card("ada", &todo, "leaves");
+        r.file("ada", &doing, &leaves);
+        r.sync();
+        let card = r
+            .meta
+            .types
+            .iter()
+            .find(|t| t.name == "Card")
+            .unwrap()
+            .id
+            .clone();
+        let at = |r: &Workspace, id: &str| ResourceRef::parse_id(&r.at(id), card.clone()).unwrap();
+        assert_eq!(r.ada.host.store().type_of(&at(&r, &stays)).unwrap(), card);
+        let root = r.root.clone();
+        let todo_at = r.at(&todo);
+        r.act(
+            "ada",
+            ("Board", &root),
+            "drop_column",
+            json!({ "c": todo_at }),
         );
         assert!(
-            r.title(who, &gone).is_err(),
-            "{who}: the card left in it went with it"
+            r.ada.host.store().type_of(&at(&r, &stays)).is_err(),
+            "the card went with its column: its window says it is gone"
         );
-    }
-}
-
-#[test]
-fn a_card_moved_into_a_column_removed_meanwhile_goes_with_the_column() {
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let card = r.card("ada", &todo, "card");
-    r.sync();
-    let root = r.root.clone();
-    let doing_at = r.at(&doing);
-    r.act(
-        "ada",
-        ("Board", &root),
-        "drop_column",
-        json!({ "c": doing_at }),
-    );
-    r.file("grace", &doing, &card);
-    r.sync();
-    for who in ["ada", "grace"] {
         assert_eq!(
-            r.listed(who, ("Board", "columns"), None),
-            std::slice::from_ref(&todo)
+            r.ada.host.store().type_of(&at(&r, &leaves)).unwrap(),
+            card,
+            "the card moved out before it is the one that stayed"
         );
-        assert!(r.cards(who, &todo).is_empty(), "{who}");
-        assert!(r.title(who, &card).is_err(), "{who}");
+        r.sync();
+        assert!(
+            r.grace.host.store().type_of(&at(&r, &stays)).is_err(),
+            "and it is gone for the other copy too"
+        );
+        assert_eq!(
+            r.grace.host.store().type_of(&at(&r, &leaves)).unwrap(),
+            card
+        );
     }
-}
-
-#[test]
-fn concurrent_moves_into_each_other_hold_the_later_back() {
-    let mut r = workspace();
-    let root = r.root.clone();
-    let made = |r: &mut Workspace, name: &str| {
-        Workspace::made(&r.act("ada", ("Board", &root), "add_node", json!({ "name": name })))
-    };
-    let (one, two) = (made(&mut r, "one"), made(&mut r, "two"));
-    r.sync();
-    let (one_at, two_at) = (r.at(&one), r.at(&two));
-    r.act(
-        "ada",
-        ("Node", &two_at),
-        "nest",
-        json!({ "n": one_at.clone() }),
-    );
-    r.act("grace", ("Node", &one_at), "nest", json!({ "n": two_at }));
-    r.sync();
-    let kids = |r: &Workspace, who: &str, id: &str| r.listed(who, ("Node", "kids"), Some(id));
-    for who in ["ada", "grace"] {
-        let top = r.listed(who, ("Board", "nodes"), None);
-        assert_eq!(top.len(), 1, "{who}: one node holds the other: {top:?}");
-        let held = if top[0] == one { &two } else { &one };
-        assert_eq!(kids(&r, who, &top[0]), std::slice::from_ref(held), "{who}");
-        assert!(kids(&r, who, held).is_empty(), "{who}");
-    }
-    // Moving the one on top into the other is refused: it would hold itself.
-    let top = r.listed("ada", ("Board", "nodes"), None)[0].clone();
-    let held = if top == one { two } else { one };
-    let action = r
-        .meta
-        .actions
-        .iter()
-        .find(|a| a.name == "nest")
-        .unwrap()
-        .id
-        .clone();
-    let ty = r.meta.types.iter().find(|t| t.name == "Node").unwrap();
-    let node = |id: &str| {
-        Value::resource(&ResourceRef::parse_id(&format!("{root}/{id}"), ty.id.clone()).unwrap())
-    };
-    let refused = r.ada.host.runtime().invoke_action(
-        &Principal::new("ada"),
-        (action.as_str(), vec![node(&held), node(&top)]),
-    );
-    assert!(refused.is_err(), "{refused:?}");
-}
-
-#[test]
-fn a_card_removed_with_its_column_has_no_type_in_either_copy() {
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let stays = r.card("ada", &todo, "stays");
-    let leaves = r.card("ada", &todo, "leaves");
-    r.file("ada", &doing, &leaves);
-    r.sync();
-    let card = r
-        .meta
-        .types
-        .iter()
-        .find(|t| t.name == "Card")
-        .unwrap()
-        .id
-        .clone();
-    let at = |r: &Workspace, id: &str| ResourceRef::parse_id(&r.at(id), card.clone()).unwrap();
-    assert_eq!(r.ada.host.store().type_of(&at(&r, &stays)).unwrap(), card);
-    let root = r.root.clone();
-    let todo_at = r.at(&todo);
-    r.act(
-        "ada",
-        ("Board", &root),
-        "drop_column",
-        json!({ "c": todo_at }),
-    );
-    assert!(
-        r.ada.host.store().type_of(&at(&r, &stays)).is_err(),
-        "the card went with its column: its window says it is gone"
-    );
-    assert_eq!(
-        r.ada.host.store().type_of(&at(&r, &leaves)).unwrap(),
-        card,
-        "the card moved out before it is the one that stayed"
-    );
-    r.sync();
-    assert!(
-        r.grace.host.store().type_of(&at(&r, &stays)).is_err(),
-        "and it is gone for the other copy too"
-    );
-    assert_eq!(
-        r.grace.host.store().type_of(&at(&r, &leaves)).unwrap(),
-        card
-    );
 }
 
 /// The index a window of the record `doc` keeps under `dir`: built from the record and left
@@ -755,75 +834,4 @@ fn kept_index(doc: &AutoCommit, lock: &str, dir: &std::path::Path) -> Host {
     assert!(host.wait_index(), "the window reads its index");
     host.store().persist_index();
     host
-}
-
-#[test]
-fn a_card_that_left_its_column_is_gone_in_a_window_opened_over_the_index_kept() {
-    let mut r = workspace();
-    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
-    let stays = r.card("ada", &todo, "stays");
-    let leaves = r.card("ada", &todo, "leaves");
-    r.file("ada", &doing, &leaves);
-    r.sync();
-    let card = r
-        .meta
-        .types
-        .iter()
-        .find(|t| t.name == "Card")
-        .unwrap()
-        .id
-        .clone();
-    let stays = ResourceRef::parse_id(&r.at(&stays), card).unwrap();
-    let root = r.root.clone();
-    let todo_at = r.at(&todo);
-    // The column goes, and the card in it: the record still holds what the card held, so a copy
-    // of it answers the card's fields, and only the index says the card is gone.
-    r.act(
-        "ada",
-        ("Board", &root),
-        "drop_column",
-        json!({ "c": todo_at }),
-    );
-    assert!(
-        r.ada.host.store().type_of(&stays).is_err(),
-        "the card went with its column"
-    );
-    // The indexes a window of that record keeps, and the record itself: a window opened over
-    // them answers what they name, before it reads the record.
-    let dir = std::env::temp_dir().join(format!("tilolang-kept-index-card-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let (doc, lock) = (r.ada.doc.clone(), r.lock.clone());
-    drop(kept_index(&doc, &lock, &dir));
-    // Done reading, the window closes, and its index is the disk's.
-    drop(r);
-    let host = Host::open(
-        tilolang_tilo::host::Opening {
-            record: None,
-            chunks: None,
-            index_dir: Some(dir.clone()),
-            device: None,
-            wake: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    host.load_builtin(KANBAN, &lock).unwrap();
-    host.store().set_loader(Box::new(move || Some(doc.clone())));
-    assert!(
-        host.index_ready(),
-        "the window opens over the index it kept"
-    );
-    assert!(!host.store().has_record(), "before its record");
-    let read = host.runtime().read(&stays, "title");
-    assert!(read.is_err(), "the card went with its column: {read:?}");
-    assert!(
-        !host.store().has_record(),
-        "the record is not read for a card the workspace no longer holds"
-    );
-    assert!(
-        host.store().type_of(&stays).is_err(),
-        "and its window says it is gone"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
 }

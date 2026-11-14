@@ -438,173 +438,253 @@ mod tests {
         authority
     }
 
-    #[test]
-    fn a_package_whose_records_are_each_members_own_is_its_persons_alone() {
-        let ada = "ab".repeat(32);
-        let owner = "ef".repeat(32);
-        let mut policy = WorkspacePolicy::new(WORKSPACE, owner.clone());
-        policy
-            .members
-            .insert(ada.clone(), tilo_action_policy::Role::Editor);
-        let standing = Standing::person(policy, ada.clone());
-        let authority =
-            TiloAuthority::new(Principal::new(ada.clone()), move || Some(standing.clone()));
+    tilo_test_env::scenario! {
+        fn a_persons_standing_and_the_workspaces_denials_decide;
+
+        phase a_package_whose_records_are_each_members_own_is_its_persons_alone;
         {
-            let mut state = authority.state.borrow_mut();
-            state.trusted.insert(module());
-            state.apps.insert(module(), APP.to_owned());
+            let ada = "ab".repeat(32);
+            let owner = "ef".repeat(32);
+            let mut policy = WorkspacePolicy::new(WORKSPACE, owner.clone());
+            policy
+                .members
+                .insert(ada.clone(), tilo_action_policy::Role::Editor);
+            let standing = Standing::person(policy, ada.clone());
+            let authority =
+                TiloAuthority::new(Principal::new(ada.clone()), move || Some(standing.clone()));
+            {
+                let mut state = authority.state.borrow_mut();
+                state.trusted.insert(module());
+                state.apps.insert(module(), APP.to_owned());
+            }
+            let change = info(EffectClass::Undoable, true);
+            let workspace_owner = Principal::new(owner);
+            // Shared, the workspace's owner may change what the package holds.
+            assert_eq!(
+                authority.decide(&workspace_owner, &[module()], &change),
+                Decision::Allow
+            );
+            // Each member's own, it is Ada's record: only she acts on it, not even the workspace's owner.
+            authority.state.borrow_mut().own.insert(APP.to_owned());
+            assert_eq!(
+                authority.decide(&Principal::new(ada), &[module()], &change),
+                Decision::Allow
+            );
+            assert_eq!(
+                authority.decide(&workspace_owner, &[module()], &change),
+                Decision::Deny
+            );
         }
-        let change = info(EffectClass::Undoable, true);
-        let workspace_owner = Principal::new(owner);
-        // Shared, the workspace's owner may change what the package holds.
-        assert_eq!(
-            authority.decide(&workspace_owner, &[module()], &change),
-            Decision::Allow
-        );
-        // Each member's own, it is Ada's record: only she acts on it, not even the workspace's owner.
-        authority.state.borrow_mut().own.insert(APP.to_owned());
-        assert_eq!(
-            authority.decide(&Principal::new(ada), &[module()], &change),
-            Decision::Allow
-        );
-        assert_eq!(
-            authority.decide(&workspace_owner, &[module()], &change),
-            Decision::Deny
-        );
+
+        phase the_persons_agent_answer_denies_the_agent;
+        {
+            let answer = agent_answers::grant(
+                WORKSPACE,
+                "helper",
+                (&AnswerScope::app(APP), ActionKind::Undoable),
+                Answer::Deny,
+                Grantee::person(PERSON),
+            );
+            let authority = authority(vec![answer]);
+            authority.admit_agent("agent:helper", Some(PERSON));
+            let agent = Principal::new("agent:helper");
+            let own = info(EffectClass::Undoable, true);
+            assert_eq!(authority.decide(&agent, &[], &own), Decision::Deny);
+            assert_eq!(authority.decide(&agent, &[module()], &own), Decision::Deny);
+            // The person at the window is not their agent.
+            let me = Principal::new(PERSON);
+            assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+        }
+
+        phase the_workspaces_denials_reach_the_runtime;
+        {
+            let me = Principal::new("bob");
+            // Bob is no member: nothing he invokes runs.
+            let authority = authority(Vec::new());
+            let own = info(EffectClass::Undoable, true);
+            assert_eq!(authority.decide(&me, &[module()], &own), Decision::Deny);
+            // The owner runs their own app's code.
+            assert_eq!(
+                authority.decide(&Principal::new(PERSON), &[], &own),
+                Decision::Allow
+            );
+        }
+
+        phase without_a_standing_the_bounds_still_decide;
+        {
+            let authority = TiloAuthority::new(Principal::new(PERSON), || None);
+            authority.admit_agent("agent:helper", Some(PERSON));
+            let agent = Principal::new("agent:helper");
+            assert_eq!(
+                authority.decide(&agent, &[], &info(EffectClass::Outside, true)),
+                Decision::Ask
+            );
+            let me = Principal::new(PERSON);
+            let stranger = ModuleHash::principal("person:stranger");
+            assert_eq!(
+                authority.decide(&me, &[stranger], &info(EffectClass::Undoable, false)),
+                Decision::Ask
+            );
+            assert_eq!(
+                authority.decide(&me, &[], &info(EffectClass::Undoable, true)),
+                Decision::Allow
+            );
+        }
     }
 
-    #[test]
-    fn the_persons_agent_answer_denies_the_agent() {
-        let answer = agent_answers::grant(
-            WORKSPACE,
-            "helper",
-            (&AnswerScope::app(APP), ActionKind::Undoable),
-            Answer::Deny,
-            Grantee::person(PERSON),
-        );
-        let authority = authority(vec![answer]);
-        authority.admit_agent("agent:helper", Some(PERSON));
-        let agent = Principal::new("agent:helper");
-        let own = info(EffectClass::Undoable, true);
-        assert_eq!(authority.decide(&agent, &[], &own), Decision::Deny);
-        assert_eq!(authority.decide(&agent, &[module()], &own), Decision::Deny);
-        // The person at the window is not their agent.
-        let me = Principal::new(PERSON);
-        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
-    }
+    tilo_test_env::scenario! {
+        fn untrusted_code_and_reaching_outside_ask;
 
-    #[test]
-    fn an_agent_asks_before_reaching_outside_until_its_person_answers() {
-        let authority = authority(Vec::new());
-        authority.admit_agent("agent:helper", Some(PERSON));
-        let agent = Principal::new("agent:helper");
-        let outside = info(EffectClass::Outside, true);
-        assert_eq!(authority.decide(&agent, &[], &outside), Decision::Ask);
-        let undoable = info(EffectClass::Undoable, true);
-        assert_eq!(authority.decide(&agent, &[], &undoable), Decision::Allow);
-    }
+        phase an_agent_asks_before_reaching_outside_until_its_person_answers;
+        {
+            let authority = authority(Vec::new());
+            authority.admit_agent("agent:helper", Some(PERSON));
+            let agent = Principal::new("agent:helper");
+            let outside = info(EffectClass::Outside, true);
+            assert_eq!(authority.decide(&agent, &[], &outside), Decision::Ask);
+            let undoable = info(EffectClass::Undoable, true);
+            assert_eq!(authority.decide(&agent, &[], &undoable), Decision::Allow);
+        }
 
-    #[test]
-    fn code_of_an_untrusted_author_asks() {
-        let authority = authority(Vec::new());
-        let me = Principal::new(PERSON);
-        let stranger = ModuleHash::principal("person:stranger");
-        let foreign = info(EffectClass::Undoable, false);
-        assert_eq!(
-            authority.decide(&me, std::slice::from_ref(&stranger), &foreign),
-            Decision::Ask
-        );
-        let unknown = ModuleHash("someone-elses".to_owned());
-        assert_eq!(authority.decide(&me, &[unknown], &foreign), Decision::Ask);
-        authority.trust(&stranger);
-        assert_eq!(
-            authority.decide(&me, &[stranger], &foreign),
-            Decision::Allow
-        );
-    }
+        phase code_of_an_untrusted_author_asks;
+        {
+            let authority = authority(Vec::new());
+            let me = Principal::new(PERSON);
+            let stranger = ModuleHash::principal("person:stranger");
+            let foreign = info(EffectClass::Undoable, false);
+            assert_eq!(
+                authority.decide(&me, std::slice::from_ref(&stranger), &foreign),
+                Decision::Ask
+            );
+            let unknown = ModuleHash("someone-elses".to_owned());
+            assert_eq!(authority.decide(&me, &[unknown], &foreign), Decision::Ask);
+            authority.trust(&stranger);
+            assert_eq!(
+                authority.decide(&me, &[stranger], &foreign),
+                Decision::Allow
+            );
+        }
 
-    #[test]
-    fn a_trusted_modules_own_action_is_allowed() {
-        let authority = authority(Vec::new());
-        let me = Principal::new(PERSON);
-        let own = info(EffectClass::Undoable, true);
-        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
-        // Nor does a block beside it add an author of its own.
-        assert_eq!(
-            authority.decide(&me, &[module(), module()], &own),
-            Decision::Allow
-        );
-        // Untrusted, it is still an author of its own records.
-        authority.revoke(&module());
-        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
-        let foreign = info(EffectClass::Undoable, false);
-        assert_eq!(authority.decide(&me, &[module()], &foreign), Decision::Ask);
-    }
+        phase a_trusted_modules_own_action_is_allowed;
+        {
+            let authority = authority(Vec::new());
+            let me = Principal::new(PERSON);
+            let own = info(EffectClass::Undoable, true);
+            assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+            // Nor does a block beside it add an author of its own.
+            assert_eq!(
+                authority.decide(&me, &[module(), module()], &own),
+                Decision::Allow
+            );
+            // Untrusted, it is still an author of its own records.
+            authority.revoke(&module());
+            assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+            let foreign = info(EffectClass::Undoable, false);
+            assert_eq!(authority.decide(&me, &[module()], &foreign), Decision::Ask);
+        }
 
-    #[test]
-    fn outside_from_a_strangers_code_asks() {
-        let authority = authority(Vec::new());
-        let me = Principal::new(PERSON);
-        let stranger = ModuleHash::principal("person:stranger");
-        let outside = info(EffectClass::Outside, false);
-        assert_eq!(authority.decide(&me, &[stranger], &outside), Decision::Ask);
-        // Trusted code reaching outside asks too, unless the workspace grants the person that.
-        assert_eq!(
-            authority.decide(&me, &[module()], &info(EffectClass::Outside, true)),
-            Decision::Ask
-        );
-    }
+        phase outside_from_a_strangers_code_asks;
+        {
+            let authority = authority(Vec::new());
+            let me = Principal::new(PERSON);
+            let stranger = ModuleHash::principal("person:stranger");
+            let outside = info(EffectClass::Outside, false);
+            assert_eq!(authority.decide(&me, &[stranger], &outside), Decision::Ask);
+            // Trusted code reaching outside asks too, unless the workspace grants the person that.
+            assert_eq!(
+                authority.decide(&me, &[module()], &info(EffectClass::Outside, true)),
+                Decision::Ask
+            );
+        }
 
-    #[test]
-    fn the_owners_own_package_asks_before_reaching_outside_until_the_workspace_grants_it() {
-        let me = Principal::new(PERSON);
-        let outside = info(EffectClass::Outside, true);
-        // Owning the workspace lets the person do anything there, but not their package's code
-        // reaching outside unasked.
-        assert_eq!(
-            authority(Vec::new()).decide(&me, &[module()], &outside),
-            Decision::Ask
-        );
-        // A grant to the person over the whole workspace does not answer for the code either.
-        let everything = Grant::new(
-            "ada-everything",
-            Grantee::person(PERSON),
-            TreePath::workspace(WORKSPACE),
-            tilo_action_policy::KindSet::ALL,
-            Answer::Allow,
-            Grantee::person(PERSON),
-        );
-        assert_eq!(
-            authority(vec![everything]).decide(&me, &[module()], &outside),
-            Decision::Ask
-        );
-        // The workspace letting the person reach outside from this app does.
-        let sends = Grant::new(
-            "ada-sends",
-            Grantee::person(PERSON),
-            TreePath::workspace(WORKSPACE).app(APP),
-            tilo_action_policy::KindSet::OUTSIDE,
-            Answer::Allow,
-            Grantee::person(PERSON),
-        );
-        assert_eq!(
-            authority(vec![sends]).decide(&me, &[module()], &outside),
-            Decision::Allow
-        );
-    }
+        phase the_owners_own_package_asks_before_reaching_outside_until_the_workspace_grants_it;
+        {
+            let me = Principal::new(PERSON);
+            let outside = info(EffectClass::Outside, true);
+            // Owning the workspace lets the person do anything there, but not their package's code
+            // reaching outside unasked.
+            assert_eq!(
+                authority(Vec::new()).decide(&me, &[module()], &outside),
+                Decision::Ask
+            );
+            // A grant to the person over the whole workspace does not answer for the code either.
+            let everything = Grant::new(
+                "ada-everything",
+                Grantee::person(PERSON),
+                TreePath::workspace(WORKSPACE),
+                tilo_action_policy::KindSet::ALL,
+                Answer::Allow,
+                Grantee::person(PERSON),
+            );
+            assert_eq!(
+                authority(vec![everything]).decide(&me, &[module()], &outside),
+                Decision::Ask
+            );
+            // The workspace letting the person reach outside from this app does.
+            let sends = Grant::new(
+                "ada-sends",
+                Grantee::person(PERSON),
+                TreePath::workspace(WORKSPACE).app(APP),
+                tilo_action_policy::KindSet::OUTSIDE,
+                Answer::Allow,
+                Grantee::person(PERSON),
+            );
+            assert_eq!(
+                authority(vec![sends]).decide(&me, &[module()], &outside),
+                Decision::Allow
+            );
+        }
 
-    #[test]
-    fn the_workspaces_denials_reach_the_runtime() {
-        let me = Principal::new("bob");
-        // Bob is no member: nothing he invokes runs.
-        let authority = authority(Vec::new());
-        let own = info(EffectClass::Undoable, true);
-        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Deny);
-        // The owner runs their own app's code.
-        assert_eq!(
-            authority.decide(&Principal::new(PERSON), &[], &own),
-            Decision::Allow
-        );
+        phase a_packages_declared_hosts_are_shown_and_the_workspace_may_take_one_back;
+        {
+            let authority = TiloAuthority::new(Principal::new(PERSON), || None);
+            let meta = Meta {
+                app: APP.to_owned(),
+                web: vec!["example.com".to_owned(), "*.rss.org".to_owned()],
+                ..Meta::default()
+            };
+            authority.load(&module(), &meta);
+            // What an install shows: the hosts the package's header declares.
+            assert_eq!(
+                authority.web_grants(),
+                vec![(
+                    APP.to_owned(),
+                    vec!["example.com".to_owned(), "*.rss.org".to_owned()]
+                )]
+            );
+            let other = Meta {
+                app: "so.tilo.lang.notes".to_owned(),
+                ..Meta::default()
+            };
+            authority.load(&ModuleHash("notes-v1".to_owned()), &other);
+            assert_eq!(
+                authority.web_grants().len(),
+                1,
+                "a package declaring none grants none"
+            );
+            // The workspace takes one host away: the request is refused, and the install says so.
+            assert!(authority.may_fetch(APP, "example.com"));
+            authority.revoke_web(APP, "Example.COM");
+            assert!(!authority.may_fetch(APP, "example.com"));
+            assert_eq!(
+                authority.web_grants(),
+                vec![(APP.to_owned(), vec!["*.rss.org".to_owned()])]
+            );
+            // Declared or not, a host the workspace did not take away is the package's own to refuse.
+            assert!(authority.may_fetch(APP, "not.declared.example"));
+            // Reloading the package keeps the revocation, and the workspace may hand it back.
+            authority.load(&module(), &meta);
+            assert!(!authority.may_fetch(APP, "example.com"));
+            authority.grant_web(APP, "example.com");
+            assert!(authority.may_fetch(APP, "example.com"));
+            assert_eq!(
+                authority.web_grants(),
+                vec![(
+                    APP.to_owned(),
+                    vec!["example.com".to_owned(), "*.rss.org".to_owned()]
+                )]
+            );
+        }
     }
 
     #[test]
@@ -689,77 +769,5 @@ mod tests {
         // Nothing stored was rewritten: the grants name Todo as they did.
         assert_eq!(policy.grants, stored);
         assert!(stored.contains(&node_denied) && stored.contains(&editor));
-    }
-
-    #[test]
-    fn without_a_standing_the_bounds_still_decide() {
-        let authority = TiloAuthority::new(Principal::new(PERSON), || None);
-        authority.admit_agent("agent:helper", Some(PERSON));
-        let agent = Principal::new("agent:helper");
-        assert_eq!(
-            authority.decide(&agent, &[], &info(EffectClass::Outside, true)),
-            Decision::Ask
-        );
-        let me = Principal::new(PERSON);
-        let stranger = ModuleHash::principal("person:stranger");
-        assert_eq!(
-            authority.decide(&me, &[stranger], &info(EffectClass::Undoable, false)),
-            Decision::Ask
-        );
-        assert_eq!(
-            authority.decide(&me, &[], &info(EffectClass::Undoable, true)),
-            Decision::Allow
-        );
-    }
-
-    #[test]
-    fn a_packages_declared_hosts_are_shown_and_the_workspace_may_take_one_back() {
-        let authority = TiloAuthority::new(Principal::new(PERSON), || None);
-        let meta = Meta {
-            app: APP.to_owned(),
-            web: vec!["example.com".to_owned(), "*.rss.org".to_owned()],
-            ..Meta::default()
-        };
-        authority.load(&module(), &meta);
-        // What an install shows: the hosts the package's header declares.
-        assert_eq!(
-            authority.web_grants(),
-            vec![(
-                APP.to_owned(),
-                vec!["example.com".to_owned(), "*.rss.org".to_owned()]
-            )]
-        );
-        let other = Meta {
-            app: "so.tilo.lang.notes".to_owned(),
-            ..Meta::default()
-        };
-        authority.load(&ModuleHash("notes-v1".to_owned()), &other);
-        assert_eq!(
-            authority.web_grants().len(),
-            1,
-            "a package declaring none grants none"
-        );
-        // The workspace takes one host away: the request is refused, and the install says so.
-        assert!(authority.may_fetch(APP, "example.com"));
-        authority.revoke_web(APP, "Example.COM");
-        assert!(!authority.may_fetch(APP, "example.com"));
-        assert_eq!(
-            authority.web_grants(),
-            vec![(APP.to_owned(), vec!["*.rss.org".to_owned()])]
-        );
-        // Declared or not, a host the workspace did not take away is the package's own to refuse.
-        assert!(authority.may_fetch(APP, "not.declared.example"));
-        // Reloading the package keeps the revocation, and the workspace may hand it back.
-        authority.load(&module(), &meta);
-        assert!(!authority.may_fetch(APP, "example.com"));
-        authority.grant_web(APP, "example.com");
-        assert!(authority.may_fetch(APP, "example.com"));
-        assert_eq!(
-            authority.web_grants(),
-            vec![(
-                APP.to_owned(),
-                vec!["example.com".to_owned(), "*.rss.org".to_owned()]
-            )]
-        );
     }
 }

@@ -114,10 +114,52 @@ fn shown(view: &ViewInstance) -> Value {
     first(view.tree()).expect("the view shows its level")
 }
 
-#[test]
-fn a_view_shows_the_reading_the_app_publishes() {
-    let (_host, view, _up, _module) = workspace(0.25);
-    assert_eq!(shown(&view), Value::text("0.25"));
+tilo_test_env::scenario! {
+    fn a_view_over_a_published_reading_shows_it_and_invokes_through_the_host;
+
+    phase a_view_shows_the_reading_the_app_publishes;
+    {
+        let (_host, view, _up, _module) = workspace(0.25);
+        assert_eq!(shown(&view), Value::text("0.25"));
+    }
+
+    phase a_buttons_invocation_carries_the_views_author_and_the_player;
+    {
+        let (host, view, up, module) = workspace(0.25);
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+        view.press(&up).expect("the button invokes the app's verb");
+        let sent = sent.borrow();
+        let [
+            Invocation::Action {
+                app,
+                action,
+                args,
+                author,
+                subject,
+                ..
+            },
+        ] = sent.as_slice()
+        else {
+            panic!("one invocation of the app's verb: {sent:?}");
+        };
+        assert_eq!((app.as_str(), action.as_str()), (APP, "set-level"));
+        assert_eq!(subject.as_ref(), Some(&player()));
+        assert_eq!(author.as_ref(), Some(&module), "the view's own code asked");
+        assert_eq!(args.len(), 2, "{args:?}");
+        assert_eq!(args[0].1, Value::resource(&player()), "the player, first");
+        assert_eq!(args[1], ("level".to_owned(), Value::Float(1.0)));
+    }
+
+    phase a_host_that_sends_no_invocation_on_says_so;
+    {
+        let (_host, view, up, _module) = workspace(0.25);
+        let why = view.press(&up).expect_err("nowhere to send it");
+        assert!(
+            format!("{why}").contains("an app this host does not run"),
+            "{why}"
+        );
+    }
 }
 
 #[test]
@@ -149,42 +191,4 @@ fn the_same_reading_twice_changes_nothing() {
         .unwrap();
     assert!(!again, "a reading that did not change moves nothing");
     assert_eq!(view.poll_patches().unwrap(), Vec::new());
-}
-
-#[test]
-fn a_buttons_invocation_carries_the_views_author_and_the_player() {
-    let (host, view, up, module) = workspace(0.25);
-    let sent = Rc::new(RefCell::new(Vec::new()));
-    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.press(&up).expect("the button invokes the app's verb");
-    let sent = sent.borrow();
-    let [
-        Invocation::Action {
-            app,
-            action,
-            args,
-            author,
-            subject,
-            ..
-        },
-    ] = sent.as_slice()
-    else {
-        panic!("one invocation of the app's verb: {sent:?}");
-    };
-    assert_eq!((app.as_str(), action.as_str()), (APP, "set-level"));
-    assert_eq!(subject.as_ref(), Some(&player()));
-    assert_eq!(author.as_ref(), Some(&module), "the view's own code asked");
-    assert_eq!(args.len(), 2, "{args:?}");
-    assert_eq!(args[0].1, Value::resource(&player()), "the player, first");
-    assert_eq!(args[1], ("level".to_owned(), Value::Float(1.0)));
-}
-
-#[test]
-fn a_host_that_sends_no_invocation_on_says_so() {
-    let (_host, view, up, _module) = workspace(0.25);
-    let why = view.press(&up).expect_err("nowhere to send it");
-    assert!(
-        format!("{why}").contains("an app this host does not run"),
-        "{why}"
-    );
 }

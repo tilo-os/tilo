@@ -406,56 +406,168 @@ fn a_history_entry_never_takes_back_the_making_and_keeps_older_changes_in_its_me
     );
 }
 
-/// The change a page ends with is the one a person means by undo: it offers it where it stands,
-/// quietly, and taking it back asks the history to reverse that change.
-#[test]
-fn the_newest_history_entry_offers_the_persons_own_change_undone_on_the_row() {
-    let (mut ada, notes, _) = two_people();
-    let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
-    ada.commit();
-    call(
-        &ada,
-        "bo",
-        NOTES_APP,
-        "retitle",
-        vec![note.clone(), Value::text("Groceries")],
-    );
-    ada.commit();
-    call(
-        &ada,
-        "ada",
-        NOTES_APP,
-        "pin",
-        vec![note.clone(), Value::Bool(true)],
-    );
-    ada.commit();
-    let at = target(&note);
-    let mut editor = ada.host.open_resource(&at, None).unwrap();
-    let section = history(&mut editor);
-    assert_eq!(entries(&section), ["ada", "bo", "ada"]);
-    let making = entry_row(&section, "created it");
-    assert!(
-        !takes_back(&making),
-        "the making offers nothing to take back: {making:#?}"
-    );
-    let newest = entry_row(&section, "tilolang-undo");
-    assert!(
-        !nodes(&newest).iter().any(|n| n.kind == "ui.MenuButton"),
-        "the newest change offers its undo, not a menu: {newest:#?}"
-    );
+tilo_test_env::scenario! {
+    fn a_history_entry_reads_and_offers_what_was_done;
 
-    let asked = press_undo(&mut ada, &mut editor, &button(&newest, "tilolang-undo"));
-    assert!(matches!(asked, UndoAsk::Step { target, .. } if target == at));
-    assert_eq!(
-        field(&ada, NOTES_APP, &at, "Note", "pinned"),
-        Value::Bool(false),
-        "undo took the pin back"
-    );
-    assert_eq!(
-        field(&ada, NOTES_APP, &at, "Note", "title"),
-        Value::text("Groceries"),
-        "Bo's rename stays"
-    );
+    phase the_newest_history_entry_offers_the_persons_own_change_undone_on_the_row;
+    // The change a page ends with is the one a person means by undo: it offers it where it stands,
+    // quietly, and taking it back asks the history to reverse that change.
+    {
+        let (mut ada, notes, _) = two_people();
+        let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+        ada.commit();
+        call(
+            &ada,
+            "bo",
+            NOTES_APP,
+            "retitle",
+            vec![note.clone(), Value::text("Groceries")],
+        );
+        ada.commit();
+        call(
+            &ada,
+            "ada",
+            NOTES_APP,
+            "pin",
+            vec![note.clone(), Value::Bool(true)],
+        );
+        ada.commit();
+        let at = target(&note);
+        let mut editor = ada.host.open_resource(&at, None).unwrap();
+        let section = history(&mut editor);
+        assert_eq!(entries(&section), ["ada", "bo", "ada"]);
+        let making = entry_row(&section, "created it");
+        assert!(
+            !takes_back(&making),
+            "the making offers nothing to take back: {making:#?}"
+        );
+        let newest = entry_row(&section, "tilolang-undo");
+        assert!(
+            !nodes(&newest).iter().any(|n| n.kind == "ui.MenuButton"),
+            "the newest change offers its undo, not a menu: {newest:#?}"
+        );
+
+        let asked = press_undo(&mut ada, &mut editor, &button(&newest, "tilolang-undo"));
+        assert!(matches!(asked, UndoAsk::Step { target, .. } if target == at));
+        assert_eq!(
+            field(&ada, NOTES_APP, &at, "Note", "pinned"),
+            Value::Bool(false),
+            "undo took the pin back"
+        );
+        assert_eq!(
+            field(&ada, NOTES_APP, &at, "Note", "title"),
+            Value::text("Groceries"),
+            "Bo's rename stays"
+        );
+    }
+
+    phase typing_in_a_bound_field_reads_as_an_edit_of_that_field;
+    {
+        let (mut ada, _notes, tasks) = two_people();
+        let task = call(
+            &ada,
+            "ada",
+            TASKS_APP,
+            "new_task",
+            crate::tasks::create(&tasks, "Buy oat milk"),
+        );
+        ada.commit();
+        let at = target(&task);
+        let title =
+            crate::fixtures::field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
+        let page = ada.host.open_resource(&at, None).unwrap();
+        let input = bound_key(page.tree(), &title).expect("the task's title is bound to its input");
+        page.edit(&input, &Value::text("Bring oat milk")).unwrap();
+        ada.commit();
+        drop(page);
+
+        // The entry says what was done, in the words of the field it wrote and the value it wrote
+        // there, and never the platform's verb id.
+        let mut page = ada.host.open_resource(&at, None).unwrap();
+        let section = history(&mut page);
+        let said = says(&section);
+        assert!(
+            said.join(" ").contains("You changed title"),
+            "the entry says what was done: {said:?}"
+        );
+        page.press(&button(&section, "tilolang-history-show"))
+            .unwrap();
+        let section = history(&mut page);
+        let said = says(&section);
+        assert!(
+            said.contains(&"Bring oat milk".to_owned()),
+            "the entry opened says the name it took: {said:?}"
+        );
+        assert!(
+            !said.iter().any(|what| what.contains("dit-text")),
+            "no entry shows an action id: {said:?}"
+        );
+    }
+
+    phase the_changes_of_one_action_are_one_entry_of_history_its_undo_takes_back;
+    // The changes one action made on one record are one entry of its history, and its Undo takes
+    // them all back together.
+    {
+        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PAIRED, "")]);
+        let tally = ada.host.root_of(PAIRED_APP).unwrap();
+        ada.commit();
+        let before = changes_of(&ada, &[&tally]);
+        call(
+            &ada,
+            "ada",
+            PAIRED_APP,
+            "both",
+            vec![Value::resource(&tally)],
+        );
+        ada.commit();
+        assert_eq!(
+            changes_of(&ada, &[&tally]),
+            before + 2,
+            "the action and the two it called are two changes"
+        );
+
+        // History lists the action once: one entry saying how many changes it made, beside the
+        // record's own first entry.
+        let mut window = ada.host.open_resource(&tally, None).unwrap();
+        let section = history(&mut window);
+        let said = says(&section);
+        assert_eq!(
+            entries(&section).len(),
+            2,
+            "the record's creation, then the action: {said:#?}"
+        );
+        assert_eq!(
+            said.iter()
+                .filter(|said| said.as_str() == "tilolang-history-changes")
+                .count(),
+            1,
+            "the action stands in history once, saying how many changes it made: {said:?}"
+        );
+
+        // One Undo takes every change of it back, and one Redo brings them back.
+        ada.history(&HistoryAsk::Undo.edit());
+        assert_eq!(
+            field(&ada, PAIRED_APP, &tally, "Tally", "value"),
+            Value::Int(0),
+            "Undo took the action's first change back"
+        );
+        assert_eq!(
+            field(&ada, PAIRED_APP, &tally, "Tally", "note"),
+            Value::text(""),
+            "and its second with it"
+        );
+        ada.history(&HistoryAsk::Redo.edit());
+        assert_eq!(
+            field(&ada, PAIRED_APP, &tally, "Tally", "value"),
+            Value::Int(1),
+            "Redo brought the action's first change back"
+        );
+        assert_eq!(
+            field(&ada, PAIRED_APP, &tally, "Tally", "note"),
+            Value::text("noted"),
+            "and its second with it"
+        );
+    }
 }
 
 #[test]
@@ -1504,49 +1616,6 @@ fn bound_key(node: &UiNode, field: &str) -> Option<String> {
         .find_map(|child| bound_key(child, field))
 }
 
-#[test]
-fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
-    let (mut ada, _notes, tasks) = two_people();
-    let task = call(
-        &ada,
-        "ada",
-        TASKS_APP,
-        "new_task",
-        crate::tasks::create(&tasks, "Buy oat milk"),
-    );
-    ada.commit();
-    let at = target(&task);
-    let title =
-        crate::fixtures::field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
-    let page = ada.host.open_resource(&at, None).unwrap();
-    let input = bound_key(page.tree(), &title).expect("the task's title is bound to its input");
-    page.edit(&input, &Value::text("Bring oat milk")).unwrap();
-    ada.commit();
-    drop(page);
-
-    // The entry says what was done, in the words of the field it wrote and the value it wrote
-    // there, and never the platform's verb id.
-    let mut page = ada.host.open_resource(&at, None).unwrap();
-    let section = history(&mut page);
-    let said = says(&section);
-    assert!(
-        said.join(" ").contains("You changed title"),
-        "the entry says what was done: {said:?}"
-    );
-    page.press(&button(&section, "tilolang-history-show"))
-        .unwrap();
-    let section = history(&mut page);
-    let said = says(&section);
-    assert!(
-        said.contains(&"Bring oat milk".to_owned()),
-        "the entry opened says the name it took: {said:?}"
-    );
-    assert!(
-        !said.iter().any(|what| what.contains("dit-text")),
-        "no entry shows an action id: {said:?}"
-    );
-}
-
 /// Checking a task off is one entry of history, saying in a sentence who did it and what it
 /// did: it took the tasks under it with it, and the step before it is an entry of its own.
 #[test]
@@ -1831,71 +1900,6 @@ action both(t: Tally) {
 "#;
 
 const PAIRED_APP: &str = "test.paired";
-
-/// The changes one action made on one record are one entry of its history, and its Undo takes
-/// them all back together.
-#[test]
-fn the_changes_of_one_action_are_one_entry_of_history_its_undo_takes_back() {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PAIRED, "")]);
-    let tally = ada.host.root_of(PAIRED_APP).unwrap();
-    ada.commit();
-    let before = changes_of(&ada, &[&tally]);
-    call(
-        &ada,
-        "ada",
-        PAIRED_APP,
-        "both",
-        vec![Value::resource(&tally)],
-    );
-    ada.commit();
-    assert_eq!(
-        changes_of(&ada, &[&tally]),
-        before + 2,
-        "the action and the two it called are two changes"
-    );
-
-    // History lists the action once: one entry saying how many changes it made, beside the
-    // record's own first entry.
-    let mut window = ada.host.open_resource(&tally, None).unwrap();
-    let section = history(&mut window);
-    let said = says(&section);
-    assert_eq!(
-        entries(&section).len(),
-        2,
-        "the record's creation, then the action: {said:#?}"
-    );
-    assert_eq!(
-        said.iter()
-            .filter(|said| said.as_str() == "tilolang-history-changes")
-            .count(),
-        1,
-        "the action stands in history once, saying how many changes it made: {said:?}"
-    );
-
-    // One Undo takes every change of it back, and one Redo brings them back.
-    ada.history(&HistoryAsk::Undo.edit());
-    assert_eq!(
-        field(&ada, PAIRED_APP, &tally, "Tally", "value"),
-        Value::Int(0),
-        "Undo took the action's first change back"
-    );
-    assert_eq!(
-        field(&ada, PAIRED_APP, &tally, "Tally", "note"),
-        Value::text(""),
-        "and its second with it"
-    );
-    ada.history(&HistoryAsk::Redo.edit());
-    assert_eq!(
-        field(&ada, PAIRED_APP, &tally, "Tally", "value"),
-        Value::Int(1),
-        "Redo brought the action's first change back"
-    );
-    assert_eq!(
-        field(&ada, PAIRED_APP, &tally, "Tally", "note"),
-        Value::text("noted"),
-        "and its second with it"
-    );
-}
 
 /// The key of the note's body in its page: the editor a person writes the note in.
 fn note_body(view: &ViewInstance) -> String {

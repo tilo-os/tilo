@@ -402,34 +402,169 @@ fn an_agent_comments_through_the_same_action() {
     );
 }
 
-#[test]
-fn a_comment_under_a_note_draws_in_the_notes_view() {
-    let mut ada = workspace();
-    let plan = note_named(&ada, "Q3 plan");
-    ada.commit();
-    let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)]);
+tilo_test_env::scenario! {
+    fn a_thread_draws_under_what_it_is_about;
 
-    let said = comment(
-        &bo,
-        "bo",
-        &plan,
-        "Add the offline editor to the first paragraph.",
-    );
-    bo.commit();
-    ada.sync_with(&mut bo);
+    phase a_comment_under_a_note_draws_in_the_notes_view;
+    {
+        let mut ada = workspace();
+        let plan = note_named(&ada, "Q3 plan");
+        ada.commit();
+        let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)]);
 
-    let view = ada.host.open_resource(&plan, None).unwrap();
-    assert!(
-        comments_drawn(view.tree())
-            .iter()
-            .any(|rich| rich.written_text() == "Add the offline editor to the first paragraph."),
-        "the note's view draws what was said about it: {said:?}"
-    );
-    assert_eq!(
-        unread_dividers(view.tree()).len(),
-        1,
-        "and says she has not read it"
-    );
+        let said = comment(
+            &bo,
+            "bo",
+            &plan,
+            "Add the offline editor to the first paragraph.",
+        );
+        bo.commit();
+        ada.sync_with(&mut bo);
+
+        let view = ada.host.open_resource(&plan, None).unwrap();
+        assert!(
+            comments_drawn(view.tree())
+                .iter()
+                .any(|rich| rich.written_text() == "Add the offline editor to the first paragraph."),
+            "the note's view draws what was said about it: {said:?}"
+        );
+        assert_eq!(
+            unread_dividers(view.tree()).len(),
+            1,
+            "and says she has not read it"
+        );
+    }
+
+    phase a_scenario_comments_as_the_people_and_times_it_names;
+    {
+        let (ada, task) = a_task_discussed_by_a_scenario();
+        let made = comments_about(&ada, &task);
+        assert_eq!(
+            made.iter().map(|v| v.who.as_str()).collect::<Vec<_>>(),
+            ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
+            "each comment is the person the scenario names"
+        );
+        assert_eq!(
+            made.iter().map(|v| v.at.as_str()).collect::<Vec<_>>(),
+            [
+                "2026-06-24T09:12:00Z",
+                "2026-06-24T15:40:00Z",
+                "2026-06-25T08:03:00Z"
+            ],
+            "each comment is when the scenario names"
+        );
+        assert!(
+            made.iter().all(|v| v
+                .from
+                .as_ref()
+                .is_some_and(|from| from.id_string() == task.id_string())),
+            "each comment is about the task: {made:#?}"
+        );
+    }
+
+    phase the_page_under_a_task_draws_its_thread_with_names_and_times;
+    {
+        let (ada, task) = a_task_discussed_by_a_scenario();
+        let page = ada.host.open_resource(&task, None).unwrap();
+        assert_eq!(
+            comments_drawn(page.tree())
+                .iter()
+                .map(RichValue::written_text)
+                .collect::<Vec<_>>(),
+            [
+                "The supplier quotes six weeks. Do we order before the summer?",
+                "Yes. The room stays empty either way.",
+                "Ordered, delivery the first week of August."
+            ],
+            "the task's thread draws them oldest first"
+        );
+        let who: Vec<String> = of_kind(page.tree(), "ui.Avatar")
+            .into_iter()
+            .filter_map(|node| match node.props.get("who") {
+                Some(Value::Principal(who)) => Some(who.0.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            who,
+            ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
+            "the thread names who said each thing"
+        );
+        let when: Vec<String> = of_kind(page.tree(), "ui.Time")
+            .into_iter()
+            .filter_map(|node| match node.props.get("at") {
+                Some(Value::Text(at)) => Some(at.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            when,
+            [
+                "2026-06-24T09:12:00Z",
+                "2026-06-24T15:40:00Z",
+                "2026-06-25T08:03:00Z"
+            ],
+            "each comment says when it was said"
+        );
+    }
+
+    phase the_thread_offers_its_own_people_and_follows_nothing_of_what_it_is_about;
+    {
+        let (mut ada, task) = a_task_discussed_by_a_scenario();
+        let page = ada.host.open_resource(&task, None).unwrap();
+        let thread = ada
+            .host
+            .package(DISCUSSION_APP)
+            .unwrap()
+            .view_id("thread")
+            .unwrap();
+        let mut view = ada
+            .host
+            .runtime()
+            .open_view(
+                &Principal::new("ada"),
+                &thread,
+                vec![Value::resource(&task)],
+            )
+            .unwrap();
+        assert_eq!(
+            drawer(&view, "speakers"),
+            ["scenario:Ada", "scenario:Bo"],
+            "who spoke in the thread, newest first, each once; the members follow under them"
+        );
+
+        // Ada retitles the task in its own page, as a person typing in the field writes it, while
+        // the thread stands open. The thread reads what was said about it, never what it holds, so
+        // it is not built again.
+        let title = field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
+        let input = bound_key(page.tree(), &title).expect("the task's title is bound");
+        ada.commit();
+        view.poll_patches().unwrap();
+        let drawn = view.stats();
+        page.edit(&input, &Value::text("Pay the whole quarter"))
+            .unwrap();
+        ada.commit();
+        assert_eq!(
+            ada.host.label_at(&task),
+            "Pay the whole quarter",
+            "the title is the task's now"
+        );
+        let patches = view.poll_patches().unwrap();
+        assert!(
+            patches.is_empty(),
+            "nothing the thread shows changed: {patches:#?}"
+        );
+        assert_eq!(
+            view.stats().renders,
+            drawn.renders,
+            "a field of what it is about does not run the thread again"
+        );
+        assert_eq!(
+            drawer(&view, "speakers"),
+            ["scenario:Ada", "scenario:Bo"],
+            "and the drawer still offers the thread's own people"
+        );
+    }
 }
 
 #[test]
@@ -558,79 +693,6 @@ fn comments_about(ada: &Replica, task: &ResourceRef) -> Vec<tilolang_runtime::st
 }
 
 #[test]
-fn a_scenario_comments_as_the_people_and_times_it_names() {
-    let (ada, task) = a_task_discussed_by_a_scenario();
-    let made = comments_about(&ada, &task);
-    assert_eq!(
-        made.iter().map(|v| v.who.as_str()).collect::<Vec<_>>(),
-        ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
-        "each comment is the person the scenario names"
-    );
-    assert_eq!(
-        made.iter().map(|v| v.at.as_str()).collect::<Vec<_>>(),
-        [
-            "2026-06-24T09:12:00Z",
-            "2026-06-24T15:40:00Z",
-            "2026-06-25T08:03:00Z"
-        ],
-        "each comment is when the scenario names"
-    );
-    assert!(
-        made.iter().all(|v| v
-            .from
-            .as_ref()
-            .is_some_and(|from| from.id_string() == task.id_string())),
-        "each comment is about the task: {made:#?}"
-    );
-}
-
-#[test]
-fn the_page_under_a_task_draws_its_thread_with_names_and_times() {
-    let (ada, task) = a_task_discussed_by_a_scenario();
-    let page = ada.host.open_resource(&task, None).unwrap();
-    assert_eq!(
-        comments_drawn(page.tree())
-            .iter()
-            .map(RichValue::written_text)
-            .collect::<Vec<_>>(),
-        [
-            "The supplier quotes six weeks. Do we order before the summer?",
-            "Yes. The room stays empty either way.",
-            "Ordered, delivery the first week of August."
-        ],
-        "the task's thread draws them oldest first"
-    );
-    let who: Vec<String> = of_kind(page.tree(), "ui.Avatar")
-        .into_iter()
-        .filter_map(|node| match node.props.get("who") {
-            Some(Value::Principal(who)) => Some(who.0.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        who,
-        ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
-        "the thread names who said each thing"
-    );
-    let when: Vec<String> = of_kind(page.tree(), "ui.Time")
-        .into_iter()
-        .filter_map(|node| match node.props.get("at") {
-            Some(Value::Text(at)) => Some(at.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        when,
-        [
-            "2026-06-24T09:12:00Z",
-            "2026-06-24T15:40:00Z",
-            "2026-06-25T08:03:00Z"
-        ],
-        "each comment says when it was said"
-    );
-}
-
-#[test]
 fn only_its_author_edits_or_deletes_a_comment() {
     let mut ada = workspace();
     let task = task_titled(&ada, "Pay rent");
@@ -737,62 +799,4 @@ fn drawer(view: &ViewInstance, prop: &str) -> Vec<String> {
             .collect(),
         other => panic!("{prop} is {other:?}"),
     }
-}
-
-#[test]
-fn the_thread_offers_its_own_people_and_follows_nothing_of_what_it_is_about() {
-    let (mut ada, task) = a_task_discussed_by_a_scenario();
-    let page = ada.host.open_resource(&task, None).unwrap();
-    let thread = ada
-        .host
-        .package(DISCUSSION_APP)
-        .unwrap()
-        .view_id("thread")
-        .unwrap();
-    let mut view = ada
-        .host
-        .runtime()
-        .open_view(
-            &Principal::new("ada"),
-            &thread,
-            vec![Value::resource(&task)],
-        )
-        .unwrap();
-    assert_eq!(
-        drawer(&view, "speakers"),
-        ["scenario:Ada", "scenario:Bo"],
-        "who spoke in the thread, newest first, each once; the members follow under them"
-    );
-
-    // Ada retitles the task in its own page, as a person typing in the field writes it, while
-    // the thread stands open. The thread reads what was said about it, never what it holds, so
-    // it is not built again.
-    let title = field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
-    let input = bound_key(page.tree(), &title).expect("the task's title is bound");
-    ada.commit();
-    view.poll_patches().unwrap();
-    let drawn = view.stats();
-    page.edit(&input, &Value::text("Pay the whole quarter"))
-        .unwrap();
-    ada.commit();
-    assert_eq!(
-        ada.host.label_at(&task),
-        "Pay the whole quarter",
-        "the title is the task's now"
-    );
-    let patches = view.poll_patches().unwrap();
-    assert!(
-        patches.is_empty(),
-        "nothing the thread shows changed: {patches:#?}"
-    );
-    assert_eq!(
-        view.stats().renders,
-        drawn.renders,
-        "a field of what it is about does not run the thread again"
-    );
-    assert_eq!(
-        drawer(&view, "speakers"),
-        ["scenario:Ada", "scenario:Bo"],
-        "and the drawer still offers the thread's own people"
-    );
 }

@@ -126,71 +126,136 @@ fn held(host: &Host) -> Vec<(ChunkNo, usize, usize)> {
     host.store().held_chunks()
 }
 
-#[test]
-fn a_record_split_over_two_chunks_reads_writes_and_syncs_each_resource_through_its_chunk() {
-    let (host, (_, list, title_field)) = split();
-    let store = host.store();
-    assert_eq!(title(&host, "first", &title_field), "first");
-    assert_eq!(title(&host, "second", &title_field), "second");
-    assert_eq!(
-        held(&host).iter().map(|(at, ..)| *at).collect::<Vec<_>>(),
-        [0, 1]
-    );
+tilo_test_env::scenario! {
+    fn a_resource_in_a_chunk_is_read_written_and_settled_there;
 
-    // Each index row names the chunk that holds its record.
-    let docs = store.index_contents(APP).unwrap().docs;
-    assert_eq!(docs.get("first"), Some(&(list.clone(), 0)));
-    assert_eq!(docs.get("second"), Some(&(list.clone(), 1)));
+    phase a_record_split_over_two_chunks_reads_writes_and_syncs_each_resource_through_its_chunk;
+    {
+        let (host, (_, list, title_field)) = split();
+        let store = host.store();
+        assert_eq!(title(&host, "first", &title_field), "first");
+        assert_eq!(title(&host, "second", &title_field), "second");
+        assert_eq!(
+            held(&host).iter().map(|(at, ..)| *at).collect::<Vec<_>>(),
+            [0, 1]
+        );
 
-    // A record the manifest places in chunk 1 is made there, and read back from there.
-    let new = NewRecord {
-        ty: list,
-        app: tilolang_runtime::ids::AppId::from(APP),
-        fields: Vec::new(),
-    };
-    let before = held(&host);
-    store.create_with_id(&new, "third").unwrap();
-    let after = held(&host);
-    assert_eq!(
-        after[0], before[0],
-        "the record's own document took no write"
-    );
-    assert_eq!(after[1].0, 1);
-    assert!(
-        after[1].1 + after[1].2 > before[1].1 + before[1].2,
-        "chunk 1 took the write: {before:?} then {after:?}"
-    );
-    assert_eq!(store.record("third").unwrap().schema().name, "TodoList");
-}
+        // Each index row names the chunk that holds its record.
+        let docs = store.index_contents(APP).unwrap().docs;
+        assert_eq!(docs.get("first"), Some(&(list.clone(), 0)));
+        assert_eq!(docs.get("second"), Some(&(list.clone(), 1)));
 
-#[test]
-fn a_change_to_a_resource_in_a_chunk_reaches_only_that_chunk() {
-    let (host, (_, list, _)) = split();
-    let store = host.store();
-    let before = held(&host);
-    // Two records the manifest places in chunk 1, made by the store.
-    for id in ["third", "fourth"] {
-        store
-            .create_with_id(
-                &NewRecord {
-                    ty: list.clone(),
-                    app: tilolang_runtime::ids::AppId::from(APP),
-                    fields: Vec::new(),
-                },
-                id,
+        // A record the manifest places in chunk 1 is made there, and read back from there.
+        let new = NewRecord {
+            ty: list,
+            app: tilolang_runtime::ids::AppId::from(APP),
+            fields: Vec::new(),
+        };
+        let before = held(&host);
+        store.create_with_id(&new, "third").unwrap();
+        let after = held(&host);
+        assert_eq!(
+            after[0], before[0],
+            "the record's own document took no write"
+        );
+        assert_eq!(after[1].0, 1);
+        assert!(
+            after[1].1 + after[1].2 > before[1].1 + before[1].2,
+            "chunk 1 took the write: {before:?} then {after:?}"
+        );
+        assert_eq!(store.record("third").unwrap().schema().name, "TodoList");
+    }
+
+    phase a_change_to_a_resource_in_a_chunk_reaches_only_that_chunk;
+    {
+        let (host, (_, list, _)) = split();
+        let store = host.store();
+        let before = held(&host);
+        // Two records the manifest places in chunk 1, made by the store.
+        for id in ["third", "fourth"] {
+            store
+                .create_with_id(
+                    &NewRecord {
+                        ty: list.clone(),
+                        app: tilolang_runtime::ids::AppId::from(APP),
+                        fields: Vec::new(),
+                    },
+                    id,
+                )
+                .unwrap();
+        }
+        let after = held(&host);
+        assert_eq!(after.len(), 2, "the record and the chunk above it");
+        assert_eq!(
+            after[0], before[0],
+            "counted per document: the record's chunk is unchanged"
+        );
+        assert!(
+            after[1].2 >= before[1].2 + 2,
+            "chunk 1 holds the writes: {before:?} then {after:?}"
+        );
+    }
+
+    phase an_insert_into_a_chunk_settles_when_the_record_takes_it_in;
+    // An insert the store plans for a chunk above the record's own leaves nothing open in that
+    // chunk once the record's change reaches it: it settles as one written into the record itself.
+    {
+        let (_store, mut docs, meta, root, ids) = board();
+        let left_field = field_id(&meta, "Board", "left");
+        // A run above the record, so the store plans the card into chunk 1.
+        {
+            let record = docs.doc(chunk::FIRST);
+            chunk::run(record, &root, &left_field, 1, "", 0).unwrap();
+            record.commit();
+        }
+        let (replica, _) = Replica::new("ada", docs.doc(chunk::FIRST).fork(), &[(BOARD, &ids)]);
+        let host = replica.host;
+        let before = counts(&host);
+
+        // The door invokes the action: the store writes the card into chunk 1's own document.
+        let add = meta
+            .actions
+            .iter()
+            .find(|action| action.name == "add")
+            .unwrap()
+            .id
+            .clone();
+        let board = host.root_of(BOARD_APP).unwrap();
+        host.runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    add.as_str(),
+                    vec![Value::resource(&board), Value::text("c")],
+                ),
             )
             .unwrap();
+        let open = counts(&host);
+        assert!(
+            open.get(&1).is_some_and(|(_, pending)| *pending > 0),
+            "chunk 1 holds the open write: {before:?} then {open:?}"
+        );
+
+        // The door applies what the store queued to the record, and the record hands it over.
+        let committed = host.take_committed();
+        assert_eq!(committed.len(), 1, "one action was queued");
+        let action = committed.into_iter().next().unwrap().action;
+        let card = made(&action);
+        docs.apply(&action);
+        docs.sync(&host);
+
+        let settled = counts(&host);
+        assert_eq!(
+            settled.get(&1),
+            Some(&(1, 0)),
+            "chunk 1 holds the record's change and nothing open: {before:?} then {settled:?}"
+        );
+        assert_eq!(
+            settled[&0].1, 0,
+            "nothing stays open in the record: {settled:?}"
+        );
+        assert_eq!(left(&host, &root, &left_field), [card]);
     }
-    let after = held(&host);
-    assert_eq!(after.len(), 2, "the record and the chunk above it");
-    assert_eq!(
-        after[0], before[0],
-        "counted per document: the record's chunk is unchanged"
-    );
-    assert!(
-        after[1].2 >= before[1].2 + 2,
-        "chunk 1 holds the writes: {before:?} then {after:?}"
-    );
 }
 
 /// A board with three collections of its own: a card may be in any of them.
@@ -580,67 +645,6 @@ fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_it
         Some("2".to_owned()),
         "the card's row still names its chunk"
     );
-}
-
-/// An insert the store plans for a chunk above the record's own leaves nothing open in that
-/// chunk once the record's change reaches it: it settles as one written into the record itself.
-#[test]
-fn an_insert_into_a_chunk_settles_when_the_record_takes_it_in() {
-    let (_store, mut docs, meta, root, ids) = board();
-    let left_field = field_id(&meta, "Board", "left");
-    // A run above the record, so the store plans the card into chunk 1.
-    {
-        let record = docs.doc(chunk::FIRST);
-        chunk::run(record, &root, &left_field, 1, "", 0).unwrap();
-        record.commit();
-    }
-    let (replica, _) = Replica::new("ada", docs.doc(chunk::FIRST).fork(), &[(BOARD, &ids)]);
-    let host = replica.host;
-    let before = counts(&host);
-
-    // The door invokes the action: the store writes the card into chunk 1's own document.
-    let add = meta
-        .actions
-        .iter()
-        .find(|action| action.name == "add")
-        .unwrap()
-        .id
-        .clone();
-    let board = host.root_of(BOARD_APP).unwrap();
-    host.runtime()
-        .invoke_action(
-            &Principal::new("ada"),
-            (
-                add.as_str(),
-                vec![Value::resource(&board), Value::text("c")],
-            ),
-        )
-        .unwrap();
-    let open = counts(&host);
-    assert!(
-        open.get(&1).is_some_and(|(_, pending)| *pending > 0),
-        "chunk 1 holds the open write: {before:?} then {open:?}"
-    );
-
-    // The door applies what the store queued to the record, and the record hands it over.
-    let committed = host.take_committed();
-    assert_eq!(committed.len(), 1, "one action was queued");
-    let action = committed.into_iter().next().unwrap().action;
-    let card = made(&action);
-    docs.apply(&action);
-    docs.sync(&host);
-
-    let settled = counts(&host);
-    assert_eq!(
-        settled.get(&1),
-        Some(&(1, 0)),
-        "chunk 1 holds the record's change and nothing open: {before:?} then {settled:?}"
-    );
-    assert_eq!(
-        settled[&0].1, 0,
-        "nothing stays open in the record: {settled:?}"
-    );
-    assert_eq!(left(&host, &root, &left_field), [card]);
 }
 
 #[test]

@@ -648,80 +648,84 @@ mod tests {
         AutoCommit::new()
     }
 
-    #[test]
-    fn a_record_written_before_chunks_opens_as_one_chunk() {
-        // A workspace written before chunks: its app's resources in the record's own map, and no
-        // manifest. It reads as one chunk with everything in it, in place.
-        let mut doc = record();
+    tilo_test_env::scenario! {
+        fn chunks_place_and_order_what_a_record_holds;
+
+        phase a_record_written_before_chunks_opens_as_one_chunk;
         {
-            use automerge::transaction::Transactable as _;
-            let records = doc
-                .put_object(&automerge::ROOT, crate::action::RECORDS_KEY, ObjType::Map)
-                .expect("records");
-            let app = doc
-                .put_object(&records, "so.tilo.tasks", ObjType::Map)
-                .expect("app");
-            let issue = doc
-                .put_object(&app, "issue-1", ObjType::Map)
-                .expect("issue");
-            doc.put(&issue, "title", "Ship it").expect("title");
+            // A workspace written before chunks: its app's resources in the record's own map, and no
+            // manifest. It reads as one chunk with everything in it, in place.
+            let mut doc = record();
+            {
+                use automerge::transaction::Transactable as _;
+                let records = doc
+                    .put_object(&automerge::ROOT, crate::action::RECORDS_KEY, ObjType::Map)
+                    .expect("records");
+                let app = doc
+                    .put_object(&records, "so.tilo.tasks", ObjType::Map)
+                    .expect("app");
+                let issue = doc
+                    .put_object(&app, "issue-1", ObjType::Map)
+                    .expect("issue");
+                doc.put(&issue, "title", "Ship it").expect("title");
+            }
+            let placement = Placement::read(&doc);
+            assert!(placement.is_empty());
+            assert_eq!(placement.chunk("issue-1"), FIRST);
+            assert_eq!(placement.next(), 1);
+            assert!(placement.runs("tracker", "issues").is_empty());
+            assert_eq!(
+                placement.for_new("tracker", "issues", FIRST, Limits::default()),
+                (FIRST, false)
+            );
         }
-        let placement = Placement::read(&doc);
-        assert!(placement.is_empty());
-        assert_eq!(placement.chunk("issue-1"), FIRST);
-        assert_eq!(placement.next(), 1);
-        assert!(placement.runs("tracker", "issues").is_empty());
-        assert_eq!(
-            placement.for_new("tracker", "issues", FIRST, Limits::default()),
-            (FIRST, false)
-        );
-    }
 
-    #[test]
-    fn a_placement_says_which_chunk_holds_a_resource() {
-        let mut doc = record();
-        place(&mut doc, "issue-7", 2).expect("write");
-        let placement = Placement::read(&doc);
-        assert_eq!(placement.chunk("issue-7"), 2);
-        assert_eq!(placement.chunk("issue-8"), FIRST);
-        assert_eq!(placement.next(), 3);
-    }
+        phase a_placement_says_which_chunk_holds_a_resource;
+        {
+            let mut doc = record();
+            place(&mut doc, "issue-7", 2).expect("write");
+            let placement = Placement::read(&doc);
+            assert_eq!(placement.chunk("issue-7"), 2);
+            assert_eq!(placement.chunk("issue-8"), FIRST);
+            assert_eq!(placement.next(), 3);
+        }
 
-    #[test]
-    fn runs_order_by_their_last_item_and_fill_before_a_new_chunk_starts() {
-        let limits = Limits { items: 2 };
-        let mut doc = record();
-        // The first run stays in the record itself, where the collection is; the second is a chunk.
-        run(&mut doc, "tracker", "issues", FIRST, "a2", 2).expect("write");
-        run(&mut doc, "tracker", "issues", 3, "a5", 1).expect("write");
-        run(&mut doc, "tracker", "issues", 2, "a4", 1).expect("write");
-        let placement = Placement::read(&doc);
-        let runs: Vec<(ChunkNo, &str)> = placement
-            .runs("tracker", "issues")
-            .into_iter()
-            .map(|(chunk, run)| (chunk, run.last.as_str()))
-            .collect();
-        assert_eq!(runs, vec![(FIRST, "a2"), (2, "a4"), (3, "a5")]);
-        assert_eq!(placement.run_of("tracker", "issues", "a4"), Some(2));
-        // The last run still has room.
-        assert_eq!(
-            placement.for_new("tracker", "issues", FIRST, limits),
-            (3, false)
-        );
-        run(&mut doc, "tracker", "issues", 3, "a6", 2).expect("write");
-        assert_eq!(
-            Placement::read(&doc).for_new("tracker", "issues", FIRST, limits),
-            (4, true)
-        );
-    }
+        phase runs_order_by_their_last_item_and_fill_before_a_new_chunk_starts;
+        {
+            let limits = Limits { items: 2 };
+            let mut doc = record();
+            // The first run stays in the record itself, where the collection is; the second is a chunk.
+            run(&mut doc, "tracker", "issues", FIRST, "a2", 2).expect("write");
+            run(&mut doc, "tracker", "issues", 3, "a5", 1).expect("write");
+            run(&mut doc, "tracker", "issues", 2, "a4", 1).expect("write");
+            let placement = Placement::read(&doc);
+            let runs: Vec<(ChunkNo, &str)> = placement
+                .runs("tracker", "issues")
+                .into_iter()
+                .map(|(chunk, run)| (chunk, run.last.as_str()))
+                .collect();
+            assert_eq!(runs, vec![(FIRST, "a2"), (2, "a4"), (3, "a5")]);
+            assert_eq!(placement.run_of("tracker", "issues", "a4"), Some(2));
+            // The last run still has room.
+            assert_eq!(
+                placement.for_new("tracker", "issues", FIRST, limits),
+                (3, false)
+            );
+            run(&mut doc, "tracker", "issues", 3, "a6", 2).expect("write");
+            assert_eq!(
+                Placement::read(&doc).for_new("tracker", "issues", FIRST, limits),
+                (4, true)
+            );
+        }
 
-    #[test]
-    fn a_resource_made_in_a_chunk_is_placed_beside_its_parent() {
-        let mut doc = record();
-        place(&mut doc, "channel-9", 4).expect("write");
-        let placement = Placement::read(&doc);
-        assert_eq!(for_resource(&placement, Some("channel-9")), 4);
-        assert_eq!(for_resource(&placement, Some("tracker")), FIRST);
-        assert_eq!(for_resource(&placement, None), FIRST);
+        phase a_resource_made_in_a_chunk_is_placed_beside_its_parent;
+        {
+            let mut doc = record();
+            place(&mut doc, "channel-9", 4).expect("write");
+            let placement = Placement::read(&doc);
+            assert_eq!(for_resource(&placement, Some("channel-9")), 4);
+            assert_eq!(for_resource(&placement, Some("tracker")), FIRST);
+            assert_eq!(for_resource(&placement, None), FIRST);
+        }
     }
 }

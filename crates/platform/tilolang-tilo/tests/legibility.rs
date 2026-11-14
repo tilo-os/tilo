@@ -429,91 +429,95 @@ view shelf(s: Shelf) {
 }
 "#;
 
-#[test]
-fn code_reads_a_versions_run_kind_and_fields_and_what_is_unseen() {
-    let app = "so.tilo.lang.shelf";
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(SHELF, "")]);
-    let shelf = Value::resource(&ada.host.root_of(app).unwrap());
-    ada.commit();
-    let book = call(
-        &ada,
-        "ada",
-        app,
-        "shelve",
-        vec![shelf.clone(), Value::text("Dune")],
-    );
-    let gone = call(
-        &ada,
-        "ada",
-        app,
-        "shelve",
-        vec![shelf.clone(), Value::text("Old")],
-    );
-    ada.commit();
-    let describe = |r: &Replica, b: &Value| match call(r, "ada", app, "describe", vec![b.clone()]) {
-        Value::Text(text) => text,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(describe(&ada, &book), "0 unseen; no run");
-    call(
-        &ada,
-        AGENT,
-        app,
-        "retitle",
-        vec![book.clone(), Value::text("Dune Messiah")],
-    );
-    call(&ada, AGENT, app, "drop", vec![shelf, gone.clone()]);
-    ada.commit_in_run(AGENT, RUN, "Sort the shelf");
-    // The book, the removed one and the shelf whose collection changed.
-    assert_eq!(
-        describe(&ada, &book),
-        "1 unseen; last changed title by Sort the shelf (issue-7); run made 3"
-    );
-    assert_eq!(
-        describe(&ada, &gone),
-        "1 unseen; last removed - by Sort the shelf (issue-7); run made 3"
-    );
-    assert!(ada.host.runtime().mark_run_seen("ada", RUN));
-    assert!(describe(&ada, &book).starts_with("0 unseen"));
-}
+tilo_test_env::scenario! {
+    fn a_runs_versions_are_read_by_code_and_undone_with_their_marks;
 
-#[test]
-fn undoing_the_run_takes_its_marks_with_it() {
-    use ui::history_source::revert::{changes_of_entries, revert_changes};
-    let Tidied {
-        mut ada,
-        made,
-        groceries,
-        landlord,
-        ..
-    } = a_run_in_notes_and_tasks();
-    // History takes the run back, as Ada.
-    let scope = ui::history_source::steps::Scope::Run(RUN.to_owned());
-    let entries: Vec<_> = tilo_resource::history::versions(&mut ada.doc)
-        .iter()
-        .filter(|version| scope.owns(version))
-        .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
-        .collect();
-    assert!(!entries.is_empty(), "the run's steps are in history");
-    let changes = changes_of_entries(&mut ada.doc, &entries);
-    revert_changes(
-        &mut ada.doc,
-        &changes,
-        &ui::history_source::authors::AuthorDirectory::new(),
-    )
-    .unwrap();
-    let message = tilo_actions::ActionContext::default()
-        .with_invoker(tilo_actions::ActionInvoker::actor("ada"))
-        .change_message()
-        .unwrap();
-    ada.doc
-        .commit_with(automerge::transaction::CommitOptions::default().with_message(message));
-    ada.host.sync_from(&ada.doc);
-    // What she took back is hers now: nothing of it is marked.
-    for at in [&groceries, &landlord, &made] {
-        assert!(
-            ada.host.runtime().unseen("ada", at).unwrap().is_empty(),
-            "{at:?} is no longer marked after the undo"
+    phase code_reads_a_versions_run_kind_and_fields_and_what_is_unseen;
+    {
+        let app = "so.tilo.lang.shelf";
+        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(SHELF, "")]);
+        let shelf = Value::resource(&ada.host.root_of(app).unwrap());
+        ada.commit();
+        let book = call(
+            &ada,
+            "ada",
+            app,
+            "shelve",
+            vec![shelf.clone(), Value::text("Dune")],
         );
+        let gone = call(
+            &ada,
+            "ada",
+            app,
+            "shelve",
+            vec![shelf.clone(), Value::text("Old")],
+        );
+        ada.commit();
+        let describe = |r: &Replica, b: &Value| match call(r, "ada", app, "describe", vec![b.clone()]) {
+            Value::Text(text) => text,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(describe(&ada, &book), "0 unseen; no run");
+        call(
+            &ada,
+            AGENT,
+            app,
+            "retitle",
+            vec![book.clone(), Value::text("Dune Messiah")],
+        );
+        call(&ada, AGENT, app, "drop", vec![shelf, gone.clone()]);
+        ada.commit_in_run(AGENT, RUN, "Sort the shelf");
+        // The book, the removed one and the shelf whose collection changed.
+        assert_eq!(
+            describe(&ada, &book),
+            "1 unseen; last changed title by Sort the shelf (issue-7); run made 3"
+        );
+        assert_eq!(
+            describe(&ada, &gone),
+            "1 unseen; last removed - by Sort the shelf (issue-7); run made 3"
+        );
+        assert!(ada.host.runtime().mark_run_seen("ada", RUN));
+        assert!(describe(&ada, &book).starts_with("0 unseen"));
+    }
+
+    phase undoing_the_run_takes_its_marks_with_it;
+    {
+        use ui::history_source::revert::{changes_of_entries, revert_changes};
+        let Tidied {
+            mut ada,
+            made,
+            groceries,
+            landlord,
+            ..
+        } = a_run_in_notes_and_tasks();
+        // History takes the run back, as Ada.
+        let scope = ui::history_source::steps::Scope::Run(RUN.to_owned());
+        let entries: Vec<_> = tilo_resource::history::versions(&mut ada.doc)
+            .iter()
+            .filter(|version| scope.owns(version))
+            .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
+            .collect();
+        assert!(!entries.is_empty(), "the run's steps are in history");
+        let changes = changes_of_entries(&mut ada.doc, &entries);
+        revert_changes(
+            &mut ada.doc,
+            &changes,
+            &ui::history_source::authors::AuthorDirectory::new(),
+        )
+        .unwrap();
+        let message = tilo_actions::ActionContext::default()
+            .with_invoker(tilo_actions::ActionInvoker::actor("ada"))
+            .change_message()
+            .unwrap();
+        ada.doc
+            .commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+        ada.host.sync_from(&ada.doc);
+        // What she took back is hers now: nothing of it is marked.
+        for at in [&groceries, &landlord, &made] {
+            assert!(
+                ada.host.runtime().unseen("ada", at).unwrap().is_empty(),
+                "{at:?} is no longer marked after the undo"
+            );
+        }
     }
 }

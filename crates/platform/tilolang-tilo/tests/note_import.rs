@@ -268,77 +268,132 @@ fn entry_text(archive: &[(String, Vec<u8>)], name: &str) -> String {
     String::from_utf8(entry(archive, name)).expect("a text file")
 }
 
-#[test]
-fn a_note_exported_and_imported_again_is_the_same_note() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let first = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
-    assert_eq!(title(&ada, &first), "Groceries", "its title is its heading");
-    let held = body(&ada, &first);
-    let kinds: Vec<&str> = held
-        .blocks
-        .iter()
-        .map(|block| block.kind.as_str())
-        .collect();
-    assert_eq!(
-        kinds,
-        [
-            "list_item",
-            "list_item",
-            "paragraph",
-            "paragraph",
-            "paragraph",
-            "paragraph",
-            "quote",
-            "divider",
-        ],
-        "the heading that names it is not said again: {kinds:?}"
-    );
+tilo_test_env::scenario! {
+    fn a_note_is_exported_and_imported;
 
-    let markdown = exported(&ada, &first);
-    assert!(
-        markdown.starts_with("# Groceries\n\n- [ ] oat milk\n"),
-        "{markdown}"
-    );
-    assert!(
-        markdown.contains("| a | b |\n| --- | --- |\n| 1 | 2 |"),
-        "a table is kept as its source: {markdown}"
-    );
-    assert!(
-        markdown.contains("```rust\nfn main() {}\n```"),
-        "a fence keeps its language: {markdown}"
-    );
-    assert!(
-        markdown.contains("![a fox](tilo-blob://picture)"),
-        "a picture keeps the address of its bytes: {markdown}"
-    );
+    phase a_note_exported_and_imported_again_is_the_same_note;
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let first = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
+        assert_eq!(title(&ada, &first), "Groceries", "its title is its heading");
+        let held = body(&ada, &first);
+        let kinds: Vec<&str> = held
+            .blocks
+            .iter()
+            .map(|block| block.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "list_item",
+                "list_item",
+                "paragraph",
+                "paragraph",
+                "paragraph",
+                "paragraph",
+                "quote",
+                "divider",
+            ],
+            "the heading that names it is not said again: {kinds:?}"
+        );
 
-    let again = imported(&mut ada, &device, "Groceries again.md", &markdown);
-    assert_eq!(title(&ada, &again), "Groceries");
-    assert_eq!(
-        exported(&ada, &again),
-        markdown,
-        "the note exported and imported again is the same note"
-    );
-}
+        let markdown = exported(&ada, &first);
+        assert!(
+            markdown.starts_with("# Groceries\n\n- [ ] oat milk\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("| a | b |\n| --- | --- |\n| 1 | 2 |"),
+            "a table is kept as its source: {markdown}"
+        );
+        assert!(
+            markdown.contains("```rust\nfn main() {}\n```"),
+            "a fence keeps its language: {markdown}"
+        );
+        assert!(
+            markdown.contains("![a fox](tilo-blob://picture)"),
+            "a picture keeps the address of its bytes: {markdown}"
+        );
 
-#[test]
-fn importing_the_same_file_twice_makes_one_note() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let first = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
-    let twice = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
-    assert_eq!(first.id_string(), twice.id_string(), "the note it made");
-    assert_eq!(written(&ada, &ada.host.root_of(APP).unwrap()).len(), 1);
-}
+        let again = imported(&mut ada, &device, "Groceries again.md", &markdown);
+        assert_eq!(title(&ada, &again), "Groceries");
+        assert_eq!(
+            exported(&ada, &again),
+            markdown,
+            "the note exported and imported again is the same note"
+        );
+    }
 
-#[test]
-fn a_whole_file_is_exported_under_the_name_it_asks_for() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let note = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
-    let text = exported(&ada, &note);
-    assert!(text.contains("# Groceries"), "{text}");
+    phase importing_the_same_file_twice_makes_one_note;
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let first = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
+        let twice = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
+        assert_eq!(first.id_string(), twice.id_string(), "the note it made");
+        assert_eq!(written(&ada, &ada.host.root_of(APP).unwrap()).len(), 1);
+    }
+
+    phase a_whole_file_is_exported_under_the_name_it_asks_for;
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let note = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
+        let text = exported(&ada, &note);
+        assert!(text.contains("# Groceries"), "{text}");
+    }
+
+    phase a_notion_export_becomes_notes_in_one_change;
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let exported = archive(&[
+            ("Reading list.md", b"# Reading list\n\nBooks to read.\n"),
+            (
+                "Reading list/Books.md",
+                b"# Books\n\n![a fox](fox.png)\n\n- [ ] Piranesi\n",
+            ),
+            ("Reading list/fox.png", PIXELS),
+        ]);
+        let file = Value::file(device.keeping("Reading list.zip", "application/zip", &exported));
+        let nb = ada.host.root_of(APP).unwrap();
+        let before = ada.log.len();
+        call(&ada, "import_archive", vec![Value::resource(&nb), file]);
+        ada.commit();
+        assert_eq!(
+            ada.log.len(),
+            before.saturating_add(1),
+            "the whole import is one change"
+        );
+
+        let all = written(&ada, &nb);
+        assert_eq!(all.len(), 2, "a note for each page");
+        assert_eq!(title(&ada, &all[0]), "Reading list");
+        assert_eq!(title(&ada, &all[1]), "Books");
+
+        // The picture the export kept is the one the page shows, by the address of its bytes.
+        let picture = device.keeping("Reading list/fox.png", "image/png", PIXELS);
+        let kept = picture.url();
+        let blocks = body(&ada, &all[1]);
+        assert!(
+            blocks
+                .blocks
+                .iter()
+                .any(|block| block.text == format!("![a fox]({kept})")),
+            "the page shows the picture the archive held: {:?}",
+            blocks
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            device.read(&picture.hash).as_deref(),
+            Some(PIXELS),
+            "the picture's bytes are in the content store"
+        );
+    }
 }
 
 /// A zip of stored files, as Notion exports one: a page's Markdown beside its pictures.
@@ -415,57 +470,6 @@ fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 const PIXELS: &[u8] = b"\x89PNG\r\n\x1a\n-a-fox";
-
-#[test]
-fn a_notion_export_becomes_notes_in_one_change() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let exported = archive(&[
-        ("Reading list.md", b"# Reading list\n\nBooks to read.\n"),
-        (
-            "Reading list/Books.md",
-            b"# Books\n\n![a fox](fox.png)\n\n- [ ] Piranesi\n",
-        ),
-        ("Reading list/fox.png", PIXELS),
-    ]);
-    let file = Value::file(device.keeping("Reading list.zip", "application/zip", &exported));
-    let nb = ada.host.root_of(APP).unwrap();
-    let before = ada.log.len();
-    call(&ada, "import_archive", vec![Value::resource(&nb), file]);
-    ada.commit();
-    assert_eq!(
-        ada.log.len(),
-        before.saturating_add(1),
-        "the whole import is one change"
-    );
-
-    let all = written(&ada, &nb);
-    assert_eq!(all.len(), 2, "a note for each page");
-    assert_eq!(title(&ada, &all[0]), "Reading list");
-    assert_eq!(title(&ada, &all[1]), "Books");
-
-    // The picture the export kept is the one the page shows, by the address of its bytes.
-    let picture = device.keeping("Reading list/fox.png", "image/png", PIXELS);
-    let kept = picture.url();
-    let blocks = body(&ada, &all[1]);
-    assert!(
-        blocks
-            .blocks
-            .iter()
-            .any(|block| block.text == format!("![a fox]({kept})")),
-        "the page shows the picture the archive held: {:?}",
-        blocks
-            .blocks
-            .iter()
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(
-        device.read(&picture.hash).as_deref(),
-        Some(PIXELS),
-        "the picture's bytes are in the content store"
-    );
-}
 
 const ARCH: &[u8] = b"\x89PNG\r\n\x1a\n-an-arch";
 
@@ -588,109 +592,233 @@ fn a_notebook_exported_and_imported_again_is_the_same_notebook() {
     );
 }
 
-/// Two notes of one title under one note are two files, and no title can name a file outside the
-/// folder the export is read into.
-#[test]
-fn an_export_names_its_files_safely_wherever_the_titles_point() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let plan = note(&mut ada, None, "Plan");
-    note(&mut ada, Some(&plan), "Monday");
-    note(&mut ada, Some(&plan), "Monday");
-    note(&mut ada, None, "../../etc/passwd");
-    note(&mut ada, None, "..");
+tilo_test_env::scenario! {
+    fn an_export_names_its_files;
 
-    let exported = notebook_export(&ada, &device);
-    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
-    for name in &names {
+    phase an_export_names_its_files_safely_wherever_the_titles_point;
+    // Two notes of one title under one note are two files, and no title can name a file outside the
+    // folder the export is read into.
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let plan = note(&mut ada, None, "Plan");
+        note(&mut ada, Some(&plan), "Monday");
+        note(&mut ada, Some(&plan), "Monday");
+        note(&mut ada, None, "../../etc/passwd");
+        note(&mut ada, None, "..");
+
+        let exported = notebook_export(&ada, &device);
+        let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+        for name in &names {
+            assert!(
+                bounded_zip::is_safe_name(name),
+                "`{name}` names a file inside the archive, nowhere else: {names:?}"
+            );
+            assert!(
+                !name.starts_with('/') && name.split('/').all(|part| part != ".." && part != "."),
+                "`{name}` does not lead out of the folder it is read into: {names:?}"
+            );
+        }
+        assert!(names.contains(&"Plan/Monday.md"), "{names:?}");
         assert!(
-            bounded_zip::is_safe_name(name),
-            "`{name}` names a file inside the archive, nowhere else: {names:?}"
-        );
-        assert!(
-            !name.starts_with('/') && name.split('/').all(|part| part != ".." && part != "."),
-            "`{name}` does not lead out of the folder it is read into: {names:?}"
+            names.contains(&"Plan/Monday (2).md"),
+            "the second note of one title is a file of its own: {names:?}"
         );
     }
-    assert!(names.contains(&"Plan/Monday.md"), "{names:?}");
-    assert!(
-        names.contains(&"Plan/Monday (2).md"),
-        "the second note of one title is a file of its own: {names:?}"
-    );
-}
 
-/// A note's own export: its Markdown while it shows no picture, and a zip of the Markdown and its
-/// pictures when it does.
-#[test]
-fn a_note_exports_as_markdown_and_its_pictures_go_with_it() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let groceries = note(&mut ada, None, "Groceries");
+    phase a_note_exports_as_markdown_and_its_pictures_go_with_it;
+    // A note's own export: its Markdown while it shows no picture, and a zip of the Markdown and its
+    // pictures when it does.
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let groceries = note(&mut ada, None, "Groceries");
 
-    let plain = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
-    assert_eq!(plain.name, "Groceries.md");
-    assert_eq!(plain.media, "text/markdown");
-    assert_eq!(
-        device.read(&plain.hash).as_deref(),
-        Some(b"# Groceries".as_slice()),
-        "a note of words alone is the Markdown itself"
-    );
+        let plain = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
+        assert_eq!(plain.name, "Groceries.md");
+        assert_eq!(plain.media, "text/markdown");
+        assert_eq!(
+            device.read(&plain.hash).as_deref(),
+            Some(b"# Groceries".as_slice()),
+            "a note of words alone is the Markdown itself"
+        );
 
-    picture_in(&mut ada, &device, &groceries, "fox.png", PIXELS);
-    let zipped = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
-    assert_eq!(zipped.name, "Groceries.zip");
-    assert_eq!(zipped.media, "application/zip");
-    let files = held(&device, &zipped);
-    let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, ["Groceries.md", "Groceries/images/fox.png"]);
-    assert!(
-        entry_text(&files, "Groceries.md").contains("](Groceries/images/fox.png)"),
-        "{}",
-        entry_text(&files, "Groceries.md")
-    );
-    assert_eq!(entry(&files, "Groceries/images/fox.png"), PIXELS);
-}
+        picture_in(&mut ada, &device, &groceries, "fox.png", PIXELS);
+        let zipped = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
+        assert_eq!(zipped.name, "Groceries.zip");
+        assert_eq!(zipped.media, "application/zip");
+        let files = held(&device, &zipped);
+        let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["Groceries.md", "Groceries/images/fox.png"]);
+        assert!(
+            entry_text(&files, "Groceries.md").contains("](Groceries/images/fox.png)"),
+            "{}",
+            entry_text(&files, "Groceries.md")
+        );
+        assert_eq!(entry(&files, "Groceries/images/fox.png"), PIXELS);
+    }
 
-/// Two notes of one title under one note are two files: the first keeps the title, the one after
-/// it takes its place among the notes of that title, and each title a file name cannot keep is
-/// named the same way, so no file of a folder stands over another.
-#[test]
-fn two_notes_of_one_title_are_two_files() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let plan = note(&mut ada, None, "Q3 plan");
-    let monday = note(&mut ada, Some(&plan), "Monday");
-    let _tuesday = note(&mut ada, Some(&plan), "Tuesday");
-    let again = note(&mut ada, Some(&plan), "Monday");
-    // Two titles that a file name cannot tell apart, `/` standing for `-`.
-    let _slash = note(&mut ada, Some(&plan), "a/b");
-    let _dash = note(&mut ada, Some(&plan), "a-b");
-    picture_in(&mut ada, &device, &monday, "fox.png", PIXELS);
-    picture_in(&mut ada, &device, &again, "fox.png", ARCH);
+    phase two_notes_of_one_title_are_two_files;
+    // Two notes of one title under one note are two files: the first keeps the title, the one after
+    // it takes its place among the notes of that title, and each title a file name cannot keep is
+    // named the same way, so no file of a folder stands over another.
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let plan = note(&mut ada, None, "Q3 plan");
+        let monday = note(&mut ada, Some(&plan), "Monday");
+        let _tuesday = note(&mut ada, Some(&plan), "Tuesday");
+        let again = note(&mut ada, Some(&plan), "Monday");
+        // Two titles that a file name cannot tell apart, `/` standing for `-`.
+        let _slash = note(&mut ada, Some(&plan), "a/b");
+        let _dash = note(&mut ada, Some(&plan), "a-b");
+        picture_in(&mut ada, &device, &monday, "fox.png", PIXELS);
+        picture_in(&mut ada, &device, &again, "fox.png", ARCH);
 
-    let exported = notebook_export(&ada, &device);
-    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        names,
-        [
-            "Q3 plan.md",
-            "Q3 plan/Monday.md",
-            "Q3 plan/Monday/images/fox.png",
-            "Q3 plan/Tuesday.md",
-            "Q3 plan/Monday (2).md",
-            "Q3 plan/Monday (2)/images/fox.png",
-            "Q3 plan/a-b.md",
-            "Q3 plan/a-b (2).md",
-        ],
-        "a note of a title another takes under the same note is offered as its place among them"
-    );
-    // Each note reaches its own picture by the folder its own name gives it.
-    assert!(
-        entry_text(&exported, "Q3 plan/Monday (2).md").contains("](Monday (2)/images/fox.png)"),
-        "{}",
-        entry_text(&exported, "Q3 plan/Monday (2).md")
-    );
-    assert_eq!(entry(&exported, "Q3 plan/Monday (2)/images/fox.png"), ARCH);
+        let exported = notebook_export(&ada, &device);
+        let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Q3 plan.md",
+                "Q3 plan/Monday.md",
+                "Q3 plan/Monday/images/fox.png",
+                "Q3 plan/Tuesday.md",
+                "Q3 plan/Monday (2).md",
+                "Q3 plan/Monday (2)/images/fox.png",
+                "Q3 plan/a-b.md",
+                "Q3 plan/a-b (2).md",
+            ],
+            "a note of a title another takes under the same note is offered as its place among them"
+        );
+        // Each note reaches its own picture by the folder its own name gives it.
+        assert!(
+            entry_text(&exported, "Q3 plan/Monday (2).md").contains("](Monday (2)/images/fox.png)"),
+            "{}",
+            entry_text(&exported, "Q3 plan/Monday (2).md")
+        );
+        assert_eq!(entry(&exported, "Q3 plan/Monday (2)/images/fox.png"), ARCH);
+    }
+
+    phase two_notes_of_one_title_are_two_files_a_link_between_them_reaches;
+    // Two notes of one title are two files, each named by the tree's order, and a note's folder
+    // follows the name its own note took. A link between them names the file of the note it links
+    // to, so the export read back is the notebook it was: the same tree, and a link reaching the
+    // same note rather than the first one of that title.
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        let file = Value::file(device.keeping("Notes.zip", "application/zip", &archive(LINKED)));
+        let nb = ada.host.root_of(APP).unwrap();
+        call(&ada, "import_archive", vec![Value::resource(&nb), file]);
+        ada.commit();
+
+        let all = written(&ada, &nb);
+        assert_eq!(all.len(), 5, "a note for each page");
+        let titles: Vec<String> = all.iter().map(|n| title(&ada, n)).collect();
+        assert_eq!(titles, ["Home", "Ideas", "Monday", "Ideas", "Tuesday"]);
+        assert_eq!(
+            refers_to(&ada, &all[1]),
+            [all[3].id_string()],
+            "the page's link reaches the second Ideas, the one its path named"
+        );
+
+        // Two notes of one title are two files, and each note's folder is the file of the note it
+        // stands under: `Ideas (2)` takes its own children with it.
+        let export = exported_notebook(&ada);
+        let exported = held(&device, &export);
+        let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Home.md",
+                "Home/Ideas.md",
+                "Home/Ideas/Monday.md",
+                "Home/Ideas (2).md",
+                "Home/Ideas (2)/Tuesday.md",
+            ],
+            "a note of a title another took beside it is a file of its own"
+        );
+        let page = entry_text(&exported, "Home/Ideas.md");
+        assert!(
+            page.contains("[the other ideas](<Ideas (2).md>)"),
+            "the link names the file of the note it links to, as a reader of the file reaches it: \
+         {page}"
+        );
+
+        // The export imported again is the notebook it was, the link reaching the second `Ideas`
+        // again, and exporting that one gives the same files.
+        let (mut ben, _loaded) = notebook(&device);
+        let nb = ben.host.root_of(APP).unwrap();
+        call(
+            &ben,
+            "import_archive",
+            vec![Value::resource(&nb), Value::file(export)],
+        );
+        ben.commit();
+        let all = written(&ben, &nb);
+        let titles: Vec<String> = all.iter().map(|n| title(&ben, n)).collect();
+        assert_eq!(titles, ["Home", "Ideas", "Monday", "Ideas", "Tuesday"]);
+        assert_eq!(parent_of(&ben, &all[1]), Some(all[0].clone()));
+        assert_eq!(parent_of(&ben, &all[2]), Some(all[1].clone()));
+        assert_eq!(parent_of(&ben, &all[3]), Some(all[0].clone()));
+        assert_eq!(
+            parent_of(&ben, &all[4]),
+            Some(all[3].clone()),
+            "the second Ideas keeps its own child"
+        );
+        assert_eq!(
+            refers_to(&ben, &all[1]),
+            [all[3].id_string()],
+            "the link reaches the second Ideas again, not the first"
+        );
+        assert_eq!(
+            notebook_export(&ben, &device),
+            exported,
+            "the notebook exports as it imported"
+        );
+    }
+
+    phase a_title_that_spells_a_name_the_export_gives_is_a_file_of_its_own;
+    // A title that spells a name the export would give a duplicate keeps a file of its own: the
+    // second `Ideas` steps past `Ideas (2)` rather than standing over the note titled that, and
+    // two notes without a title are two files as well.
+    {
+        let device = Device::default();
+        let (mut ada, _loaded) = notebook(&device);
+        note(&mut ada, None, "Ideas");
+        note(&mut ada, None, "Ideas (2)");
+        note(&mut ada, None, "Ideas");
+        note(&mut ada, None, "");
+        note(&mut ada, None, "");
+
+        let exported = notebook_export(&ada, &device);
+        let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Ideas.md",
+                "Ideas (2).md",
+                "Ideas (3).md",
+                "Note.md",
+                "Note (2).md",
+            ],
+            "no note's file stands over another's, whatever its title spells"
+        );
+        // Each file says which note it is, so the notebook read back has every note again.
+        let titles: Vec<String> = ["Ideas.md", "Ideas (2).md", "Ideas (3).md"]
+            .iter()
+            .map(|name| {
+                entry_text(&exported, name)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start_matches("# ")
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(titles, ["Ideas", "Ideas (2)", "Ideas"]);
+    }
 }
 
 /// The notes `note`'s body refers to, by their ids: what its links name.
@@ -718,123 +846,3 @@ const LINKED: &[(&str, &[u8])] = &[
         b"# Tuesday\n\nSecond branch.\n",
     ),
 ];
-
-/// Two notes of one title are two files, each named by the tree's order, and a note's folder
-/// follows the name its own note took. A link between them names the file of the note it links
-/// to, so the export read back is the notebook it was: the same tree, and a link reaching the
-/// same note rather than the first one of that title.
-#[test]
-fn two_notes_of_one_title_are_two_files_a_link_between_them_reaches() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let file = Value::file(device.keeping("Notes.zip", "application/zip", &archive(LINKED)));
-    let nb = ada.host.root_of(APP).unwrap();
-    call(&ada, "import_archive", vec![Value::resource(&nb), file]);
-    ada.commit();
-
-    let all = written(&ada, &nb);
-    assert_eq!(all.len(), 5, "a note for each page");
-    let titles: Vec<String> = all.iter().map(|n| title(&ada, n)).collect();
-    assert_eq!(titles, ["Home", "Ideas", "Monday", "Ideas", "Tuesday"]);
-    assert_eq!(
-        refers_to(&ada, &all[1]),
-        [all[3].id_string()],
-        "the page's link reaches the second Ideas, the one its path named"
-    );
-
-    // Two notes of one title are two files, and each note's folder is the file of the note it
-    // stands under: `Ideas (2)` takes its own children with it.
-    let export = exported_notebook(&ada);
-    let exported = held(&device, &export);
-    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        names,
-        [
-            "Home.md",
-            "Home/Ideas.md",
-            "Home/Ideas/Monday.md",
-            "Home/Ideas (2).md",
-            "Home/Ideas (2)/Tuesday.md",
-        ],
-        "a note of a title another took beside it is a file of its own"
-    );
-    let page = entry_text(&exported, "Home/Ideas.md");
-    assert!(
-        page.contains("[the other ideas](<Ideas (2).md>)"),
-        "the link names the file of the note it links to, as a reader of the file reaches it: \
-         {page}"
-    );
-
-    // The export imported again is the notebook it was, the link reaching the second `Ideas`
-    // again, and exporting that one gives the same files.
-    let (mut ben, _loaded) = notebook(&device);
-    let nb = ben.host.root_of(APP).unwrap();
-    call(
-        &ben,
-        "import_archive",
-        vec![Value::resource(&nb), Value::file(export)],
-    );
-    ben.commit();
-    let all = written(&ben, &nb);
-    let titles: Vec<String> = all.iter().map(|n| title(&ben, n)).collect();
-    assert_eq!(titles, ["Home", "Ideas", "Monday", "Ideas", "Tuesday"]);
-    assert_eq!(parent_of(&ben, &all[1]), Some(all[0].clone()));
-    assert_eq!(parent_of(&ben, &all[2]), Some(all[1].clone()));
-    assert_eq!(parent_of(&ben, &all[3]), Some(all[0].clone()));
-    assert_eq!(
-        parent_of(&ben, &all[4]),
-        Some(all[3].clone()),
-        "the second Ideas keeps its own child"
-    );
-    assert_eq!(
-        refers_to(&ben, &all[1]),
-        [all[3].id_string()],
-        "the link reaches the second Ideas again, not the first"
-    );
-    assert_eq!(
-        notebook_export(&ben, &device),
-        exported,
-        "the notebook exports as it imported"
-    );
-}
-
-/// A title that spells a name the export would give a duplicate keeps a file of its own: the
-/// second `Ideas` steps past `Ideas (2)` rather than standing over the note titled that, and
-/// two notes without a title are two files as well.
-#[test]
-fn a_title_that_spells_a_name_the_export_gives_is_a_file_of_its_own() {
-    let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    note(&mut ada, None, "Ideas");
-    note(&mut ada, None, "Ideas (2)");
-    note(&mut ada, None, "Ideas");
-    note(&mut ada, None, "");
-    note(&mut ada, None, "");
-
-    let exported = notebook_export(&ada, &device);
-    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        names,
-        [
-            "Ideas.md",
-            "Ideas (2).md",
-            "Ideas (3).md",
-            "Note.md",
-            "Note (2).md",
-        ],
-        "no note's file stands over another's, whatever its title spells"
-    );
-    // Each file says which note it is, so the notebook read back has every note again.
-    let titles: Vec<String> = ["Ideas.md", "Ideas (2).md", "Ideas (3).md"]
-        .iter()
-        .map(|name| {
-            entry_text(&exported, name)
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim_start_matches("# ")
-                .to_owned()
-        })
-        .collect();
-    assert_eq!(titles, ["Ideas", "Ideas (2)", "Ideas"]);
-}

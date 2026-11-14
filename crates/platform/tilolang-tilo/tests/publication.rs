@@ -135,41 +135,188 @@ action rename(n: Note, title: Text) {
 }
 "#;
 
-/// An action's `outside(...)` capability is what the platform tags it with
-/// (`outside:youtube.search`), so text naming a kind of that outside service finds the app's own
-/// action that asks its origin; an action that asks nothing outside carries no such tag.
-#[test]
-fn an_outside_capability_is_published_as_the_actions_tag() {
-    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(SEARCHES, "")]);
-    let meta = &packages[0].meta;
-    let spec = |name: &str, kind: &str| {
-        let action = meta
-            .actions
+tilo_test_env::scenario! {
+    fn an_action_is_published_with_its_parameters;
+
+    phase an_outside_capability_is_published_as_the_actions_tag;
+    // An action's `outside(...)` capability is what the platform tags it with
+    // (`outside:youtube.search`), so text naming a kind of that outside service finds the app's own
+    // action that asks its origin; an action that asks nothing outside carries no such tag.
+    {
+        let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(SEARCHES, "")]);
+        let meta = &packages[0].meta;
+        let spec = |name: &str, kind: &str| {
+            let action = meta
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap();
+            let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+            action_type(meta, &meta.kind_of(kind), action, &planner, &SourceWords)
+                .bind(Target::new("v".to_owned()))
+        };
+        let search = spec("search", "Video");
+        assert_eq!(
+            search
+                .action_type()
+                .contract
+                .outside_capabilities()
+                .collect::<Vec<_>>(),
+            vec!["youtube.search"]
+        );
+        let rename = spec("rename", "Note");
+        assert!(
+            rename
+                .action_type()
+                .contract
+                .outside_capabilities()
+                .next()
+                .is_none()
+        );
+    }
+
+    phase an_action_is_published_by_its_name;
+    // A caller at the door lists and calls a tilolang action by its name, as it does a native verb,
+    // with its typed parameters and its label; what is stored of it keeps its id.
+    {
+        let meta = shapes();
+        for name in ["resize", "pin", "remove"] {
+            let ours = tilolang_spec(&meta, name);
+            let native = native_spec(name);
+            assert_eq!(ours.id, native.id, "{name}");
+            assert_eq!(
+                ours.params()
+                    .iter()
+                    .map(|param| (&param.name, &param.ty))
+                    .collect::<Vec<_>>(),
+                native
+                    .params()
+                    .iter()
+                    .map(|param| (&param.name, &param.ty))
+                    .collect::<Vec<_>>(),
+                "{name}"
+            );
+            assert!(!ours.action_type().label.is_empty(), "{name}");
+            let declared = meta.action_published_as(name).unwrap();
+            assert_eq!(declared.name, name);
+            assert_ne!(declared.id, name, "stored by its id");
+        }
+    }
+
+    phase an_enum_parameter_is_published_as_its_cases;
+    {
+        let meta = shapes();
+        let ours = tilolang_spec(&meta, "resize");
+        let native = native_spec("resize");
+        let (param, theirs) = (&ours.params()[0], &native.params()[0]);
+        assert_eq!(param.name, "size");
+        assert_eq!(param.ty, theirs.ty);
+        assert_eq!(param.required, theirs.required);
+        let cases = |schema: &serde_json::Value| schema["enum"].clone();
+        assert_eq!(
+            cases(param.schema.as_deref().unwrap()),
+            cases(theirs.schema.as_deref().unwrap())
+        );
+        // Chosen from, and each case read by its label.
+        assert_eq!(param.choices, ["small", "large"]);
+        assert_eq!(param.choice_label("large"), Some("Large"));
+        assert!(param.validate_declaration().is_empty());
+    }
+
+    phase an_enum_argument_travels_as_the_name_of_its_case;
+    // What a program gives an enum parameter travels as the name of the case it gave, which the
+    // broker reads from the published parameter before it delivers the invocation.
+    {
+        let meta = shapes();
+        let size = meta
+            .enums
             .iter()
-            .find(|action| action.name == name)
+            .find(|declared| declared.name == "Size")
             .unwrap();
-        let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
-        action_type(meta, &meta.kind_of(kind), action, &planner, &SourceWords)
-            .bind(Target::new("v".to_owned()))
-    };
-    let search = spec("search", "Video");
-    assert_eq!(
-        search
-            .action_type()
-            .contract
-            .outside_capabilities()
-            .collect::<Vec<_>>(),
-        vec!["youtube.search"]
-    );
-    let rename = spec("rename", "Note");
-    assert!(
-        rename
-            .action_type()
-            .contract
-            .outside_capabilities()
-            .next()
-            .is_none()
-    );
+        let large = size
+            .variants
+            .iter()
+            .find(|variant| variant.name == "large")
+            .unwrap();
+        let ty = Ty::Enum(TypeKey {
+            app: meta.app.clone(),
+            name: "Size".to_owned(),
+        });
+        let value = Value::Enum(EnumValue {
+            ty: size.id.clone(),
+            variant: large.id.clone(),
+            fields: BTreeMap::new(),
+        });
+        let no_package = |app: &str| Err(format!("no package {app}"));
+        assert_eq!(
+            argument_json(&no_package, &meta, &value, &ty).unwrap(),
+            serde_json::json!("large")
+        );
+    }
+
+    phase a_record_parameter_is_published_as_a_pick_of_its_kind;
+    {
+        let meta = shapes();
+        for (name, id) in [("pin", "pin"), ("remove", "remove")] {
+            let ours = tilolang_spec(&meta, name);
+            let native = native_spec(id);
+            let (param, theirs) = (&ours.params()[0], &native.params()[0]);
+            assert_eq!(param.name, "item");
+            assert_eq!(param.ty, theirs.ty);
+            assert_eq!(
+                param.pick(),
+                Some(Pick::Resource {
+                    kind: ITEM_KIND.to_owned()
+                })
+            );
+            assert_eq!(param.pick(), theirs.pick());
+            assert_eq!(untitled(param), untitled(theirs));
+        }
+    }
+
+    phase a_destructive_action_is_published_as_a_native_destructive_verb;
+    {
+        let meta = shapes();
+        let ours = tilolang_spec(&meta, "remove");
+        let native = native_spec("remove");
+        let (ours, theirs) = (&ours.action_type().contract, &native.action_type().contract);
+        assert_eq!(ours.risk, theirs.risk);
+        assert_eq!(ours.kind, theirs.kind);
+        assert_eq!(ours.confirmation, theirs.confirmation);
+        assert_eq!(
+            tilolang_spec(&meta, "remove").action_type().icon,
+            native.action_type().icon
+        );
+        // A plain action is not.
+        let resize = tilolang_spec(&meta, "resize");
+        assert_eq!(
+            resize.action_type().contract.risk,
+            native_spec("resize").action_type().contract.risk
+        );
+    }
+
+    phase a_command_that_asks_for_an_argument_says_so_before_it_opens;
+    // A command the person choosing it still has to answer for says so with "…", as the runtime's
+    // own menus do: what the published spec is given is the resource, so the parameters after it
+    // are the form's. One that acts on what it is given reads plainly.
+    {
+        let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(ASKS, "")]);
+        let meta = &packages[0].meta;
+        let label = |name: &str| {
+            let action = meta
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap();
+            let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+            action_type(meta, &meta.kind_of("Pile"), action, &planner, &SourceWords)
+                .bind(Target::new("l".to_owned()))
+                .label
+                .clone()
+        };
+        assert_eq!(label("rename"), "Rename…", "the name is the form's");
+        assert_eq!(label("empty"), "Empty", "it runs on what it is given");
+    }
 }
 
 /// The native counterpart of the package's `Size`.
@@ -256,85 +403,6 @@ fn native_spec(id: &str) -> ActionSpec {
         .unwrap()
 }
 
-/// A caller at the door lists and calls a tilolang action by its name, as it does a native verb,
-/// with its typed parameters and its label; what is stored of it keeps its id.
-#[test]
-fn an_action_is_published_by_its_name() {
-    let meta = shapes();
-    for name in ["resize", "pin", "remove"] {
-        let ours = tilolang_spec(&meta, name);
-        let native = native_spec(name);
-        assert_eq!(ours.id, native.id, "{name}");
-        assert_eq!(
-            ours.params()
-                .iter()
-                .map(|param| (&param.name, &param.ty))
-                .collect::<Vec<_>>(),
-            native
-                .params()
-                .iter()
-                .map(|param| (&param.name, &param.ty))
-                .collect::<Vec<_>>(),
-            "{name}"
-        );
-        assert!(!ours.action_type().label.is_empty(), "{name}");
-        let declared = meta.action_published_as(name).unwrap();
-        assert_eq!(declared.name, name);
-        assert_ne!(declared.id, name, "stored by its id");
-    }
-}
-
-#[test]
-fn an_enum_parameter_is_published_as_its_cases() {
-    let meta = shapes();
-    let ours = tilolang_spec(&meta, "resize");
-    let native = native_spec("resize");
-    let (param, theirs) = (&ours.params()[0], &native.params()[0]);
-    assert_eq!(param.name, "size");
-    assert_eq!(param.ty, theirs.ty);
-    assert_eq!(param.required, theirs.required);
-    let cases = |schema: &serde_json::Value| schema["enum"].clone();
-    assert_eq!(
-        cases(param.schema.as_deref().unwrap()),
-        cases(theirs.schema.as_deref().unwrap())
-    );
-    // Chosen from, and each case read by its label.
-    assert_eq!(param.choices, ["small", "large"]);
-    assert_eq!(param.choice_label("large"), Some("Large"));
-    assert!(param.validate_declaration().is_empty());
-}
-
-/// What a program gives an enum parameter travels as the name of the case it gave, which the
-/// broker reads from the published parameter before it delivers the invocation.
-#[test]
-fn an_enum_argument_travels_as_the_name_of_its_case() {
-    let meta = shapes();
-    let size = meta
-        .enums
-        .iter()
-        .find(|declared| declared.name == "Size")
-        .unwrap();
-    let large = size
-        .variants
-        .iter()
-        .find(|variant| variant.name == "large")
-        .unwrap();
-    let ty = Ty::Enum(TypeKey {
-        app: meta.app.clone(),
-        name: "Size".to_owned(),
-    });
-    let value = Value::Enum(EnumValue {
-        ty: size.id.clone(),
-        variant: large.id.clone(),
-        fields: BTreeMap::new(),
-    });
-    let no_package = |app: &str| Err(format!("no package {app}"));
-    assert_eq!(
-        argument_json(&no_package, &meta, &value, &ty).unwrap(),
-        serde_json::json!("large")
-    );
-}
-
 /// A parameter's schema without what it is called: the reader's words for it, which each
 /// catalogue gives its own and the surface, the same in every language, leaves out.
 fn untitled(param: &tilo_actions::ActionParam) -> Option<serde_json::Value> {
@@ -345,271 +413,211 @@ fn untitled(param: &tilo_actions::ActionParam) -> Option<serde_json::Value> {
     schema
 }
 
-#[test]
-fn a_record_parameter_is_published_as_a_pick_of_its_kind() {
-    let meta = shapes();
-    for (name, id) in [("pin", "pin"), ("remove", "remove")] {
-        let ours = tilolang_spec(&meta, name);
-        let native = native_spec(id);
-        let (param, theirs) = (&ours.params()[0], &native.params()[0]);
-        assert_eq!(param.name, "item");
-        assert_eq!(param.ty, theirs.ty);
-        assert_eq!(
-            param.pick(),
-            Some(Pick::Resource {
-                kind: ITEM_KIND.to_owned()
-            })
-        );
-        assert_eq!(param.pick(), theirs.pick());
-        assert_eq!(untitled(param), untitled(theirs));
-    }
-}
+tilo_test_env::scenario! {
+    fn the_surface_the_planner_and_the_views_read_what_is_published;
 
-#[test]
-fn a_destructive_action_is_published_as_a_native_destructive_verb() {
-    let meta = shapes();
-    let ours = tilolang_spec(&meta, "remove");
-    let native = native_spec("remove");
-    let (ours, theirs) = (&ours.action_type().contract, &native.action_type().contract);
-    assert_eq!(ours.risk, theirs.risk);
-    assert_eq!(ours.kind, theirs.kind);
-    assert_eq!(ours.confirmation, theirs.confirmation);
-    assert_eq!(
-        tilolang_spec(&meta, "remove").action_type().icon,
-        native.action_type().icon
-    );
-    // A plain action is not.
-    let resize = tilolang_spec(&meta, "resize");
-    assert_eq!(
-        resize.action_type().contract.risk,
-        native_spec("resize").action_type().contract.risk
-    );
-}
-
-/// The generated surface describes each parameter as the door binds it, and says which actions
-/// are destructive, as a native surface does.
-#[test]
-fn the_surface_says_what_the_published_spec_says() {
-    let meta = shapes();
-    let surfaces = package_surfaces(&meta);
-    let shelf = surfaces
-        .iter()
-        .find(|surface| surface.kind == meta.kind_of("Shelf"))
-        .unwrap();
-    let native = tilo_resource::surface::surface_of::<Shelf>();
-    for name in ["resize", "pin", "remove"] {
-        // The generated surface names each verb by the action's id, as a change's claim does; a
-        // native app's verbs have no other id than the name it publishes them by.
-        let id = &meta
-            .actions
+    phase the_surface_says_what_the_published_spec_says;
+    // The generated surface describes each parameter as the door binds it, and says which actions
+    // are destructive, as a native surface does.
+    {
+        let meta = shapes();
+        let surfaces = package_surfaces(&meta);
+        let shelf = surfaces
             .iter()
-            .find(|action| action.name == name)
-            .unwrap()
-            .id;
-        let verb = shelf.verbs.iter().find(|verb| verb.id == *id).unwrap();
-        let theirs = native.verbs.iter().find(|verb| verb.id == name).unwrap();
-        assert_eq!(verb.destructive, theirs.destructive, "{name}");
-        let spec = tilolang_spec(&meta, name);
-        let param = &spec.params()[0];
-        assert_eq!(verb.params[0].required, param.required, "{name}");
-        assert_eq!(
-            Some(&verb.params[0].schema),
-            untitled(param).as_ref(),
-            "{name}"
-        );
-    }
-}
-
-/// What the door binds is what the planner takes: a case by its name, a record by the
-/// catalogue's reference, refused when it names a resource of another kind.
-#[test]
-fn the_planner_takes_the_arguments_as_published() {
-    let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(SHAPES, "")]);
-    let meta = &packages[0].meta;
-    let root = replica.host.root_of(&meta.app).unwrap();
-    let id = |name: &str| {
-        meta.actions
-            .iter()
-            .find(|action| action.name == name)
-            .unwrap()
-            .id
-            .clone()
-    };
-    let plan = |action: &str, args: serde_json::Value| {
-        replica.host.plan(&PlanRequest {
-            app: &meta.app,
-            kind: &meta.kind_of("Shelf"),
-            action_id: action,
-            resource: Some(&root.id_string()),
-            args: args.as_object().unwrap(),
-            caller: None,
-            from: None,
-        })
-    };
-    let resized = plan(&id("resize"), serde_json::json!({"size": "large"})).unwrap();
-    assert!(!resized.edits.is_empty());
-    assert!(plan(&id("resize"), serde_json::json!({"size": "huge"})).is_err());
-    let wrong = serde_json::json!({"item": {
-        "app": meta.app,
-        "kind": meta.kind_of("Shelf"),
-        "id": root.id_string(),
-        "label": "Shapes",
-    }});
-    let refused = plan(&id("pin"), wrong).unwrap_err();
-    assert!(refused.contains(ITEM_KIND), "{refused}");
-}
-
-/// A resource says which views show it, so a host that does not run the app can list them and
-/// open one: the package's offered views that take the resource alone, the type's default view
-/// the primary one opened through the resource's own `open`, every other through an action of
-/// its own.
-#[test]
-fn a_resource_lists_the_views_that_show_it() {
-    let meta = shapes();
-    let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
-    let types = ActionTypes::new(&meta, &planner, &SourceWords);
-    let shelf = publish_record(&types, "Shelf", "s", "My shelf");
-    let id = |name: &str| {
-        meta.views
-            .iter()
-            .find(|view| view.name == name)
-            .unwrap()
-            .id
-            .clone()
-    };
-    let (main, compact) = (id("main"), id("compact"));
-    let listed: Vec<String> = shelf.views.iter().map(|view| view.id.clone()).collect();
-    assert_eq!(
-        listed,
-        [main.clone(), compact.clone()],
-        "the package's views of the type, as it declares them"
-    );
-    let by_id = |id: &str| shelf.views.iter().find(|view| view.id == id).unwrap();
-    let (first, second) = (by_id(&main), by_id(&compact));
-    assert!(
-        first.primary && !second.primary,
-        "the type's default view is the primary one"
-    );
-    assert_eq!(first.label, "main");
-    assert_eq!(
-        second.description.as_deref(),
-        Some("Its items, as a list of their names.")
-    );
-    // A view and the action that opens it name each other: the default view through the
-    // resource's own `open`, which shows it; another through an action of its own.
-    assert_eq!(first.open_action, "open");
-    assert_eq!(
-        second.open_action,
-        open_with_id("compact"),
-        "by the view's name"
-    );
-    let opens = shelf
-        .actions
-        .iter()
-        .find(|action| action.id == second.open_action)
-        .expect("the compact view's open action is published");
-    assert_eq!(opens.label, "compact", "labelled as the view is");
-    let encoded = opens.encode_immediate().expect("it takes no input");
-    let effect = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-        .expect("an open effect");
-    assert_eq!(
-        effect,
-        OpenEffect::OpenWith {
-            anchor: "s".to_owned(),
-            view: compact.clone(),
-        },
-        "it opens this resource through that view"
-    );
-    assert_eq!(
-        tilo_actions::validate_surface_contracts(
-            std::slice::from_ref(&shelf),
-            &tilo_actions::ActionRegistry::new()
-        ),
-        Vec::new(),
-        "a surface the host publishes"
-    );
-    // A view that needs more than the resource has nothing that opens it, so it is not listed.
-    let shelved = id("shelved");
-    assert!(
-        shelf.views.iter().all(|view| view.id != shelved),
-        "{:?}",
-        shelf.views
-    );
-    // A view is listed on the type it shows: an item has none of its own.
-    let item = publish_record(&types, "Item", "i", "An item");
-    assert!(item.views.is_empty(), "{:?}", item.views);
-}
-
-/// A command the person choosing it still has to answer for says so with "…", as the runtime's
-/// own menus do: what the published spec is given is the resource, so the parameters after it
-/// are the form's. One that acts on what it is given reads plainly.
-#[test]
-fn a_command_that_asks_for_an_argument_says_so_before_it_opens() {
-    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(ASKS, "")]);
-    let meta = &packages[0].meta;
-    let label = |name: &str| {
-        let action = meta
-            .actions
-            .iter()
-            .find(|action| action.name == name)
+            .find(|surface| surface.kind == meta.kind_of("Shelf"))
             .unwrap();
-        let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
-        action_type(meta, &meta.kind_of("Pile"), action, &planner, &SourceWords)
-            .bind(Target::new("l".to_owned()))
-            .label
-            .clone()
-    };
-    assert_eq!(label("rename"), "Rename…", "the name is the form's");
-    assert_eq!(label("empty"), "Empty", "it runs on what it is given");
-}
+        let native = tilo_resource::surface::surface_of::<Shelf>();
+        for name in ["resize", "pin", "remove"] {
+            // The generated surface names each verb by the action's id, as a change's claim does; a
+            // native app's verbs have no other id than the name it publishes them by.
+            let id = &meta
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap()
+                .id;
+            let verb = shelf.verbs.iter().find(|verb| verb.id == *id).unwrap();
+            let theirs = native.verbs.iter().find(|verb| verb.id == name).unwrap();
+            assert_eq!(verb.destructive, theirs.destructive, "{name}");
+            let spec = tilolang_spec(&meta, name);
+            let param = &spec.params()[0];
+            assert_eq!(verb.params[0].required, param.required, "{name}");
+            assert_eq!(
+                Some(&verb.params[0].schema),
+                untitled(param).as_ref(),
+                "{name}"
+            );
+        }
+    }
 
-/// What a change reaches: an answer kept between publications ([`tilolang_tilo::publish`]) stands
-/// while nothing it read moved, so a change to a resource it did not read, or to a field of one it
-/// did, must not read it again — and one that did, must.
-#[test]
-fn a_change_reaches_what_read_it() {
-    let field = |resource: &str, field: &str| (resource.to_owned(), field.to_owned());
-    let reached = |(resource, changed): (String, String), read: &(String, String)| {
-        Moved::These(std::collections::BTreeMap::from([(
-            resource,
-            std::collections::BTreeSet::from([changed]),
-        )]))
-        .reaches(read)
-    };
-    let list = "tl:tasks:task";
-    let task = "tl:tasks:task/1";
-    // A requirement that read a task's own field is read again when that field moves, or when the
-    // task is replaced whole; another field of the same task leaves the answer standing.
-    assert!(reached(field(task, "done"), &field(task, "done")));
-    assert!(reached(field(task, "*"), &field(task, "done")));
-    assert!(reached(field(task, "done"), &field(task, "*")));
-    assert!(!reached(field(task, "title"), &field(task, "done")));
-    // A requirement that read the list of tasks read every task in it: a change to one task is
-    // read again, while a change to one of the list's own fields is not a change to its tasks.
-    assert!(reached(field(task, "done"), &field(list, "done")));
-    assert!(!reached(field(list, "order"), &field(task, "title")));
-    // The list replaced whole is every task in it changed.
-    assert!(reached(field(list, "*"), &field(task, "title")));
-    // Another task, or a resource whose id only starts like the list's, is not under it.
-    assert!(!reached(
-        field("tl:tasks:task/2", "done"),
-        &field(task, "done")
-    ));
-    assert!(!reached(
-        field("tl:tasks:tasks/1", "done"),
-        &field(list, "done")
-    ));
-    // An item under the list is found past ids that sort between the list's and its items'.
-    let moved = Moved::These(BTreeMap::from([
-        (
-            "tl:tasks:task-a".to_owned(),
-            std::collections::BTreeSet::from(["done".to_owned()]),
-        ),
-        (
-            "tl:tasks:task/2".to_owned(),
-            std::collections::BTreeSet::from(["done".to_owned()]),
-        ),
-    ]));
-    assert!(moved.reaches(&field(list, "done")));
-    assert!(!Moved::These(BTreeMap::new()).reaches(&field(list, "*")));
+    phase the_planner_takes_the_arguments_as_published;
+    // What the door binds is what the planner takes: a case by its name, a record by the
+    // catalogue's reference, refused when it names a resource of another kind.
+    {
+        let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(SHAPES, "")]);
+        let meta = &packages[0].meta;
+        let root = replica.host.root_of(&meta.app).unwrap();
+        let id = |name: &str| {
+            meta.actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let plan = |action: &str, args: serde_json::Value| {
+            replica.host.plan(&PlanRequest {
+                app: &meta.app,
+                kind: &meta.kind_of("Shelf"),
+                action_id: action,
+                resource: Some(&root.id_string()),
+                args: args.as_object().unwrap(),
+                caller: None,
+                from: None,
+            })
+        };
+        let resized = plan(&id("resize"), serde_json::json!({"size": "large"})).unwrap();
+        assert!(!resized.edits.is_empty());
+        assert!(plan(&id("resize"), serde_json::json!({"size": "huge"})).is_err());
+        let wrong = serde_json::json!({"item": {
+            "app": meta.app,
+            "kind": meta.kind_of("Shelf"),
+            "id": root.id_string(),
+            "label": "Shapes",
+        }});
+        let refused = plan(&id("pin"), wrong).unwrap_err();
+        assert!(refused.contains(ITEM_KIND), "{refused}");
+    }
+
+    phase a_resource_lists_the_views_that_show_it;
+    // A resource says which views show it, so a host that does not run the app can list them and
+    // open one: the package's offered views that take the resource alone, the type's default view
+    // the primary one opened through the resource's own `open`, every other through an action of
+    // its own.
+    {
+        let meta = shapes();
+        let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+        let types = ActionTypes::new(&meta, &planner, &SourceWords);
+        let shelf = publish_record(&types, "Shelf", "s", "My shelf");
+        let id = |name: &str| {
+            meta.views
+                .iter()
+                .find(|view| view.name == name)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let (main, compact) = (id("main"), id("compact"));
+        let listed: Vec<String> = shelf.views.iter().map(|view| view.id.clone()).collect();
+        assert_eq!(
+            listed,
+            [main.clone(), compact.clone()],
+            "the package's views of the type, as it declares them"
+        );
+        let by_id = |id: &str| shelf.views.iter().find(|view| view.id == id).unwrap();
+        let (first, second) = (by_id(&main), by_id(&compact));
+        assert!(
+            first.primary && !second.primary,
+            "the type's default view is the primary one"
+        );
+        assert_eq!(first.label, "main");
+        assert_eq!(
+            second.description.as_deref(),
+            Some("Its items, as a list of their names.")
+        );
+        // A view and the action that opens it name each other: the default view through the
+        // resource's own `open`, which shows it; another through an action of its own.
+        assert_eq!(first.open_action, "open");
+        assert_eq!(
+            second.open_action,
+            open_with_id("compact"),
+            "by the view's name"
+        );
+        let opens = shelf
+            .actions
+            .iter()
+            .find(|action| action.id == second.open_action)
+            .expect("the compact view's open action is published");
+        assert_eq!(opens.label, "compact", "labelled as the view is");
+        let encoded = opens.encode_immediate().expect("it takes no input");
+        let effect = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
+            .expect("an open effect");
+        assert_eq!(
+            effect,
+            OpenEffect::OpenWith {
+                anchor: "s".to_owned(),
+                view: compact.clone(),
+            },
+            "it opens this resource through that view"
+        );
+        assert_eq!(
+            tilo_actions::validate_surface_contracts(
+                std::slice::from_ref(&shelf),
+                &tilo_actions::ActionRegistry::new()
+            ),
+            Vec::new(),
+            "a surface the host publishes"
+        );
+        // A view that needs more than the resource has nothing that opens it, so it is not listed.
+        let shelved = id("shelved");
+        assert!(
+            shelf.views.iter().all(|view| view.id != shelved),
+            "{:?}",
+            shelf.views
+        );
+        // A view is listed on the type it shows: an item has none of its own.
+        let item = publish_record(&types, "Item", "i", "An item");
+        assert!(item.views.is_empty(), "{:?}", item.views);
+    }
+
+    phase a_change_reaches_what_read_it;
+    // What a change reaches: an answer kept between publications ([`tilolang_tilo::publish`]) stands
+    // while nothing it read moved, so a change to a resource it did not read, or to a field of one it
+    // did, must not read it again — and one that did, must.
+    {
+        let field = |resource: &str, field: &str| (resource.to_owned(), field.to_owned());
+        let reached = |(resource, changed): (String, String), read: &(String, String)| {
+            Moved::These(std::collections::BTreeMap::from([(
+                resource,
+                std::collections::BTreeSet::from([changed]),
+            )]))
+            .reaches(read)
+        };
+        let list = "tl:tasks:task";
+        let task = "tl:tasks:task/1";
+        // A requirement that read a task's own field is read again when that field moves, or when the
+        // task is replaced whole; another field of the same task leaves the answer standing.
+        assert!(reached(field(task, "done"), &field(task, "done")));
+        assert!(reached(field(task, "*"), &field(task, "done")));
+        assert!(reached(field(task, "done"), &field(task, "*")));
+        assert!(!reached(field(task, "title"), &field(task, "done")));
+        // A requirement that read the list of tasks read every task in it: a change to one task is
+        // read again, while a change to one of the list's own fields is not a change to its tasks.
+        assert!(reached(field(task, "done"), &field(list, "done")));
+        assert!(!reached(field(list, "order"), &field(task, "title")));
+        // The list replaced whole is every task in it changed.
+        assert!(reached(field(list, "*"), &field(task, "title")));
+        // Another task, or a resource whose id only starts like the list's, is not under it.
+        assert!(!reached(
+            field("tl:tasks:task/2", "done"),
+            &field(task, "done")
+        ));
+        assert!(!reached(
+            field("tl:tasks:tasks/1", "done"),
+            &field(list, "done")
+        ));
+        // An item under the list is found past ids that sort between the list's and its items'.
+        let moved = Moved::These(BTreeMap::from([
+            (
+                "tl:tasks:task-a".to_owned(),
+                std::collections::BTreeSet::from(["done".to_owned()]),
+            ),
+            (
+                "tl:tasks:task/2".to_owned(),
+                std::collections::BTreeSet::from(["done".to_owned()]),
+            ),
+        ]));
+        assert!(moved.reaches(&field(list, "done")));
+        assert!(!Moved::These(BTreeMap::new()).reaches(&field(list, "*")));
+    }
 }

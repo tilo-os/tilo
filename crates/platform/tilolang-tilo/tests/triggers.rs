@@ -239,82 +239,144 @@ fn remind_at(replica: &mut Replica, doc: &str, at: &str) {
 /// The start of the half hour a `now` is in, and the half hour before it.
 const PERIOD: i64 = 30 * 60;
 
-#[test]
-fn a_schedule_runs_once_a_period() {
-    let (mut ada, board, _) = workspace();
-    let noon = 1_790_000_400 / PERIOD * PERIOD;
+tilo_test_env::scenario! {
+    fn a_trigger_runs_once_when_it_is_due;
 
-    assert_eq!(turn(&mut ada, noon), 1, "the half hour is due");
-    assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
+    phase a_schedule_runs_once_a_period;
+    {
+        let (mut ada, board, _) = workspace();
+        let noon = 1_790_000_400 / PERIOD * PERIOD;
 
-    assert_eq!(turn(&mut ada, noon + 60), 0, "not twice in one half hour");
-    assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
+        assert_eq!(turn(&mut ada, noon), 1, "the half hour is due");
+        assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
 
-    assert_eq!(turn(&mut ada, noon + PERIOD), 1, "the next half hour");
-    assert_eq!(counted(&ada, &board, "Board", "ticks"), 2);
-}
+        assert_eq!(turn(&mut ada, noon + 60), 0, "not twice in one half hour");
+        assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
 
-#[test]
-fn a_trigger_at_a_records_time_fires_and_rearms_when_it_changes() {
-    let (mut ada, _, reminder) = workspace();
-    let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
-    let eleven = tilolang::calendar::instant("2026-10-27T11:00:00Z").unwrap();
-    let rings = |ada: &Replica| counted(ada, &reminder, "Reminder", "rings");
+        assert_eq!(turn(&mut ada, noon + PERIOD), 1, "the next half hour");
+        assert_eq!(counted(&ada, &board, "Board", "ticks"), 2);
+    }
 
-    remind_at(&mut ada, &reminder, "2026-10-27T10:00:00Z");
-    turn(&mut ada, ten - 1);
-    assert_eq!(rings(&ada), 0, "not before its time");
+    phase a_trigger_at_a_records_time_fires_and_rearms_when_it_changes;
+    {
+        let (mut ada, _, reminder) = workspace();
+        let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
+        let eleven = tilolang::calendar::instant("2026-10-27T11:00:00Z").unwrap();
+        let rings = |ada: &Replica| counted(ada, &reminder, "Reminder", "rings");
 
-    turn(&mut ada, ten);
-    assert_eq!(rings(&ada), 1, "at its time");
-    turn(&mut ada, ten);
-    assert_eq!(rings(&ada), 1, "once, not every turn");
+        remind_at(&mut ada, &reminder, "2026-10-27T10:00:00Z");
+        turn(&mut ada, ten - 1);
+        assert_eq!(rings(&ada), 0, "not before its time");
 
-    remind_at(&mut ada, &reminder, "2026-10-27T11:00:00Z");
-    turn(&mut ada, ten + 60);
-    assert_eq!(rings(&ada), 1, "the old time rang already");
+        turn(&mut ada, ten);
+        assert_eq!(rings(&ada), 1, "at its time");
+        turn(&mut ada, ten);
+        assert_eq!(rings(&ada), 1, "once, not every turn");
 
-    turn(&mut ada, eleven);
-    assert_eq!(rings(&ada), 2, "the new time comes due");
-}
+        remind_at(&mut ada, &reminder, "2026-10-27T11:00:00Z");
+        turn(&mut ada, ten + 60);
+        assert_eq!(rings(&ada), 1, "the old time rang already");
 
-#[test]
-fn a_run_missed_while_every_device_was_off_runs_once_when_one_comes_up() {
-    let (mut ada, board, reminder) = workspace();
-    let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
-    remind_at(&mut ada, &reminder, "2026-10-27T10:00:00Z");
+        turn(&mut ada, eleven);
+        assert_eq!(rings(&ada), 2, "the new time comes due");
+    }
 
-    // Nothing ran for five hours: the board's half hours and the reminder's time all passed.
-    let five_past = ten + 5 * 60 * 60;
-    assert_eq!(turn(&mut ada, five_past), 2, "each trigger runs once");
-    assert_eq!(counted(&ada, &board, "Board", "ticks"), 1, "one, not ten");
-    assert_eq!(counted(&ada, &reminder, "Reminder", "rings"), 1);
+    phase a_run_missed_while_every_device_was_off_runs_once_when_one_comes_up;
+    {
+        let (mut ada, board, reminder) = workspace();
+        let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
+        remind_at(&mut ada, &reminder, "2026-10-27T10:00:00Z");
 
-    assert_eq!(turn(&mut ada, five_past + 1), 0, "and nothing again");
-    assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
-    assert_eq!(counted(&ada, &reminder, "Reminder", "rings"), 1);
-}
+        // Nothing ran for five hours: the board's half hours and the reminder's time all passed.
+        let five_past = ten + 5 * 60 * 60;
+        assert_eq!(turn(&mut ada, five_past), 2, "each trigger runs once");
+        assert_eq!(counted(&ada, &board, "Board", "ticks"), 1, "one, not ten");
+        assert_eq!(counted(&ada, &reminder, "Reminder", "rings"), 1);
 
-#[test]
-fn a_wake_comes_at_the_next_instant_a_trigger_is_due() {
-    let (mut ada, _, reminder) = workspace();
-    let ten = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
-    let now = ten - 60;
+        assert_eq!(turn(&mut ada, five_past + 1), 0, "and nothing again");
+        assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
+        assert_eq!(counted(&ada, &reminder, "Reminder", "rings"), 1);
+    }
 
-    // No reminder time to come first: the board's next half hour.
-    let next = ada.host.next_trigger(now).unwrap();
-    assert!(next > now && next <= now + PERIOD, "{next} after {now}");
-    assert_eq!(next % PERIOD, 0, "a period's start: {next}");
+    phase a_wake_comes_at_the_next_instant_a_trigger_is_due;
+    {
+        let (mut ada, _, reminder) = workspace();
+        let ten = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
+        let now = ten - 60;
 
-    // A time still to come comes first.
-    remind_at(&mut ada, &reminder, "2026-10-27T10:07:30Z");
-    assert_eq!(ada.host.next_trigger(now), Some(ten), "the reminder's time");
+        // No reminder time to come first: the board's next half hour.
+        let next = ada.host.next_trigger(now).unwrap();
+        assert!(next > now && next <= now + PERIOD, "{next} after {now}");
+        assert_eq!(next % PERIOD, 0, "a period's start: {next}");
 
-    // Once it rang, the board's half hour is what wakes the app again.
-    turn(&mut ada, ten);
-    let next = ada.host.next_trigger(ten).unwrap();
-    assert!(next > ten && next <= ten + PERIOD, "{next} after {ten}");
-    assert_eq!(next % PERIOD, 0);
+        // A time still to come comes first.
+        remind_at(&mut ada, &reminder, "2026-10-27T10:07:30Z");
+        assert_eq!(ada.host.next_trigger(now), Some(ten), "the reminder's time");
+
+        // Once it rang, the board's half hour is what wakes the app again.
+        turn(&mut ada, ten);
+        let next = ada.host.next_trigger(ten).unwrap();
+        assert!(next > ten && next <= ten + PERIOD, "{next} after {ten}");
+        assert_eq!(next % PERIOD, 0);
+    }
+
+    phase two_devices_run_a_trigger_once;
+    {
+        let (mut ada, board, _) = workspace();
+        let now = 1_790_000_400 / PERIOD * PERIOD;
+        let mut bo = ada.fork("bo", &packages());
+
+        assert_eq!(ada.host.run_triggers(now), 1, "the origin runs it");
+        let done = ada.host.take_committed();
+        assert_eq!(done.len(), 1, "one change: {done:#?}");
+        // The app acting by itself, not the person at the window.
+        assert_eq!(done[0].action.authorship.invoker, "trigger:t.trig");
+        for change in done {
+            ada.apply(&change.action);
+        }
+
+        bo.sync_with(&mut ada);
+        assert_eq!(turn(&mut bo, now), 0, "the other device finds it ran");
+        assert_eq!(counted(&bo, &board, "Board", "ticks"), 1);
+        assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
+    }
+
+    phase only_the_origin_runs_triggers_from_its_frame;
+    {
+        let noon = "2026-10-27T12:00:00Z";
+
+        let (mut origin, doc) = window(noon, true);
+        origin.sync(Some(&doc));
+        // Driven by hand, this window has no frames to take in the index its load builds off
+        // them: it waits for it, as a running window's frames would.
+        origin.host().expect("the window opened").wait_index();
+        origin.sync(Some(&doc));
+        origin.sync(Some(&doc));
+        let ran: Vec<String> = origin
+            .host()
+            .unwrap()
+            .take_committed()
+            .into_iter()
+            .map(|done| done.action.authorship.invoker)
+            .filter(|invoker| invoker.starts_with("trigger:"))
+            .collect();
+        assert_eq!(ran, vec!["trigger:t.trig".to_owned()]);
+
+        let (mut reader, doc) = window(noon, false);
+        reader.sync(Some(&doc));
+        reader.host().expect("the window opened").wait_index();
+        reader.sync(Some(&doc));
+        reader.sync(Some(&doc));
+        assert!(
+            reader
+                .host()
+                .unwrap()
+                .take_committed()
+                .iter()
+                .all(|done| !done.action.authorship.invoker.starts_with("trigger:")),
+            "a replica that does not govern the workspace runs none"
+        );
+    }
 }
 
 #[test]
@@ -422,27 +484,6 @@ fn an_action_reads_the_end_and_count_of_a_large_collection_not_its_items() {
     );
 }
 
-#[test]
-fn two_devices_run_a_trigger_once() {
-    let (mut ada, board, _) = workspace();
-    let now = 1_790_000_400 / PERIOD * PERIOD;
-    let mut bo = ada.fork("bo", &packages());
-
-    assert_eq!(ada.host.run_triggers(now), 1, "the origin runs it");
-    let done = ada.host.take_committed();
-    assert_eq!(done.len(), 1, "one change: {done:#?}");
-    // The app acting by itself, not the person at the window.
-    assert_eq!(done[0].action.authorship.invoker, "trigger:t.trig");
-    for change in done {
-        ada.apply(&change.action);
-    }
-
-    bo.sync_with(&mut ada);
-    assert_eq!(turn(&mut bo, now), 0, "the other device finds it ran");
-    assert_eq!(counted(&bo, &board, "Board", "ticks"), 1);
-    assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
-}
-
 /// What a window's instance asks the platform: the package, the clock, and the words.
 struct Trig {
     now: RefCell<String>,
@@ -500,41 +541,4 @@ fn window(now: &str, origin: bool) -> (Instance, AutoCommit) {
     );
     instance.set_origin(origin);
     (instance, doc)
-}
-
-#[test]
-fn only_the_origin_runs_triggers_from_its_frame() {
-    let noon = "2026-10-27T12:00:00Z";
-
-    let (mut origin, doc) = window(noon, true);
-    origin.sync(Some(&doc));
-    // Driven by hand, this window has no frames to take in the index its load builds off
-    // them: it waits for it, as a running window's frames would.
-    origin.host().expect("the window opened").wait_index();
-    origin.sync(Some(&doc));
-    origin.sync(Some(&doc));
-    let ran: Vec<String> = origin
-        .host()
-        .unwrap()
-        .take_committed()
-        .into_iter()
-        .map(|done| done.action.authorship.invoker)
-        .filter(|invoker| invoker.starts_with("trigger:"))
-        .collect();
-    assert_eq!(ran, vec!["trigger:t.trig".to_owned()]);
-
-    let (mut reader, doc) = window(noon, false);
-    reader.sync(Some(&doc));
-    reader.host().expect("the window opened").wait_index();
-    reader.sync(Some(&doc));
-    reader.sync(Some(&doc));
-    assert!(
-        reader
-            .host()
-            .unwrap()
-            .take_committed()
-            .iter()
-            .all(|done| !done.action.authorship.invoker.starts_with("trigger:")),
-        "a replica that does not govern the workspace runs none"
-    );
 }

@@ -2577,40 +2577,44 @@ mod tests {
         DynRecord::empty(schema).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// A field a person is named in (a direct conversation's `person`) has no default: the seed
-    /// writes one, so a view reading it reads a person rather than trapping.
-    #[test]
-    fn a_seeded_record_names_a_person_where_its_type_holds_one() {
-        let mut record = record_of("person");
-        fill_registers(&mut record, &[("person".to_owned(), Ty::Principal)])
-            .unwrap_or_else(|e| panic!("{e}"));
-        let Some(DynValue::Register(person)) = record.get("person") else {
-            panic!("the person is a register");
-        };
-        let read = tilolang_runtime::value::from_json(person).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(read, Value::Principal(Principal::new(VIEWER)));
-    }
+    tilo_test_env::scenario! {
+        fn a_seed_names_people_and_the_fields_it_cannot_fill;
 
-    /// A field of a type the seed has no value for, which a view would read as a trap, is named
-    /// when the workspace is seeded instead.
-    #[test]
-    fn a_field_the_seed_cannot_fill_is_named_when_seeding() {
-        let mut record = record_of("place");
-        let place = Ty::Record(tilolang::types::TypeKey {
-            app: "bench".to_owned(),
-            name: "Place".to_owned(),
-        });
-        let refused = fill_registers(&mut record, &[("place".to_owned(), place)]);
-        assert!(
-            refused.as_ref().is_err_and(|why| why.contains("`place`")),
-            "{refused:?}"
-        );
-        // What reads as a value unwritten is left so.
-        let mut record = record_of("when");
-        let optional = Ty::Option(Box::new(Ty::Date));
-        fill_registers(&mut record, &[("when".to_owned(), optional)])
-            .unwrap_or_else(|e| panic!("{e}"));
-        assert!(matches!(record.get("when"), Some(DynValue::Register(slot)) if slot.is_null()));
+        phase a_seeded_record_names_a_person_where_its_type_holds_one;
+        // A field a person is named in (a direct conversation's `person`) has no default: the seed
+        // writes one, so a view reading it reads a person rather than trapping.
+        {
+            let mut record = record_of("person");
+            fill_registers(&mut record, &[("person".to_owned(), Ty::Principal)])
+                .unwrap_or_else(|e| panic!("{e}"));
+            let Some(DynValue::Register(person)) = record.get("person") else {
+                panic!("the person is a register");
+            };
+            let read = tilolang_runtime::value::from_json(person).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(read, Value::Principal(Principal::new(VIEWER)));
+        }
+
+        phase a_field_the_seed_cannot_fill_is_named_when_seeding;
+        // A field of a type the seed has no value for, which a view would read as a trap, is named
+        // when the workspace is seeded instead.
+        {
+            let mut record = record_of("place");
+            let place = Ty::Record(tilolang::types::TypeKey {
+                app: "bench".to_owned(),
+                name: "Place".to_owned(),
+            });
+            let refused = fill_registers(&mut record, &[("place".to_owned(), place)]);
+            assert!(
+                refused.as_ref().is_err_and(|why| why.contains("`place`")),
+                "{refused:?}"
+            );
+            // What reads as a value unwritten is left so.
+            let mut record = record_of("when");
+            let optional = Ty::Option(Box::new(Ty::Date));
+            fill_registers(&mut record, &[("when".to_owned(), optional)])
+                .unwrap_or_else(|e| panic!("{e}"));
+            assert!(matches!(record.get("when"), Some(DynValue::Register(slot)) if slot.is_null()));
+        }
     }
 }
 

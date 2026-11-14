@@ -1711,66 +1711,70 @@ mod outbox_tests {
         }
     }
 
-    /// A record of `app` holding the resource `id` with no outbox: what an earlier version of the
-    /// platform left, and what two replicas that queued the first effect on it each made one for.
-    #[test]
-    fn an_outbox_each_replica_queued_before_they_met_is_one_outbox_after_a_write() {
-        let mut ada = holding("app", "r", &[]);
-        let obj = crate::reads::resource_obj(&ada, "app", "r").expect("the resource");
-        {
-            use automerge::ReadDoc as _;
-            use automerge::transaction::Transactable as _;
-            assert!(ada.get(&obj, OUTBOX_KEY).expect("outbox").is_some());
-            ada.delete(&obj, OUTBOX_KEY).expect("no outbox");
-        }
-        ada.commit();
-        let mut grace = ada.fork();
-        apply_edits(&mut ada, "app", &[push("1")], b"ada").expect("ada queues");
-        ada.commit();
-        apply_edits(&mut grace, "app", &[push("2")], b"grace").expect("grace queues");
-        grace.commit();
-        ada.merge_incoming(&mut grace)
-            .expect("ada takes grace's entries");
-        assert_eq!(outboxes(&ada, "app", "r"), 2, "each replica made an outbox");
-        let queued: Vec<String> = outbox_entries(&ada, "app", "r")
-            .into_iter()
-            .map(|entry| entry.entry)
-            .collect();
-        assert_eq!(queued, ["1", "2"], "both queued entries read");
+    tilo_test_env::scenario! {
+        fn an_outbox_merges_and_keeps_what_does_not_read;
 
-        // The next write folds the two into the one the record keeps, and nothing queued is lost.
-        apply_edits(&mut ada, "app", &[push("3")], b"ada").expect("ada queues again");
-        ada.commit();
-        assert_eq!(outboxes(&ada, "app", "r"), 1, "one outbox after the write");
-        grace
-            .merge_incoming(&mut ada)
-            .expect("grace takes ada's entries");
-        for (name, doc) in [("ada", &ada), ("grace", &grace)] {
-            assert_eq!(outboxes(doc, "app", "r"), 1, "{name}: one outbox");
-            let queued: Vec<String> = outbox_entries(doc, "app", "r")
+        phase an_outbox_each_replica_queued_before_they_met_is_one_outbox_after_a_write;
+        // A record of `app` holding the resource `id` with no outbox: what an earlier version of the
+        // platform left, and what two replicas that queued the first effect on it each made one for.
+        {
+            let mut ada = holding("app", "r", &[]);
+            let obj = crate::reads::resource_obj(&ada, "app", "r").expect("the resource");
+            {
+                use automerge::ReadDoc as _;
+                use automerge::transaction::Transactable as _;
+                assert!(ada.get(&obj, OUTBOX_KEY).expect("outbox").is_some());
+                ada.delete(&obj, OUTBOX_KEY).expect("no outbox");
+            }
+            ada.commit();
+            let mut grace = ada.fork();
+            apply_edits(&mut ada, "app", &[push("1")], b"ada").expect("ada queues");
+            ada.commit();
+            apply_edits(&mut grace, "app", &[push("2")], b"grace").expect("grace queues");
+            grace.commit();
+            ada.merge_incoming(&mut grace)
+                .expect("ada takes grace's entries");
+            assert_eq!(outboxes(&ada, "app", "r"), 2, "each replica made an outbox");
+            let queued: Vec<String> = outbox_entries(&ada, "app", "r")
                 .into_iter()
                 .map(|entry| entry.entry)
                 .collect();
-            assert_eq!(queued, ["1", "2", "3"], "{name}: every queued entry");
-        }
-    }
+            assert_eq!(queued, ["1", "2"], "both queued entries read");
 
-    #[test]
-    fn an_outbox_entry_that_does_not_read_stands_rejected_with_why() {
-        let doc = holding("app", "r", &[("1", "[\"to\"]"), ("2", "{not json")]);
-        let entries = outbox_entries(&doc, "app", "r");
-        assert_eq!(entries.len(), 2, "no entry is left out");
-        assert_eq!(entries[0].settled, None, "the readable one waits");
-        assert_eq!(entries[0].payload, serde_json::json!(["to"]));
-        let unreadable = &entries[1];
-        assert_eq!(unreadable.settled.as_deref(), Some("rejected"));
-        assert!(
-            unreadable.reason.contains("payload"),
-            "{}",
-            unreadable.reason
-        );
-        let delivery = unreadable.delivery();
-        assert_eq!(delivery.state, "rejected");
-        assert!(!delivery.reason.is_empty());
+            // The next write folds the two into the one the record keeps, and nothing queued is lost.
+            apply_edits(&mut ada, "app", &[push("3")], b"ada").expect("ada queues again");
+            ada.commit();
+            assert_eq!(outboxes(&ada, "app", "r"), 1, "one outbox after the write");
+            grace
+                .merge_incoming(&mut ada)
+                .expect("grace takes ada's entries");
+            for (name, doc) in [("ada", &ada), ("grace", &grace)] {
+                assert_eq!(outboxes(doc, "app", "r"), 1, "{name}: one outbox");
+                let queued: Vec<String> = outbox_entries(doc, "app", "r")
+                    .into_iter()
+                    .map(|entry| entry.entry)
+                    .collect();
+                assert_eq!(queued, ["1", "2", "3"], "{name}: every queued entry");
+            }
+        }
+
+        phase an_outbox_entry_that_does_not_read_stands_rejected_with_why;
+        {
+            let doc = holding("app", "r", &[("1", "[\"to\"]"), ("2", "{not json")]);
+            let entries = outbox_entries(&doc, "app", "r");
+            assert_eq!(entries.len(), 2, "no entry is left out");
+            assert_eq!(entries[0].settled, None, "the readable one waits");
+            assert_eq!(entries[0].payload, serde_json::json!(["to"]));
+            let unreadable = &entries[1];
+            assert_eq!(unreadable.settled.as_deref(), Some("rejected"));
+            assert!(
+                unreadable.reason.contains("payload"),
+                "{}",
+                unreadable.reason
+            );
+            let delivery = unreadable.delivery();
+            assert_eq!(delivery.state, "rejected");
+            assert!(!delivery.reason.is_empty());
+        }
     }
 }
