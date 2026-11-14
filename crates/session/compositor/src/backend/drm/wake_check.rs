@@ -203,6 +203,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Whether a display really came back after a wake.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn a_wake_is_judged_by_its_stages_and_redone_once;
 
         phase a_wake_whose_stages_all_happened_is_lit_and_records_its_first_frame;

@@ -197,6 +197,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Dimming an idle display.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn dimming_lowers_the_backlight_and_restores_what_it_saved;
 
         phase dimming_lowers_the_backlight_to_a_fraction_of_the_current_level_and_restores_it;

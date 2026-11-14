@@ -457,6 +457,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Which display changes are risky, and what an unanswered one does.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn a_display_change_that_could_leave_the_person_blind_is_asked_about;
 
         phase arranging_and_listed_modes_apply_directly;

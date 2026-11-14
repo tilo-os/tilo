@@ -236,6 +236,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// What an HDR layer hands the shader that draws it.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn an_hdr_layer_tells_the_shader_where_its_texels_land;
 
         phase a_layer_says_where_its_texels_land_and_what_they_hold;

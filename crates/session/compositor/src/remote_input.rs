@@ -123,6 +123,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The firewall in front of remote input.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn remote_input_yields_to_the_person_and_to_the_cut_chord;
 
         phase ctrl_alt_escape_cuts_remote_input_and_nothing_else_does;

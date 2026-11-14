@@ -592,6 +592,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Blanking the display and waking it.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn blanking_and_waking_the_display_keep_the_lock_and_the_idle_time;
 
         phase blanking_now_turns_the_display_off_once_and_input_wakes_it_still_locked;
@@ -758,6 +762,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Idle and suspend inhibitors.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn an_inhibitor_holds_off_what_it_asked_to_and_nothing_else;
 
         phase an_idle_inhibitor_keeps_the_screen_from_blanking_and_locking;
@@ -871,6 +879,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Dimming before the blank.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn the_display_dims_before_it_blanks_and_input_restores_it;
 
         phase the_display_dims_fifteen_seconds_before_it_blanks;
@@ -1008,6 +1020,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The idle timeouts: as configured, and changed while the session runs.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn idle_timeouts_parse_with_secure_defaults_and_change_live;
 
         phase idle_config_parses_timeouts_with_secure_defaults;
@@ -1266,6 +1282,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Suspending an idle session.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn idleness_suspends_once_an_episode_and_only_where_asked;
 
         phase with_lock_never_and_idle_suspend_off_idleness_only_darkens_the_screen;

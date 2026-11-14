@@ -513,6 +513,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The development window as an output.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn the_nested_window_is_an_output_of_its_hosts_size_scale_and_turn;
 
         phase the_window_draws_at_the_scales_its_host_reports;

@@ -744,6 +744,10 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The colour transform of an output: its grid, its filter and its profile.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a test's sums: clippy exempts a test function's body, not a phase's closure"
+        )]
         fn an_outputs_colour_pass_is_built_only_from_what_can_be_read;
 
         phase the_identity_transform_gives_the_grid_itself;
