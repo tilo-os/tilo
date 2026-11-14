@@ -59,6 +59,31 @@ def git(root: Path, *args: str, input: bytes | None = None, empty: tuple[int, ..
     return finished.stdout
 
 
+#: The longest expression one ``git grep`` is handed. Git refuses an expression
+#: over 64 KiB, so a search for many names goes as several expressions of one
+#: call (``alternations``), which keeps a file any of them matches.
+MAX_EXPRESSION = 16 * 1024
+
+
+def alternations(before: str, names: Sequence[str], after: str) -> list[str]:
+    """``before(a|b|...)after`` over ``names``, in as few expressions as stay
+    within ``MAX_EXPRESSION`` each: together they match what the one would."""
+    room = MAX_EXPRESSION - len(before.encode()) - len(after.encode())
+    expressions: list[str] = []
+    held: list[str] = []
+    size = 0
+    for name in names:
+        length = len(name.encode())
+        if held and size + 1 + length > room:
+            expressions.append(before + "|".join(held) + after)
+            held, size = [], 0
+        size += length + (1 if held else 0)
+        held.append(name)
+    if held:
+        expressions.append(before + "|".join(held) + after)
+    return expressions
+
+
 @dataclass
 class Judged:
     """The files a check judges in one tree: all of them, or one commit's.
@@ -74,16 +99,19 @@ class Judged:
     _blobs: dict[Path, bytes] = field(default_factory=dict, repr=False)
     _only: set[Path] | None = field(default=None, repr=False)
 
-    def holding(self, pattern: str, *scopes: str | Path) -> "Judged":
+    def holding(self, pattern: str | Sequence[str], *scopes: str | Path) -> "Judged":
         """This judgement narrowed to the files whose text extends ``pattern``.
 
         A check that needs a name defined somewhere in the tree reads only the
         files that can define it. One ``git grep`` answers which they are: the
         expression is an extended regular one (``fn[[:space:]]+(decode|parse)``),
         and a file it does not match cannot hold what the check looks for.
+        Several expressions keep a file any of them matches, which is how a
+        search too long for one expression is asked (``alternations``).
         """
+        patterns = [pattern] if isinstance(pattern, str) else list(pattern)
         scopes = [Path(scope) for scope in scopes if (self.root / scope).exists()]
-        if not scopes:
+        if not scopes or not patterns:
             return Judged(root=self.root, staged=self.staged, _only=set())
         found = git(
             self.root,
@@ -91,7 +119,7 @@ class Judged:
             "-l",
             "-E",
             *(("--cached",) if self.staged else ()),
-            pattern,
+            *[argument for expression in patterns for argument in ("-e", expression)],
             "--",
             *[scope.as_posix() for scope in scopes],
             empty=(1,),

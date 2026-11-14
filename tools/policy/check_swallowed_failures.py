@@ -55,7 +55,7 @@ from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from judged import STAGED_FLAG, Judged, judged  # noqa: E402
+from judged import STAGED_FLAG, Judged, alternations, judged  # noqa: E402
 from rust_source import Literal, blank_test_items, is_test_file, lex, matching  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -520,13 +520,13 @@ def definitions_of(files: Judged) -> Judged:
     files that can define one of the names they do call are read. The
     expression is a loose one -- every file holding ``fn <name>``, whatever
     surrounds it -- because it only narrows what is read: the files it keeps are
-    parsed by the same rules as ever.
+    parsed by the same rules as ever. A commit that calls more names than one
+    expression holds asks in several, and is narrowed the same.
     """
     names = judged_names(files)
     if not names:
         return replace(files, _only=set())
-    pattern = "fn[[:space:]]+(" + "|".join(sorted(names)) + ")"
-    return files.holding(pattern, *SCANNED)
+    return files.holding(alternations("fn[[:space:]]+(", sorted(names), ")"), *SCANNED)
 
 
 def findings_of_file(

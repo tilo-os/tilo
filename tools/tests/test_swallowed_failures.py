@@ -1,5 +1,7 @@
 import importlib.util
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -154,6 +156,51 @@ class SwallowedFailures(unittest.TestCase):
     def test_tests_and_comments_are_not_counted(self):
         self.assertEqual(count("// decode(b).ok()\nfn f() {}"), 0)
         self.assertEqual(count("#[cfg(test)]\nmod tests { fn f(b: &[u8]) { decode(b).ok(); } }"), 0)
+
+
+class DefinitionsOfALargeCommit(unittest.TestCase):
+    """A commit of hundreds of files calls thousands of names: more than one
+    expression of a `git grep` holds."""
+
+    NAMES = [f"reads_row_{n:05}_of_a_commit_that_calls_a_great_many_names" for n in range(4000)]
+
+    def test_many_names_are_asked_for_in_expressions_git_takes(self):
+        judged = sys.modules["judged"]
+        before, after = "fn[[:space:]]+(", ")"
+        expressions = failures.alternations(before, self.NAMES, after)
+        self.assertGreater(len(expressions), 1)
+        self.assertTrue(all(len(one) <= judged.MAX_EXPRESSION for one in expressions))
+        asked = [name for one in expressions for name in one[len(before) : -len(after)].split("|")]
+        self.assertEqual(asked, self.NAMES)
+        self.assertEqual(failures.alternations(before, ["decode", "parse"], after), [before + "decode|parse" + after])
+        self.assertEqual(failures.alternations(before, [], after), [])
+
+    def test_a_commit_calling_more_names_than_one_expression_holds_finds_their_definitions(self):
+        scanned = failures.SCANNED[0]
+        with tempfile.TemporaryDirectory() as held:
+            root = Path(held)
+
+            def git(*arguments):
+                subprocess.run(["git", "-C", held, *arguments], check=True, capture_output=True)
+
+            git("init", "--quiet")
+            source = root / scanned / "src"
+            source.mkdir(parents=True)
+            calls = "".join(f"    {name}();\n" for name in self.NAMES)
+            (source / "calls.rs").write_text("fn all() {\n" + calls + "}\n")
+            (source / "first.rs").write_text(f"fn {self.NAMES[0]}() {{}}\n")
+            (source / "last.rs").write_text(f"fn {self.NAMES[-1]}() {{}}\n")
+            # A definition reads as a call of its own name, so the file left out is one
+            # that names nothing a commit could call.
+            (source / "other.rs").write_text("pub const NOTHING_IS_CALLED_HERE: u8 = 0;\n")
+            git("add", "--all")
+            files = failures.judged(root, True)
+            called = failures.judged_names(files)
+            self.assertGreater(sum(len(name) + 1 for name in called), 64 * 1024)
+            defining = failures.definitions_of(files).files(scanned)
+        self.assertIn(scanned / "src/first.rs", defining)
+        self.assertIn(scanned / "src/last.rs", defining)
+        self.assertNotIn(scanned / "src/other.rs", defining)
 
 
 if __name__ == "__main__":
