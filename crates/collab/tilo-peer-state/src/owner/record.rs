@@ -8,9 +8,7 @@ use tilo_user_identity::DeviceCert;
 pub(crate) mod format;
 
 /// The layout of a workspace's entry this build writes ([`StoredWorkspace`]):
-/// the workspace named once, by its id. The entries the 0.1 releases wrote
-/// are versions 2 and 3, and version 4 is the layout before this one, all read
-/// through [`format`].
+/// the workspace named once, by its id.
 pub(crate) const WORKSPACE_VERSION: u32 = 5;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
@@ -194,10 +192,6 @@ pub(crate) struct StoredVouch {
 /// Only a successful state-file publication creates an enrollment handle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingEnrollmentId {
-    /// Written under the key it was first written under, as the state file it
-    /// belongs to is; a handle written while the field was named for the
-    /// workspace still reads.
-    #[serde(rename = "room", alias = "workspace")]
     workspace: WorkspaceId,
     generation: u64,
     digest: [u8; 32],

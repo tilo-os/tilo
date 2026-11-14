@@ -168,11 +168,10 @@ who may have written it.
   are kept beside it as a golden fixture (`assert_golden_bytes`), read by
   today's types and written back exactly, so a field added to, removed from or
   moved in a persisted type fails a test instead of leaving stored files
-  unreadable. The host's governed workspace record (versions 3, which the 0.1
-  releases wrote, and 4), its wait list, its door, its revocation log and its
-  governed access are such formats. A format's oldest version only falls: it
-  is written out as a number, and `tools/policy/check_format_migrations.py`
-  fails a change that raises it.
+  unreadable. The host's governed workspace record, its wait list, its door,
+  its revocation log and its governed access are such formats. A format names
+  the versions it brings up, written out as numbers: a file of any other is
+  refused with the version it holds, never read under another layout.
 - **Signed bytes are never rewritten.** An invitation, a delegation and the
   rows a workspace's governance hashes are kept as their signer wrote them,
   since their ids and signatures are over those bytes. Their own version names
@@ -210,11 +209,6 @@ who may have written it.
   those, to an issue's work or a Shortcut) is logged as a warning with why;
   `relay-upgrade` fails on any, and has members write through Notes and Files
   after the upgrade.
-- **Directories named by an old id move once.** The 0.1 releases named a
-  workspace's relay store and link store by a number derived from its id;
-  this build names them by the id. Opening such a store moves it to the id
-  (the relay store's frames written as this build writes them), and keeps the
-  relay store's old directory beside it as `<number>.kept`.
 - **A file only this build writes** names the one version it writes and
   refuses every other, saying which version it holds, instead of reading its
   rows under rules written for another layout: the state a device keeps of a

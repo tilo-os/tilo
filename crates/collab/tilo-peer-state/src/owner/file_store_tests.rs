@@ -1,8 +1,6 @@
 //! The owner's record on disk: an index and one file per workspace, written
-//! apart. A change writes its own workspace's file and the index; a record
-//! written as one file before the split reads once and is kept split, with
-//! the file it came from left as it is. A later change of a workspace alone
-//! appends to that workspace's journal.
+//! apart. A change writes its own workspace's file and the index; a later
+//! change of a workspace alone appends to that workspace's journal.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -22,26 +20,12 @@ use std::{
 use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth, with_observer};
 use tilo_user_identity::DeviceCert;
 
-const PREDECESSOR: &str =
-    include_str!("../../tests/fixtures/owner-record/single-file.owner.json.hex");
-const FOUNDERS: &str = "40267648-f762-4c8d-89ad-c5ab27aa13b8";
-const RESEARCH: &str = "7fdaf11b-68aa-4e34-b01d-4ee2424fadcf";
-const JOINING: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-
 fn directory() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
 }
 
 fn record_path(directory: &tempfile::TempDir) -> PathBuf {
     directory.path().join("state.owner.json")
-}
-
-/// The record the build before the split wrote, as one file.
-fn predecessor() -> Vec<u8> {
-    PREDECESSOR
-        .split_whitespace()
-        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
-        .collect()
 }
 
 /// The record's index on disk.
@@ -51,11 +35,6 @@ fn index_path(path: &Path) -> PathBuf {
 
 fn index_bytes(path: &Path) -> Vec<u8> {
     std::fs::read(index_path(path)).unwrap()
-}
-
-/// The index on disk.
-fn index(path: &Path) -> serde_json::Value {
-    serde_json::from_slice(&index_bytes(path)).unwrap()
 }
 
 /// Every workspace file on disk, by name.
@@ -110,80 +89,6 @@ fn replacements<T>(operation: impl FnOnce() -> T) -> (T, usize) {
         operation,
     );
     (value, count.get())
-}
-
-fn name(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Option<String> {
-    owner
-        .with_current(workspace, |view| {
-            Ok(view.peer().governance().workspace_name())
-        })
-        .unwrap()
-}
-
-#[test]
-fn a_record_written_as_one_file_reads_once_and_is_then_kept_split() {
-    let directory = directory();
-    let path = record_path(&directory);
-    std::fs::write(&path, predecessor()).unwrap();
-
-    // Opening it splits it: one file per workspace and its journal, then the
-    // index that names them.
-    let (opened, replaced) = replacements(|| open_file(&path));
-    let owner = opened.unwrap();
-    assert_eq!(
-        replaced, 5,
-        "two workspace files, their journals and the index"
-    );
-
-    let record = read_file(&path).unwrap();
-    assert_eq!(record.revision(), 3);
-    assert!(record.holds(workspace(FOUNDERS)));
-    assert!(record.holds(workspace(RESEARCH)));
-    assert!(record.requires(workspace(JOINING)));
-    assert_eq!(
-        name(&owner, workspace(FOUNDERS)).as_deref(),
-        Some("Founders")
-    );
-    assert_eq!(
-        name(&owner, workspace(RESEARCH)).as_deref(),
-        Some("Research")
-    );
-
-    let index = index(&path);
-    assert_eq!(
-        index.get("version").and_then(serde_json::Value::as_u64),
-        Some(2)
-    );
-    assert_eq!(
-        index.get("revision").and_then(serde_json::Value::as_u64),
-        Some(3)
-    );
-    assert_eq!(
-        index
-            .get("held")
-            .and_then(|held| held.as_object())
-            .map(serde_json::Map::len),
-        Some(2)
-    );
-    assert_eq!(
-        part_files(&path).keys().cloned().collect::<Vec<_>>(),
-        vec![format!("{FOUNDERS}.3.json"), format!("{RESEARCH}.3.json")]
-    );
-    // The record was 16208 bytes as one file; the index that a publication
-    // rewrites beside the workspaces is smaller than it, and the file the
-    // record came from is left as it is.
-    assert!(index_bytes(&path).len() < predecessor().len());
-    assert_eq!(
-        std::fs::read(&path).unwrap(),
-        predecessor(),
-        "the file the record came from is not rewritten"
-    );
-
-    // Reading a split record again publishes nothing.
-    drop(owner);
-    let (reopened, replaced) = replacements(|| open_file(&path));
-    assert_eq!(replaced, 0);
-    assert_eq!(reopened.unwrap().storage().held().count(), 2);
 }
 
 #[tokio::test]
@@ -326,39 +231,6 @@ async fn a_workspace_costs_its_own_record() {
 }
 
 #[tokio::test]
-async fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
-    let directory = directory();
-    let path = record_path(&directory);
-    std::fs::write(&path, predecessor()).unwrap();
-    let (key, device) = device();
-    let now = SystemTime::now();
-    let owner = open_file(&path).unwrap();
-    testing::founded(&owner, "Third", &device, &key, now)
-        .await
-        .unwrap();
-    drop(owner);
-
-    // A build before the split finds the file it wrote as it wrote it, with
-    // its two workspaces: the split wrote the record beside that file, not
-    // over it.
-    assert_eq!(std::fs::read(&path).unwrap(), predecessor());
-    let older = super::format::read_whole(&predecessor()).unwrap();
-    assert_eq!(older.revision(), 3);
-    assert_eq!(older.held().count(), 2);
-
-    // That build publishing over its file, as one does after a rollback,
-    // does not take the record with it: this build reads its index.
-    let split = read_file(&path).unwrap();
-    assert_eq!(split.held().count(), 3);
-    let mut rolled_back: serde_json::Value = serde_json::from_slice(&predecessor()).unwrap();
-    rolled_back["revision"] = 4.into();
-    std::fs::write(&path, serde_json::to_vec(&rolled_back).unwrap()).unwrap();
-    let reread = read_file(&path).unwrap();
-    assert_eq!(reread.revision(), split.revision());
-    assert_eq!(reread.held().count(), 3);
-}
-
-#[tokio::test]
 async fn a_released_workspace_leaves_no_file_behind() {
     let directory = directory();
     let path = record_path(&directory);
@@ -472,101 +344,4 @@ async fn a_journal_entry_cut_short_is_not_part_of_the_record() {
     drop(reopened);
     let reopened = open_file(&path).unwrap();
     assert!(held(&reopened, "a") && held(&reopened, "b"));
-}
-
-/// A record an earlier build kept, its index naming the workspace files
-/// alone, reads as it was, and its next change starts a journal.
-#[tokio::test]
-async fn an_index_before_journals_reads_and_gains_them() {
-    let directory = directory();
-    let path = record_path(&directory);
-    let (key, device) = device();
-    let now = SystemTime::now();
-    let owner = open_file(&path).unwrap();
-    let founded = testing::founded(&owner, "One", &device, &key, now)
-        .await
-        .unwrap();
-    drop(owner);
-    for name in journal_files(&path).keys() {
-        std::fs::remove_file(parts_of(&path).join(name)).unwrap();
-    }
-    let mut index = index(&path);
-    index["version"] = 1.into();
-    std::fs::write(index_path(&path), serde_json::to_vec(&index).unwrap()).unwrap();
-
-    let reopened = open_file(&path).unwrap();
-    assert_eq!(name(&reopened, founded).as_deref(), Some("One"));
-    testing::start_record(&reopened, founded, "so.tilo.chat", "a", &key, now);
-    assert_eq!(journal_files(&path).len(), 1);
-    drop(reopened);
-    let reopened = open_file(&path).unwrap();
-    assert!(
-        reopened
-            .with_current(founded, |view| {
-                Ok(view.peer().document("so.tilo.chat", "a").is_some())
-            })
-            .unwrap()
-    );
-}
-
-/// The record as a release kept it split: the index before journals and each
-/// workspace's file in the releases' layout, the predecessor's entries.
-fn released_split(path: &Path) {
-    let whole: serde_json::Value = serde_json::from_slice(&predecessor()).unwrap();
-    let parts = parts_of(path);
-    std::fs::create_dir_all(&parts).unwrap();
-    let mut held = serde_json::Map::new();
-    for (workspace, entry) in whole["rooms"].as_object().unwrap() {
-        std::fs::write(
-            parts.join(format!("{workspace}.3.json")),
-            serde_json::to_vec(entry).unwrap(),
-        )
-        .unwrap();
-        held.insert(workspace.clone(), 3.into());
-    }
-    let index = serde_json::json!({
-        "version": 1,
-        "revision": 3,
-        "held": held,
-        "pending": whole["pending"],
-    });
-    std::fs::write(index_path(path), serde_json::to_vec(&index).unwrap()).unwrap();
-}
-
-#[tokio::test]
-async fn a_split_record_a_release_wrote_comes_up_with_its_files_kept_beside() {
-    let directory = directory();
-    let path = record_path(&directory);
-    released_split(&path);
-    let released = part_files(&path);
-
-    let owner = open_file(&path).unwrap();
-    assert_eq!(
-        name(&owner, workspace(FOUNDERS)).as_deref(),
-        Some("Founders")
-    );
-    assert!(owner.storage().requires(workspace(JOINING)));
-    // Each file is in this build's layout now, and the file as the release
-    // wrote it is beside it.
-    for (name, bytes) in &released {
-        let kept = std::fs::read(parts_of(&path).join(format!("{name}.v2"))).unwrap();
-        assert_eq!(&kept, bytes);
-        let now: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(parts_of(&path).join(name)).unwrap()).unwrap();
-        assert_eq!(now["version"], crate::owner::record::WORKSPACE_VERSION);
-        assert!(now.get("room").is_none());
-    }
-
-    // A publication moves past those files; the kept ones stay.
-    let (key, device) = device();
-    testing::founded(&owner, "Third", &device, &key, SystemTime::now())
-        .await
-        .unwrap();
-    drop(owner);
-    for name in released.keys() {
-        assert!(parts_of(&path).join(format!("{name}.v2")).is_file());
-    }
-    let (reopened, replaced) = replacements(|| open_file(&path));
-    assert_eq!(replaced, 0, "a record already brought up is read as it is");
-    assert_eq!(reopened.unwrap().storage().held().count(), 3);
 }

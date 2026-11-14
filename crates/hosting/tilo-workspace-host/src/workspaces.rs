@@ -1088,25 +1088,6 @@ impl WorkspaceAuthority {
     }
 }
 
-/// The workspaces whose records are in `dir`, by the name of each record.
-fn governed_here(dir: &Path) -> Vec<WorkspaceId> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "workspace")
-        })
-        .filter_map(|path| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .and_then(WorkspaceId::parse)
-        })
-        .collect()
-}
-
 /// `host`, serving with the certificate the workspace records under `dir`
 /// name, when they are the same device: the record's authority is the one the
 /// workspace was made with, and every comparison a host makes for its
@@ -1244,10 +1225,6 @@ impl Workspaces {
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) =
             device_plane::plane(Arc::clone(&workspaces), host.key.clone(), host.work.clone());
-        // The frames a 0.1 release kept for the workspaces governed here are
-        // under the numbers it named them by: they move to their ids first.
-        tilo_peer_state::store::bring_up_released(&store, governed_here(&dir))
-            .map_err(|error| error.to_string())?;
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         let this = Self {

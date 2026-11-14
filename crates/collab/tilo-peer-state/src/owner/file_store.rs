@@ -19,10 +19,8 @@
 //! again. A publication that changes the index (an enrollment, a workspace
 //! held or let go) writes the snapshot and the index as before.
 //!
-//! The index has names of its own ([`parts_of`], and `index.json` in it), so
-//! the whole file a build before the split wrote is read once and then left
-//! exactly as it is. A build that predates the split still finds its record
-//! there — the one it last wrote, not this one — and never sees the index.
+//! The index has names of its own ([`parts_of`], and `index.json` in it), so a
+//! record's files never share the name of the file the host keeps them beside.
 use crate::owner::journal;
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
@@ -44,12 +42,8 @@ use std::{
 use tilo_desktop_model::WorkspaceId;
 
 /// The layout an index is: one snapshot per workspace, named with the
-/// revision it was written at, and that snapshot's journal beside it. A build
-/// that reads only the snapshots reads layout 1, and refuses this one rather
-/// than lose what a journal holds.
+/// revision it was written at, and that snapshot's journal beside it.
 const INDEX_VERSION: u32 = 2;
-/// The layout before journals: the snapshots alone.
-const INDEX_BEFORE_JOURNALS: u32 = 1;
 /// A journal is appended to until it holds this much or as much as its
 /// snapshot, whichever is more: rewriting the snapshot then costs at most
 /// what the writes since the last one appended.
@@ -57,10 +51,6 @@ const JOURNAL_FLOOR: usize = 256 * 1024;
 
 /// The file a host whose own state is the file `state` keeps its owner's
 /// record in, beside it (`state.json` keeps it in `state.owner.json`).
-///
-/// A build before the split wrote the record to this file whole; this build
-/// reads such a file once, keeps the record beside it from then on, and does
-/// not touch the file again.
 #[must_use]
 pub fn owner_file_of(state: &Path) -> PathBuf {
     state.with_extension("owner.json")
@@ -110,13 +100,6 @@ struct StoredIndex {
 /// The revisions each workspace's file was written at.
 type Held = BTreeMap<WorkspaceId, u64>;
 
-/// How the record file held the record.
-enum Layout {
-    /// As one file, by a build before the split: read once, then split.
-    Whole,
-    Index(Held),
-}
-
 /// The directory beside the record file that holds the record: its index and
 /// one file per workspace.
 pub(crate) fn parts_of(path: &Path) -> PathBuf {
@@ -124,10 +107,6 @@ pub(crate) fn parts_of(path: &Path) -> PathBuf {
 }
 
 /// The record's index, in the directory beside the record file.
-///
-/// It has a name of its own, and the record file a build before the split
-/// wrote is left as it is: a build that predates the split reads that file
-/// whole, as it always did, and never sees the index.
 pub(crate) fn index_of(parts: &Path) -> PathBuf {
     parts.join("index.json")
 }
@@ -174,18 +153,6 @@ fn part_name(name: &OsStr) -> Option<(WorkspaceId, u64)> {
     Some((WorkspaceId::parse(workspace)?, revision.parse().ok()?))
 }
 
-/// Whether `path` is a workspace file as an older build wrote it, kept beside
-/// the file it came up into ([`format::FORMAT`]): never pruned, so going back
-/// to that build loses nothing.
-fn is_kept_layout(path: &Path) -> bool {
-    path.file_name()
-        .and_then(OsStr::to_str)
-        .and_then(|name| name.rsplit_once(".json.v"))
-        .is_some_and(|(_, version)| {
-            !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
-        })
-}
-
 fn provision(parts: &Path) -> Result<(), String> {
     if parts.is_dir() {
         return Ok(());
@@ -220,32 +187,20 @@ fn read_within(path: &Path, cap: usize) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(bytes))
 }
 
-/// The record at `path`, empty when there is none, and how it is held: the
-/// split layout when the index is there, otherwise the whole file a build
-/// before the split wrote.
-fn read_record(path: &Path) -> Result<(NativeAuthorityStorage, Layout), String> {
+/// The record at `path`, empty when there is none, and the revision each
+/// workspace's file was written at.
+fn read_record(path: &Path) -> Result<(NativeAuthorityStorage, Held), String> {
     let parts = parts_of(path);
-    if let Some(bytes) = read_bounded(&index_of(&parts))? {
-        let index: StoredIndex = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("the record's index does not parse: {error}"))?;
-        return read_index(path, index);
-    }
-    let Some(bytes) = read_bounded(path)? else {
-        return Ok((
-            NativeAuthorityStorage::default(),
-            Layout::Index(Held::new()),
-        ));
+    let Some(bytes) = read_bounded(&index_of(&parts))? else {
+        return Ok((NativeAuthorityStorage::default(), Held::new()));
     };
-    // A record written as one file, by a build before the split: read whole,
-    // and kept beside it from here on, leaving this file as it is. Its
-    // workspaces come up to this build's layout as they are read.
-    let mut record = format::read_whole(&bytes)?;
-    drop_recovery_projections(&mut record);
-    Ok((record, Layout::Whole))
+    let index: StoredIndex = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("the record's index does not parse: {error}"))?;
+    read_index(path, index)
 }
 
-fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage, Layout), String> {
-    if index.version != INDEX_VERSION && index.version != INDEX_BEFORE_JOURNALS {
+fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage, Held), String> {
+    if index.version != INDEX_VERSION {
         return Err(format!(
             "the owner record's index is version {}, and this build reads version {INDEX_VERSION}",
             index.version
@@ -264,17 +219,9 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
             .saturating_mul(2)
             .saturating_add(JOURNAL_FLOOR);
         let log = read_within(&log_of(&parts, workspace, revision), journal_cap)?;
-        // A file an older build wrote comes up to this build's layout, the
-        // file as it was kept beside it. A journal is a delta of the bytes
-        // its snapshot's layout writes, so one that continues an older
-        // layout is not replayed over this one: no release wrote one.
+        // The layout the file names: one this build writes reads as it is,
+        // and another is refused rather than replayed over its journal.
         let version = format::stored_version(&bytes)?;
-        if version != format::FORMAT.version && log.as_ref().is_some_and(|log| !log.is_empty()) {
-            return Err(format!(
-                "{workspace}'s journal continues a record of version {version}, which this build \
-                 does not replay"
-            ));
-        }
         let bytes = format::FORMAT
             .bring_up(&part, bytes, version)
             .map_err(|error| error.to_string())?;
@@ -298,7 +245,7 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
         pending: index.pending,
     };
     drop_recovery_projections(&mut record);
-    Ok((record, Layout::Index(index.held)))
+    Ok((record, index.held))
 }
 
 /// A recovery projection is a re-signed copy of frames this build re-sends
@@ -337,8 +284,7 @@ fn index_bytes(record: &NativeAuthorityStorage, held: &Held) -> Result<Vec<u8>, 
 }
 
 /// Read the record kept at `path`: the index beside it and the workspace
-/// files the index names, or the whole file a build before the split wrote
-/// there. Empty when there is neither.
+/// files the index names. Empty when there is none.
 pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
     read_record(path).map(|(record, _)| record)
 }
@@ -353,25 +299,19 @@ pub fn open_file_with(
     path: &Path,
     host: Arc<dyn FileHost>,
 ) -> Result<NativeWorkspaceOwner, String> {
-    let (mut authority, layout) = read_record(path)?;
+    let (mut authority, held) = read_record(path)?;
     let migrated = crate::owner::enrollment::migrate_intents(&mut authority)?;
-    let whole = matches!(layout, Layout::Whole);
-    let held = match layout {
-        Layout::Whole => Held::new(),
-        Layout::Index(held) => held,
-    };
     let store = Arc::new(FileStore::at(path, host, held));
     let owner = NativeWorkspaceOwner::restore(
         Arc::clone(&store) as Arc<dyn Store>,
         authority,
         tilo_clock::wall(),
     )?;
-    if whole || migrated {
-        // The split layout of a record written as one file, or the form of
-        // records already there. Either changes neither a workspace nor its
-        // relay workspace, so it goes straight to the files rather than
+    if migrated {
+        // The form of records already there changes neither a workspace nor
+        // its relay workspace, so it goes straight to the files rather than
         // through a publication of the store: nothing a host follows has
-        // changed, and the file the record was read from is left as it is.
+        // changed.
         let record = owner.0.authority.read();
         store.write_all(&record)?;
     } else {
@@ -570,8 +510,8 @@ impl FileStore {
     }
 
     /// Remove the workspace files `record`, the record as published, does not name: the one a
-    /// workspace was published over, one a release left behind, one a publication stopped
-    /// before its index wrote, and the runs of custody that moved to its head.
+    /// workspace was published over, one a publication stopped before its index wrote, and the
+    /// runs of custody that moved to its head.
     fn prune_parts(&self, record: &NativeAuthorityStorage) {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
@@ -584,7 +524,7 @@ impl FileStore {
             .collect();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path == index || runs.contains(&path) || is_kept_layout(&path) {
+            if path == index || runs.contains(&path) {
                 continue;
             }
             if path

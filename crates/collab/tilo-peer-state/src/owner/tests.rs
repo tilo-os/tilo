@@ -109,11 +109,6 @@ fn workspace_json(path: &std::path::Path, workspace: WorkspaceId) -> serde_json:
     serde_json::from_slice(&std::fs::read(workspace_file(path, workspace)).unwrap()).unwrap()
 }
 
-/// The record as a build before the split wrote it: JSON a file holds whole.
-fn whole_record(path: &std::path::Path) -> serde_json::Value {
-    serde_json::to_value(crate::owner::read_file(path).unwrap()).unwrap()
-}
-
 /// Every file under `root`, looking into its directories.
 fn files_under(root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut files = Vec::new();
@@ -1129,37 +1124,11 @@ fn a_workspace_file_names_its_host_under_the_stored_key() {
 }
 
 #[test]
-fn an_owner_file_written_while_the_map_was_named_for_rooms_restores() {
-    let joined = enrolled();
-    drop(joined.owner);
-    let mut value = whole_record(&joined.path);
-    let workspaces = value
-        .as_object_mut()
-        .expect("a storage object")
-        .remove("workspaces")
-        .expect("the storage names its workspaces");
-    value["rooms"] = workspaces;
-    // That build's file, where the split layout this build keeps is not.
-    std::fs::remove_dir_all(crate::owner::file_store::parts_of(&joined.path)).unwrap();
-    std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let reopened = open_file(&joined.path).expect("a file written by that build reads");
-    assert_eq!(
-        reopened.workspaces(),
-        vec![joined.workspace],
-        "the workspaces read under the key it was written under"
-    );
-}
-
-#[test]
-fn a_pending_enrollment_handle_is_written_under_the_stored_key() {
+fn a_pending_enrollment_handle_names_its_workspace() {
     let id = PendingEnrollmentId::new(WorkspaceId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
     let value = serde_json::to_value(&id).unwrap();
     let object = value.as_object().expect("a handle object");
-    assert!(
-        object.contains_key("room"),
-        "a build any image can roll back to reads this key"
-    );
-    assert!(!object.contains_key("workspace"), "one key, one spelling");
+    assert!(object.contains_key("workspace"));
     assert_eq!(
         serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
         id

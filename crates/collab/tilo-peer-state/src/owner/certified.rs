@@ -17,11 +17,6 @@ const MAX_INTENT_BYTES: usize = MAX_WORKSPACE_JOIN_REQUEST_BYTES + 8192;
 /// The record this build writes: its Complete decodes in the layout its own
 /// challenge version names.
 const INTENT_VERSION: u8 = 2;
-/// The record a build wrote before the join version bump, whose Complete
-/// holds that earlier challenge layout. Its bytes are the ones the device
-/// signed, so restoring one keeps them and only the record around them is
-/// rewritten ([`VerifiedNativeEnrollmentIntent::durable_bytes`]).
-const PREVIOUS_INTENT_VERSION: u8 = 1;
 #[derive(Clone, Serialize, Deserialize)]
 struct IntentRecord {
     version: u8,
@@ -92,7 +87,7 @@ impl VerifiedNativeEnrollmentIntent {
         Self::validate(record)
     }
     fn validate(record: IntentRecord) -> Result<Self, String> {
-        if !matches!(record.version, PREVIOUS_INTENT_VERSION | INTENT_VERSION)
+        if record.version != INTENT_VERSION
             || record.complete.len() > MAX_WORKSPACE_JOIN_REQUEST_BYTES
             || record.prepared_at_ns > now_ns(tilo_clock::wall())?
         {
@@ -179,15 +174,8 @@ fn validate_historical_iroh(
         return Err("native enrollment requires signed Iroh host hint".into());
     }
     join::verify_transport_hint_at(hint, &RevocationList::new(), at)?;
-    let value: WorkspaceDeviceHintV1 = match serde_json::from_str(&hint.opaque_json) {
-        Ok(value) => value,
-        Err(error) => {
-            return match serde_json::from_str::<ReleasedHint>(&hint.opaque_json) {
-                Ok(released) => released.validate(join, hint),
-                Err(_) => Err(error.to_string()),
-            };
-        }
-    };
+    let value: WorkspaceDeviceHintV1 =
+        serde_json::from_str(&hint.opaque_json).map_err(|error| error.to_string())?;
     if value.version != 1
         || value.workspace_id != join.grant().workspace_id
         || value.device_certificate != hint.host
@@ -206,64 +194,6 @@ fn validate_historical_iroh(
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-/// A signed host hint as the 0.1 releases wrote it, inside an invitation a
-/// device prepared its enrollment with then: it named the workspace by its
-/// UUID as text and a number derived from it, and its device's trust by a
-/// mode. The host signed these bytes, so they are read as they are.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReleasedHint {
-    version: u32,
-    #[serde(rename = "mode")]
-    _mode: String,
-    room: String,
-    #[serde(rename = "workspace_id")]
-    _number: u64,
-    endpoint_addr: ReleasedEndpoint,
-    host_user_public_key: [u8; 32],
-    host_device_certificate: DeviceCert,
-    packet_relay_url: String,
-    #[serde(default, rename = "governing_authority")]
-    _governing_authority: Option<DeviceCert>,
-}
-
-/// The address a [`ReleasedHint`] names: its endpoint's key, hex.
-#[derive(Deserialize)]
-struct ReleasedEndpoint {
-    id: String,
-    #[serde(rename = "addrs")]
-    _addrs: serde::de::IgnoredAny,
-}
-
-impl ReleasedHint {
-    /// The scope checks [`validate_historical_iroh`] makes of this build's
-    /// hint, in that layout.
-    fn validate(self, join: &VerifiedJoin, hint: &TransportHint) -> Result<(), String> {
-        if self.version != 1
-            || WorkspaceId::parse(&self.room) != Some(join.grant().workspace_id)
-            || self.host_device_certificate != hint.host
-            || self.host_user_public_key != hint.host.user_public_key
-            || tilo_failure::ignored!(
-                "an endpoint id that is not hex names no key, so it matches none",
-                hex::decode(&self.endpoint_addr.id).ok()
-            )
-            .as_deref()
-                != Some(hint.service_public_key.as_slice())
-            || self.packet_relay_url.is_empty()
-            || self.packet_relay_url.len() > 4096
-        {
-            return Err("native signed Iroh scope mismatch".into());
-        }
-        if !hint.host.capabilities.can_own_workspaces {
-            return Err("the device serving the workspace cannot govern workspaces".into());
-        }
-        if join.grant().issuer != self.host_device_certificate {
-            return Err("the device that serves the workspace did not issue the invitation".into());
-        }
-        Ok(())
-    }
-}
-
 fn now_ns(now: SystemTime) -> Result<u64, String> {
     u64::try_from(
         now.duration_since(SystemTime::UNIX_EPOCH)
