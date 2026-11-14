@@ -429,7 +429,7 @@ pub struct Hosted {
     /// The programs the agents working this session's tasks write, which this
     /// session's door runs as steps of their runs.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
-    /// The session's own actions — the arrangement, its undo, the windows and the
+    /// The session's own actions — the layout, its undo, the windows and the
     /// notices — offered to a turn's agent as the broker's steps, so it arranges the
     /// screen as the REPL does.
     pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
@@ -1347,7 +1347,7 @@ fn seams(
                     .into_iter()
                     .collect(),
                 // The session's own actions, published where every other caller of the
-                // desktop reaches them: the arrangement, its undo, the windows and the
+                // desktop reaches them: the layout, its undo, the windows and the
                 // notices, which a turn's agent arranges the screen with (shell.md §8.1).
                 session_actions
                     .map(|actions| actions as std::sync::Arc<dyn HostStepServices>)

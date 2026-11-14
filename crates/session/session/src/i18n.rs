@@ -175,10 +175,10 @@ mod tests {
         assert_eq!(german, "Der Speicher ist voll");
     }
 
-    /// What the arrangement publishes reads in the person's language, and a key its catalogue
+    /// What the layout publishes reads in the person's language, and a key its catalogue
     /// lacks keeps the source words a host names it with.
     #[test]
-    fn the_arrangement_words_resolve_in_the_persons_language() {
+    fn the_layout_words_resolve_in_the_persons_language() {
         // A catalogue installs itself on its first use, and selecting a language before that
         // would be replaced by the desktop's own.
         assert_eq!(

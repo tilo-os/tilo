@@ -8,7 +8,7 @@
 //! workspace refused a write it never saw.
 //! The bug this holds: the device tried the write anyway, was told by its own engine
 //! `this device has no secret store, so it holds no channel keys` , and raised that as a
-//! shared-layout refusal — "… did not take your window arrangement: It stays on this device: the
+//! shared-layout refusal — "… did not take your window layout: It stays on this device: the
 //! change could not be read" — a notice that names the workspace and blames the change's shape.
 
 #![cfg(target_os = "linux")]
@@ -149,7 +149,7 @@ fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     assert!(
         !told
             .iter()
-            .any(|notice| notice.contains("did not take your window arrangement")),
+            .any(|notice| notice.contains("did not take your window layout")),
         "no workspace is said to have refused the layout: {told:?}"
     );
 }

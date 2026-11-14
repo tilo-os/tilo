@@ -122,7 +122,7 @@ pub struct Launches {
 
 impl Launches {
     /// What the windows this session runs show, kept with its launches: one store for the shell, the
-    /// layout record and the arrangement.
+    /// layout record and the layout.
     pub(crate) fn notes(&self) -> std::sync::Arc<crate::continuations::Continuations> {
         std::sync::Arc::clone(&self.notes)
     }

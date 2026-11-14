@@ -1480,7 +1480,7 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
     /// Run the session's own action `address` as `actor` with `slot` (its
     /// arguments in the slot form the broker carries), as a step of an agent's
     /// turn the broker already decided: answered on the loop's pass, which is
-    /// where the arrangement and the windows are.
+    /// where the layout and the windows are.
     fn invoke_step(
         &self,
         actor: String,
@@ -1662,7 +1662,7 @@ impl SessionDoors {
 
     /// Answer what the connections asked since the last pass, from `doors`,
     /// the `services` the session runs, and the one `search`; `shows` names
-    /// the resources a place can show, as the arrangement holds them, and
+    /// the resources a place can show, as the layout holds them, and
     /// `person` is whose calls are their own, not someone's for them.
     ///
     /// The services are borrowed briefly, one ask at a time: a change they carry out is the
@@ -1705,8 +1705,8 @@ impl SessionDoors {
                 } => match arguments_of(slot.as_deref()) {
                     // A step a service publishes runs there, on the record the service keeps —
                     // Chat's `record-work` on a turn's summons is the session's Chat service's,
-                    // not the arrangement's. Every other step is the session's own doors': the
-                    // arrangement, the windows and the notices. Any resource a service publishes,
+                    // not the layout's. Every other step is the session's own doors': the
+                    // layout, the windows and the notices. Any resource a service publishes,
                     // at any depth: a note in a notebook the session keeps is the service's as
                     // its notebook is.
                     Ok(arguments)
@@ -2147,7 +2147,7 @@ impl Host {
     }
 
     /// The session's own action `request` names, carried out on the loop's pass as `actor` (the
-    /// person at this seat, or an agent reading): where the arrangement and the windows are.
+    /// person at this seat, or an agent reading): where the layout and the windows are.
     fn invoke_step_at(
         &self,
         actor: String,
@@ -2243,7 +2243,7 @@ impl ActionHost for Host {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         // A person typing at a REPL is the seat: their own step is carried out on the loop's
-        // pass, where the arrangement and the windows are, as their own input is — never
+        // pass, where the layout and the windows are, as their own input is — never
         // through the broker, which decides for an actor on another's word but has no
         // certificate for the person alone. An agent's step is the turn's, and the broker
         // decides it exactly as it decides the agent's app action in that turn.

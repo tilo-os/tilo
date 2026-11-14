@@ -1292,7 +1292,7 @@ mod tests {
         }
     }
 
-    /// The notice that a workspace did not take the window arrangement names the workspace by
+    /// The notice that a workspace did not take the window layout names the workspace by
     /// the name the person gave it. One nobody named, and one that left the shell since, are said
     /// to be that: the title never opens with an empty name, or with a word standing in for one.
     #[test]
@@ -1308,10 +1308,10 @@ mod tests {
         assert_eq!(
             english,
             [
-                "Research did not take your window arrangement",
-                "A workspace with no name did not take your window arrangement",
-                "A workspace with no name did not take your window arrangement",
-                "A workspace this device is no longer in did not take your window arrangement",
+                "Research did not take your window layout",
+                "A workspace with no name did not take your window layout",
+                "A workspace with no name did not take your window layout",
+                "A workspace this device is no longer in did not take your window layout",
             ]
         );
         assert_eq!(

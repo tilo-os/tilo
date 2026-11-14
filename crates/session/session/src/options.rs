@@ -30,7 +30,7 @@ pub struct Options {
     pub presentation: fn() -> ComponentRunnerInputs,
     /// Whether the tilolang shell package (`apps/tl/shell`) runs: its whole screen under the
     /// windows, one part per display, each on its own display's rectangle and stepping aside where
-    /// a fullscreen window owns one — its bar, dock and the person's arrangement as their preset
+    /// a fullscreen window owns one — its bar, dock and the person's layout as their preset
     /// shows it, every window in the well its place leaves it. `false` , the default, until the
     /// desktop's own chrome moves onto it.
     pub shell: bool,

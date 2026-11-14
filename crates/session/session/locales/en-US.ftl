@@ -119,11 +119,11 @@ refusal-reason-other = the reason is not known
 # What a person changed on a workspace's shared shell did not arrive there: the
 # change stays on this device.
 shell-not-shared-app = Shared shell
-shell-not-shared-title = { $workspace } did not take your window arrangement
+shell-not-shared-title = { $workspace } did not take your window layout
 # The same of a workspace nobody named, and of one this device left before the notice came: there
 # is no name to say.
-shell-not-shared-title-unnamed = A workspace with no name did not take your window arrangement
-shell-not-shared-title-gone = A workspace this device is no longer in did not take your window arrangement
+shell-not-shared-title-unnamed = A workspace with no name did not take your window layout
+shell-not-shared-title-gone = A workspace this device is no longer in did not take your window layout
 shell-not-shared-body = It stays on this device: { $reason }.
 
 # A collaborator's device speaks another Tilo protocol version: the two work
