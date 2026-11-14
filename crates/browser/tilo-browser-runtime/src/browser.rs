@@ -1389,9 +1389,12 @@ fn present_desktop(
     // What the palette reads the workspace's records and files in, and the content those files are.
     let (records_store, content_store) = (Rc::clone(&dyn_store), content(config));
     let wake = proxy()?;
-    let owners = desktop_inputs(config, &dyn_store, permissions.clone())?.owners;
+    // The workspace's files are read through the desktop's own owners: a second set of owners
+    // over the same store claims the records the desktop's windows hold, and neither opens them.
+    let inputs = desktop_inputs(config, &dyn_store, permissions)?;
+    let owners = inputs.owners.clone();
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
-        desktop_inputs(config, &dyn_store, permissions)?,
+        inputs,
         dyn_store,
         config.apps.as_deref(),
         config.workspace_name.as_deref(),
