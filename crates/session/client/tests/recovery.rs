@@ -91,91 +91,104 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
 /// Back online after a long outage, a session waiting out its backoff
 /// reconnects when told the network is back, not up to half a minute
 /// later; a connected session is left as it is.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backoff() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
-    let browser = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    // Back online, the page reaches the host through the relay it knew,
-    // whichever port the host came back on.
-    let host = start_host_serving(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
-    )
-    .await;
-    let peer = start_peer(
-        host.iroh(),
-        browser.cert.clone(),
-        host_device.cert.clone(),
-        browser.key.clone(),
-    );
-    let events = peer.events();
-    peer.join_placed(crate::support::WORKSPACE, "Workspace")
+#[test]
+fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backoff() {
+    // The backoff waits on the clock `tilo_clock` lends, and this test holds that clock an hour
+    // ahead and the wall clock still: the wait cannot end by itself, so the dial after the retry
+    // is the session's answer to it, not a timer's, and the deadline its status names stays in
+    // the future for the assertion below.
+    let held = tilo_clock::now() + std::time::Duration::from_secs(3600);
+    let wall = tilo_clock::wall();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    // Wait for the join's own `Ready` event, not a ready phase: the join
-    // is a command the session takes up later, so the phase can read
-    // ready (connected, no workspace waiting) before the workspace is even asked
-    // for, and the session marks the workspace ready before it emits the
-    // event. Either way that `Ready` would land after the drain below.
-    wait_for("the workspace's Ready", || async {
-        events
-            .drain()
-            .iter()
-            .any(|event| {
-                matches!(event, Event::HostReady { ws: workspace_id, .. } if *workspace_id == workspace())
-            })
-            .then_some(())
-    })
-    .await;
-    ready(&[&peer]).await;
-    // Any status change bumps the generation (each envelope's contact
-    // time does); a reconnect is what subscribes the workspace anew.
-    let _ = events.drain();
-    peer.send(Cmd::Retry).unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        !events
-            .drain()
-            .iter()
-            .any(|event| matches!(event, Event::HostReady { .. })),
-        "a connected session is left as it is"
-    );
+    tilo_clock::testing::with_monotonic_time(held, || {
+        tilo_clock::testing::with_wall(wall, || {
+            runtime.block_on(async {
+                let (root, _) = UserIdentity::generate("Ada", 1);
+                let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
+                let browser = enrol(&root, "browser", DeviceCapabilities::member());
+                let state = tempfile::tempdir().unwrap();
+                // Back online, the page reaches the host through the relay it knew,
+                // whichever port the host came back on.
+                let host = start_host_serving(
+                    &root,
+                    &host_device,
+                    state.path(),
+                    "127.0.0.1:0".parse().unwrap(),
+                    HostSettings {
+                        relayed: true,
+                        ..HostSettings::default()
+                    },
+                )
+                .await;
+                let peer = start_peer(
+                    host.iroh(),
+                    browser.cert.clone(),
+                    host_device.cert.clone(),
+                    browser.key.clone(),
+                );
+                let events = peer.events();
+                peer.join_placed(crate::support::WORKSPACE, "Workspace")
+                    .unwrap();
+                // Wait for the join's own `Ready` event, not a ready phase: the join
+                // is a command the session takes up later, so the phase can read
+                // ready (connected, no workspace waiting) before the workspace is even asked
+                // for, and the session marks the workspace ready before it emits the
+                // event. Either way that `Ready` would land after the drain below.
+                wait_for("the workspace's Ready", || async {
+                    events
+                        .drain()
+                        .iter()
+                        .any(|event| {
+                            matches!(event, Event::HostReady { ws: workspace_id, .. } if *workspace_id == workspace())
+                        })
+                        .then_some(())
+                })
+                .await;
+                ready(&[&peer]).await;
+                // Any status change bumps the generation (each envelope's contact
+                // time does); a reconnect is what subscribes the workspace anew.
+                let _ = events.drain();
+                peer.send(Cmd::Retry).unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                assert!(
+                    !events
+                        .drain()
+                        .iter()
+                        .any(|event| matches!(event, Event::HostReady { .. })),
+                    "a connected session is left as it is"
+                );
 
-    drop(host.web);
-    host.relay.shutdown().await;
-    // The session waits out a backoff before its next attempt, and its
-    // status names when that is. The retry is proved by reaching the dial
-    // before that time, so the backoff is the room a stall may take: the
-    // first lasts a quarter of a second and a loaded machine keeps a thread
-    // off the CPU that long, the second twice it.
-    let due = wait_for("the session to wait out a backoff", || async {
-        let status = peer.status();
-        (status.phase == TransportPhase::Offline && status.attempt >= 2)
-            .then_some(status.next_attempt_at_ms)
-            .flatten()
-    })
-    .await;
-    peer.send(Cmd::Retry).unwrap();
-    // The session dials at once, not when the backoff runs out.
-    wait_for("the session to dial again", || async {
-        (peer.status().phase == TransportPhase::Reconnecting).then_some(())
-    })
-    .await;
-    assert!(
-        tilo_clock::unix_now_ms() < due,
-        "back before the backoff ran out"
-    );
-    let host = restart_host_relayed(&root, &host_device, state.path()).await;
-    ready(&[&peer]).await;
-    peer.close();
-    host.relay.shutdown().await;
+                drop(host.web);
+                host.relay.shutdown().await;
+                // The session waits out a backoff before its next attempt, and its
+                // status names when that is.
+                let due = wait_for("the session to wait out a backoff", || async {
+                    let status = peer.status();
+                    (status.phase == TransportPhase::Offline)
+                        .then_some(status.next_attempt_at_ms)
+                        .flatten()
+                })
+                .await;
+                peer.send(Cmd::Retry).unwrap();
+                // The session dials at once, not when the backoff runs out.
+                wait_for("the session to dial again", || async {
+                    (peer.status().phase == TransportPhase::Reconnecting).then_some(())
+                })
+                .await;
+                assert!(
+                    tilo_clock::unix_now_ms() < due,
+                    "back before the backoff ran out"
+                );
+                let host = restart_host_relayed(&root, &host_device, state.path()).await;
+                ready(&[&peer]).await;
+                peer.close();
+                host.relay.shutdown().await;
+            });
+        });
+    });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
