@@ -12,7 +12,7 @@
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names]
+# usage: build.sh OUTPUT_DIR [--profile release|assert|gate|dev|quick] [--[no-]wasm-opt] [--names]
 #                 [--bundle runtime|desktop] [--no-split] [--update]
 #                 [--wasm-only | --wasm-from WASM_DIR] [--wasm-steps auto|builder|local]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
@@ -23,6 +23,12 @@
 # is the development loop's: Cargo's `wasm-dev` profile (no debug
 # information, light optimisation), whose much smaller module wasm-bindgen
 # and the splitter get through in half the time, and no wasm-opt.
+# `gate` (desktop bundle only) is `release` without its whole-program link
+# (Cargo's `wasm-split-gate`, as `lounge-gate` is to the native release): the
+# same opt-level, split and wasm-opt, so a change to one app compiles that app
+# and relinks rather than running fat LTO over every app in one codegen unit.
+# The local tilo.sh stack serves it (the web-desktop-gate-bundle check); what
+# ships stays `release`.
 # `--bundle desktop` builds crates/browser/tilo-web-desktop instead: the same
 # runtime with every web-capable app registered from its manifest, under the
 # runtime's module name so the page host loads it unchanged, plus apps.json;
@@ -75,7 +81,7 @@ set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|gate|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
 out=${1:?$usage}
 shift
 profile=release
@@ -126,13 +132,16 @@ case "$profile" in
   assert) defines_profile wasm-assert || {
     echo "--profile assert needs a workspace that declares [profile.wasm-assert], as this repository's does" >&2; exit 2; }
     cargo_profile=wasm-assert optimize=${optimize:-1} ;;
+  gate) defines_profile wasm-split-gate || {
+    echo "--profile gate needs a workspace that declares [profile.wasm-split-gate], as this repository's does" >&2; exit 2; }
+    cargo_profile=wasm-split-gate optimize=${optimize:-1} ;;
   dev) cargo_profile=dev optimize=${optimize:-0} ;;
   quick) if defines_profile wasm-dev; then cargo_profile=wasm-dev; else cargo_profile=dev; fi; optimize=${optimize:-0} ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
-# A release or qualification bundle is always built whole from source and
-# split: what ships, and what is measured.
-[[ $profile != release && $profile != assert || ( $split == 1 && $update == 0 ) ]] || {
+# A release, qualification or gate bundle is always built whole from source
+# and split: what ships, and what is measured.
+[[ $profile != release && $profile != assert && $profile != gate || ( $split == 1 && $update == 0 ) ]] || {
   echo '--no-split and --update are for dev and quick bundles' >&2; exit 2;
 }
 [[ $wasm_only == 0 || -z $wasm_from ]] || { echo '--wasm-only and --wasm-from exclude each other' >&2; exit 2; }
@@ -145,6 +154,7 @@ esac
 # The runtime bundle's profile strips the symbols at link time; the desktop's
 # keeps them for its splitter.
 [[ $names == 0 || $bundle == desktop ]] || { echo '--names is for the desktop bundle' >&2; exit 2; }
+[[ $profile != gate || $bundle == desktop ]] || { echo '--profile gate is for the desktop bundle' >&2; exit 2; }
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
   desktop) package=tilo-web-desktop ;;
@@ -217,6 +227,8 @@ if [[ "${TILO_USE_ZIG:-0}" == 1 ]]; then
   export AR_wasm32_unknown_unknown="$repo/crates/hosting/tilo-relay/scripts/wasm-ar.sh"
 fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
+# Each step's time, on stderr: what a slow bundle spent its minutes on.
+took() { echo "build.sh: $1 in $((SECONDS - $2))s" >&2; }
 cargo=${CARGO:-cargo}
 # Whether this cargo both compiles elsewhere and runs a program there,
 # bringing a directory of the target dir back (`$CARGO exec --fetch`): asked of
@@ -282,7 +294,9 @@ else
   compile=(build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile")
   metadata=(metadata --format-version 1 --no-deps --offline)
 fi
+local began=$SECONDS
 "$cargo" "${compile[@]}"
+took "compile ($cargo_profile)" "$began"
 # Read Cargo's artifact location; never redirect it.
 target_dir=$("$cargo" "${metadata[@]}" |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
@@ -306,16 +320,20 @@ else
   next="$out/pkg.next"
   rm -rf "$next"
   mkdir -p "$next"
+  began=$SECONDS
   "$bindgen" "$linked" --target web --out-dir "$next" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
+  took wasm-bindgen "$began"
+  began=$SECONDS
   if [[ $bundle == desktop && $split == 1 ]]; then
     bash "$repo/tools/web/wasm-split/split.sh" "$linked" "$next"
   elif [[ $bundle == desktop ]]; then
     bash "$repo/tools/web/wasm-split/split.sh" --unsplit "$next"
   fi
+  [[ $bundle != desktop ]] || took split "$began"
   if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
   # A release or qualification bundle ships exactly what it was built from; no
   # stamp.
-  if [[ $profile != release && $profile != assert && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
+  if [[ $profile != release && $profile != assert && $profile != gate && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
 fi
@@ -355,7 +373,9 @@ if [[ $optimize == 1 ]]; then
   command -v wasm-opt >/dev/null || { echo 'wasm-opt (binaryen) is required; pass --no-wasm-opt to skip' >&2; exit 2; }
   # A few at a time: the start module alone takes gigabytes to optimize.
   # shellcheck disable=SC2086
+  began=$SECONDS
   printf '%s\0' "$out"/pkg/*.wasm | xargs -0 -P 4 -I {} wasm-opt $wasm_opt_flags {} -o {}
+  took wasm-opt "$began"
 else
   wasm_opt_flags=
 fi
@@ -363,7 +383,11 @@ compute_opt=--no-wasm-opt
 [[ $optimize == 1 ]] && compute_opt=--wasm-opt
 if [[ $module_only == 0 ]] && ! kept pkg/compute; then
   # The same profile the page module is built in.
-  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$profile" "$compute_opt" --module-only
+  # A gate bundle's compute module is the release one: it is small, and
+  # separate from the page's module the gate profile is about.
+  began=$SECONDS
+  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "${profile/#gate/release}" "$compute_opt" --module-only
+  took 'compute module' "$began"
 fi
 rustc_version=$(rustc --version)
 bindgen_version=$("$bindgen" --version)

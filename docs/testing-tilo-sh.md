@@ -9,12 +9,18 @@ runs:
 os/containers/tilo-sh/stack.sh up
 ```
 
-By default the stack runs this checkout's programs as plain processes, and
-`t build` compiles them into `./target`, so only what a change touches compiles.
-Each service gets its own state and runtime directory under the stack's state.
-The first run also builds the web bundle and fetches the font catalog; after
-that, `up` takes as long as the programs take to build. `stack.sh help` lists
-every command.
+By default the stack runs this checkout's programs and web bundle as plain
+processes, built by t's checks: `tilo-sh-binaries` and `lounge-gate-cli` (the
+release's code without its whole-program link) and `web-desktop-gate-bundle`
+(the shipped bundle's build without its whole-program link; compiled, bound,
+split and optimized on t). A clean checkout is built as its commit, one with
+changes as t finds it when the run starts. Each check is cached by what it
+read, so a change reruns only the checks it reaches, and the stack fetches
+into the same directory each time, where t brings only the files that changed:
+nothing but the fetch, the site's layout and its precompression (at faster
+levels than the image's) runs on your machine. Each service gets its own state
+and runtime directory under the stack's state. `stack.sh help` lists every
+command.
 
 `stack.sh up --images` runs the release images instead: `image-lounge`,
 `image-api` and `image-web-entry`, built by `t` for this commit, under rootless
@@ -146,8 +152,9 @@ on the same machine.
 ## Other builds
 
 `TILO_SH_CARGO=<command>` builds the programs and the bundle's WebAssembly with
-that cargo drop-in instead of `t build`, for when `t` cannot bring a build back
-to your machine. It must leave what it builds in `./target` as cargo would. A
+that cargo drop-in instead of t's checks, with the bundle's build script
+(`build.sh --bundle desktop`, the shipped profile) run here. It must leave what
+it builds in `./target` as cargo would. A
 drop-in that also runs a program on its builder and brings a directory of its
 target dir back (`<command> --fetch PATH exec PROGRAM ARGS…`) gets the bundle's
 WebAssembly steps too.

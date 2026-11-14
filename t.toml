@@ -2229,6 +2229,31 @@ outputs = ["/target/publish/web-desktop/bundle/**"]
 git = true
 default = false
 
+# The same bundle for the local tilo.sh stack (os/containers/tilo-sh/stack.sh), built as
+# `lounge-gate-binaries` builds its programs: release optimisation without the whole-program link
+# (Cargo.toml's `wasm-split-gate`), so a change to one app compiles that app and relinks instead of
+# running fat LTO over every app in one codegen unit. Split and optimized as the shipped bundle is;
+# what ships, and what the page checks drive, stays `web-desktop-bundle`.
+[[check]]
+name = "web-desktop-gate-wasm"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop-gate/wasm gate"
+needs = ["test-assets"]
+env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/web-desktop-gate/wasm/**"]
+default = false
+
+[[check]]
+name = "web-desktop-gate-bundle"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/web-desktop-bundle.sh bundle /target/publish/web-desktop-gate/bundle /target/publish/web-desktop-gate/wasm gate"
+needs = ["web-desktop-gate-wasm"]
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/web-desktop-gate/bundle/**"]
+git = true
+default = false
+
 # The dates the images below are built at, oci-build.sh's SOURCE_DATE_EPOCH: the commit time of
 # the newest commit that changed a file the image is built from (`source-date.sh`). Only these
 # read Git, so only they are kept per commit, and each takes a second; an image build needs the

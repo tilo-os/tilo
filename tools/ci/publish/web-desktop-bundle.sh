@@ -6,10 +6,12 @@
 # pages around them for this commit (the bundle records it). The image contexts take the bundle
 # as an output instead of each compiling every app to wasm again, and it builds beside the
 # relay's native binaries rather than after them.
-# usage: web-desktop-bundle.sh wasm OUT | web-desktop-bundle.sh bundle OUT WASM_DIR
+# usage: web-desktop-bundle.sh wasm OUT [PROFILE] | web-desktop-bundle.sh bundle OUT WASM_DIR [PROFILE]
+# PROFILE is build.sh's: `release` (the default) is what ships; `gate` is the same without the
+# whole-program link, which the local tilo.sh stack serves (os/containers/tilo-sh/stack.sh).
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: web-desktop-bundle.sh wasm OUT | web-desktop-bundle.sh bundle OUT WASM_DIR'
+usage='usage: web-desktop-bundle.sh wasm OUT [PROFILE] | web-desktop-bundle.sh bundle OUT WASM_DIR [PROFILE]'
 part=${1:?$usage}
 out=${2:?$usage}
 cd "$repo_root"
@@ -19,11 +21,11 @@ mkdir -p "$(dirname -- "$out")"
 case $part in
   wasm)
     python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle desktop --wasm-only >/dev/null
+    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle desktop --profile "${3:-release}" --wasm-only >/dev/null
     ;;
   bundle)
     wasm=${3:?$usage}
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle desktop --wasm-from "$wasm" >/dev/null
+    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle desktop --profile "${4:-release}" --wasm-from "$wasm" >/dev/null
     ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac

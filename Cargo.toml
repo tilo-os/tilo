@@ -1391,6 +1391,16 @@ strip = "symbols"
 inherits = "wasm-release"
 strip = "none"
 
+# `wasm-split` without its whole-program link, as `lounge-gate` is `release`
+# without it: the local tilo.sh stack's and its checks' desktop bundle, which a
+# change to one app relinks in a minute instead of fat LTO's single
+# codegen unit over every app. Same opt-level, same split, same wasm-opt; the
+# module is larger before wasm-opt and the shipped bundle stays `wasm-split`'s.
+[profile.wasm-split-gate]
+inherits = "wasm-split"
+lto = false
+codegen-units = 16
+
 # `wasm-release` with the assertions the qualification surface is behind. A
 # measured release-speed bundle must still refuse what a dev build refuses
 # (`debug_assertions`, `cfg!(debug_assertions)` and the diagnostics that read
