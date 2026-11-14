@@ -252,6 +252,102 @@ fn invoice() -> String {
     )
 }
 
+/// One PBES2 entry of `key4.db` sealing `plaintext` under `global_salt`
+/// with no primary password, its entry salt filled with `salt`.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot seal its entry panics"
+)]
+fn key4_entry(global_salt: &[u8], plaintext: &[u8], salt: u8) -> Vec<u8> {
+    use tilo_seal::compat::nss_pbes2_ciphertext;
+    let entry_salt = [salt; 32];
+    let iv = [0x04, 0x0e, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3];
+    let ciphertext = nss_pbes2_ciphertext(global_salt, b"", &entry_salt, 10_000, &iv, plaintext)
+        .expect("seal a key4 entry");
+    let hmac_sha256 = der(
+        0x30,
+        &der(0x06, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x09]),
+    );
+    let pbkdf2 = der(
+        0x30,
+        &[
+            der(
+                0x06,
+                &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0c],
+            ),
+            der(
+                0x30,
+                &[
+                    der(0x04, &entry_salt),
+                    der(0x02, &[0x27, 0x10]),
+                    der(0x02, &[0x20]),
+                    hmac_sha256,
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    );
+    let cipher = der(
+        0x30,
+        &[
+            der(
+                0x06,
+                &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2a],
+            ),
+            der(0x04, iv.get(2..).unwrap_or_default()),
+        ]
+        .concat(),
+    );
+    der(
+        0x30,
+        &[
+            der(
+                0x30,
+                &[
+                    der(
+                        0x06,
+                        &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0d],
+                    ),
+                    der(0x30, &[pbkdf2, cipher].concat()),
+                ]
+                .concat(),
+            ),
+            der(0x04, &ciphertext),
+        ]
+        .concat(),
+    )
+}
+
+/// One `logins.json` field sealing `plaintext` under the logins `key`.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot seal its login panics"
+)]
+fn login_field(key: &[u8], plaintext: &str) -> String {
+    use base64::Engine as _;
+    use tilo_seal::compat::{NssCipher, nss_cbc_ciphertext};
+    let iv = [7_u8; 8];
+    let ciphertext = nss_cbc_ciphertext(NssCipher::TripleDesCbc, key, &iv, plaintext.as_bytes())
+        .expect("seal a login");
+    base64::engine::general_purpose::STANDARD.encode(der(
+        0x30,
+        &[
+            der(0x04, &super::logins::LOGINS_KEY_ID),
+            der(
+                0x30,
+                &[
+                    der(0x06, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x03, 0x07]),
+                    der(0x04, &iv),
+                ]
+                .concat(),
+            ),
+            der(0x04, &ciphertext),
+        ]
+        .concat(),
+    ))
+}
+
 /// `logins.json` holding `logins` (origin, user name, password) under a key
 /// `key4.db` keeps with no primary password, as Thunderbird writes them.
 #[expect(
@@ -259,93 +355,11 @@ fn invoice() -> String {
     reason = "a fixture that cannot write its files panics with the path"
 )]
 fn write_logins(profile: &Path, logins: &[(String, &str, &str)]) {
-    use base64::Engine as _;
-    use tilo_seal::compat::{NssCipher, nss_cbc_ciphertext, nss_pbes2_ciphertext};
     let global_salt = [0x11_u8; 20];
     let key = [0x5a_u8; 24];
-    let entry = |plaintext: &[u8], salt: u8| {
-        let entry_salt = [salt; 32];
-        let iv = [0x04, 0x0e, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3];
-        let ciphertext =
-            nss_pbes2_ciphertext(&global_salt, b"", &entry_salt, 10_000, &iv, plaintext)
-                .expect("seal a key4 entry");
-        let hmac_sha256 = der(
-            0x30,
-            &der(0x06, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x09]),
-        );
-        let pbkdf2 = der(
-            0x30,
-            &[
-                der(
-                    0x06,
-                    &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0c],
-                ),
-                der(
-                    0x30,
-                    &[
-                        der(0x04, &entry_salt),
-                        der(0x02, &[0x27, 0x10]),
-                        der(0x02, &[0x20]),
-                        hmac_sha256,
-                    ]
-                    .concat(),
-                ),
-            ]
-            .concat(),
-        );
-        let cipher = der(
-            0x30,
-            &[
-                der(
-                    0x06,
-                    &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2a],
-                ),
-                der(0x04, iv.get(2..).unwrap_or_default()),
-            ]
-            .concat(),
-        );
-        der(
-            0x30,
-            &[
-                der(
-                    0x30,
-                    &[
-                        der(
-                            0x06,
-                            &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0d],
-                        ),
-                        der(0x30, &[pbkdf2, cipher].concat()),
-                    ]
-                    .concat(),
-                ),
-                der(0x04, &ciphertext),
-            ]
-            .concat(),
-        )
-    };
+    let entry = |plaintext: &[u8], salt: u8| key4_entry(&global_salt, plaintext, salt);
     write_key4(profile, &global_salt, &key, &entry);
-    let field = |plaintext: &str| {
-        let iv = [7_u8; 8];
-        let ciphertext =
-            nss_cbc_ciphertext(NssCipher::TripleDesCbc, &key, &iv, plaintext.as_bytes())
-                .expect("seal a login");
-        base64::engine::general_purpose::STANDARD.encode(der(
-            0x30,
-            &[
-                der(0x04, &super::logins::LOGINS_KEY_ID),
-                der(
-                    0x30,
-                    &[
-                        der(0x06, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x03, 0x07]),
-                        der(0x04, &iv),
-                    ]
-                    .concat(),
-                ),
-                der(0x04, &ciphertext),
-            ]
-            .concat(),
-        ))
-    };
+    let field = |plaintext: &str| login_field(&key, plaintext);
     let entries: Vec<serde_json::Value> = logins
         .iter()
         .enumerate()
