@@ -31,6 +31,16 @@ hex.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
+# A text document's file, projected from the tree that holds it (`tree::document_file`).
+tilo-content = { version = "0.1.0", path = "../content", optional = true }
+tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
+tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
+
+[features]
+# Read a text document of the tree as its file: what a reader without the
+# filesystem (a page's Files and search, an agent's host) opens and searches.
+documents = ["dep:tilo-content", "dep:tilo-doc", "dep:tilo-doc-codecs"]
+
 [dev-dependencies]
 getrandom.workspace = true
 postcard = { workspace = true, features = ["alloc"] }

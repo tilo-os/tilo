@@ -1026,6 +1026,19 @@ tilo_test_env::scenario! {
                 s.contains("Title") && s.contains("Hello world"),
                 "round-trip lost content: {s}"
             );
+            // A reader with only the tree record (a page's Files, an agent's
+            // host) reads the same file from it.
+            let id = ns.id_for_ino(ino).unwrap().to_owned();
+            let mut record = automerge::AutoCommit::load(&ns.save()).unwrap();
+            let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+            let node = tree.node(&id).unwrap();
+            assert_eq!(
+                (node.codec.as_deref(), node.hash.as_deref()),
+                (Some("md"), None)
+            );
+            let file =
+                fs_protocol::tree::document_file(&record, &id, &tilo_content::NoContent).unwrap();
+            assert_eq!(file, out, "the file the tree record holds is the mount's");
         }
         {
             let mut ns = Namespace::new("a").unwrap();

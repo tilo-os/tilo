@@ -190,6 +190,7 @@ tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-
 key-group = { version = "0.1.0", path = "../../collab/key-group", optional = true }
 
 [dev-dependencies]
+fs-protocol = { version = "0.1.0", path = "../fs-protocol", features = ["documents"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
