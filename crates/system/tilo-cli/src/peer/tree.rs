@@ -323,27 +323,22 @@ impl Sync {
             // found a second one beside it.
             return;
         }
-        let mut namespace = self.namespace.lock_recover();
-        if namespace.heads() == self.sent {
-            return;
-        }
-        let mutation = if self.founded {
-            let bytes = namespace.changes_since(&self.sent);
-            if bytes.is_empty() {
-                self.sent = namespace.heads();
+        let outgoing = outgoing(&mut self.namespace.lock_recover(), &self.sent, self.founded);
+        let (mutation, covered) = match outgoing {
+            Outgoing::Nothing => return,
+            Outgoing::Covered(heads) => {
+                self.sent = heads;
                 return;
             }
-            DocumentMutation::Incremental(bytes)
-        } else {
-            if !namespace.holds_tree() {
-                return;
-            }
-            DocumentMutation::Snapshot(namespace.save())
+            Outgoing::Write(mutation, heads) => (mutation, heads),
         };
-        drop(namespace);
         if self.link.write(self.route.clone(), &mutation).is_ok() {
             self.founded = true;
-            self.sent = self.namespace.lock_recover().heads();
+            // What the write carries, not what the namespace holds now: the
+            // mount keeps changing it while the write goes out, and a change
+            // made meanwhile counted as sent would never reach the host, which
+            // then leaves out every later write of this device.
+            self.sent = covered;
         }
     }
 
@@ -395,6 +390,36 @@ impl Sync {
             Err(error) => tracing::warn!(%error, "the workspace's tree is not kept on disk"),
         }
     }
+}
+
+/// What a namespace has to send after `sent`.
+enum Outgoing {
+    /// Nothing, or nothing it may send yet.
+    Nothing,
+    /// Nothing new: everything up to these heads is out.
+    Covered(Vec<automerge::ChangeHash>),
+    /// This write, which carries the namespace up to these heads.
+    Write(DocumentMutation, Vec<automerge::ChangeHash>),
+}
+
+/// What `namespace` has to send after `sent`, read under one lock with the heads it reaches.
+/// Until the record is `founded`, the whole tree goes out once it holds one.
+fn outgoing(namespace: &mut Namespace, sent: &[automerge::ChangeHash], founded: bool) -> Outgoing {
+    let heads = namespace.heads();
+    if heads == sent {
+        return Outgoing::Nothing;
+    }
+    if founded {
+        let bytes = namespace.changes_since(sent);
+        if bytes.is_empty() {
+            return Outgoing::Covered(heads);
+        }
+        return Outgoing::Write(DocumentMutation::Incremental(bytes), heads);
+    }
+    if !namespace.holds_tree() {
+        return Outgoing::Nothing;
+    }
+    Outgoing::Write(DocumentMutation::Snapshot(namespace.save()), heads)
 }
 
 /// The record's heads as the namespace's change hashes: the same changes,
@@ -459,5 +484,39 @@ mod tests {
                 .any(|node| node.name.as_bytes() == b"contract.txt" && node.hash.is_some()),
             "{tree:?}"
         );
+    }
+    #[test]
+    fn a_change_made_while_a_write_goes_out_goes_out_next() {
+        let mut namespace = Namespace::new("laptop").unwrap();
+        let file = |namespace: &mut Namespace, name: &str| {
+            let hash = iroh_blobs::Hash::new(name.as_bytes());
+            namespace
+                .create_file(tilo_fs::namespace::ROOT_INO, name, Some(&hash), 4, 1)
+                .unwrap();
+        };
+        file(&mut namespace, "contract.txt");
+        let Outgoing::Write(DocumentMutation::Snapshot(first), covered) =
+            outgoing(&mut namespace, &[], false)
+        else {
+            panic!("the first tree goes out whole");
+        };
+        // The mount writes another file before the write's answer is back.
+        file(&mut namespace, "handbook.md");
+        let Outgoing::Write(DocumentMutation::Incremental(next), _) =
+            outgoing(&mut namespace, &covered, true)
+        else {
+            panic!("the file written meanwhile is still to send");
+        };
+
+        // What the host keeps: both writes, every change built on one it holds.
+        let mut record = automerge::AutoCommit::load(&[first, next].concat()).unwrap();
+        assert!(record.get_missing_deps(&[]).is_empty());
+        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        for name in [&b"contract.txt"[..], b"handbook.md"] {
+            assert!(
+                tree.nodes.values().any(|node| node.name.as_bytes() == name),
+                "{tree:?}"
+            );
+        }
     }
 }
