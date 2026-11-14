@@ -863,6 +863,10 @@ fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
 /// and a click on a language there chooses it.
 #[test]
 fn a_pointer_click_picks_the_language() {
+    // The second click aims at where a row of the open list rests, so the list is read at rest:
+    // on its way open the rows are elsewhere, and how far along it is by then is the machine's
+    // speed.
+    let _arrived = ui::motion::testing::settled();
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
     open_row(&mut app, "Deploy");
     let nodes = app.harness().a11y_nodes();

@@ -245,6 +245,12 @@ fn an_image_without_a_readable_code_says_so_over_the_open_sheet() {
     for _ in 0..3 {
         app.harness().idle();
     }
+    // The image is read off the frame, so how many frames pass before its answer is the
+    // machine's speed: wait for the answer rather than count them.
+    app.harness()
+        .wait_until(ui::time::Duration::from_secs(30), |_| {
+            ui::window_toolbar::notice().is_some()
+        });
 
     let notice = ui::window_toolbar::notice().map(|notice| notice.text);
     assert_eq!(

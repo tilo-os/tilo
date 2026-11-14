@@ -1206,8 +1206,11 @@ mod tests {
         assert!(canvas.drag_to(on_screen(&canvas, 2)));
         let (held, _) = canvas.drawn_at(ui::motion::frame_now())[1];
         let gap = canvas.gap();
-        assert!(canvas.release());
+        // Read before the release, so no later than the settle begins. Read after it, the instant
+        // is some of the settle on, and a hand whose velocity is carried in (a press and a drag
+        // less than a tenth of a second apart) has by then moved the speaker past the tolerance.
         let released = ui::motion::frame_now();
+        assert!(canvas.release());
         let rest = canvas.stored()[1];
         let apart = f64::from(rest.0 - points()[2].0).hypot(f64::from(rest.1 - points()[2].1));
         assert!(
