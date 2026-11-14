@@ -372,7 +372,7 @@ impl DesktopChrome {
             Some(strip.id.0.to_string())
         });
         let Some(strip) = target else {
-            self.handle.acknowledge(crate::i18n::t("desk-window-edge"));
+            self.handle.acknowledge(crate::i18n::t("shell-window-edge"));
             return;
         };
         self.dispatch(ChromeEffect::MoveTab {
@@ -400,7 +400,7 @@ impl DesktopChrome {
             Some(display.id.to_string())
         });
         let Some(display) = target else {
-            self.handle.acknowledge(crate::i18n::t("desk-window-edge"));
+            self.handle.acknowledge(crate::i18n::t("shell-window-edge"));
             return;
         };
         self.dispatch(ChromeEffect::MoveTab {

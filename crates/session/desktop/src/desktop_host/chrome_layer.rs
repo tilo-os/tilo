@@ -61,6 +61,9 @@ pub struct DesktopChrome {
     /// The bars of the other displays, each on its own: a display besides the one in use carries
     /// the compact bar.
     compact: Vec<TopBarChrome>,
+    /// The desk's confirmations in passing ("Link copied"), over the windows on the display the
+    /// person works on.
+    acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
     /// Where the bars stood at the bar's source last reading, and the snapshot revision it was read
     /// at.
     placement: Placement,
@@ -238,6 +241,9 @@ impl DesktopChrome {
         Self {
             bar,
             compact: Vec::new(),
+            acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(
+                handle.acknowledger(),
+            ),
             placement: Placement::default(),
             bars_revision: u64::MAX,
             overview: OverviewPanel::new(),
@@ -853,10 +859,10 @@ impl DesktopChrome {
                     // Stepping past the end says which end it was.
                     None if delta > 0 => self
                         .handle
-                        .acknowledge(crate::i18n::t("desk-last-workspace")),
+                        .acknowledge(crate::i18n::t("shell-last-workspace")),
                     None if delta < 0 => {
                         self.handle
-                            .acknowledge(crate::i18n::t("desk-first-workspace"));
+                            .acknowledge(crate::i18n::t("shell-first-workspace"));
                     }
                     None => {}
                 }
@@ -1506,9 +1512,9 @@ impl DesktopChrome {
     fn step_strip(&self, steps: isize) {
         if !self.go_to_strip(|current| current.checked_add_signed(steps)) {
             if steps > 0 {
-                self.handle.acknowledge(crate::i18n::t("desk-last-strip"));
+                self.handle.acknowledge(crate::i18n::t("shell-last-strip"));
             } else if steps < 0 {
-                self.handle.acknowledge(crate::i18n::t("desk-first-strip"));
+                self.handle.acknowledge(crate::i18n::t("shell-first-strip"));
             }
         }
     }
@@ -2348,6 +2354,8 @@ impl Widget for DesktopChrome {
         let under_bar = ui::widget::layout_rect(taffy, *overview, inner);
         let area = self.overview_area().unwrap_or(under_bar);
         self.overview.stand_in(area);
+        self.acknowledgement
+            .place(self.working_display().unwrap_or(self.rect));
         self.about.apply_layout(taffy, *about, inner);
         self.workspace_menu
             .apply_layout(taffy, *workspace_menu, inner);
@@ -2431,6 +2439,9 @@ impl Widget for DesktopChrome {
         // Above even search: Alt+Tab's panel, which is the walk the person is in the middle of and
         // the only thing a press reaches while it is up.
         let host = self.working_display().unwrap_or(self.rect);
+        self.acknowledgement.place(host);
+        self.acknowledgement
+            .draw_child(scene, transform, text, theme, presence);
         self.switcher.draw(scene, transform, text, theme, host);
         // Over all of it, and in the way of nothing: the keys a held Super reaches take no input,
         // so the switcher a chord of them opens is never under them for long.
@@ -2551,6 +2562,7 @@ impl Widget for DesktopChrome {
             &self.about,
             &self.workspace_menu,
             &self.search,
+            &self.acknowledgement,
         ];
         children.extend(self.notices.iter().map(|layer| layer as &dyn Widget));
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
@@ -2646,6 +2658,7 @@ impl Widget for DesktopChrome {
             &mut self.about,
             &mut self.workspace_menu,
             &mut self.search,
+            &mut self.acknowledgement,
         ];
         children.extend(
             self.notices
@@ -2707,6 +2720,7 @@ impl Widget for DesktopChrome {
             &self.overview,
             &self.about,
             &self.search,
+            &self.acknowledgement,
         ]
         .into_iter()
         .chain(self.notices.iter().map(|layer| layer as &dyn Widget))

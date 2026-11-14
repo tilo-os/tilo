@@ -226,7 +226,7 @@ impl State {
         self.space
             .outputs()
             .filter_map(|output| self.space.output_geometry(output))
-            .reduce(|all, one| all.merge(one))
+            .reduce(Rectangle::merge)
     }
 
     /// The size of the lock screen as the person sees it, in logical pixels: the rectangle every
@@ -252,7 +252,13 @@ impl State {
         let here = self.space.output_geometry(output)?.loc;
         let bounds = self.lock_bounds()?.loc;
         let surface = self.lock_surfaces_on(output).into_iter().next()?;
-        Some((surface, bounds - here))
+        Some((
+            surface,
+            Point::from((
+                bounds.x.saturating_sub(here.x),
+                bounds.y.saturating_sub(here.y),
+            )),
+        ))
     }
 
     /// The lock screen under a logical point, and where the screen's corner stands: a person

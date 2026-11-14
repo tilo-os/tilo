@@ -216,8 +216,6 @@ impl Acknowledger {
 pub struct AcknowledgementLayer {
     acknowledger: Acknowledger,
     rect: Rect,
-    /// Where the pill is said, when not across the whole layer ([`Self::set_area`]).
-    area: Option<Rect>,
     drawn: Cell<Option<(u64, bool)>>,
     reduce_motion: bool,
 }
@@ -227,7 +225,6 @@ impl AcknowledgementLayer {
         Self {
             acknowledger,
             rect: Rect::ZERO,
-            area: None,
             drawn: Cell::new(None),
             reduce_motion: false,
         }
@@ -237,10 +234,10 @@ impl AcknowledgementLayer {
         &self.acknowledger
     }
 
-    /// Say the pill within `area` (the display the person works on) rather than across the whole
-    /// layer; `None` for the whole layer.
-    pub fn set_area(&mut self, area: Option<Rect>) {
-        self.area = area;
+    /// Say the pill within `area` : a host that draws the layer itself, not through layout, says
+    /// where it stands, such as the display the person works on.
+    pub fn place(&mut self, area: Rect) {
+        self.rect = area;
     }
 
     fn showing(&self, now: Instant) -> bool {
@@ -297,8 +294,7 @@ impl Widget for AcknowledgementLayer {
         let current = self.acknowledger.current(now);
         if let Some(ack) = &current {
             let alpha = ack.alpha_at(now, theme.reduce_motion);
-            let area = self.area.unwrap_or(self.rect);
-            ack.draw(scene, transform, text, theme, area, alpha);
+            ack.draw(scene, transform, text, theme, self.rect, alpha);
         }
         self.drawn
             .set(Some((self.acknowledger.raised.get(), current.is_some())));

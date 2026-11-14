@@ -382,7 +382,7 @@ pub(super) fn paint_team_card(
         transform,
         theme,
         card,
-        "desk-team-title",
+        "shell-team-title",
         TEAM_HEADER,
     );
     let avatar = match stage {
@@ -473,7 +473,7 @@ pub(super) fn paint_team_card(
     }
     if members.len() > rows.len() {
         let more = t_args(
-            "desk-team-more",
+            "shell-team-more",
             &[("count", (members.len() - rows.len()).into())],
         );
         let y = rows.last().map_or(card.y0 + TEAM_HEADER, |row| row.y1);
@@ -712,7 +712,7 @@ pub(super) fn paint_monitor_glance(
     if reading.is_empty() {
         // The widget is up and the first reading is on its way: its name,
         // dim, until there is a number.
-        let title = t("desk-monitor-title");
+        let title = t("shell-monitor-title");
         let (_, h) = text.measure_style(&title, None, &value_style);
         text.draw_style(
             scene,
@@ -725,8 +725,8 @@ pub(super) fn paint_monitor_glance(
         return;
     }
     let pairs = [
-        ("desk-monitor-cpu-short", reading.cpu_percent),
-        ("desk-monitor-memory-short", reading.memory_percent),
+        ("shell-monitor-cpu-short", reading.cpu_percent),
+        ("shell-monitor-memory-short", reading.memory_percent),
     ];
     let mut x = rect.x0 + PAD;
     for (key, value) in pairs {
@@ -773,7 +773,7 @@ pub(super) fn paint_monitor_card(
         transform,
         theme,
         card,
-        "desk-monitor-title",
+        "shell-monitor-title",
         MONITOR_HEADER,
     );
     if stage == Stage::Compact {
@@ -783,8 +783,8 @@ pub(super) fn paint_monitor_card(
             .with_weight(TextWeight::Semibold);
         let half = (card.width() - 2.0 * PAD) / 2.0;
         for (k, (key, value)) in [
-            ("desk-monitor-cpu", reading.cpu_percent),
-            ("desk-monitor-memory", reading.memory_percent),
+            ("shell-monitor-cpu", reading.cpu_percent),
+            ("shell-monitor-memory", reading.memory_percent),
         ]
         .into_iter()
         .enumerate()
@@ -817,19 +817,19 @@ pub(super) fn paint_monitor_card(
     }
     let rows = [
         (
-            "desk-monitor-cpu",
+            "shell-monitor-cpu",
             reading
                 .cpu_percent
                 .map(|v| (format!("{v}%"), f64::from(v) / 100.0)),
         ),
         (
-            "desk-monitor-memory",
+            "shell-monitor-memory",
             reading
                 .memory_percent
                 .map(|v| (format!("{v}%"), f64::from(v) / 100.0)),
         ),
         (
-            "desk-monitor-temperature",
+            "shell-monitor-temperature",
             reading
                 .temperature_celsius
                 .map(|c| (format!("{c}\u{b0}"), (f64::from(c) / 100.0).clamp(0.0, 1.0))),
@@ -927,10 +927,10 @@ pub(super) fn paint_grip(
 /// A widget's name, for the controls that open, fold, pin or remove it.
 pub(super) fn desk_widget_title(id: WidgetId) -> String {
     t(match id {
-        WidgetId::Music => "desk-widget-music",
-        WidgetId::Team => "desk-widget-team",
-        WidgetId::Calendar => "desk-widget-calendar",
-        WidgetId::SystemMonitor => "desk-widget-system-monitor",
+        WidgetId::Music => "shell-widget-music",
+        WidgetId::Team => "shell-widget-team",
+        WidgetId::Calendar => "shell-widget-calendar",
+        WidgetId::SystemMonitor => "shell-widget-system-monitor",
     })
 }
 

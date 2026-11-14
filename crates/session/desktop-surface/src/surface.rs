@@ -363,6 +363,12 @@ impl DesktopHandle {
         shared.wake.wake();
     }
 
+    /// What says the confirmations ([`Self::acknowledge`]): the host draws them over the windows.
+    #[must_use]
+    pub fn acknowledger(&self) -> ui::widget::acknowledgement::Acknowledger {
+        self.shared.borrow().acknowledger.clone()
+    }
+
     pub fn revision(&self) -> u64 {
         self.shared.borrow().revision
     }
@@ -914,7 +920,6 @@ pub struct DesktopSurface {
     inbox: Option<AppInbox>,
     /// What an action that leaves nothing to see confirms in passing ("Link copied"), over
     /// everything else.
-    acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
     /// "Kim opened Notes": windows others opened out of sight.
     arrival_hints: arrivals::ArrivalHints,
     /// "Not responding": the windows whose app stopped answering, each with its Wait and its Force
@@ -978,13 +983,12 @@ impl DesktopSurface {
         let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =
             Rc::new(RefCell::new(tilo_desktop_search::LazyDesktopSearch::new()));
         let shared = Rc::new(RefCell::new(Shared::new(tree, minter, &search)));
-        let acknowledger = shared.borrow().acknowledger.clone();
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
         let tiles = Box::new(peer_view::PeerTiles::new(
             tiles,
             Rc::clone(&shared.borrow().peers),
         )) as Box<dyn TileSource>;
-        let mut surface = Self::standing(Rc::clone(&shared), tiles, &search, acknowledger);
+        let mut surface = Self::standing(Rc::clone(&shared), tiles, &search);
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
     }
@@ -995,7 +999,6 @@ impl DesktopSurface {
         shared: Rc<RefCell<Shared>>,
         tiles: Box<dyn TileSource>,
         search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
-        acknowledger: ui::widget::acknowledgement::Acknowledger,
     ) -> Self {
         Self {
             shared,
@@ -1026,7 +1029,6 @@ impl DesktopSurface {
             activity: None,
             activity_loading: false,
             inbox: None,
-            acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
             arrival_hints: arrivals::ArrivalHints::default(),
             hung_apps: hung::HungApps::default(),
             controls: None,
@@ -2074,16 +2076,12 @@ impl Widget for DesktopSurface {
             .collect();
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let hung = self.hung_apps.build_layout(taffy, theme, node_map);
-        let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
         // The rows, each over the whole surface and drawing only in its
         // displays' lanes, come first, then the arrival hints and the cards of
-        // apps that stopped answering, and the acknowledgement last. Search and
-        // the notifications are drawn over the windows, by the host above them,
-        // not in this tree.
-        let children: Vec<NodeId> = rows
-            .into_iter()
-            .chain([arrivals, hung, acknowledgement])
-            .collect();
+        // apps that stopped answering. Search, the notifications and the
+        // confirmations are drawn over the windows, by the host above them, not
+        // in this tree.
+        let children: Vec<NodeId> = rows.into_iter().chain([arrivals, hung]).collect();
         let style = Style {
             display: ui::taffy::Display::Flex,
             flex_direction: ui::taffy::FlexDirection::Column,
@@ -2101,11 +2099,9 @@ impl Widget for DesktopSurface {
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
         let strips = self.drawn_strips();
-        if let [.., arrivals, hung, acknowledgement] = nodes[..] {
+        if let [.., arrivals, hung] = nodes[..] {
             self.arrival_hints.apply_layout(taffy, arrivals, inner);
             self.hung_apps.apply_layout(taffy, hung, inner);
-            self.acknowledgement
-                .apply_layout(taffy, acknowledgement, inner);
         }
         let reveal = self.reveal.take();
         let shown = self.shown;
@@ -2376,7 +2372,6 @@ impl Widget for DesktopSurface {
             .chain([
                 &self.arrival_hints as &dyn Widget,
                 &self.hung_apps as &dyn Widget,
-                &self.acknowledgement as &dyn Widget,
             ])
             .collect()
     }
@@ -2399,10 +2394,7 @@ impl Widget for DesktopSurface {
             .collect();
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let hung = &mut self.hung_apps as &mut (dyn Widget + '_);
-        let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
-        rows.into_iter()
-            .chain([arrivals, hung, acknowledgement])
-            .collect()
+        rows.into_iter().chain([arrivals, hung]).collect()
     }
 
     fn set_platform_conventions(&mut self, conventions: ui::platform::PlatformConventions) {
@@ -2560,12 +2552,6 @@ impl DesktopSurface {
         self.arrival_hints
             .draw_child(scene, transform, text, theme, presence);
         self.hung_apps
-            .draw_child(scene, transform, text, theme, presence);
-        // A confirmation is said on the display the person works on, not across the seam.
-        let working = displays::working_display(&self.shared.borrow().tree)
-            .map(|display| display + self.rect.origin().to_vec2());
-        self.acknowledgement.set_area(working);
-        self.acknowledgement
             .draw_child(scene, transform, text, theme, presence);
     }
 }

@@ -289,3 +289,30 @@ fn a_strip_nobody_named_is_reached_by_the_word_the_desk_reads() {
         "the name it kept before the person named it is not its name"
     );
 }
+
+/// A confirmation in passing is said politely over the windows, wakes the host for its fade and
+/// end, and is no notification.
+#[test]
+fn a_confirmation_passes_over_the_windows_without_a_notification() {
+    use ui::widget::Widget as _;
+    let (chrome, handle) = chrome_over_a_desk();
+    let said = |chrome: &DesktopChrome| {
+        chrome
+            .children()
+            .iter()
+            .filter_map(|layer| layer.accessibility())
+            .find_map(|node| node.live.zip(node.value))
+    };
+    assert_eq!(
+        said(&chrome),
+        Some((ui::a11y::Politeness::Polite, String::new())),
+        "present and silent before anything is said"
+    );
+    handle.acknowledge("Link copied");
+    assert_eq!(
+        said(&chrome),
+        Some((ui::a11y::Politeness::Polite, "Link copied".to_owned()))
+    );
+    assert!(chrome.needs_redraw());
+    assert!(chrome.next_wake_deadline().is_some());
+}

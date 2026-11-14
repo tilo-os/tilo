@@ -827,13 +827,13 @@ impl DeskWidgets {
     fn offer_undo(&self, id: WidgetId) {
         let name = paint::desk_widget_title(id);
         let mut toast = Notification::new(
-            crate::i18n::t_args("desk-widget-removed", &[("widget", name.as_str().into())]),
+            crate::i18n::t_args("shell-widget-removed", &[("widget", name.as_str().into())]),
             String::new(),
         )
         .with_severity(NotificationSeverity::Info)
         .with_icon_kind(NotificationIconKind::Generic);
         toast.dismiss_after = CLEAR_UNDO_WINDOW;
-        toast.actions = vec![("default".into(), crate::i18n::t("desk-widget-undo"))];
+        toast.actions = vec![("default".into(), crate::i18n::t("shell-widget-undo"))];
         toast.show_on_lock_screen = false;
         let posted = self.notices.post(toast);
         self.undo.borrow_mut().insert(posted, id);
@@ -1046,14 +1046,16 @@ impl DeskWidgets {
         paint::paint_card_ground(scene, transform, theme, open);
         let pinned = self.prefs.get(slot.id).always_on(None);
         let title = paint::desk_widget_title(slot.id);
-        let collapse_label =
-            crate::i18n::t_args("desk-widget-collapse", &[("widget", title.as_str().into())]);
+        let collapse_label = crate::i18n::t_args(
+            "shell-widget-collapse",
+            &[("widget", title.as_str().into())],
+        );
         let remove_label =
-            crate::i18n::t_args("desk-widget-remove", &[("widget", title.as_str().into())]);
+            crate::i18n::t_args("shell-widget-remove", &[("widget", title.as_str().into())]);
         let pin_label = crate::i18n::t(if pinned {
-            "desk-widget-unpin"
+            "shell-widget-unpin"
         } else {
-            "desk-widget-pin"
+            "shell-widget-pin"
         });
         let cursor_on =
             |rect: Rect| cursor.is_some_and(|p| rect.contains(p)) && self.grab.is_none();
@@ -1453,20 +1455,20 @@ impl Widget for DeskWidgets {
                 (
                     slot.open,
                     crate::i18n::t_args(
-                        "desk-widget-collapse",
+                        "shell-widget-collapse",
                         &[("widget", title.as_str().into())],
                     ),
                 )
             } else {
                 (
                     slot.glance,
-                    crate::i18n::t_args("desk-widget-open", &[("widget", title.as_str().into())]),
+                    crate::i18n::t_args("shell-widget-open", &[("widget", title.as_str().into())]),
                 )
             };
             children.push(control(target.clone(), name, bounds));
             let remove = control(
                 format!("{target}.remove"),
-                crate::i18n::t_args("desk-widget-remove", &[("widget", title.as_str().into())]),
+                crate::i18n::t_args("shell-widget-remove", &[("widget", title.as_str().into())]),
                 if form == Form::Open {
                     paint::remove_rect(slot.open)
                 } else {
@@ -1477,9 +1479,9 @@ impl Widget for DeskWidgets {
                 Form::Open => {
                     let pinned = self.prefs.get(slot.id).always_on(None);
                     let pin = crate::i18n::t(if pinned {
-                        "desk-widget-unpin"
+                        "shell-widget-unpin"
                     } else {
-                        "desk-widget-pin"
+                        "shell-widget-pin"
                     });
                     children.push(control(
                         format!("{target}.pin"),

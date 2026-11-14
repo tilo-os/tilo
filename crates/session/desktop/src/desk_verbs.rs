@@ -171,21 +171,21 @@ pub fn desk_resource(
                 &LayoutEffect::Focus {
                     tab: id.to_string(),
                 },
-                Some(t_args("desk-focus-window", names_the_window)),
+                Some(t_args("shell-focus-window", names_the_window)),
             ))
             .with_action(bound(
                 &LayoutEffect::CloseTab {
                     tab: id.to_string(),
                 },
-                Some(t_args("desk-close-window", names_the_window)),
+                Some(t_args("shell-close-window", names_the_window)),
             ));
         // A window this session does not run has no surface of its own to ask what it shows: the
         // desk answers both read actions for it, and neither acts on it
         // (`tilo_desktop_surface::window`).
         if shown.foreign.is_some() {
             window = window
-                .with_action(window::look(t_args("desk-look-window", names_the_window)))
-                .with_action(window::read(t_args("desk-read-window", names_the_window)));
+                .with_action(window::look(t_args("shell-look-window", names_the_window)))
+                .with_action(window::read(t_args("shell-read-window", names_the_window)));
         }
         // Only a window whose app stopped answering offers the two ways out of it: quitting a
         // healthy app is nobody's accident to make.
@@ -197,13 +197,13 @@ pub fn desk_resource(
                 &LayoutEffect::WaitWindow {
                     tab: id.to_string(),
                 },
-                Some(t_args("desk-wait-window", names_the_window)),
+                Some(t_args("shell-wait-window", names_the_window)),
             ))
             .with_action(bound(
                 &LayoutEffect::ForceQuitApp {
                     tab: id.to_string(),
                 },
-                Some(t_args("desk-force-quit-window", names_the_window)),
+                Some(t_args("shell-force-quit-window", names_the_window)),
             ))
     });
     let search = search.map(search_resource);

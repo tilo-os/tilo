@@ -392,35 +392,6 @@ fn a_windows_search_stands_over_that_window() {
     );
 }
 
-/// An acknowledgement is said politely over the desktop, wakes the host for its fade and end, and
-/// is no notification.
-#[test]
-fn an_acknowledgement_passes_over_the_desktop_without_a_notification() {
-    let (mut surface, handle) = desktop(1);
-    let notifications = DesktopNotifications::default();
-    surface.set_notifications(notifications.clone());
-    let said = |surface: &DesktopSurface| {
-        surface
-            .children()
-            .last()
-            .and_then(|layer| layer.accessibility())
-            .and_then(|node| node.live.zip(node.value))
-    };
-    // Present and silent before anything is said.
-    assert_eq!(
-        said(&surface),
-        Some((ui::a11y::Politeness::Polite, String::new()))
-    );
-    handle.acknowledge("Link copied");
-    assert_eq!(
-        said(&surface),
-        Some((ui::a11y::Politeness::Polite, "Link copied".to_owned()))
-    );
-    assert!(surface.needs_redraw());
-    assert!(Widget::next_wake_deadline(&surface).is_some());
-    assert_eq!(notifications.counts(), (0, 0));
-}
-
 /// Each select a host sends applies in the frame its wake draws, in order, while the strip pans
 /// between windows.
 #[test]
