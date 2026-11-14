@@ -446,11 +446,13 @@ impl Service {
 
     fn room_for(&self, expected_mib: u64, except: &str) -> bool {
         let used = self.used_mib(except).saturating_add(self.building_mib());
-        if !self.budget.admits(used, expected_mib) {
-            return false;
-        }
-        // The arithmetic is what this host counted; this is what it really has. The page cache of a
-        // hundred VMs' disks is available, but the kernel may not have given it back yet.
+        self.budget.admits(used, expected_mib) && self.free_for(expected_mib)
+    }
+
+    /// Whether the machine really has `expected_mib` to hand out over the host's own reserve: the
+    /// arithmetic is what this host counted, this is what it has. The page cache of a hundred VMs'
+    /// disks is available, but the kernel may not have given it back yet.
+    fn free_for(&self, expected_mib: u64) -> bool {
         (self.available)()
             .is_none_or(|free| free >= self.budget.reserve_mib.saturating_add(expected_mib))
     }
@@ -754,13 +756,21 @@ impl Service {
     }
 
     /// Start making `size`'s template when it has none, there is room for it, and it was not tried
-    /// lately. A template is counted at its guest's whole configured memory, which warming
-    /// deliberately fills, so a node that cannot spare that much makes none and boots its VMs cold.
+    /// lately. Admission counts a template at its guest's whole configured memory, so no VM is
+    /// admitted on room the template may take; what the machine must have *free* for it is less.
+    /// Warming reads a fixed set of the guest's files — the session, its runtime and its apps — and
+    /// the pages it keeps are file-backed and shared with every clone of it, so a machine that can
+    /// hold a clone can make the template. Asking it for the whole size there made such a machine
+    /// make none and boot every VM cold.
     fn keep_template(self: &Arc<Self>, size: VmSize, now: u64) {
         let settings = &self.config.settings;
         if super::vm::template_dir(settings, size).is_none()
             || super::vm::template(settings, size).is_some()
-            || !self.room_for(size.memory_mib(), "")
+            || !self.budget.admits(
+                self.used_mib("").saturating_add(self.building_mib()),
+                size.memory_mib(),
+            )
+            || !self.free_for(self.budget.expected_mib())
         {
             return;
         }

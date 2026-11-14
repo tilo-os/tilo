@@ -407,6 +407,23 @@ impl WorkspaceActions {
         self.ledger().owned(caller, id).is_some()
     }
 
+    /// How invocation `id` of `caller` stands here now, when this host holds it: what a caller
+    /// follows a long-running action with to learn what it made, and what a host reads to place a
+    /// window once an open's record exists.
+    #[must_use]
+    pub fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let update = {
+            let ledger = self.ledger();
+            ledger
+                .entries
+                .get(id)
+                .filter(|entry| entry.caller == *caller)?
+                .update
+                .clone()
+        };
+        Some(InvocationState::new(*id, update))
+    }
+
     fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
         self.shared.ledger.lock_recover()
     }

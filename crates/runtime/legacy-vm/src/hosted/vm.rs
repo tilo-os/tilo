@@ -31,6 +31,9 @@ const MAX_SHARES: u32 = 64;
 
 /// How long a cold boot or restore may take before the agent answers.
 const AGENT_PATIENCE: Duration = Duration::from_secs(120);
+/// How long setting a restored guest's clock may take: one small program in a guest that answered
+/// its agent a moment ago.
+const CLOCK_PATIENCE: Duration = Duration::from_secs(30);
 
 /// Wall-clock milliseconds since the epoch.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -579,7 +582,27 @@ impl HostedVm {
                 millis: u64::try_from(wake.elapsed().as_millis()).unwrap_or(u64::MAX),
             });
         }
+        if self.restoring {
+            self.set_guest_clock();
+        }
         Ok(())
+    }
+
+    /// Set a restored guest's clock from the host's. A clone resumes with the clock its template was
+    /// snapshotted at, which is behind the host's by however long the template has been kept: a
+    /// certificate the relay issued this moment is then "not yet valid" inside the VM, and the
+    /// session that scans it refuses its own identity. What reads a clock in the guest — the
+    /// session's identity, its history, a program's timestamps — reads the host's time instead.
+    fn set_guest_clock(&self) {
+        // The next whole second, not this one: `date` takes whole seconds, and a guest set to the
+        // second this host is in is still behind the nanoseconds a certificate issued a moment
+        // earlier carries.
+        let seconds = (self.clock)().saturating_add(1_000).saturating_div(1_000);
+        let set = format!("@{seconds}");
+        if let Err(error) = self.run_in_guest(&["/usr/bin/date", "-u", "-s", &set], CLOCK_PATIENCE)
+        {
+            eprintln!("tilo-legacy hosted: a restored VM's clock was not set: {error}");
+        }
     }
 
     fn sync_shares(&mut self) -> Result<(), VmError> {

@@ -449,12 +449,17 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         if agents {
             return None;
         }
+        let observe: Arc<crate::hosted_browser::ObserveInvocation> = {
+            let actions = self.actions.clone();
+            Arc::new(move |caller, invocation| actions.observe(caller, invocation))
+        };
         serve_with_browser(
             self.browsers.as_ref(),
             workspace_id,
             caller,
             message,
             |message| self.actions.serve(workspace_id, caller, message),
+            Some(&observe),
         )
     }
 
@@ -520,12 +525,17 @@ impl crate::AppServingPlane for HostActionsPlane {
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        let observe: Arc<crate::hosted_browser::ObserveInvocation> = {
+            let actions = self.host.actions.clone();
+            Arc::new(move |caller, invocation| actions.observe(caller, invocation))
+        };
         serve_with_browser(
             self.browsers.as_ref(),
             workspace_id,
             caller,
             message,
             |message| self.host.serve(workspace_id, caller, message),
+            Some(&observe),
         )
     }
 
@@ -591,11 +601,12 @@ impl crate::AppServingPlane for HostActionsPlane {
 fn serve_with_browser(
     browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
     workspace_id: WorkspaceId,
-    _caller: &tilo_actions::remote::Caller,
+    caller: &tilo_actions::remote::Caller,
     message: tilo_actions::remote::RemoteActionMessage,
     serve: impl FnOnce(
         tilo_actions::remote::RemoteActionMessage,
     ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>>,
+    observe: Option<&Arc<crate::hosted_browser::ObserveInvocation>>,
 ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
     use tilo_actions::remote::RemoteActionMessage;
     // A Linux app opens in the workspace's VM the way Browser does: the open
@@ -620,6 +631,8 @@ fn serve_with_browser(
             }
         };
         let browsers = Arc::clone(browsers?);
+        let caller = caller.clone();
+        let observe = observe.cloned();
         return Some(serve(message)?.map(move |message| {
             crate::hosted_browser::placed_linux_app(
                 &browsers,
@@ -627,6 +640,8 @@ fn serve_with_browser(
                 invocation,
                 &launch,
                 message,
+                observe,
+                &caller,
             )
         }));
     }
@@ -656,8 +671,17 @@ fn serve_with_browser(
         )));
     };
     let browsers = Arc::clone(browsers);
+    let caller = caller.clone();
+    let observe = observe.cloned();
     Some(serve(message)?.map(move |message| {
-        crate::hosted_browser::placed(&browsers, workspace_id, invocation, message)
+        crate::hosted_browser::placed(
+            &browsers,
+            workspace_id,
+            invocation,
+            message,
+            observe,
+            &caller,
+        )
     }))
 }
 

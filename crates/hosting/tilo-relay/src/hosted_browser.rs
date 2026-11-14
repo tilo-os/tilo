@@ -75,7 +75,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod environment_device;
 
@@ -566,6 +566,15 @@ impl HostedBrowsers {
     /// the host is not running yet.
     pub fn ask_from(&self, plane: tilo_peer_state::actions::ActionPlane, endpoint: iroh::Endpoint) {
         self.sessions.ask_from(plane, endpoint);
+    }
+
+    /// The runtime this host serves on, when it runs: where what it follows between messages — an
+    /// open that answers with the run it started — is polled.
+    fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.authority
+            .lock_recover()
+            .as_ref()
+            .map(|authority| authority.runtime.clone())
     }
 
     /// The window `workspace_id`'s Browser is in, when one is up.
@@ -1263,6 +1272,7 @@ impl HostedBrowsers {
         if let Some(up) = self.open.lock_recover().get(&workspace_id) {
             return Ok(up.window.clone());
         }
+        tracing::info!(%workspace, record, "placing the workspace's Browser in its VM");
         let (device, material) = {
             let authority = self.authority.lock_recover();
             let authority = authority.as_ref().ok_or("this host is not running yet")?;
@@ -1958,25 +1968,161 @@ pub fn unplaced_linux_apps() -> String {
         .to_owned()
 }
 
+/// What a host knows of one of a caller's invocations: how it follows an open that answers with
+/// the run it started rather than with the record the run made.
+pub type ObserveInvocation = dyn Fn(&Caller, &tilo_actions::InvocationId) -> Option<tilo_actions::remote::InvocationState>
+    + Send
+    + Sync;
+
 /// The answer to an open of Browser that ran in `workspace_id`: `message`
 /// with the window placed, or the refusal in its place.
 ///
 /// The open answered once its record was made; this places the session on
-/// that record, and the open answers once the window is live.
+/// that record, and the open answers once the window is live. An open answered
+/// at admission — a run the caller follows — places the window once the run
+/// says what record it made, so an agent's open still runs where its record
+/// is.
 #[must_use]
 pub fn placed(
-    browsers: &HostedBrowsers,
+    browsers: &Arc<HostedBrowsers>,
     workspace_id: WorkspaceId,
     invocation: tilo_actions::InvocationId,
     message: RemoteActionMessage,
+    observe: Option<Arc<ObserveInvocation>>,
+    caller: &Caller,
 ) -> RemoteActionMessage {
     let Some(record) = opened_record(&message) else {
+        if accepted(&message) {
+            when_record(
+                browsers,
+                workspace_id,
+                invocation,
+                observe,
+                caller.clone(),
+                move |browsers, record| {
+                    let placed = browsers
+                        .workspace_name(workspace_id)
+                        .ok_or_else(|| "this host serves no such workspace".to_owned())
+                        .and_then(|workspace| browsers.place(&workspace, workspace_id, record));
+                    match placed {
+                        Ok(_) => tracing::info!(
+                            %workspace_id,
+                            "the workspace's Browser window is up in its VM"
+                        ),
+                        Err(reason) => tracing::warn!(
+                            %workspace_id,
+                            %reason,
+                            "the workspace's Browser did not open"
+                        ),
+                    }
+                },
+            );
+            return message;
+        }
+        // An open answered without naming the record it made asks for no
+        // window: nothing would run in the workspace's VM, and the caller
+        // would read a record nothing publishes.
+        tracing::warn!(
+            %workspace_id,
+            answer = ?message,
+            "an open of Browser answered without the record it made"
+        );
         return message;
     };
+    place_record(browsers, workspace_id, invocation, &record, message)
+}
+
+/// Whether `message` is the receipt of an invocation that runs on: its record is on its way with
+/// the run's result.
+fn accepted(message: &RemoteActionMessage) -> bool {
+    matches!(
+        message,
+        RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+            status: tilo_actions::remote::ReceiptStatus::Accepted,
+            ..
+        })
+    )
+}
+
+/// Follow `invocation`, the open `caller` started, until the run says what record it made, and
+/// hand that record to `place` then. The caller's own answer is unchanged: it follows its run as
+/// it does any other.
+fn when_record(
+    browsers: &Arc<HostedBrowsers>,
+    workspace_id: WorkspaceId,
+    invocation: tilo_actions::InvocationId,
+    observe: Option<Arc<ObserveInvocation>>,
+    caller: Caller,
+    place: impl FnOnce(&Arc<HostedBrowsers>, &str) + Send + 'static,
+) {
+    let (Some(observe), Some(runtime)) = (observe, browsers.runtime()) else {
+        tracing::warn!(
+            %workspace_id,
+            "an open answered at admission cannot be followed, so its window was not placed"
+        );
+        return;
+    };
+    let browsers = Arc::clone(browsers);
+    runtime.spawn(async move {
+        let Some(until) = Instant::now().checked_add(FOLLOW_OPEN) else {
+            return;
+        };
+        loop {
+            if let Some(state) = observe(&caller, &invocation) {
+                match state.update {
+                    tilo_actions::outcome::InvocationUpdate::Succeeded { output, .. } => {
+                        let record = output
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.get("record"))
+                            .and_then(|record| record.as_str())
+                            .map(str::to_owned);
+                        let Some(record) = record else {
+                            tracing::warn!(
+                                %workspace_id,
+                                "an open finished without the record it made, so its window was \
+                                 not placed"
+                            );
+                            return;
+                        };
+                        // Placing asks the workspace's VM host and waits for its session: never on
+                        // a runtime thread.
+                        let placed = tokio::task::spawn_blocking(move || place(&browsers, &record));
+                        if let Err(error) = placed.await {
+                            tracing::warn!(%error, "placing a window that opened ended");
+                        }
+                        return;
+                    }
+                    tilo_actions::outcome::InvocationUpdate::Failed { .. }
+                    | tilo_actions::outcome::InvocationUpdate::Cancelled { .. } => return,
+                    _ => {}
+                }
+            }
+            if Instant::now() >= until {
+                tracing::warn!(
+                    %workspace_id,
+                    "an open did not settle in time, so its window was not placed"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+}
+
+/// Place the workspace's Browser on `record`, the record `invocation`'s open made, or answer with
+/// the refusal in its place.
+fn place_record(
+    browsers: &HostedBrowsers,
+    workspace_id: WorkspaceId,
+    invocation: tilo_actions::InvocationId,
+    record: &str,
+    message: RemoteActionMessage,
+) -> RemoteActionMessage {
     let placement = browsers
         .workspace_name(workspace_id)
         .ok_or_else(|| "this host serves no such workspace".to_owned())
-        .and_then(|workspace| browsers.place(&workspace, workspace_id, &record));
+        .and_then(|workspace| browsers.place(&workspace, workspace_id, record));
     match placement {
         Ok(_) => message,
         Err(reason) => {
@@ -1985,6 +2131,10 @@ pub fn placed(
         }
     }
 }
+
+/// How long an open that answers at admission is followed for the record it made: a record an app
+/// makes takes a moment, and a run that has not made one in this long is not waited on.
+const FOLLOW_OPEN: Duration = Duration::from_secs(5 * 60);
 
 /// The answer to `invocation` refused with `reason`.
 #[must_use]
@@ -2036,13 +2186,52 @@ pub fn opens_linux_app(request: &InvokeRequest) -> Option<Result<AppLaunch, Stri
 /// Linux, so whoever opened it reads what would let it through.
 #[must_use]
 pub fn placed_linux_app(
-    browsers: &HostedBrowsers,
+    browsers: &Arc<HostedBrowsers>,
     workspace_id: WorkspaceId,
     invocation: tilo_actions::InvocationId,
     launch: &AppLaunch,
     message: RemoteActionMessage,
+    observe: Option<Arc<ObserveInvocation>>,
+    caller: &Caller,
 ) -> RemoteActionMessage {
     let Some(record) = opened_record(&message) else {
+        if accepted(&message) {
+            let launch = launch.clone();
+            when_record(
+                browsers,
+                workspace_id,
+                invocation,
+                observe,
+                caller.clone(),
+                move |browsers, record| {
+                    let placed = browsers
+                        .workspace_name(workspace_id)
+                        .ok_or_else(|| {
+                            AppRefusal::Words("this host serves no such workspace".to_owned())
+                        })
+                        .and_then(|workspace| {
+                            browsers.place_app(&workspace, workspace_id, record, &launch)
+                        });
+                    match placed {
+                        Ok(_) => tracing::info!(
+                            %workspace_id,
+                            app = %launch.desktop_id,
+                            "the workspace's Linux app is up in its VM"
+                        ),
+                        Err(AppRefusal::Refused(refusal)) => tracing::warn!(
+                            %workspace_id,
+                            reason = %refusal.message,
+                            "the workspace's Linux app was refused"
+                        ),
+                        Err(AppRefusal::Words(reason)) => tracing::warn!(
+                            %workspace_id,
+                            %reason,
+                            "the workspace's Linux app did not open"
+                        ),
+                    }
+                },
+            );
+        }
         return message;
     };
     let placement = browsers

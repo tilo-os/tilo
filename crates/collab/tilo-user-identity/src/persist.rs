@@ -48,7 +48,9 @@ use tilo_files::native::migration::Format;
 use zeroize::Zeroizing;
 
 use crate::CanonicalError;
-use crate::cert::{DeviceCapabilities, DeviceCert, verify_device_cert, verify_device_cert_at};
+use crate::cert::{
+    DeviceCapabilities, DeviceCert, DeviceCertError, verify_device_cert, verify_device_cert_at,
+};
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
@@ -365,6 +367,23 @@ pub enum PersistError {
     /// Canonical decode of the cert file failed.
     #[error("cert decode failed: {0}")]
     Canonical(#[from] CanonicalError),
+}
+
+impl PersistError {
+    /// The I/O failure this refusal is, when it is one: what a caller inspects to tell a certificate
+    /// refused only for the clock apart from a broken one
+    /// ([`CertificateClockError::in_io`](crate::CertificateClockError::in_io)).
+    #[must_use]
+    pub fn io(&self) -> Option<&io::Error> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::InsecurePermissions { .. }
+            | Self::InsecureLinkCount { .. }
+            | Self::InsecureOwner { .. }
+            | Self::WrongKeyLength(_)
+            | Self::Canonical(_) => None,
+        }
+    }
 }
 
 /// Read a 32-byte Ed25519 public key from disk.
@@ -1288,12 +1307,8 @@ pub fn provision_joined_device(
             format!("device certificate was not signed: {error}"),
         ))
     })?;
-    verify_device_cert_at(&cert, now_ns).map_err(|error| {
-        PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("device certificate did not verify: {error}"),
-        ))
-    })?;
+    verify_device_cert_at(&cert, now_ns)
+        .map_err(|error| refused_verification(&cert, now_ns, &error))?;
     write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
     if !publish_device_key_no_clobber(&paths.device_privkey, &device)? {
         return Err(PersistError::Io(io::Error::new(
@@ -1310,6 +1325,24 @@ pub fn provision_joined_device(
         )));
     }
     Ok(cert)
+}
+/// A certificate that did not verify, as the refusal it is. One refused only because the wall clock
+/// reads outside its validity interval keeps that reading
+/// ([`CertificateClockError`](crate::CertificateClockError)), so a caller can wait for the clock to
+/// reach it instead of ending without an identity — a session in a resumed VM, whose clock starts
+/// at the instant its template was snapshotted.
+fn refused_verification(cert: &DeviceCert, now_ns: u64, error: &DeviceCertError) -> PersistError {
+    PersistError::Io(
+        crate::CertificateClockError::of(cert, now_ns, error).map_or_else(
+            || {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("the certificate did not verify: {error}"),
+                )
+            },
+            crate::CertificateClockError::into_io,
+        ),
+    )
 }
 
 /// Install a root-signed certificate for this device's existing key, as a
@@ -1342,12 +1375,8 @@ pub fn install_device_cert(
             "the certificate is for another device key".into(),
         ));
     }
-    verify_device_cert_at(cert, now_ns).map_err(|error| {
-        refused(
-            io::ErrorKind::InvalidData,
-            format!("the certificate did not verify: {error}"),
-        )
-    })?;
+    verify_device_cert_at(cert, now_ns)
+        .map_err(|error| refused_verification(cert, now_ns, &error))?;
     if cert.capabilities.can_admit_devices {
         return Err(refused(
             io::ErrorKind::InvalidData,
@@ -1715,14 +1744,21 @@ mod tests {
                 ))
                 .contains("another device key")
             );
+            // A clock outside the certificate's interval is refused as that and says so: expired
+            // says no clock reaches it, and a clock that reads before its issuance says when it
+            // does — what a session resumed from a snapshot waits for instead of ending without an
+            // identity.
+            let late = install_device_cert(&paths, &cert(&root, own, node()), 20_000).unwrap_err();
+            let error = late.io().unwrap();
             assert!(
-                refused(install_device_cert(
-                    &paths,
-                    &cert(&root, own, node()),
-                    20_000
-                ))
-                .contains("did not verify")
+                crate::CertificateClockError::in_io(error)
+                    .is_some_and(|clock| clock.valid_at_ns().is_none()),
+                "an expired certificate is a refusal for the clock alone"
             );
+            let early = install_device_cert(&paths, &cert(&root, own, node()), 500).unwrap_err();
+            let clock = crate::CertificateClockError::in_io(early.io().unwrap())
+                .expect("a refusal for the clock alone keeps its reading");
+            assert_eq!(clock.valid_at_ns(), Some(1_000));
             let primary = DeviceCapabilities::primary();
             assert!(
                 refused(install_device_cert(

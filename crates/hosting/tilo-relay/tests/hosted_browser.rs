@@ -2407,3 +2407,59 @@ async fn live_plane_session(
         .expect("the live plane admits the environment's device");
     (endpoint, joined)
 }
+
+/// An app's open answers with the run it started, not with the record it made: the relay follows
+/// that run and places the window when the record exists, so an agent's open still runs where its
+/// record is. The caller's own answer is unchanged — it follows its run as it does any other.
+#[tokio::test]
+async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exists() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let invocation = InvocationId::new();
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observe: Arc<tilo_relay::hosted_browser::ObserveInvocation> = {
+        let polls = Arc::clone(&polls);
+        Arc::new(move |_, _| {
+            // The run is admitted first, then makes the record.
+            let update = if polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                tilo_actions::outcome::InvocationUpdate::Accepted { invocation }
+            } else {
+                tilo_actions::outcome::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({"record": "record-2"})),
+                        resources: Vec::new(),
+                    },
+                }
+            };
+            Some(tilo_actions::remote::InvocationState {
+                update,
+                untrusted: false,
+                left_at: None,
+            })
+        })
+    };
+    let answer = tilo_relay::hosted_browser::placed(
+        &fixture.browsers,
+        OTHER_WS,
+        invocation,
+        RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Accepted,
+        }),
+        Some(observe),
+        &Caller::local_app("test"),
+    );
+    assert!(
+        matches!(&answer, RemoteActionMessage::Receipt(receipt) if matches!(receipt.status, ReceiptStatus::Accepted)),
+        "the caller is answered its run, as it was"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fixture.browsers.window(OTHER_WS).is_none() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let window = fixture
+        .browsers
+        .window(OTHER_WS)
+        .expect("the run's record placed the workspace's window");
+    assert_eq!(window.provider, WINDOW);
+}

@@ -61,6 +61,12 @@ const KEEP_HELD: &str = tilo_actions::remote::browser::KEEP_HELD;
 const HELD_PAGE: u32 = 64;
 /// How long the invitation the relay answers the join with stays redeemable.
 const ENTER_INVITATION_SECONDS: u64 = 600;
+/// How far behind the host this session's clock may read and still wait for it
+/// to reach the certificate it was handed: a guest resumed from a template's
+/// snapshot is behind by the template's age and the host sets its clock as it
+/// wakes it, so what is left is a fraction of a second. A minute covers a clock
+/// the host could not set, which is refused rather than waited out.
+const CLOCK_WAIT_NS: u64 = 60 * 1_000_000_000;
 /// How often the page's use is reported while it is in use: one an action or a viewer is what the
 /// host counts its idle limit from, and a page being read for an hour is in use the whole time.
 const USED_EVERY: Duration = Duration::from_secs(60);
@@ -860,8 +866,37 @@ fn take_identity(material: &Material) -> Result<(), String> {
     // read (0600), rather than the device key's group-readable mode.
     tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &key)
         .map_err(|error| format!("this device's key was not written: {error}"))?;
-    tilo_user_identity::install_device_cert(&paths, &material.device, tilo_clock::unix_now_ns())
-        .map_err(|error| format!("this device's certificate was not taken: {error}"))?;
+    // A guest resumed from its template's snapshot wakes with the clock that
+    // snapshot was taken at, behind the host's: the certificate the relay issued
+    // this moment is there "not yet valid". The host sets the guest's clock as
+    // it wakes it; should it still read a little behind, this session waits for
+    // the clock to reach its certificate rather than ending without an identity.
+    loop {
+        let refused = match tilo_user_identity::install_device_cert(
+            &paths,
+            &material.device,
+            tilo_clock::unix_now_ns(),
+        ) {
+            Ok(()) => break,
+            Err(tilo_user_identity::PersistError::Io(error)) => error,
+            Err(error) => {
+                return Err(format!("this device's certificate was not taken: {error}"));
+            }
+        };
+        let waiting = tilo_user_identity::CertificateClockError::in_io(&refused)
+            .and_then(tilo_user_identity::CertificateClockError::valid_at_ns)
+            .filter(|at| at.saturating_sub(tilo_clock::unix_now_ns()) <= CLOCK_WAIT_NS);
+        let Some(at) = waiting else {
+            return Err(format!(
+                "this device's certificate was not taken: {refused}"
+            ));
+        };
+        if tilo_user_identity::wait_for_wall_clock(at).is_err() {
+            return Err(format!(
+                "this device's certificate was not taken: {refused}"
+            ));
+        }
+    }
     // The person the workspace belongs to, as a record this device holds of them: the relay hands
     // over their public key, and every part of the session that presents this device's person in a
     // workspace reads that person from this login's identity records. The record carries no root:

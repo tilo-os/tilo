@@ -30,8 +30,9 @@ GPU) with Browser and the Chromium engine runtime it requires.
   so the host keeps one copy of every page no clone wrote. A clone's first
   suspend copies that file before writing into it. The template ran no
   session and holds no identity; each clone's session is handed its
-  workspace's at the hand-off, and the VM generation ID reseeds each clone's
-  randomness when it is restored.
+  workspace's at the hand-off, the VM generation ID reseeds each clone's
+  randomness when it is restored, and its clock is set from the host's as it
+  wakes, so the certificate the relay issued moments earlier is valid there.
 - **Logins persist per workspace.** The profile (cookies, storage) is kept
   among the workspace's own files on the VM host
   (`.tilo/browser/profile.tar.gz`), which sync, encrypted, through the

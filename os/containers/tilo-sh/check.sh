@@ -365,9 +365,13 @@ if [[ $hosted == 1 ]]; then
 
   if runs_step 9; then
     step '9. does the guest this stack boots carry the Browser?'
+    # At the size a workspace's VM runs at, so the VM that runs here warms the
+    # template step 9b waits for and step 10's workspace VM starts as a clone
+    # of. A probe at another size would warm a template nothing clones.
     guest_says=$(sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
         --init-groups --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
-        --workspace ws-browser-guest --account "$vm_run_account" -- /bin/sh -c \
+        --workspace ws-browser-guest --account "$vm_run_account" \
+        --size "${TILO_SH_HOSTED_VM_SIZE:-default}" -- /bin/sh -c \
         'if [ -x /usr/libexec/tilo/browser-session ]; then echo has-session; else echo no-session; fi
          if getent passwd tilo-browser >/dev/null; then echo has-user; else echo no-user; fi' 2>&1) \
       || fail "the workspace VM did not run the guest's own check: $guest_says"
@@ -397,7 +401,7 @@ if [[ $hosted == 1 ]]; then
       sleep 1
     done
     [[ -n $template ]] \
-      || fail "the VM host made no warm template in 360 s, so every workspace's VM boots cold: what it said is in sudo -n podman logs tilo-sh-vm-host-0 (a template is counted at the size's whole memory, and TILO_SH_VM_HOST_MEMORY_MIB is the room the host may use)"
+      || fail "the VM host made no warm template in 360 s, so every workspace's VM boots cold: what it said is in sudo -n podman logs tilo-sh-vm-host-0 (a template is admitted at the size's whole memory, and needs a clone's room free; the host's log says how warming went)"
     echo "ok: the template was ready in $((SECONDS - warmed))s"
   fi
 
