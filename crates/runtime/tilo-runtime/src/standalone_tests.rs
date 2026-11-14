@@ -293,6 +293,9 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
         return;
     };
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    // Just started on a new profile, with nothing written yet: the host holds
+    // the person's own documents store.
+    holds_the_persons_own_documents_store(&session);
     // Durable collaboration history and the invocation journal live in the
     // profile.
     assert!(root.join(COLLABORATION_HISTORY).is_dir());
@@ -627,19 +630,9 @@ fn listed_workspace(root: &Path) -> String {
     tree.workspaces[0].id().to_string()
 }
 
-const PERSONAL_STORE_TEST: &str =
-    "standalone::tests::a_running_host_holds_the_persons_own_documents_store";
-
-#[test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the session holds the profile and brokers for the whole scenario on purpose"
-)]
-fn a_running_host_holds_the_persons_own_documents_store() {
-    let Some(root) = isolated_root(PERSONAL_STORE_TEST) else {
-        return;
-    };
-    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+/// A running host holds the person's own documents store: asserted on the
+/// host a test starts first on its new profile, before anything is written.
+fn holds_the_persons_own_documents_store(session: &Standalone) {
     let identity = tilo_identity_host::registry::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
