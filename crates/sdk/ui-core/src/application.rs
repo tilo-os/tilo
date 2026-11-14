@@ -149,6 +149,8 @@ pub struct HostContext {
     /// swap it in ([`Reopener`]).
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
     launch_arguments: Vec<String>,
+    /// The file or folder the window shows ([`WindowShows`]).
+    shows: Rc<RefCell<Option<String>>>,
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
     private: bool,
@@ -630,6 +632,7 @@ impl HostContext {
             files: None,
             replacement: Rc::default(),
             launch_arguments: Vec::new(),
+            shows: Rc::default(),
             handoff: None,
             launch_options: Vec::new(),
             private: false,
@@ -677,6 +680,15 @@ impl HostContext {
     /// "open with" (paths, URLs), in order.
     pub fn provide_launch_arguments(&mut self, arguments: Vec<String>) {
         self.launch_arguments = arguments;
+    }
+    /// Where the window says which file or folder it shows, so it opens on that again after a restart.
+    #[must_use]
+    pub fn window_shows(&self) -> crate::application_view::WindowShows {
+        crate::application_view::WindowShows {
+            shown: Rc::clone(&self.shows),
+            views: Rc::clone(&self.views),
+            unsaved: self.envelope(View::default(), None),
+        }
     }
     /// The launch arguments the host handed over, once.
     pub fn take_launch_arguments(&mut self) -> Vec<String> {
@@ -927,7 +939,7 @@ impl HostContext {
     }
     fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {
         SavedInstanceView {
-            version: 2,
+            version: SavedInstanceView::VERSION,
             app_id: self.app_id.clone(),
             device_id: self.device_id.clone(),
             workspace_id: self.views.workspace_id().into(),
@@ -936,6 +948,7 @@ impl HostContext {
             record_kind: self.record.kind.as_str().into(),
             view,
             application,
+            shows: self.shows.borrow().clone(),
         }
     }
     fn validate_restore(&self, restore: &RestoreInput) -> Result<(), LaunchError> {
@@ -1084,6 +1097,11 @@ impl ApplicationDefinition {
             )));
         }
         context.validate_restore(&restore)?;
+        if let RestoreInput::Local(saved) = &restore
+            && context.shows.borrow().is_none()
+        {
+            context.shows.borrow_mut().clone_from(&saved.shows);
+        }
         let shows_existing = matches!(target, LaunchTarget::Record { .. });
         let records = context.records.clone();
         let record = context.record.clone();
@@ -1241,28 +1259,6 @@ impl AppComponent {
     /// Whether the component was prepared as a private window ([`HostContext::provide_private`]).
     pub fn is_private(&self) -> bool {
         self.context.is_private()
-    }
-    /// A collaboration manager for this component's record, reached through the host's `connector` as
-    /// an app the host launched: what a host showing the component inside its process hands the App it
-    /// runs it in, so the component publishes and is invoked through the session broker as a launched
-    /// app is.
-    #[cfg(all(unix, feature = "broker-transport"))]
-    pub fn collaborate_through(
-        &self,
-        connector: crate::collaboration::HostSessionConnector,
-    ) -> Option<crate::collaboration::CollaborationManager> {
-        let binding = self.callback_binding();
-        let route = binding
-            .broker_route()
-            .or_else(|| binding.admission_route())?;
-        let _entry = self.context.wake_scope.enter();
-        Some(
-            crate::collaboration::CollaborationManager::for_route_host_in_background(
-                connector,
-                route,
-                Some(binding.checkout.kind.as_str().to_owned()),
-            ),
-        )
     }
     pub(crate) fn take_root_retirement(
         &mut self,

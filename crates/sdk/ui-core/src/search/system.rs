@@ -6,7 +6,6 @@ use tilo_sort::CompactSort as _;
 pub mod filters;
 #[cfg(test)]
 mod tests;
-pub const PALETTE_ROW_BUDGET: usize = 8;
 use crate::search::Scope;
 
 /// One well-known category a result can belong to — the domain vocabulary the chip strip
@@ -801,10 +800,6 @@ pub fn lexical_strength(
     }
 }
 
-/// A deliberately small contextual preference: proximity should settle close matches,
-/// never make a weak metadata hit beat an exact visible title.
-pub const ACTIVE_APP_PROXIMITY_BOOST: f32 = 0.25;
-
 /// One hit's strength against every other provider's: its lexical fit, its provider's
 /// normalized score, launch intent for an application match
 /// ([`application_intent_boost`]), and the caller's contextual `proximity` boost.
@@ -1116,18 +1111,6 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
     }
     pub fn register(&mut self, provider: &'a dyn Provider<Host, Row>) {
         self.providers.push(provider);
-    }
-    pub fn registered_kinds(&self) -> Vec<ResourceKind> {
-        let mut kinds = Vec::new();
-        for provider in &self.providers {
-            for kind in provider.resource_kinds() {
-                if !kinds.contains(kind) {
-                    kinds.push(kind.clone());
-                }
-            }
-        }
-        kinds.compact_sort_by_key(ResourceKind::sort_key);
-        kinds
     }
     pub fn query(&self, host: &Host, query: &Query<'_>) -> Vec<Row> {
         if !query_input_is_bounded(query.needle) {

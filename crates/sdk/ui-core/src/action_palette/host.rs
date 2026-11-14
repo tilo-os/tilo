@@ -166,12 +166,6 @@ impl ActionPalette {
         self.field_only_while_empty && self.field.is_empty() && self.host_step.is_none()
     }
 
-    /// Whether the card reserves its band of host-painted controls right now.
-    #[must_use]
-    pub fn filter_band_shown(&self) -> bool {
-        !self.shows_field_only() && self.band_shown
-    }
-
     /// Show or hide the band. A host hides it until the results have
     /// something to tell apart, so it isn't standing chrome over every
     /// search. Returns whether that changed.

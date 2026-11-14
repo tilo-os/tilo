@@ -74,11 +74,6 @@ impl HostedActionsLink {
             .set(self.shared.generation.get().wrapping_add(1));
     }
 
-    /// Call `wake` whenever an invocation arrives, so the host's loop runs.
-    pub fn on_asked(&self, wake: impl Fn() + 'static) {
-        *self.shared.asked_wake.borrow_mut() = Some(Rc::new(wake));
-    }
-
     /// The invocations admitted since the last call, oldest first.
     #[must_use]
     pub fn take_asked(&self) -> Vec<HostedInvocation> {

@@ -801,10 +801,6 @@ pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
     }
 }
 
-pub fn format_modified_date(modified: Option<DateTime<Local>>) -> Option<String> {
-    modified.map(crate::i18n::format_date)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
     Name,

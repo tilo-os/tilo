@@ -209,8 +209,6 @@ impl FaceStack {
 }
 
 impl Face<'_> {
-    /// The gap of ground between a face's disc and its colour ring.
-    pub const GROUND_GAP: f64 = GAP;
     /// How far a face's ground reaches past its disc: the gap, the colour
     /// ring and the gap around it (the call ring, when shown, reaches further).
     pub const REACH: f64 = GAP + RING + GAP;

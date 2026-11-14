@@ -1306,6 +1306,7 @@ fn start_record(
             reveal: std::cell::RefCell::new(
                 ui_core::window_door::requested_reveal().or_else(|| revealed(target)),
             ),
+            shows: Some(context.window_shows()),
         })
         .opening_with(opener)
         .showing_file_history(
@@ -1561,7 +1562,19 @@ fn prepare_hooked(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    let (record, arguments) = record_argument(args.positionals());
+    // A window brought back, which its launch names nothing for, opens on the file or folder it
+    // showed as the launch that first opened it there did.
+    let restored = if args.positionals().is_empty()
+        && !isolated(args, app.private_windows && args.has(PRIVATE_FLAG))
+        && args.value("--data-dir").is_none()
+    {
+        NativeProcessHost::window_shows(definition)?
+            .map(|path| vec![path.to_string_lossy().into_owned()])
+    } else {
+        None
+    };
+    let (record, arguments) =
+        record_argument(restored.as_deref().unwrap_or_else(|| args.positionals()));
     let options = launch_options(app, args);
     let named = record
         .or_else(|| (app.launch_record)(&LaunchInput::new(arguments, None).with_options(&options)));
@@ -1784,6 +1797,26 @@ mod record_argument_tests {
     }
 }
 
+/// Whether the launch is a capture's window: a screenshot, or a headless drive that names a
+/// scenario, built from that scenario's fixtures on a profile of its own.
+#[cfg(tilo_native_runner)]
+fn captured(args: &LaunchArgs) -> bool {
+    args.shots.is_some()
+        || args.responsive_matrix.is_some()
+        || (args.headless.is_some() && args.scenario.is_some())
+}
+
+/// Whether the launch runs on a private profile removed with the process: captures, audits,
+/// headless driving, first-frame measurements and private windows never touch the person's, unless
+/// a headless drive or a measurement names its profile with `--data-dir`.
+#[cfg(tilo_native_runner)]
+fn isolated(args: &LaunchArgs, private: bool) -> bool {
+    private
+        || captured(args)
+        || args.native_audit
+        || ((args.headless.is_some() || args.first_frame) && args.value("--data-dir").is_none())
+}
+
 #[cfg(tilo_native_runner)]
 fn prepare_named(
     definition: &ApplicationDefinition,
@@ -1792,20 +1825,8 @@ fn prepare_named(
     private: bool,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
-    // Captures, audits, headless driving, first-frame measurements and
-    // private windows never touch the user's profile: they run on a private
-    // one removed with the process, unless a headless drive or a
-    // measurement names its profile with `--data-dir`.
-    // A headless drive that names a scenario is a capture's window: built
-    // from that scenario's fixtures, on a profile of its own.
-    let captured = args.shots.is_some()
-        || args.responsive_matrix.is_some()
-        || (args.headless.is_some() && args.scenario.is_some());
-    let isolated = private
-        || captured
-        || args.native_audit
-        || ((args.headless.is_some() || args.first_frame) && args.value("--data-dir").is_none());
-    if isolated {
+    let captured = captured(args);
+    if isolated(args, private) {
         let profile = tempfile::Builder::new()
             .prefix("tilo-capture-")
             .tempdir()

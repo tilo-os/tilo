@@ -764,16 +764,6 @@ impl Theme {
         Self::comforts_in(&document, crate::host::environment().accessibility)
     }
 
-    /// [`Self::configured_accessibility`] of an explicit settings document and launch
-    /// request.
-    #[must_use]
-    pub fn accessibility_in(
-        document: &serde_json::Value,
-        requested: crate::host::AccessibilityInputs,
-    ) -> crate::theme_layers::AccessibilityLayer {
-        Self::comforts_in(document, requested).or_default()
-    }
-
     /// [`Self::configured_comforts`] of an explicit settings document and launch request.
     /// The launcher's request is a floor for contrast and motion (it can add them, never
     /// take them away) and gives the scales until the document names its own: the

@@ -48,13 +48,6 @@ impl Kind {
         }
     }
 
-    /// Whether an activity of this kind is a card of its own while it runs (a call, directions) rather
-    /// than only once it is pulled out of the pill (music).
-    #[must_use]
-    pub const fn asks_for_a_card(self) -> bool {
-        matches!(self, Self::Call | Self::Navigation | Self::PictureInPicture)
-    }
-
     /// The lucide glyph that stands for this kind of activity, for a card whose app names no icon of
     /// its own.
     #[must_use]

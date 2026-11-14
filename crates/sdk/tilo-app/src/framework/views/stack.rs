@@ -118,11 +118,6 @@ impl<V: Clone + PartialEq> ViewStack<V> {
         Some(&self.current)
     }
 
-    /// Hand in where the person is in the view shown, without moving.
-    pub fn note_place(&mut self, place: ViewPlace) {
-        self.current.place = place;
-    }
-
     /// Forget every held view `gone` says no longer exists (a deleted
     /// playlist's page); the view shown is kept, and its caller decides.
     pub fn forget(&mut self, mut gone: impl FnMut(&V) -> bool) {

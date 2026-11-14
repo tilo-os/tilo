@@ -36,10 +36,6 @@ use super::{
     meta_ro, object_at, validate_identity,
 };
 
-/// The kind an app's own document ([`Origin::AppDocument`]) takes when it
-/// arrives in another workspace as a record.
-pub const APP_DOCUMENT_KIND: &str = "tilo.app-document";
-
 pub(super) use ::collaboration::record::retirement::RETIRED;
 pub use ::collaboration::record::retirement::{Retirement, Successor, is_retired, retirement};
 

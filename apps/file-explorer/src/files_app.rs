@@ -434,6 +434,8 @@ pub struct FilesState {
     services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
+    /// Where the window says which folder it shows, so it opens there again after a restart.
+    window_shows: Option<ui::application_view::WindowShows>,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
     find: String,
@@ -763,6 +765,7 @@ impl FileExplorerWidget {
             services,
             startup_accounts,
             current_path: cwd.clone(),
+            window_shows: None,
             home_path: home,
             entries: Vec::new(),
             find: String::new(),
@@ -4753,6 +4756,14 @@ impl FilesState {
         self.framework_history = source;
         self.framework_history_binding = None;
         self.refresh_framework_history_target();
+    }
+
+    /// Tell `shows` each folder the window shows from now on.
+    pub(crate) fn tell_window_shows(&mut self, shows: ui::application_view::WindowShows) {
+        if self.shown_is_folder {
+            shows.show(&self.current_path);
+        }
+        self.window_shows = Some(shows);
     }
 
     pub fn open_launch_argument(&mut self, argument: &str) {

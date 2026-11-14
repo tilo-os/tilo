@@ -39,13 +39,6 @@ impl FrameHarness {
         self.present_window_bar(false);
     }
 
-    /// Whether the window's bar stands out at rest, over the app's frame. Always, save for a harness
-    /// that shows the window at rest ([`Self::present_window_bar_at_rest`]).
-    #[must_use]
-    pub fn window_bar_revealed(&self) -> bool {
-        self.bar_revealed
-    }
-
     fn present_window_bar(&mut self, revealed: bool) {
         self.invalidate_local();
         self.bar_revealed = revealed;

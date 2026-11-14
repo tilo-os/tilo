@@ -393,23 +393,6 @@ impl CommandEntry {
         self
     }
 
-    /// Prefill is fully selected when the argument step opens, so the first
-    /// keystroke replaces it.
-    #[must_use]
-    pub fn with_argument_prefill(mut self, prefill: impl Into<String>) -> Self {
-        let prefill = prefill.into();
-        match &mut self.argument {
-            Some(spec) => spec.prefill = Some(prefill),
-            None => {
-                self.argument = Some(ArgumentSpec {
-                    prefill: Some(prefill),
-                    ..ArgumentSpec::default()
-                });
-            }
-        }
-        self
-    }
-
     /// The row already has the value it runs with, so choosing it asks for none: a search hit an app's
     /// `open` names its item itself.
     #[must_use]

@@ -1,7 +1,7 @@
 //! Versioned, device/workspace-local presentation. Never contains document bytes.
 use crate::view::{ThawError, View};
 use durable_store::{DurableStore, StorageKey, StoreError, WriteOp};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// Opaque application-owned local presentation; never document bytes.
@@ -39,8 +39,47 @@ pub trait ApplicationViewState {
     }
 }
 
+/// The file or folder a window shows, kept with its saved view as it changes (Files going into a
+/// folder): after a restart the window opens on it again, as a launch naming it does.
+#[derive(Clone)]
+pub struct WindowShows {
+    pub(crate) shown: Rc<std::cell::RefCell<Option<String>>>,
+    pub(crate) views: Rc<InstanceViewStore>,
+    /// The window's view as saved before it showed anything: kept when no view of it is saved.
+    pub(crate) unsaved: SavedInstanceView,
+}
+
+impl WindowShows {
+    /// The window now shows the file or folder at `path`. Kept at once, so a session that ends
+    /// without closing the window brings it back there.
+    pub fn show(&self, path: &Path) {
+        let Some(path) = std::path::absolute(path)
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned))
+        else {
+            return;
+        };
+        if self.shown.borrow().as_deref() == Some(path.as_str()) {
+            return;
+        }
+        *self.shown.borrow_mut() = Some(path.clone());
+        let saved = match self.views.load(self.unsaved.instance_id) {
+            Ok(Some(saved)) if saved.record_id == self.unsaved.record_id => saved,
+            _ => self.unsaved.clone(),
+        };
+        let saved = SavedInstanceView {
+            shows: Some(path),
+            ..saved
+        };
+        if let Err(error) = self.views.save(&saved) {
+            tracing::warn!(%error, "what the window shows is not remembered");
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SavedInstanceView {
+    /// [`Self::VERSION`] for a view this build saved.
     pub version: u32,
     pub app_id: String,
     pub device_id: String,
@@ -50,15 +89,38 @@ pub struct SavedInstanceView {
     pub record_kind: String,
     pub view: View,
     pub application: Option<ApplicationLocalView>,
+    /// The file or folder the window shows, by its absolute path: the one it was opened on, or the
+    /// one it went to since ([`WindowShows`]). A window brought back opens on it again, as a launch
+    /// naming it would.
+    pub shows: Option<String>,
 }
 
 impl SavedInstanceView {
+    pub const VERSION: u32 = 3;
+
+    /// The file or folder the window shows, while it is still there. One that is gone names
+    /// nothing: the window opens as the app opens a window on nothing.
+    #[must_use]
+    pub fn shown(&self) -> Option<&Path> {
+        self.shows
+            .as_deref()
+            .map(Path::new)
+            .filter(|path| path.exists())
+    }
+
     pub(crate) fn validate(&self) -> Result<(), ThawError> {
-        if self.version != 2 {
+        if self.version != Self::VERSION {
             return Err(ThawError::UnsupportedVersion {
                 found: self.version,
-                supported: 2,
+                supported: Self::VERSION,
             });
+        }
+        if self
+            .shows
+            .as_deref()
+            .is_some_and(|path| !Path::new(path).is_absolute() || path.contains('\0'))
+        {
+            return Err(ThawError::InvalidView("shows no absolute path".into()));
         }
         for identity in [
             &self.app_id,
@@ -80,19 +142,23 @@ impl SavedInstanceView {
     }
 }
 
-fn decode_envelope(bytes: &[u8]) -> Result<SavedInstanceView, ThawError> {
+/// The view `bytes` keep, `None` for one an earlier build saved: the window opens as a new one.
+fn decode_envelope(bytes: &[u8]) -> Result<Option<SavedInstanceView>, ThawError> {
     let (version, _): (u32, _) = postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
-    if version != 2 {
+    if version < SavedInstanceView::VERSION {
+        return Ok(None);
+    }
+    if version != SavedInstanceView::VERSION {
         return Err(ThawError::UnsupportedVersion {
             found: version,
-            supported: 2,
+            supported: SavedInstanceView::VERSION,
         });
     }
     let (instance, remainder) = postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
     if !remainder.is_empty() {
         return Err(ThawError::InvalidView("trailing envelope bytes".into()));
     }
-    Ok(instance)
+    Ok(Some(instance))
 }
 
 /// Exact explicit namespace retained across construction, close and save retry.
@@ -245,7 +311,9 @@ impl InstanceViewStore {
             };
             stored.bytes
         };
-        let instance = decode_envelope(&bytes)?;
+        let Some(instance) = decode_envelope(&bytes)? else {
+            return Ok(None);
+        };
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
     }
@@ -312,7 +380,7 @@ mod tests {
 
     fn saved(instance_id: u64) -> SavedInstanceView {
         SavedInstanceView {
-            version: 2,
+            version: SavedInstanceView::VERSION,
             app_id: "so.tilo.test".into(),
             device_id: "D".into(),
             workspace_id: "A".into(),
@@ -321,6 +389,7 @@ mod tests {
             record_kind: "note".into(),
             view: View::default(),
             application: None,
+            shows: None,
         }
     }
 

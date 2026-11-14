@@ -179,16 +179,6 @@ fn file_offers(paths: &[PathBuf]) -> Vec<(String, Offer)> {
     offers
 }
 
-/// Start a drag carrying arbitrary `offers` (mime type → bytes).
-pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
-    start_drag_with(
-        offers
-            .into_iter()
-            .map(|(mime, bytes)| (mime, Offer::Bytes(bytes)))
-            .collect(),
-    )
-}
-
 static HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 static HOSTED_DRAG: Mutex<Option<Vec<(String, Vec<u8>)>>> = Mutex::new(None);

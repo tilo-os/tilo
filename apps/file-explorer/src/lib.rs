@@ -115,18 +115,6 @@ pub use resource::{FileExplorer, FileExplorerShell};
 
 pub use tree::FilesTreeShell;
 
-#[cfg(feature = "desktop")]
-pub fn mounted_files(widget: &mut dyn ui::widget::Widget) -> Option<&mut FileExplorerWidget> {
-    ui::framework::testing::surface_in_root::<FileExplorerShell, FileExplorerWidget>(widget)
-}
-
-#[cfg(feature = "desktop")]
-pub fn mounted_files_in(
-    harness: &mut ui::headless::FrameHarness,
-) -> Option<&mut FileExplorerWidget> {
-    ui::framework::testing::surface_in::<FileExplorerShell, FileExplorerWidget>(harness)
-}
-
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     #[cfg(feature = "desktop")]
     {

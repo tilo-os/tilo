@@ -143,6 +143,38 @@ impl NativeProcessHost {
         named: Option<RecordId>,
         inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
+        Self::with_process_host(
+            definition,
+            |host| match crate::window_door::requested_instance() {
+                Some(instance) => host.prepare_instance(definition, instance, named, inputs),
+                None => host.prepare_launch(definition, named, inputs),
+            },
+        )
+    }
+
+    /// The file or folder the window this process prepares next showed when it was last saved, while
+    /// it is still there ([`crate::application_view::WindowShows`]): a launch naming nothing opens
+    /// it again, as the launch that first opened it did.
+    ///
+    /// # Errors
+    /// Refuses what [`Self::open`] refuses, and an unreadable saved view.
+    pub fn window_shows(
+        definition: &ApplicationDefinition,
+    ) -> Result<Option<PathBuf>, LaunchError> {
+        Self::with_process_host(definition, |host| {
+            let instance = crate::window_door::requested_instance().unwrap_or(host.instance_id);
+            Ok(host
+                .host
+                .saved_view(instance)?
+                .and_then(|saved| saved.shown().map(Path::to_path_buf)))
+        })
+    }
+
+    /// Run `with` on the host of this process's windows, opened for its first.
+    fn with_process_host<T>(
+        definition: &ApplicationDefinition,
+        with: impl FnOnce(&mut Self) -> Result<T, LaunchError>,
+    ) -> Result<T, LaunchError> {
         thread_local! {
             static PROCESS_HOST: RefCell<Option<NativeProcessHost>> = const { RefCell::new(None) };
         }
@@ -159,10 +191,7 @@ impl NativeProcessHost {
                 Some(host) => host,
                 empty => empty.insert(Self::open(definition)?),
             };
-            match crate::window_door::requested_instance() {
-                Some(instance) => host.prepare_instance(definition, instance, named, inputs),
-                None => host.prepare_launch(definition, named, inputs),
-            }
+            with(host)
         })
     }
 
@@ -940,63 +969,50 @@ impl ApplicationHost {
             .map_err(LaunchError::Record)
     }
 
-    /// Validate the local binding before a migration adapter touches any source.
-    /// # Errors
-    /// Rejects unreadable, malformed or foreign presentation without repairing it.
-    pub fn saved_view_for(
+    /// What `instance_id` saved of its window, unless the file or folder it showed is gone: nothing
+    /// of that window applies any more, and it opens as a window on nothing does.
+    fn saved_view(
         &self,
-        definition: &ApplicationDefinition,
         instance_id: InstanceId,
-        checkout: &RecordCheckout,
     ) -> Result<Option<SavedInstanceView>, LaunchError> {
-        if checkout.kind != definition.record_kind
-            || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
-        {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let saved = self.views.load(instance_id).map_err(LaunchError::Restore)?;
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
-        if package_id != definition.app_id()
-            || saved.as_ref().is_some_and(|saved| {
-                saved.app_id != package_id
-                    || saved.record_id != checkout.id.as_str()
-                    || checkout.kind.as_str() != saved.record_kind
-            })
-        {
-            return Err(LaunchError::BindingMismatch);
-        }
-        Ok(saved)
+        Ok(self
+            .views
+            .load(instance_id)
+            .map_err(LaunchError::Restore)?
+            .filter(|saved| saved.shows.is_none() || saved.shown().is_some()))
     }
 
-    /// The record this instance's saved presentation names, when it names one of `definition`'s kind: a
-    /// window carried in from another workspace arrives showing its record rather than the workspace's
-    /// default.
-    pub fn saved_record(
+    /// The record this instance's saved presentation names, with that presentation, when it names
+    /// one of `definition`'s kind: a window carried in from another workspace arrives showing its
+    /// record rather than the workspace's default.
+    fn saved_record(
         &self,
         definition: &ApplicationDefinition,
         instance_id: InstanceId,
-    ) -> Result<Option<RecordCheckout>, LaunchError> {
-        let Some(saved) = self.views.load(instance_id).map_err(LaunchError::Restore)? else {
+    ) -> Result<Option<(RecordCheckout, SavedInstanceView)>, LaunchError> {
+        let Some(saved) = self.saved_view(instance_id)? else {
             return Ok(None);
         };
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
         let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
-        if saved.app_id != package_id
+        if package_id != definition.app_id()
+            || saved.app_id != package_id
             || definition.record_kind.as_str() != saved.record_kind
             || id.is_package_primary()
         {
             return Err(LaunchError::BindingMismatch);
         }
-        Ok(Some(RecordCheckout::new(
-            id,
-            definition.record_kind.clone(),
+        Ok(Some((
+            RecordCheckout::new(id, definition.record_kind.clone()),
+            saved,
         )))
     }
 
     /// Open the record this instance's saved presentation names, else the
     /// host's stable default record, or reserve that for the definition's New
     /// factory. Restore presentation from this exact device/workspace/instance.
-    /// A saved view pointing at a missing record is an error, never a blank replacement.
+    /// A saved view pointing at a missing record is an error, never a blank replacement, unless the
+    /// window shows a file or folder: the record is made again from that, as the launch on it made it.
     /// A record moved out of this workspace is never reopened: a view still naming
     /// it is dropped, and a retired record gives way to its successor.
     /// `initial_view` is used only when this instance has no saved presentation.
@@ -1047,14 +1063,11 @@ impl ApplicationHost {
             context.provide_models(self.models.clone());
             let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
             let saved = if matches!(target, LaunchTarget::Record { .. }) {
-                self.views
-                    .load(instance_id)
-                    .map_err(LaunchError::Restore)?
-                    .filter(|saved| {
-                        saved.app_id == package_id
-                            && saved.record_id == context.record().id.as_str()
-                            && definition.record_kind.names(&saved.record_kind)
-                    })
+                self.saved_view(instance_id)?.filter(|saved| {
+                    saved.app_id == package_id
+                        && saved.record_id == context.record().id.as_str()
+                        && definition.record_kind.names(&saved.record_kind)
+                })
             } else {
                 None
             };
@@ -1071,10 +1084,10 @@ impl ApplicationHost {
                 runner_inputs,
             });
         }
-        let checkout = self
-            .saved_record(definition, instance_id)?
-            .unwrap_or(default);
-        let saved = self.saved_view_for(definition, instance_id, &checkout)?;
+        let (checkout, saved) = match self.saved_record(definition, instance_id)? {
+            Some((checkout, saved)) => (checkout, Some(saved)),
+            None => (default, None),
+        };
         let (context, target, restore) = self.prepare_checkout(
             definition,
             records,
@@ -1112,14 +1125,9 @@ impl ApplicationHost {
         {
             return Err(LaunchError::BindingMismatch);
         }
-        let saved = self
-            .views
-            .load(instance_id)
-            .map_err(LaunchError::Restore)?
-            .filter(|saved| {
-                saved.record_id == checkout.id.as_str()
-                    && checkout.kind.as_str() == saved.record_kind
-            });
+        let saved = self.saved_view(instance_id)?.filter(|saved| {
+            saved.record_id == checkout.id.as_str() && checkout.kind.as_str() == saved.record_kind
+        });
         let (context, target, restore) =
             self.prepare_checkout(definition, records, instance_id, checkout, saved, None)?;
         Ok(PreparedComponentInputs {
@@ -1149,8 +1157,11 @@ impl ApplicationHost {
                         reveal: None,
                     };
                 }
-                Err(RecordOpenError::MissingRecord) if saved.is_none() => {
+                Err(RecordOpenError::MissingRecord)
+                    if saved.as_ref().is_none_or(|saved| saved.shown().is_some()) =>
+                {
                     refuse_copy_while_joining(&LaunchTarget::New)?;
+                    saved = None;
                     break LaunchTarget::New;
                 }
                 Err(RecordOpenError::Retired) if successors < MAX_SUCCESSORS => {
@@ -1237,6 +1248,59 @@ mod native_process_tests {
             xdg_data_home: Some(root.to_owned()),
             ..NativeProcessEnvironment::default()
         }
+    }
+
+    /// A window opened on a file names it in its saved view before the file's record is written:
+    /// the next start opens that file again, and once the file is gone, the window opens on the
+    /// app's own default with nothing to complain about.
+    #[test]
+    fn a_window_on_a_file_opens_on_it_again_and_on_nothing_once_it_is_gone() {
+        use crate::application_test_support as probe;
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("Budget for Friday.txt");
+        std::fs::write(&file, "Room 4: 40 EUR\n").unwrap();
+        let definition = definition(probe::APP);
+        let launch = || {
+            NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some("3f2b1c00-0000-4000-8000-00000000005a".into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("51".into()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let of_file = RecordId::for_file(&file);
+        {
+            let mut native = launch();
+            let opened = native
+                .prepare_launch(&definition, Some(of_file.clone()), probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(opened.target, LaunchTarget::New));
+            opened.context.window_shows().show(&file);
+        }
+
+        let mut native = launch();
+        let shown = native.host.saved_view(51).unwrap().unwrap();
+        assert_eq!(shown.shown(), Some(file.as_path()));
+        let again = native
+            .prepare_launch(&definition, Some(of_file.clone()), probe::runner_inputs())
+            .expect("the file the window showed opens again though its record was never written");
+        assert_eq!(again.context.record().id, of_file);
+        assert!(matches!(again.target, LaunchTarget::New));
+        drop(again);
+
+        std::fs::remove_file(&file).unwrap();
+        let mut native = launch();
+        assert!(native.host.saved_view(51).unwrap().is_none());
+        let fresh = native
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .expect("a window whose file is gone opens on the app's default");
+        assert_eq!(fresh.context.record().id, RecordId::window_default(51));
+        assert!(matches!(fresh.restore, RestoreInput::None));
     }
 
     tilo_test_env::scenario! {
@@ -1652,7 +1716,7 @@ mod native_process_tests {
             }
             let profile = NativeProfile::open(temp.path(), Some(workspace)).unwrap();
             let view = SavedInstanceView {
-                version: 2,
+                version: SavedInstanceView::VERSION,
                 app_id: probe::APP.into(),
                 device_id: "elsewhere".into(),
                 workspace_id: "elsewhere".into(),
@@ -1661,6 +1725,7 @@ mod native_process_tests {
                 record_kind: default.kind.as_str().into(),
                 view: View::default(),
                 application: None,
+                shows: None,
             };
             let _ = profile.adopt_view(&view, 7, &carried).unwrap();
             let host = |temp: &Path| {

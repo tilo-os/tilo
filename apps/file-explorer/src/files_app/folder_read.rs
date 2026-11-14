@@ -310,6 +310,9 @@ impl super::FilesState {
         let in_archive = archive.is_some();
         self.shown_folder = shown_folder;
         self.shown_is_folder = is_folder;
+        if is_folder && let Some(shows) = &self.window_shows {
+            shows.show(&path);
+        }
         match watched {
             Watched::Kept => {}
             Watched::Nothing => {

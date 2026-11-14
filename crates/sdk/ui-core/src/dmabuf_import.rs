@@ -570,34 +570,6 @@ fn has_modifier_extension(hal_device: &vulkan::Device) -> bool {
         .contains(&ash::ext::image_drm_format_modifier::NAME)
 }
 
-/// The DRM modifiers `device` can sample for a single-plane dma-buf of `fourcc`: each one the driver
-/// lists for the format and confirms (`VulkanImporter::check_modifier`, the check every import repeats
-/// at its real size) can be imported and sampled.
-pub fn sampleable_modifiers(device: &wgpu::Device, fourcc: u32) -> Vec<u64> {
-    // Safety: the guard only lends this device's Vulkan handles for the call.
-    let Some(guard) = (unsafe { device.as_hal::<vulkan::Api>() }) else {
-        return Vec::new();
-    };
-    let hal_device: &vulkan::Device = &guard;
-    if !has_modifier_extension(hal_device) {
-        return Vec::new();
-    }
-    let Some((PlaneLayout::Packed, specs)) = plane_specs(fourcc, 1, 1) else {
-        return Vec::new();
-    };
-    let [spec] = specs.as_slice() else {
-        return Vec::new();
-    };
-    let importer = VulkanImporter::new(hal_device);
-    let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC;
-    importer
-        .listed_modifiers(spec.format)
-        .iter()
-        .map(|props| props.drm_format_modifier)
-        .filter(|&modifier| importer.check_modifier(spec, modifier, usage).is_ok())
-        .collect()
-}
-
 /// Import `image` as sampleable `wgpu` textures, aliasing its GPU memory.
 ///
 /// The returned textures own their `VkImage` + imported `VkDeviceMemory` (and
@@ -697,19 +669,6 @@ static LIVE_IMAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 static WRAPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WRAP_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// `(images alive, images made, nanoseconds spent making them)` for the
-/// per-commit images of [`DmabufImage::texture`]. An image is alive from its
-/// creation until wgpu destroys its texture, which it does only after every
-/// submission that used it retired, so `alive` is the GPU's backlog.
-pub fn image_stats() -> (usize, u64, u64) {
-    use std::sync::atomic::Ordering::Relaxed;
-    (
-        LIVE_IMAGES.load(Relaxed),
-        WRAPS.load(Relaxed),
-        WRAP_NANOS.load(Relaxed),
-    )
-}
-
 /// A client's single-plane dma-buf, imported once, that yields a texture to
 /// draw each commit from ([`Self::texture`]).
 ///
@@ -781,12 +740,6 @@ const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: u32 = 0xC008_6202;
 const DMA_BUF_SYNC_READ: u32 = 1;
 
 static WRITE_FENCE_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// How many times a submission was made to wait on the GPU for a client buffer's pending writes since
-/// the process started: commits whose buffer the producer's GPU had not finished when it was imported.
-pub fn write_fence_waits() -> u64 {
-    WRITE_FENCE_WAITS.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 #[repr(C)]
 struct DmaBufExportSyncFile {

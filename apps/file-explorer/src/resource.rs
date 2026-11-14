@@ -1190,6 +1190,9 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     if let Some(argument) = cx.launch_arguments().first() {
         files.open_launch_argument(argument);
     }
+    if let Some(shows) = cx.window_shows() {
+        files.tell_window_shows(shows);
+    }
     let native = files.native_undo_queue();
     let ops = carry_out_queued(cx, native);
     files.attach_framework(

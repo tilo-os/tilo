@@ -109,12 +109,6 @@ impl Entry {
         self.target
     }
 
-    /// Whether it can be undone, and by which verb.
-    #[must_use]
-    pub fn undo_verb(&self) -> Option<&str> {
-        self.undo.as_deref()
-    }
-
     /// The line a History row shows under the outcome: what it is about and why, as one clause.
     #[must_use]
     pub fn detail_line(&self) -> String {

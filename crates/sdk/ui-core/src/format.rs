@@ -174,21 +174,6 @@ impl Formats {
         format!("{} {unit}", self.decimal(value, digits))
     }
 
-    /// The rate unit a scale up to `peak` bytes per second reads in, and the
-    /// bytes per second one of it is: `(1e6, "MB/s")` for 7.6 MB/s. For chart
-    /// axes that label round numbers of one unit ([`Self::decimal`] writes
-    /// the number).
-    #[must_use]
-    pub fn rate_unit(&self, peak: f64) -> (f64, &'static str) {
-        const UNITS: [&str; 5] = ["B/s", "kB/s", "MB/s", "GB/s", "TB/s"];
-        let (mut unit, mut scale) = (0, 1.0_f64);
-        while peak / scale >= 1000.0 && unit < UNITS.len().saturating_sub(1) {
-            unit = unit.saturating_add(1);
-            scale *= 1000.0;
-        }
-        (scale, UNITS.get(unit).copied().unwrap_or("B/s"))
-    }
-
     /// Divide by `base` until below one step; whole bytes print with no
     /// decimal, larger units with one.
     fn scaled(self, n: u64, base: f64, units: &[&str; 7]) -> String {

@@ -266,12 +266,6 @@ impl Job {
         self.started
     }
 
-    /// When it ended; `None` while it runs.
-    #[must_use]
-    pub const fn ended_at(&self) -> Option<Instant> {
-        self.ended
-    }
-
     /// Whether it is still going.
     #[must_use]
     pub const fn is_running(&self) -> bool {

@@ -5221,26 +5221,6 @@ impl FrameHarness {
         out
     }
 
-    /// The rects the widgets inside the [`EmbeddedApp`] root answer to, by
-    /// name, in the frame pixels.
-    ///
-    /// [`targets`](Self::targets) stops at the app: an embedded app keeps
-    /// its widget tree to itself, so a caller that drives the app alone (a
-    /// recording of it) reads them from here instead.
-    ///
-    /// Quiet: reads the embedded app's widget rects; reaches it through `root_mut`, which
-    /// invalidates.
-    /// # Panics
-    /// When the root was not mounted as an [`EmbeddedApp`].
-    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
-    pub fn embedded_targets(&mut self) -> std::collections::HashMap<String, Rect> {
-        let mut embedded = self.root_mut::<crate::app::EmbeddedApp>();
-        let root = embedded.app_mut().root_widget_mut();
-        let mut out = std::collections::HashMap::new();
-        collect_targets(root, "", &mut std::collections::HashMap::new(), &mut out);
-        out
-    }
-
     /// Perform one semantic action against a stable widget id or fallback path, through the same
     /// routing contract as live assistive technology.
     pub fn perform_named(

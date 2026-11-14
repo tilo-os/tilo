@@ -377,6 +377,12 @@ impl<R: Resource> RecordEnv<R> {
         &self.run.launched.arguments
     }
 
+    /// Where the window says which file or folder it shows, so it opens on that again after a
+    /// restart: the file a launch opened it on, the folder it went to. `None` for a past version.
+    pub fn window_shows(&self) -> Option<ui_core::application_view::WindowShows> {
+        self.run.launched.shows.clone()
+    }
+
     /// The file whose history History shows beside the resource's, for an
     /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY):
     /// set its target to the file the window shows (the selected one) and

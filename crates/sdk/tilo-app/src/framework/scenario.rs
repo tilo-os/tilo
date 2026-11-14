@@ -104,6 +104,8 @@ pub(crate) struct Launched {
     ///
     /// [`LaunchTarget::Record`]: ui_core::application::LaunchTarget::Record
     pub(crate) reveal: std::cell::RefCell<Option<String>>,
+    /// Where the window says which file or folder it shows.
+    pub(crate) shows: Option<ui_core::application_view::WindowShows>,
 }
 
 /// What an in-process host lent the app

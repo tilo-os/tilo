@@ -287,7 +287,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
                 "device" => bad.device_id = "E".into(),
                 "workspace" => bad.workspace_id = "B".into(),
                 "instance" => bad.instance_id = 12,
-                "version" => bad.version = 3,
+                "version" => bad.version = SavedInstanceView::VERSION + 1,
                 "geometry" => bad.view.viewport.width = f64::NAN,
                 "record" => bad.record_id.clear(),
                 "kind" => bad.record_kind.clear(),
@@ -318,7 +318,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
         let mut first =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let mut saved = first.close().recovery.unwrap();
-        assert_eq!(saved.version, 2);
+        assert_eq!(saved.version, SavedInstanceView::VERSION);
         assert!(saved.application.is_none());
         saved.application = Some(ApplicationLocalView {
             app_id: APP.into(),
@@ -847,7 +847,7 @@ fn local_view(scroll: f64, caret: &str) -> View {
 }
 fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
     SavedInstanceView {
-        version: 2,
+        version: SavedInstanceView::VERSION,
         app_id: format!("test.{workspace}.{device}"),
         device_id: device.into(),
         workspace_id: workspace.into(),
@@ -856,6 +856,7 @@ fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
         record_kind: "test".into(),
         view: local_view(scroll, "caret=1"),
         application: None,
+        shows: None,
     }
 }
 

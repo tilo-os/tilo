@@ -53,12 +53,6 @@ impl LayoutCounts {
         self.measures = self.measures.saturating_add(other.measures);
         self.solve_nanos = self.solve_nanos.saturating_add(other.solve_nanos);
     }
-
-    /// The time spent solving, in milliseconds.
-    #[must_use]
-    pub fn solve_ms(&self) -> u64 {
-        self.solve_nanos / 1_000_000
-    }
 }
 
 thread_local! {
