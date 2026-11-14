@@ -1067,7 +1067,10 @@ impl Apps {
             // The launch is over: its door retires with it, so the app's next window there starts a
             // process again.
             self.state.borrow_mut().held.remove(&event.id);
-            if !event.end.crashed() {
+            // An app that ended cleanly before its window came never opened either, and is told
+            // as one that crashed: the tab the person asked for it in would otherwise wait on a
+            // window that is not coming, with nothing logged of why.
+            if !event.end.crashed() && !self.waits_for_window(&event) {
                 self.state.borrow_mut().running.remove(&event.id);
                 tracing::info!(app = %event.app, "an app closed");
                 continue;
@@ -1128,6 +1131,25 @@ impl Apps {
                 desktop.with_widgets(WidgetHost::relayout);
             }
         }
+    }
+
+    /// Whether the person still waits for the window of the launch that ended with `event`: the
+    /// desk holds a place for it that no window filled.
+    fn waits_for_window(&self, event: &tilo_app_launch::Event) -> bool {
+        let asked = self
+            .state
+            .borrow()
+            .running
+            .get(&event.id)
+            .cloned()
+            .unwrap_or_else(|| event.app.clone());
+        self.desktop.borrow().clone().is_some_and(|desktop| {
+            desktop.with_policy(|policy| {
+                policy
+                    .anchor_for(&asked)
+                    .is_some_and(|(tab, ..)| policy.holds_a_place(tab))
+            })
+        })
     }
 
     /// What a launch does about the app maybe already showing in `workspace`: start it,
@@ -2509,6 +2531,51 @@ mod tests {
             widgets.relayout();
             ui::a11y::texts(widgets.host_mut().root_widget())
         })
+    }
+
+    /// An app that ends cleanly before the window the person asked for came never opened: its tab
+    /// says it could not open, as for an app that crashed, instead of waiting on a window that is
+    /// not coming. Chat did that on the e2e-ws-branch box and left nothing anywhere.
+    #[test]
+    fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
+        let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+        let desktop = desk();
+        apps.attach(desktop.clone());
+        desktop
+            .with_policy(|policy| {
+                policy
+                    .handle()
+                    .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+                        app: "example.Canvas".into(),
+                        beside: None,
+                        background: None,
+                        float: None,
+                    })
+            })
+            .unwrap();
+        desktop.with_widgets(WidgetHost::relayout);
+        let asked = desktop.take_launches();
+        assert_eq!(asked.len(), 1, "the person asked for Canvas");
+        apps.state
+            .borrow_mut()
+            .running
+            .insert(1, "example.Canvas".to_owned());
+        apps.state.borrow().spawner.report(Event {
+            id: 1,
+            app: "example.Canvas".to_owned(),
+            title: "Canvas".to_owned(),
+            end: End::exited(0),
+            said: OutputTail::default(),
+        });
+        apps.follow_ended();
+        let shown = desktop.with_widgets(|widgets| {
+            widgets.relayout();
+            ui::a11y::texts(widgets.host_mut().root_widget())
+        });
+        assert!(
+            shown.iter().any(|text| text.contains("could not open")),
+            "the tab says Canvas could not open: {shown:?}"
+        );
     }
 
     #[test]
