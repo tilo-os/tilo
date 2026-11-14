@@ -24,6 +24,7 @@ import base64
 import json
 import re
 import shlex
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -452,6 +453,39 @@ def session_keys(ctx) -> list[str]:
     return sorted(a.get("key", "") for a in agent_sessions(ctx) if a.get("stoppable", True))
 
 
+# What the desk says beside each agent's name of where it works from: the other device it came
+# from, and the environment whose door it came in by. Every field is there, empty for none.
+WHERE = ("device", "device_name", "environment", "environment_id")
+
+
+def sessions_in(ctx, env: dict) -> list[dict]:
+    """The agents the desk seats as come in by `env`'s door: by the environment's id beside
+    their names, the one its shell reads as TILO_ENVIRONMENT. Never by the words of a name."""
+    return [a for a in agent_sessions(ctx) if a.get("stoppable", True) and env["environment"]
+            and a.get("environment_id") == env["environment"]]
+
+
+def where_wrong(agent: dict, env: dict | None) -> list[str]:
+    """What the desk says wrongly beside `agent` of where it works from: an agent of `env` names
+    that environment, by its name and its TILO_ENVIRONMENT, and an agent of no environment
+    (`env` None) neither. Neither came from another device."""
+    wrong = [f"lists no {field!r}" for field in WHERE if field not in agent]
+    if agent.get("device") or agent.get("device_name"):
+        wrong.append(f"says it came from the device {agent.get('device')!r} "
+                     f"({agent.get('device_name')!r})")
+    environment, environment_id = agent.get("environment"), agent.get("environment_id")
+    if env is None:
+        if environment or environment_id:
+            wrong.append(f"seats it in the environment {environment!r} ({environment_id!r})")
+    else:
+        if environment_id != env["environment"]:
+            wrong.append(f"says its environment's id is {environment_id!r}, not its TILO_ENVIRONMENT "
+                         f"{env['environment']!r}")
+        if environment != env["env_name"]:
+            wrong.append(f"calls its environment {environment!r}, not {env['env_name']!r}")
+    return wrong
+
+
 # -- the scenario ------------------------------------------------------------------------------
 
 
@@ -542,8 +576,9 @@ def environments(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
-@check("E02", AREA, "An agent in each environment is asked about on the sheet, naming its workspace and "
-                    "environment, and both are admitted at once with distinct ids naming their environments")
+@check("E02", AREA, "An agent in each environment is asked about on the sheet and both are admitted at "
+                    "once, each seated under a key of its own with its environment beside its name: "
+                    "the environment's name, and its id as its shell reads TILO_ENVIRONMENT")
 def admitted(ctx, res):
     scene = _scene(ctx)
     one, two = scene["envs"]
@@ -562,16 +597,23 @@ def admitted(ctx, res):
         agent.send("notifications/initialized", notify=True)
         agents[e["name"]] = agent
     res.metrics["sheets"] = {e["name"]: e["dialog"] for e in (one, two)}
-    keys = wait_until(lambda: (k if len(k := session_keys(ctx)) >= 2 else None), 20, interval=0.5) or session_keys(ctx)
+    res.metrics["served_as"] = {e["name"]: e["served_as"] for e in (one, two)}
+    # The desk tells the two apart by the environment each came in by, said beside its name.
+    wait_until(lambda: all(sessions_in(ctx, e) for e in (one, two)) or None, 20, interval=0.5)
     res.metrics["sessions"] = agent_sessions(ctx)
     for e in (one, two):
-        want = f"{CLIENT}@{e['record'].lower()}#"
-        mine = [k for k in keys if k.startswith(want)]
-        expect(len(mine) == 1, f"{e['name']}: the desk seats no single agent {want}<n>: {keys}")
-        e["agent_id"] = mine[0]
-        expect(e["served_as"] == e["agent_id"],
-               f"{e['name']}: the door told the client it is {e['served_as']!r}, the desk seats {e['agent_id']!r}")
+        mine = sessions_in(ctx, e)
+        expect(len(mine) == 1, f"{e['name']}: the desk seats no single agent of the environment "
+                               f"{e['environment']!r}: {agent_sessions(ctx)}")
+        wrong = where_wrong(mine[0], e)
+        expect(not wrong, f"{e['name']}: the desk " + "; ".join(wrong) + f": {mine[0]}")
+        expect(str(mine[0].get("name") or "").strip(), f"{e['name']}: the desk seats its agent "
+                                                      f"under no name: {mine[0]}")
+        e["agent_id"] = mine[0].get("key")
+        expect(e["agent_id"], f"{e['name']}: the desk seats its agent under no key: {mine[0]}")
     expect(one["agent_id"] != two["agent_id"], f"both agents are {one['agent_id']}")
+    expect(one["environment"] != two["environment"],
+           f"both environments read TILO_ENVIRONMENT {one['environment']!r}")
     res.metrics["agents"] = {e["name"]: e["agent_id"] for e in (one, two)}
     scene["agents"] = agents
 
@@ -825,7 +867,7 @@ def other_workspace(ctx, res):
 
 
 @check("E05", AREA, "\"Always allow\" admits a second session in the same environment without the sheet, "
-                    "as an agent of its own with the next instance number")
+                    "seated under a key of its own with the same environment beside its name")
 def always_allow(ctx, res):
     scene = _scene(ctx)
     _need(scene, "agents", "E02")
@@ -842,11 +884,17 @@ def always_allow(ctx, res):
     expect(isinstance(reply, dict) and "result" in reply, f"the second session was not admitted: {str(reply)[:300]}")
     agent.send("notifications/initialized", notify=True)
     first = one["agent_id"]
-    base, _, n = first.rpartition("#")
-    second = f"{base}#{int(n) + 1}" if n.isdigit() else None
-    keys = wait_until(lambda: (k if second in (k := session_keys(ctx)) else None), 20, interval=0.5) or session_keys(ctx)
-    res.metrics["sessions"] = keys
-    expect(second in keys and first in keys, f"the desk does not seat {first} and {second}: {keys}")
+    wait_until(lambda: len(sessions_in(ctx, one)) >= 2 or None, 20, interval=0.5)
+    mine = sessions_in(ctx, one)
+    res.metrics["sessions"] = agent_sessions(ctx)
+    keys = [a.get("key") for a in mine]
+    expect(first in keys, f"the desk no longer seats {first} in {one['env_name']}: {mine}")
+    others = [a for a in mine if a.get("key") != first]
+    expect(len(others) == 1, f"the desk does not seat a second agent of {one['env_name']} "
+                             f"({one['environment']!r}) beside {first}: {agent_sessions(ctx)}")
+    wrong = where_wrong(others[0], one)
+    expect(not wrong, f"the second session: the desk " + "; ".join(wrong) + f": {others[0]}")
+    res.metrics["second"] = others[0].get("key")
     scene["second"] = agent
 
 
@@ -865,6 +913,8 @@ def stop_one(ctx, res):
     expect(ended, f"{two['name']}'s connection did not close on the person's Stop")
     expect(two["agent_id"] not in keys, f"{two['agent_id']} is still at the desk: {keys}")
     expect(one["agent_id"] in keys, f"{one['agent_id']} left the desk with it: {keys}")
+    expect(not sessions_in(ctx, two), f"the desk still seats an agent of {two['env_name']}: "
+                                    f"{sessions_in(ctx, two)}")
     still = agents[one["name"]]
     reply = still.tool("tilo_ls", {})
     still.keep()
@@ -906,10 +956,119 @@ print("E2E-HOST " + json.dumps(out))
 '''
 
 
-@check("E07", AREA, "A program of the login outside the environments cannot use an environment's door")
+# A program of the login, outside every environment, coming in by the session's own door as
+# Claude Code on the host does (`tilo-runtime-mcp --connect`): admitted, it stays connected until
+# the harness writes the file named first, then leaves.
+HOST_AGENT = r'''
+import json, os, select, shutil, subprocess, sys, time
+done = sys.argv[1]
+out = {}
+door = shutil.which("tilo-runtime-mcp") or "/usr/libexec/tilo/tilo-runtime-mcp"
+if not os.path.exists(door):
+    out["missing"] = "tilo-runtime-mcp"
+    print("E2E-HOST-AGENT " + json.dumps(out))
+    sys.exit(0)
+proc = subprocess.Popen([door, "--connect"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, bufsize=0)
+def send(message):
+    proc.stdin.write((json.dumps(message) + "\n").encode())
+    proc.stdin.flush()
+try:
+    send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "claude-code", "version": "1"}}})
+    data, deadline = b"", time.monotonic() + 90
+    while b"\n" not in data and time.monotonic() < deadline:
+        ready, _, _ = select.select([proc.stdout], [], [], max(0.0, deadline - time.monotonic()))
+        if not ready:
+            break
+        chunk = os.read(proc.stdout.fileno(), 65536)
+        if not chunk:
+            break
+        data += chunk
+    line = data.split(b"\n", 1)[0].decode(errors="replace")
+    try:
+        out["initialize"] = json.loads(line)
+    except ValueError:
+        out["initialize"] = {"unparsed": line[:600]}
+    if "result" in out["initialize"]:
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        deadline = time.monotonic() + 60
+        while not os.path.exists(done) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        out["done"] = os.path.exists(done)
+except Exception as exc:
+    out["error"] = f"{type(exc).__name__}: {exc}"
+finally:
+    try:
+        proc.stdin.close()
+        proc.wait(5)
+    except Exception:
+        proc.kill()
+print("E2E-HOST-AGENT " + json.dumps(out))
+'''
+
+
+def host_agent_seated(ctx, res) -> None:
+    """A program of the login outside every environment, admitted through the session's own
+    door once, is seated with nothing beside its name: no environment, no other device."""
+    before = set(session_keys(ctx))
+    done = f".e2e-host-agent-done-{uuid.uuid4().hex[:8]}"
+    held: dict = {}
+
+    def run():
+        try:
+            held["out"] = ctx.vm.run("slot", "exec", "--timeout", "180", "--", "sh", "-c",
+                                     f'python3 -c {shlex.quote(HOST_AGENT)} "$HOME/{done}"',
+                                     timeout=210, check=False)
+        except VmError as exc:
+            held["error"] = str(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        dialog = answer_sheet(ctx, ALLOW_ONCE, "host-agent")
+        res.metrics["host_agent_sheet"] = dialog
+
+        def new_seats():
+            fresh = [a for a in agent_sessions(ctx) if a.get("stoppable", True) and a.get("key") not in before]
+            return fresh or None
+
+        fresh = wait_until(new_seats, 30, interval=0.5) or []
+    finally:
+        ctx.vm.exec(f'touch "$HOME/{done}"', check=False)
+        thread.join(120)
+    out = held.get("out", "")
+    line = next((l for l in reversed(out.splitlines()) if l.startswith("E2E-HOST-AGENT ")), None)
+    said = json.loads(line[len("E2E-HOST-AGENT "):]) if line else {"raw": out[-300:], **held}
+    res.metrics["host_agent"] = said
+    res.metrics["host_agent_seated"] = fresh
+    if said.get("missing"):
+        raise Unobservable(f"the guest has no {said['missing']} for a host program to come in by")
+    init = said.get("initialize")
+    expect(isinstance(init, dict) and "result" in init,
+           f"the host program was not admitted through the session's own door: {str(said)[:300]}")
+    expect(len(fresh) == 1, f"the desk does not seat the host program as one new agent: {fresh}")
+    wrong = where_wrong(fresh[0], None)
+    expect(not wrong, "the host program: the desk " + "; ".join(wrong) + f": {fresh[0]}")
+
+
+@check("E07", AREA, "A program of the login outside the environments cannot use an environment's door; "
+                    "through the session's own door it is seated with no environment and no device")
 def host_refused(ctx, res):
     scene = _scene(ctx)
     _need(scene, "agents", "E02")
+    try:
+        _host_refused(ctx, res)
+        host_agent_seated(ctx, res)
+    finally:
+        # The end: every client still connected ends, as Claude Code quitting does.
+        for agent in list(scene.get("agents", {}).values()) + [scene.get("second")]:
+            if agent is not None:
+                agent.quit()
+
+
+def _host_refused(ctx, res) -> None:
     listed = ctx.vm.exec('ls -1 "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/environments/" 2>&1; true')
     socks = [l.strip() for l in listed.splitlines() if l.strip() and not l.startswith("receipt")]
     res.metrics["doors"] = socks
@@ -931,7 +1090,3 @@ def host_refused(ctx, res):
         expect('"result"' not in reply, f"a host program was served on {r.get('path')}: {reply[:300]}")
         expect("error" in r or '"error"' in reply or reply == "",
                f"no refusal from {r.get('path')}: {r}")
-    # The end: every client still connected ends, as Claude Code quitting does.
-    for agent in list(scene.get("agents", {}).values()) + [scene.get("second")]:
-        if agent is not None:
-            agent.quit()
