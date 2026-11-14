@@ -198,8 +198,9 @@ struct Request {
     /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
     key: Option<String>,
     session: AgentSessionId,
-    /// Answered by the loop once the person decided and the agent is a member; dropped by the
-    /// connection when its client leaves, which withdraws the question.
+    /// Answered by the loop once the person decided and the agent is a member the broker's roster
+    /// lists ([`Members`]); dropped by the connection when its client leaves, which withdraws the
+    /// question.
     decide: tokio::sync::oneshot::Sender<Consent>,
 }
 
@@ -976,11 +977,13 @@ impl Loop {
 }
 
 /// How the session finds or adds the person's agent member for an MCP client in a workspace: by
-/// workspace id and client name, answering the agent's id.
+/// workspace id and client name, answering the agent's id once the roster the broker reads lists
+/// it ([`Shared::mcp_member`]). A connection admitted on this answer joins the broker at once, on
+/// its own thread, so the answer never names an agent the broker would not find.
 pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<String, String> + 'a;
 
 /// Admit the client `facts` describes, in `workspace` for `person`, as the person's agent member
-/// for its client, shown as `name`; refused where that member cannot be found or added.
+/// for its client, shown as `name`; refused where that member cannot be found, added or listed.
 fn as_member(
     members: &Members<'_>,
     facts: &Facts,

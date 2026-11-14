@@ -5,6 +5,9 @@
 //! broker admits an agent's session only for the keeper the record names
 //! ([`tilo_broker_core::services::AgentRoster`]). Nothing here keeps state of its own beyond the
 //! record this device has open: who works here is the record's.
+//! The agent door adds a member to that record between two passes, and tells its client it may
+//! join at once: the record is read again there ([`crate::Shared::mcp_member`]), so the broker
+//! lists a member before anyone is told to join as it.
 //! The person who keeps an agent runs it: the pass hands the agents kept here to the session's
 //! launches ([`Kept`]), which start each one's process — the record is who works, and whose device
 //! runs them.
@@ -42,7 +45,7 @@ pub(crate) struct Kept {
 pub(crate) use crate::search::ListedAgent as Listed;
 
 /// Who keeps each of the workspaces' agents, and what each may spend today,
-/// as the pass read their records.
+/// as the session last read their records: every pass, and when its agent door added a member.
 #[derive(Default)]
 pub(crate) struct Roster {
     listed: Mutex<BTreeMap<String, Vec<tilo_broker_core::services::ListedAgent>>>,
@@ -310,6 +313,38 @@ impl crate::Shared {
                 .collect(),
         );
     }
+
+    /// The person's agent member for the MCP client `client` in `workspace`, as the agent door
+    /// admits a connection ([`crate::mcp_server::Members`]): the one the workspace's record of its
+    /// agents lists, else a new one ([`crate::workspace_settings::Feeding::mcp_agent`]), answered
+    /// once the roster the broker reads lists it. The door tells the connection it may join on
+    /// this answer, and the connection joins the broker on a thread of its own, at once: a member
+    /// the record names since this call is one no pass has read, so the records are read again
+    /// here ([`Self::feed_agents`]) rather than on the pass that follows.
+    ///
+    /// # Errors
+    /// The member could not be found or added, or the workspace's agents as this session reads
+    /// them still do not list it: the client is refused here, told so, and not at its join.
+    pub(crate) fn mcp_member(&self, workspace: &str, client: &str) -> Result<String, String> {
+        use tilo_broker_core::services::AgentRoster as _;
+        let agent = self
+            .workspace_settings_feed()
+            .mcp_agent(workspace, client)?;
+        let roster = self.agents.roster();
+        if roster.keeper(workspace, &agent).is_none() {
+            self.feed_agents();
+        }
+        if roster.keeper(workspace, &agent).is_none() {
+            tracing::warn!(
+                %workspace,
+                %agent,
+                %client,
+                "the workspace's agents as read here do not list a client's agent member"
+            );
+            return Err(tilo_sheets::word("mcp-server-unlisted"));
+        }
+        Ok(agent)
+    }
 }
 
 /// Who a request typed in a workspace goes to: the agent the person keeps there, and a new one —
@@ -320,5 +355,92 @@ pub(crate) fn agent_recipient(kept: Option<(String, String)>) -> ui::floating_su
     match kept {
         Some((id, name)) => Recipient::found(RecipientKind::Agent, id, name),
         None => Recipient::new_agent(crate::i18n::t("session-agent-name")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tilo_broker_core::services::AgentRoster as _;
+    use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+
+    use super::same_person;
+
+    /// The person at the desk, who owns its workspace.
+    const PERSON: &str = "ada";
+    /// The workspace in front of them, where nobody set an agent up yet.
+    const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
+
+    /// A headless session at a desk whose one workspace is the person's, its passes run until the
+    /// desk stands.
+    fn session(state: &std::path::Path) -> crate::Session {
+        let mut session = crate::Session::headless(
+            crate::Options {
+                person: PERSON.to_owned(),
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: false,
+                state: Some(state.to_path_buf()),
+                ..crate::Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session");
+        let mut studio = Workspace::new(
+            WorkspaceId::parse(STUDIO).expect("a workspace id"),
+            "Studio",
+        );
+        studio.set_owner(PERSON);
+        session.handle().replace_tree(Layout {
+            active: studio.id(),
+            workspaces: vec![studio],
+            ..Layout::default()
+        });
+        for _ in 0..4 {
+            session.step(Duration::from_millis(1)).expect("a frame");
+        }
+        session
+    }
+
+    /// The agent door tells a connection it may join as soon as the session answers it the
+    /// person's agent member for its client, and the connection joins the broker on a thread of
+    /// its own, at once. So the answer itself lists the member where the broker reads who works
+    /// in the workspace: a member this call added to the workspace's record is the person's in
+    /// the broker's roster when the call returns, with no pass of the session in between. On a
+    /// machine no agent worked on, that is the first client the person approves.
+    #[test]
+    fn a_clients_agent_member_is_listed_for_the_broker_when_the_door_is_answered() {
+        let _settled = ui::motion::testing::settled();
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let state = tempfile::tempdir().expect("a state directory");
+        let session = session(state.path());
+        let roster = session.shared.agents.roster();
+        assert!(
+            roster.listed(STUDIO).is_empty(),
+            "nobody set an agent up in this workspace yet"
+        );
+
+        // No pass of the session from here on: what the door is answered is all the broker has
+        // when the connection joins.
+        let member = session
+            .shared
+            .mcp_member(STUDIO, "claude-code")
+            .expect("the person's agent member for the client is added");
+        let keeper = roster.keeper(STUDIO, &member);
+        assert!(
+            keeper
+                .as_deref()
+                .is_some_and(|keeper| same_person(keeper, PERSON)),
+            "the broker lists the member {member} as the person's before its client is told it \
+             may join: {keeper:?}"
+        );
+
+        // The same client again is the same member, found and still listed: no second one.
+        assert_eq!(session.shared.mcp_member(STUDIO, "claude-code"), Ok(member));
+        assert_eq!(
+            roster.listed(STUDIO).len(),
+            1,
+            "one member for the client, whichever connection it comes in on"
+        );
     }
 }

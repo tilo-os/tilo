@@ -465,15 +465,15 @@ impl Shared {
         self.follow_boot_join();
         self.follow_hosted_browser();
         // A program of this login asking to work as an agent is a question of the person's: their
-        // answer admits it, and the client is served from the next pass on.
+        // answer admits it as their agent member for its client, which the broker's roster lists
+        // before the client is told (`Shared::mcp_member`), and it is served from the next pass on.
         if !self.boot_join.borrow().waiting()
             && let Some(door) = self.mcp_server.borrow_mut().as_mut()
         {
-            let feed = self.workspace_settings_feed();
             door.follow(
                 &self.handle,
                 &self.person,
-                &|workspace: &str, client: &str| feed.mcp_agent(workspace, client),
+                &|workspace: &str, client: &str| self.mcp_member(workspace, client),
             );
         }
         self.tell_agent_bindings_lost();
