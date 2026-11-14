@@ -1,11 +1,12 @@
-//! Reads of existing records, answered by confined app workers.
+//! Reads of existing records, answered in slots of pooled confined app
+//! workers.
 
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_actions::remote::ViewResourceQuery;
 use ui::record::RecordId;
 
-use super::process::Process;
+use super::process::{Lease, Stopped};
 use super::proto::{Mode, Reply, Request};
 use crate::workspace_actions::ViewReadPolicy;
 
@@ -21,6 +22,15 @@ fn descriptors(reply: Reply) -> Result<Vec<ActionDescriptor>, String> {
     }
 }
 
+fn sent(lease: &mut Lease, request: &Request) -> Result<Reply, String> {
+    lease.call(request).map_err(|stopped| match stopped {
+        // What the slot held is gone with the worker: the caller holds it
+        // again from the source.
+        Stopped::Lost => "the app worker holding this was replaced; ask again".to_owned(),
+        Stopped::Failed(reason) => reason,
+    })
+}
+
 fn done(reply: Reply) -> Result<(), String> {
     match reply {
         Reply::Done => Ok(()),
@@ -34,7 +44,7 @@ fn done(reply: Reply) -> Result<(), String> {
 /// policy checks; the worker is given the source and the caller's current
 /// policy and runs the component.
 pub(crate) struct ConfinedRead {
-    process: Process,
+    process: Lease,
 }
 
 impl ConfinedRead {
@@ -46,27 +56,33 @@ impl ConfinedRead {
         source: Vec<u8>,
         policy: &ViewReadPolicy,
     ) -> Result<Self, String> {
-        let mut process = Process::start(Mode::Read)?;
-        done(process.call(&Request::ReadPrepare {
-            app_id: app_id.to_owned(),
-            workspace: workspace.to_owned(),
-            record: record.as_str().to_owned(),
-            source,
-            policy: json(policy)?,
-        })?)?;
+        let mut process = Lease::new(Mode::Read, workspace);
+        done(sent(
+            &mut process,
+            &Request::ReadPrepare {
+                app_id: app_id.to_owned(),
+                workspace: workspace.to_owned(),
+                record: record.as_str().to_owned(),
+                source,
+                policy: json(policy)?,
+            },
+        )?)?;
         Ok(Self { process })
     }
 
     /// Replace the component's permissions with `policy`.
     pub(crate) fn set_policy(&mut self, policy: &ViewReadPolicy) -> Result<(), String> {
-        done(self.process.call(&Request::ReadPolicy {
-            policy: json(policy)?,
-        })?)
+        done(sent(
+            &mut self.process,
+            &Request::ReadPolicy {
+                policy: json(policy)?,
+            },
+        )?)
     }
 
     /// The registered reads the component offers now.
     pub(crate) fn operations(&mut self) -> Result<Vec<ActionDescriptor>, String> {
-        descriptors(self.process.call(&Request::ReadOperations)?)
+        descriptors(sent(&mut self.process, &Request::ReadOperations)?)
     }
 
     /// Perform one registered read.
@@ -80,7 +96,7 @@ impl ConfinedRead {
             address: json(address).map_err(|_| refused())?,
             arguments: json(arguments).map_err(|_| refused())?,
         };
-        match self.process.call(&request).map_err(|_| refused())? {
+        match sent(&mut self.process, &request).map_err(|_| refused())? {
             Reply::Output(text) => serde_json::from_str(&text).map_err(|_| refused()),
             Reply::Refused(error) => Err(error.into_door(address)),
             _ => Err(refused()),
@@ -91,17 +107,20 @@ impl ConfinedRead {
 /// One existing document of one app loaded in a confined app worker, to
 /// discover the views a resource of it offers.
 pub(crate) struct ConfinedViews {
-    process: Process,
+    process: Lease,
 }
 
 impl ConfinedViews {
     /// Load `doc`, a document of `app_id`.
     pub(crate) fn load(app_id: &str, doc: Vec<u8>) -> Result<Self, String> {
-        let mut process = Process::start(Mode::Views)?;
-        done(process.call(&Request::ViewsLoad {
-            app_id: app_id.to_owned(),
-            doc,
-        })?)?;
+        let mut process = Lease::new(Mode::Views, app_id);
+        done(sent(
+            &mut process,
+            &Request::ViewsLoad {
+                app_id: app_id.to_owned(),
+                doc,
+            },
+        )?)?;
         Ok(Self { process })
     }
 
@@ -111,19 +130,22 @@ impl ConfinedViews {
         wanted: &ViewResourceQuery,
         policy: &ViewReadPolicy,
     ) -> Result<Vec<ActionDescriptor>, String> {
-        descriptors(self.process.call(&Request::Views {
-            wanted: json(wanted)?,
-            policy: json(policy)?,
-        })?)
+        descriptors(sent(
+            &mut self.process,
+            &Request::Views {
+                wanted: json(wanted)?,
+                policy: json(policy)?,
+            },
+        )?)
     }
 }
 
 /// What existing documents are called and what search finds in them, read
-/// in one confined app worker started on the first question and kept for
-/// the next.
+/// in one slot of a confined app worker taken on the first question and kept
+/// for the next.
 #[derive(Default)]
 pub(crate) struct ConfinedTitles {
-    process: Option<Process>,
+    process: Option<Lease>,
 }
 
 impl ConfinedTitles {
@@ -132,12 +154,15 @@ impl ConfinedTitles {
     pub(crate) fn title(&mut self, app_id: &str, doc: Vec<u8>) -> Result<Option<String>, String> {
         let process = match &mut self.process {
             Some(process) => process,
-            None => self.process.insert(Process::start(Mode::Views)?),
+            None => self.process.insert(Lease::new(Mode::Views, app_id)),
         };
-        let reply = process.call(&Request::Title {
-            app_id: app_id.to_owned(),
-            doc,
-        });
+        let reply = sent(
+            process,
+            &Request::Title {
+                app_id: app_id.to_owned(),
+                doc,
+            },
+        );
         match reply {
             Ok(Reply::Title(title)) => Ok(title),
             Ok(Reply::Failed(reason)) => Err(reason),
@@ -164,12 +189,15 @@ impl ConfinedTitles {
     ) -> Result<Vec<ui::search::index_publication::IndexEntry>, String> {
         let process = match &mut self.process {
             Some(process) => process,
-            None => self.process.insert(Process::start(Mode::Views)?),
+            None => self.process.insert(Lease::new(Mode::Views, app_id)),
         };
-        let reply = process.call(&Request::Entries {
-            app_id: app_id.to_owned(),
-            doc,
-        });
+        let reply = sent(
+            process,
+            &Request::Entries {
+                app_id: app_id.to_owned(),
+                doc,
+            },
+        );
         match reply {
             Ok(Reply::Entries(entries)) => {
                 let entries: Vec<ui::search::index_publication::IndexEntry> =

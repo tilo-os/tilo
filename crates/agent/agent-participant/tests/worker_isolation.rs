@@ -262,6 +262,63 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
     assert!(agent.body().contains("After the crash"), "{}", agent.body());
 }
 
+#[test]
+fn records_of_many_workspaces_share_the_pools_workers_and_outlive_one_that_stops() {
+    use tilo_agent_participant::worker::pool_size;
+    let note = crate::common::scratchpad_body("").0;
+    // More workspaces than the pool has workers: their records share them.
+    let records: Vec<(String, ConfinedReplica)> = (0..pool_size() * 3)
+        .map(|index| {
+            let workspace = format!("6f1d3a52-1c7e-4b8e-9d2a-{index:012x}");
+            let record = ConfinedReplica::open(
+                &catalogue(),
+                "so.tilo.scratchpad",
+                &workspace,
+                "writer",
+                &ReplicaActor::Agent,
+                Seed::New,
+            )
+            .unwrap();
+            record.take_mutation().unwrap();
+            record
+                .invoke(&note, &edit(&format!("Written in {workspace}")), false)
+                .unwrap();
+            record.take_mutation().unwrap().unwrap();
+            (workspace, record)
+        })
+        .collect();
+    let workers: std::collections::BTreeSet<u32> = records
+        .iter()
+        .filter_map(|(_, record)| record.worker_id())
+        .collect();
+    assert!(
+        workers.len() <= pool_size(),
+        "{} records in {} workers, more than the pool's {}",
+        records.len(),
+        workers.len(),
+        pool_size()
+    );
+    // Each record holds its own workspace's text, never another's.
+    for (workspace, record) in &records {
+        let body = record.body();
+        assert!(body.contains(&format!("Written in {workspace}")), "{body}");
+        assert_eq!(body.matches("Written in").count(), 1, "{body}");
+    }
+    // A worker that stops takes every slot in it; each record is given
+    // again from what the host holds, its text and its next edit intact.
+    let (_, first) = &records[0];
+    kill(first.worker_id().unwrap());
+    let _ = first.survey();
+    for (workspace, record) in &records {
+        record
+            .invoke(&note, &edit(&format!("Again in {workspace}")), false)
+            .unwrap();
+        record.take_mutation().unwrap().unwrap();
+        let body = record.body();
+        assert!(body.contains(&format!("Again in {workspace}")), "{body}");
+    }
+}
+
 fn kill(pid: u32) {
     let status = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])

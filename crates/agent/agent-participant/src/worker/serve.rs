@@ -1,5 +1,7 @@
-//! The app worker's side: prepare, confine, then serve one record.
+//! The app worker's side: prepare, confine, then serve the records, views
+//! and reads the supervisor holds in it, each in a slot of its own.
 
+use std::collections::HashMap;
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
@@ -20,29 +22,37 @@ use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
 use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
-    Reply, Request, WireDoorError,
+    Reply, Request, Slot, WireDoorError,
 };
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
 use crate::workspace_actions::ViewReadPolicy;
 
 /// Serve as a worker in `mode` on the socket that is this process's stdin.
 /// Returns the exit code.
+///
+/// One worker serves many slots ([`Slot`]): each record, view or read the
+/// supervisor holds here has a slot of its own, with its own content store
+/// and wake scope, opened by its first request and let go by
+/// [`Request::Close`]. What the process prepares before it confines itself
+/// (the app catalogue, the fonts) is shared by every slot, so a worker costs
+/// its process once and each record only what the record holds.
 pub(super) fn serve(mode: Mode) -> i32 {
     // SAFETY: descriptor 0 is the socket the supervisor handed this process
     // as stdin; it is taken over here and nothing else in the worker reads
     // stdin.
     let socket = UnixStream::from(unsafe { OwnedFd::from_raw_fd(0) });
-    let mut worker = Worker::new(mode);
-    // The app's code finds the worker's content store wherever it runs, in
-    // or out of its view's own scope: every request is served inside this
-    // one.
-    let scope = ui::WakeScope::new();
-    ui::tilo_resource::content::register(&scope.handle(), worker.content.store.clone());
-    let _entered = scope.enter();
+    let catalogue = AppCatalogue::native();
     // The app's view lays out text once the filesystem is gone.
-    if !ui::text_render::hold_catalog_fonts_in_memory() {
+    let catalog_held = ui::text_render::hold_catalog_fonts_in_memory();
+    if !catalog_held {
         tracing::warn!("app worker: no font catalog; views will lay out no text");
     }
+    // A reader lays its component's text out: in the catalog held in memory,
+    // or, without one, in the one renderer mapped now, for its first slot.
+    let mut fonts = Fonts {
+        held: catalog_held,
+        resident: (mode != Mode::Picture && !catalog_held).then(resident_text_renderer),
+    };
     // The confinement denies the GPU driver its IOKit and Mach services, so
     // no adapter starts here: an app's pictures are drawn on the CPU.
     ui::offscreen::disable_gpu();
@@ -61,16 +71,83 @@ pub(super) fn serve(mode: Mode) -> i32 {
     {
         return 1;
     }
+    // A picture worker shrinks pictures and nothing else; any other serves
+    // every kind of slot.
+    let serves = |slot_mode: Mode| (mode == Mode::Picture) == (slot_mode == Mode::Picture);
+    let mut slots: HashMap<Slot, Held> = HashMap::new();
     loop {
-        let request: Request = match FRAMING.read_value(&mut &socket) {
-            Ok(Some(request)) => request,
-            // The supervisor went away or spoke garbage: nothing left to do.
-            Ok(None) | Err(_) => return 0,
+        let (slot, slot_mode, request): (Slot, Mode, Request) =
+            match FRAMING.read_value(&mut &socket) {
+                Ok(Some(request)) => request,
+                // The supervisor went away or spoke garbage: nothing left to do.
+                Ok(None) | Err(_) => return 0,
+            };
+        let reply = match request {
+            Request::Close => {
+                slots.remove(&slot);
+                Reply::Done
+            }
+            Request::Probe { path } => Reply::Probe(probe(&path)),
+            _ if !serves(slot_mode) => Reply::Failed(format!(
+                "a {} worker serves no {} slot",
+                mode.as_str(),
+                slot_mode.as_str()
+            )),
+            request => {
+                let held = slots
+                    .entry(slot)
+                    .or_insert_with(|| Held::new(slot_mode, &catalogue, &mut fonts));
+                // The app's code finds the slot's content store wherever it
+                // runs, in or out of its view's own scope.
+                let _entered = held.scope.enter();
+                held.worker.handle(request)
+            }
         };
-        let reply = worker.handle(request);
         if FRAMING.write_value(&mut &socket, &reply).is_err() {
             return 0;
         }
+    }
+}
+
+/// How a reader's slots get the renderer their component lays its text out
+/// with.
+struct Fonts {
+    /// The product catalog is held in memory: every slot gets a renderer
+    /// over it.
+    held: bool,
+    /// Without it, the one renderer mapped before the confinement.
+    resident: Option<ui::TextRenderer>,
+}
+
+impl Fonts {
+    fn renderer(&mut self) -> Option<ui::TextRenderer> {
+        if self.held {
+            Some(ui::TextRenderer::with_font_system(
+                ui::configured_font_system(),
+            ))
+        } else {
+            self.resident.take()
+        }
+    }
+}
+
+/// One slot: what it holds, and the scope its app's code runs in. The
+/// worker is dropped before the scope it was made in.
+struct Held {
+    worker: Worker,
+    scope: ui::WakeScope,
+}
+
+impl Held {
+    fn new(mode: Mode, catalogue: &AppCatalogue, fonts: &mut Fonts) -> Self {
+        let scope = ui::WakeScope::new();
+        let worker = Worker::new(
+            mode,
+            catalogue.clone(),
+            (mode == Mode::Read).then(|| fonts.renderer()).flatten(),
+        );
+        ui::tilo_resource::content::register(&scope.handle(), worker.content.store.clone());
+        Self { worker, scope }
     }
 }
 
@@ -104,8 +181,9 @@ struct WorkerContent {
 
 impl WorkerContent {
     fn new() -> Self {
-        // It holds only what the supervisor put from the one workspace the
-        // worker serves, so a reference an action names resolves in it.
+        // It holds only what the supervisor put for the one record the slot
+        // holds, of its one workspace, so a reference an action names
+        // resolves in it.
         let local = ContentStore::memory().for_one_workspace();
         let lane = Arc::new(ContentLane::default());
         let store = RecordContent::store(local.clone(), Arc::clone(&lane));
@@ -146,13 +224,13 @@ impl WorkerContent {
 }
 
 impl Worker {
-    fn new(mode: Mode) -> Self {
+    fn new(mode: Mode, catalogue: AppCatalogue, text: Option<ui::TextRenderer>) -> Self {
         Self {
             mode,
-            catalogue: AppCatalogue::native(),
+            catalogue,
             replica: None,
             views: None,
-            text: (mode == Mode::Read).then(resident_text_renderer),
+            text,
             read: None,
             content: WorkerContent::new(),
             surveyed: None,
@@ -164,7 +242,6 @@ impl Worker {
             self.surveyed = None;
         }
         match request {
-            Request::Probe { path } => Reply::Probe(probe(&path)),
             Request::PutContent(bytes) => self.content.put(&bytes),
             Request::Shrink {
                 bytes,
@@ -337,7 +414,7 @@ impl Worker {
         seed: Option<(String, Vec<Vec<u8>>)>,
     ) -> Reply {
         if self.mode != Mode::Replica || self.replica.is_some() {
-            return Reply::Failed("this worker holds one record".into());
+            return Reply::Failed("this slot holds one record".into());
         }
         let seed = match seed {
             None => Seed::New,
@@ -367,7 +444,7 @@ impl Worker {
 
     fn load_views(&mut self, app_id: String, bytes: &[u8]) -> Reply {
         if self.mode != Mode::Views || self.views.is_some() {
-            return Reply::Failed("this worker reads one document".into());
+            return Reply::Failed("this slot reads one document".into());
         }
         let mut doc = automerge::AutoCommit::new();
         if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes) {
@@ -430,7 +507,7 @@ impl Worker {
         policy: &str,
     ) -> Reply {
         let Some(text_renderer) = self.text.take() else {
-            return Reply::Failed("this worker mounts one component".into());
+            return Reply::Failed("this slot mounts one component".into());
         };
         let (Some(record), Ok(policy)) = (parse_record(record), decode(policy)) else {
             return Reply::Failed("invalid read request".into());

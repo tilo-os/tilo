@@ -5,9 +5,30 @@
 //! it serves. An app's code — its resource kind, its seed, its component —
 //! runs over whatever a workspace's members put in a record, so it does not run
 //! there. Each record the host's workspace actions or an agent holds lives in
-//! its own worker process ([`ConfinedReplica`]); the registered reads of a
-//! record's component (`ConfinedRead`) and the views of an existing
-//! resource (`ConfinedViews`) each run in one too.
+//! a slot of a confined worker process ([`ConfinedReplica`]); the registered
+//! reads of a record's component (`ConfinedRead`) and the views of an
+//! existing resource (`ConfinedViews`) each run in one too.
+//!
+//! # The pool
+//!
+//! Workers are long-lived and few: a pool of [`pool_size`] processes,
+//! started ahead ([`prestart`]), each holding the slots of many records of
+//! many workspaces. A worker costs its process once (its runtime, the app
+//! catalogue, the fonts), so the host's memory follows the pool and what the
+//! records hold, not how many workspaces it serves, and no request waits for
+//! a process to start. A worker that stops takes its slots with it; each
+//! record is given to a worker again from the supervisor's mirror when it is
+//! next asked, and only a record whose own requests keep stopping workers is
+//! given up on.
+//!
+//! The confinement stands between the host (its keys, its state, its
+//! network) and every app's code. The slots of one worker share its
+//! process: a request names its slot, and what one slot holds is never
+//! handed to another's request, but an app whose code is subverted by a
+//! record could read the other records held in the same worker. That is the
+//! price of a host whose memory does not grow with its workspaces; the
+//! keys, which are what reach the workspaces themselves, stay out of every
+//! worker.
 //!
 //! A worker is the host's own executable started again in worker mode. It
 //! prepares what it cannot load later (the app catalogue; a reader's
@@ -40,6 +61,7 @@ mod replica;
 mod serve;
 
 pub(crate) use picture::shrink_picture;
+pub use process::{pool_size, prestart, set_affinity};
 pub use proto::ProbeReport;
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
 pub use replica::ConfinedReplica;

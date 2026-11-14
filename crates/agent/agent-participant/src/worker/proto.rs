@@ -34,12 +34,14 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 8;
+pub(crate) const PROTOCOL_VERSION: u32 = 9;
 
-/// What a worker is started to do. It decides what the worker prepares
-/// before it confines itself: a reader loads the fonts a component lays its
-/// text out in, which it can no longer open afterwards.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a worker is started to do, and what each of its slots does. The
+/// process's mode decides what it prepares before it confines itself (a
+/// reader the fonts a component lays its text out in, which it can no longer
+/// open afterwards); a slot's mode, sent with every request, what the slot
+/// answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Mode {
     /// Hold one record as a replica of its resource ([`crate::Replica`]).
     Replica,
@@ -72,9 +74,17 @@ impl Mode {
     }
 }
 
-/// The supervisor's requests.
+/// Which of a worker's slots a request is for. A worker serves many
+/// records, views and reads at once, each in a slot of its own: what one
+/// slot holds is never handed to a request for another.
+pub(crate) type Slot = u64;
+
+/// The supervisor's requests, each sent as `(Slot, Mode, Request)`: the
+/// slot it is for and what that slot does.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Request {
+    /// Let go of everything the slot holds.
+    Close,
     /// Hold a record ([`Mode::Replica`]): a new one when `seed` is `None`,
     /// a new one under the record named when it has no changes, otherwise
     /// the record named with its durable changes in order.

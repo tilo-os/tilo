@@ -12,7 +12,7 @@ use tilo_content::ContentStore;
 use tilo_relay_protocol::live::LiveAnchor;
 use ui::record::RecordId;
 
-use super::process::Process;
+use super::process::{Lease, Stopped};
 use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, Reply, Request};
 use crate::apps::{AppCatalogue, AppError, ReplicaActor, Seed};
 use tilo_lock::MutexRecover as _;
@@ -63,7 +63,8 @@ pub struct ConfinedReplica {
 }
 
 struct Inner {
-    process: Option<Process>,
+    /// The record's slot in a pooled worker, while it holds the record.
+    process: Option<Lease>,
     revivals: u32,
     mirror: AutoCommit,
     /// The record is new here: the whole document is still to be sent.
@@ -84,6 +85,16 @@ struct Inner {
     /// ([`ConfinedReplica::ask_workspace_for_missing`]), and the records they
     /// answered they hold none of: told again to a worker that replaces it.
     asks_workspace: Option<BTreeSet<String>>,
+}
+
+impl Inner {
+    /// Stop the worker holding the record: it answered in a way no worker
+    /// should. Every record in it is given to a worker again.
+    fn stop(&mut self) {
+        if let Some(mut lease) = self.process.take() {
+            lease.stop();
+        }
+    }
 }
 
 /// A worker's reply to a request that only says it was carried out.
@@ -130,7 +141,7 @@ impl ConfinedReplica {
             }
         };
         let expected = seed.as_ref().map(|(record, _)| record.clone());
-        let mut process = Process::start(Mode::Replica).map_err(worker_error)?;
+        let mut process = Lease::new(Mode::Replica, workspace);
         let reply = process
             .call(&Request::Open {
                 app_id: definition.app_id().to_owned(),
@@ -139,7 +150,7 @@ impl ConfinedReplica {
                 actor: actor.clone(),
                 seed,
             })
-            .map_err(worker_error)?;
+            .map_err(|stopped| worker_error(stopped.to_string()))?;
         let record = match reply {
             Reply::Opened { record } => super::serve::parse_record(&record)
                 .filter(|record| expected.as_deref().is_none_or(|id| id == record.as_str()))
@@ -220,36 +231,60 @@ impl ConfinedReplica {
     /// The worker's process id, while one runs.
     #[must_use]
     pub fn worker_id(&self) -> Option<u32> {
-        self.lock().process.as_ref().map(Process::id)
+        self.lock().process.as_ref().and_then(Lease::worker_id)
     }
 
-    /// One request to the worker, replacing a dead one first. A failed call
-    /// ends the worker; the next call starts another.
+    /// One request to the worker, giving the record to a worker again first
+    /// when the one holding it stopped. A failed call stops the worker; the
+    /// next call gives the record to another.
     fn call(&self, inner: &mut Inner, request: &Request) -> Result<Reply, AppError> {
+        // What the operation this request is part of left to collect is
+        // still to be collected from the worker the record is given to.
+        let pending = (inner.dirty, inner.beside_dirty);
         if inner.process.is_none() {
-            self.revive(inner)?;
+            self.revive(inner, true)?;
+            (inner.dirty, inner.beside_dirty) = pending;
         }
-        let process = inner
-            .process
-            .as_mut()
-            .ok_or_else(|| worker_error("no app worker is running"))?;
-        process.call(request).map_err(|reason| {
+        let mut answer = Self::send(inner, request);
+        // Another slot's request stopped the worker this record was in:
+        // nothing of this request was sent, and the record is given again
+        // from the mirror, which is no fault of the record's.
+        if matches!(answer, Err(Stopped::Lost)) {
             inner.process = None;
-            tracing::warn!(app = %self.app_id, record = %self.record.as_str(), %reason,
+            self.revive(inner, false)?;
+            (inner.dirty, inner.beside_dirty) = pending;
+            answer = Self::send(inner, request);
+        }
+        answer.map_err(|stopped| {
+            inner.stop();
+            tracing::warn!(app = %self.app_id, record = %self.record.as_str(), reason = %stopped,
                 "app worker: a request failed; the worker was stopped");
-            worker_error(reason)
+            worker_error(stopped.to_string())
         })
     }
 
-    /// Start a new worker on what the mirror holds of the record.
-    fn revive(&self, inner: &mut Inner) -> Result<(), AppError> {
-        if inner.revivals >= MAX_REVIVALS {
-            return Err(worker_error(
-                "the record's app worker kept stopping; the record is no longer held",
-            ));
+    fn send(inner: &mut Inner, request: &Request) -> Result<Reply, Stopped> {
+        inner
+            .process
+            .as_mut()
+            .ok_or_else(|| Stopped::Failed("no app worker is running".into()))?
+            .call(request)
+    }
+
+    /// Give the record to a worker again from what the mirror holds of it.
+    /// `counted` when the record's own request stopped the last one: a record
+    /// that keeps stopping its workers is given up on.
+    fn revive(&self, inner: &mut Inner, counted: bool) -> Result<(), AppError> {
+        if counted {
+            if inner.revivals >= MAX_REVIVALS {
+                return Err(worker_error(
+                    "the record's app worker kept stopping; the record is no longer held",
+                ));
+            }
+            inner.revivals = inner.revivals.saturating_add(1);
         }
-        inner.revivals = inner.revivals.saturating_add(1);
-        let mut process = Process::start(Mode::Replica).map_err(worker_error)?;
+        let mut process = Lease::new(Mode::Replica, &self.workspace);
+        let worker = |stopped: Stopped| worker_error(stopped.to_string());
         match process
             .call(&Request::Open {
                 app_id: self.app_id.clone(),
@@ -258,7 +293,7 @@ impl ConfinedReplica {
                 actor: self.actor.clone(),
                 seed: Some((self.record.as_str().to_owned(), vec![inner.mirror.save()])),
             })
-            .map_err(worker_error)?
+            .map_err(worker)?
         {
             Reply::Opened { record } if record == self.record.as_str() => {
                 // The records held beside it go back to the new worker as
@@ -270,7 +305,7 @@ impl ConfinedReplica {
                             snapshot: true,
                             bytes: mirror.save(),
                         })
-                        .map_err(worker_error)?
+                        .map_err(worker)?
                     {
                         Reply::Done => {}
                         Reply::Failed(reason) => return Err(worker_error(reason)),
@@ -294,7 +329,7 @@ impl ConfinedReplica {
                         },
                     ));
                     for request in told {
-                        match process.call(&request).map_err(worker_error)? {
+                        match process.call(&request).map_err(worker)? {
                             Reply::Done => {}
                             Reply::Failed(reason) => return Err(worker_error(reason)),
                             _ => return Err(worker_error("the worker answered out of turn")),
@@ -646,7 +681,7 @@ impl ConfinedReplica {
     ) -> Result<Option<usize>, AppError> {
         if inner.process.is_none() {
             // A new worker is given everything held; this one is next.
-            self.revive(inner)?;
+            self.revive(inner, true)?;
         }
         let process = inner
             .process
@@ -659,7 +694,7 @@ impl ConfinedReplica {
             }
             Ok(None) => Ok(None),
             Err(error) => {
-                inner.process = None;
+                inner.stop();
                 Err(error)
             }
         }
@@ -715,7 +750,7 @@ impl ConfinedReplica {
             }
             Reply::Failed(reason) => Err(worker_error(reason)),
             _ => {
-                inner.process = None;
+                inner.stop();
                 Err(worker_error("the worker answered out of turn"))
             }
         }
@@ -735,7 +770,7 @@ impl ConfinedReplica {
                     break;
                 }
                 Ok(_) => {
-                    inner.process = None;
+                    inner.stop();
                     break;
                 }
                 Err(_) => break,
@@ -856,19 +891,19 @@ impl ConfinedReplica {
                         Ok(Some(bytes))
                     }
                     Ok(_) => {
-                        inner.process = None;
+                        inner.stop();
                         Err(AppError::Merge(
                             "the worker's change builds on nothing the record holds".into(),
                         ))
                     }
                     Err(error) => {
-                        inner.process = None;
+                        inner.stop();
                         Err(AppError::Merge(error.to_string()))
                     }
                 }
             }
             Reply::Mutation(Some((true, _))) => {
-                inner.process = None;
+                inner.stop();
                 Err(worker_error(
                     "the worker replaced a record it did not create",
                 ))
@@ -879,7 +914,7 @@ impl ConfinedReplica {
                 Err(worker_error(reason))
             }
             _ => {
-                inner.process = None;
+                inner.stop();
                 Err(worker_error("the worker answered out of turn"))
             }
         }
@@ -928,7 +963,7 @@ impl ConfinedReplica {
             }
             Ok(Reply::Failed(reason)) => Err(AppError::Merge(reason)),
             Ok(_) => {
-                inner.process = None;
+                inner.stop();
                 Err(worker_error("the worker answered out of turn"))
             }
             Err(error) => Err(error),
@@ -1008,7 +1043,7 @@ impl ConfinedReplica {
             }
             Ok(Reply::Failed(reason)) => Err(AppError::Merge(reason)),
             Ok(_) => {
-                inner.process = None;
+                inner.stop();
                 Err(worker_error("the worker answered out of turn"))
             }
             Err(error) => Err(error),
@@ -1038,7 +1073,7 @@ impl ConfinedReplica {
                 return Err(worker_error(reason));
             }
             _ => {
-                inner.process = None;
+                inner.stop();
                 return Err(worker_error("the worker answered out of turn"));
             }
         };
@@ -1049,7 +1084,7 @@ impl ConfinedReplica {
                 Err(error) => {
                     // A worker that sends what is not admitted is not asked
                     // again.
-                    inner.process = None;
+                    inner.stop();
                     return Err(error);
                 }
             }
@@ -1173,7 +1208,7 @@ fn admit_history(doc: &mut AutoCommit, changes: &[Vec<u8>]) -> Result<(), AppErr
 /// Put the content at `hash` from `content` into the worker, answering its
 /// size. `None` when it is not there to put, or too large to cross.
 fn put_content(
-    process: &mut Process,
+    process: &mut Lease,
     content: &ContentStore,
     hash: &str,
 ) -> Result<Option<usize>, AppError> {
@@ -1187,7 +1222,7 @@ fn put_content(
     let size = bytes.len();
     match process
         .call(&Request::PutContent(bytes))
-        .map_err(worker_error)?
+        .map_err(|stopped| worker_error(stopped.to_string()))?
     {
         Reply::Stored(stored) if stored == hash => Ok(Some(size)),
         Reply::Stored(_) => Err(worker_error("the worker kept content under another hash")),
