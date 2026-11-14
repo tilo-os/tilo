@@ -92,6 +92,12 @@ impl HostMail {
         self.accounts.take()
     }
 
+    /// When the window reads the person's accounts again, so an account
+    /// added in another window shows here too.
+    pub(super) fn next_listing_at(&self) -> Option<ui::time::Instant> {
+        self.listed_at.map(|at| at + ACCOUNTS_FRESH)
+    }
+
     /// Why the host would not keep the account the person added, once it
     /// would not.
     pub(super) fn take_add_error(&mut self) -> Option<String> {
