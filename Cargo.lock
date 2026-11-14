@@ -18224,6 +18224,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "blake3",
  "bytes",
  "chrono",
  "clap",
@@ -18237,6 +18238,8 @@ dependencies = [
  "http-body-util",
  "iroh",
  "iroh-blobs",
+ "mail-parser",
+ "migration-sources",
  "neighbour-wire",
  "percent-encoding",
  "postcard",
@@ -18273,7 +18276,9 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+ "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

@@ -34,7 +34,7 @@ chrono = { workspace = true, features = ["std"] }
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
-rustix = { workspace = true, features = ["fs", "std", "process"] }
+rustix = { workspace = true, features = ["fs", "std", "process", "termios"] }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
 # control protocol's one client, shared with tilo-control.
@@ -96,6 +96,15 @@ tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # A workspace's name as a folder name, composed as macOS and Linux read it back.
 unicode-normalization = "0.1.25"
 
+# `tilo migrate`: the migration sources the Tilo OS installer reads (Thunderbird, Outline,
+# Linear), brought into the workspace from this computer.
+migration-sources = { path = "../../platform/migration-sources" }
+blake3.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+# A Thunderbird message read for Mail's `deliver-message`: who, what, when and its words.
+mail-parser = "0.11.4"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true
 
@@ -108,6 +117,7 @@ workspace-hack = { version = "0.1" }
 test-http = { path = "../../dev/test-http" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+migration-sources = { path = "../../platform/migration-sources", features = ["fixture"] }
 
 [[test]]
 name = "it"

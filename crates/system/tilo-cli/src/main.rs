@@ -39,6 +39,7 @@ mod hosted;
 mod identity;
 mod login;
 mod mcp;
+mod migrate;
 mod nouns;
 mod os;
 mod peer;
@@ -353,6 +354,24 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<folders::FoldersCmd>,
     },
+    /// Bring your things over from this computer and the services you use: Thunderbird's
+    /// mail, contacts and calendars, Outline and Linear.
+    #[command(
+        after_help = "Examples:\n  tilo migrate sources\n  tilo migrate review thunderbird\n  \
+                            tilo migrate choose thunderbird ada@example.com --only\n  \
+                            tilo migrate start thunderbird\n  tilo migrate status\n\n\
+                      Each step is its own command, so an agent can show the person what a source holds \
+                      before anything moves. What comes over appears in the workspace as one entry in \
+                      History, which undoes it. Running it again brings only what is not there yet. \
+                      Keys and passwords are never arguments: `connect` asks the person for a key."
+    )]
+    Migrate {
+        /// The answer as JSON.
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        cmd: migrate::MigrateCmd,
+    },
     /// Connect agents to this desktop, and choose their models.
     Agent {
         #[command(subcommand)]
@@ -543,8 +562,10 @@ fn command_here(here: Here) -> clap::Command {
                 "package" => !nouns::any_present(nouns::PACKAGE, here.has),
                 // A desktop's agents use its own door; elsewhere this
                 // computer logs in to the person's workspace instead, and its
-                // folders are what a Tilo desktop's own files are there.
-                "login" | "folders" => here.desktop || (here.has)(agent::DOOR),
+                // folders are what a Tilo desktop's own files are there, and
+                // its migrations land through that login (a desktop has its
+                // own, in its setup).
+                "login" | "folders" | "migrate" => here.desktop || (here.has)(agent::DOOR),
                 // Started by agent tools (`tilo agent connect`), not typed.
                 "mcp" => true,
                 _ => return sub,
@@ -963,6 +984,12 @@ fn run_hosted(
     })
 }
 
+/// Every command as a page of documentation (`tilo help-markdown`).
+fn help_markdown() -> Result<ExitCode> {
+    print!("{}", docs::markdown().map_err(anyhow::Error::msg)?);
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
     let cmd = match run_hosted(
@@ -999,11 +1026,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         )),
         Cmd::Completions { shell } => completions(shell),
         Cmd::Device { cmd } => run_system_command(cmd),
-        Cmd::HelpMarkdown => {
-            print!("{}", docs::markdown().map_err(anyhow::Error::msg)?);
-            Ok(ExitCode::SUCCESS)
-        }
+        Cmd::HelpMarkdown => help_markdown(),
         Cmd::Agent { cmd } => agent::run(cmd),
+        Cmd::Migrate { json, cmd } => migrate::run(cmd, json),
         Cmd::Login {
             new_identity: true,
             name,
@@ -2114,7 +2139,7 @@ mod tests {
                 listed(elsewhere),
                 [
                     "app", "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
-                    "login", "folders"
+                    "login", "folders", "migrate"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2134,7 +2159,7 @@ mod tests {
                 listed(nothing),
                 [
                     "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
-                    "login", "folders"
+                    "login", "folders", "migrate"
                 ]
             );
             let bare = command_here(nothing).render_help().to_string();
