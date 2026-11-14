@@ -480,7 +480,6 @@ mod tests {
             &device::Writer {
                 person: Some("ada"),
                 mine: &|_| true,
-                retained: &|_| false,
                 records: device::Writer::NOTHING_NOTED,
             },
         )

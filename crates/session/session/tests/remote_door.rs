@@ -445,7 +445,7 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     // an agent of theirs does: the setting's own verb.
     b.session
         .invoke(
-            "settings:settings.mcp-server",
+            "settings:settings.agent-door",
             "set-accept-own-devices",
             json!({"on": true}).as_object().unwrap(),
         )
@@ -1088,7 +1088,7 @@ impl DeskWithNotes {
     fn set(&mut self, verb: &str, holds: fn(&serde_json::Map<String, Value>) -> bool) {
         self.session
             .invoke(
-                "settings:settings.mcp-server",
+                "settings:settings.agent-door",
                 verb,
                 json!({"on": true}).as_object().unwrap(),
             )
