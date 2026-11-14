@@ -337,6 +337,18 @@ fn is_output_limit(body: &str) -> bool {
 
 /// The longest prefix of `text` within `max` bytes, cut on a character
 /// boundary.
+/// The day the person asks on, as the model reads it: a program reads no clock, so a request
+/// about "this week" or "overdue" is answered from this, never found out by reading change times.
+fn today_line(today: ui::format::NaiveDate) -> String {
+    let week = today.week(ui::format::Weekday::Mon);
+    format!(
+        "Today is {} where the person is ({today}); this week runs from Monday {} to Sunday {}.",
+        ui::format::day_heading(today, true),
+        week.first_day(),
+        week.last_day()
+    )
+}
+
 /// The input tokens the provider counted for the request a turn's `body`
 /// answers, when it said.
 fn input_tokens(body: &str) -> Option<u64> {
@@ -1179,7 +1191,10 @@ impl Session {
         let place = program_steps::where_section(run, &state.programs, state.turns);
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!("{place}\nThe request:\n\n{request}{resumed}"),
+            task: format!(
+                "{place}\n{}\n\nThe request:\n\n{request}{resumed}",
+                today_line(ui::clock::today())
+            ),
         };
         let mut conversation = if self.chooser.uses_neutral_protocol() {
             Conversation::neutral_first(LOOP_SYSTEM, &first)
@@ -2933,3 +2948,20 @@ fn newly_available(
 #[path = "agent_loop_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod today_tests {
+    /// The model is told the day and the week it is in, so "this week" needs no step.
+    #[test]
+    fn the_request_names_today_and_its_week() {
+        let friday = ui::format::NaiveDate::from_ymd_opt(2026, 11, 13).unwrap();
+        assert_eq!(
+            super::today_line(friday),
+            format!(
+                "Today is {} where the person is (2026-11-13); this week runs from Monday \
+                 2026-11-09 to Sunday 2026-11-15.",
+                ui::format::day_heading(friday, true)
+            )
+        );
+    }
+}
