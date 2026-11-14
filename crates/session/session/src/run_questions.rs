@@ -220,7 +220,6 @@ mod tests {
             needs_confirmation: true,
             confirming: true,
             moderation: None,
-            preview: None,
             scope: scope.map(str::to_owned),
             draft: None,
         }

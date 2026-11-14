@@ -94,7 +94,6 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
                 finished_by_agent: false,
                 subject: None,
                 turn: None,
-                question: None,
                 delegation: Some(Ok(agent.delegation.encode())),
                 origin: None,
             });

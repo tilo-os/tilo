@@ -299,7 +299,6 @@ fn conversation_request(draft: &Draft, resource: &str, action: &str) -> AppActio
         needs_confirmation: true,
         confirming: true,
         moderation: None,
-        preview: None,
         scope: None,
         draft: Some(draft.clone()),
     }

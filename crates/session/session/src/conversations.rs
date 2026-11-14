@@ -924,7 +924,6 @@ fn turns(
                     active: true,
                     finished_by_agent: false,
                     subject,
-                    question: None,
                     turn: Some(Turn::new(address, message_id.to_string())),
                     delegation: None,
                     origin: None,

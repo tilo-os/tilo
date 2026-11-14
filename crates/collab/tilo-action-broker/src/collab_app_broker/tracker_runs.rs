@@ -24,13 +24,7 @@ use std::sync::Arc;
 
 use super::native_task_confirmation::NativeGate;
 use super::{AppBrokerState, PendingTaskRun, PublishedAction, StagedJob, TaskRunEnvelope};
-use crate::services::{
-    NativeTaskActionRequirement, NativeTaskBinding, TrackerAnswer, TrackerRun, TrackerRuns,
-};
-
-#[cfg(test)]
-#[path = "tracker_runs_tests.rs"]
-mod tests;
+use crate::services::{NativeTaskActionRequirement, NativeTaskBinding, TrackerRun, TrackerRuns};
 
 /// The run of `binding` among `runs`: the same epoch and agent.
 fn run_of<'a>(runs: &'a [TrackerRun], binding: &NativeTaskBinding) -> Option<&'a TrackerRun> {
@@ -51,60 +45,6 @@ fn spend_of(
         .agents
         .as_deref()?
         .spend(workspace, &run.agent)
-}
-
-/// The arguments a person confirmed (with their edits) and the question's id.
-type Confirmed = (serde_json::Map<String, serde_json::Value>, String);
-
-/// How the person's answer to `run`'s question lets the child with
-/// `arguments` start, `draft` being what those arguments render. `None` when
-/// the run asked nothing about exactly these arguments.
-pub(super) fn answered(
-    run: &TrackerRun,
-    (resource, action): (&str, &str),
-    arguments: &serde_json::Map<String, serde_json::Value>,
-    draft: &tilo_actions::Draft,
-) -> Result<Option<Confirmed>, String> {
-    let digest = hex::encode(tilo_actions::draft::arguments_digest(arguments));
-    let Some(question) = run.question.as_ref().filter(|question| {
-        question.resource == resource
-            && question.action == action
-            && question.arguments_digest == digest
-    }) else {
-        return Ok(None);
-    };
-    let shown: tilo_actions::Draft = serde_json::from_value(question.draft.clone())
-        .map_err(|_| "the run's question carries no readable draft")?;
-    if &shown != draft {
-        return Err("the run's question shows another draft than these arguments render".into());
-    }
-    match &question.answer {
-        TrackerAnswer::Waiting => Err(awaiting(draft)),
-        TrackerAnswer::Confirmed { edits } => {
-            let edits: Vec<tilo_actions::DraftEdit> = if edits.is_null() {
-                Vec::new()
-            } else {
-                serde_json::from_value(edits.clone())
-                    .map_err(|_| "the person's edits do not read")?
-            };
-            Ok(Some((
-                draft.apply_edits(arguments, &edits)?,
-                question.id.clone(),
-            )))
-        }
-        TrackerAnswer::Declined { reason } => {
-            let declined = format!(
-                "{}: the person declined {}",
-                tilo_actions::draft::DECLINED,
-                draft.action_label
-            );
-            Err(if reason.trim().is_empty() {
-                declined
-            } else {
-                format!("{declined}: {reason}")
-            })
-        }
-    }
 }
 
 /// What a child that asks first is answered with until the person answers
@@ -338,7 +278,7 @@ impl AppBrokerState {
         &self,
         run: &PendingTaskRun,
         (app, offered): (&str, &PublishedAction),
-        (resource, action): (&str, &str),
+        (resource, _): (&str, &str),
         argument: Option<&str>,
     ) -> Result<NativeGate, String> {
         let binding = run.native.clone();
@@ -353,18 +293,6 @@ impl AppBrokerState {
         let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
         let draft = tilo_actions::Draft::render(&descriptor, &arguments);
         let current = self.tracker_run_of(run)?;
-        let logical = tilo_actions::selection::logical_resource_id(resource);
-        if let Some((edited, id)) = answered(&current, (&logical, action), &arguments, &draft)? {
-            let edited = serde_json::Value::Object(edited).to_string();
-            return Ok(NativeGate::Confirmed {
-                argument: if prefixed.is_some() {
-                    format!("{}{edited}", tilo_actions::ARGUMENTS_JSON_PREFIX)
-                } else {
-                    edited
-                },
-                confirmation: id,
-            });
-        }
         let contract_argument =
             json.map(|text| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX));
         let consequential = descriptor

@@ -904,7 +904,6 @@ fn consent(
         needs_confirmation: false,
         confirming: false,
         moderation: None,
-        preview: None,
         scope: None,
         draft: None,
     }

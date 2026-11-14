@@ -286,7 +286,6 @@ impl NativeTaskActionRequirement {
             finished_by_agent: false,
             subject: None,
             turn: binding.turn.clone(),
-            question: None,
             delegation: None,
             origin: None,
         };

@@ -26,8 +26,6 @@ mod confirmation;
 mod conversation_ask;
 #[path = "native_task_cross_app_tests.rs"]
 mod cross_app;
-#[path = "native_store_witness_tests.rs"]
-mod store_witness;
 #[path = "task_run_host_tests.rs"]
 mod task_run_host;
 
@@ -555,7 +553,6 @@ impl Fixture {
                 finished_by_agent: false,
                 subject: None,
                 turn: None,
-                question: None,
                 delegation: None,
                 origin: None,
             });

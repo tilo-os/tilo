@@ -1,8 +1,6 @@
 //! Host-owned adaptation of authenticated task channels to the canonical owner.
 //! No caller certificate, actor label or new grant is accepted from task arguments.
 
-use serde::{Deserialize, Serialize};
-
 #[cfg(test)]
 #[path = "task_execution_tests.rs"]
 mod tests;
@@ -330,87 +328,6 @@ pub fn is_agent_session(task_id: &str) -> bool {
         })
 }
 
-/// What a person answered a run's question.
-#[derive(Clone, Debug, PartialEq)]
-pub enum TrackerAnswer {
-    Waiting,
-    Confirmed { edits: serde_json::Value },
-    Declined { reason: String },
-}
-
-/// The action a run asks its person about, as the run recorded it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TrackerQuestion {
-    pub id: String,
-    pub app: String,
-    pub resource: String,
-    pub action: String,
-    /// Hex of [`tilo_actions::draft::arguments_digest`] of the arguments.
-    pub arguments_digest: String,
-    /// The [`tilo_actions::Draft`] the person was shown.
-    pub draft: serde_json::Value,
-    /// The change the step makes, before and after, where it previews one ([`Preview`]): the
-    /// person decides on the difference, on what the run wrote beside the draft.
-    pub before: Option<serde_json::Value>,
-    pub answer: TrackerAnswer,
-}
-
-/// What one side of a change preview shows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewSide {
-    /// The tree, or the item, as it is (or will be) written.
-    pub text: String,
-    /// Its lines, for a person who cannot see characters line up.
-    pub spoken: String,
-}
-
-/// The change a step makes in tree form, before and after: a person approving a bulk move sees
-/// what it becomes, and a script or screen reader reads the same two sides as text.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Preview {
-    pub before: PreviewSide,
-    pub after: PreviewSide,
-}
-
-/// The draft of `question` as a person reading it with a preview reads it:
-/// the step as the run recorded it, and what the step before it left.
-/// Nothing the asking agent sent decides either.
-#[must_use]
-pub fn confirmation_preview(question: &TrackerQuestion) -> (tilo_actions::Draft, Option<Preview>) {
-    let draft = match serde_json::from_value(question.draft.clone()) {
-        Ok(draft) => draft,
-        Err(error) => {
-            // The sheet then shows no fields to review, only the action.
-            tracing::warn!(
-                question = %question.id,
-                app = %question.app,
-                action = %question.action,
-                %error,
-                "the run's recorded draft does not decode"
-            );
-            tilo_actions::Draft::default()
-        }
-    };
-    // A preview this build cannot read is no preview: the person is
-    // asked on the draft alone rather than on a difference shown wrong.
-    let preview = question.before.clone().and_then(|preview| {
-        match serde_json::from_value(preview) {
-            Ok(preview) => Some(preview),
-            Err(error) => {
-                tracing::warn!(
-                    question = %question.id,
-                    %error,
-                    "the run's recorded change preview does not decode; asking on the draft alone"
-                );
-                None
-            }
-        }
-    });
-    (draft, preview)
-}
-
 /// The scope a run's question asks its person's answer under: the exact action where the step
 /// shows something for good, the whole kind where it does not.
 #[must_use]
@@ -448,8 +365,6 @@ pub struct TrackerRun {
     /// What the issue is about, when it was asked about a selection: where
     /// to act, granting nothing.
     pub subject: Option<tilo_actions::SelectionSubject>,
-    /// What the run asks or last asked its person.
-    pub question: Option<TrackerQuestion>,
     /// The turn the run's agent acts inside: the person's message in a
     /// conversation it takes part in. Every op the run makes carries it; a
     /// run whose causing message the receiver does not hold yet waits for it.

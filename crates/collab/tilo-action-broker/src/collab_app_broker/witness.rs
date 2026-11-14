@@ -329,7 +329,6 @@ impl AppBrokerState {
                 needs_confirmation: true,
                 confirming: true,
                 moderation: Some(moderation),
-                preview: None,
                 scope: None,
                 draft: None,
             },
@@ -611,7 +610,6 @@ impl AppBrokerState {
                 needs_confirmation: true,
                 confirming: true,
                 moderation,
-                preview: None,
                 scope: answer
                     .as_ref()
                     .and_then(|_| caller.agent_name().map(str::to_owned)),

@@ -90,7 +90,6 @@ impl Fixture {
             finished_by_agent: false,
             subject: None,
             turn: None,
-            question: None,
             delegation: Some(Ok(minted.delegation.encode())),
             origin: None,
         });
