@@ -7,8 +7,7 @@
 //! input of the window becomes [`InputEvent`]s; the pointer is drawn as on a real screen, in place
 //! of the host's.
 //! A window whose graphics are lost (a failed present, a refused surface) gets them made again on
-//! the same window while the session runs on ([`recovery`]); one that cannot is given up and the
-//! session runs on without it.
+//! the same window while the session runs on ([`recovery`]), for as long as it takes.
 
 mod graphics;
 mod recovery;
@@ -149,6 +148,8 @@ struct Inner {
     display: EGLDisplay,
     host: HostRef,
     recovery: Recovery,
+    /// When the lost graphics are next made again; none while the window shows.
+    rebuild_due: Option<Instant>,
     output: Output,
     damage: OutputDamageTracker,
     /// When a frame may be drawn though the last one changed nothing.
@@ -226,6 +227,7 @@ impl NestedBackend {
             display,
             host,
             recovery: Recovery::default(),
+            rebuild_due: None,
             output,
             damage,
             next_frame: Instant::now(),
@@ -310,9 +312,7 @@ impl Painter for WindowFrame<'_> {
         let window = self.host.window();
         let age = graphics.buffer_age();
         let (damage, states) = {
-            let (renderer, mut framebuffer) = graphics
-                .bind(window)
-                .map_err(|error| format!("bind window: {error}"))?;
+            let (renderer, mut framebuffer) = graphics.bind(window)?;
             let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
                 self.state.cursor_elements(renderer, self.output);
             elements.extend(output_elements(renderer, self.state, self.output));
@@ -325,9 +325,7 @@ impl Painter for WindowFrame<'_> {
         // Clients draw their next frame now. A frame the host does not take is dropped unshown,
         // which tells its clients it was discarded.
         let presentation = self.state.frame_drawn(self.output, Some(&states));
-        graphics
-            .submit(window, damage.as_deref())
-            .map_err(|error| format!("present window: {error}"))?;
+        graphics.submit(window, damage.as_deref())?;
         presentation.shown(self.state, Shown::Host);
         Ok(())
     }
@@ -343,12 +341,6 @@ impl Painter for WindowFrame<'_> {
         *self.damage = window_damage(self.output);
         *self.graphics = Some(graphics);
         Ok(())
-    }
-
-    fn give_up(&mut self) {
-        *self.graphics = None;
-        // The window shows nothing any more: it goes, and the session runs on without it.
-        self.host.window().set_visible(false);
     }
 }
 
@@ -405,11 +397,16 @@ impl Backend for NestedBackend {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
         let now = Instant::now();
-        if inner.closed || inner.dark || now < inner.next_frame {
+        if inner.closed || inner.dark {
+            return Ok(());
+        }
+        // Lost graphics are made again when due, whether or not anything changed.
+        let rebuild = inner.rebuild_due.is_some_and(|due| now >= due);
+        if now < inner.next_frame && !rebuild {
             return Ok(());
         }
         // Nothing new to show: an idle session draws nothing.
-        if !state.take_redraw(&inner.output) {
+        if !state.take_redraw(&inner.output) && !rebuild {
             return Ok(());
         }
         // With nothing new on screen the window is asked again one refresh later.
@@ -435,18 +432,14 @@ impl Backend for NestedBackend {
             now,
         );
         match shown {
-            Frame::Presented => {}
+            Frame::Presented => inner.rebuild_due = None,
             Frame::Lost(due) => {
-                // The window shows nothing while its graphics are made again. Its clients still
-                // draw at the output's refresh, as on a headless output, and hear that those frames
-                // were not shown; the frame stays owed to the window, drawn whole once it is back.
+                // The window shows nothing while its graphics are made again. Its clients are
+                // answered as they draw, as on a headless output, and hear that those frames were
+                // not shown. The loop wakes for the rebuild at `due`, whose first frame draws the
+                // whole scene; nothing else wakes it while the session is idle.
                 drop(state.frame_drawn(&inner.output, None));
-                state.mark_redraw(&inner.output);
-                inner.next_frame = due.min(next);
-            }
-            Frame::Unusable => {
-                // No window any more: clients are answered as they draw, as on a headless output.
-                drop(state.frame_drawn(&inner.output, None));
+                inner.rebuild_due = Some(due);
             }
         }
         Ok(())
@@ -553,8 +546,14 @@ impl Backend for NestedBackend {
 
     fn next_deadline(&self, state: &State) -> Option<Instant> {
         let inner = self.inner.borrow();
-        let ready = !inner.closed && !inner.dark && state.redraw_owed(&inner.output);
-        ready.then_some(inner.next_frame)
+        if inner.closed || inner.dark {
+            return None;
+        }
+        let frame = state.redraw_owed(&inner.output).then_some(inner.next_frame);
+        match (frame, inner.rebuild_due) {
+            (Some(frame), Some(rebuild)) => Some(frame.min(rebuild)),
+            (frame, rebuild) => frame.or(rebuild),
+        }
     }
 
     fn set_power(&mut self, state: &mut State, _name: &str, on: bool) -> Result<(), BackendError> {

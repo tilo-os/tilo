@@ -4,9 +4,11 @@
 //! or reset the GPU, the driver refused the surface, the desktop was busy. None of that ends the
 //! session. The window drops its graphics and makes them again on the same window, a frame later
 //! at first and then less often ([`backoff`]), while the session goes on serving its clients, its
-//! door and its agent. A frame that is shown again ends the episode and the schedule starts over;
-//! after [`GIVE_UP_AFTER`] rebuilds in a row came to nothing the window is given up and the session
-//! runs on without it.
+//! door and its agent. A frame that is shown again ends the episode and the schedule starts over.
+//! The window is never given up: past the first minute it is tried every [`SLOW`], so a host that
+//! comes back brings it back, and it stays on the desktop for the person to close, which ends the
+//! session as closing any nested window does. The log tells an episode as it starts, once a minute
+//! while it lasts, and as it ends.
 //!
 //! [`Recovery`] is the decision alone (what a frame's outcome leads to, and when), and [`frame`]
 //! drives one frame of a [`Painter`] through it: the window's real graphics in the backend, a
@@ -14,8 +16,8 @@
 
 use std::time::{Duration, Instant};
 
-/// The wait before each rebuild of an episode, by how many rebuilds of it already failed: the first
-/// a frame later, then longer, and every two seconds from the fifth on.
+/// The wait before each rebuild of an episode's first minute, by how many rebuilds of it already
+/// failed: the first a frame later, then longer, and every two seconds from the fifth on.
 const BACKOFF: [Duration; 5] = [
     Duration::from_millis(16),
     Duration::from_millis(50),
@@ -24,13 +26,22 @@ const BACKOFF: [Duration; 5] = [
     Duration::from_secs(2),
 ];
 
-/// Rebuilds in a row that may fail before the window is given up. With [`BACKOFF`] that is a little
-/// over a minute after the loss: long enough to outlast a host compositor restarting or a GPU
-/// reset, after which a window still without graphics is not coming back by waiting.
-pub(crate) const GIVE_UP_AFTER: u32 = 34;
+/// Failed rebuilds after which the window is tried only every [`SLOW`]: with [`BACKOFF`] a little
+/// over a minute, long enough for a host compositor restarting or a GPU reset to be over.
+pub(crate) const FAST_REBUILDS: u32 = 34;
+
+/// The wait between rebuilds after the first minute: rare enough to cost nothing, often enough that
+/// a window whose host came back is drawn again within moments.
+pub(crate) const SLOW: Duration = Duration::from_secs(10);
+
+/// How often a lasting episode is told again in the log.
+pub(crate) const RETELL: Duration = Duration::from_secs(60);
 
 /// The wait before the next rebuild, once `failures` rebuilds of the episode failed.
 pub(crate) fn backoff(failures: u32) -> Duration {
+    if failures >= FAST_REBUILDS {
+        return SLOW;
+    }
     let [.., last] = BACKOFF;
     usize::try_from(failures)
         .ok()
@@ -50,13 +61,13 @@ enum Phase {
     Showing,
     /// The window's graphics were lost: `failures` rebuilds since came to nothing, and the next is
     /// due at `due`. `rebuilt` while a rebuild succeeded and its first frame is still to be shown.
+    /// `told` is when the episode was last told in the log.
     Lost {
         failures: u32,
         due: Instant,
         rebuilt: bool,
+        told: Instant,
     },
-    /// Given up: nothing is drawn to the window again.
-    Unusable,
 }
 
 /// What the window does at a frame.
@@ -68,20 +79,18 @@ pub(crate) enum Step {
     Rebuild,
     /// Nothing until the next rebuild is due, at this instant.
     Wait(Instant),
-    /// The window is given up.
-    Unusable,
 }
 
-/// A change worth one line in the log: an episode is told once as it starts and once as it ends,
-/// not at every frame of it.
+/// A change worth one line in the log: an episode is told as it starts, once a minute while it
+/// lasts, and as it ends; not at every frame of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Note {
     /// The window's graphics were lost; rebuilding them.
     Lost,
+    /// Still lost after this many rebuilds.
+    StillLost { rebuilds: u32 },
     /// A frame reached the window again, after this many rebuilds.
     Recovered { rebuilds: u32 },
-    /// Given up after this many rebuilds.
-    Unusable { rebuilds: u32 },
 }
 
 /// Where the window stands between its graphics being lost and shown again.
@@ -105,7 +114,6 @@ impl Recovery {
             Phase::Showing | Phase::Lost { rebuilt: true, .. } => Step::Present,
             Phase::Lost { due, .. } if now < due => Step::Wait(due),
             Phase::Lost { .. } => Step::Rebuild,
-            Phase::Unusable => Step::Unusable,
         }
     }
 
@@ -113,7 +121,7 @@ impl Recovery {
     /// over.
     pub(crate) fn presented(&mut self) -> Option<Note> {
         match self.phase {
-            Phase::Showing | Phase::Unusable => None,
+            Phase::Showing => None,
             Phase::Lost { failures, .. } => {
                 self.phase = Phase::Showing;
                 Some(Note::Recovered {
@@ -132,11 +140,11 @@ impl Recovery {
                     failures: 0,
                     due: due(now, 0),
                     rebuilt: false,
+                    told: now,
                 };
                 Some(Note::Lost)
             }
-            Phase::Lost { failures, .. } => self.failed(failures.saturating_add(1), now),
-            Phase::Unusable => None,
+            Phase::Lost { .. } => self.failed(now),
         }
     }
 
@@ -150,22 +158,24 @@ impl Recovery {
     /// Making the window's graphics again failed at `now`.
     pub(crate) fn rebuild_failed(&mut self, now: Instant) -> Option<Note> {
         match self.phase {
-            Phase::Lost { failures, .. } => self.failed(failures.saturating_add(1), now),
-            Phase::Showing | Phase::Unusable => None,
+            Phase::Lost { .. } => self.failed(now),
+            Phase::Showing => None,
         }
     }
 
-    fn failed(&mut self, failures: u32, now: Instant) -> Option<Note> {
-        if failures >= GIVE_UP_AFTER {
-            self.phase = Phase::Unusable;
-            return Some(Note::Unusable { rebuilds: failures });
-        }
+    fn failed(&mut self, now: Instant) -> Option<Note> {
+        let Phase::Lost { failures, told, .. } = self.phase else {
+            return None;
+        };
+        let failures = failures.saturating_add(1);
+        let retell = now.saturating_duration_since(told) >= RETELL;
         self.phase = Phase::Lost {
             failures,
             due: due(now, failures),
             rebuilt: false,
+            told: if retell { now } else { told },
         };
-        None
+        retell.then_some(Note::StillLost { rebuilds: failures })
     }
 }
 
@@ -175,8 +185,6 @@ pub(crate) trait Painter {
     fn present(&mut self) -> Result<(), String>;
     /// Drop the window's graphics and make them again on the same window.
     fn rebuild(&mut self) -> Result<(), String>;
-    /// Drop the window's graphics for good and take the window off the desktop.
-    fn give_up(&mut self);
 }
 
 /// What one frame of the window came to.
@@ -186,21 +194,18 @@ pub(crate) enum Frame {
     Presented,
     /// It did not: the window's graphics are lost, and a rebuild is due at this instant.
     Lost(Instant),
-    /// The window is given up.
-    Unusable,
 }
 
 /// Draw one frame at `now` on `painter`, rebuilding its graphics first when a rebuild is due, and
 /// log what changed.
 pub(crate) fn frame(recovery: &mut Recovery, painter: &mut impl Painter, now: Instant) -> Frame {
     match recovery.step(now) {
-        Step::Unusable => return Frame::Unusable,
         Step::Wait(due) => return Frame::Lost(due),
         Step::Rebuild => match painter.rebuild() {
             Ok(()) => recovery.rebuilt(),
             Err(error) => {
                 let note = recovery.rebuild_failed(now);
-                return settle(recovery, painter, note, &error, now);
+                return settle(recovery, note, &error, now);
             }
         },
         Step::Present => {}
@@ -214,39 +219,28 @@ pub(crate) fn frame(recovery: &mut Recovery, painter: &mut impl Painter, now: In
         }
         Err(error) => {
             let note = recovery.present_failed(now);
-            settle(recovery, painter, note, &error, now)
+            settle(recovery, note, &error, now)
         }
     }
 }
 
-/// After a failure: log the note it made and give the window up if that is what it came to.
-fn settle(
-    recovery: &Recovery,
-    painter: &mut impl Painter,
-    note: Option<Note>,
-    error: &str,
-    now: Instant,
-) -> Frame {
+/// After a failure: log the note it made, and say when the next rebuild is due.
+fn settle(recovery: &Recovery, note: Option<Note>, error: &str, now: Instant) -> Frame {
     match note {
         Some(Note::Lost) => {
-            tracing::warn!(error, "the window's graphics were lost; rebuilding them")
+            tracing::warn!(error, "the window's graphics were lost; rebuilding them");
         }
-        Some(Note::Unusable { rebuilds }) => {
-            tracing::error!(
-                error,
-                rebuilds,
-                "the window's graphics could not be made again; the session runs on without its window"
-            );
-            painter.give_up();
-            return Frame::Unusable;
-        }
+        Some(Note::StillLost { rebuilds }) => tracing::warn!(
+            error,
+            rebuilds,
+            "the window's graphics are still lost; the session runs on and keeps trying"
+        ),
         Some(Note::Recovered { .. }) | None => {
             tracing::debug!(error, "the window's graphics are still lost");
         }
     }
     match recovery.step(now) {
         Step::Wait(due) => Frame::Lost(due),
-        Step::Unusable => Frame::Unusable,
         Step::Present | Step::Rebuild => Frame::Lost(now),
     }
 }
@@ -256,15 +250,14 @@ fn settle(
     clippy::arithmetic_side_effects,
     clippy::unchecked_time_subtraction,
     clippy::unwrap_used,
-    reason = "test timelines a minute from now"
+    reason = "test timelines a few minutes from now"
 )]
 mod tests {
     use super::*;
 
     #[test]
     fn a_window_that_shows_presents() {
-        let recovery = Recovery::default();
-        assert_eq!(recovery.step(Instant::now()), Step::Present);
+        assert_eq!(Recovery::default().step(Instant::now()), Step::Present);
     }
 
     #[test]
@@ -308,7 +301,11 @@ mod tests {
             waits.push(due - now);
             now = due;
             assert_eq!(recovery.step(now), Step::Rebuild);
-            assert_eq!(recovery.rebuild_failed(now), None, "told once per episode");
+            assert_eq!(
+                recovery.rebuild_failed(now),
+                None,
+                "told once to start with"
+            );
         }
         let ms = Duration::from_millis;
         assert_eq!(
@@ -341,41 +338,57 @@ mod tests {
         assert_eq!(recovery.step(start), Step::Wait(start + backoff(2)));
     }
 
+    /// The window is never given up: after a minute of quick tries it is tried every ten seconds for
+    /// as long as it takes, and the log hears of it once a minute, not at each try.
     #[test]
-    fn the_window_is_given_up_after_a_minute_of_failed_rebuilds() {
+    fn a_window_lost_for_long_is_tried_slowly_forever_and_told_once_a_minute() {
         let lost = Instant::now();
         let mut now = lost;
         let mut recovery = Recovery::default();
         recovery.present_failed(now);
-        let mut rebuilds = 0;
-        let note = loop {
+        let mut told = Vec::new();
+        let mut rebuilds: u64 = 0;
+        while now - lost < Duration::from_secs(10 * 60) {
             let Step::Wait(due) = recovery.step(now) else {
-                panic!("still recovering after {rebuilds} rebuilds");
+                panic!("a lost window waits for its next rebuild");
             };
             now = due;
+            assert_eq!(
+                recovery.step(now),
+                Step::Rebuild,
+                "it is always tried again"
+            );
             rebuilds += 1;
             if let Some(note) = recovery.rebuild_failed(now) {
-                break note;
+                told.push((now - lost, note));
             }
-        };
-        assert_eq!(
-            note,
-            Note::Unusable {
-                rebuilds: GIVE_UP_AFTER
-            }
-        );
-        assert_eq!(rebuilds, GIVE_UP_AFTER);
-        let tried_for = now - lost;
+        }
+        // The quick tries fill the first minute; ten seconds apart after that.
+        assert_eq!(backoff(FAST_REBUILDS - 1), Duration::from_secs(2));
+        assert_eq!(backoff(FAST_REBUILDS), SLOW);
+        let first_minute: Duration = (0..FAST_REBUILDS).map(backoff).sum();
         assert!(
-            tried_for >= Duration::from_secs(60) && tried_for < Duration::from_secs(65),
-            "given up after {tried_for:?}"
+            first_minute >= Duration::from_secs(60) && first_minute < Duration::from_secs(65),
+            "quick tries for {first_minute:?}"
         );
-        assert_eq!(recovery.step(now), Step::Unusable);
-        // Nothing brings a given-up window back or tells of it again.
-        assert_eq!(recovery.present_failed(now), None);
-        assert_eq!(recovery.rebuild_failed(now), None);
+        let slow_tries = (Duration::from_secs(10 * 60) - first_minute).as_secs() / 10;
+        assert!(
+            rebuilds.abs_diff(u64::from(FAST_REBUILDS) + slow_tries) <= 1,
+            "{rebuilds} rebuilds in ten minutes"
+        );
+        // Told about once a minute: nine or ten times in ten minutes, never closer than a minute.
+        assert!((9..=10).contains(&told.len()), "told {told:?}");
+        for pair in told.windows(2) {
+            assert!(pair[1].0 - pair[0].0 >= RETELL, "told {told:?}");
+        }
+        assert!(matches!(told[0].1, Note::StillLost { .. }));
+        // And a host that comes back brings the window back.
         recovery.rebuilt();
-        assert_eq!(recovery.step(now + Duration::from_secs(10)), Step::Unusable);
+        assert_eq!(recovery.step(now), Step::Present);
+        assert!(matches!(
+            recovery.presented(),
+            Some(Note::Recovered { rebuilds: r }) if u64::from(r) == rebuilds + 1
+        ));
     }
 
     #[test]
@@ -400,10 +413,11 @@ mod tests {
     }
 
     #[test]
-    fn backoff_past_the_schedule_stays_at_its_last_step() {
+    fn backoff_past_the_schedule_settles_at_the_slow_pace() {
         assert_eq!(backoff(4), Duration::from_secs(2));
-        assert_eq!(backoff(1000), Duration::from_secs(2));
-        assert_eq!(backoff(u32::MAX), Duration::from_secs(2));
+        assert_eq!(backoff(FAST_REBUILDS), SLOW);
+        assert_eq!(backoff(1000), SLOW);
+        assert_eq!(backoff(u32::MAX), SLOW);
     }
 
     /// What a scripted window does at each call, and what it was asked.
@@ -422,9 +436,6 @@ mod tests {
         fn rebuild(&mut self) -> Result<(), String> {
             self.calls.push("rebuild");
             self.rebuilds.remove(0)
-        }
-        fn give_up(&mut self) {
-            self.calls.push("give up");
         }
     }
 
@@ -457,13 +468,21 @@ mod tests {
         );
     }
 
+    /// A rebuild that keeps failing for minutes (as one did live, with a renderer refused for a
+    /// missing extension) never ends the window: the first good rebuild draws it again.
     #[test]
-    fn a_window_that_cannot_be_rebuilt_is_given_up_once() {
+    fn a_window_whose_rebuilds_fail_for_minutes_comes_back() {
         let mut now = Instant::now();
+        let lost_at = now;
         let mut recovery = Recovery::default();
+        let failing = 60;
+        let mut rebuilds: Vec<_> = (0..failing)
+            .map(|_| Err("renderer: GL_EXT_texture_format_BGRA8888 missing".to_owned()))
+            .collect();
+        rebuilds.push(Ok(()));
         let mut window = Scripted {
-            presents: vec![lost()],
-            rebuilds: (0..GIVE_UP_AFTER).map(|_| lost()).collect(),
+            presents: vec![lost(), Ok(())],
+            rebuilds,
             ..Scripted::default()
         };
         let mut outcome = frame(&mut recovery, &mut window, now);
@@ -471,27 +490,20 @@ mod tests {
             now = due;
             outcome = frame(&mut recovery, &mut window, now);
         }
-        assert_eq!(outcome, Frame::Unusable);
-        assert_eq!(
-            frame(&mut recovery, &mut window, now + Duration::from_secs(60)),
-            Frame::Unusable
+        assert_eq!(outcome, Frame::Presented);
+        assert!(
+            now - lost_at > Duration::from_secs(60 * 4),
+            "back after {:?}",
+            now - lost_at
         );
-        let rebuilds = window
+        let tried = window
             .calls
             .iter()
             .filter(|call| **call == "rebuild")
             .count();
-        assert_eq!(rebuilds, usize::try_from(GIVE_UP_AFTER).unwrap());
-        assert_eq!(window.calls.first(), Some(&"present"));
-        assert_eq!(window.calls.last(), Some(&"give up"));
-        assert_eq!(
-            window
-                .calls
-                .iter()
-                .filter(|call| **call == "give up")
-                .count(),
-            1
-        );
+        assert_eq!(tried, failing + 1);
+        assert_eq!(window.calls.last(), Some(&"present"));
+        assert_eq!(recovery, Recovery::default());
     }
 
     /// Rebuilt graphics that fail again at once are rebuilt again on the schedule, and a frame that

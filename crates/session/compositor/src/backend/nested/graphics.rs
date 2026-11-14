@@ -14,7 +14,6 @@ use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use smithay::backend::SwapBuffersError;
 use smithay::backend::egl::context::{GlAttributes, PixelFormatRequirements};
 use smithay::backend::egl::native::XlibWindow;
 use smithay::backend::egl::{EGLContext, EGLDisplay, EGLSurface};
@@ -35,6 +34,31 @@ const ATTRIBUTES: GlAttributes = GlAttributes {
     debug: cfg!(debug_assertions),
     vsync: false,
 };
+
+/// Make OpenGL ES this thread's EGL client API, and say whether it was another.
+///
+/// Which API a new EGL context speaks is the thread's bound API at `eglCreateContext`, and smithay
+/// binds GLES only as it makes a display (`EGLDisplay::new`). Anything else on the session's thread
+/// that speaks EGL may bind another API, and a context made on the kept display after that is not
+/// a GLES one: it lacks `GL_EXT_texture_format_BGRA8888`, a GLES extension the renderer requires,
+/// which is how rebuilt windows failed. So GLES is bound before each context is made and each
+/// frame is drawn and presented.
+fn bind_gles() -> Result<Option<u32>, String> {
+    use smithay::backend::egl::ffi::egl;
+    // SAFETY: EGL is loaded (the window's display was made with it); these read and set only this
+    // thread's client API.
+    let was = unsafe { egl::QueryAPI() };
+    if was == egl::OPENGL_ES_API {
+        return Ok(None);
+    }
+    // SAFETY: as above.
+    if unsafe { egl::BindAPI(egl::OPENGL_ES_API) } == egl::FALSE {
+        // SAFETY: asked right after the refused call, on the same thread.
+        let error = unsafe { egl::GetError() };
+        return Err(format!("eglBindAPI(EGL_OPENGL_ES_API): {error:#x}"));
+    }
+    Ok(Some(was))
+}
 
 /// The window's size in physical pixels.
 pub(super) fn window_size(window: &WinitWindow) -> Size<i32, Physical> {
@@ -139,12 +163,22 @@ pub(super) struct WindowGraphics {
     damage_tracking: bool,
     /// The window size the surface was last drawn at.
     bind_size: Option<Size<i32, Physical>>,
+    /// Whether these graphics already told that another EGL user on the thread changed its state
+    /// under them (bound another API, or made its own context current): once is enough to know.
+    told_foreign: bool,
 }
 
 impl WindowGraphics {
     /// Make a context and a renderer on `display`, and the window's surface, as smithay's window
     /// backend does. The window must have no other EGL surface.
     pub(super) fn new(host: &HostRef, display: &EGLDisplay) -> Result<Self, String> {
+        let rebound = bind_gles()?;
+        if let Some(was) = rebound {
+            tracing::warn!(
+                api = format_args!("{was:#x}"),
+                "the thread's EGL API was not OpenGL ES as the window's context was made; bound it"
+            );
+        }
         let context =
             EGLContext::new_with_config(display, ATTRIBUTES, PixelFormatRequirements::_10_bit())
                 .or_else(|_| {
@@ -202,6 +236,7 @@ impl WindowGraphics {
             surface,
             damage_tracking: display.supports_damage(),
             bind_size: None,
+            told_foreign: false,
         };
         graphics.present_without_waiting()?;
         Ok(graphics)
@@ -256,7 +291,13 @@ impl WindowGraphics {
     pub(super) fn bind(
         &mut self,
         window: &WinitWindow,
-    ) -> Result<(&mut GlesRenderer, GlesTarget<'_>), SwapBuffersError> {
+    ) -> Result<(&mut GlesRenderer, GlesTarget<'_>), String> {
+        let rebound = bind_gles()?;
+        if let Some(was) = rebound {
+            self.tell_foreign(format_args!(
+                "the thread's EGL API was {was:#x}, not OpenGL ES"
+            ));
+        }
         // The surface is resized before its context is made current: Mesa latches the back buffer
         // as it is made current.
         let size = window_size(window);
@@ -264,17 +305,48 @@ impl WindowGraphics {
             self.surface.resize(size.w, size.h, 0, 0);
         }
         self.bind_size = Some(size);
-        let target = self.renderer.bind(&mut self.surface)?;
+        let target = self
+            .renderer
+            .bind(&mut self.surface)
+            .map_err(|error| format!("bind window: {error}"))?;
         Ok((&mut self.renderer, target))
+    }
+
+    /// Log, once for these graphics, that another EGL user on the thread changed its state under
+    /// the window.
+    fn tell_foreign(&mut self, what: std::fmt::Arguments<'_>) {
+        if !self.told_foreign {
+            self.told_foreign = true;
+            tracing::warn!("{what}: another EGL user on the session's thread changed it; restored");
+        }
     }
 
     /// Hand the frame drawn since [`Self::bind`] to the host, with its damage in the output's
     /// physical space.
     pub(super) fn submit(
-        &self,
+        &mut self,
         window: &WinitWindow,
         damage: Option<&[Rectangle<i32, Physical>]>,
-    ) -> Result<(), SwapBuffersError> {
+    ) -> Result<(), String> {
+        // A swap is of the surface current on the thread's current context (Mesa answers any other
+        // with `EGL_BAD_SURFACE`). The renderer leaves the window's current after a frame, but
+        // what ran since may have made another context current — a client buffer imported
+        // surfaceless, another EGL user on the thread — so the window's is made current again.
+        let rebound = bind_gles()?;
+        if let Some(was) = rebound {
+            self.tell_foreign(format_args!(
+                "the thread's EGL API was {was:#x}, not OpenGL ES"
+            ));
+        }
+        let context = self.renderer.egl_context();
+        if !(context.is_current() && self.surface.is_current()) {
+            // SAFETY: the window's own context and surface, on the thread that draws them.
+            unsafe { context.make_current_with_surface(&self.surface) }
+                .map_err(|error| format!("make the window current to present: {error}"))?;
+            self.tell_foreign(format_args!(
+                "the window's context and surface were not current at present"
+            ));
+        }
         // The window's buffer is counted from its bottom edge.
         let mut damage = match (damage, self.bind_size) {
             (Some(damage), Some(size)) if self.damage_tracking && !damage.is_empty() => Some(
@@ -298,7 +370,8 @@ impl WindowGraphics {
         };
         // The desktop is asked for a frame callback.
         window.pre_present_notify();
-        self.surface.swap_buffers(damage.as_deref_mut())?;
-        Ok(())
+        self.surface
+            .swap_buffers(damage.as_deref_mut())
+            .map_err(|error| format!("present window: {error}"))
     }
 }
