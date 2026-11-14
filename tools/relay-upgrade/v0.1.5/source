@@ -1,0 +1,5 @@
+# The release the live relay runs, as tools/relay-upgrade/run.sh fetches it:
+# its commit, and the SHA-256 of `git archive --format=tar --prefix=tilo/ <commit>`,
+# which is what the forge's archive of that commit holds once ungzipped.
+commit=976ba3597c400bc1e91ce9d5e715b07392a29e38
+tar_sha256=385e19025639894d897434f52e245fada57f21e97b1251b434588f09421ac7b4

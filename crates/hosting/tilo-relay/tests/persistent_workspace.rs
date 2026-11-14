@@ -38,11 +38,21 @@ fn start_with(
     secrets: &std::path::Path,
     extra: &[&str],
 ) -> std::io::Result<Workspace> {
-    spawn_workspace(state, root_file, secrets, extra, "warn", Stdio::inherit())
+    spawn_workspace(
+        state,
+        root_file,
+        secrets,
+        extra,
+        "warn",
+        Stdio::inherit(),
+        &[],
+    )
 }
 
 /// The workspace on `state`, as [`start_with`] starts it, logging `log`
-/// (`TILO_RELAY_LOG`) to `stderr`.
+/// (`TILO_RELAY_LOG`) to `stderr`, with `envs` set for it alone: a door that
+/// mails a release check's test takes its sender, key and mail service from
+/// them without reaching any other test's process.
 fn spawn_workspace(
     state: &std::path::Path,
     root_file: &std::path::Path,
@@ -50,8 +60,10 @@ fn spawn_workspace(
     extra: &[&str],
     log: &str,
     stderr: Stdio,
+    envs: &[(&str, &str)],
 ) -> std::io::Result<Workspace> {
-    let mut child = Command::new(tilo_test_env::package_binary!("tilo-relay"))
+    let mut command = Command::new(tilo_test_env::package_binary!("tilo-relay"));
+    command
         .env("TILO_SECRETS_DIR", secrets)
         .env("TILO_RELAY_LOG", log)
         .env("NO_COLOR", "1")
@@ -77,8 +89,11 @@ fn spawn_workspace(
         .args(extra)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn_locked()?;
+        .stderr(stderr);
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    let mut child = command.spawn_locked()?;
     let stdin = Some(child.stdin.take().unwrap());
     let stdout = child.stdout.take().unwrap();
     let (sender, events) = mpsc::channel();
@@ -1506,3 +1521,8 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
     );
     workspace.stop();
 }
+
+/// The release of tilo.sh that starts its relay on fresh state, on what the
+/// live relay's release kept.
+#[path = "persistent_workspace/release_upgrade.rs"]
+mod release_upgrade;
