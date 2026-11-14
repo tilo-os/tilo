@@ -30,6 +30,15 @@
 //! A host of several workspaces answers them all on [`DIRECT_ALPN`] through
 //! one [`Serving`], which dispatches each connection to the workspace its
 //! first frame names.
+//!
+//! The device a member dials answers each of the member's own writes it took
+//! in, or refused for good, on a unidirectional stream of its own opened after
+//! its frames' ([`Answered`]); the member lets an answered write go from its
+//! custody, as it does what a relay host answers. That stream is the
+//! difference between [`DIRECT_ALPN`] and [`DIRECT_ALPN_V2`], which a device
+//! still answers and dials where the other device answers nothing newer: on a
+//! link of the older protocol nothing is answered, and a member lets its writes
+//! go once the receipts a later link's catch-up brings cover them.
 
 use crate::actions::now_ns;
 use crate::frames::{MAX_FRAME_BYTES, OUTGOING, REFUSED, bump, from_device};
@@ -47,8 +56,39 @@ use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 
-/// ALPN of a direct replica link between two devices of one workspace.
-pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/2";
+/// ALPN of a direct replica link between two devices of one workspace, on which
+/// the dialled device answers the dialling one's writes ([`Answered`]).
+pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/3";
+
+/// ALPN of the direct link before writes were answered: a device of this build
+/// serves it beside [`DIRECT_ALPN`], and dials it where the other device serves
+/// nothing newer.
+pub const DIRECT_ALPN_V2: &[u8] = b"tilo-peer-state-direct/2";
+
+/// The ALPN codes a device serves direct links on, newest first.
+pub const DIRECT_ALPNS: [&[u8]; 2] = [DIRECT_ALPN, DIRECT_ALPN_V2];
+
+/// What the dialled device made of one of the dialling device's own writes,
+/// named by the hash of the write's frame as the writer keeps it in custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Answered {
+    /// The hash of the write's frame.
+    pub write: [u8; 32],
+    /// The write's own sequence number, as its writer signed it.
+    pub seq: u64,
+    /// Whether the workspace keeps it.
+    pub kept: Kept,
+}
+
+/// Whether the workspace keeps a write ([`Answered`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Kept {
+    /// The dialled device took it in.
+    Durable,
+    /// The dialled device refused it for good: no later attempt of it is
+    /// admitted. Its verdict reaches the writer in the workspace as before.
+    Refused,
+}
 
 /// One frame of a direct link's control stream.
 ///
@@ -289,6 +329,71 @@ impl Dialed {
     }
 }
 
+/// Whether dialling failed because the other device serves none of the protocols asked for: a
+/// device of an older build, which answers a direct link only on [`DIRECT_ALPN_V2`].
+fn refused_protocol(error: &iroh::endpoint::ConnectError) -> bool {
+    use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
+    // TLS's alert for an application protocol neither side shares.
+    let none_shared = TransportErrorCode::crypto(120);
+    let (ConnectError::Connection { source: closed, .. }
+    | ConnectError::Connecting {
+        source: ConnectingError::ConnectionError { source: closed, .. },
+        ..
+    }) = error
+    else {
+        return false;
+    };
+    match closed {
+        ConnectionError::ConnectionClosed(close) => close.error_code == none_shared,
+        ConnectionError::TransportError(error) => error.code == none_shared,
+        _ => false,
+    }
+}
+
+/// Where the dialled device's answers to the dialling one's writes go, where it answers them, and
+/// what writes them on the stream it opens for them: after its frames', so the dialling device
+/// takes the two in that order.
+async fn answering(
+    connection: &Connection,
+    dialing: bool,
+) -> Result<
+    (
+        Option<tokio::sync::mpsc::UnboundedSender<Answered>>,
+        std::pin::Pin<Box<impl std::future::Future<Output = Result<(), String>>>>,
+    ),
+    String,
+> {
+    let (answering, answers) = tokio::sync::mpsc::unbounded_channel::<Answered>();
+    if dialing || !answers_writes(connection) {
+        return Ok((None, Box::pin(answer_all(None, answers))));
+    }
+    let stream = connection
+        .open_uni()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok((Some(answering), Box::pin(answer_all(Some(stream), answers))))
+}
+
+/// Write each of `answers` on `stream` as it comes; on no stream, wait for the link to end.
+async fn answer_all(
+    stream: Option<SendStream>,
+    mut answers: tokio::sync::mpsc::UnboundedReceiver<Answered>,
+) -> Result<(), String> {
+    let Some(mut stream) = stream else {
+        return std::future::pending().await;
+    };
+    while let Some(answered) = answers.recv().await {
+        let bytes = postcard::to_allocvec(&answered).map_err(|error| error.to_string())?;
+        crate::frames::write_frame(&mut stream, &bytes).await?;
+    }
+    Ok(())
+}
+
+/// Whether `connection` is a link on which the dialled device answers the dialling one's writes.
+fn answers_writes(connection: &Connection) -> bool {
+    connection.alpn() == DIRECT_ALPN
+}
+
 /// Why the device on the other end of `connection` refused it, when it did.
 fn refusal(connection: &Connection) -> Option<String> {
     match connection.close_reason()? {
@@ -328,6 +433,8 @@ struct Inner {
     store: Option<Arc<Store>>,
     outgoing: broadcast::Sender<Authored>,
     heard: broadcast::Sender<Heard>,
+    /// What the device this one dialled answered of this device's writes.
+    answered: broadcast::Sender<Answered>,
     changed: watch::Sender<u64>,
     /// Set once the other device's retained history is in hand.
     caught_up: watch::Sender<bool>,
@@ -419,6 +526,7 @@ impl DirectSync {
             store: None,
             outgoing: broadcast::channel(OUTGOING).0,
             heard: broadcast::channel(OUTGOING).0,
+            answered: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
             catch_up_written: watch::channel(false).0,
@@ -441,6 +549,7 @@ impl DirectSync {
             store: self.0.store.clone(),
             outgoing: self.0.outgoing.clone(),
             heard: self.0.heard.clone(),
+            answered: self.0.answered.clone(),
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
@@ -582,6 +691,15 @@ impl DirectSync {
     #[must_use]
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.0.changed.subscribe()
+    }
+
+    /// What the device this one dialled answers of this device's own writes,
+    /// on a link of [`DIRECT_ALPN`]: what its custody lets go of. A receiver
+    /// that falls behind loses answers, and the writes they name wait for the
+    /// next link's catch-up.
+    #[must_use]
+    pub fn answers(&self) -> broadcast::Receiver<Answered> {
+        self.0.answered.subscribe()
     }
 
     /// Every frame a link brings this device's engine, in the order the
@@ -799,10 +917,18 @@ impl DirectSync {
         addr: impl Into<EndpointAddr>,
         device: [u8; 32],
     ) -> Result<Dialed, String> {
-        let connection = endpoint
-            .connect(addr, DIRECT_ALPN)
-            .await
-            .map_err(|error| error.to_string())?;
+        let addr: EndpointAddr = addr.into();
+        // A device of an older build serves only the link before writes were answered: its
+        // handshake refuses the newer protocol at once, and the older one is dialled instead.
+        let connection = match endpoint.connect(addr.clone(), DIRECT_ALPN).await {
+            Ok(connection) => connection,
+            Err(error) if refused_protocol(&error) => endpoint
+                .connect(addr, DIRECT_ALPN_V2)
+                .await
+                .map_err(|error| error.to_string())?,
+            Err(error) => return Err(error.to_string()),
+        };
+
         let (mut send, recv) = connection
             .open_bi()
             .await
@@ -933,28 +1059,12 @@ impl DirectSync {
     /// Sync with the device on the other end of `connection` until the link
     /// ends, whichever side dialled: `dialled` names the device this side
     /// dialled, and the side that accepted reads it off the connection.
-    async fn link(
-        &self,
-        connection: &Connection,
-        dialled: Option<[u8; 32]>,
-        control: Control,
-        live: broadcast::Receiver<Authored>,
-    ) -> Result<(), String> {
-        let dialing = dialled.is_some();
-        let remote = dialled.unwrap_or_else(|| *connection.remote_id().as_bytes());
-        // The device that accepted a dial refuses one of the workspace's
-        // roster it does not know before a frame is read; the one that
-        // dialled cannot judge, and takes only what its roster verifies.
-        if !dialing && let Err(reason) = self.admits(remote) {
-            return Err(refuse(connection, &reason));
-        }
-        // Taken after the catch-up, which the caller subscribed before: a
-        // change published in between reaches the link after the history
-        // rather than not at all.
-        // The device that accepted the dial hands its replica's catch-up with
-        // the history the other one asks for ([`Self::answer_store`]), where it
-        // is judged as history: on the live stream, what it carries that was
-        // written more than the live window ago was refused as a late frame.
+    /// What a link starts by sending: the dialling device's catch-up, and the channels' history
+    /// this device hands with it. The device that accepted the dial hands its replica's catch-up
+    /// with the history the other one asks for ([`Self::answer_store`]), where it is judged as
+    /// history: on the live stream, what it carries that was written more than the live window ago
+    /// was refused as a late frame.
+    async fn link_catch_up(&self, dialing: bool) -> Result<Vec<Authored>, String> {
         let mut catch_up = if dialing {
             self.catch_up().await?
         } else {
@@ -975,6 +1085,28 @@ impl DirectSync {
             }
             catch_up.extend(history);
         }
+        Ok(catch_up)
+    }
+
+    async fn link(
+        &self,
+        connection: &Connection,
+        dialled: Option<[u8; 32]>,
+        control: Control,
+        live: broadcast::Receiver<Authored>,
+    ) -> Result<(), String> {
+        let dialing = dialled.is_some();
+        let remote = dialled.unwrap_or_else(|| *connection.remote_id().as_bytes());
+        // The device that accepted a dial refuses one of the workspace's
+        // roster it does not know before a frame is read; the one that
+        // dialled cannot judge, and takes only what its roster verifies.
+        if !dialing && let Err(reason) = self.admits(remote) {
+            return Err(refuse(connection, &reason));
+        }
+        // Taken after the catch-up, which the caller subscribed before: a
+        // change published in between reaches the link after the history
+        // rather than not at all.
+        let catch_up = self.link_catch_up(dialing).await?;
         tracing::debug!(
             workspace = ?self.workspace().ok(),
             remote = %short(&remote),
@@ -986,6 +1118,7 @@ impl DirectSync {
             .open_uni()
             .await
             .map_err(|error| error.to_string())?;
+        let (answering, answer_all) = answering(connection, dialing).await?;
         // What this link alone carries, besides what every link does: this
         // device's asks for the other's state, and its answers to the other's.
         let (own, only_here) = tokio::sync::mpsc::unbounded_channel();
@@ -1008,7 +1141,16 @@ impl DirectSync {
         // before the live writes the link brings meanwhile: each author's
         // writes to a record apply in the order the author wrote them.
         let (history_in_hand, in_hand) = watch::channel(!dialing);
-        let receiving = self.receive_all(connection, remote, &own, in_hand);
+        let receiving = Box::pin(self.receive_all(
+            connection,
+            remote,
+            &own,
+            in_hand,
+            Answering {
+                dialing,
+                sender: answering.as_ref(),
+            },
+        ));
         let history = async {
             let mut control = control;
             if !dialing {
@@ -1050,6 +1192,7 @@ impl DirectSync {
         let ended = tokio::select! {
             result = receiving => result,
             result = sending => result,
+            result = answer_all => result,
             result = history => result,
             Some(reason) = ended => Err(refuse(connection, &reason)),
         };
@@ -1289,6 +1432,7 @@ impl DirectSync {
         remote: [u8; 32],
         link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
         history: watch::Receiver<bool>,
+        answering: Answering<'_>,
     ) -> Result<(), String> {
         let mut recv = connection
             .accept_uni()
@@ -1305,12 +1449,36 @@ impl DirectSync {
             }
             Ok::<(), String>(())
         };
-        let admitting = self.admit_in_order(remote, link, frames, history);
-        tokio::try_join!(reading, async {
-            admitting.await;
-            Ok(())
-        })
-        .map(|_| ())
+        let admitting = self.admit_in_order(remote, link, answering.sender, frames, history);
+        let received = async {
+            tokio::try_join!(reading, async {
+                admitting.await;
+                Ok(())
+            })
+            .map(|_| ())
+        };
+        tokio::select! {
+            result = received => result,
+            result = Box::pin(self.take_answers(connection, answering.dialing)) => result,
+        }
+    }
+
+    /// Take what the device this one dialled answers of its writes, on the stream it opens after
+    /// its frames', on a link where it does; on any other link, nothing.
+    async fn take_answers(&self, connection: &Connection, dialing: bool) -> Result<(), String> {
+        if !answers_writes(connection) || !dialing {
+            return std::future::pending().await;
+        }
+        let mut recv = connection
+            .accept_uni()
+            .await
+            .map_err(|error| error.to_string())?;
+        while let Some(bytes) = crate::frames::read_frame(&mut recv, MAX_FRAME_BYTES).await? {
+            let answered: Answered =
+                postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+            let _ = self.0.answered.send(answered);
+        }
+        std::future::pending().await
     }
 
     /// Take in `frames`, the other device's live frames in the order it sent
@@ -1319,6 +1487,7 @@ impl DirectSync {
         &self,
         remote: [u8; 32],
         link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
+        answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         mut frames: tokio::sync::mpsc::Receiver<Authored>,
         mut history: watch::Receiver<bool>,
     ) {
@@ -1335,7 +1504,7 @@ impl DirectSync {
             let in_hand = *history.borrow();
             if in_hand {
                 for authored in std::mem::take(&mut waiting) {
-                    self.receive_live(remote, link, authored).await;
+                    self.receive_live(remote, link, answering, authored).await;
                 }
             }
             let Some(authored) = next else {
@@ -1345,7 +1514,7 @@ impl DirectSync {
                 waiting.push(authored);
                 continue;
             }
-            self.receive_live(remote, link, authored).await;
+            self.receive_live(remote, link, answering, authored).await;
         }
     }
 
@@ -1354,6 +1523,7 @@ impl DirectSync {
         &self,
         remote: [u8; 32],
         link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
+        answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         authored: Authored,
     ) {
         // An ask another device made reached this one only because a
@@ -1364,8 +1534,23 @@ impl DirectSync {
             }
             return;
         }
-        if self.admit(authored.from, authored.message, false).await {
+        // The other device's own write is answered, named as its custody names it.
+        let write = match &authored.message {
+            NeighbourMsg::AppDocument { envelope, .. } if authored.from == remote => {
+                postcard::to_allocvec(&authored.message)
+                    .ok()
+                    .map(|bytes| (*blake3::hash(&bytes).as_bytes(), envelope.seq))
+            }
+            _ => None,
+        };
+        let (lacks_history, kept) = self
+            .admit_kept(authored.from, authored.message, false)
+            .await;
+        if lacks_history {
             let _ = link.send(OnlyHere::Ask);
+        }
+        if let (Some(answering), Some((write, seq)), Some(kept)) = (answering, write, kept) {
+            let _ = answering.send(Answered { write, seq, kept });
         }
     }
 
@@ -1378,13 +1563,25 @@ impl DirectSync {
     /// device that sent it is asked for its state. What the workspace
     /// refuses of a frame is that frame's verdict, never the link's.
     async fn admit(&self, claimed: [u8; 32], message: NeighbourMsg, retained: bool) -> bool {
+        self.admit_kept(claimed, message, retained).await.0
+    }
+
+    /// [`Self::admit`], answering besides whether the workspace keeps the frame, where that
+    /// is settled: it took it in, or refused it for good. A frame that waits for history, or was
+    /// refused for now, is answered nothing yet.
+    async fn admit_kept(
+        &self,
+        claimed: [u8; 32],
+        message: NeighbourMsg,
+        retained: bool,
+    ) -> (bool, Option<Kept>) {
         let author = store::author_of(&message).unwrap_or(claimed);
         if channel_governance(&message) {
             if self.fans_out() && !retained {
                 self.answer_request(&message);
             }
             self.carry_governance(author, message, retained);
-            return false;
+            return (false, None);
         }
         let mut heard = self.judge(author, message, retained).await;
         let lacks_history = heard
@@ -1392,6 +1589,13 @@ impl DirectSync {
             .as_ref()
             .is_ok_and(|report| report.lacks_history);
         heard.fresh = self.keep(&heard.message, true);
+        let kept = match &heard.report {
+            Ok(report) if !report.lacks_history => Some(Kept::Durable),
+            Ok(_) => None,
+            Err(reason) => neighbour_wire::RefusalReason::of(reason)
+                .permanent()
+                .then_some(Kept::Refused),
+        };
         tracing::debug!(
             workspace = ?self.workspace().ok(),
             author = %short(&heard.author),
@@ -1425,7 +1629,7 @@ impl DirectSync {
             });
         }
         self.tell(heard);
-        lacks_history
+        (lacks_history, kept)
     }
 
     /// What this device sends the other end of a link to ask for the state
@@ -1646,6 +1850,14 @@ impl DirectSync {
             .find(|certificate| certificate.device_public_key == device)
             .ok_or_else(|| "this device is not in the workspace roster".into())
     }
+}
+
+/// Who answers whose writes on one link: the dialling device takes answers, and the dialled one
+/// sends them through `sender` where the link carries them.
+#[derive(Clone, Copy)]
+struct Answering<'a> {
+    dialing: bool,
+    sender: Option<&'a tokio::sync::mpsc::UnboundedSender<Answered>>,
 }
 
 /// The control stream of one link: what a device asks the other for, and what
@@ -2361,7 +2573,7 @@ mod tests {
             drop(live);
         };
         tokio::join!(
-            member.admit_in_order(host.device(), &asks, frames, history),
+            member.admit_in_order(host.device(), &asks, None, frames, history),
             reading_history
         );
 

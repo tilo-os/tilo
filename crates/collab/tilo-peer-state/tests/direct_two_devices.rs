@@ -14,7 +14,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::Duration;
-use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
+use tilo_peer_state::direct::{DIRECT_ALPN, DIRECT_ALPN_V2, DirectSync, Kept};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
@@ -315,4 +315,132 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     })
     .await;
     paired.abort();
+}
+
+/// Device A seeded with the test record, and device B knowing only the roster, each as a direct
+/// link, with their keys.
+fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let (a_key, a_cert) = device(&root, 2);
+    let (b_key, b_cert) = device(&root, 3);
+    let roster = vec![a_cert.clone(), b_cert];
+    let now = SystemTime::now();
+    let mut a = StatePeer::new(
+        WORKSPACE,
+        a_cert.clone(),
+        roster.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    a.select_admission_v5().unwrap();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "from a").unwrap();
+    document.commit_edit("fixture", "value");
+    a.install_seed(
+        SeedState {
+            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
+            documents: vec![SeedDocument {
+                app_id: APP.into(),
+                record_id: RECORD.into(),
+                kind: "test".into(),
+                bytes: document.save(),
+            }],
+        },
+        &a_key,
+        now,
+    )
+    .unwrap();
+    let b = StatePeer::from_join(WORKSPACE, a_cert, roster, &[], now).unwrap();
+    (
+        DirectSync::new(a, a_key.clone()),
+        a_key,
+        DirectSync::new(b, b_key.clone()),
+        b_key,
+    )
+}
+
+/// The device dialled answers each write of the dialling device's it takes in, named as the
+/// writer's custody names it: the hash of the frame it published.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_device_dialled_answers_each_write_it_takes_in() {
+    let (a, a_key, b, b_key) = two_devices();
+    let a_endpoint = localhost_endpoint(&a_key).await;
+    let _a_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(DIRECT_ALPN, a.clone())
+        .spawn();
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let mut answers = b.answers();
+    let _link = tokio::spawn({
+        let (b, b_endpoint, a_addr) = (b.clone(), b_endpoint.clone(), addr(&a_endpoint));
+        async move { b.connect(&b_endpoint, a_addr).await }
+    });
+    let rows = a.read(StatePeer::rows);
+    until(&b, "B holds A's rows", |b| b.rows() == rows).await;
+
+    let mut written = AutoCommit::load(&b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
+    written.set_actor(automerge::ActorId::from(
+        b_key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = written.get_heads();
+    written.put(ROOT, "value", "from b").unwrap();
+    written.commit_edit("fixture", "value");
+    let change = written.save_after(&heads);
+    let message = b
+        .publish(|peer| {
+            peer.publication_mut().publish_incremental(
+                APP,
+                RECORD,
+                change,
+                &b_key,
+                SystemTime::now(),
+            )
+        })
+        .unwrap();
+    let write = *blake3::hash(&postcard::to_allocvec(&message).unwrap()).as_bytes();
+    let answered = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let answered = answers.recv().await.unwrap();
+            if answered.write == write {
+                return answered;
+            }
+        }
+    })
+    .await
+    .expect("A answers B's write");
+    assert_eq!(answered.kept, Kept::Durable);
+}
+
+/// A device of an older build serves only the link before writes were answered: a device of
+/// this one dials that link instead, and the two converge as before, nothing answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_answers_nothing_newer_is_dialled_on_the_older_link() {
+    let (a, a_key, b, b_key) = two_devices();
+    let a_endpoint = localhost_endpoint(&a_key).await;
+    let _a_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(DIRECT_ALPN_V2, a.clone())
+        .spawn();
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let mut answers = b.answers();
+    let _link = tokio::spawn({
+        let (b, b_endpoint, a_addr) = (b.clone(), b_endpoint.clone(), addr(&a_endpoint));
+        async move { b.connect(&b_endpoint, a_addr).await }
+    });
+    let rows = a.read(StatePeer::rows);
+    until(&b, "B holds A's rows over the older link", |b| {
+        b.rows() == rows
+    })
+    .await;
+    let edited = edit(&b, &b_key, "from b");
+    until(&a, "A holds B's edit over the older link", |a| {
+        a.document_heads(APP, RECORD) == edited
+    })
+    .await;
+    assert!(
+        matches!(
+            answers.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "nothing is answered on the older link"
+    );
 }

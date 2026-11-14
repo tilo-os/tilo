@@ -1506,11 +1506,18 @@ impl Engine {
     /// kept.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn direct_protocols(&self) -> Vec<(Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>)> {
+        // Every version of the link a device dials, newest first: one of an older build dials the
+        // link before writes were answered.
         self.directed.as_ref().map_or_else(Vec::new, |directed| {
-            vec![(
-                tilo_peer_state::direct::DIRECT_ALPN.to_vec(),
-                Box::<dyn iroh::protocol::DynProtocolHandler>::from(directed.clone()),
-            )]
+            tilo_peer_state::direct::DIRECT_ALPNS
+                .iter()
+                .map(|alpn| {
+                    (
+                        alpn.to_vec(),
+                        Box::<dyn iroh::protocol::DynProtocolHandler>::from(directed.clone()),
+                    )
+                })
+                .collect()
         })
     }
 

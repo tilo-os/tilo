@@ -466,6 +466,10 @@ fn allowed(
     for (index, entry) in publication.entries.iter().enumerate() {
         // A compaction not drafted yet holds its place: nothing after it leaves before it.
         if publication.slots.contains(&entry.id) {
+            tracing::debug!(
+                held = publication.entries.len().saturating_sub(index),
+                "this device's writes wait in custody behind a compaction not drafted yet"
+            );
             break;
         }
         let message: NeighbourMsg =
@@ -481,6 +485,11 @@ fn allowed(
         };
         let route = (app_id, record_id);
         if compacting.contains(&route) {
+            tracing::debug!(
+                app = %route.0,
+                record = %route.1,
+                "a write waits in custody behind its record's compaction the host has not answered"
+            );
             continue;
         }
         if envelope.kind == OpKind::Compaction {
@@ -492,6 +501,11 @@ fn allowed(
         // and the relay never re-sends the expired original beside a renewal.
         // A cleartext frame is re-sent as it was signed, however old it is.
         if envelope.encryption.is_some() && !fresh(entry, now) {
+            tracing::debug!(
+                app = %app_id,
+                record = %record_id,
+                "a sealed write in custody is past its epoch and waits for its renewal"
+            );
             continue;
         }
         if let Some(slot) = allowed.get_mut(governance_len.saturating_add(index)) {
@@ -502,6 +516,13 @@ fn allowed(
                     .ok()
                     .flatten()
                     .is_some();
+            if !*slot {
+                tracing::debug!(
+                    app = %app_id,
+                    record = %record_id,
+                    "a write in custody is not this device's as its replica holds it, and stays"
+                );
+            }
         }
     }
     Ok(allowed)
@@ -887,6 +908,7 @@ pub(crate) fn refresh_governance_checkpoint(
 /// ([`settle`]). Custody refuses no write for how many it holds.
 fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), String> {
     let id = *blake3::hash(&bytes).as_bytes();
+    let workspace = view.workspace;
     let custody = state_of(view)?;
     if custody
         .entries
@@ -927,6 +949,16 @@ fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), Stri
     if at_head {
         publication.entries.push(entry);
     } else {
+        // Nothing is lost: the write waits behind the others, kept beside the record, and leaves
+        // as the workspace's host answers those. Said once each time custody fills.
+        if publication.tail.is_empty() && publication.spilled.is_empty() {
+            tracing::warn!(
+                %workspace,
+                waiting = publication.entries.len(),
+                "this device's writes wait to be sent: the workspace's host has not answered the \
+                 ones before them"
+            );
+        }
         publication.tail.push(entry);
     }
     Ok(())

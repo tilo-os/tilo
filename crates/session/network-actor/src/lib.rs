@@ -507,6 +507,14 @@ enum InternalEvent {
     },
     /// A workspace's link has the host's retained history in hand.
     NativeReady { ws: WorkspaceId },
+    /// The device a workspace's link reaches answered this device's writes.
+    NativeAnswered {
+        ws: WorkspaceId,
+        answers: Vec<tilo_peer_state::direct::Answered>,
+    },
+    /// This device let answered writes of workspace `ws` go from its custody: what waited behind
+    /// them goes now.
+    NativeRetired { ws: WorkspaceId },
     /// A workspace's link ended; `deleted` when its host said the
     /// workspace's owner deleted it.
     NativeLinkClosed { ws: WorkspaceId, deleted: bool },
@@ -1913,6 +1921,10 @@ impl ActorState {
                 heard,
             }) => self.member_heard(ws, workspace, heard).await,
             Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
+            Some(InternalEvent::NativeAnswered { ws, answers }) => {
+                self.native_answered(ws, answers);
+            }
+            Some(InternalEvent::NativeRetired { ws }) => self.drive_native_publication(ws),
             Some(InternalEvent::NativeLinkClosed { ws, deleted }) => {
                 self.native_link_closed(ws, deleted).await;
             }
@@ -3691,6 +3703,7 @@ fn spawn_direct_pump(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reader = link.reader();
+        let mut answers = link.answers();
         let mut caught_up = link.caught_up();
         let running = linked.run();
         tokio::pin!(running);
@@ -3721,6 +3734,23 @@ fn spawn_direct_pump(
                         }
                     }
                     None => break,
+                },
+                // What the host answered of this device's writes, gathered while more wait.
+                answered = answers.recv() => match answered {
+                    Ok(first) => {
+                        let mut answered = vec![first];
+                        while let Ok(more) = answers.try_recv() {
+                            answered.push(more);
+                        }
+                        let event = InternalEvent::NativeAnswered { ws, answers: answered };
+                        if tx.send(event).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        tracing::warn!(ws = %ws, missed, "answers to this device's writes were missed; they leave custody at the next link");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 },
                 result = &mut running => {
                     if let Err(reason) = result {

@@ -296,6 +296,8 @@ pub struct Outgoing<'a> {
 #[derive(Default)]
 pub struct Sending {
     sent: std::collections::BTreeSet<[u8; 32]>,
+    /// How many writes in custody the last pass held back: they may not leave now.
+    held: usize,
 }
 
 impl Sending {
@@ -316,6 +318,15 @@ impl Sending {
     ) -> Result<bool, String> {
         owner.with_outgoing(workspace, tilo_clock::wall(), |view, outgoing| {
             authorize(view)?;
+            let (queued, sendable) = (outgoing.queued().count(), outgoing.entries().count());
+            self.held = queued.saturating_sub(sendable);
+            tracing::debug!(
+                %workspace,
+                queued,
+                sendable,
+                sent_before = self.sent.len(),
+                "this device's custody of the workspace goes to its link"
+            );
             Ok(self.pass(
                 outgoing.queued(),
                 outgoing.entries().map(|entry| Outgoing {
@@ -327,6 +338,13 @@ impl Sending {
                 send,
             ))
         })
+    }
+
+    /// How many writes in custody the last [`Self::drive`] held back: a sealed write past its
+    /// epoch waits for its renewal, and a write behind its record's compaction for the host's answer.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.held
     }
 
     /// Send each of `writes` this connection has not sent; `queued` is every write still in

@@ -1300,8 +1300,14 @@ impl Device {
             // people through.
             .env(tilo_secrets::SECRETS_DIR_ENV, root.join("secrets"))
             .env(FILE_SECRETS_ENV, "1")
-            // The session says at info why a join did not land: what a failed step reads.
-            .env("RUST_LOG", "info")
+            // The session says at info why a join did not land, and its direct links say at debug
+            // what they carried: what a failed step reads.
+            .env(
+                "RUST_LOG",
+                "info,tilo_peer_state::direct=debug,tilo_peer_state::join_transport=debug,\
+                 tilo_session::shared_desktop=debug,tilo_network_actor::native_ingress=debug,\
+                 tilo_peer_state::owner::publication=debug,tilo_session_client::custody=debug",
+            )
             .env("TILO_APP_STDERR_DIR", &logs)
             // The tests of this process mount the trees this device's session serves, so the
             // session records this process as the Files endpoint the login's unit would be.

@@ -418,6 +418,9 @@ pub(crate) struct SharedDesktops {
     person: RefCell<Option<String>>,
     /// Every record of every workspace this device reads and writes.
     held: RefCell<HashMap<Key, Held>>,
+    /// Why each workspace's layout was last left unwritten on a look, said once each time it
+    /// changes: what a change that never reached the workspace reads back.
+    unwritten: RefCell<HashMap<WorkspaceId, &'static str>>,
 }
 
 impl SharedDesktops {
@@ -439,6 +442,23 @@ impl SharedDesktops {
     /// What this device holds of `key`, changed by `edit`.
     fn held<R>(&self, key: &Key, edit: impl FnOnce(&mut Held) -> R) -> R {
         edit(self.held.borrow_mut().entry(key.clone()).or_default())
+    }
+
+    /// Note that this look left `workspace_id`'s layout unwritten for `why`, said at debug when the
+    /// reason changes; `None` once a write of it goes out.
+    fn unwritten(&self, workspace_id: WorkspaceId, why: Option<&'static str>) {
+        let mut unwritten = self.unwritten.borrow_mut();
+        let was = match why {
+            Some(why) => unwritten.insert(workspace_id, why),
+            None => unwritten.remove(&workspace_id),
+        };
+        if was != why {
+            tracing::debug!(
+                %workspace_id,
+                why = why.unwrap_or("written"),
+                "a look leaves the workspace's layout as it stands here"
+            );
+        }
     }
 
     /// Every key this device holds a record of.
@@ -853,6 +873,7 @@ impl SharedDesktops {
         // it is the write that says what was done.
         let acted = acted.or_else(|| self.held(&key, |held| held.pending_acted.take()));
         if !self.settle_one(&key) {
+            self.unwritten(workspace_id, Some("its last write is under way"));
             if let Some(acted) = acted {
                 self.held(&key, |held| held.pending_acted = Some(acted));
             }
@@ -865,6 +886,7 @@ impl SharedDesktops {
             .iter()
             .any(|strip| !strip.window_groups.is_empty());
         let Some(sealed) = self.sealed(engine, &key) else {
+            self.unwritten(workspace_id, Some("it cannot be sealed here yet"));
             // An arranging action's change waits for the record's keys, and is written once they
             // are here.
             if let Some(acted) = acted
@@ -879,6 +901,10 @@ impl SharedDesktops {
         // desk shows before then is not what the person made of it. A copy this device wrote is
         // what its next write is made on, with the workspace's merged in.
         if reached.is_some() && !holds && self.held(&key, |held| held.folded.is_none()) {
+            self.unwritten(
+                workspace_id,
+                Some("the workspace's layout is not read here yet"),
+            );
             if let Some(acted) = acted {
                 self.held(&key, |held| held.pending_acted = Some(acted));
             }
@@ -888,6 +914,10 @@ impl SharedDesktops {
         // nothing to show founds nothing, so the record stays one the devices that do show
         // something make.
         if reached.is_none() && !holds && !shares {
+            self.unwritten(
+                workspace_id,
+                Some("nobody wrote it and this desk shows nothing"),
+            );
             return;
         }
         let mut notes = self.notes.of_workspace(workspace_id);
@@ -900,6 +930,10 @@ impl SharedDesktops {
                 held.written == Some(Written::Layout(own, notes.clone()))
             })
         {
+            self.unwritten(
+                workspace_id,
+                Some("this desk did not move since it wrote it"),
+            );
             return;
         }
         if let Some(acted) = &acted {
@@ -909,6 +943,7 @@ impl SharedDesktops {
                 }
             }
         }
+        self.unwritten(workspace_id, None);
         self.lay(
             engine,
             person,
@@ -974,6 +1009,7 @@ impl SharedDesktops {
         let written = || Written::Layout(laying.own, laying.notes.clone());
         match laid {
             Laid::Held { record, windows } => {
+                tracing::debug!(%workspace_id, "the layout's write found nothing to write");
                 // Nothing to write: what this device read is the copy its next write is made on.
                 let written = written();
                 self.written_windows
@@ -984,6 +1020,7 @@ impl SharedDesktops {
             }
             Laid::Wrote(taken) => match taken.took {
                 Ok(_) => {
+                    tracing::debug!(%workspace_id, "the layout's write was taken");
                     let written = written();
                     self.written_windows
                         .borrow_mut()

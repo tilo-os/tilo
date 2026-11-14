@@ -157,6 +157,11 @@ impl WorkspaceJoinClient {
                     .map_err(|error| WorkspaceJoinError::Decode(error.to_string()));
             }
         };
+        tracing::debug!(
+            host = %hex::encode(&address.id.as_bytes()[..4]),
+            addrs = ?address.addrs,
+            "a workspace join dials its host where its hint says"
+        );
         let connection = endpoint
             .connect(address, WORKSPACE_JOIN_ALPN)
             .await

@@ -26,7 +26,8 @@
 use std::time::Instant;
 
 use crate::common::people::{
-    Device, Person, Site, joined_within, show, two_devices_of_one_person, wait_shown,
+    Device, Person, Site, joined_within, shared_invitation, show, two_devices_of_one_person,
+    wait_shown,
 };
 use serde_json::json;
 use tilo_relay_protocol::workspaces::Role;
@@ -526,4 +527,254 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
         "the copy's Passwords lists {listed:?}, not the login its source saved\n{}",
         copy.warnings()
     );
+}
+
+/// Bring the workspace `workspace` (its id) to the front on `device`'s desk.
+fn show_held(device: &Device, workspace: &str) {
+    let key = || -> Option<u64> {
+        device.state()["state"]["held_workspaces"]
+            .as_array()?
+            .iter()
+            .find(|held| held["room"].as_str() == Some(workspace))
+            .and_then(|held| held["workspace"].as_u64())
+    };
+    tilo_test_env::wait_until(format!("{} holds {workspace}", device.label), || {
+        key().is_some()
+    });
+    let shown = device.act(
+        "so.tilo.session",
+        "session:desk\u{1f}switch-workspace",
+        &json!({"workspace": key().expect("held").to_string()}),
+    );
+    assert!(
+        shown.get("err").is_none(),
+        "{} shows {workspace}: {shown}",
+        device.label
+    );
+    tilo_test_env::wait_until(format!("{} shows {workspace}", device.label), || {
+        device.showing().as_deref() == Some(workspace)
+    });
+}
+
+/// The window titles `device` 's desk shows in the workspace `workspace` (its id).
+fn titles_in(device: &Device, workspace: &str) -> Vec<String> {
+    let state = device.state();
+    let tree: tilo_desktop_model::DesktopTree =
+        serde_json::from_value(state["state"]["workspace_tree"].clone()).unwrap_or_default();
+    tree.workspaces
+        .iter()
+        .filter(|held| held.id().to_string() == workspace)
+        .flat_map(|held| &held.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.title.clone())
+        .collect()
+}
+
+/// What `device` holds of its workspaces' hosts and logged of joining and syncing them.
+fn syncing(device: &Device) -> String {
+    let hosts = device.ask(&json!({"op": "workspace_hosts"}));
+    let log = device.log();
+    let said: Vec<&str> = log
+        .lines()
+        .filter(|line| {
+            [
+                "join",
+                "admit",
+                "direct link",
+                "link's",
+                "frame",
+                "history",
+                "workspace_sync",
+                "refus",
+                "custody",
+                "take this device",
+                "peer-sync",
+                "dials its host",
+                "device of the person",
+                "own host",
+                "layout",
+                "custody",
+                "native",
+                "link",
+                "WARN",
+                "ERROR",
+            ]
+            .iter()
+            .any(|word| line.contains(word))
+        })
+        .filter(|line| {
+            !line.contains("moq_net") && !line.contains("mDNS") && !line.contains("retained=true")
+        })
+        .collect();
+    let tail = said.len().saturating_sub(200);
+    format!("hosts: {hosts}\n{}", said[tail..].join("\n"))
+}
+
+/// Start `laptop` and its copy and wait until the copy is admitted to `hosted`, the workspace the
+/// laptop hosts. A restart moves the port the laptop's record names; the copy reaches it at the
+/// relay the record names, which the laptop answers on while a link it handed out into the
+/// workspace waits to be redeemed. On the boxes the two find each other on their network instead
+/// (`e2e-branch`).
+fn start_both(laptop: &mut Device, copy: &mut Device, hosted: &str) {
+    laptop.start();
+    copy.start();
+    let until = tilo_test_env::hang_deadline();
+    loop {
+        let rows = copy.ask(&json!({"op": "workspace_hosts"}));
+        let admitted = rows["answer"]["workspaces"].as_array().is_some_and(|held| {
+            held.iter()
+                .any(|row| row["room"].as_str() == Some(hosted) && row["awaiting_host"] == false)
+        });
+        if admitted {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "{} was never admitted to {hosted}, which {} hosts\n--- {} ---\n{}\n--- {} ---\n{}",
+            copy.label,
+            laptop.label,
+            laptop.label,
+            syncing(laptop),
+            copy.label,
+            syncing(copy),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// Wait until `reader` shows the window `title` that `writer` opened in `workspace`, saying on a
+/// miss what each desk shows and what each session logged of syncing it.
+fn wait_reaches(writer: &Device, reader: &Device, workspace: &str, title: &str) {
+    let until = tilo_test_env::hang_deadline();
+    while !titles_in(reader, workspace)
+        .iter()
+        .any(|shown| shown == title)
+    {
+        assert!(
+            std::time::Instant::now() < until,
+            "{title:?}, opened on {}, never showed on {} in {workspace}: {} shows {:?}, {} shows \
+             {:?}\n--- {} ---\n{}\n--- {} ---\n{}",
+            writer.label,
+            reader.label,
+            writer.label,
+            titles_in(writer, workspace),
+            reader.label,
+            titles_in(reader, workspace),
+            writer.label,
+            syncing(writer),
+            reader.label,
+            syncing(reader),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// A workspace the source made and hosts itself, and the machine copied from it, edited each way
+/// after each restart of both: an edit on either always reaches the other (`e2e-branch` S09 and
+/// S11, which missed one direction once in a while after a reboot). `TILO_SYNC_ROUNDS` runs more
+/// rounds than the suite's three.
+#[test]
+fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart() {
+    let rounds: usize = std::env::var("TILO_SYNC_ROUNDS")
+        .ok()
+        .and_then(|rounds| rounds.parse().ok())
+        .unwrap_or(3);
+    // No site: as on the boxes, every workspace the two hold is one the laptop hosts.
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.start();
+    // A workspace the laptop makes and hosts before it is copied, as box hosts "Branch e2e".
+    let before = laptop.on_desk();
+    let made = laptop.act_wait("actions", "workspace.create", &json!({}));
+    assert_eq!(
+        made["answer"]["receipt"]["update"]["state"],
+        json!("succeeded"),
+        "{made}"
+    );
+    tilo_test_env::wait_until("the laptop's desk holds the workspace it made", || {
+        laptop.on_desk().len() > before.len()
+    });
+    let hosted = laptop
+        .on_desk()
+        .into_iter()
+        .find(|workspace| !before.contains(workspace))
+        .expect("the workspace the laptop made");
+    show_held(&laptop, &hosted);
+    {
+        let _before = laptop.window(NOTES, "Before the copy");
+        tilo_test_env::wait_until("the laptop shows its window", || {
+            titles_in(&laptop, &hosted)
+                .iter()
+                .any(|title| title == "Before the copy")
+        });
+    }
+    // A link into the workspace waits for Bob: the laptop stays reachable at its relay through every
+    // restart, as the boxes are on their network.
+    let _out = shared_invitation(&laptop, "editor", Person::new("Bob").public);
+    laptop.stop();
+    let (mut copy, _) = ada.branch(&laptop);
+    start_both(&mut laptop, &mut copy, &hosted);
+    for round in 0..rounds {
+        for device in [&laptop, &copy] {
+            show_held(device, &hosted);
+        }
+        let from_laptop = format!("Laptop {round}");
+        let _laptop_window = laptop.window(NOTES, &from_laptop);
+        wait_reaches(&laptop, &copy, &hosted, &from_laptop);
+        let from_copy = format!("Copy {round}");
+        let _copy_window = copy.window(NOTES, &from_copy);
+        wait_reaches(&copy, &laptop, &hosted, &from_copy);
+        drop((_laptop_window, _copy_window));
+        laptop.stop();
+        copy.stop();
+        start_both(&mut laptop, &mut copy, &hosted);
+    }
+}
+
+/// A copy keeps reaching the workspace its source hosts however much it writes there: each window
+/// it opens shows on its source, past the writes its custody holds at once (`MAX_ENTRIES`, 64).
+/// The copy's writes stayed in its custody for good and, once that was full, a new one never left
+/// it (`e2e-branch` S11).
+#[test]
+fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_custody_holds() {
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.start();
+    let before = laptop.on_desk();
+    let made = laptop.act_wait("actions", "workspace.create", &json!({}));
+    assert_eq!(
+        made["answer"]["receipt"]["update"]["state"],
+        json!("succeeded"),
+        "{made}"
+    );
+    tilo_test_env::wait_until("the laptop's desk holds the workspace it made", || {
+        laptop.on_desk().len() > before.len()
+    });
+    let hosted = laptop
+        .on_desk()
+        .into_iter()
+        .find(|workspace| !before.contains(workspace))
+        .expect("the workspace the laptop made");
+    show_held(&laptop, &hosted);
+    {
+        let _before = laptop.window(NOTES, "Before the copy");
+        tilo_test_env::wait_until("the laptop shows its window", || {
+            titles_in(&laptop, &hosted)
+                .iter()
+                .any(|title| title == "Before the copy")
+        });
+    }
+    let _out = shared_invitation(&laptop, "editor", Person::new("Bob").public);
+    laptop.stop();
+    let (mut copy, _) = ada.branch(&laptop);
+    start_both(&mut laptop, &mut copy, &hosted);
+    for device in [&laptop, &copy] {
+        show_held(device, &hosted);
+    }
+    for round in 0..80 {
+        let title = format!("Copy {round}");
+        let _window = copy.window(NOTES, &title);
+        wait_reaches(&copy, &laptop, &hosted, &title);
+    }
 }
