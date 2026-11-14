@@ -436,3 +436,17 @@ fn files_opens_its_workspace_record_and_lists_no_tree_beside_it() {
         "the tree of the workspace's folder is read where it is kept, never mounted as Files'"
     );
 }
+
+#[test]
+fn a_chain_beside_the_workspace_record_is_the_apps_own() {
+    let chat = chat::definition();
+    assert!(
+        super::opens_as_its_own(chat, ""),
+        "the workspace's own Chat record"
+    );
+    let part = chat::parts::part(0).route().to_owned();
+    assert!(
+        super::opens_as_its_own(chat, &part),
+        "a part of the chat's messages is the chat's own record: {part}"
+    );
+}

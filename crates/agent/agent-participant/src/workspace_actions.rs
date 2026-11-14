@@ -2861,12 +2861,12 @@ fn log_outcome(
 }
 
 /// Whether `record` is one of `app`'s own records, which its replica opens. An app that keeps one
-/// record per workspace opens that one alone: a record it owns beside it, of another kind (Files'
-/// tree of the workspace's folder), is read where it is kept, never mounted as the app's, which
-/// refuses it as not the app's workspace record.
+/// record per workspace opens that one, and what it keeps as records of its own beside it (a
+/// chain's parts, its chunks); a person's record of some kind, kept beside the app's for that
+/// person (Files' tree of the workspace's folder), is read where it is kept, never mounted as the
+/// app's, which refuses it as not the app's workspace record.
 fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) -> bool {
-    !app.keeps_workspace_record()
-        || ui::record::RecordId::from_route(record).is_some_and(|id| id.is_package_primary())
+    !app.keeps_workspace_record() || collab_types::person_record_kind(record).is_none()
 }
 
 #[cfg(test)]
