@@ -22,7 +22,7 @@ fn unexpected(answer: &ContentPutAnswer) -> ActionHostError {
 
 impl ContentPuts for SessionPuts {
     fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
-        match self.0.put_step(ContentPutStep::Begin { size })? {
+        match self.0.put_step_waited(ContentPutStep::Begin { size })? {
             ContentPutAnswer::Begun { upload } => Ok(Box::new(SessionPut {
                 actions: self.0.clone(),
                 upload,
@@ -62,7 +62,7 @@ impl ContentPut for SessionPut {
         }
         for piece in chunk.chunks(MAX_CONTENT_FRAME_BYTES) {
             let step = ContentPutStep::append(self.upload, self.written, piece);
-            match self.actions.put_step(step)? {
+            match self.actions.put_step_waited(step)? {
                 ContentPutAnswer::Appended { written } => self.written = written,
                 other => return Err(unexpected(&other)),
             }
@@ -71,7 +71,7 @@ impl ContentPut for SessionPut {
     }
 
     fn finish(self: Box<Self>) -> Result<String, ActionHostError> {
-        match self.actions.put_step(ContentPutStep::Finish {
+        match self.actions.put_step_waited(ContentPutStep::Finish {
             upload: self.upload,
         })? {
             ContentPutAnswer::Finished { content } => Ok(content),

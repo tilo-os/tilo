@@ -381,3 +381,7 @@ impl Worker {
 
 /// Shared between the service's handle and its thread.
 pub(super) type Stores = std::sync::Mutex<std::collections::HashMap<WorkspaceId, ContentStore>>;
+
+#[cfg(test)]
+#[path = "content_upload_tests.rs"]
+mod upload_tests;

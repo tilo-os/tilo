@@ -69,7 +69,8 @@ pub fn desktop_input_ownership(id: u64) -> Result<Option<String>, JsValue> {
 /// beside the desktop's commands, and choosing one reaches the page as a
 /// host request `{action: id}`. The empty desk's welcome verbs are the
 /// desktop's own and are added here, so a page and a session offer the same
-/// rows.
+/// rows, and so are "Upload files…" and "Upload a folder…" where the person
+/// may change the workspace's records (`uploads`).
 ///
 /// # Errors
 ///
@@ -91,14 +92,7 @@ pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
         // An ask for an action no longer offered was answered some other way.
-        let mut withdrew = false;
-        for gone in desktop.handle.set_host_actions(actions) {
-            withdrew |= desktop
-                .persistence
-                .notifications
-                .withdraw_host_action(&gone);
-        }
-        if withdrew {
+        if desktop.offer_host_actions(actions) {
             m.window.request_redraw();
         }
         Ok(())

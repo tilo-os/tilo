@@ -152,6 +152,8 @@ mod guide;
 #[cfg(target_arch = "wasm32")]
 mod invite;
 #[cfg(target_arch = "wasm32")]
+mod jobs_card;
+#[cfg(target_arch = "wasm32")]
 mod layers;
 #[cfg(target_arch = "wasm32")]
 mod over_page;

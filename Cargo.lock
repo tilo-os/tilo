@@ -21877,6 +21877,7 @@ dependencies = [
  "settings-store",
  "tilo-actions",
  "tilo-automerge-fork",
+ "tilo-content-types",
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",

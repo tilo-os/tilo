@@ -624,6 +624,8 @@ pub(crate) struct Desktop {
     /// The runs a finished notice already told, by the history's id: an agent's sessions that
     /// worked one run are told of once.
     told_runs: RefCell<std::collections::BTreeSet<String>>,
+    /// The page's own rows on the desk, and whether the upload rows stand with them.
+    offered: uploads::Offered,
 }
 
 impl Desktop {
@@ -1417,6 +1419,7 @@ fn present_desktop(
             workspace: config.workspace.clone(),
             finishing: RefCell::default(),
             told_runs: RefCell::default(),
+            offered: uploads::Offered::default(),
         }),
         waiting: None,
     })
@@ -2491,6 +2494,7 @@ impl Mount {
                 .set_viewport_width(f64::from(viewport.logical_size().0));
             desktop.post_workspace_notices();
             desktop.announce_agents_finished();
+            desktop.offer_uploads(false);
             desktop.follow_notice_choices();
             desktop.tell_mentions();
             desktop.serve_activity();
@@ -3245,6 +3249,7 @@ mod publication;
 mod scale;
 mod scene;
 mod session_asks;
+mod uploads;
 use crate::first_frame::{self, GpuStep};
 pub(crate) use frame_loop::sleep_ms;
 use frame_loop::watch_first_frame;
