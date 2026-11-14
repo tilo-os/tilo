@@ -311,25 +311,28 @@ impl Save {
         let mine = |id: u64| peer_salt_of(id) == local && !elsewhere.contains(&id);
         let by_tab: BTreeMap<u64, String> = notes.into_iter().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
-        let writer = |retained: &'static dyn Fn(u64) -> bool| device::Writer {
+        let writer = || device::Writer {
             person: Some(person),
             mine: &mine,
-            retained,
             records: &records,
         };
-        if heads.is_empty()
-            && let Err(error) = found(&mut candidate, workspace_id, &laid_out, &writer(&|_| true))
-        {
+        // A record nobody wrote yet is founded by this desk: its strips stand in the record with
+        // no window, so taking back the first window leaves the strip it stood in.
+        let founding = heads.is_empty();
+        if founding && let Err(error) = found(&mut candidate, workspace_id, &laid_out, &writer()) {
             candidate.rollback();
             return Laid::Failed(error.to_string(), Some(Box::new(base)));
         }
         let from = candidate.committed_heads();
         let was = arranged(&candidate, workspace_id);
-        match device::write(&mut candidate, workspace_id, &laid_out, &writer(&|_| false)) {
+        match device::write(&mut candidate, workspace_id, &laid_out, &writer()) {
             Err(error) => {
                 candidate.rollback();
                 return Laid::Failed(error.to_string(), Some(Box::new(base)));
             }
+            // The founding write laid the whole desk down already: a look that finds nothing more
+            // to write has written it, not found nothing to do.
+            Ok(false) if founding => {}
             Ok(false) => {
                 return Laid::Held {
                     record: Box::new(base),
@@ -358,7 +361,6 @@ impl Save {
         }
         let changes = candidate.save_after(&heads);
         // A write on no history is the whole record: the one that founds it.
-        let founding = heads.is_empty();
         let took = engine
             .write_record(
                 workspace_id,
@@ -401,6 +403,12 @@ pub(crate) struct SharedDesktops {
     /// of this device's that is not among them is one it opened since, which the layout has not
     /// taken in yet.
     recorded: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
+    /// The workspace that was in front at the last look.
+    front: Cell<Option<WorkspaceId>>,
+    /// The workspace the front left, whose layout is written before it stops being the one this
+    /// look captures: a strip made or a window moved in the turn the person switched away is
+    /// otherwise on a workspace no later look writes.
+    left: Cell<Option<WorkspaceId>>,
     /// The engine's revision and this desk's own at the last look.
     seen: Cell<Option<(u64, u64)>>,
     /// A failure to read or write a record that the person has not heard yet.
@@ -567,7 +575,10 @@ impl SharedDesktops {
     ) {
         self.wait_writes(patience);
         if let Some(person) = self.person.borrow().clone() {
-            self.capture_layout(engine, &person, tree, None);
+            if let Some(left) = self.left.get() {
+                self.capture_layout(engine, &person, tree, left, None);
+            }
+            self.capture_layout(engine, &person, tree, tree.active, None);
             self.capture_view(engine, &person, tree, true);
         }
         self.wait_writes(patience);
@@ -849,28 +860,42 @@ impl SharedDesktops {
         let Some(person) = self.person.borrow().clone() else {
             return false;
         };
-        self.capture_layout(engine, &person, tree, None);
+        // The workspace the front leaves is written while the desk still holds it, and until that
+        // write is handed: a strip made or a window moved in the turn the person switched away is
+        // otherwise on a workspace no later look captures.
+        let front = self.front.replace(Some(tree.active));
+        if let Some(previous) = front.filter(|previous| *previous != tree.active) {
+            self.left.set(Some(previous));
+        }
+        if let Some(previous) = self.left.get()
+            && self.capture_layout(engine, &person, tree, previous, None)
+        {
+            self.left.set(None);
+        }
+        self.capture_layout(engine, &person, tree, tree.active, None);
         self.capture_view(engine, &person, tree, false)
     }
 
-    /// Write this device's changes to the workspace in front's layout into the workspace's record,
-    /// as one change: `acted`'s if the arrangement just did something, else the person's own edit.
+    /// Write this device's changes to the layout of `workspace` into that workspace's record, as
+    /// one change: `acted`'s if the arrangement just did something, else the person's own edit.
     /// Handing them to the task that writes them is all the loop does: folding the record into this
     /// desk's workspace and writing the two together is what a save costs, and none of it runs here.
+    /// Whether this look is done with the workspace: what it could not hand yet is tried again.
     fn capture_layout(
         &self,
         engine: &Arc<Engine>,
         person: &str,
         tree: &Layout,
+        workspace: WorkspaceId,
         acted: Option<Acted>,
-    ) {
-        let Some(workspace) = tree.workspaces.iter().find(|held| held.id() == tree.active) else {
-            return;
+    ) -> bool {
+        let Some(workspace) = tree.workspaces.iter().find(|held| held.id() == workspace) else {
+            return true;
         };
         let workspace_id = workspace.id();
         let local = tree.salt;
         if workspace_id.is_nil() || local == 0 {
-            return;
+            return true;
         }
         let key = (workspace_id, Route::layout());
         // The desk the person changes while a write of it is under way is written on the look after
@@ -882,14 +907,12 @@ impl SharedDesktops {
             if let Some(acted) = acted {
                 self.held(&key, |held| held.pending_acted = Some(acted));
             }
-            return;
+            return false;
         }
-        // What this device's desk has to share: its windows. A workspace it shows with none is a
-        // desk it keeps to itself.
-        let shares = workspace
-            .strips
-            .iter()
-            .any(|strip| !strip.window_groups.is_empty());
+        // What this device's desk has to share: the strips it shows, and what stands in them. The
+        // desk's shape is the workspace's layout, so a workspace with strips is one however few
+        // windows it holds; a workspace with no strip at all is one this device shows nothing of.
+        let shares = !workspace.strips.is_empty();
         let Some(sealed) = self.sealed(engine, &key) else {
             self.unwritten(workspace_id, Some("it cannot be sealed here yet"));
             // An arranging action's change waits for the record's keys, and is written once they
@@ -899,7 +922,7 @@ impl SharedDesktops {
             {
                 self.held(&key, |held| held.pending_acted = Some(acted));
             }
-            return;
+            return false;
         };
         let (reached, revision, holds) = self.reached(engine, &key);
         // A layout the workspace holds is laid out here before this device writes it: what the
@@ -913,9 +936,9 @@ impl SharedDesktops {
             if let Some(acted) = acted {
                 self.held(&key, |held| held.pending_acted = Some(acted));
             }
-            return;
+            return false;
         }
-        // A record nobody wrote yet is founded by the first desk with a window in it: a device with
+        // A record nobody wrote yet is founded by the first desk with a strip in it: a device with
         // nothing to show founds nothing, so the record stays one the devices that do show
         // something make.
         if reached.is_none() && !holds && !shares {
@@ -923,7 +946,7 @@ impl SharedDesktops {
                 workspace_id,
                 Some("nobody wrote it and this desk shows nothing"),
             );
-            return;
+            return true;
         }
         let mut notes = self.notes.of_workspace(workspace_id);
         // A desk that did not move since this device last wrote it has nothing to write: a
@@ -939,7 +962,7 @@ impl SharedDesktops {
                 workspace_id,
                 Some("this desk did not move since it wrote it"),
             );
-            return;
+            return true;
         }
         if let Some(acted) = &acted {
             for (tab, record) in &acted.shows {
@@ -969,6 +992,7 @@ impl SharedDesktops {
                 acted,
             },
         );
+        true
     }
 
     /// Hand `save` to the task that writes it, and take what it came to at once if it is there
@@ -1292,6 +1316,7 @@ impl SharedDesktops {
             &engine,
             &person,
             tree,
+            tree.active,
             Some(Acted {
                 message,
                 shows: shows.to_vec(),

@@ -72,7 +72,6 @@ impl Device {
         let writer = Writer {
             person: Some(PERSON),
             mine: &mine,
-            retained: &|_| false,
             records: &records,
         };
         let published = self.published();

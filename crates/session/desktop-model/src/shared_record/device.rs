@@ -154,11 +154,6 @@ pub struct Writer<'a> {
     /// record lacks is not this device's to add: its maker adds it, or
     /// someone closed it.
     pub mine: &'a dyn Fn(u64) -> bool,
-    /// Whether a strip this device made is kept while it holds no window. A
-    /// device's ordinary empty strip stays on it: an empty row arriving on
-    /// every other device is noise, not news. One a person made to put
-    /// windows in is a destination, and the others see it at once.
-    pub retained: &'a dyn Fn(u64) -> bool,
     /// The record the window `id` running here shows: what this device notes
     /// of its own windows, so the person's other devices hold which record
     /// each window is on and can continue it there.
@@ -236,7 +231,7 @@ pub fn write(
                 })
                 .collect();
             let id = strip.id.0;
-            let kept = held_ids.contains(&id) || ((writer.mine)(id) && (writer.retained)(id));
+            let kept = held_ids.contains(&id) || (writer.mine)(id);
             (kept || !window_groups.is_empty()).then(|| Strip {
                 id: strip.id,
                 name: strip.name.clone(),
@@ -396,8 +391,9 @@ fn shown(record: &Tab, local: Option<&Tab>, device: &str) -> Tab {
 /// What of a device's own layout the record never holds, so folding the
 /// record keeps it.
 pub struct Kept<'a> {
-    /// Whether this device minted `id`: a strip it made that holds no
-    /// window was never written ([`Writer::retained`]), and stays.
+    /// Whether this device minted `id`: a strip it made that the record does
+    /// not hold yet stays on its desk until the write of it reaches the
+    /// workspace.
     pub mine: &'a dyn Fn(u64) -> bool,
     /// Whether `id` is this device's to keep to itself: a window it had
     /// open before it joined the workspace is not the workspace's.

@@ -2422,9 +2422,12 @@ fn leaving_another_workspace_keeps_the_person_where_they_are() {
 #[test]
 fn the_next_session_comes_up_where_this_one_was() {
     let _settled = ui::motion::testing::settled();
-    let state = tempfile::tempdir().expect("a state directory");
+    // A workspace's layout is the workspace's own record, which a device holds once it has an
+    // identity: this desk is on a device seated as one is at its first login.
+    let mut device = tilo_test_env::TestHome::new().expect("a home");
+    let state = crate::common::seat_in(&mut device);
     let home = {
-        let mut session = session_keeping(state.path());
+        let mut session = session_keeping(&state);
         session.step(Duration::from_millis(1)).unwrap();
         add_strip(&session, "Second");
         invoke(&mut session, CHROME_RESOURCE, "new-workspace");
@@ -2445,7 +2448,7 @@ fn the_next_session_comes_up_where_this_one_was() {
         kept
     };
 
-    let mut second = session_keeping(state.path());
+    let mut second = session_keeping(&state);
     // The workspaces' layouts are the workspaces' own records, which reach this session after
     // its first pass: the desk it shows is the one they hold once they arrive.
     let came_back = crate::common::wait_maybe(&mut second, |session| {
