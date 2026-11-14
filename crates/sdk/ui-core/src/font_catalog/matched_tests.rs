@@ -64,248 +64,410 @@ fn ui(weight: u16) -> Attrs<'static> {
         .weight(Weight(weight))
 }
 
-#[test]
-fn latin_and_ascii_stay_one_span_in_the_ui_face() {
-    let fs = system();
-    let spans = plan_text(&fs, "Quarterly report, 2026", ui(400), TextKind::Prose);
-    assert_eq!(spans.len(), 1);
-    assert_eq!(family(&spans[0].1), UI_SANS_FAMILY);
-    assert!(spans[0].1.metrics_opt.is_none());
-    let spans = plan_text(&fs, "Café naïve Größe", ui(400), TextKind::Prose);
-    assert_eq!(spans.len(), 1, "Latin-1 letters are the UI face's own");
-}
+tilo_test_env::scenario! {
+    /// Which face each script of a run is planned in, beside the UI face it is matched to.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_script_is_set_in_the_face_matched_to_the_ui_face;
 
-#[test]
-fn cyrillic_words_are_set_in_onest_at_the_ui_x_height() {
-    let fs = system();
-    let spans = plan_text(&fs, "Hello «Привет, мир», Alex", ui(400), TextKind::Prose);
-    let texts: Vec<&str> = spans.iter().map(|(t, _)| *t).collect();
-    assert_eq!(texts, ["Hello ", "«Привет, мир»,", " Alex"]);
-    let (_, cyrillic) = &spans[1];
-    assert_eq!(family(cyrillic), "Onest");
-    assert!(features(cyrillic).contains(b"ss02"));
-    assert_eq!(cyrillic.weight, Weight(390));
-    let metrics = Metrics::from(cyrillic.metrics_opt.unwrap());
-    assert_eq!(
-        metrics.line_height, BASE.line_height,
-        "leading never changes"
-    );
-    let primary = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Normal);
-    let onest = face_caps(&fs, "Onest", 390, Style::Normal);
-    let ui_x = BASE.font_size * primary.x_height_em(400.0).unwrap();
-    let onest_x = metrics.font_size * onest.x_height_em(390.0).unwrap();
-    assert!((ui_x - onest_x).abs() < 0.01, "{ui_x} vs {onest_x}");
-    assert!(
-        metrics.font_size < BASE.font_size,
-        "Onest's x-height is taller"
-    );
-}
-
-#[test]
-fn greek_and_vietnamese_are_the_ui_face_s_own_in_every_weight_and_style() {
-    let fs = system();
-    for text in [
-        "Γεια σου κόσμε, Αρχεία · Ρυθμίσεις",
-        "Tiếng Việt có dấu, Đồng ý",
-        "Report Αναφορά Báo cáo Größe",
-    ] {
-        for weight in [400, 500, 600, 700] {
-            for style in [Style::Normal, Style::Italic] {
-                let spans = plan_text(&fs, text, ui(weight).style(style), TextKind::Prose);
-                assert_eq!(spans.len(), 1, "{text} {weight} {style:?}");
-                assert_eq!(family(&spans[0].1), UI_SANS_FAMILY, "{text}");
-                assert!(spans[0].1.metrics_opt.is_none(), "{text}: own size");
-            }
-        }
+    phase latin_and_ascii_stay_one_span_in_the_ui_face;
+    {
+        let fs = system();
+        let spans = plan_text(&fs, "Quarterly report, 2026", ui(400), TextKind::Prose);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(family(&spans[0].1), UI_SANS_FAMILY);
+        assert!(spans[0].1.metrics_opt.is_none());
+        let spans = plan_text(&fs, "Café naïve Größe", ui(400), TextKind::Prose);
+        assert_eq!(spans.len(), 1, "Latin-1 letters are the UI face's own");
     }
-    let ui_face = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Italic);
-    assert!("ΆΰώẪỹ₫".chars().all(|c| ui_face.covers(c)));
-}
 
-#[test]
-fn italic_cyrillic_keeps_a_true_italic_from_noto_sans() {
-    let fs = system();
-    let attrs = ui(400).style(Style::Italic);
-    let spans = plan_text(&fs, "Привет Γεια", attrs, TextKind::Prose);
-    let set: Vec<(&str, &str)> = spans.iter().map(|(t, a)| (*t, family(a))).collect();
-    assert_eq!(set, [("Привет", "Noto Sans"), (" Γεια", UI_SANS_FAMILY)]);
-    let (_, cyrillic) = &spans[0];
-    assert!(!features(cyrillic).contains(b"ss02"));
-    assert!(cyrillic.metrics_opt.is_some(), "still x-height matched");
-}
-
-#[test]
-fn a_face_without_vietnamese_sends_whole_words_to_noto_sans() {
-    let fs = system();
-    let attrs = Attrs::new().family(Family::Name(UI_HYPERLEGIBLE_FAMILY));
-    let spans = plan_text(&fs, "Tiếng Việt có dấu", attrs, TextKind::Prose);
-    let set: Vec<(&str, &str)> = spans.iter().map(|(t, a)| (*t, family(a))).collect();
-    // A word is never split between faces; one the UI face covers stays in it.
-    assert_eq!(
-        set,
-        [
-            ("Tiếng Việt", "Noto Sans"),
-            (" có ", UI_HYPERLEGIBLE_FAMILY),
-            ("dấu", "Noto Sans")
-        ]
-    );
-}
-
-#[test]
-fn hyperlegible_gets_the_same_fallbacks_matched_to_its_own_x_height() {
-    let fs = system();
-    let attrs = Attrs::new().family(Family::Name(UI_HYPERLEGIBLE_FAMILY));
-    let spans = plan_text(&fs, "Atkinson Привет", attrs.clone(), TextKind::Prose);
-    assert_eq!(spans.len(), 2);
-    assert_eq!(family(&spans[0].1), UI_HYPERLEGIBLE_FAMILY);
-    let (_, cyrillic) = &spans[1];
-    assert_eq!(family(cyrillic), "Onest");
-    let primary = face_caps(&fs, UI_HYPERLEGIBLE_FAMILY, 400, Style::Normal);
-    let onest = face_caps(&fs, "Onest", 390, Style::Normal);
-    let size = Metrics::from(cyrillic.metrics_opt.unwrap()).font_size;
-    let expected =
-        BASE.font_size * primary.x_height_em(400.0).unwrap() / onest.x_height_em(390.0).unwrap();
-    assert!((size - expected).abs() < 0.01);
-    let spans = plan_text(&fs, "Atkinson Γεια", attrs, TextKind::Prose);
-    let (_, greek) = &spans[1];
-    assert_eq!(family(greek), "Noto Sans");
-    let noto = face_caps(&fs, "Noto Sans", 400, Style::Normal);
-    let size = Metrics::from(greek.metrics_opt.unwrap()).font_size;
-    let expected =
-        BASE.font_size * primary.x_height_em(400.0).unwrap() / noto.x_height_em(400.0).unwrap();
-    assert!((size - expected).abs() < 0.01);
-}
-
-#[test]
-fn monospace_and_unmatched_scripts_are_left_to_the_shaper() {
-    let fs = system();
-    let mono = Attrs::new().family(Family::Monospace);
-    assert_eq!(plan_text(&fs, "Привет мир", mono, TextKind::Prose).len(), 1);
-    let spans = plan_text(&fs, "مرحبا 東京 שלום", ui(400), TextKind::Prose);
-    assert_eq!(spans.len(), 1);
-    assert_eq!(family(&spans[0].1), UI_SANS_FAMILY);
-}
-
-#[test]
-fn kinds_resolve_to_what_each_face_supports() {
-    let fs = system();
-    let ui_face = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Normal);
-    assert!(ui_face.kind_features(TextKind::Prose).is_empty());
-    assert_eq!(ui_face.kind_features(TextKind::Numeric), [*b"tnum"]);
-    assert_eq!(
-        ui_face.kind_features(TextKind::Secret),
-        [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
-    );
-    assert_eq!(
-        ui_face.kind_features(TextKind::Identifier),
-        [*b"cv01", *b"cv02", *b"ss13"]
-    );
-    let noto = face_caps(&fs, "Noto Sans", 400, Style::Normal);
-    assert_eq!(
-        noto.kind_features(TextKind::Secret),
-        [*b"tnum", *b"lnum", *b"zero"],
-        "Noto's titling I and J (ss04) are not a distinct-I/l set"
-    );
-    let onest = face_caps(&fs, "Onest", 400, Style::Normal);
-    assert!(onest.kind_features(TextKind::Identifier).is_empty());
-
-    let spans = plan_text(&fs, "4 829 113", ui(400), TextKind::Numeric);
-    assert_eq!(features(&spans[0].1), [*b"tnum"]);
-    let spans = plan_text(&fs, "Код 0451", ui(400), TextKind::Secret);
-    assert_eq!(family(&spans[0].1), "Onest");
-    assert!(features(&spans[0].1).starts_with(&[*b"ss02", *b"tnum"]));
-
-    // A catalog face with a serif I variant is used for it.
-    let adwaita = face_caps(&fs, "Adwaita Sans", 400, Style::Normal);
-    assert!(
-        adwaita
-            .features_for(TextKind::Identifier, false)
-            .contains(b"cv08"),
-        "Adwaita Sans: an identifier takes its serif I"
-    );
-    assert!(
-        adwaita.features_for(TextKind::Url, false).contains(b"zero"),
-        "Adwaita Sans: a link takes its slashed zero"
-    );
-    assert!(
-        adwaita.features_for(TextKind::Prose, false).is_empty(),
-        "Adwaita Sans: prose takes nothing"
-    );
-
-    // Hyperlegible is distinct by design, so distinguishing turns nothing on.
-    let hyperlegible = face_caps(&fs, UI_HYPERLEGIBLE_FAMILY, 400, Style::Normal);
-    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
+    phase cyrillic_words_are_set_in_onest_at_the_ui_x_height;
+    {
+        let fs = system();
+        let spans = plan_text(&fs, "Hello «Привет, мир», Alex", ui(400), TextKind::Prose);
+        let texts: Vec<&str> = spans.iter().map(|(t, _)| *t).collect();
+        assert_eq!(texts, ["Hello ", "«Привет, мир»,", " Alex"]);
+        let (_, cyrillic) = &spans[1];
+        assert_eq!(family(cyrillic), "Onest");
+        assert!(features(cyrillic).contains(b"ss02"));
+        assert_eq!(cyrillic.weight, Weight(390));
+        let metrics = Metrics::from(cyrillic.metrics_opt.unwrap());
+        assert_eq!(
+            metrics.line_height, BASE.line_height,
+            "leading never changes"
+        );
+        let primary = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Normal);
+        let onest = face_caps(&fs, "Onest", 390, Style::Normal);
+        let ui_x = BASE.font_size * primary.x_height_em(400.0).unwrap();
+        let onest_x = metrics.font_size * onest.x_height_em(390.0).unwrap();
+        assert!((ui_x - onest_x).abs() < 0.01, "{ui_x} vs {onest_x}");
         assert!(
-            hyperlegible.features_for(kind, true).is_empty(),
-            "Hyperlegible: {kind:?}"
+            metrics.font_size < BASE.font_size,
+            "Onest's x-height is taller"
         );
     }
-    assert_eq!(
-        hyperlegible.features_for(TextKind::Secret, true),
-        [*b"tnum"],
-        "Hyperlegible: a secret keeps its tabular figures"
-    );
+
+    phase greek_and_vietnamese_are_the_ui_face_s_own_in_every_weight_and_style;
+    {
+        let fs = system();
+        for text in [
+            "Γεια σου κόσμε, Αρχεία · Ρυθμίσεις",
+            "Tiếng Việt có dấu, Đồng ý",
+            "Report Αναφορά Báo cáo Größe",
+        ] {
+            for weight in [400, 500, 600, 700] {
+                for style in [Style::Normal, Style::Italic] {
+                    let spans = plan_text(&fs, text, ui(weight).style(style), TextKind::Prose);
+                    assert_eq!(spans.len(), 1, "{text} {weight} {style:?}");
+                    assert_eq!(family(&spans[0].1), UI_SANS_FAMILY, "{text}");
+                    assert!(spans[0].1.metrics_opt.is_none(), "{text}: own size");
+                }
+            }
+        }
+        let ui_face = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Italic);
+        assert!("ΆΰώẪỹ₫".chars().all(|c| ui_face.covers(c)));
+    }
+
+    phase italic_cyrillic_keeps_a_true_italic_from_noto_sans;
+    {
+        let fs = system();
+        let attrs = ui(400).style(Style::Italic);
+        let spans = plan_text(&fs, "Привет Γεια", attrs, TextKind::Prose);
+        let set: Vec<(&str, &str)> = spans.iter().map(|(t, a)| (*t, family(a))).collect();
+        assert_eq!(set, [("Привет", "Noto Sans"), (" Γεια", UI_SANS_FAMILY)]);
+        let (_, cyrillic) = &spans[0];
+        assert!(!features(cyrillic).contains(b"ss02"));
+        assert!(cyrillic.metrics_opt.is_some(), "still x-height matched");
+    }
+
+    phase a_face_without_vietnamese_sends_whole_words_to_noto_sans;
+    {
+        let fs = system();
+        let attrs = Attrs::new().family(Family::Name(UI_HYPERLEGIBLE_FAMILY));
+        let spans = plan_text(&fs, "Tiếng Việt có dấu", attrs, TextKind::Prose);
+        let set: Vec<(&str, &str)> = spans.iter().map(|(t, a)| (*t, family(a))).collect();
+        // A word is never split between faces; one the UI face covers stays in it.
+        assert_eq!(
+            set,
+            [
+                ("Tiếng Việt", "Noto Sans"),
+                (" có ", UI_HYPERLEGIBLE_FAMILY),
+                ("dấu", "Noto Sans")
+            ]
+        );
+    }
+
+    phase hyperlegible_gets_the_same_fallbacks_matched_to_its_own_x_height;
+    {
+        let fs = system();
+        let attrs = Attrs::new().family(Family::Name(UI_HYPERLEGIBLE_FAMILY));
+        let spans = plan_text(&fs, "Atkinson Привет", attrs.clone(), TextKind::Prose);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(family(&spans[0].1), UI_HYPERLEGIBLE_FAMILY);
+        let (_, cyrillic) = &spans[1];
+        assert_eq!(family(cyrillic), "Onest");
+        let primary = face_caps(&fs, UI_HYPERLEGIBLE_FAMILY, 400, Style::Normal);
+        let onest = face_caps(&fs, "Onest", 390, Style::Normal);
+        let size = Metrics::from(cyrillic.metrics_opt.unwrap()).font_size;
+        let expected =
+            BASE.font_size * primary.x_height_em(400.0).unwrap() / onest.x_height_em(390.0).unwrap();
+        assert!((size - expected).abs() < 0.01);
+        let spans = plan_text(&fs, "Atkinson Γεια", attrs, TextKind::Prose);
+        let (_, greek) = &spans[1];
+        assert_eq!(family(greek), "Noto Sans");
+        let noto = face_caps(&fs, "Noto Sans", 400, Style::Normal);
+        let size = Metrics::from(greek.metrics_opt.unwrap()).font_size;
+        let expected =
+            BASE.font_size * primary.x_height_em(400.0).unwrap() / noto.x_height_em(400.0).unwrap();
+        assert!((size - expected).abs() < 0.01);
+    }
+
+    phase monospace_and_unmatched_scripts_are_left_to_the_shaper;
+    {
+        let fs = system();
+        let mono = Attrs::new().family(Family::Monospace);
+        assert_eq!(plan_text(&fs, "Привет мир", mono, TextKind::Prose).len(), 1);
+        let spans = plan_text(&fs, "مرحبا 東京 שלום", ui(400), TextKind::Prose);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(family(&spans[0].1), UI_SANS_FAMILY);
+    }
+
+    phase planned_paragraphs_keep_their_final_empty_line;
+    {
+        let mut fs = system();
+        let attrs = ui(400);
+        let spans = plan(
+            fs.db(),
+            [("Hi Привет\n", attrs.clone())],
+            BASE,
+            TextKind::Prose,
+            Optical::default(),
+            false,
+        );
+        assert!(spans.len() > 1);
+        let mut buffer = Buffer::new(&mut fs, BASE);
+        set_spans(&mut buffer, &spans, &attrs, None);
+        let mut plain = Buffer::new(&mut fs, BASE);
+        plain.set_text("Hi Привет\n", &attrs, Shaping::Advanced, None);
+        assert_eq!(buffer.lines.len(), plain.lines.len());
+    }
 }
 
-#[test]
-fn explicit_features_win_and_stylistic_sets_stay_with_their_face() {
-    let fs = system();
-    let style = TextStyle::new(14.0)
-        .with_family(crate::text_render::FontChoice::Named(UI_SANS_FAMILY.into()))
-        .with_font_feature(crate::text_render::OpenTypeTag::new(*b"ss03"), 1)
-        .with_kerning(false);
-    let attrs = style.cosmic_attrs();
-    let spans = plan(
-        fs.db(),
-        [("y Привет", attrs)],
-        BASE,
-        TextKind::Numeric,
-        Optical::default(),
-        false,
-    );
-    assert_eq!(features(&spans[0].1), [*b"tnum", *b"ss03", *b"kern"]);
-    let fallback = features(&spans[1].1);
-    assert!(fallback.contains(b"kern") && !fallback.contains(b"ss03"));
-}
+tilo_test_env::scenario! {
+    /// The OpenType features a planned span carries for its kind of text, asked for explicitly each
+    /// time.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_kind_of_text_takes_the_features_its_face_supports;
 
-#[test]
-fn a_distinct_il_set_changes_only_i_l_and_their_look_alikes() {
-    assert!(only_distinguishes_il(&['I', 'l', '1', '|']));
-    assert!(only_distinguishes_il(&['l', 'ł', 'ĺ']));
-    assert!(
-        only_distinguishes_il(&['I', 'Ĳ']),
-        "the Dutch IJ on the serif I"
-    );
-    assert!(!only_distinguishes_il(&['I', 'J']), "titling alternates");
-    assert!(
-        !only_distinguishes_il(&['a', 'l', 't', 'y']),
-        "a single-storey a set"
-    );
-    assert!(!only_distinguishes_il(&['1']), "a one alone is not I or l");
-    assert!(
-        only_distinguishes_il(&['I', 'Ɨ', 'І', 'Ї', 'Ι', 'Ί', 'Ἰ']),
-        "the same capital I in Cyrillic and Greek, as a serif I set covers it"
-    );
-}
+    phase kinds_resolve_to_what_each_face_supports;
+    {
+        let fs = system();
+        let ui_face = face_caps(&fs, UI_SANS_FAMILY, 400, Style::Normal);
+        assert!(ui_face.kind_features(TextKind::Prose).is_empty());
+        assert_eq!(ui_face.kind_features(TextKind::Numeric), [*b"tnum"]);
+        assert_eq!(
+            ui_face.kind_features(TextKind::Secret),
+            [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
+        );
+        assert_eq!(
+            ui_face.kind_features(TextKind::Identifier),
+            [*b"cv01", *b"cv02", *b"ss13"]
+        );
+        let noto = face_caps(&fs, "Noto Sans", 400, Style::Normal);
+        assert_eq!(
+            noto.kind_features(TextKind::Secret),
+            [*b"tnum", *b"lnum", *b"zero"],
+            "Noto's titling I and J (ss04) are not a distinct-I/l set"
+        );
+        let onest = face_caps(&fs, "Onest", 400, Style::Normal);
+        assert!(onest.kind_features(TextKind::Identifier).is_empty());
 
-#[test]
-fn planned_paragraphs_keep_their_final_empty_line() {
-    let mut fs = system();
-    let attrs = ui(400);
-    let spans = plan(
-        fs.db(),
-        [("Hi Привет\n", attrs.clone())],
-        BASE,
-        TextKind::Prose,
-        Optical::default(),
-        false,
-    );
-    assert!(spans.len() > 1);
-    let mut buffer = Buffer::new(&mut fs, BASE);
-    set_spans(&mut buffer, &spans, &attrs, None);
-    let mut plain = Buffer::new(&mut fs, BASE);
-    plain.set_text("Hi Привет\n", &attrs, Shaping::Advanced, None);
-    assert_eq!(buffer.lines.len(), plain.lines.len());
+        let spans = plan_text(&fs, "4 829 113", ui(400), TextKind::Numeric);
+        assert_eq!(features(&spans[0].1), [*b"tnum"]);
+        let spans = plan_text(&fs, "Код 0451", ui(400), TextKind::Secret);
+        assert_eq!(family(&spans[0].1), "Onest");
+        assert!(features(&spans[0].1).starts_with(&[*b"ss02", *b"tnum"]));
+
+        // A catalog face with a serif I variant is used for it.
+        let adwaita = face_caps(&fs, "Adwaita Sans", 400, Style::Normal);
+        assert!(
+            adwaita
+                .features_for(TextKind::Identifier, false)
+                .contains(b"cv08"),
+            "Adwaita Sans: an identifier takes its serif I"
+        );
+        assert!(
+            adwaita.features_for(TextKind::Url, false).contains(b"zero"),
+            "Adwaita Sans: a link takes its slashed zero"
+        );
+        assert!(
+            adwaita.features_for(TextKind::Prose, false).is_empty(),
+            "Adwaita Sans: prose takes nothing"
+        );
+
+        // Hyperlegible is distinct by design, so distinguishing turns nothing on.
+        let hyperlegible = face_caps(&fs, UI_HYPERLEGIBLE_FAMILY, 400, Style::Normal);
+        for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
+            assert!(
+                hyperlegible.features_for(kind, true).is_empty(),
+                "Hyperlegible: {kind:?}"
+            );
+        }
+        assert_eq!(
+            hyperlegible.features_for(TextKind::Secret, true),
+            [*b"tnum"],
+            "Hyperlegible: a secret keeps its tabular figures"
+        );
+    }
+
+    phase explicit_features_win_and_stylistic_sets_stay_with_their_face;
+    {
+        let fs = system();
+        let style = TextStyle::new(14.0)
+            .with_family(crate::text_render::FontChoice::Named(UI_SANS_FAMILY.into()))
+            .with_font_feature(crate::text_render::OpenTypeTag::new(*b"ss03"), 1)
+            .with_kerning(false);
+        let attrs = style.cosmic_attrs();
+        let spans = plan(
+            fs.db(),
+            [("y Привет", attrs)],
+            BASE,
+            TextKind::Numeric,
+            Optical::default(),
+            false,
+        );
+        assert_eq!(features(&spans[0].1), [*b"tnum", *b"ss03", *b"kern"]);
+        let fallback = features(&spans[1].1);
+        assert!(fallback.contains(b"kern") && !fallback.contains(b"ss03"));
+    }
+
+    phase a_distinct_il_set_changes_only_i_l_and_their_look_alikes;
+    {
+        assert!(only_distinguishes_il(&['I', 'l', '1', '|']));
+        assert!(only_distinguishes_il(&['l', 'ł', 'ĺ']));
+        assert!(
+            only_distinguishes_il(&['I', 'Ĳ']),
+            "the Dutch IJ on the serif I"
+        );
+        assert!(!only_distinguishes_il(&['I', 'J']), "titling alternates");
+        assert!(
+            !only_distinguishes_il(&['a', 'l', 't', 'y']),
+            "a single-storey a set"
+        );
+        assert!(!only_distinguishes_il(&['1']), "a one alone is not I or l");
+        assert!(
+            only_distinguishes_il(&['I', 'Ɨ', 'І', 'Ї', 'Ι', 'Ί', 'Ἰ']),
+            "the same capital I in Cyrillic and Greek, as a serif I set covers it"
+        );
+    }
+
+    phase tilo_sans_held_back_forms_apply_to_secrets_and_identifiers_once_present;
+    {
+        let mut db = system().into_locale_and_db().1;
+        db.load_font_data(FEATURES_FIXTURE.to_vec());
+        let mut fs = crate::font_catalog::system_over("en-US".into(), db);
+        let face = face_caps(&fs, FEATURES_FIXTURE_FAMILY, 400, Style::Normal);
+        assert!(face.kind_features(TextKind::Prose).is_empty());
+        assert_eq!(face.kind_features(TextKind::Numeric), [*b"tnum"]);
+        assert_eq!(
+            face.kind_features(TextKind::Secret),
+            [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
+        );
+        assert_eq!(
+            face.kind_features(TextKind::Identifier),
+            [*b"cv01", *b"cv02", *b"ss13"]
+        );
+        // A link adds the zero, and distinguishing adds every form to every kind.
+        assert_eq!(face.kind_features(TextKind::Url), ZERO_IL, "a link");
+        assert_eq!(
+            face.kind_features(TextKind::Identifier),
+            IL,
+            "an identifier"
+        );
+        for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
+            assert_eq!(
+                face.features_for(kind, true),
+                ZERO_IL,
+                "{kind:?}, distinguishing"
+            );
+        }
+        assert_eq!(
+            face.features_for(TextKind::Numeric, true),
+            [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"],
+            "numeric, distinguishing"
+        );
+        assert_eq!(
+            face.features_for(TextKind::Secret, true),
+            face.kind_features(TextKind::Secret),
+            "a secret already has every form"
+        );
+
+        let prose = glyph_ids(&mut fs, "Il0", TextKind::Prose);
+        let identifier = glyph_ids(&mut fs, "Il0", TextKind::Identifier);
+        let secret = glyph_ids(&mut fs, "Il0", TextKind::Secret);
+        assert_eq!(prose.len(), 3);
+        assert_ne!(identifier[0], prose[0], "serif I");
+        assert_ne!(identifier[1], prose[1], "tailed l");
+        assert_eq!(identifier[2], prose[2], "identifiers keep the plain zero");
+        assert_eq!(secret[..2], identifier[..2]);
+        assert_ne!(secret[2], prose[2], "slashed zero");
+    }
+
+    phase identifiers_in_prose_are_spans_of_their_own_kind;
+    {
+        let fs = fixture_system();
+        let text = "Mail Il0@example.org or open https://paypa1.com/I0l, @lena_l1.";
+        let spans = plan(
+            fs.db(),
+            [(text, fixture())],
+            BASE,
+            TextKind::Prose,
+            Optical::default(),
+            false,
+        );
+        assert_eq!(
+            planned(&spans),
+            expect(&[
+                ("Mail ", &[]),
+                ("Il0@example.org", &IL),
+                (" or open ", &[]),
+                ("https://paypa1.com/I0l", &ZERO_IL),
+                (", ", &[]),
+                ("@lena_l1", &IL),
+                (".", &[]),
+            ])
+        );
+        let secret = plan(
+            fs.db(),
+            [(text, fixture())],
+            BASE,
+            TextKind::Secret,
+            Optical::default(),
+            false,
+        );
+        assert_eq!(secret.len(), 1);
+    }
+
+    phase a_link_across_styled_runs_is_found_in_each;
+    {
+        let fs = fixture_system();
+        let bold = fixture().weight(Weight::BOLD);
+        let spans = plan(
+            fs.db(),
+            [("see https://exa", fixture()), ("mple.org/Il now", bold)],
+            BASE,
+            TextKind::Prose,
+            Optical::default(),
+            false,
+        );
+        assert_eq!(
+            planned(&spans),
+            expect(&[
+                ("see ", &[]),
+                ("https://exa", &ZERO_IL),
+                ("mple.org/Il", &ZERO_IL),
+                (" now", &[]),
+            ])
+        );
+    }
+
+    phase a_run_that_says_its_kind_keeps_it;
+    {
+        let fs = fixture_system();
+        let spans = plan_runs(
+            fs.db(),
+            [
+                ("Thanks ", fixture(), None),
+                ("Ilya Lebedev", fixture(), Some(TextKind::Identifier)),
+            ],
+            BASE,
+            TextKind::Prose,
+            Optical::default(),
+            false,
+        );
+        assert_eq!(
+            planned(&spans),
+            expect(&[("Thanks ", &[]), ("Ilya Lebedev", &IL)])
+        );
+    }
+
+    phase distinguishing_sets_prose_apart_and_leaves_it_alone_when_off;
+    {
+        let mut fs = fixture_system();
+        let plain = glyph_ids_with(&mut fs, "Il0", TextKind::Prose, false);
+        let distinct = glyph_ids_with(&mut fs, "Il0", TextKind::Prose, true);
+        let identifier = glyph_ids(&mut fs, "Il0", TextKind::Identifier);
+        let url = glyph_ids(&mut fs, "Il0", TextKind::Url);
+        // Every one of I, l and 0 changes; prose figures stay proportional,
+        // so the zero is the proportional slashed one a link has.
+        assert!(plain.iter().zip(&distinct).all(|(a, b)| a != b));
+        assert_eq!(distinct, url);
+        assert_eq!(
+            url[..2],
+            identifier[..2],
+            "a link's I and l are an identifier's"
+        );
+        assert_ne!(url[2], identifier[2], "and its zero is slashed");
+    }
 }
 
 const FEATURES_FIXTURE: &[u8] = include_bytes!(concat!(
@@ -337,58 +499,6 @@ fn glyph_ids_with(fs: &mut FontSystem, text: &str, kind: TextKind, distinguish: 
         .collect()
 }
 
-#[test]
-fn tilo_sans_held_back_forms_apply_to_secrets_and_identifiers_once_present() {
-    let mut db = system().into_locale_and_db().1;
-    db.load_font_data(FEATURES_FIXTURE.to_vec());
-    let mut fs = crate::font_catalog::system_over("en-US".into(), db);
-    let face = face_caps(&fs, FEATURES_FIXTURE_FAMILY, 400, Style::Normal);
-    assert!(face.kind_features(TextKind::Prose).is_empty());
-    assert_eq!(face.kind_features(TextKind::Numeric), [*b"tnum"]);
-    assert_eq!(
-        face.kind_features(TextKind::Secret),
-        [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
-    );
-    assert_eq!(
-        face.kind_features(TextKind::Identifier),
-        [*b"cv01", *b"cv02", *b"ss13"]
-    );
-    // A link adds the zero, and distinguishing adds every form to every kind.
-    assert_eq!(face.kind_features(TextKind::Url), ZERO_IL, "a link");
-    assert_eq!(
-        face.kind_features(TextKind::Identifier),
-        IL,
-        "an identifier"
-    );
-    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
-        assert_eq!(
-            face.features_for(kind, true),
-            ZERO_IL,
-            "{kind:?}, distinguishing"
-        );
-    }
-    assert_eq!(
-        face.features_for(TextKind::Numeric, true),
-        [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"],
-        "numeric, distinguishing"
-    );
-    assert_eq!(
-        face.features_for(TextKind::Secret, true),
-        face.kind_features(TextKind::Secret),
-        "a secret already has every form"
-    );
-
-    let prose = glyph_ids(&mut fs, "Il0", TextKind::Prose);
-    let identifier = glyph_ids(&mut fs, "Il0", TextKind::Identifier);
-    let secret = glyph_ids(&mut fs, "Il0", TextKind::Secret);
-    assert_eq!(prose.len(), 3);
-    assert_ne!(identifier[0], prose[0], "serif I");
-    assert_ne!(identifier[1], prose[1], "tailed l");
-    assert_eq!(identifier[2], prose[2], "identifiers keep the plain zero");
-    assert_eq!(secret[..2], identifier[..2]);
-    assert_ne!(secret[2], prose[2], "slashed zero");
-}
-
 fn fixture_system() -> FontSystem {
     let mut db = system().into_locale_and_db().1;
     db.load_font_data(FEATURES_FIXTURE.to_vec());
@@ -414,103 +524,6 @@ fn expect(spans: &[(&str, &[[u8; 4]])]) -> Vec<(String, Vec<[u8; 4]>)> {
         .iter()
         .map(|(text, features)| ((*text).to_owned(), features.to_vec()))
         .collect()
-}
-
-#[test]
-fn identifiers_in_prose_are_spans_of_their_own_kind() {
-    let fs = fixture_system();
-    let text = "Mail Il0@example.org or open https://paypa1.com/I0l, @lena_l1.";
-    let spans = plan(
-        fs.db(),
-        [(text, fixture())],
-        BASE,
-        TextKind::Prose,
-        Optical::default(),
-        false,
-    );
-    assert_eq!(
-        planned(&spans),
-        expect(&[
-            ("Mail ", &[]),
-            ("Il0@example.org", &IL),
-            (" or open ", &[]),
-            ("https://paypa1.com/I0l", &ZERO_IL),
-            (", ", &[]),
-            ("@lena_l1", &IL),
-            (".", &[]),
-        ])
-    );
-    let secret = plan(
-        fs.db(),
-        [(text, fixture())],
-        BASE,
-        TextKind::Secret,
-        Optical::default(),
-        false,
-    );
-    assert_eq!(secret.len(), 1);
-}
-
-#[test]
-fn a_link_across_styled_runs_is_found_in_each() {
-    let fs = fixture_system();
-    let bold = fixture().weight(Weight::BOLD);
-    let spans = plan(
-        fs.db(),
-        [("see https://exa", fixture()), ("mple.org/Il now", bold)],
-        BASE,
-        TextKind::Prose,
-        Optical::default(),
-        false,
-    );
-    assert_eq!(
-        planned(&spans),
-        expect(&[
-            ("see ", &[]),
-            ("https://exa", &ZERO_IL),
-            ("mple.org/Il", &ZERO_IL),
-            (" now", &[]),
-        ])
-    );
-}
-
-#[test]
-fn a_run_that_says_its_kind_keeps_it() {
-    let fs = fixture_system();
-    let spans = plan_runs(
-        fs.db(),
-        [
-            ("Thanks ", fixture(), None),
-            ("Ilya Lebedev", fixture(), Some(TextKind::Identifier)),
-        ],
-        BASE,
-        TextKind::Prose,
-        Optical::default(),
-        false,
-    );
-    assert_eq!(
-        planned(&spans),
-        expect(&[("Thanks ", &[]), ("Ilya Lebedev", &IL)])
-    );
-}
-
-#[test]
-fn distinguishing_sets_prose_apart_and_leaves_it_alone_when_off() {
-    let mut fs = fixture_system();
-    let plain = glyph_ids_with(&mut fs, "Il0", TextKind::Prose, false);
-    let distinct = glyph_ids_with(&mut fs, "Il0", TextKind::Prose, true);
-    let identifier = glyph_ids(&mut fs, "Il0", TextKind::Identifier);
-    let url = glyph_ids(&mut fs, "Il0", TextKind::Url);
-    // Every one of I, l and 0 changes; prose figures stay proportional,
-    // so the zero is the proportional slashed one a link has.
-    assert!(plain.iter().zip(&distinct).all(|(a, b)| a != b));
-    assert_eq!(distinct, url);
-    assert_eq!(
-        url[..2],
-        identifier[..2],
-        "a link's I and l are an identifier's"
-    );
-    assert_ne!(url[2], identifier[2], "and its zero is slashed");
 }
 
 #[test]

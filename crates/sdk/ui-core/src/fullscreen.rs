@@ -276,100 +276,379 @@ mod tests {
         }
     }
 
-    /// `select_output` for every target: the index it picks, or `None` to defer to the compositor.
-    #[test]
-    fn select_output_resolves_each_target_or_defers_to_the_compositor() {
-        use FullscreenTarget::{Auto, Largest, Output, Primary, PrimaryExternal};
-        let three = vec![
-            mon(0, 1920, 1080, true),
-            mon(1, 3840, 2160, false),
-            mon(2, 1280, 720, false),
-        ];
-        let single = vec![mon(0, 1920, 1080, true)];
-        let flagged_second = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, true)];
-        let none_primary = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
-        let twins_second_primary = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, true)];
-        let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
-        let flagged_tv = MonitorInfo {
-            primary: true,
-            ..television(2)
-        };
-        let cases = [
-            (
-                "Present targets the biggest monitor, not the primary laptop panel",
-                three,
-                Largest,
-                Some(1),
-            ),
-            ("an empty list defers: largest", vec![], Largest, None),
-            ("an empty list defers: primary", vec![], Primary, None),
-            ("an empty list defers: auto", vec![], Auto, None),
-            (
-                "an empty list defers: primary external",
-                vec![],
-                PrimaryExternal,
-                None,
-            ),
-            ("an empty list defers: output 0", vec![], Output(0), None),
-            ("auto always defers", single.clone(), Auto, None),
-            ("a single monitor is the largest", single, Largest, Some(0)),
-            (
-                "primary picks the flagged monitor",
-                flagged_second,
-                Primary,
-                Some(1),
-            ),
-            (
-                "primary without a flag is the first monitor",
-                none_primary.clone(),
-                Primary,
-                Some(0),
-            ),
-            (
-                "an output index selects that output",
-                none_primary.clone(),
-                Output(1),
-                Some(1),
-            ),
-            (
-                "an output index out of range defers",
-                none_primary,
-                Output(9),
-                None,
-            ),
-            (
-                "largest ties break toward primary",
-                twins_second_primary,
-                Largest,
-                Some(1),
-            ),
-            (
-                "largest ties with no primary break toward the lowest index",
-                twins,
-                Largest,
-                Some(0),
-            ),
-            (
-                "of a laptop and a television the television is the largest",
-                vec![laptop(0), television(1)],
-                Largest,
-                Some(1),
-            ),
-            (
-                "primary external is the primary-flagged television",
-                vec![laptop(0), desk_monitor(1), flagged_tv],
-                PrimaryExternal,
-                Some(2),
-            ),
-            (
-                "a lone built-in panel is the only primary external there is",
-                vec![laptop(0)],
-                PrimaryExternal,
-                Some(0),
-            ),
-        ];
-        for (case, monitors, target, want) in cases {
-            assert_eq!(select_output(&monitors, target), want, "case: {case}");
+    tilo_test_env::scenario! {
+        /// Which output a fullscreen request lands on: by target, for an audience and for the
+        /// presenter.
+        /// Each phase was a test of its own and builds its own fixture.
+        #[allow(clippy::too_many_lines, reason = "one row per case")]
+        fn an_output_is_chosen_for_each_target_and_set_of_screens;
+
+        phase select_output_resolves_each_target_or_defers_to_the_compositor;
+        // `select_output` for every target: the index it picks, or `None` to defer to the compositor.
+        {
+            use FullscreenTarget::{Auto, Largest, Output, Primary, PrimaryExternal};
+            let three = vec![
+                mon(0, 1920, 1080, true),
+                mon(1, 3840, 2160, false),
+                mon(2, 1280, 720, false),
+            ];
+            let single = vec![mon(0, 1920, 1080, true)];
+            let flagged_second = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, true)];
+            let none_primary = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
+            let twins_second_primary = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, true)];
+            let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
+            let flagged_tv = MonitorInfo {
+                primary: true,
+                ..television(2)
+            };
+            let cases = [
+                (
+                    "Present targets the biggest monitor, not the primary laptop panel",
+                    three,
+                    Largest,
+                    Some(1),
+                ),
+                ("an empty list defers: largest", vec![], Largest, None),
+                ("an empty list defers: primary", vec![], Primary, None),
+                ("an empty list defers: auto", vec![], Auto, None),
+                (
+                    "an empty list defers: primary external",
+                    vec![],
+                    PrimaryExternal,
+                    None,
+                ),
+                ("an empty list defers: output 0", vec![], Output(0), None),
+                ("auto always defers", single.clone(), Auto, None),
+                ("a single monitor is the largest", single, Largest, Some(0)),
+                (
+                    "primary picks the flagged monitor",
+                    flagged_second,
+                    Primary,
+                    Some(1),
+                ),
+                (
+                    "primary without a flag is the first monitor",
+                    none_primary.clone(),
+                    Primary,
+                    Some(0),
+                ),
+                (
+                    "an output index selects that output",
+                    none_primary.clone(),
+                    Output(1),
+                    Some(1),
+                ),
+                (
+                    "an output index out of range defers",
+                    none_primary,
+                    Output(9),
+                    None,
+                ),
+                (
+                    "largest ties break toward primary",
+                    twins_second_primary,
+                    Largest,
+                    Some(1),
+                ),
+                (
+                    "largest ties with no primary break toward the lowest index",
+                    twins,
+                    Largest,
+                    Some(0),
+                ),
+                (
+                    "of a laptop and a television the television is the largest",
+                    vec![laptop(0), television(1)],
+                    Largest,
+                    Some(1),
+                ),
+                (
+                    "primary external is the primary-flagged television",
+                    vec![laptop(0), desk_monitor(1), flagged_tv],
+                    PrimaryExternal,
+                    Some(2),
+                ),
+                (
+                    "a lone built-in panel is the only primary external there is",
+                    vec![laptop(0)],
+                    PrimaryExternal,
+                    Some(0),
+                ),
+            ];
+            for (case, monitors, target, want) in cases {
+                assert_eq!(select_output(&monitors, target), want, "case: {case}");
+            }
+        }
+
+        phase builtin_connectors_are_the_panels_a_device_ships_with;
+        {
+            for builtin in [
+                "eDP-1",
+                "LVDS-1",
+                "DSI-1",
+                "card1/eDP-2",
+                // Only the connector part is judged, however deep the qualifier.
+                "card0/card1/LVDS-2",
+                "HDMI-A-1/eDP-1",
+                // The bare prefix, with no number.
+                "DSI",
+            ] {
+                assert!(connector_is_builtin(builtin), "{builtin}");
+            }
+            for external in [
+                "HDMI-A-1",
+                "DP-3",
+                "Tilo-0",
+                "card0/DP-1",
+                "Virtual-1",
+                // No name, and a name that ends in its separator, name no panel.
+                "",
+                "eDP-1/",
+                // A panel's name starts the connector part; it does not merely appear in the name.
+                "HDMI-eDP-1",
+                "DP-eDP",
+                "eDP-1/HDMI-A-1",
+            ] {
+                assert!(!connector_is_builtin(external), "{external:?}");
+            }
+        }
+
+        phase the_audience_output_is_chosen_for_each_set_of_screens_and_target;
+        // `select_audience_output`: where the slides go, for each set of screens, target and screen
+        // the presenter window is on.
+        {
+            use FullscreenTarget::{Auto, Largest, Output, Primary, PrimaryExternal};
+            let laptop_tv = vec![laptop(0), television(1)];
+            let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
+            let flagged_laptop = MonitorInfo {
+                primary: true,
+                ..laptop(0)
+            };
+            let flagged_tv = MonitorInfo {
+                primary: true,
+                ..television(2)
+            };
+            let cases = [
+                (
+                    "slides go to the external screen with no presenter window",
+                    laptop_tv.clone(),
+                    Largest,
+                    None,
+                    Some(1),
+                ),
+                (
+                    "slides go to the external screen with the presenter on the laptop",
+                    laptop_tv.clone(),
+                    Largest,
+                    Some(0),
+                    Some(1),
+                ),
+                (
+                    "slides go to the external screen with the presenter on the television",
+                    laptop_tv.clone(),
+                    Largest,
+                    Some(1),
+                    Some(1),
+                ),
+                (
+                    "a 65-inch 1080p television beats a 27-inch 4K monitor for an audience",
+                    vec![desk_monitor(0), television(1)],
+                    Largest,
+                    Some(1),
+                    Some(1),
+                ),
+                (
+                    "a projector reports no size, so pixel area decides",
+                    vec![desk_monitor(0), mon(1, 1920, 1080, false)],
+                    Largest,
+                    None,
+                    Some(0),
+                ),
+                (
+                    "of two identical screens the presenter keeps the one it is on (0)",
+                    twins.clone(),
+                    Largest,
+                    Some(0),
+                    Some(1),
+                ),
+                (
+                    "of two identical screens the presenter keeps the one it is on (1)",
+                    twins.clone(),
+                    Largest,
+                    Some(1),
+                    Some(0),
+                ),
+                (
+                    "two identical screens and no presenter window: the lowest index",
+                    twins,
+                    Largest,
+                    None,
+                    Some(0),
+                ),
+                (
+                    "laptop, desk monitor and television: the television",
+                    vec![laptop(0), desk_monitor(1), television(2)],
+                    Largest,
+                    Some(1),
+                    Some(2),
+                ),
+                (
+                    "a single laptop has no audience output",
+                    vec![laptop(0)],
+                    Largest,
+                    None,
+                    None,
+                ),
+                (
+                    "a single television has no audience output",
+                    vec![television(0)],
+                    Largest,
+                    None,
+                    None,
+                ),
+                (
+                    "no screen has no audience output",
+                    vec![],
+                    Largest,
+                    None,
+                    None,
+                ),
+                (
+                    "a single screen has no audience output even when it is named",
+                    vec![laptop(0)],
+                    Output(0),
+                    None,
+                    None,
+                ),
+                (
+                    "the first external display, not the primary-flagged laptop panel",
+                    vec![flagged_laptop, desk_monitor(1), television(2)],
+                    PrimaryExternal,
+                    None,
+                    Some(1),
+                ),
+                (
+                    "primary external is the primary-flagged television",
+                    vec![laptop(0), desk_monitor(1), flagged_tv],
+                    PrimaryExternal,
+                    None,
+                    Some(2),
+                ),
+                (
+                    "the compositor moves the presenter view off an explicitly chosen screen",
+                    laptop_tv.clone(),
+                    Output(0),
+                    Some(0),
+                    Some(0),
+                ),
+                (
+                    "an explicit output that does not exist is no audience output",
+                    laptop_tv.clone(),
+                    Output(9),
+                    None,
+                    None,
+                ),
+                (
+                    "auto chooses as largest does",
+                    laptop_tv.clone(),
+                    Auto,
+                    None,
+                    Some(1),
+                ),
+                (
+                    "primary is the flagged screen, even the smaller one",
+                    vec![mon(0, 1280, 720, true), mon(1, 1920, 1080, false)],
+                    Primary,
+                    None,
+                    Some(0),
+                ),
+                (
+                    "primary without a flag chooses as largest does",
+                    laptop_tv,
+                    Primary,
+                    None,
+                    Some(1),
+                ),
+            ];
+            for (case, monitors, target, presenter, want) in cases {
+                assert_eq!(
+                    select_audience_output(&monitors, target, presenter),
+                    want,
+                    "case: {case}"
+                );
+            }
+        }
+
+        phase the_presenter_output_is_the_built_in_or_smallest_screen_left;
+        // `select_presenter_output`: where the presenter view goes once the audience owns a screen.
+        {
+            let laptop_tv = vec![laptop(0), television(1)];
+            let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
+            let cases = [
+                (
+                    "laptop and television: the laptop",
+                    laptop_tv.clone(),
+                    1,
+                    Some(0),
+                ),
+                (
+                    "desk monitor and television: the desk monitor",
+                    vec![desk_monitor(0), television(1)],
+                    1,
+                    Some(0),
+                ),
+                (
+                    "laptop, desk monitor and television: the presenter stays on the laptop",
+                    vec![laptop(0), desk_monitor(1), television(2)],
+                    2,
+                    Some(0),
+                ),
+                (
+                    "a single laptop has no other output",
+                    vec![laptop(0)],
+                    0,
+                    None,
+                ),
+                (
+                    "a single television has no other output",
+                    vec![television(0)],
+                    0,
+                    None,
+                ),
+                ("no screen has no other output", vec![], 0, None),
+                (
+                    "an audience explicitly on the laptop sends the presenter to the television",
+                    laptop_tv.clone(),
+                    0,
+                    Some(1),
+                ),
+                (
+                    "an audience output that is not listed leaves the built-in panel",
+                    laptop_tv,
+                    9,
+                    Some(0),
+                ),
+                (
+                    "with no built-in panel and a size unknown, the fewer pixels",
+                    vec![desk_monitor(0), television(1), mon(2, 1920, 1080, false)],
+                    1,
+                    Some(2),
+                ),
+                (
+                    "identical screens: the other one (0)",
+                    twins.clone(),
+                    1,
+                    Some(0),
+                ),
+                ("identical screens: the other one (1)", twins, 0, Some(1)),
+            ];
+            for (case, monitors, audience, want) in cases {
+                assert_eq!(
+                    select_presenter_output(&monitors, audience),
+                    want,
+                    "case: {case}"
+                );
+            }
         }
     }
 
@@ -377,277 +656,5 @@ mod tests {
     fn request_constructors_carry_view() {
         assert!(!FullscreenRequest::mirror(FullscreenTarget::Largest).is_distinct());
         assert!(FullscreenRequest::distinct(FullscreenTarget::Largest).is_distinct());
-    }
-
-    #[test]
-    fn builtin_connectors_are_the_panels_a_device_ships_with() {
-        for builtin in [
-            "eDP-1",
-            "LVDS-1",
-            "DSI-1",
-            "card1/eDP-2",
-            // Only the connector part is judged, however deep the qualifier.
-            "card0/card1/LVDS-2",
-            "HDMI-A-1/eDP-1",
-            // The bare prefix, with no number.
-            "DSI",
-        ] {
-            assert!(connector_is_builtin(builtin), "{builtin}");
-        }
-        for external in [
-            "HDMI-A-1",
-            "DP-3",
-            "Tilo-0",
-            "card0/DP-1",
-            "Virtual-1",
-            // No name, and a name that ends in its separator, name no panel.
-            "",
-            "eDP-1/",
-            // A panel's name starts the connector part; it does not merely appear in the name.
-            "HDMI-eDP-1",
-            "DP-eDP",
-            "eDP-1/HDMI-A-1",
-        ] {
-            assert!(!connector_is_builtin(external), "{external:?}");
-        }
-    }
-
-    /// `select_audience_output`: where the slides go, for each set of screens, target and screen
-    /// the presenter window is on.
-    #[test]
-    #[allow(clippy::too_many_lines, reason = "one row per case")]
-    fn the_audience_output_is_chosen_for_each_set_of_screens_and_target() {
-        use FullscreenTarget::{Auto, Largest, Output, Primary, PrimaryExternal};
-        let laptop_tv = vec![laptop(0), television(1)];
-        let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
-        let flagged_laptop = MonitorInfo {
-            primary: true,
-            ..laptop(0)
-        };
-        let flagged_tv = MonitorInfo {
-            primary: true,
-            ..television(2)
-        };
-        let cases = [
-            (
-                "slides go to the external screen with no presenter window",
-                laptop_tv.clone(),
-                Largest,
-                None,
-                Some(1),
-            ),
-            (
-                "slides go to the external screen with the presenter on the laptop",
-                laptop_tv.clone(),
-                Largest,
-                Some(0),
-                Some(1),
-            ),
-            (
-                "slides go to the external screen with the presenter on the television",
-                laptop_tv.clone(),
-                Largest,
-                Some(1),
-                Some(1),
-            ),
-            (
-                "a 65-inch 1080p television beats a 27-inch 4K monitor for an audience",
-                vec![desk_monitor(0), television(1)],
-                Largest,
-                Some(1),
-                Some(1),
-            ),
-            (
-                "a projector reports no size, so pixel area decides",
-                vec![desk_monitor(0), mon(1, 1920, 1080, false)],
-                Largest,
-                None,
-                Some(0),
-            ),
-            (
-                "of two identical screens the presenter keeps the one it is on (0)",
-                twins.clone(),
-                Largest,
-                Some(0),
-                Some(1),
-            ),
-            (
-                "of two identical screens the presenter keeps the one it is on (1)",
-                twins.clone(),
-                Largest,
-                Some(1),
-                Some(0),
-            ),
-            (
-                "two identical screens and no presenter window: the lowest index",
-                twins,
-                Largest,
-                None,
-                Some(0),
-            ),
-            (
-                "laptop, desk monitor and television: the television",
-                vec![laptop(0), desk_monitor(1), television(2)],
-                Largest,
-                Some(1),
-                Some(2),
-            ),
-            (
-                "a single laptop has no audience output",
-                vec![laptop(0)],
-                Largest,
-                None,
-                None,
-            ),
-            (
-                "a single television has no audience output",
-                vec![television(0)],
-                Largest,
-                None,
-                None,
-            ),
-            (
-                "no screen has no audience output",
-                vec![],
-                Largest,
-                None,
-                None,
-            ),
-            (
-                "a single screen has no audience output even when it is named",
-                vec![laptop(0)],
-                Output(0),
-                None,
-                None,
-            ),
-            (
-                "the first external display, not the primary-flagged laptop panel",
-                vec![flagged_laptop, desk_monitor(1), television(2)],
-                PrimaryExternal,
-                None,
-                Some(1),
-            ),
-            (
-                "primary external is the primary-flagged television",
-                vec![laptop(0), desk_monitor(1), flagged_tv],
-                PrimaryExternal,
-                None,
-                Some(2),
-            ),
-            (
-                "the compositor moves the presenter view off an explicitly chosen screen",
-                laptop_tv.clone(),
-                Output(0),
-                Some(0),
-                Some(0),
-            ),
-            (
-                "an explicit output that does not exist is no audience output",
-                laptop_tv.clone(),
-                Output(9),
-                None,
-                None,
-            ),
-            (
-                "auto chooses as largest does",
-                laptop_tv.clone(),
-                Auto,
-                None,
-                Some(1),
-            ),
-            (
-                "primary is the flagged screen, even the smaller one",
-                vec![mon(0, 1280, 720, true), mon(1, 1920, 1080, false)],
-                Primary,
-                None,
-                Some(0),
-            ),
-            (
-                "primary without a flag chooses as largest does",
-                laptop_tv,
-                Primary,
-                None,
-                Some(1),
-            ),
-        ];
-        for (case, monitors, target, presenter, want) in cases {
-            assert_eq!(
-                select_audience_output(&monitors, target, presenter),
-                want,
-                "case: {case}"
-            );
-        }
-    }
-
-    /// `select_presenter_output`: where the presenter view goes once the audience owns a screen.
-    #[test]
-    fn the_presenter_output_is_the_built_in_or_smallest_screen_left() {
-        let laptop_tv = vec![laptop(0), television(1)];
-        let twins = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, false)];
-        let cases = [
-            (
-                "laptop and television: the laptop",
-                laptop_tv.clone(),
-                1,
-                Some(0),
-            ),
-            (
-                "desk monitor and television: the desk monitor",
-                vec![desk_monitor(0), television(1)],
-                1,
-                Some(0),
-            ),
-            (
-                "laptop, desk monitor and television: the presenter stays on the laptop",
-                vec![laptop(0), desk_monitor(1), television(2)],
-                2,
-                Some(0),
-            ),
-            (
-                "a single laptop has no other output",
-                vec![laptop(0)],
-                0,
-                None,
-            ),
-            (
-                "a single television has no other output",
-                vec![television(0)],
-                0,
-                None,
-            ),
-            ("no screen has no other output", vec![], 0, None),
-            (
-                "an audience explicitly on the laptop sends the presenter to the television",
-                laptop_tv.clone(),
-                0,
-                Some(1),
-            ),
-            (
-                "an audience output that is not listed leaves the built-in panel",
-                laptop_tv,
-                9,
-                Some(0),
-            ),
-            (
-                "with no built-in panel and a size unknown, the fewer pixels",
-                vec![desk_monitor(0), television(1), mon(2, 1920, 1080, false)],
-                1,
-                Some(2),
-            ),
-            (
-                "identical screens: the other one (0)",
-                twins.clone(),
-                1,
-                Some(0),
-            ),
-            ("identical screens: the other one (1)", twins, 0, Some(1)),
-        ];
-        for (case, monitors, audience, want) in cases {
-            assert_eq!(
-                select_presenter_output(&monitors, audience),
-                want,
-                "case: {case}"
-            );
-        }
     }
 }

@@ -1236,27 +1236,254 @@ pub fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
 mod tests {
     use super::*;
 
-    #[test]
-    fn optional_input_geometry_never_expands_the_host_window() {
-        let window = Rect::new(100.0, 80.0, 500.0, 400.0);
-        assert_eq!(protocol_input_rect(window, None).unwrap(), None);
-        let input = [108.0, 88.0, 492.0, 392.0];
-        assert_eq!(
-            protocol_input_rect(window, Some(input)).unwrap(),
-            Some(Rect::new(108.0, 88.0, 492.0, 392.0))
-        );
-        for invalid in [
-            [99.0, 88.0, 492.0, 392.0],
-            [108.0, 88.0, 501.0, 392.0],
-            [108.0, 88.0, 108.0, 392.0],
-            [108.0, 88.0, f64::NAN, 392.0],
-            [108.0, 88.0, 492.0, f64::INFINITY],
-        ] {
-            assert!(protocol_input_rect(window, Some(invalid)).is_err());
+    tilo_test_env::scenario! {
+        /// The floating-surface protocol: the geometry it accepts and the wire form of its
+        /// messages.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_surface_protocol_carries_checked_geometry_in_a_stable_wire_form;
+
+        phase optional_input_geometry_never_expands_the_host_window;
+        {
+            let window = Rect::new(100.0, 80.0, 500.0, 400.0);
+            assert_eq!(protocol_input_rect(window, None).unwrap(), None);
+            let input = [108.0, 88.0, 492.0, 392.0];
+            assert_eq!(
+                protocol_input_rect(window, Some(input)).unwrap(),
+                Some(Rect::new(108.0, 88.0, 492.0, 392.0))
+            );
+            for invalid in [
+                [99.0, 88.0, 492.0, 392.0],
+                [108.0, 88.0, 501.0, 392.0],
+                [108.0, 88.0, 108.0, 392.0],
+                [108.0, 88.0, f64::NAN, 392.0],
+                [108.0, 88.0, 492.0, f64::INFINITY],
+            ] {
+                assert!(protocol_input_rect(window, Some(invalid)).is_err());
+            }
+            let translated =
+                translate_input_rect(Some(window), window.origin(), Point::new(200.0, 180.0));
+            assert_eq!(translated, Some(window + Vec2::new(100.0, 100.0)));
         }
-        let translated =
-            translate_input_rect(Some(window), window.origin(), Point::new(200.0, 180.0));
-        assert_eq!(translated, Some(window + Vec2::new(100.0, 100.0)));
+
+        phase capture_protection_request_has_a_stable_wire_form;
+        {
+            for protected in [true, false] {
+                let message = FloatingSurfaceClientMessage::SetCaptureProtection {
+                    protected,
+                    generation: None,
+                };
+                let json = serde_json::to_string(&message).unwrap();
+                assert_eq!(
+                    json,
+                    format!(r#"{{"type":"set_capture_protection","protected":{protected}}}"#)
+                );
+                assert_eq!(
+                    serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
+                    message
+                );
+            }
+        }
+
+        phase surface_protocol_carries_explicit_geometry_and_rejects_invalid_frames;
+        {
+            {
+                let req = FloatingSurfaceRequest {
+                    id: "pair".into(),
+                    title: "Compare".into(),
+                    role: FloatingRole::PictureInPicture,
+                    source: FloatingSource::Composite(vec![
+                        FloatingSource::Surface { surface_id: 1 },
+                        FloatingSource::Surface { surface_id: 2 },
+                    ]),
+                    preferred_size: Size::new(480.0, 270.0),
+                    aspect_ratio: Some(16.0 / 9.0),
+                    initial_rect: None,
+                    presentation_rect: None,
+                    tracking_source: None,
+                };
+                assert!(matches!(req.source, FloatingSource::Composite(ref v) if v.len() == 2));
+            }
+
+            {
+                let request = FloatingSurfaceRequest {
+                    id: "comparison".into(),
+                    title: "Live comparison".into(),
+                    role: FloatingRole::PictureInPicture,
+                    source: FloatingSource::Composite(vec![
+                        FloatingSource::AppRegion {
+                            app_id: "so.tilo.editor".into(),
+                            region: Rect::new(12.0, 30.0, 412.0, 330.0),
+                        },
+                        FloatingSource::AppElement {
+                            app_id: "so.tilo.browser".into(),
+                            element_id: "video:main".into(),
+                            region: Rect::new(20.0, 40.0, 620.0, 378.0),
+                        },
+                        FloatingSource::Surface { surface_id: 42 },
+                    ]),
+                    preferred_size: Size::new(520.0, 320.0),
+                    aspect_ratio: Some(1.625),
+                    initial_rect: Some(Rect::new(600.0, 80.0, 1_120.0, 400.0)),
+                    presentation_rect: Some(Rect::new(590.0, 70.0, 1_130.0, 410.0)),
+                    tracking_source: None,
+                };
+                let message = FloatingSurfaceClientMessage::Present {
+                    request: (&request).into(),
+                };
+                let json = serde_json::to_string(&message).unwrap();
+                let decoded: FloatingSurfaceClientMessage = serde_json::from_str(&json).unwrap();
+                let FloatingSurfaceClientMessage::Present { request: wire } = decoded else {
+                    panic!("present must remain present across the transport");
+                };
+                assert_eq!(FloatingSurfaceRequest::try_from(wire).unwrap(), request);
+            }
+
+            {
+                let messages = [
+                    FloatingSurfaceHostMessage::PrepareSurface {
+                        id: "call".into(),
+                        token: "0123456789abcdef0123456789abcdef".into(),
+                        rect: [92.0, 32.0, 488.0, 288.0],
+                        content_rect: [100.0, 40.0, 480.0, 280.0],
+                        transfer_covered: true,
+                        coordinate_offset: [220.0, 90.0],
+                    },
+                    FloatingSurfaceHostMessage::Adopted {
+                        id: "call".into(),
+                        rect: [100.0, 40.0, 480.0, 280.0],
+                    },
+                ];
+                for message in messages {
+                    let json = serde_json::to_string(&message).unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
+                        message
+                    );
+                }
+                let geometry = FloatingSurfaceClientMessage::SurfaceGeometry {
+                    id: "call".into(),
+                    rect: [192.0, 72.0, 588.0, 328.0],
+                    content_rect: [200.0, 80.0, 580.0, 320.0],
+                    input_rect: Some([200.0, 80.0, 580.0, 320.0]),
+                };
+                let json = serde_json::to_string(&geometry).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
+                    geometry
+                );
+
+                for message in [
+                    FloatingSurfaceClientMessage::OpenCaptureStudio {
+                        mode: CaptureStudioProtocolMode::PictureInPicture,
+                    },
+                    FloatingSurfaceClientMessage::SourceCleared { id: "call".into() },
+                    FloatingSurfaceClientMessage::DestinationPresented { id: "call".into() },
+                    FloatingSurfaceClientMessage::Suspend {
+                        id: "call".into(),
+                        rect: [192.0, 72.0, 588.0, 328.0],
+                        content_rect: [200.0, 80.0, 580.0, 320.0],
+                    },
+                    FloatingSurfaceClientMessage::Dismiss { id: "call".into() },
+                ] {
+                    let json = serde_json::to_string(&message).unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
+                        message
+                    );
+                }
+                let suspended = FloatingSurfaceHostMessage::Suspended { id: "call".into() };
+                let json = serde_json::to_string(&suspended).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
+                    suspended
+                );
+            }
+
+            {
+                let base = FloatingSurfaceProtocolRequest {
+                    id: "call".into(),
+                    title: "Call".into(),
+                    role: FloatingSurfaceProtocolRole::ActiveCall,
+                    source: FloatingSurfaceProtocolSource::AppRegion {
+                        app_id: "so.tilo.chat".into(),
+                        region: [10.0, 20.0, 210.0, 140.0],
+                    },
+                    preferred_size: [360.0, 220.0],
+                    aspect_ratio: None,
+                    initial_rect: Some([900.0, 40.0, 1_260.0, 260.0]),
+                    presentation_rect: Some([892.0, 32.0, 1_268.0, 268.0]),
+                };
+                let mut inverted = base;
+                inverted.source = FloatingSurfaceProtocolSource::AppRegion {
+                    app_id: "so.tilo.chat".into(),
+                    region: [210.0, 20.0, 10.0, 140.0],
+                };
+                assert!(FloatingSurfaceRequest::try_from(inverted).is_err());
+            }
+
+            {
+                let bounds = FloatingSurfaceHostMessage::DesktopBounds {
+                    bounds: [0.0, 0.0, 3200.0, 1080.0],
+                };
+                let json = serde_json::to_string(&bounds).unwrap();
+                assert!(json.contains("desktop_bounds"));
+                assert_eq!(
+                    serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
+                    bounds
+                );
+                assert_ne!(
+                    FloatingSurfaceHostMessage::Adopted {
+                        id: "call".into(),
+                        rect: [100.0, 100.0, 460.0, 320.0],
+                    },
+                    FloatingSurfaceHostMessage::Reattach { id: "call".into() }
+                );
+            }
+        }
+
+        phase a_window_appearance_round_trips_and_unknown_values_are_unsaid;
+        {
+            use crate::theme::WindowAppearance;
+            use crate::tokens::PresenceHue;
+
+            let told = WindowAppearance {
+                workspace_hue: Some(40.0),
+                your_colour: Some(PresenceHue::Violet),
+                corner_radius: None,
+            };
+            let message = FloatingSurfaceHostMessage::appearance(&told);
+            let wire = serde_json::to_value(&message).unwrap();
+            assert_eq!(
+                wire,
+                serde_json::json!({"type": "appearance", "workspace_hue": 40.0, "your_colour": "violet"})
+            );
+            let back: FloatingSurfaceHostMessage = serde_json::from_value(wire).unwrap();
+            assert_eq!(back.window_appearance(), Some(told));
+
+            let neutral: FloatingSurfaceHostMessage =
+                serde_json::from_value(serde_json::json!({"type": "appearance"})).unwrap();
+            assert_eq!(
+                neutral.window_appearance(),
+                Some(WindowAppearance::default()),
+                "no temperature and no colour said"
+            );
+            let unknown: FloatingSurfaceHostMessage = serde_json::from_value(
+                serde_json::json!({"type": "appearance", "workspace_hue": 400.0, "your_colour": "chartreuse"}),
+            )
+            .unwrap();
+            assert_eq!(
+                unknown.window_appearance(),
+                Some(WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: None,
+                    corner_radius: None,
+                })
+            );
+            assert_eq!(
+                FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
+                None
+            );
+        }
     }
 
     fn instant_ago(duration: crate::time::Duration) -> crate::time::Instant {
@@ -1265,798 +1492,642 @@ mod tests {
             .unwrap_or_else(crate::time::now)
     }
 
-    #[test]
-    fn repeated_float_return_keeps_independent_conversation_ownership() {
-        let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-        let desktop = Rect::new(-800.0, 0.0, 1600.0, 900.0);
-        let inline = Rect::new(300.0, 120.0, 840.0, 660.0);
-        let detached = Rect::new(-700.0, 150.0, -160.0, 690.0);
-        let mut conversation = FloatingPlacement::attached(inline.size());
-        conversation.set_attached_region(Some(inline));
-        let mut sibling = FloatingPlacement::attached(inline.size());
-        sibling.detach_to_desktop(Rect::new(940.0, 120.0, 1480.0, 660.0));
-        sibling.confirm_desktop_adoption();
-        let sibling_rect = sibling.rect(app, desktop);
-        for _ in 0..3 {
-            conversation.detach_to_desktop(detached);
-            assert!(!conversation.is_desktop_adopted());
-            conversation.prepare_desktop_rect_with_offset(detached, Vec2::new(-1000.0, 30.0));
-            assert_eq!(conversation.rect(app, desktop), detached);
-            conversation.confirm_desktop_adoption();
-            conversation.request_app_return();
-            assert!(conversation.is_return_pending());
-            assert!(matches!(
-                conversation.attachment(),
-                Attachment::Desktop { .. }
-            ));
-            conversation.confirm_app_adoption(app);
-            assert!(matches!(conversation.attachment(), Attachment::App { .. }));
-            assert!(!conversation.is_desktop_adopted());
-            assert!(!conversation.is_return_pending());
-            assert!(sibling.is_desktop_adopted());
-            assert_eq!(sibling.rect(app, desktop), sibling_rect);
-        }
-    }
+    tilo_test_env::scenario! {
+        /// A floating placement between its app and the desktop: who owns it, where it may stand
+        /// and how it moves.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_floating_placement_keeps_its_owner_and_moves_without_jumps;
 
-    #[test]
-    fn attached_and_detached_surfaces_stay_inside_their_owner() {
-        {
-            let p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let a = p.rect(Rect::new(100.0, 80.0, 900.0, 700.0), desk);
-            let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
-            assert_eq!(b.x0 - a.x0, 140.0);
-            assert_eq!(b.y0 - a.y0, 40.0);
-        }
-
+        phase repeated_float_return_keeps_independent_conversation_ownership;
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
-            let inline = Rect::new(310.0, 120.0, 840.0, 660.0);
-            let mut p = FloatingPlacement::attached(inline.size());
-            p.set_attached_region(Some(inline));
-            assert_eq!(p.rect(app, desk), inline);
-            p.set_attached_region(Some(Rect::new(f64::NAN, 0.0, 2.0, 2.0)));
-            assert_eq!(p.rect(app, desk), inline, "invalid geometry is ignored");
+            let desktop = Rect::new(-800.0, 0.0, 1600.0, 900.0);
+            let inline = Rect::new(300.0, 120.0, 840.0, 660.0);
+            let detached = Rect::new(-700.0, 150.0, -160.0, 690.0);
+            let mut conversation = FloatingPlacement::attached(inline.size());
+            conversation.set_attached_region(Some(inline));
+            let mut sibling = FloatingPlacement::attached(inline.size());
+            sibling.detach_to_desktop(Rect::new(940.0, 120.0, 1480.0, 660.0));
+            sibling.confirm_desktop_adoption();
+            let sibling_rect = sibling.rect(app, desktop);
+            for _ in 0..3 {
+                conversation.detach_to_desktop(detached);
+                assert!(!conversation.is_desktop_adopted());
+                conversation.prepare_desktop_rect_with_offset(detached, Vec2::new(-1000.0, 30.0));
+                assert_eq!(conversation.rect(app, desktop), detached);
+                conversation.confirm_desktop_adoption();
+                conversation.request_app_return();
+                assert!(conversation.is_return_pending());
+                assert!(matches!(
+                    conversation.attachment(),
+                    Attachment::Desktop { .. }
+                ));
+                conversation.confirm_app_adoption(app);
+                assert!(matches!(conversation.attachment(), Attachment::App { .. }));
+                assert!(!conversation.is_desktop_adopted());
+                assert!(!conversation.is_return_pending());
+                assert!(sibling.is_desktop_adopted());
+                assert_eq!(sibling.rect(app, desktop), sibling_rect);
+            }
         }
 
+        phase attached_and_detached_surfaces_stay_inside_their_owner;
         {
-            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            p.request_app_return();
-            assert!(!p.is_return_pending());
-            p.detach_to_desktop(Rect::new(940.0, 120.0, 1_260.0, 300.0));
-            p.request_app_return();
-            assert!(
-                !p.is_return_pending(),
-                "a request is not proof that desktop pixels were adopted"
-            );
-            p.prepare_desktop_rect(Rect::new(940.0, 120.0, 1_260.0, 300.0));
-            p.confirm_desktop_adoption();
-            p.request_app_return();
-            assert!(p.is_return_pending());
-            p.reattach_to_app(app, desk);
-            assert!(!p.is_return_pending());
-        }
+            {
+                let p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let a = p.rect(Rect::new(100.0, 80.0, 900.0, 700.0), desk);
+                let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
+                assert_eq!(b.x0 - a.x0, 140.0);
+                assert_eq!(b.y0 - a.y0, 40.0);
+            }
 
-        {
-            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            let plain = p.rect(app, desk);
-            p.set_safe_insets([0.0, 56.0, 0.0, 0.0]);
-            let home = p.rect(app, desk);
-            assert!(
-                (home.y0 - (plain.y0 + 56.0)).abs() < 1e-9,
-                "home clears the header row"
-            );
-            p.begin_drag(home.center(), app, desk);
-            p.update_drag(home.center() - Vec2::new(0.0, 100.0), app, desk);
-            let dragged = p.rect(app, desk);
-            assert!(
-                dragged.y0 >= app.y0 + 56.0 - 1e-9,
-                "a drag stays below it: {dragged:?}"
-            );
-        }
+            {
+                let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let inline = Rect::new(310.0, 120.0, 840.0, 660.0);
+                let mut p = FloatingPlacement::attached(inline.size());
+                p.set_attached_region(Some(inline));
+                assert_eq!(p.rect(app, desk), inline);
+                p.set_attached_region(Some(Rect::new(f64::NAN, 0.0, 2.0, 2.0)));
+                assert_eq!(p.rect(app, desk), inline, "invalid geometry is ignored");
+            }
 
-        {
-            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            p.set_attached_chrome([12.0, 40.0, 12.0, 156.0]);
-            let content = p.rect(app, desk);
-            let complete = Rect::new(
-                content.x0 - 12.0,
-                content.y0 - 40.0,
-                content.x1 + 12.0,
-                content.y1 + 156.0,
-            );
-            assert!(app.contains(complete.origin()));
-            assert!(app.contains(Point::new(complete.x1, complete.y1)));
-            assert_eq!(complete.y0, app.y0 + 16.0);
-            assert_eq!(complete.x1, app.x1 - 16.0);
-        }
+            {
+                let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                p.request_app_return();
+                assert!(!p.is_return_pending());
+                p.detach_to_desktop(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+                p.request_app_return();
+                assert!(
+                    !p.is_return_pending(),
+                    "a request is not proof that desktop pixels were adopted"
+                );
+                p.prepare_desktop_rect(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+                p.confirm_desktop_adoption();
+                p.request_app_return();
+                assert!(p.is_return_pending());
+                p.reattach_to_app(app, desk);
+                assert!(!p.is_return_pending());
+            }
 
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            let pointer = Point::new(600.0, 150.0);
-            let before = p.rect(app, desk);
-            p.begin_drag(pointer, app, desk);
-            let outside = Point::new(940.0, 150.0);
-            assert!(!FloatingPlacement::is_beyond_detach_boundary(
-                Point::new(app.x1 + 27.0, app.y0),
-                app
-            ));
-            assert!(FloatingPlacement::is_beyond_detach_boundary(
-                Point::new(app.x1 + 28.0, app.y0),
-                app
-            ));
-            assert!(FloatingPlacement::is_beyond_detach_boundary(outside, app));
-            assert_eq!(p.update_drag(outside, app, desk), Handoff::Detached);
-            assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
-            assert_eq!(
-                p.rect(app, desk),
-                before + (outside - pointer),
-                "ownership transfer must not move the surface by even one logical pixel"
-            );
-        }
-
-        {
-            let app = Rect::new(100.0, 100.0, 700.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            p.begin_drag(Point::new(600.0, 150.0), app, desk);
-            assert_eq!(
-                p.update_drag(Point::new(6_000.0, 150.0), app, desk),
-                Handoff::Detached
-            );
-            let r = p.rect(app, desk);
-            assert_eq!(r.x0, desk.x1 - 64.0);
-            assert_eq!(r.x1, desk.x1 - 64.0 + 320.0);
-        }
-
-        {
-            let app = Rect::new(100.0, 100.0, 700.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let released = Rect::new(1055.0, 300.0, 1375.0, 480.0);
-            let target = Rect::new(1064.0, 300.0, 1384.0, 480.0);
-            let mut p = FloatingPlacement::attached(released.size());
-            p.attachment = Attachment::Desktop { rect: released };
-            p.end_drag(desk);
-            assert!(p.is_handoff_animating());
-            assert!((p.rect(app, desk).x0 - released.x0).abs() < 1.0);
-
-            p.settle_motion
-                .as_mut()
-                .unwrap()
-                .started
-                .set(Some(instant_ago(
-                    settle_time().saturating_add(crate::time::Duration::from_millis(1)),
-                )));
-            assert_eq!(p.rect(app, desk), target);
-        }
-    }
-
-    #[test]
-    fn handoff_motion_is_continuous_across_owners() {
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            p.begin_drag(Point::new(600.0, 150.0), app, desk);
-            let _ = p.update_drag(Point::new(940.0, 150.0), app, desk);
-            let rect = p.rect(app, desk);
-            let transform = p.presentation_transform(Affine::IDENTITY, rect, false);
-            assert_eq!(transform * rect.center(), rect.center());
-            assert_eq!(
-                p.presentation_transform(Affine::IDENTITY, rect, true),
-                Affine::IDENTITY,
-                "reduced motion must disable the handoff flourish"
-            );
-        }
-
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
-            p.pin_handoff_for_visual_review(500);
-            let rect = p.rect(app, desk);
-            let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
-
-            p.handoff_motion.as_mut().unwrap().started =
-                instant_ago(settle_time().saturating_add(crate::time::Duration::from_secs(1)));
-            assert_eq!(
-                p.presentation_transform(Affine::IDENTITY, rect, false),
-                desktop_transform,
-                "a pinned review frame must not drift with wall-clock time"
-            );
-
-            p.confirm_app_adoption(app);
-            assert_eq!(p.rect(app, desk), rect);
-            assert_eq!(
-                p.presentation_transform(Affine::IDENTITY, rect, false),
-                desktop_transform,
-                "switching owners must preserve the exact visual handoff phase"
-            );
-            assert!(
-                !p.is_handoff_animating(),
-                "a pinned review frame must not keep the headless renderer alive"
-            );
-        }
-
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            p.begin_drag(Point::new(600.0, 150.0), app, desk);
-            p.drag.as_mut().unwrap().last_sample =
-                instant_ago(crate::time::Duration::from_millis(16));
-            assert_eq!(
-                p.update_drag(Point::new(600.0, 230.0), app, desk),
-                Handoff::None
-            );
-            p.drag.as_mut().unwrap().last_sample =
-                instant_ago(crate::time::Duration::from_millis(16));
-            assert_eq!(
-                p.update_drag(Point::new(950.0, 220.0), app, desk),
-                Handoff::Detached
-            );
-            let motion = p.handoff_motion.unwrap();
-            assert!(
-                motion.axis.x.abs() > motion.axis.y.abs(),
-                "the boundary flourish should follow the latest fast rightward motion"
-            );
-            assert!(motion.strength > 0.9, "a quick throw gets the full cue");
-        }
-
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            let origin = Point::new(600.0, 150.0);
-            let initial = p.rect(app, desk);
-            p.begin_drag(origin, app, desk);
-            assert_eq!(
-                p.update_drag(Point::new(950.0, 150.0), app, desk),
-                Handoff::Detached
-            );
-            let returned = Point::new(500.0, 300.0);
-            assert_eq!(p.update_drag(returned, app, desk), Handoff::Reattached);
-            assert!(p.is_return_pending());
-            assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
-            assert_eq!(
-                p.rect(app, desk),
-                initial + (returned - origin),
-                "shell → app ownership transfer must preserve geometry too"
-            );
-            p.confirm_app_adoption(app);
-            assert!(!p.is_return_pending());
-            assert!(matches!(p.attachment(), Attachment::App { .. }));
-            assert_eq!(p.rect(app, desk), initial + (returned - origin));
-        }
-
-        {
-            let app = Rect::new(0.0, 0.0, 700.0, 600.0);
-            let desktop = Rect::new(0.0, 0.0, 1600.0, 900.0);
-            let app_to_desktop = Vec2::new(240.0, 100.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            let origin = Point::new(600.0, 120.0);
-            p.begin_drag(origin, app, desktop);
-            p.drag.as_mut().unwrap().last_sample =
-                instant_ago(crate::time::Duration::from_millis(16));
-            assert_eq!(
-                p.update_drag(Point::new(900.0, 150.0), app, desktop),
-                Handoff::Detached
-            );
-
-            let prepared = p.rect(app, desktop) + app_to_desktop;
-            p.prepare_desktop_rect_with_offset(prepared, app_to_desktop);
-            p.confirm_desktop_adoption();
-            p.drag.as_mut().unwrap().last_sample =
-                instant_ago(crate::time::Duration::from_millis(16));
-            let returned_desktop_pointer = Point::new(620.0, 310.0);
-            assert_eq!(
-                p.update_drag(returned_desktop_pointer, app, desktop),
-                Handoff::Reattached
-            );
-            let last_shell_rect = p.rect(app, desktop);
-            let shell_velocity = p.drag.unwrap().velocity;
-            let shell_motion = p.handoff_motion.unwrap();
-
-            p.confirm_app_adoption(app);
-            assert!(p.is_dragging(), "the held drag survives the ownership edge");
-            assert_eq!(
-                p.rect(app, desktop) + app_to_desktop,
-                last_shell_rect,
-                "the first app-owned pixels cover the exact final shell rect"
-            );
-            assert_eq!(
-                p.drag.unwrap().velocity,
-                shell_velocity,
-                "the soft handoff flourish must retain its velocity vector"
-            );
-            let app_motion = p.handoff_motion.unwrap();
-            assert_eq!(app_motion.started, shell_motion.started);
-            assert_eq!(app_motion.axis, shell_motion.axis);
-            assert_eq!(app_motion.strength, shell_motion.strength);
-
-            let next_delta = Vec2::new(12.0, -8.0);
-            let next_local_pointer = returned_desktop_pointer - app_to_desktop + next_delta;
-            assert_eq!(
-                p.update_drag(next_local_pointer, app, desktop),
-                Handoff::None
-            );
-            assert_eq!(
-                p.rect(app, desktop) + app_to_desktop,
-                last_shell_rect + next_delta,
-                "the first primary-window pointer event continues the same drag"
-            );
-            p.end_drag(desktop);
-            assert!(!p.is_dragging());
-        }
-
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            let home = p.rect(app, desk);
-            p.set_reduce_motion(true);
-            p.begin_drag(Point::new(600.0, 150.0), app, desk);
-            let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
-            p.reattach_to_app(app, desk);
-            assert_eq!(p.rect(app, desk), home, "no snap-back under reduced motion");
-            assert!(!p.is_handoff_animating(), "nothing asks for motion frames");
-            let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
-            p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
-            assert_eq!(
-                p.presentation_transform(Affine::IDENTITY, rect, false),
-                Affine::IDENTITY,
-                "the ownership flourish is not played"
-            );
-        }
-
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            p.begin_drag(Point::new(600.0, 150.0), app, desk);
-            let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
-            let detached = p.rect(app, desk);
-            p.reattach_to_app(app, desk);
-            assert!(matches!(p.attachment(), Attachment::App { .. }));
-            assert!(
-                (p.rect(app, desk).x0 - detached.x0).abs() < 1.0,
-                "the decline frame stays where the pointer left it"
-            );
-            p.settle_motion
-                .as_mut()
-                .unwrap()
-                .started
-                .set(Some(instant_ago(
-                    settle_time().saturating_add(crate::time::Duration::from_millis(1)),
-                )));
-            assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
-        }
-    }
-
-    #[test]
-    fn capture_protection_request_has_a_stable_wire_form() {
-        for protected in [true, false] {
-            let message = FloatingSurfaceClientMessage::SetCaptureProtection {
-                protected,
-                generation: None,
-            };
-            let json = serde_json::to_string(&message).unwrap();
-            assert_eq!(
-                json,
-                format!(r#"{{"type":"set_capture_protection","protected":{protected}}}"#)
-            );
-            assert_eq!(
-                serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
-                message
-            );
-        }
-    }
-
-    #[test]
-    fn surface_protocol_carries_explicit_geometry_and_rejects_invalid_frames() {
-        {
-            let req = FloatingSurfaceRequest {
-                id: "pair".into(),
-                title: "Compare".into(),
-                role: FloatingRole::PictureInPicture,
-                source: FloatingSource::Composite(vec![
-                    FloatingSource::Surface { surface_id: 1 },
-                    FloatingSource::Surface { surface_id: 2 },
-                ]),
-                preferred_size: Size::new(480.0, 270.0),
-                aspect_ratio: Some(16.0 / 9.0),
-                initial_rect: None,
-                presentation_rect: None,
-                tracking_source: None,
-            };
-            assert!(matches!(req.source, FloatingSource::Composite(ref v) if v.len() == 2));
-        }
-
-        {
-            let request = FloatingSurfaceRequest {
-                id: "comparison".into(),
-                title: "Live comparison".into(),
-                role: FloatingRole::PictureInPicture,
-                source: FloatingSource::Composite(vec![
-                    FloatingSource::AppRegion {
-                        app_id: "so.tilo.editor".into(),
-                        region: Rect::new(12.0, 30.0, 412.0, 330.0),
-                    },
-                    FloatingSource::AppElement {
-                        app_id: "so.tilo.browser".into(),
-                        element_id: "video:main".into(),
-                        region: Rect::new(20.0, 40.0, 620.0, 378.0),
-                    },
-                    FloatingSource::Surface { surface_id: 42 },
-                ]),
-                preferred_size: Size::new(520.0, 320.0),
-                aspect_ratio: Some(1.625),
-                initial_rect: Some(Rect::new(600.0, 80.0, 1_120.0, 400.0)),
-                presentation_rect: Some(Rect::new(590.0, 70.0, 1_130.0, 410.0)),
-                tracking_source: None,
-            };
-            let message = FloatingSurfaceClientMessage::Present {
-                request: (&request).into(),
-            };
-            let json = serde_json::to_string(&message).unwrap();
-            let decoded: FloatingSurfaceClientMessage = serde_json::from_str(&json).unwrap();
-            let FloatingSurfaceClientMessage::Present { request: wire } = decoded else {
-                panic!("present must remain present across the transport");
-            };
-            assert_eq!(FloatingSurfaceRequest::try_from(wire).unwrap(), request);
-        }
-
-        {
-            let messages = [
-                FloatingSurfaceHostMessage::PrepareSurface {
-                    id: "call".into(),
-                    token: "0123456789abcdef0123456789abcdef".into(),
-                    rect: [92.0, 32.0, 488.0, 288.0],
-                    content_rect: [100.0, 40.0, 480.0, 280.0],
-                    transfer_covered: true,
-                    coordinate_offset: [220.0, 90.0],
-                },
-                FloatingSurfaceHostMessage::Adopted {
-                    id: "call".into(),
-                    rect: [100.0, 40.0, 480.0, 280.0],
-                },
-            ];
-            for message in messages {
-                let json = serde_json::to_string(&message).unwrap();
-                assert_eq!(
-                    serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
-                    message
+            {
+                let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                let plain = p.rect(app, desk);
+                p.set_safe_insets([0.0, 56.0, 0.0, 0.0]);
+                let home = p.rect(app, desk);
+                assert!(
+                    (home.y0 - (plain.y0 + 56.0)).abs() < 1e-9,
+                    "home clears the header row"
+                );
+                p.begin_drag(home.center(), app, desk);
+                p.update_drag(home.center() - Vec2::new(0.0, 100.0), app, desk);
+                let dragged = p.rect(app, desk);
+                assert!(
+                    dragged.y0 >= app.y0 + 56.0 - 1e-9,
+                    "a drag stays below it: {dragged:?}"
                 );
             }
-            let geometry = FloatingSurfaceClientMessage::SurfaceGeometry {
-                id: "call".into(),
-                rect: [192.0, 72.0, 588.0, 328.0],
-                content_rect: [200.0, 80.0, 580.0, 320.0],
-                input_rect: Some([200.0, 80.0, 580.0, 320.0]),
-            };
-            let json = serde_json::to_string(&geometry).unwrap();
-            assert_eq!(
-                serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
-                geometry
-            );
 
-            for message in [
-                FloatingSurfaceClientMessage::OpenCaptureStudio {
-                    mode: CaptureStudioProtocolMode::PictureInPicture,
-                },
-                FloatingSurfaceClientMessage::SourceCleared { id: "call".into() },
-                FloatingSurfaceClientMessage::DestinationPresented { id: "call".into() },
-                FloatingSurfaceClientMessage::Suspend {
-                    id: "call".into(),
-                    rect: [192.0, 72.0, 588.0, 328.0],
-                    content_rect: [200.0, 80.0, 580.0, 320.0],
-                },
-                FloatingSurfaceClientMessage::Dismiss { id: "call".into() },
-            ] {
-                let json = serde_json::to_string(&message).unwrap();
+            {
+                let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                p.set_attached_chrome([12.0, 40.0, 12.0, 156.0]);
+                let content = p.rect(app, desk);
+                let complete = Rect::new(
+                    content.x0 - 12.0,
+                    content.y0 - 40.0,
+                    content.x1 + 12.0,
+                    content.y1 + 156.0,
+                );
+                assert!(app.contains(complete.origin()));
+                assert!(app.contains(Point::new(complete.x1, complete.y1)));
+                assert_eq!(complete.y0, app.y0 + 16.0);
+                assert_eq!(complete.x1, app.x1 - 16.0);
+            }
+
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                let pointer = Point::new(600.0, 150.0);
+                let before = p.rect(app, desk);
+                p.begin_drag(pointer, app, desk);
+                let outside = Point::new(940.0, 150.0);
+                assert!(!FloatingPlacement::is_beyond_detach_boundary(
+                    Point::new(app.x1 + 27.0, app.y0),
+                    app
+                ));
+                assert!(FloatingPlacement::is_beyond_detach_boundary(
+                    Point::new(app.x1 + 28.0, app.y0),
+                    app
+                ));
+                assert!(FloatingPlacement::is_beyond_detach_boundary(outside, app));
+                assert_eq!(p.update_drag(outside, app, desk), Handoff::Detached);
+                assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
                 assert_eq!(
-                    serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
-                    message
+                    p.rect(app, desk),
+                    before + (outside - pointer),
+                    "ownership transfer must not move the surface by even one logical pixel"
                 );
             }
-            let suspended = FloatingSurfaceHostMessage::Suspended { id: "call".into() };
-            let json = serde_json::to_string(&suspended).unwrap();
-            assert_eq!(
-                serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
-                suspended
-            );
-        }
 
-        {
-            let base = FloatingSurfaceProtocolRequest {
-                id: "call".into(),
-                title: "Call".into(),
-                role: FloatingSurfaceProtocolRole::ActiveCall,
-                source: FloatingSurfaceProtocolSource::AppRegion {
-                    app_id: "so.tilo.chat".into(),
-                    region: [10.0, 20.0, 210.0, 140.0],
-                },
-                preferred_size: [360.0, 220.0],
-                aspect_ratio: None,
-                initial_rect: Some([900.0, 40.0, 1_260.0, 260.0]),
-                presentation_rect: Some([892.0, 32.0, 1_268.0, 268.0]),
-            };
-            let mut inverted = base;
-            inverted.source = FloatingSurfaceProtocolSource::AppRegion {
-                app_id: "so.tilo.chat".into(),
-                region: [210.0, 20.0, 10.0, 140.0],
-            };
-            assert!(FloatingSurfaceRequest::try_from(inverted).is_err());
-        }
-
-        {
-            let bounds = FloatingSurfaceHostMessage::DesktopBounds {
-                bounds: [0.0, 0.0, 3200.0, 1080.0],
-            };
-            let json = serde_json::to_string(&bounds).unwrap();
-            assert!(json.contains("desktop_bounds"));
-            assert_eq!(
-                serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
-                bounds
-            );
-            assert_ne!(
-                FloatingSurfaceHostMessage::Adopted {
-                    id: "call".into(),
-                    rect: [100.0, 100.0, 460.0, 320.0],
-                },
-                FloatingSurfaceHostMessage::Reattach { id: "call".into() }
-            );
-        }
-    }
-
-    #[test]
-    fn prepare_rebases_the_live_handoff_without_frame_jumps() {
-        {
-            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
-            let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            placement.begin_drag(Point::new(600.0, 150.0), app, desk);
-            assert_eq!(
-                placement.update_drag(Point::new(950.0, 150.0), app, desk),
-                Handoff::Detached
-            );
-            let prepared = Rect::new(1_000.0, 120.0, 1_320.0, 300.0);
-            placement.prepare_desktop_rect(prepared);
-            assert_eq!(placement.rect(app, desk), prepared);
-            assert!(placement.is_dragging(), "the pointer grab survives prepare");
-            assert!(
-                !placement.is_desktop_adopted(),
-                "creation is not evidence that pixels are visible"
-            );
-
-            placement.confirm_desktop_adoption();
-            assert!(placement.is_desktop_adopted());
-            assert_eq!(
-                placement.rect(app, desk),
-                prepared,
-                "ownership acknowledgement cannot replay stale geometry"
-            );
-        }
-
-        {
-            let app = Rect::new(0.0, 0.0, 700.0, 600.0);
-            let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
-            let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
-            let press = Point::new(600.0, 40.0);
-            placement.begin_drag(press, app, desk);
-            let outside = Point::new(750.0, 40.0);
-            assert_eq!(placement.update_drag(outside, app, desk), Handoff::Detached);
-            let local_detached = placement.rect(app, desk);
-            let coordinate_offset = Vec2::new(240.0, 110.0);
-            let prepared = local_detached + coordinate_offset;
-            placement.prepare_desktop_rect_with_offset(prepared, coordinate_offset);
-            assert_eq!(placement.rect(app, desk), prepared);
-
-            // The compositor may deliver a native cursor event without the mouse
-            // moving at all. Its coordinates are desktop-space; it must not pull
-            // the surface by the app's origin.
-            assert_eq!(
-                placement.update_drag(outside + coordinate_offset, app, desk),
-                Handoff::None
-            );
-            assert_eq!(placement.rect(app, desk), prepared);
-        }
-
-        {
-            let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
-            let desk = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-            let app_origin = Vec2::new(262.0, 124.0);
-            let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
-            let press = Point::new(1_114.0, 24.0);
-            placement.begin_drag(press, app, desk);
-            let crossing = Point::new(1_114.0, -64.0);
-            assert_eq!(
-                placement.update_drag(crossing, app, desk),
-                Handoff::Detached
-            );
-            let request_rect = placement.rect(app, desk);
-
-            let pre_prepare_pointer = Point::new(738.0, -64.0);
-            assert_eq!(
-                placement.update_drag(pre_prepare_pointer, app, desk),
-                Handoff::None
-            );
-            let live_before_prepare = placement.rect(app, desk);
-
-            placement.prepare_desktop_rect_with_offset(request_rect + app_origin, app_origin);
-            assert_eq!(
-                placement.rect(app, desk),
-                live_before_prepare + app_origin,
-                "Prepare references the crossing frame; newer live motion must survive it"
-            );
-            assert_eq!(
-                placement.update_drag(pre_prepare_pointer + app_origin, app, desk),
-                Handoff::None
-            );
-            assert_eq!(placement.rect(app, desk), live_before_prepare + app_origin);
-        }
-
-        {
-            let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
-            let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
-            let app_origin = Vec2::new(262.0, 124.0);
-            let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
-            let press_local = Point::new(1_114.0, 24.0);
-            let initial_local = placement.rect(app, desktop);
-            placement.begin_drag(press_local, app, desktop);
-            assert_eq!(
-                placement.update_drag(Point::new(1_114.0, -104.0), app, desktop),
-                Handoff::Detached
-            );
-            let local_detached = placement.rect(app, desktop);
-            placement.prepare_desktop_rect_with_offset(local_detached + app_origin, app_origin);
-
-            let returned_desktop = Point::new(1_376.0, 180.0);
-            let returned_primary_local = returned_desktop - app_origin;
-            assert_eq!(
-                placement.update_drag(returned_primary_local + app_origin, app, desktop),
-                Handoff::Reattached
-            );
-            assert!(placement.is_return_pending());
-            let returned_desktop_rect = placement.rect(app, desktop);
-            let expected_desktop =
-                initial_local + app_origin + (returned_desktop - (press_local + app_origin));
-            assert_eq!(returned_desktop_rect, expected_desktop);
-            placement.confirm_app_adoption(app);
-            assert_eq!(placement.rect(app, desktop) + app_origin, expected_desktop);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn nonblocking_service_client_bounds_output_and_completes_lifecycles() {
-        {
-            let (app_side, _shell_side) = UnixStream::pair().unwrap();
-            let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
-            let chunk = MAX_PROTOCOL_FRAME_BYTES / 2;
-            for _ in 0..8 {
-                client.enqueue_frame(vec![0; chunk]).unwrap();
+            {
+                let app = Rect::new(100.0, 100.0, 700.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                p.begin_drag(Point::new(600.0, 150.0), app, desk);
+                assert_eq!(
+                    p.update_drag(Point::new(6_000.0, 150.0), app, desk),
+                    Handoff::Detached
+                );
+                let r = p.rect(app, desk);
+                assert_eq!(r.x0, desk.x1 - 64.0);
+                assert_eq!(r.x1, desk.x1 - 64.0 + 320.0);
             }
-            assert_eq!(client.outgoing_bytes, MAX_OUTGOING_QUEUE_BYTES);
-            assert_eq!(client.outgoing.len(), 8);
-            assert!(
-                client.enqueue_frame(vec![0]).is_err(),
-                "a stalled peer must exert bounded backpressure"
-            );
+
+            {
+                let app = Rect::new(100.0, 100.0, 700.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let released = Rect::new(1055.0, 300.0, 1375.0, 480.0);
+                let target = Rect::new(1064.0, 300.0, 1384.0, 480.0);
+                let mut p = FloatingPlacement::attached(released.size());
+                p.attachment = Attachment::Desktop { rect: released };
+                p.end_drag(desk);
+                assert!(p.is_handoff_animating());
+                assert!((p.rect(app, desk).x0 - released.x0).abs() < 1.0);
+
+                p.settle_motion
+                    .as_mut()
+                    .unwrap()
+                    .started
+                    .set(Some(instant_ago(
+                        settle_time().saturating_add(crate::time::Duration::from_millis(1)),
+                    )));
+                assert_eq!(p.rect(app, desk), target);
+            }
         }
 
+        phase handoff_motion_is_continuous_across_owners;
         {
-            use std::io::{BufRead, BufReader};
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                p.begin_drag(Point::new(600.0, 150.0), app, desk);
+                let _ = p.update_drag(Point::new(940.0, 150.0), app, desk);
+                let rect = p.rect(app, desk);
+                let transform = p.presentation_transform(Affine::IDENTITY, rect, false);
+                assert_eq!(transform * rect.center(), rect.center());
+                assert_eq!(
+                    p.presentation_transform(Affine::IDENTITY, rect, true),
+                    Affine::IDENTITY,
+                    "reduced motion must disable the handoff flourish"
+                );
+            }
+
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
+                p.pin_handoff_for_visual_review(500);
+                let rect = p.rect(app, desk);
+                let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
+
+                p.handoff_motion.as_mut().unwrap().started =
+                    instant_ago(settle_time().saturating_add(crate::time::Duration::from_secs(1)));
+                assert_eq!(
+                    p.presentation_transform(Affine::IDENTITY, rect, false),
+                    desktop_transform,
+                    "a pinned review frame must not drift with wall-clock time"
+                );
+
+                p.confirm_app_adoption(app);
+                assert_eq!(p.rect(app, desk), rect);
+                assert_eq!(
+                    p.presentation_transform(Affine::IDENTITY, rect, false),
+                    desktop_transform,
+                    "switching owners must preserve the exact visual handoff phase"
+                );
+                assert!(
+                    !p.is_handoff_animating(),
+                    "a pinned review frame must not keep the headless renderer alive"
+                );
+            }
+
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                p.begin_drag(Point::new(600.0, 150.0), app, desk);
+                p.drag.as_mut().unwrap().last_sample =
+                    instant_ago(crate::time::Duration::from_millis(16));
+                assert_eq!(
+                    p.update_drag(Point::new(600.0, 230.0), app, desk),
+                    Handoff::None
+                );
+                p.drag.as_mut().unwrap().last_sample =
+                    instant_ago(crate::time::Duration::from_millis(16));
+                assert_eq!(
+                    p.update_drag(Point::new(950.0, 220.0), app, desk),
+                    Handoff::Detached
+                );
+                let motion = p.handoff_motion.unwrap();
+                assert!(
+                    motion.axis.x.abs() > motion.axis.y.abs(),
+                    "the boundary flourish should follow the latest fast rightward motion"
+                );
+                assert!(motion.strength > 0.9, "a quick throw gets the full cue");
+            }
+
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                let origin = Point::new(600.0, 150.0);
+                let initial = p.rect(app, desk);
+                p.begin_drag(origin, app, desk);
+                assert_eq!(
+                    p.update_drag(Point::new(950.0, 150.0), app, desk),
+                    Handoff::Detached
+                );
+                let returned = Point::new(500.0, 300.0);
+                assert_eq!(p.update_drag(returned, app, desk), Handoff::Reattached);
+                assert!(p.is_return_pending());
+                assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
+                assert_eq!(
+                    p.rect(app, desk),
+                    initial + (returned - origin),
+                    "shell → app ownership transfer must preserve geometry too"
+                );
+                p.confirm_app_adoption(app);
+                assert!(!p.is_return_pending());
+                assert!(matches!(p.attachment(), Attachment::App { .. }));
+                assert_eq!(p.rect(app, desk), initial + (returned - origin));
+            }
+
+            {
+                let app = Rect::new(0.0, 0.0, 700.0, 600.0);
+                let desktop = Rect::new(0.0, 0.0, 1600.0, 900.0);
+                let app_to_desktop = Vec2::new(240.0, 100.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                let origin = Point::new(600.0, 120.0);
+                p.begin_drag(origin, app, desktop);
+                p.drag.as_mut().unwrap().last_sample =
+                    instant_ago(crate::time::Duration::from_millis(16));
+                assert_eq!(
+                    p.update_drag(Point::new(900.0, 150.0), app, desktop),
+                    Handoff::Detached
+                );
+
+                let prepared = p.rect(app, desktop) + app_to_desktop;
+                p.prepare_desktop_rect_with_offset(prepared, app_to_desktop);
+                p.confirm_desktop_adoption();
+                p.drag.as_mut().unwrap().last_sample =
+                    instant_ago(crate::time::Duration::from_millis(16));
+                let returned_desktop_pointer = Point::new(620.0, 310.0);
+                assert_eq!(
+                    p.update_drag(returned_desktop_pointer, app, desktop),
+                    Handoff::Reattached
+                );
+                let last_shell_rect = p.rect(app, desktop);
+                let shell_velocity = p.drag.unwrap().velocity;
+                let shell_motion = p.handoff_motion.unwrap();
+
+                p.confirm_app_adoption(app);
+                assert!(p.is_dragging(), "the held drag survives the ownership edge");
+                assert_eq!(
+                    p.rect(app, desktop) + app_to_desktop,
+                    last_shell_rect,
+                    "the first app-owned pixels cover the exact final shell rect"
+                );
+                assert_eq!(
+                    p.drag.unwrap().velocity,
+                    shell_velocity,
+                    "the soft handoff flourish must retain its velocity vector"
+                );
+                let app_motion = p.handoff_motion.unwrap();
+                assert_eq!(app_motion.started, shell_motion.started);
+                assert_eq!(app_motion.axis, shell_motion.axis);
+                assert_eq!(app_motion.strength, shell_motion.strength);
+
+                let next_delta = Vec2::new(12.0, -8.0);
+                let next_local_pointer = returned_desktop_pointer - app_to_desktop + next_delta;
+                assert_eq!(
+                    p.update_drag(next_local_pointer, app, desktop),
+                    Handoff::None
+                );
+                assert_eq!(
+                    p.rect(app, desktop) + app_to_desktop,
+                    last_shell_rect + next_delta,
+                    "the first primary-window pointer event continues the same drag"
+                );
+                p.end_drag(desktop);
+                assert!(!p.is_dragging());
+            }
+
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                let home = p.rect(app, desk);
+                p.set_reduce_motion(true);
+                p.begin_drag(Point::new(600.0, 150.0), app, desk);
+                let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
+                p.reattach_to_app(app, desk);
+                assert_eq!(p.rect(app, desk), home, "no snap-back under reduced motion");
+                assert!(!p.is_handoff_animating(), "nothing asks for motion frames");
+                let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+                p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
+                assert_eq!(
+                    p.presentation_transform(Affine::IDENTITY, rect, false),
+                    Affine::IDENTITY,
+                    "the ownership flourish is not played"
+                );
+            }
+
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                p.begin_drag(Point::new(600.0, 150.0), app, desk);
+                let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
+                let detached = p.rect(app, desk);
+                p.reattach_to_app(app, desk);
+                assert!(matches!(p.attachment(), Attachment::App { .. }));
+                assert!(
+                    (p.rect(app, desk).x0 - detached.x0).abs() < 1.0,
+                    "the decline frame stays where the pointer left it"
+                );
+                p.settle_motion
+                    .as_mut()
+                    .unwrap()
+                    .started
+                    .set(Some(instant_ago(
+                        settle_time().saturating_add(crate::time::Duration::from_millis(1)),
+                    )));
+                assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
+            }
+        }
+
+        phase prepare_rebases_the_live_handoff_without_frame_jumps;
+        {
+            {
+                let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                placement.begin_drag(Point::new(600.0, 150.0), app, desk);
+                assert_eq!(
+                    placement.update_drag(Point::new(950.0, 150.0), app, desk),
+                    Handoff::Detached
+                );
+                let prepared = Rect::new(1_000.0, 120.0, 1_320.0, 300.0);
+                placement.prepare_desktop_rect(prepared);
+                assert_eq!(placement.rect(app, desk), prepared);
+                assert!(placement.is_dragging(), "the pointer grab survives prepare");
+                assert!(
+                    !placement.is_desktop_adopted(),
+                    "creation is not evidence that pixels are visible"
+                );
+
+                placement.confirm_desktop_adoption();
+                assert!(placement.is_desktop_adopted());
+                assert_eq!(
+                    placement.rect(app, desk),
+                    prepared,
+                    "ownership acknowledgement cannot replay stale geometry"
+                );
+            }
+
+            {
+                let app = Rect::new(0.0, 0.0, 700.0, 600.0);
+                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
+                let press = Point::new(600.0, 40.0);
+                placement.begin_drag(press, app, desk);
+                let outside = Point::new(750.0, 40.0);
+                assert_eq!(placement.update_drag(outside, app, desk), Handoff::Detached);
+                let local_detached = placement.rect(app, desk);
+                let coordinate_offset = Vec2::new(240.0, 110.0);
+                let prepared = local_detached + coordinate_offset;
+                placement.prepare_desktop_rect_with_offset(prepared, coordinate_offset);
+                assert_eq!(placement.rect(app, desk), prepared);
+
+                // The compositor may deliver a native cursor event without the mouse
+                // moving at all. Its coordinates are desktop-space; it must not pull
+                // the surface by the app's origin.
+                assert_eq!(
+                    placement.update_drag(outside + coordinate_offset, app, desk),
+                    Handoff::None
+                );
+                assert_eq!(placement.rect(app, desk), prepared);
+            }
+
+            {
+                let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
+                let desk = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+                let app_origin = Vec2::new(262.0, 124.0);
+                let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
+                let press = Point::new(1_114.0, 24.0);
+                placement.begin_drag(press, app, desk);
+                let crossing = Point::new(1_114.0, -64.0);
+                assert_eq!(
+                    placement.update_drag(crossing, app, desk),
+                    Handoff::Detached
+                );
+                let request_rect = placement.rect(app, desk);
+
+                let pre_prepare_pointer = Point::new(738.0, -64.0);
+                assert_eq!(
+                    placement.update_drag(pre_prepare_pointer, app, desk),
+                    Handoff::None
+                );
+                let live_before_prepare = placement.rect(app, desk);
+
+                placement.prepare_desktop_rect_with_offset(request_rect + app_origin, app_origin);
+                assert_eq!(
+                    placement.rect(app, desk),
+                    live_before_prepare + app_origin,
+                    "Prepare references the crossing frame; newer live motion must survive it"
+                );
+                assert_eq!(
+                    placement.update_drag(pre_prepare_pointer + app_origin, app, desk),
+                    Handoff::None
+                );
+                assert_eq!(placement.rect(app, desk), live_before_prepare + app_origin);
+            }
+
+            {
+                let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
+                let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+                let app_origin = Vec2::new(262.0, 124.0);
+                let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
+                let press_local = Point::new(1_114.0, 24.0);
+                let initial_local = placement.rect(app, desktop);
+                placement.begin_drag(press_local, app, desktop);
+                assert_eq!(
+                    placement.update_drag(Point::new(1_114.0, -104.0), app, desktop),
+                    Handoff::Detached
+                );
+                let local_detached = placement.rect(app, desktop);
+                placement.prepare_desktop_rect_with_offset(local_detached + app_origin, app_origin);
+
+                let returned_desktop = Point::new(1_376.0, 180.0);
+                let returned_primary_local = returned_desktop - app_origin;
+                assert_eq!(
+                    placement.update_drag(returned_primary_local + app_origin, app, desktop),
+                    Handoff::Reattached
+                );
+                assert!(placement.is_return_pending());
+                let returned_desktop_rect = placement.rect(app, desktop);
+                let expected_desktop =
+                    initial_local + app_origin + (returned_desktop - (press_local + app_origin));
+                assert_eq!(returned_desktop_rect, expected_desktop);
+                placement.confirm_app_adoption(app);
+                assert_eq!(placement.rect(app, desktop) + app_origin, expected_desktop);
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The service client over a socket pair of its own: bounded output, whole lifecycles, one
+        /// wake per arrival.
+        /// Each phase was a test of its own and builds its own fixture.
+        #[cfg(unix)]
+        fn the_service_client_bounds_its_output_and_wakes_once_per_arrival;
+
+        phase nonblocking_service_client_bounds_output_and_completes_lifecycles;
+        {
+            {
+                let (app_side, _shell_side) = UnixStream::pair().unwrap();
+                let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
+                let chunk = MAX_PROTOCOL_FRAME_BYTES / 2;
+                for _ in 0..8 {
+                    client.enqueue_frame(vec![0; chunk]).unwrap();
+                }
+                assert_eq!(client.outgoing_bytes, MAX_OUTGOING_QUEUE_BYTES);
+                assert_eq!(client.outgoing.len(), 8);
+                assert!(
+                    client.enqueue_frame(vec![0]).is_err(),
+                    "a stalled peer must exert bounded backpressure"
+                );
+            }
+
+            {
+                use std::io::{BufRead, BufReader};
+
+                let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+                shell_side
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
+                let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };
+                client.send(&outbound).unwrap();
+
+                let mut reader = BufReader::new(shell_side.try_clone().unwrap());
+                let mut read = || {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    serde_json::from_str::<FloatingSurfaceClientMessage>(line.trim()).unwrap()
+                };
+                assert_eq!(
+                    read(),
+                    FloatingSurfaceClientMessage::Hello {
+                        version: FLOATING_SURFACE_PROTOCOL_VERSION
+                    },
+                    "the app says its version before anything else"
+                );
+                assert_eq!(read(), outbound);
+
+                let inbound = FloatingSurfaceHostMessage::DesktopBounds {
+                    bounds: [0.0, 0.0, 2560.0, 1440.0],
+                };
+                let mut bytes = serde_json::to_vec(&inbound).unwrap();
+                bytes.push(b'\n');
+                shell_side.write_all(&bytes).unwrap();
+                let mut received = Vec::new();
+                tilo_test_env::wait_until("the inbound surface message", || {
+                    received.extend(client.pump().unwrap());
+                    !received.is_empty()
+                });
+                assert_eq!(received, vec![inbound]);
+
+                let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
+                    shell: FLOATING_SURFACE_PROTOCOL_VERSION + 1,
+                })
+                .unwrap();
+                bytes.push(b'\n');
+                shell_side.write_all(&bytes).unwrap();
+                let mut ended = None;
+                tilo_test_env::wait_until("the shell's version mismatch", || {
+                    match client.pump() {
+                        Ok(messages) => assert!(messages.is_empty(), "{messages:?}"),
+                        Err(error) => ended = Some(error),
+                    }
+                    ended.is_some()
+                });
+                assert!(
+                    ended.is_some_and(|error| error.contains("shell-ui version")),
+                    "a mismatch ends the client"
+                );
+            }
+        }
+
+        phase an_idle_client_wakes_once_per_arrival;
+        {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
 
             let (app_side, mut shell_side) = UnixStream::pair().unwrap();
-            shell_side
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
-            let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
-            let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };
-            client.send(&outbound).unwrap();
-
-            let mut reader = BufReader::new(shell_side.try_clone().unwrap());
-            let mut read = || {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                serde_json::from_str::<FloatingSurfaceClientMessage>(line.trim()).unwrap()
-            };
-            assert_eq!(
-                read(),
-                FloatingSurfaceClientMessage::Hello {
-                    version: FLOATING_SURFACE_PROTOCOL_VERSION
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&wakes);
+            let parks = Arc::new(AtomicUsize::new(0));
+            let parked = Arc::clone(&parks);
+            let mut client = FloatingSurfaceServiceClient::from_stream_watched(
+                app_side,
+                move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
                 },
-                "the app says its version before anything else"
-            );
-            assert_eq!(read(), outbound);
-
-            let inbound = FloatingSurfaceHostMessage::DesktopBounds {
-                bounds: [0.0, 0.0, 2560.0, 1440.0],
-            };
-            let mut bytes = serde_json::to_vec(&inbound).unwrap();
-            bytes.push(b'\n');
-            shell_side.write_all(&bytes).unwrap();
-            let mut received = Vec::new();
-            tilo_test_env::wait_until("the inbound surface message", || {
-                received.extend(client.pump().unwrap());
-                !received.is_empty()
-            });
-            assert_eq!(received, vec![inbound]);
-
-            let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
-                shell: FLOATING_SURFACE_PROTOCOL_VERSION + 1,
-            })
+                move || {
+                    parked.fetch_add(1, Ordering::SeqCst);
+                },
+            )
             .unwrap();
-            bytes.push(b'\n');
-            shell_side.write_all(&bytes).unwrap();
-            let mut ended = None;
-            tilo_test_env::wait_until("the shell's version mismatch", || {
-                match client.pump() {
-                    Ok(messages) => assert!(messages.is_empty(), "{messages:?}"),
-                    Err(error) => ended = Some(error),
-                }
-                ended.is_some()
+            let send = |shell_side: &mut UnixStream| {
+                let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
+                    &crate::theme::WindowAppearance {
+                        workspace_hue: Some(40.0),
+                        your_colour: None,
+                        corner_radius: None,
+                    },
+                ))
+                .unwrap();
+                bytes.push(b'\n');
+                shell_side.write_all(&bytes).unwrap();
+            };
+            send(&mut shell_side);
+            tilo_test_env::wait_until("the watcher waits for the app to read", || {
+                parks.load(Ordering::SeqCst) >= 1
             });
-            assert!(
-                ended.is_some_and(|error| error.contains("shell-ui version")),
-                "a mismatch ends the client"
+            assert_eq!(parks.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "unread bytes wake the app once, not in a loop"
             );
+            assert_eq!(client.pump().unwrap().len(), 1);
+            send(&mut shell_side);
+            tilo_test_env::wait_until("the next arrival wakes it again", || {
+                wakes.load(Ordering::SeqCst) >= 2
+            });
+            assert_eq!(client.pump().unwrap().len(), 1);
         }
-    }
-
-    #[test]
-    fn a_window_appearance_round_trips_and_unknown_values_are_unsaid() {
-        use crate::theme::WindowAppearance;
-        use crate::tokens::PresenceHue;
-
-        let told = WindowAppearance {
-            workspace_hue: Some(40.0),
-            your_colour: Some(PresenceHue::Violet),
-            corner_radius: None,
-        };
-        let message = FloatingSurfaceHostMessage::appearance(&told);
-        let wire = serde_json::to_value(&message).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({"type": "appearance", "workspace_hue": 40.0, "your_colour": "violet"})
-        );
-        let back: FloatingSurfaceHostMessage = serde_json::from_value(wire).unwrap();
-        assert_eq!(back.window_appearance(), Some(told));
-
-        let neutral: FloatingSurfaceHostMessage =
-            serde_json::from_value(serde_json::json!({"type": "appearance"})).unwrap();
-        assert_eq!(
-            neutral.window_appearance(),
-            Some(WindowAppearance::default()),
-            "no temperature and no colour said"
-        );
-        let unknown: FloatingSurfaceHostMessage = serde_json::from_value(
-            serde_json::json!({"type": "appearance", "workspace_hue": 400.0, "your_colour": "chartreuse"}),
-        )
-        .unwrap();
-        assert_eq!(
-            unknown.window_appearance(),
-            Some(WindowAppearance {
-                workspace_hue: Some(40.0),
-                your_colour: None,
-                corner_radius: None,
-            })
-        );
-        assert_eq!(
-            FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
-            None
-        );
     }
 
     /// The watcher is never scheduled while nothing arrives: armed, or
@@ -2105,56 +2176,5 @@ mod tests {
         tilo_test_env::wait_until("the watcher ends with its client", || {
             !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists()
         });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn an_idle_client_wakes_once_per_arrival() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&wakes);
-        let parks = Arc::new(AtomicUsize::new(0));
-        let parked = Arc::clone(&parks);
-        let mut client = FloatingSurfaceServiceClient::from_stream_watched(
-            app_side,
-            move || {
-                counted.fetch_add(1, Ordering::SeqCst);
-            },
-            move || {
-                parked.fetch_add(1, Ordering::SeqCst);
-            },
-        )
-        .unwrap();
-        let send = |shell_side: &mut UnixStream| {
-            let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
-                &crate::theme::WindowAppearance {
-                    workspace_hue: Some(40.0),
-                    your_colour: None,
-                    corner_radius: None,
-                },
-            ))
-            .unwrap();
-            bytes.push(b'\n');
-            shell_side.write_all(&bytes).unwrap();
-        };
-        send(&mut shell_side);
-        tilo_test_env::wait_until("the watcher waits for the app to read", || {
-            parks.load(Ordering::SeqCst) >= 1
-        });
-        assert_eq!(parks.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            1,
-            "unread bytes wake the app once, not in a loop"
-        );
-        assert_eq!(client.pump().unwrap().len(), 1);
-        send(&mut shell_side);
-        tilo_test_env::wait_until("the next arrival wakes it again", || {
-            wakes.load(Ordering::SeqCst) >= 2
-        });
-        assert_eq!(client.pump().unwrap().len(), 1);
     }
 }

@@ -8958,23 +8958,148 @@ mod tests {
         let _ = frame.poll_frame().unwrap();
     }
 
-    #[test]
-    fn a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_and_a_space_alone() {
-        for (spec, pressed, expected) in [
-            ("Shift+F10", "F10", &["Shift"][..]),
-            ("ctrl+shift+k", "k", &["ctrl", "shift"][..]),
-            ("Tab", "Tab", &[][..]),
-            ("+", "+", &[][..]),
-            (" ", " ", &[][..]),
-            ("Ctrl+ ", " ", &["Ctrl"][..]),
-        ] {
-            let (key, modifiers) = chord(spec);
-            let held: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-            assert_eq!(
-                (key, held.as_slice()),
-                (pressed, expected),
-                "{spec} is {pressed} with {expected:?} held"
-            );
+    tilo_test_env::scenario! {
+        /// Parsing alone, with no frame built: a key spec's modifiers and every shape of a headless
+        /// spec.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_headless_spec_reads_its_keys_and_its_shapes_from_text;
+
+        phase a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_and_a_space_alone;
+        {
+            for (spec, pressed, expected) in [
+                ("Shift+F10", "F10", &["Shift"][..]),
+                ("ctrl+shift+k", "k", &["ctrl", "shift"][..]),
+                ("Tab", "Tab", &[][..]),
+                ("+", "+", &[][..]),
+                (" ", " ", &[][..]),
+                ("Ctrl+ ", " ", &["Ctrl"][..]),
+            ] {
+                let (key, modifiers) = chord(spec);
+                let held: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+                assert_eq!(
+                    (key, held.as_slice()),
+                    (pressed, expected),
+                    "{spec} is {pressed} with {expected:?} held"
+                );
+            }
+        }
+
+        phase headless_spec_parses_every_shape_and_rejects_malformed_input;
+        {
+            {
+                let spec = parse_spec(
+                r#"{"viewport":[800,600],"audit":true,"audit_report":"/tmp/a.json","dump":"/tmp/d.json","targets":"/tmp/t.json",
+                "inspect":"/tmp/i.json",
+                "actions":[{"click_named":"save"},{"click_at":[10,20]},
+                           {"tap_named":"save"},{"tap_at":[30,40]},
+                           {"swipe_at":[100,200,100,20]},
+                           {"key":"Enter"},{"type":"hi"},{"modifiers":["ctrl"]},
+                           {"wait_for_named":{"target":"result","timeout_ms":750}},
+                           {"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},
+                           {"perform":{"target":"name","action":"set_value","value":"Ada"}},
+                           {"perform":{"target":"name","action":"set_selection","anchor":0,"focus":3}},
+                           {"perform":{"target":"workspace-tree","semantic_target":"key:node:2","action":"expand"}}]}"#,
+            )
+            .expect("spec parses");
+                assert_eq!(spec.viewport, Some((800, 600)));
+                assert!(spec.audit);
+                assert_eq!(spec.audit_report.as_deref(), Some("/tmp/a.json"));
+                assert_eq!(spec.dump.as_deref(), Some("/tmp/d.json"));
+                assert_eq!(spec.inspect.as_deref(), Some("/tmp/i.json"));
+                assert_eq!(spec.actions.len(), 13);
+                assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
+                assert!(matches!(&spec.actions[2], Action::TapNamed(n) if n == "save"));
+                assert!(matches!(
+                    &spec.actions[4],
+                    Action::SwipeAt(100.0, 200.0, 100.0, 20.0)
+                ));
+                assert!(matches!(&spec.actions[6], Action::Type(t) if t == "hi"));
+                assert!(matches!(
+                    &spec.actions[8],
+                    Action::WaitForNamed { target, timeout_ms: 750 } if target == "result"
+                ));
+                assert!(matches!(
+                    &spec.actions[9],
+                    Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout_ms: Some(1000), .. })
+                        if target == "result" && role == "static_text"
+                ));
+                assert!(matches!(
+                    &spec.actions[10],
+                    Action::Perform { target, action: tilo_headless_schema::SemanticAction::SetValue(value), .. }
+                        if target == "name" && value == "Ada"
+                ));
+                assert!(matches!(
+                    &spec.actions[11],
+                    Action::Perform {
+                        action: tilo_headless_schema::SemanticAction::SetSelection {
+                            anchor: 0,
+                            focus: 3
+                        },
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    &spec.actions[12],
+                    Action::Perform {
+                        target,
+                        semantic_target: Some(semantic_target),
+                        action: tilo_headless_schema::SemanticAction::Expand,
+                    } if target == "workspace-tree" && semantic_target == "key:node:2"
+                ));
+            }
+
+            {
+                let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
+                assert!(err.contains("teleport"), "{err}");
+            }
+
+            {
+                let typed = action_description(&Action::Type("private value".into()));
+                assert_eq!(typed, "type 13 character(s)");
+                assert!(!typed.contains("private"));
+
+                let set = action_description(&Action::Perform {
+                    target: "password".into(),
+                    semantic_target: None,
+                    action: tilo_headless_schema::SemanticAction::SetValue("hunter2".into()),
+                });
+                assert_eq!(set, "perform set_value on \"password\"");
+                assert!(!set.contains("hunter2"));
+
+                let expected = action_description(&Action::Expect(
+                    SemanticExpectation::named("items").semantic_target("row:42"),
+                ));
+                assert_eq!(expected, "expect \"items\" / \"row:42\"");
+            }
+
+            {
+                for raw in [
+                    r#"{"viewport":[0,600]}"#,
+                    r#"{"viewport":[800]}"#,
+                    r#"{"viewport":"800x600"}"#,
+                    r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
+                    r#"{"actions":[{"perform":{"target":"name","action":"set_value"}}]}"#,
+                    r#"{"actions":[{"perform":{"target":"name","action":"focus","value":"extra"}}]}"#,
+                    r#"{"actions":[{"perform":{"target":"name","action":"set_selection","anchor":-1,"focus":0}}]}"#,
+                    r#"{"actions":[{"wait_for_named":{"target":"result","timeout_ms":0}}]}"#,
+                    "[]",
+                ] {
+                    assert!(parse_spec(raw).is_err(), "accepted {raw}");
+                }
+            }
+
+            {
+                let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
+                assert!(error.contains("unknown field \"steps\""), "{error}");
+                assert!(error.contains("actions"), "{error}");
+            }
+
+            {
+                let temp = tempfile::tempdir().expect("temporary output root");
+                let output = temp.path().join("artifacts/audit/inspect.json");
+                write_headless_output(&output, b"{}\n").expect("write nested output");
+                assert_eq!(std::fs::read_to_string(output).unwrap(), "{}\n");
+            }
         }
     }
 
@@ -10720,124 +10845,6 @@ mod tests {
                 (400, 200),
             );
             assert!(driver.accessibility_audit().is_clean());
-        }
-    }
-
-    #[test]
-    fn headless_spec_parses_every_shape_and_rejects_malformed_input() {
-        {
-            let spec = parse_spec(
-            r#"{"viewport":[800,600],"audit":true,"audit_report":"/tmp/a.json","dump":"/tmp/d.json","targets":"/tmp/t.json",
-                "inspect":"/tmp/i.json",
-                "actions":[{"click_named":"save"},{"click_at":[10,20]},
-                           {"tap_named":"save"},{"tap_at":[30,40]},
-                           {"swipe_at":[100,200,100,20]},
-                           {"key":"Enter"},{"type":"hi"},{"modifiers":["ctrl"]},
-                           {"wait_for_named":{"target":"result","timeout_ms":750}},
-                           {"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},
-                           {"perform":{"target":"name","action":"set_value","value":"Ada"}},
-                           {"perform":{"target":"name","action":"set_selection","anchor":0,"focus":3}},
-                           {"perform":{"target":"workspace-tree","semantic_target":"key:node:2","action":"expand"}}]}"#,
-        )
-        .expect("spec parses");
-            assert_eq!(spec.viewport, Some((800, 600)));
-            assert!(spec.audit);
-            assert_eq!(spec.audit_report.as_deref(), Some("/tmp/a.json"));
-            assert_eq!(spec.dump.as_deref(), Some("/tmp/d.json"));
-            assert_eq!(spec.inspect.as_deref(), Some("/tmp/i.json"));
-            assert_eq!(spec.actions.len(), 13);
-            assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
-            assert!(matches!(&spec.actions[2], Action::TapNamed(n) if n == "save"));
-            assert!(matches!(
-                &spec.actions[4],
-                Action::SwipeAt(100.0, 200.0, 100.0, 20.0)
-            ));
-            assert!(matches!(&spec.actions[6], Action::Type(t) if t == "hi"));
-            assert!(matches!(
-                &spec.actions[8],
-                Action::WaitForNamed { target, timeout_ms: 750 } if target == "result"
-            ));
-            assert!(matches!(
-                &spec.actions[9],
-                Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout_ms: Some(1000), .. })
-                    if target == "result" && role == "static_text"
-            ));
-            assert!(matches!(
-                &spec.actions[10],
-                Action::Perform { target, action: tilo_headless_schema::SemanticAction::SetValue(value), .. }
-                    if target == "name" && value == "Ada"
-            ));
-            assert!(matches!(
-                &spec.actions[11],
-                Action::Perform {
-                    action: tilo_headless_schema::SemanticAction::SetSelection {
-                        anchor: 0,
-                        focus: 3
-                    },
-                    ..
-                }
-            ));
-            assert!(matches!(
-                &spec.actions[12],
-                Action::Perform {
-                    target,
-                    semantic_target: Some(semantic_target),
-                    action: tilo_headless_schema::SemanticAction::Expand,
-                } if target == "workspace-tree" && semantic_target == "key:node:2"
-            ));
-        }
-
-        {
-            let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
-            assert!(err.contains("teleport"), "{err}");
-        }
-
-        {
-            let typed = action_description(&Action::Type("private value".into()));
-            assert_eq!(typed, "type 13 character(s)");
-            assert!(!typed.contains("private"));
-
-            let set = action_description(&Action::Perform {
-                target: "password".into(),
-                semantic_target: None,
-                action: tilo_headless_schema::SemanticAction::SetValue("hunter2".into()),
-            });
-            assert_eq!(set, "perform set_value on \"password\"");
-            assert!(!set.contains("hunter2"));
-
-            let expected = action_description(&Action::Expect(
-                SemanticExpectation::named("items").semantic_target("row:42"),
-            ));
-            assert_eq!(expected, "expect \"items\" / \"row:42\"");
-        }
-
-        {
-            for raw in [
-                r#"{"viewport":[0,600]}"#,
-                r#"{"viewport":[800]}"#,
-                r#"{"viewport":"800x600"}"#,
-                r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
-                r#"{"actions":[{"perform":{"target":"name","action":"set_value"}}]}"#,
-                r#"{"actions":[{"perform":{"target":"name","action":"focus","value":"extra"}}]}"#,
-                r#"{"actions":[{"perform":{"target":"name","action":"set_selection","anchor":-1,"focus":0}}]}"#,
-                r#"{"actions":[{"wait_for_named":{"target":"result","timeout_ms":0}}]}"#,
-                "[]",
-            ] {
-                assert!(parse_spec(raw).is_err(), "accepted {raw}");
-            }
-        }
-
-        {
-            let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
-            assert!(error.contains("unknown field \"steps\""), "{error}");
-            assert!(error.contains("actions"), "{error}");
-        }
-
-        {
-            let temp = tempfile::tempdir().expect("temporary output root");
-            let output = temp.path().join("artifacts/audit/inspect.json");
-            write_headless_output(&output, b"{}\n").expect("write nested output");
-            assert_eq!(std::fs::read_to_string(output).unwrap(), "{}\n");
         }
     }
 
