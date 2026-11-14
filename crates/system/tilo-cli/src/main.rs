@@ -789,6 +789,24 @@ fn main() -> ExitCode {
             }
         };
     }
+    // `tilo mcp`, as an agent's tools start it, runs for as long as the agent does. It is
+    // answered without building the whole command tree: that tree's parser is the
+    // largest frame the program has, and its strings and arguments are allocations
+    // the process would keep holding for nothing. Anything else typed after `mcp`
+    // (`--help`, a global flag) is parsed as every command is.
+    if noun_of(&args).is_none() {
+        let hold = match args.get(1..).unwrap_or_default() {
+            [mcp] if mcp == "mcp" => Some(false),
+            [mcp, hold] if mcp == "mcp" && hold == "--hold" => Some(true),
+            _ => None,
+        };
+        if let Some(hold) = hold {
+            return mcp::serve(hold).unwrap_or_else(|e| {
+                eprintln!("tilo: {e:#}");
+                ExitCode::FAILURE
+            });
+        }
+    }
     let invoked = args
         .first()
         .and_then(|arg| std::path::Path::new(arg).file_name())

@@ -259,14 +259,25 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
     );
     if hold {
         // The peer's log (its standard error, kept beside the device): what it could not do,
-        // and more with `RUST_LOG`.
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        // and more with `RUST_LOG` (`debug`, `tilo_fs=trace,warn`). Read as targets and
+        // levels: a filter of regular expressions would link a regex engine into every
+        // `tilo`, which `tilo mcp` holds in memory for as long as an agent runs.
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        let targets = std::env::var("RUST_LOG")
+            .ok()
+            .and_then(|filter| filter.parse::<tracing_subscriber::filter::Targets>().ok())
+            .unwrap_or_else(|| {
+                tracing_subscriber::filter::Targets::new()
+                    .with_default(tracing_subscriber::filter::LevelFilter::WARN)
+            });
+        let _ = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_ansi(false),
             )
-            .with_writer(std::io::stderr)
-            .with_ansi(false)
+            .with(targets)
             .try_init();
         let home = tilo_paths::home().ok_or_else(|| anyhow::anyhow!("HOME is missing"))?;
         return held::hold(&place.map_err(anyhow::Error::msg)?, shared(device), home);
