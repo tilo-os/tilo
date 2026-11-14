@@ -364,8 +364,6 @@ impl WindowMenuSurface {
 
     /// Hand what the menu's send row opened to the session: each send goes as the one send action
     /// every sender runs (`session:send-to#send`), carrying the window or tab the menu stands on.
-    /// A box's search is its host's to answer, and this host knows no people or agents: a name the
-    /// person types is the agent the box makes of it, as it does of a name the search never found.
     fn deliver() {
         for request in ui::shared_selection::take_send_to() {
             let arguments = send_arguments(request);
@@ -376,9 +374,6 @@ impl WindowMenuSurface {
                     tracing::warn!(%error, "the window menu's send was not taken");
                 }
             });
-        }
-        for (request, _query) in ui::shared_selection::take_recipient_searches() {
-            ui::shared_selection::answer_recipients(request, Vec::new());
         }
     }
 

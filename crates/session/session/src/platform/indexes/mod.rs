@@ -33,7 +33,8 @@ pub trait Index: Send + Sync {
     /// The person's files, by their names and what they hold, as a source; `None` where this host
     /// indexes no file.
     fn files(&self) -> Option<Held>;
-    /// The people, agents and conversations `query` names, as a window's box lists whom a message
-    /// could go to.
-    fn recipients(&self, query: &str) -> Vec<Recipient>;
+    /// The people, agents and conversations a message can go to, the most recent first.
+    fn recipients(&self) -> Vec<Recipient>;
+    /// A number that moves whenever what [`Self::recipients`] lists may have.
+    fn generation(&self) -> u64;
 }

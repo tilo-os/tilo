@@ -3,7 +3,7 @@
 //! means that selection.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace};
@@ -352,9 +352,6 @@ thread_local! {
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static FOCUSED: RefCell<Option<SharedSelection>> = const { RefCell::new(None) };
     static BOX_OPEN: Cell<bool> = const { Cell::new(false) };
-    static SEARCHES: RefCell<VecDeque<(u64, String)>> = const { RefCell::new(VecDeque::new()) };
-    static NEXT_SEARCH: Cell<u64> = const { Cell::new(1) };
-    static ROWS: RefCell<HashMap<u64, Vec<Recipient>>> = RefCell::new(HashMap::new());
     static ALONE: RefCell<Option<OpenSendBox>> = const { RefCell::new(None) };
 }
 
@@ -448,39 +445,93 @@ pub fn set_box_open(open: bool) {
     BOX_OPEN.with(|box_open| box_open.set(open));
 }
 
-/// Ask the one search for the recipients matching `query`; the answer comes back through
-/// [`answer_recipients`] under the number returned.
-pub fn search_recipients(query: &str) -> u64 {
-    let request = NEXT_SEARCH.with(|next| {
-        let request = next.get();
-        next.set(request.saturating_add(1));
-        request
-    });
-    SEARCHES.with(|searches| {
-        let mut searches = searches.borrow_mut();
-        if searches.len() < MAX_PENDING {
-            searches.push_back((request, query.chars().take(200).collect()));
+/// The session's resource whose reading lists whom a message can go to: the workspace's agents,
+/// people and conversations, the most recent first.
+pub const SEND_TO_RESOURCE: &str = "session:send-to";
+
+#[derive(Deserialize)]
+struct SendToReading {
+    #[serde(default)]
+    recipients: Vec<Recipient>,
+}
+
+/// The session's list of whom a message can go to, as this process last read it.
+struct Known {
+    followed: Option<crate::collaboration::SessionResource>,
+    asked: bool,
+    /// `None` until the first reading arrives.
+    recipients: Option<Vec<Recipient>>,
+    readings: u64,
+}
+
+static KNOWN: std::sync::Mutex<Known> = std::sync::Mutex::new(Known {
+    followed: None,
+    asked: false,
+    recipients: None,
+    readings: 0,
+});
+
+/// The list, with the reading that arrived since the last call taken in. The first call follows
+/// [`SEND_TO_RESOURCE`] on a worker, whose readings wake the window that called.
+fn known() -> std::sync::MutexGuard<'static, Known> {
+    let lock = || {
+        KNOWN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if !std::mem::replace(&mut lock().asked, true) {
+        let wake = crate::WakeHandle::new();
+        let spawned = crate::background::Background::current().spawn("recipients", move || {
+            match crate::collaboration::SessionResource::follow(SEND_TO_RESOURCE, wake) {
+                Ok(followed) => lock().followed = Some(followed),
+                Err(error) => tracing::debug!(%error, "no session lists whom a message can go to"),
+            }
+        });
+        if spawned.is_err() {
+            tracing::debug!("nothing here runs the work that follows whom a message can go to");
         }
-    });
-    request
+    }
+    let mut known = lock();
+    if let Some(Ok(reading)) = known
+        .followed
+        .as_ref()
+        .and_then(|followed| followed.latest())
+    {
+        match serde_json::from_str::<SendToReading>(&reading) {
+            Ok(reading) => {
+                known.recipients = Some(reading.recipients);
+                known.readings = known.readings.saturating_add(1);
+            }
+            Err(error) => tracing::warn!(%error, "the session's recipients do not parse"),
+        }
+    }
+    known
 }
 
-/// The searches boxes asked for since the last call, oldest first.
-pub fn take_recipient_searches() -> Vec<(u64, String)> {
-    SEARCHES.with(|searches| searches.borrow_mut().drain(..).collect())
+/// The recipients `query` names in the session's one list
+/// ([`crate::floating_surface::recipients_matching`]); `None` until the list arrived.
+#[must_use]
+pub fn recipients(query: &str) -> Option<Vec<Recipient>> {
+    let known = known();
+    let all = known.recipients.as_ref()?;
+    Some(crate::floating_surface::recipients_matching(all, query))
 }
 
-/// What the search found for `request`, waiting for the box that asked.
-pub fn answer_recipients(request: u64, rows: Vec<Recipient>) {
-    ROWS.with(|rows_by_request| {
-        rows_by_request.borrow_mut().insert(request, rows);
-    });
+/// How many readings of the session's list arrived: rows read at an earlier count are stale.
+#[must_use]
+pub fn recipients_read() -> u64 {
+    known().readings
 }
 
-/// The rows for `request`, if the search has answered: taken once, so a box never draws
-/// the same answer twice.
-pub fn take_recipients(request: u64) -> Option<Vec<Recipient>> {
-    ROWS.with(|rows| rows.borrow_mut().remove(&request))
+/// Stand `all` in for the session's list, as a test's session would publish it.
+#[cfg(test)]
+pub(crate) fn set_recipients(all: Vec<Recipient>) {
+    let mut known = KNOWN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    known.asked = true;
+    known.recipients = Some(all);
+    known.readings = known.readings.saturating_add(1);
 }
 
 #[cfg(test)]
@@ -891,41 +942,39 @@ mod tests {
     #[test]
     fn send_requests_queue_boundedly() {
         let _ = take_send_to();
-        let _ = take_recipient_searches();
         for index in 0..(MAX_PENDING + 4) {
             send_to(SendToRequest {
                 to: vec![Recipient::new_agent("Ana")],
                 about: vec![SharedSelection::of_text("a")],
                 text: format!("note {index}"),
             });
-            let _ = search_recipients(&format!("ad{index}"));
         }
         let requests = take_send_to();
         assert_eq!(requests.len(), MAX_PENDING);
         assert_eq!(requests[0].text, "note 0");
         assert!(take_send_to().is_empty());
-        assert!(take_recipient_searches().len() <= MAX_PENDING);
     }
 
     #[test]
-    fn a_search_answers_the_box_that_asked() {
-        let _ = take_recipient_searches();
-        let first = search_recipients("ad");
-        let second = search_recipients("ada");
-        assert_eq!(
-            take_recipient_searches(),
-            vec![(first, "ad".to_owned()), (second, "ada".to_owned()),]
-        );
-        assert_eq!(take_recipients(second), None, "not answered yet");
-        answer_recipients(
-            second,
-            vec![Recipient::found(
-                crate::floating_surface::RecipientKind::Person,
-                "u_ada",
-                "Ada",
-            )],
-        );
-        assert_eq!(take_recipients(second).map(|rows| rows.len()), Some(1));
-        assert_eq!(take_recipients(second), None, "taken once");
+    fn a_search_reads_the_sessions_one_list() {
+        use crate::floating_surface::RecipientKind;
+
+        set_recipients(vec![
+            Recipient::found(RecipientKind::Conversation, "c_1", "Design crit")
+                .with_detail("Ada, Bo"),
+            Recipient::found(RecipientKind::Agent, "a_2", "Adam"),
+            Recipient::found(RecipientKind::Person, "u_ada", "Ada"),
+        ]);
+        let ids = |query: &str| -> Vec<String> {
+            recipients(query)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|recipient| recipient.id)
+                .collect()
+        };
+        assert_eq!(ids("ada"), ["u_ada", "a_2", "c_1"]);
+        assert_eq!(ids("crit"), ["c_1"]);
+        assert!(ids("  ").is_empty(), "an empty field names nobody");
+        assert!(ids("zed").is_empty());
     }
 }

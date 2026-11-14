@@ -82,11 +82,12 @@ pub struct SendToBox {
     /// Whom it goes to: the agent being made by default, the people the
     /// session named, or a report's one destination.
     to: Vec<Recipient>,
-    /// What is typed into the recipient field, and the search it asked for.
+    /// What is typed into the recipient field, and how many readings of the session's list its
+    /// rows were read at.
     search: String,
     search_selection: Selection,
     search_composition: QueryComposition,
-    request: u64,
+    read_at: u64,
     rows: Vec<Recipient>,
     hovered: Option<usize>,
     /// The message's words and their editing state.
@@ -132,7 +133,7 @@ impl SendToBox {
             search: String::new(),
             search_selection: Selection::default(),
             search_composition: QueryComposition::default(),
-            request: 0,
+            read_at: 0,
             rows: Vec::new(),
             hovered: None,
             text: String::new(),
@@ -712,20 +713,16 @@ impl SendToBox {
         }
     }
 
-    /// The recipients `query` finds, asked of the host's one search. An empty
-    /// field asks nothing: what every app holds would answer it, and nothing
-    /// anybody choosing a recipient reads starts with a list of conversations.
+    /// The recipients what is typed names, from the session's one list. An empty field names
+    /// nobody: nothing anybody choosing a recipient reads starts with a list of conversations.
     fn ask_search(&mut self) {
-        self.answered = false;
-        self.rows.clear();
-        self.hovered = None;
+        self.read_at = crate::shared_selection::recipients_read();
+        let found = crate::shared_selection::recipients(&self.search);
+        self.answered = found.is_some() && !self.search.trim().is_empty();
+        self.rows = found.unwrap_or_default();
+        self.hovered = (!self.rows.is_empty()).then_some(0);
         self.dirty = true;
-        // An empty field asks nothing: what every app holds would answer it.
-        if self.search.trim().is_empty() {
-            self.layout = self.build_layout();
-            return;
-        }
-        self.request = crate::shared_selection::search_recipients(&self.search);
+        self.layout = self.build_layout();
     }
 
     /// What the box is called: a report, when the one place reports go is on
@@ -754,9 +751,7 @@ impl SendToBox {
         if !self.open {
             return false;
         }
-        if self.drain_answer() {
-            return true;
-        }
+        self.drain_answer();
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -834,22 +829,12 @@ impl SendToBox {
         }
     }
 
-    /// Take what the one search answered for this box, once. Whether it
-    /// answered.
+    /// Read the rows again when the session's list moved since they were read. Whether it moved.
     pub fn drain_answer(&mut self) -> bool {
-        let Some(rows) = crate::shared_selection::take_recipients(self.request) else {
-            return false;
-        };
-        if self.search.trim().is_empty() {
-            // Answered after the field was cleared: what it found is not what
-            // the person is choosing from now.
+        if !self.open || crate::shared_selection::recipients_read() == self.read_at {
             return false;
         }
-        self.rows = rows;
-        self.answered = true;
-        self.hovered = (!self.rows.is_empty()).then_some(0);
-        self.dirty = true;
-        self.layout = self.build_layout();
+        self.ask_search();
         true
     }
 

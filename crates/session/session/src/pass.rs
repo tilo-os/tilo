@@ -78,6 +78,7 @@ impl Session {
         // hands them.
         self.read_controls();
         self.shared.feed_agents();
+        self.shared.follow_recipients();
         let mut services = self.shared.services.borrow_mut();
         // What the records the services keep themselves reference: each record's content, kept in
         // the store of the workspace it stands in and offered on its route, so a device of the

@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 29
+version = 30
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -220,9 +220,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::present" = "struct"
 "FloatingSurfaceClientMessage::present.request" = "FloatingSurfaceProtocolRequest"
 "FloatingSurfaceClientMessage::reopen_closed_tab" = "unit"
-"FloatingSurfaceClientMessage::search_recipients" = "struct"
-"FloatingSurfaceClientMessage::search_recipients.query" = "String"
-"FloatingSurfaceClientMessage::search_recipients.request" = "u64"
 "FloatingSurfaceClientMessage::selection_capable" = "unit"
 "FloatingSurfaceClientMessage::send_to" = "struct"
 "FloatingSurfaceClientMessage::send_to.attached" = "Vec<Attached> optional"
@@ -318,9 +315,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceHostMessage::press_target.role" = "String"
 "FloatingSurfaceHostMessage::reattach" = "struct"
 "FloatingSurfaceHostMessage::reattach.id" = "String"
-"FloatingSurfaceHostMessage::recipients" = "struct"
-"FloatingSurfaceHostMessage::recipients.request" = "u64"
-"FloatingSurfaceHostMessage::recipients.rows" = "Vec<Recipient>"
 "FloatingSurfaceHostMessage::share_selection" = "struct"
 "FloatingSurfaceHostMessage::share_selection.pointing" = "bool optional"
 "FloatingSurfaceHostMessage::share_selection.to" = "Vec<Recipient> optional"

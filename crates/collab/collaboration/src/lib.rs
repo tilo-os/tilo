@@ -323,6 +323,10 @@ impl SessionResource {
         Err("Published resources need the certified collaboration service.".into())
     }
 
+    pub fn follow(_resource: &str, _wake: tilo_rt::wake::WakeHandle) -> Result<Self, String> {
+        Err("Published resources need the certified collaboration service.".into())
+    }
+
     /// Nothing is watched on this transport.
     #[must_use]
     pub fn latest(&self) -> Option<Result<String, String>> {

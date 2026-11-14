@@ -957,12 +957,18 @@ impl SessionSearch {
         edits
     }
 
-    /// The agents, people and conversations `query` names, as a window's box lists whom a message
-    /// could go to.
-    pub(crate) fn recipients(&self, query: &str) -> Vec<ui::floating_surface::Recipient> {
+    /// The agents, people and conversations a message can go to, the most recent first.
+    pub(crate) fn recipients(&self) -> Vec<ui::floating_surface::Recipient> {
         self.indexes
             .as_ref()
-            .map_or_else(Vec::new, |indexes| indexes.recipients(query))
+            .map_or_else(Vec::new, |indexes| indexes.recipients())
+    }
+
+    /// A number that moves whenever what [`Self::recipients`] lists may have.
+    pub(crate) fn recipients_generation(&self) -> u64 {
+        self.indexes
+            .as_ref()
+            .map_or(0, |indexes| indexes.generation())
     }
 
     /// The apps this session opens, for what it asks to be opened outside a search: a link a page

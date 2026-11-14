@@ -71,7 +71,11 @@ impl Index for SessionIndex {
         )))
     }
 
-    fn recipients(&self, query: &str) -> Vec<Recipient> {
-        self.content.recipients(query)
+    fn recipients(&self) -> Vec<Recipient> {
+        self.content.recipients()
+    }
+
+    fn generation(&self) -> u64 {
+        self.content.current().generation
     }
 }

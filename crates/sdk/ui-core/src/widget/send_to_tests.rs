@@ -10,7 +10,7 @@ use winit::keyboard::NamedKey;
 /// A box opened about a Task, beside `menu` in `viewport`.
 fn box_beside(menu: Rect, viewport: Rect) -> SendToBox {
     let _ = crate::shared_selection::take_send_to();
-    let _ = crate::shared_selection::take_recipient_searches();
+    crate::shared_selection::set_recipients(Vec::new());
     crate::shared_selection::set_send_host_available(true);
     let mut send_to = SendToBox::new();
     send_to.set_viewport(Some(viewport));
@@ -157,27 +157,16 @@ tilo_test_env::scenario! {
     {
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+        crate::shared_selection::set_recipients(vec![
+            Recipient::found(RecipientKind::Agent, "agent:7", "Ada").with_detail("agent"),
+            Recipient::found(RecipientKind::Person, "person:ada", "Ada Lovelace"),
+        ]);
         assert!(
             send_to.rows().is_empty(),
             "an empty recipient field shows nobody to choose from"
         );
-        assert!(
-            crate::shared_selection::take_recipient_searches().is_empty(),
-            "and asks the search nothing until the person types"
-        );
         send_to.focus_first();
         type_text(&mut send_to, "a");
-        let (request, _) = crate::shared_selection::take_recipient_searches()
-            .pop()
-            .expect("the box asked the search");
-        crate::shared_selection::answer_recipients(
-            request,
-            vec![
-                Recipient::found(RecipientKind::Agent, "agent:7", "Ada").with_detail("agent"),
-                Recipient::found(RecipientKind::Person, "person:ada", "Ada Lovelace"),
-            ],
-        );
-        assert!(send_to.drain_answer(), "the search answered this box");
         assert_eq!(send_to.rows().len(), 2);
         assert_eq!(
             send_to.hovered_row(),
@@ -236,23 +225,16 @@ tilo_test_env::scenario! {
             "holding what is typed into it"
         );
 
-        // Typing asks the one search for what matches, and the answer is what
-        // the rows show.
+        // Typing reads the session's one list for what matches, and the rows show it; a new
+        // reading of the list reads them again.
         send_to.focus_first();
         type_text(&mut send_to, "d");
-        assert!(
-            send_to.rows().is_empty(),
-            "what was found for an earlier query is not what this one finds"
-        );
-        let (request, query) = crate::shared_selection::take_recipient_searches()
-            .pop()
-            .expect("the box asked the search");
-        assert_eq!(query, "ad");
-        crate::shared_selection::answer_recipients(
-            request,
-            vec![Recipient::found(RecipientKind::Agent, "agent:4", "Adrien")],
-        );
+        crate::shared_selection::set_recipients(vec![
+            Recipient::found(RecipientKind::Agent, "agent:4", "Adrien"),
+            Recipient::found(RecipientKind::Person, "person:bo", "Bo"),
+        ]);
         assert!(send_to.drain_answer());
+        assert_eq!(send_to.rows().len(), 1);
         assert_eq!(send_to.hovered_row(), Some(0), "Enter would pick it");
 
         // Tab: the recipient field, the message, then the menu's own stops.
@@ -277,19 +259,12 @@ tilo_test_env::scenario! {
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
         send_to.focus_first();
+        crate::shared_selection::set_recipients(vec![Recipient::found(
+            RecipientKind::Person,
+            "person:ada",
+            "Ada Lovelace",
+        )]);
         type_text(&mut send_to, "ada");
-        let (request, _) = crate::shared_selection::take_recipient_searches()
-            .pop()
-            .expect("the box asked the search");
-        crate::shared_selection::answer_recipients(
-            request,
-            vec![Recipient::found(
-                RecipientKind::Person,
-                "person:ada",
-                "Ada Lovelace",
-            )],
-        );
-        assert!(send_to.drain_answer());
 
         assert!(key(
             &mut send_to,
@@ -319,7 +294,6 @@ tilo_test_env::scenario! {
         // the default and comes off by its ×.
         send_to.focus_first();
         type_text(&mut send_to, "Ada's agent");
-        let _ = crate::shared_selection::take_recipient_searches();
         send_to.pick_or_name();
         assert_eq!(send_to.recipients().len(), 1);
         assert_eq!(send_to.recipients()[0].kind, RecipientKind::NewAgent);
@@ -460,7 +434,6 @@ tilo_test_env::scenario! {
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let beside = Rect::new(40.0, 120.0, 212.0, 320.0);
         let _ = crate::shared_selection::take_send_to();
-        let _ = crate::shared_selection::take_recipient_searches();
         crate::shared_selection::set_send_host_available(true);
         let mut plain = SendToBox::new();
         plain.set_viewport(Some(viewport));
@@ -644,7 +617,6 @@ tilo_test_env::scenario! {
     {
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let _ = crate::shared_selection::take_send_to();
-        let _ = crate::shared_selection::take_recipient_searches();
         crate::shared_selection::set_send_host_available(true);
         let destination = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
         let mut send_to = SendToBox::new();

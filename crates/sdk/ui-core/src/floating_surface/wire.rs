@@ -89,6 +89,52 @@ impl Recipient {
     }
 }
 
+/// The recipients of `all` that `query` names, best first: what is called exactly that, then what
+/// a name starts with it, then a word of a name, then the conversations whose people hold it, then
+/// the rest. Among equals `all`'s own order (the most recent first) stands. An empty `query` names
+/// none.
+#[must_use]
+pub fn recipients_matching(all: &[Recipient], query: &str) -> Vec<Recipient> {
+    let needle = query.trim().to_lowercase();
+    let standing = |recipient: &Recipient| {
+        let name = recipient.name.to_lowercase();
+        if name == needle {
+            return Some(4);
+        }
+        if name.starts_with(&needle) {
+            return Some(3);
+        }
+        if name
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word.starts_with(&needle))
+        {
+            return Some(2);
+        }
+        let detail = recipient
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase();
+        needle
+            .split_whitespace()
+            .all(|word| name.contains(word) || detail.contains(word))
+            .then_some(u8::from(recipient.kind == RecipientKind::Conversation))
+    };
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut found: Vec<(u8, &Recipient)> = all
+        .iter()
+        .filter_map(|recipient| Some((standing(recipient)?, recipient)))
+        .collect();
+    found.sort_by_key(|(standing, _)| std::cmp::Reverse(*standing));
+    found
+        .into_iter()
+        .take(12)
+        .map(|(_, recipient)| recipient.clone())
+        .collect()
+}
+
 /// What a model may know about one change it is asked to describe: the
 /// change's id as History lists it (32 lowercase hex characters), its
 /// summary, the action and resource it named, and what it wrote. Never who
@@ -370,12 +416,6 @@ pub enum FloatingSurfaceClientMessage {
         attached: Vec<tilo_reference::Attached>,
         text: String,
     },
-    /// The person typed `query` into the box's recipient field: the shell answers with
-    /// [`FloatingSurfaceHostMessage::Recipients`], from the one search every part of the shell shares.
-    SearchRecipients {
-        request: u64,
-        query: String,
-    },
     /// The resource this window shows (the first it publishes), sent when it changes: the shell menus
     /// for the window (its window menu) attach it, as the app menus do.
     WindowResource {
@@ -516,13 +556,6 @@ pub enum FloatingSurfaceHostMessage {
         to: Vec<Recipient>,
         #[serde(default)]
         pointing: bool,
-    },
-    /// What the one search finds for [`FloatingSurfaceClientMessage::SearchRecipients`] `request`:
-    /// agents, people and conversations to send to, the people and conversations this window is already
-    /// in first.
-    Recipients {
-        request: u64,
-        rows: Vec<Recipient>,
     },
     /// The person pointed at `point` of this app's focused window, in its logical coordinates, to say
     /// what something is about (feedback on one control): answer with

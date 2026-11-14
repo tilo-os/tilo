@@ -162,11 +162,9 @@ pub struct AppTabs {
     /// The listener the apps connect to, taken off on the session's own pass,
     /// and the socket's path, which goes when the session ends.
     socket: Socket,
-    /// What the windows' boxes sent and asked on this pass, carried out once every ask of theirs is
-    /// answered: they reach the session's records and its search, which the answers themselves do
-    /// not.
+    /// What the windows' boxes sent on this pass, carried out once every ask of theirs is
+    /// answered: it reaches the session's records, which the answers themselves do not.
     sent: Vec<Sent>,
-    asked: Vec<Asked>,
 }
 
 /// An open shell-ui connection: the app it vouches for, the launch whose
@@ -264,7 +262,6 @@ impl AppTabs {
             host_shell: HostShellAsks::default(),
             socket,
             sent: Vec::new(),
-            asked: Vec::new(),
         })
     }
 
@@ -304,7 +301,6 @@ impl AppTabs {
                 cards: &self.cards,
                 launches: &self.launches,
                 sent: &mut self.sent,
-                asked: &mut self.asked,
                 pages: &shared.pages,
             };
             for request in self.requests.try_iter() {
@@ -320,11 +316,9 @@ impl AppTabs {
         // What the members' desks show of these windows' pages, and what the
         // apps sent of them since the last pass.
         self.follow_pages(shared);
-        // What the windows' boxes sent and asked, now that every ask of
-        // theirs is answered: a send is one action on the person's behalf,
-        // and a search is the desk's own.
+        // What the windows' boxes sent, now that every ask of theirs is
+        // answered: a send is one action on the person's behalf.
         self.deliver_sends(shared);
-        self.deliver_searches(shared);
         self.deliver_box(shared, desktop, compositor);
         // Where each app's own card stands this pass: the floating layer's place, which the desk
         // lays the app's window out by.
@@ -376,22 +370,6 @@ impl AppTabs {
             }
         }
         shared.deliver_sends();
-    }
-
-    /// Answer what the windows' boxes asked of the search: who a message could go to, for what they
-    /// typed.
-    fn deliver_searches(&mut self, shared: &crate::Shared) {
-        for asked in std::mem::take(&mut self.asked) {
-            let rows = shared.recipients(&asked.query);
-            tell(
-                &asked.reply,
-                &FloatingSurfaceHostMessage::Recipients {
-                    request: asked.request,
-                    rows,
-                },
-                &asked.app,
-            );
-        }
     }
 
     /// Ask the window in front to open its box, as the shell's send keys do
@@ -651,11 +629,9 @@ struct Answers<'a> {
     links: &'a mut BTreeMap<u64, Link>,
     cards: &'a crate::cards::Cards,
     launches: &'a Launches,
-    /// The messages windows sent from their own boxes, and the searches they asked, both carried
-    /// out after the pass has every ask: they reach the session's records, which the answers
-    /// themselves do not touch.
+    /// The messages windows sent from their own boxes, carried out after the pass has every ask:
+    /// they reach the session's records, which the answers themselves do not touch.
     sent: &'a mut Vec<Sent>,
-    asked: &'a mut Vec<Asked>,
     /// The windows whose apps hand their page over as a paint stream.
     pages: &'a Rc<RefCell<PageTracks>>,
 }
@@ -665,14 +641,6 @@ struct Answers<'a> {
 struct Sent {
     app: String,
     arguments: serde_json::Map<String, serde_json::Value>,
-}
-
-/// A window's box asking the search whom it could send to.
-struct Asked {
-    app: String,
-    reply: Arc<Mutex<UnixStream>>,
-    request: u64,
-    query: String,
 }
 
 impl Answers<'_> {
@@ -951,8 +919,8 @@ impl Answers<'_> {
             | FloatingSurfaceClientMessage::PickAnswered { .. } => {
                 refuse(&reply, &app, &name, NO_AGENT);
             }
-            // The message its box sent, and whom its box could send to: both reach the session's
-            // records and the one search, so they are carried out after this pass has every ask.
+            // The message its box sent reaches the session's records, so it is carried out after
+            // this pass has every ask.
             FloatingSurfaceClientMessage::SendTo { to, attached, text } => {
                 let arguments = serde_json::json!({
                     "to": to,
@@ -968,14 +936,6 @@ impl Answers<'_> {
             // window that sent.
             FloatingSurfaceClientMessage::OpenFloated { anchor, .. } => {
                 self.answer_open_after_send(&app, &anchor);
-            }
-            FloatingSurfaceClientMessage::SearchRecipients { request, query } => {
-                self.asked.push(Asked {
-                    app,
-                    reply,
-                    request,
-                    query,
-                });
             }
             // A window that runs a page engine offers its page as the thing the
             // workspace sees of it: what it draws is published on the live

@@ -511,7 +511,6 @@ impl App {
         }
         crate::shared_selection::set_send_host_available(false);
         let _ = crate::shared_selection::take_send_to();
-        let _ = crate::shared_selection::take_recipient_searches();
         while let Some(request) = self.root_widget.take_floating_surface_request() {
             let message =
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id };
@@ -761,16 +760,6 @@ impl App {
                     to,
                     attached,
                     text,
-                },
-            )?;
-            *changed = true;
-        }
-        // The recipients a box asked the one search for.
-        for (request, query) in crate::shared_selection::take_recipient_searches() {
-            client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::SearchRecipients {
-                    request,
-                    query,
                 },
             )?;
             *changed = true;
@@ -1208,9 +1197,6 @@ impl App {
                         .as_ref()
                         .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
                     crate::shared_selection::open_send_box(about, bounds, None, to);
-                }
-                FloatingSurfaceHostMessage::Recipients { request, rows } => {
-                    crate::shared_selection::answer_recipients(*request, rows.clone());
                 }
                 // What the shell says of windows shared live reaches the
                 // app's next sync, where it reads them

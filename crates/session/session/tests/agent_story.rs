@@ -107,10 +107,18 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         session.settle_services();
         session
             .read("session:send-to")
-            .and_then(|sent| sent.as_array()?.last().cloned())
+            .and_then(|read| read["sent"].as_array()?.last().cloned())
     });
     assert_eq!(sent["text"], "the plan for Friday", "{sent}");
     assert_eq!(sent["to"][0]["kind"], "person", "{sent}");
+    let listed = session
+        .read("session:send-to")
+        .and_then(|read| read["recipients"].as_array().cloned())
+        .unwrap_or_default();
+    assert!(
+        listed.iter().any(|row| row["kind"] == "feedback"),
+        "every box reads whom a message can go to from the same reading: {listed:?}"
+    );
     let carried = &sent["attached"][0];
     assert_eq!(
         carried["kind"], "resource",

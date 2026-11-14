@@ -457,7 +457,7 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
         session.settle_services();
         session
             .read("session:send-to")
-            .and_then(|sent| sent.as_array()?.last().cloned())
+            .and_then(|read| read["sent"].as_array()?.last().cloned())
     });
     assert_eq!(sent["text"], "nothing is called this", "{sent}");
     assert_eq!(

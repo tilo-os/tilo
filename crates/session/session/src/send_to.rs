@@ -1,6 +1,6 @@
 //! A message a window sends from its own context: the session makes the agents it names, carries
-//! the message to Chat as one action the person's own grants decide, and answers the search the box
-//! uses to find whom it goes to.
+//! the message to Chat as one action the person's own grants decide, and publishes whom a message
+//! can go to, which every box (an app's and the shell's) searches.
 //! The window says what the box held — the recipients, what the message carries
 //! ([`tilo_reference::Attached`]) and its words — and nothing of how that becomes a conversation:
 //! Chat's `send` opens the conversation, posts what it carries and shows where it landed. Making
@@ -11,7 +11,7 @@
 //! is filed there as the channel's report ([`crate::feedback`]), one action of the person's own,
 //! and nothing opens over the window it is about.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
@@ -19,7 +19,7 @@ use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop_search::Target;
 use tilo_desktop_search::model::InvokeTarget;
 use tilo_resource::Effect;
-use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_service::{Service, Started, decode, offer};
 use ui::floating_surface::{Recipient, RecipientKind};
 
 use crate::i18n::t;
@@ -81,11 +81,17 @@ struct Sent {
     refused: Option<String>,
 }
 
-/// The sends taken and carried out, shared by the service and the pass.
+/// The sends taken and carried out, and whom a message can go to, shared by the service and the
+/// pass.
 #[derive(Clone, Default)]
 pub(crate) struct Sends {
     waiting: Rc<RefCell<Vec<Sending>>>,
     sent: Rc<RefCell<Vec<Sent>>>,
+    recipients: Rc<RefCell<Vec<Recipient>>>,
+    /// The search's generation [`Self::recipients`] was read at.
+    read_at: Rc<Cell<Option<u64>>>,
+    /// Whether the reading moved since the service last said so.
+    moved: Rc<Cell<bool>>,
 }
 
 /// What [`RESOURCE`] publishes: the send.
@@ -152,7 +158,16 @@ impl Service for SendToService {
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        (resource == RESOURCE).then(|| reading(&*self.sends.sent.borrow()))
+        (resource == RESOURCE).then(|| {
+            serde_json::json!({
+                "recipients": *self.sends.recipients.borrow(),
+                "sent": *self.sends.sent.borrow(),
+            })
+        })
+    }
+
+    fn poll(&mut self) -> bool {
+        self.sends.moved.replace(false)
     }
 
     fn invoke(
@@ -192,8 +207,8 @@ pub(crate) const SEND: &str = "send";
 
 impl Shared {
     /// Carry out the sends taken since the last pass ([`SendToService`]): each item named by its
-    /// id is carried as the record it is, each recipient named only by name is found by the one
-    /// search, and the send goes as one action of the sender's own.
+    /// id is carried as the record it is, and the send goes as one action of the sender's own, for
+    /// Chat to find whom it names.
     pub(crate) fn deliver_sends(&self) {
         let waiting = std::mem::take(&mut *self.sends.waiting.borrow_mut());
         for sending in waiting {
@@ -211,11 +226,7 @@ impl Shared {
                 }
                 None => None,
             };
-            let to: Vec<Recipient> = sending
-                .to
-                .into_iter()
-                .map(|recipient| self.found_recipient(recipient))
-                .collect();
+            let to = sending.to;
             let refused = refused.or_else(|| {
                 self.send_to(
                     sending.by.as_ref(),
@@ -238,7 +249,20 @@ impl Shared {
             });
             let over = sent.len().saturating_sub(KEPT);
             sent.drain(..over);
+            self.sends.moved.set(true);
         }
+    }
+
+    /// Read whom a message can go to again when the search's index moved, for the next reading of
+    /// [`RESOURCE`].
+    pub(crate) fn follow_recipients(&self) {
+        let generation = self.search.recipients_generation();
+        if self.sends.read_at.get() == Some(generation) {
+            return;
+        }
+        self.sends.read_at.set(Some(generation));
+        *self.sends.recipients.borrow_mut() = self.recipients();
+        self.sends.moved.set(true);
     }
 
     /// The resource `item` names, as a message carries it: the record of the app that publishes
@@ -263,18 +287,6 @@ impl Shared {
             None,
             resource.label.clone(),
         ))
-    }
-
-    /// `recipient` as a send names it: one named only by its name is the first of its kind the
-    /// one search finds by that name, and one with an id or a new agent is itself.
-    fn found_recipient(&self, recipient: Recipient) -> Recipient {
-        if !recipient.id.is_empty() || recipient.kind == RecipientKind::NewAgent {
-            return recipient;
-        }
-        self.recipients(&recipient.name)
-            .into_iter()
-            .find(|found| found.kind == recipient.kind)
-            .unwrap_or(recipient)
     }
 
     /// Send what a window's box holds: an agent named as a new one is made in
@@ -401,17 +413,14 @@ impl Shared {
     /// The people in the workspace here, as the chips of a box that says something to them: the
     /// one search's own reading of who is about, never a second list.
     pub(crate) fn people_recipients(&self) -> Vec<Recipient> {
-        people_of(self.recipients(""))
+        people_of(self.recipients())
     }
 
-    /// The agents, people and conversations `query` names, as a window's box lists them: found by
-    /// the one search every part of the desk shares, with reporting a problem among them.
-    pub(crate) fn recipients(&self, query: &str) -> Vec<Recipient> {
-        let mut found = self.search.recipients(query);
-        let report = self.feedback_row();
-        if wanted(query, &report) {
-            found.push(report);
-        }
+    /// The agents, people and conversations a message can go to, the most recent first, with
+    /// reporting a problem last.
+    pub(crate) fn recipients(&self) -> Vec<Recipient> {
+        let mut found = self.search.recipients();
+        found.push(self.feedback_row());
         found
     }
 }
@@ -427,13 +436,6 @@ fn people_of(rows: Vec<Recipient>) -> Vec<Recipient> {
         .filter(|recipient| recipient.kind == RecipientKind::Person)
         .take(MAX_PEOPLE_CHIPS)
         .collect()
-}
-
-/// Whether `row` belongs in the list a box's `query` answered: a report is what the person asks for
-/// by name, so it stands at the end of an empty list and is found by what it is called.
-fn wanted(query: &str, row: &Recipient) -> bool {
-    let query = query.trim().to_lowercase();
-    query.is_empty() || row.name.to_lowercase().contains(&query)
 }
 
 /// The most characters a new agent's name takes from what it is sent.
@@ -589,17 +591,25 @@ mod tests {
         );
     }
 
-    /// Reporting a problem is a row of every box's list: at the end of an empty one, and found by
-    /// what it is called.
+    /// Reporting a problem is a row of every box's list, found by what it is called.
     #[test]
-    fn the_report_row_is_offered_and_found_by_name() {
+    fn the_report_row_is_found_by_name() {
         let report = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
-        assert!(wanted("", &report), "every empty list ends with it");
-        assert!(wanted("  ", &report));
-        assert!(wanted("feed", &report), "found by what it is called");
-        assert!(wanted("TILO", &report), "whatever the case typed");
+        let found = |query: &str| {
+            ui::floating_surface::recipients_matching(std::slice::from_ref(&report), query)
+        };
+        assert_eq!(
+            found("feed"),
+            std::slice::from_ref(&report),
+            "found by what it is called"
+        );
+        assert_eq!(
+            found("TILO"),
+            std::slice::from_ref(&report),
+            "whatever the case typed"
+        );
         assert!(
-            !wanted("ada", &report),
+            found("ada").is_empty(),
             "and absent from a search for someone"
         );
     }
