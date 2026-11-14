@@ -47,9 +47,9 @@ fn workspace_with(tree: &Layout, strip: StripId) -> Option<&Workspace> {
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
 }
 
-/// A window the person floated or put back in its strip on this shell. The host makes it an
-/// arranging action of the workspace's layout ([`super::DesktopHandle::take_asked_floats`]); until
-/// then the shell shows the window as asked.
+/// A window the shell floated or put back in its strip: the person asked for it, or the window
+/// opened as a card. The host makes it an arranging action of the workspace's layout
+/// ([`super::DesktopHandle::take_asked_floats`]); until then the shell shows the window as asked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AskedFloat {
     /// The window in front of the group, which the action names.
@@ -66,11 +66,11 @@ impl super::DesktopHandle {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 impl super::DesktopHandle {
-    /// Make the floats asked for as a host's arranging action makes them: the workspace's
-    /// arrangement holds each window where it was asked to float.
-    pub(crate) fn arrange_asked_floats(&self) {
+    /// Make the floats the shell asked for as the session's arrangement makes them: the workspace's
+    /// record holds each window where it was asked to float.
+    pub fn arrange_asked_floats(&self) {
         let asked = self.take_asked_floats();
         let mut shared = self.shared.borrow_mut();
         for asked in asked {

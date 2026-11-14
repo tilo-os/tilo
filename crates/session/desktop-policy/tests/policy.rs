@@ -659,6 +659,9 @@ fn a_conversation_opens_beside_its_sender() {
         "the desk takes the place beside the sender"
     );
     settle(&mut driver);
+    // The desk asks for the float; the session's arrangement makes the ask.
+    policy.handle().arrange_asked_floats();
+    settle(&mut driver);
 
     let tab = tabs(&policy)
         .into_iter()
