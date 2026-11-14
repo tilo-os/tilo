@@ -72,9 +72,9 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@25"
-tilo-fs = "optional@25"
-shell-ui = "optional@31"
+collab = "optional@27"
+tilo-fs = "optional@27"
+shell-ui = "optional@32"
 
 [entrypoint]
 bin             = "bin/code-editor"

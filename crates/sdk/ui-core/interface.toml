@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 31
+version = 32
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -766,6 +766,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WindowToolbar.sidebar_unavailable" = "bool optional"
 "WindowToolbar.views" = "Option<ToolbarViews> optional"
 "WorkGroup" = "struct"
+"WorkGroup.declared_id" = "Option<String> optional"
 "WorkGroup.id" = "String"
 "WorkGroup.kind" = "String"
 "WorkGroup.label" = "String"
