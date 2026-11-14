@@ -82,16 +82,22 @@ view clock() {
 /// `place_part`. A compact bar keeps the clock, the workspace, the connection, the charge, the
 /// notifications and the person's own face; who is here and the sound give way there, and a
 /// question put to the person always keeps its seat.
+///
+/// On the canvas the canvas is the whole screen (`canvas.md` §7): the bar keeps only what a
+/// person needs on any screen — the time, the notices and the person — and a question put to
+/// the person. The desk style and the workspaces are in the person's own menu and in Settings,
+/// not in a control that is always there (`canvas_keeps`).
 view bar() {
     let s = shell
     let roomy = space.width_class == .expanded or space.width_class == .wide
-    let nobody = device.overlays.ask == "" and space.compact
+    let nobody = device.overlays.ask == "" and (space.compact or frames_style())
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
             if part.shown
                 and (space.wide or not part_gives_way(part, roomy))
-                and not (part.slot == .people and nobody) {
+                and not (part.slot == .people and nobody)
+                and (not frames_style() or canvas_keeps(part)) {
                 ui.DragItem(
                     part,
                     title: part_name(part.slot),
@@ -106,6 +112,13 @@ view bar() {
             }
         }
     }
+}
+
+/// Whether the canvas's bar keeps a part (`canvas.md` §7, "The canvas is the whole screen"): the
+/// time, the status cluster (which on the canvas is the notices and the person, `bar_part`), a
+/// question put to the person, and the space that spreads them.
+fn canvas_keeps(part: BarPart) -> Bool {
+    part.slot == .clock or part.slot == .status or part.slot == .people or part.slot == .space
 }
 
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
@@ -169,7 +182,7 @@ view bar_part(part: BarPart) {
         }
     } else if part.slot == .people {
         row(gap: .related, align: .center) {
-            if not space.compact {
+            if not space.compact and not frames_style() {
                 people_button()
             }
             if device.overlays.ask != "" {
@@ -182,6 +195,13 @@ view bar_part(part: BarPart) {
     } else if part.slot == .agent {
         for a in device.agents.seated {
             agent_chip(a)
+        }
+    } else if part.slot == .status and frames_style() {
+        // The canvas's bar: the notices and the person, whose menu holds the desk style and the
+        // workspaces the canvas does not keep on its bar.
+        row(gap: .related, align: .center) {
+            bell()
+            person_menu()
         }
     } else if part.slot == .status {
         // One cluster, so its controls stand a cluster gap apart and never the tightest: a bar
@@ -237,6 +257,44 @@ view workspace_menu() {
             on choose: session.workspace_settings()
         }
         ui.MenuItem("Overview", icon: .layout_grid) {
+            on choose: session.overview()
+        }
+    }
+}
+
+/// The person's own menu, as their face on the bar: the desk styles to show the desk as, the
+/// chosen style's settings, and the workspaces to switch between, folded under one row. Where
+/// the bar keeps no style switch and no workspace menu of its own (the canvas), this is where a
+/// person finds them; Settings has the same.
+view person_menu() {
+    let v = viewing
+    let me = if arrangement.person != "" { arrangement.person } else { "You" }
+    ui.MenuButton("{me}: desk style and workspaces", faces: [me], role: .bar) {
+        for style in device.styles.offered {
+            if style_listed(style) {
+                ui.MenuItem(style_label(style), checked: v.style == style.style) {
+                    on choose: show_style(v, style.style)
+                }
+            }
+        }
+        ui.MenuItem("Settings for {style_title(v)}", icon: .settings) {
+            on choose: open_style_settings(shell)
+        }
+        for w in arrangement.workspaces {
+            ui.MenuItem(w.name, checked: w.current, group: "Workspaces") {
+                on choose: session.switch_workspace(workspace: w.key)
+            }
+        }
+        ui.MenuItem("New workspace", icon: .plus, group: "Workspaces") {
+            on choose: session.new_workspace()
+        }
+        ui.MenuItem("Join a workspace", icon: .users, group: "Workspaces") {
+            on choose: session.join_workspace()
+        }
+        ui.MenuItem("Workspace settings", icon: .settings, group: "Workspaces") {
+            on choose: session.workspace_settings()
+        }
+        ui.MenuItem("Overview", icon: .layout_grid, group: "Workspaces") {
             on choose: session.overview()
         }
     }

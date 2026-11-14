@@ -63,6 +63,8 @@ const FORWARDED: &[&str] = &[
     // How much an app (and the connector the system runs for one) logs, as the session's own
     // log says: a development session's log is all a connector without a window has.
     "RUST_LOG",
+    // Where an app's panic was, when the session's log asks for it: the launcher hands it on.
+    "RUST_BACKTRACE",
     // The launcher's debug-only switch that keeps an app's own output in its data home
     // (`launcher-debug-output.log`) instead of dropping it: what an app that ends with no window
     // and no word otherwise leaves nowhere. Absent unless a developer's session sets it.

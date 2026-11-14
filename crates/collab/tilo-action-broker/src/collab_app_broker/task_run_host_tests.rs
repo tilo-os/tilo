@@ -18,6 +18,8 @@ const DESKTOP_PROVIDER: &str = "test-desktop";
 #[derive(Default)]
 struct Desktop {
     started: Mutex<Vec<String>>,
+    /// The turn each step was handed as its actor's, in order.
+    turns: Mutex<Vec<Option<tilo_action_policy::turn::Turn>>>,
     /// Whether its steps are a task agent's steps of its run.
     for_tasks: bool,
     /// Whether its steps are a turn's (the session's own, as a session's shell publishes them).
@@ -39,6 +41,7 @@ impl crate::services::HostStepServices for Desktop {
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
+            did: None,
             semantic_identity: None,
             address: ActionAddress::new("desktop", "list-windows"),
             resource_kind: "desktop".into(),
@@ -64,6 +67,10 @@ impl crate::services::HostStepServices for Desktop {
             .lock()
             .unwrap()
             .push(request.actor.id().to_owned());
+        self.turns
+            .lock()
+            .unwrap()
+            .push(request.actor.turn().cloned());
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))

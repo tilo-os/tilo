@@ -67,6 +67,7 @@ fn fixture_granting(
             record_id: "record-a".into(),
         },
         actions: vec![PublishedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "test:block-a".into(),
@@ -1063,6 +1064,7 @@ fn continuation_fixture() -> (
         AppBrokerState::test_broker_with_authority(membership.authority(), membership.services());
     let state = Arc::clone(broker.state());
     let action = |action: &str, kind: tilo_actions::OperationKind| PublishedAction {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: "test:block-a".into(),

@@ -474,10 +474,19 @@ pub struct TextInput {
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
+    /// A caret standing on a surface ([`Self::as_caret`]): no well and no fill, and only as
+    /// wide as what it holds — the words typed, or its prompt while it holds none.
+    caret: bool,
+    /// What a caret field was last measured holding: an edit that changes it lays the field out
+    /// again, so its width follows the words.
+    caret_measured: Option<String>,
     on_submit: Option<TextChangeCallback>,
     /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
     /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
     selection_event: Option<crate::component::Event>,
+    /// Escape let go of what was being typed ([`Self::set_cancel_event`]): the field clears, and
+    /// what holds it is told, so a caret on a canvas goes away with it.
+    cancel_event: crate::component::Event,
     submit_action: Option<ActionEmitter<String>>,
     submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
     /// The words a submit published and its own handler has not answered yet: an entry clears
@@ -786,8 +795,11 @@ impl TextInput {
             own_width: crate::tokens::Metrics::BASE.field_min_width,
             prompt_fit: None,
             document_inset: false,
+            caret: false,
+            caret_measured: None,
             on_submit: None,
             selection_event: None,
+            cancel_event: crate::component::Event::None,
             submit_action: None,
             submit_view: None,
             submitted: None,
@@ -3662,108 +3674,6 @@ impl TextInput {
         self
     }
 
-    /// Run `callback` with the text when the person presses Enter: the
-    /// field's commit for a tree-owned field nobody polls. Enter submits
-    /// (Shift+Enter still breaks a wrapping field's line).
-    #[must_use]
-    pub fn on_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        self.set_on_submit(Some(Box::new(callback)));
-        self
-    }
-
-    /// Run `callback` on a submitting Enter (Shift+Enter still breaks a wrapping field's
-    /// line), or, given none, let Enter break the line again.
-    pub fn set_on_submit(&mut self, callback: Option<Box<dyn FnMut(&str)>>) {
-        self.repaint = true;
-        self.enter_submits = callback.is_some();
-        self.on_submit = callback;
-    }
-
-    #[must_use]
-    /// Enter submits the field's action. A press whose submission the host has not collected yet is
-    /// replaced by the next: two Enters delivered before the next frame submit once, so a repeated
-    /// press cannot advance a wizard twice.
-    pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.enter_submits = true;
-        self.submit_action = Some(ActionEmitter::new_replace_one(binding));
-        self
-    }
-
-    /// Report the selection each time it settles — a drag let go, a double or triple click, a
-    /// touch release, a select all — as `<start>:<end>` byte offsets into the text, or nothing
-    /// when the selection collapsed. A read-only field reports it so what reads it can act on
-    /// the run someone chose (a message answered on just those words); a field being typed in
-    /// keeps its selection private unless it is given one too.
-    #[must_use]
-    pub fn with_selection_event(mut self, event: crate::component::Event) -> Self {
-        self.selection_event = Some(event);
-        self
-    }
-
-    pub fn set_selection_event(&mut self, event: crate::component::Event) {
-        self.selection_event = Some(event);
-    }
-
-    fn report_selection(&self) {
-        let Some(event) = self.selection_event.clone() else {
-            return;
-        };
-        let value = self
-            .selection_range_public()
-            .map(|(start, end)| {
-                let (start, end) = (start.min(end), start.max(end));
-                crate::component::Value::Text(format!("{start}:{end}"))
-            })
-            .unwrap_or_else(|| crate::component::Value::Text(String::new()));
-        event.fire(Some(value));
-    }
-
-    #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "the generated payload is serializable and the action is the resource's own"
-    )]
-    pub fn on_submit_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        use crate::tilo_actions::{ActionBinding, ActionSpec, OperationKind, ResourceSpec};
-        let id = self.test_id().unwrap_or("text_input").to_owned();
-        let spec = ActionSpec::operation(
-            "submit",
-            "Submit",
-            OperationKind::View,
-            SUBMIT_TEXT,
-            &serde_json::json!({ "control": id }),
-        )
-        .expect("the submit payload is serializable")
-        .for_audience(crate::tilo_actions::Audience::Agents);
-        let resource = ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Submit")
-            .with_action(spec);
-        let binding = ActionBinding::unit_for(&resource, "submit")
-            .expect("the submit action is the resource's own and takes no arguments");
-        self.enter_submits = true;
-        self.on_submit = Some(Box::new(callback));
-        self.submit_view = Some((ActionEmitter::new_replace_one(binding), resource));
-        self
-    }
-
-    #[must_use]
-    pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        self.set_on_change_view(callback);
-        self
-    }
-
-    pub fn set_on_change_view(&mut self, callback: impl FnMut(&str) + 'static) {
-        let id = self.test_id().unwrap_or("text_input").to_owned();
-        self.change_verb = Some(super::control_verb::ControlVerb::new(
-            &id,
-            "Change",
-            "change",
-            CHANGE_TEXT,
-            super::control_verb::VerbArgument::Text,
-        ));
-        self.on_change = Some(Box::new(callback));
-        self.last_notified_text.clone_from(&self.text);
-    }
-
     #[must_use]
     pub fn with_clear_button(self) -> Self {
         self.with_trailing_accessory(crate::icons::Icon::X, "Clear", AccessoryAction::Clear)
@@ -5083,7 +4993,12 @@ impl Widget for TextInput {
         };
         let style = Style {
             size: Size {
-                width: Dimension::percent(1.0),
+                // A caret is as wide as what it holds (`measure`); a field takes its row.
+                width: if self.caret {
+                    Dimension::auto()
+                } else {
+                    Dimension::percent(1.0)
+                },
                 height,
             },
             min_size: Size {
@@ -5142,6 +5057,9 @@ impl Widget for TextInput {
                 );
             }
             self.layout_dirty = false;
+            if self.caret {
+                return self.measure_caret(text_renderer, known.width, available.width);
+            }
             // Its height is the band `build_layout` set. Its width is the width
             // it is given; where nothing gives it a width (a row that wraps, a run
             // that hugs its items) it stands at its own width, never at 0.
@@ -5643,7 +5561,9 @@ impl Widget for TextInput {
     /// them, so an edit is measured in one frame however long its owner
     /// waits to publish it, and idle inputs are never re-measured.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.layout_dirty
+        self.rect == Rect::ZERO
+            || self.layout_dirty
+            || (self.caret && self.caret_measured.as_deref() != Some(self.caret_shown()))
     }
 
     /// Where the field's text stands in it, so an audit of a window holds it to the band a
@@ -6357,7 +6277,9 @@ mod preparation_tests;
 #[path = "text_input_touch_tests.rs"]
 mod touch_tests;
 
+mod caret;
 mod component;
+mod events;
 pub use component::TextInputProps;
 mod completion;
 

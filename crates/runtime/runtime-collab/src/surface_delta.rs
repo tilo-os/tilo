@@ -495,6 +495,7 @@ mod tests {
 
     fn shape(action: &str, label: &str) -> ExportedAction {
         ExportedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             resource: String::new(),
             semantic_identity: None,

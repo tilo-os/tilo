@@ -29,12 +29,11 @@ use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_service::Service as _;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use crate::common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
+use crate::common::{CANVAS, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
 /// Click the shell's control `name` through the test-control socket, as the person does: the
 /// socket takes the click, and what it presses is what stands there.
@@ -143,7 +142,7 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
     click(&mut session, &socket, "Frames");
     assert!(
         reached(&mut session, |session| session
-            .shell_control(CANVAS_ENTRY)
+            .shell_control(CANVAS)
             .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0)),
         "the canvas: {:?}",
         session.accessible_labels()
@@ -168,7 +167,7 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
         }
     }
     let apps = crate::common::seeded_apps();
-    let resources = apps.resources();
+    let resources = crate::common::published(&apps);
     let mut kinds = std::collections::BTreeSet::new();
     walk(&resources, &mut kinds);
     for kind in [
@@ -414,10 +413,10 @@ fn written(shot: &image::RgbaImage, rect: (f64, f64, f64, f64)) -> usize {
     light
 }
 
-/// Text typed through the socket into the canvas's entry reaches it: a click on the entry puts
-/// the caret there, and what is typed stands in the field as the person's own typing does.
+/// Text typed through the socket at the canvas's caret reaches it: a click on the canvas's free
+/// ground puts the caret there, and what is typed stands at it as the person's own typing does.
 #[test]
-fn text_typed_through_the_socket_reaches_the_canvas_entry() {
+fn text_typed_through_the_socket_reaches_the_canvas_caret() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
@@ -440,15 +439,15 @@ fn text_typed_through_the_socket_reaches_the_canvas_entry() {
     click(&mut session, &socket, "Frames");
     assert!(
         reached(&mut session, |session| session
-            .shell_control(CANVAS_ENTRY)
+            .shell_control(CANVAS)
             .is_some()),
         "the canvas: {:?}",
         session.accessible_labels()
     );
 
-    // The press a person's pointer makes on the field, waited out as a hand's is (the frame it
-    // lands on is the one that shows it), then text as the socket writes it.
-    let (x, y, w, h) = session.shell_control(CANVAS_ENTRY).expect("the entry");
+    // The press a person's pointer makes on the canvas's free ground, waited out as a hand's is
+    // (the frame it lands on is the one that shows it), then text as the socket writes it.
+    let (x, y, w, h) = session.shell_control(CANVAS).expect("the canvas");
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     assert_eq!(
         ask(
@@ -457,11 +456,11 @@ fn text_typed_through_the_socket_reaches_the_canvas_entry() {
             &json!({"op": "click_at", "x": cx, "y": cy})
         ),
         json!({"ok": {}}),
-        "the click on the entry is taken"
+        "the click on the canvas is taken"
     );
     assert!(
         session.compositor().host_takes_keys(),
-        "the press put the caret in the entry: {:?}",
+        "the press put the caret on the canvas: {:?}",
         session.accessible_labels()
     );
     let typed = ask(
@@ -472,9 +471,68 @@ fn text_typed_through_the_socket_reaches_the_canvas_entry() {
     assert_eq!(typed, json!({"ok": {}}), "the text is typed");
     assert!(
         reached(&mut session, |session| session.shell_says("groceries")),
-        "the entry shows what was typed: {:?}; the shell refused {:?}",
+        "the caret shows what was typed: {:?}; the shell refused {:?}",
         session.accessible_labels(),
         session.shell_refusals()
+    );
+}
+
+/// A sentence typed through the socket at the canvas's caret stands there in the order it was
+/// typed: every key of one `type` reaches the caret after the one before it, a letter that recurs
+/// ("summarise") included.
+#[test]
+fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        test_control: Some(socket.clone()),
+        ..Options::default()
+    });
+    let menu = preset_menu(&mut session);
+    click(&mut session, &socket, &menu);
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control("Frames")
+            .is_some()),
+        "the preset menu offers Frames: {:?}",
+        session.accessible_labels()
+    );
+    click(&mut session, &socket, "Frames");
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control(CANVAS)
+            .is_some()),
+        "the canvas: {:?}",
+        session.accessible_labels()
+    );
+    let (x, y, w, h) = session.shell_control(CANVAS).expect("the canvas");
+    assert_eq!(
+        ask(
+            &mut session,
+            &socket,
+            &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0})
+        ),
+        json!({"ok": {}}),
+        "the click on the canvas is taken"
+    );
+    let sentence = "summarise what changed in my notes this week";
+    let typed = ask(
+        &mut session,
+        &socket,
+        &json!({"op": "type", "text": sentence}),
+    );
+    assert_eq!(typed, json!({"ok": {}}), "the text is typed");
+    assert!(
+        reached(&mut session, |session| session.shell_says(sentence)),
+        "the caret shows the sentence as typed; of its words it shows {:?}",
+        ["summarise", "summaries", "summari", "what", "week"]
+            .into_iter()
+            .filter(|word| session.shell_says(word))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -486,8 +544,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let apps = crate::common::seeded_apps();
-    let note = apps
-        .resources()
+    let note = crate::common::published(&apps)
         .iter()
         .flat_map(|resource| resource.children.clone())
         .find(|resource| resource.label == "Groceries")
@@ -499,7 +556,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         test_control: Some(socket.clone()),
         ..Options::default()
     });
@@ -510,7 +567,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         .is_some()));
     click(&mut session, &socket, "Frames");
     assert!(reached(&mut session, |session| session
-        .shell_control(CANVAS_ENTRY)
+        .shell_control(CANVAS)
         .is_some()));
 
     let (workspace, row) = {

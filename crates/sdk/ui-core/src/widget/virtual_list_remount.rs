@@ -188,6 +188,12 @@ impl<M: ListModel + 'static> VirtualList<M> {
             self.layout_offset = self.viewport.offset();
         }
         self.place_rows(remount.taffy());
+        // The node saying how tall the rows come to stays the list's, as tall as they are now.
+        if let Some(natural) = self.natural {
+            let style = self.natural_style();
+            let _ = remount.taffy().set_style(natural, style);
+            children.push(natural);
+        }
         if remount.set_children(node, &children).is_err() {
             return false;
         }

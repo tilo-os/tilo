@@ -20,7 +20,6 @@
 )]
 
 use tilo_app_launch::SessionEnvironment;
-use tilo_service::Service as _;
 use tilo_session::apps::Apps;
 
 /// Every app of the development session is a package the session's store holds, built from
@@ -195,7 +194,7 @@ fn the_installed_apps_scenarios_fill_the_sessions_records() {
 
     let apps = crate::common::seeded_apps_in(&store);
     let mut kinds = std::collections::BTreeSet::new();
-    kinds_of(&apps.resources(), &mut kinds);
+    kinds_of(&crate::common::published(&apps), &mut kinds);
     for kind in [
         "tl.so.tilo.lang.tube.Channel",
         "tl.so.tilo.lang.tube.Video",

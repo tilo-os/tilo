@@ -146,6 +146,7 @@ impl WorkspaceGovernanceServices for MediaImport {
             return Vec::new();
         }
         vec![ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             address: ActionAddress::new(RESOURCE, ACTION),
             semantic_identity: None,

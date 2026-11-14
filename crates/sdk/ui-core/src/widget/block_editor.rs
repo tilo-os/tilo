@@ -7939,6 +7939,25 @@ impl Widget for BlockStackLeaf {
         })
     }
 
+    /// The blocks are stacked at the width this tree solved the stack at, measured, before the
+    /// editor places them there. The stack is the editor's alone while the host measures it in
+    /// more than one tree (a region measures in a copy first) and at more than one width (a
+    /// min-content contribution, a measure on the way to a size): the editor's apply, which has
+    /// no text renderer, would otherwise lay the blocks out at heights measured for another
+    /// width, and a list a paragraph long would stand where nothing is drawn.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text_renderer: &mut TextRenderer,
+    ) -> bool {
+        let width = taffy.unrounded_layout(node).size.width;
+        if let Some(editor) = self.editor_mut() {
+            editor.stack_at(width, text_renderer);
+        }
+        false
+    }
+
     /// The host marks each node it must re-measure; the editor's own node has
     /// children, so its dirtiness alone would leave this leaf's cached size.
     fn layout_needs_measure(&self) -> bool {
@@ -8240,51 +8259,6 @@ impl BlockEditor {
             self.prepare_blocks(&theme);
             self.stack.width = None;
         }
-    }
-
-    /// Measure the block stack. A query without a definite width asks for an
-    /// intrinsic size: answer it from the last stack rather than reshaping
-    /// every paragraph at a width it will never be painted at.
-    fn measure_stack(
-        &mut self,
-        known: Size<Option<f32>>,
-        available: Size<taffy::AvailableSpace>,
-        text_renderer: &mut TextRenderer,
-    ) -> Size<f32> {
-        self.settle_restack();
-        let definite = known.width.or(match available.width {
-            taffy::AvailableSpace::Definite(width) => Some(width),
-            _ => None,
-        });
-        let width = match (definite, self.stack.width) {
-            (Some(width), _) if width > 0.0 => width,
-            (Some(width), _) => return self.probe_stack(width, text_renderer),
-            (None, Some(_)) if self.stack.tops.len() == self.blocks.len() => {
-                return Size {
-                    width: if self.stack.measured { 400.0 } else { 0.0 },
-                    height: self.stack.total,
-                };
-            }
-            (None, _) => 400.0,
-        };
-        self.stack_blocks(width, Some(text_renderer));
-        Size {
-            width: if self.stack.measured { width } else { 0.0 },
-            height: self.stack.total,
-        }
-    }
-
-    /// The size the blocks take at `width`, measured and then dropped, so a
-    /// query that reaches no layout of its own leaves the recorded stack be.
-    fn probe_stack(&mut self, width: f32, text_renderer: &mut TextRenderer) -> Size<f32> {
-        let recorded = std::mem::take(&mut self.stack);
-        self.stack_blocks(width, Some(text_renderer));
-        let size = Size {
-            width: if self.stack.measured { width } else { 0.0 },
-            height: self.stack.total,
-        };
-        self.stack = recorded;
-        size
     }
 
     /// Stack every block at `width`, as a flex column would: each block's top is the running total
@@ -11549,6 +11523,9 @@ pub use present::{BlockContent, EditScope, PresenceKeyFn};
 #[path = "block_editor_cards.rs"]
 mod cards;
 use cards::{Card, draw_embed_card, transclusion_target};
+
+#[path = "block_editor_stack_measure.rs"]
+mod stack_measure;
 
 #[path = "block_editor_picture_markdown.rs"]
 mod picture_markdown;

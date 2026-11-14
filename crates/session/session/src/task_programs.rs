@@ -72,6 +72,7 @@ const PARAMS: &[ActionParam] = &[PROGRAM, CONFIRM, THIS, RUN, RUN_LABEL];
 fn descriptor() -> tilo_actions::ActionDescriptor {
     use tilo_desktop_surface::i18n::t;
     tilo_actions::ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(wire::RESOURCE, wire::RUN),

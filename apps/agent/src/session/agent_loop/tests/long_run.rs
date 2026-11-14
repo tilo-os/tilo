@@ -28,6 +28,9 @@ impl TurnTransport for Reading {
             bodies.len() - 1
         };
         let calls = (self.decide)(turn, &request.body);
+        // Counted as a provider counts English and JSON: about four
+        // characters a token, fewer tokens than compaction's estimate.
+        let input_tokens = u64::try_from(request.body.to_string().len() / 4).unwrap();
         let response = ModelResponse {
             message: Message {
                 role: Role::Assistant,
@@ -47,9 +50,9 @@ impl TurnTransport for Reading {
             },
             stop_reason: StopReason::ToolCalls,
             usage: Usage {
-                input_tokens: 10,
+                input_tokens,
                 output_tokens: 10,
-                total_tokens: 20,
+                total_tokens: input_tokens + 10,
                 ..Usage::default()
             },
             cost_micros: 0,
@@ -271,4 +274,45 @@ fn a_model_without_tool_calling_is_refused_by_name() {
         runtime_collab::TaskRunUpdate::Failed { message }
             if message.contains("tiny-chat from Scripted cannot call tools")
     ));
+}
+
+/// A short run on a model whose context and output limit nobody declared
+/// (a provider record that names only the model) keeps every result it read
+/// in front of the model: nothing is put aside and no turn is folded. The
+/// agent's own instructions alone are most of what an unknown context is
+/// assumed to hold, so measuring by the estimate alone, and leaving the
+/// default request ceiling as the answer's room, folded a turn on every
+/// turn, and the model read again what it had just been shown.
+#[test]
+fn a_short_run_on_an_undeclared_model_keeps_its_results_in_front_of_it() {
+    const TURNS: usize = 8;
+    let (mut f, reading) = reading_fixture(
+        "Go through today's applications",
+        World {
+            letters: 20,
+            ..World::default()
+        },
+        agent_provider_config::ModelDescriptor::new("undeclared"),
+        Box::new(|turn, _| {
+            if turn + 1 == TURNS {
+                vec![finish("Read them.", true)]
+            } else {
+                vec![invoke(
+                    "read-letter",
+                    &serde_json::json!({"letter": turn + 1}),
+                )]
+            }
+        }),
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = reading.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), TURNS);
+    for (turn, body) in bodies.iter().enumerate() {
+        assert!(
+            folded_handle(body).is_none() && put_aside(body).is_empty(),
+            "turn {turn} was sent its run compacted"
+        );
+    }
+    // Past what the estimate alone allowed an unknown context to hold.
+    assert!(Context::tokens_of(bodies.last().unwrap()) > 12_000);
 }

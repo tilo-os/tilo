@@ -1927,7 +1927,7 @@ fn session_with_agents() -> Session {
         person: crate::common::PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(crate::common::seeded_apps())],
+        services: crate::common::seeded_apps(),
         ..Options::default()
     });
     for _ in 0..3 {

@@ -276,6 +276,10 @@ pub(crate) struct Conversations {
     wake: ui::WakeScope,
     /// Each workspace's records, opened here and followed change by change.
     open: RefCell<BTreeMap<String, Opened>>,
+    /// The turns asked from the canvas that stood, by the message that asked, with the
+    /// conversation it is in and what it said: the turns, and their conversations, this session
+    /// publishes for their places to draw ([`TurnSummonses`]).
+    asked: RefCell<BTreeMap<String, (String, String)>>,
 }
 
 /// A workspace's records as they are open here, and what was read of them.
@@ -306,6 +310,7 @@ impl Conversations {
             records,
             wake: scope,
             open: RefCell::default(),
+            asked: RefCell::default(),
         }
     }
 
@@ -576,6 +581,200 @@ impl Conversations {
         let part = opened.part.as_ref().map(|(_, part)| part.clone())?;
         Some((chat, part))
     }
+
+    /// The turn the message `question` opened — the one Chat said it posted for an ask the person
+    /// sent from the canvas — once Chat's record of it is here (canvas.md §3): its conversation,
+    /// and the turn as this session publishes it from then on ([`TurnSummonses`]), read from
+    /// Chat's record as Chat posted it. `None` while the record does not hold the message yet.
+    pub(crate) fn asked_turn(
+        &self,
+        question: &str,
+    ) -> Option<(
+        tilo_session_core::arrangement::Asked,
+        Vec<tilo_actions::ResourceSpec>,
+    )> {
+        let (channel, text) = {
+            let open = self.open.borrow();
+            open.values().find_map(|opened| {
+                let (_, part) = opened.part.as_ref()?;
+                let part = part.get();
+                part.messages
+                    .iter()
+                    .find(|(id, _)| id.as_str() == question)
+                    .map(|(_, held)| (held.channel.as_str().to_owned(), held.text.clone()))
+            })?
+        };
+        self.asked
+            .borrow_mut()
+            .insert(question.to_owned(), (channel.clone(), text.clone()));
+        Some((
+            tilo_session_core::arrangement::Asked {
+                conversation: format!("{}/channels/{channel}", chat::Chat::KIND),
+                message: question.to_owned(),
+                turn: turn_address(question),
+                opened_as: format!("{CHANNELS}{channel}"),
+            },
+            vec![
+                turn_resource(question, &text),
+                conversation_resource(&channel, self.conversation_name(&channel)),
+            ],
+        ))
+    }
+
+    /// The turn the message `question` opened, as its place draws it (canvas.md §3): the message
+    /// and what the agent answered, read from Chat's record of the conversation holding it, as
+    /// Chat's own page reads it. `None` where no open workspace holds the message.
+    #[must_use]
+    pub fn turn_reading(&self, question: &str) -> Option<chat::views::Turn> {
+        let channel = self.asked.borrow().get(question)?.0.clone();
+        let page = self.channel_reading(&channel)?;
+        chat::views::Turn::of(&page, question)
+    }
+
+    /// What the conversation `channel` is called, as Chat's window names it: the agent's name for
+    /// a conversation with an agent.
+    fn conversation_name(&self, channel: &str) -> String {
+        let open = self.open.borrow();
+        open.values()
+            .find_map(|opened| {
+                let chat = opened.chat.as_ref()?.get();
+                let person = opened.records.author().key();
+                Some(chat.display_names(
+                    &Id::from_raw(channel),
+                    Some(&person),
+                    &Self::agent_names(opened),
+                ))
+            })
+            .unwrap_or_default()
+    }
+
+    /// The conversation `channel` (its id, a direct conversation's included) as Chat's own page
+    /// draws it, read from Chat's record of the workspace this session holds open that has its
+    /// messages: Chat's projection of its own record, the rows its window shows. `None` where no
+    /// open workspace holds a message of it.
+    #[must_use]
+    pub fn channel_reading(&self, channel: &str) -> Option<chat::views::Channel> {
+        let open = self.open.borrow();
+        for opened in open.values() {
+            let (Some(chat_record), Some((index, part))) = (&opened.chat, &opened.part) else {
+                continue;
+            };
+            let held = chat::parts::ChatPart::clone(part.get().as_ref());
+            if !held
+                .messages
+                .iter()
+                .any(|(_, message)| message.channel.as_str() == channel)
+            {
+                continue;
+            }
+            let chat = chat_record.get();
+            let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
+            let rows = chat.message_rows(&messages, channel);
+            let me = opened.records.author().key();
+            let names = chat::views::Names {
+                me: crate::platform::person::desk_person_name(
+                    ui::local_identity::load().map(|identity| identity.display_name),
+                    &me,
+                ),
+                agents: Self::agent_names(opened),
+            };
+            return Some(chat::views::Channel::read(
+                &chat, &rows, channel, &me, &names,
+            ));
+        }
+        None
+    }
+
+    /// The revision of every open workspace's chat and messages: what a turn's reading is read
+    /// at, so a reply landing reads it again.
+    fn revisions(&self) -> Vec<(u64, u64, u64)> {
+        let open = self.open.borrow();
+        open.values()
+            .filter_map(|opened| {
+                let chat = opened.chat.as_ref()?;
+                let (index, part) = opened.part.as_ref()?;
+                Some((chat.revision(), part.revision(), *index))
+            })
+            .collect()
+    }
+}
+
+/// Where a turn is published: its stable address `chat.workspace.turns:<message>`, by the
+/// message that asked.
+const TURNS: &str = "chat.workspace.turns:";
+
+/// The turn the message `question` opened, by its address.
+fn turn_address(question: &str) -> String {
+    format!("{TURNS}{question}")
+}
+
+/// What a turn offers on its place's handle: the whole conversation it was asked in, opened
+/// beside it (canvas.md §7, "the conversation is reached from the handle").
+const CONVERSATION: &str = "conversation";
+
+/// [`CONVERSATION`] as the turn publishes it: an action with no arguments, which the session runs
+/// itself ([`TurnSummonses::invoke_as`]).
+fn conversation_action() -> tilo_actions::ActionSpec {
+    tilo_actions::ActionSpec::typed_operation(
+        CONVERSATION,
+        "Whole conversation",
+        "Opens the whole conversation this answer was asked in, beside it.",
+        tilo_actions::OperationKind::Effect,
+        chat::views::TURN_KIND,
+        Vec::new(),
+        |_| tilo_actions::EncodedAction {
+            type_id: chat::views::TURN_KIND.into(),
+            payload: CONVERSATION.as_bytes().to_vec(),
+        },
+    )
+}
+
+/// One turn as a place's resource (canvas.md §3): the message `question` a person asked an agent
+/// in, named by what they asked, drawn through Chat's `turn` view.
+fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
+    let label = asked.lines().next().unwrap_or_default().trim();
+    let mut spec =
+        tilo_actions::ResourceSpec::new(turn_address(question), chat::views::TURN_KIND, label)
+            .with_view(tilo_actions::ResourceViewSpec::new(
+                tilo_session_core::arrangement::TURN_VIEW,
+                label.to_owned(),
+                "open",
+            ))
+            .with_type(tilo_actions::ResourceType {
+                noun: tilo_actions::Noun::new("answer", "answers"),
+                app: tilo_actions::Noun::new("Chat", "Chat"),
+                root: false,
+            })
+            .with_action(conversation_action());
+    spec.app_id = Some("chat".to_owned());
+    spec
+}
+
+/// Where a conversation is published: Chat's channel item at its stable address
+/// (`chat.workspace.channels:<id>`), a direct conversation's included.
+const CHANNELS: &str = "chat.workspace.channels:";
+
+/// The conversation `channel` as a place's resource: Chat's channel, through Chat's own page,
+/// with Chat's own `send` its composer runs. What a turn's "Whole conversation" places beside it.
+fn conversation_resource(channel: &str, label: String) -> tilo_actions::ResourceSpec {
+    let mut spec = tilo_actions::ResourceSpec::new(
+        format!("{CHANNELS}{channel}"),
+        "chat.workspace.channels",
+        label.clone(),
+    )
+    .with_view(tilo_actions::ResourceViewSpec::new("page", label, "open"))
+    .with_type(tilo_actions::ResourceType {
+        noun: tilo_actions::Noun::new("conversation", "conversations"),
+        app: tilo_actions::Noun::new("Chat", "Chat"),
+        root: false,
+    });
+    if let Some(send) =
+        <chat::effects::ChatEffect as tilo_resource::Effect>::spec(crate::send_to::SEND)
+    {
+        spec = spec.with_action(send);
+    }
+    spec.app_id = Some("chat".to_owned());
+    spec
 }
 
 /// The turns going in the workspaces' conversations as a session service: each turn's summons, as
@@ -589,6 +788,13 @@ pub(crate) struct TurnSummonses {
     /// rebuilt only when a part moved or a workspace opened, so a pass that changed nothing
     /// writes no item again — and reads no part, which would cost the loop every frame.
     summonses: std::cell::RefCell<Option<(SummonsKey, Vec<tilo_actions::ResourceSpec>)>>,
+    /// The revisions the asked turns were last read at: a reply landing moves them, and the turns'
+    /// places read again.
+    turns_at: Vec<(u64, u64, u64)>,
+    /// The one send: what a conversation's composer sends goes through it to Chat.
+    sends: crate::send_to::Sends,
+    /// The desk's arrangement: where a turn's whole conversation is opened beside it.
+    arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
 }
 
 /// What the summonses a [session's summonses](TurnSummonses) publishes depend on: each open
@@ -598,10 +804,17 @@ type SummonsKey = (u64, u64, u64);
 impl TurnSummonses {
     /// The service over `conversations`, the session's one open of the workspaces' chats.
     #[must_use]
-    pub(crate) fn new(conversations: Rc<Conversations>) -> Self {
+    pub(crate) fn new(
+        conversations: Rc<Conversations>,
+        sends: crate::send_to::Sends,
+        arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
+    ) -> Self {
         Self {
             conversations,
             summonses: std::cell::RefCell::new(None),
+            turns_at: Vec::new(),
+            sends,
+            arrangement,
         }
     }
 }
@@ -643,12 +856,46 @@ impl tilo_service::Service for TurnSummonses {
             });
             specs.extend(items);
         }
+        // Each turn asked from the canvas, as its place draws it (canvas.md §3), and the
+        // conversation it is in, which the turn places beside it on request.
+        let asked = self.conversations.asked.borrow();
+        let mut channels: Vec<&str> = Vec::new();
+        for (question, (channel, text)) in asked.iter() {
+            specs.push(turn_resource(question, text));
+            if !channels.contains(&channel.as_str()) {
+                channels.push(channel);
+            }
+        }
+        specs.extend(channels.into_iter().map(|channel| {
+            conversation_resource(channel, self.conversations.conversation_name(channel))
+        }));
         specs
     }
 
-    /// A summons has no reading of its own: its message is Chat's to show.
-    fn read(&self, _resource: &str) -> Option<serde_json::Value> {
-        None
+    /// A summons has no reading of its own: its message is Chat's to show. A turn asked from the
+    /// canvas reads as the question and what the agent answered, from Chat's record.
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        if let Some(question) = resource.strip_prefix(TURNS) {
+            let reading = self.conversations.turn_reading(question)?;
+            return serde_json::to_value(&reading).ok();
+        }
+        let channel = resource.strip_prefix(CHANNELS)?;
+        let reading = self.conversations.channel_reading(channel)?;
+        serde_json::to_value(&reading).ok()
+    }
+
+    /// A reply landing in Chat's record moves the turns asked from the canvas: their places read
+    /// them again.
+    fn poll(&mut self) -> bool {
+        if self.conversations.asked.borrow().is_empty() {
+            return false;
+        }
+        let at = self.conversations.revisions();
+        if at == self.turns_at {
+            return false;
+        }
+        self.turns_at = at;
+        true
     }
 
     /// A record of work asked with no invoker is the person's here.
@@ -674,6 +921,45 @@ impl tilo_service::Service for TurnSummonses {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        // A conversation's composer sends through the one send, to the conversation it is: Chat
+        // posts it, as a box's message.
+        if let Some(channel) = resource.strip_prefix(CHANNELS)
+            && action == crate::send_to::SEND
+        {
+            let text = arguments
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let to = ui::floating_surface::Recipient::found(
+                ui::floating_surface::RecipientKind::Conversation,
+                channel.to_owned(),
+                String::new(),
+            );
+            let mut send = serde_json::Map::new();
+            send.insert("to".into(), serde_json::json!([to]));
+            send.insert("text".into(), text.into());
+            return self.sends.send(Some(invoker.clone()), &send);
+        }
+        // A turn's whole conversation, from its place's handle: opened beside the turn, as the
+        // person's (or the invoker's) own arranging step.
+        if action == CONVERSATION && resource.starts_with(TURNS) {
+            let actor = invoker.key();
+            let asked = if actor.is_empty() {
+                self.conversations.person()
+            } else {
+                actor
+            };
+            self.arrangement
+                .borrow_mut()
+                .open_conversation_of(&asked, resource)
+                .map_err(|why| tilo_actions::DoorError::Unavailable {
+                    code: "nowhere_to_open".to_owned(),
+                    reason: why,
+                })?;
+            return Ok(tilo_service::Started::Done(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
         if action != RECORD_WORK {
             return Err(tilo_actions::DoorError::Unknown(
                 tilo_actions::ActionAddress::new(resource, action),
@@ -983,6 +1269,20 @@ fn request(message: &chat::record::Message) -> (String, Option<tilo_actions::Sel
 mod tests {
     use super::*;
     use tilo_resource::Atom;
+
+    /// A turn offers its whole conversation as its own action, which its place's handle lists
+    /// (canvas.md §7): the card itself holds no button for it.
+    #[test]
+    fn a_turn_offers_its_whole_conversation() {
+        let turn = turn_resource("q1", "what is due?");
+        let offered = turn
+            .actions
+            .iter()
+            .find(|action| action.id == CONVERSATION)
+            .expect("the turn offers its conversation");
+        assert_eq!(offered.label, "Whole conversation");
+        assert!(offered.params().is_empty(), "it takes nothing");
+    }
 
     /// The agent the tests' conversations take in.
     const AGENT: &str = "tide";

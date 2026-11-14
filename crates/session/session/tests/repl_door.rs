@@ -20,15 +20,15 @@
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_service::{Questions, Service as _, Started};
+use tilo_service::{Questions, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::records_service::RecordService;
 
 use crate::common::{
-    CANVAS_ENTRY, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen,
-    place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
-    seeded_session, show_preset, until,
+    CANVAS, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen, place_the_inbox,
+    placed, placed_resources, press_sheet, private_home, repl_session, seeded_session, show_preset,
+    until,
 };
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -145,7 +145,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     // The framed canvas, as the person shows it.
     show_preset(session, "so.tilo.shell:frames");
     until(session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
 
     // A `tilo` program places the note on the arrangement, as the person.
@@ -281,7 +281,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
@@ -616,7 +616,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
@@ -625,7 +625,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -691,7 +691,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
@@ -700,7 +700,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -738,7 +738,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
             .map(|(kind, _)| kind.as_str())
             .collect::<Vec<_>>(),
         ["tl.so.tilo.lang.mail.Mail"],
-        "\"my mails\" places Mail's root, which Mail draws as its inbox: {found:?}"
+        "\"my mails\" places Mail's root, through the inbox's list: {found:?}"
     );
 }
 
@@ -998,7 +998,7 @@ fn seeded_thread(session: &Session, id: &str) -> bool {
 /// the kind `withheld` (the app that publishes it never does, or the session's watch has not seen
 /// it): what a place whose data never arrives meets.
 struct Withholding {
-    inner: RecordService,
+    inner: Box<dyn tilo_service::Service>,
     withheld: &'static str,
     /// The ids of the resources of that kind, found once.
     ids: std::cell::RefCell<Option<std::collections::BTreeSet<String>>>,
@@ -1082,13 +1082,17 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(Withholding {
-            inner: apps,
-            // Every task's reading never comes: the window of the one placed has no record to
-            // draw.
-            withheld: "tl.so.tilo.lang.tasks.Task",
-            ids: std::cell::RefCell::new(None),
-        })],
+        // Every task's reading never comes: the window of the one placed has no record to draw.
+        services: apps
+            .into_iter()
+            .map(|inner| {
+                Box::new(Withholding {
+                    inner,
+                    withheld: "tl.so.tilo.lang.tasks.Task",
+                    ids: std::cell::RefCell::new(None),
+                }) as Box<dyn tilo_service::Service>
+            })
+            .collect(),
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
@@ -1097,7 +1101,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -1172,7 +1176,7 @@ fn the_repl_finds_what_place_found_places() {
         state: Some(crate::common::seated_state()),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         questions: Some(questions),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
@@ -1181,7 +1185,7 @@ fn the_repl_finds_what_place_found_places() {
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
