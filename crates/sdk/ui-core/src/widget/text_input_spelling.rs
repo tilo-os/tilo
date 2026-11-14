@@ -573,12 +573,29 @@ impl super::TextInput {
         if self.text.get(correction.start..correction.end) != Some(&correction.replacement) {
             return;
         }
-        let (start, end) = (correction.start, correction.end);
-        for rect in self.selection_rects(theme, start, end) {
-            let line = vello::kurbo::Line::new(
-                (rect.x0.max(self.rect.x0), rect.y1 - 0.5),
-                (rect.x1.min(self.rect.x1), rect.y1 - 0.5),
-            );
+        let viewport = transform.transform_rect_bbox(self.rect);
+        let lines: Vec<vello::kurbo::Line> = self
+            .selection_rects(theme, correction.start, correction.end)
+            .into_iter()
+            .filter(|row| transform.transform_rect_bbox(*row).overlaps(viewport))
+            .map(|rect| {
+                vello::kurbo::Line::new(
+                    (rect.x0.max(self.rect.x0), rect.y1 - 0.5),
+                    (rect.x1.min(self.rect.x1), rect.y1 - 0.5),
+                )
+            })
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &viewport,
+        );
+        for line in lines {
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
@@ -587,6 +604,7 @@ impl super::TextInput {
                 &line,
             );
         }
+        scene.pop_layer();
     }
 
     pub(super) fn draw_autocorrection_preview(

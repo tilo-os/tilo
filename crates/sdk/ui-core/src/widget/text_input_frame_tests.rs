@@ -883,4 +883,61 @@ tilo_test_env::scenario! {
             "a bound edit shows in place"
         );
     }
+
+    phase an_autocorrection_mark_stays_inside_the_field;
+    {
+        fn drawn(field: &mut TextInput, theme: &Theme) -> Scene {
+            let mut renderer = TextRenderer::new();
+            let mut scene = Scene::new();
+            Widget::draw(
+                field,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                theme,
+                &crate::presence::PresenceCtx::empty(),
+            );
+            scene
+        }
+
+        // A tall note in a short field, with the typo on its first row corrected.
+        fn corrected_field() -> TextInput {
+            let mut field = TextInput::local()
+                .multiline(true)
+                .with_spellcheck(true)
+                .with_autocorrect(true)
+                .with_spell_language("en_US")
+                .with_initial_value("teh one\nand two\nand three\nand four\nand five\n");
+            field.set_focus(true);
+            field.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 70.0));
+            field.core.set_caret(3);
+            field.insert_word_boundary(" ");
+            assert_eq!(
+                field.value().get(..4),
+                Some("the "),
+                "the typo is corrected in place"
+            );
+            assert!(field.last_autocorrection.is_some());
+            field
+        }
+
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+        let mut shown = corrected_field();
+        let mut hidden = corrected_field();
+        hidden.last_autocorrection = None;
+        assert_ne!(
+            drawn(&mut shown, &theme).encoding().draw_data,
+            drawn(&mut hidden, &theme).encoding().draw_data,
+            "the corrected word on a row the field shows is marked"
+        );
+        let line = shown.body_line_height();
+        shown.scroll_y = 3.0 * line;
+        hidden.scroll_y = 3.0 * line;
+        assert_eq!(
+            drawn(&mut shown, &theme).encoding().draw_data,
+            drawn(&mut hidden, &theme).encoding().draw_data,
+            "a mark on a row scrolled out of the field paints nothing"
+        );
+    }
 }
