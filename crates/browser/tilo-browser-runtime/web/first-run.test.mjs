@@ -911,10 +911,13 @@ test('the prompt breaks only between its words: a flag and a URL each stay whole
  * out of the page, which is what showing it again depends on. */
 function stubDocument() {
   const made = [];
+  // Every element is of the one document, however late it is made.
+  const owner = {document: null};
   const element = id => {
     const el = {
       id, dataset: {}, textContent: '', value: '', hidden: false, removed: false, style: {}, className: '',
-      attrs: new Map(), children: [], kind: 'element', ownerDocument: null,
+      get ownerDocument() { return owner.document; },
+      attrs: new Map(), children: [], kind: 'element',
       setAttribute(name, value) { this.attrs.set(name, String(value)); },
       getAttribute(name) { return this.attrs.get(name) ?? null; },
       removeAttribute(name) { this.attrs.delete(name); },
@@ -933,6 +936,7 @@ function stubDocument() {
   const root = element('html');
   const document = {documentElement: root, getElementById, getSelection: () => null, addEventListener() {},
     createElement: name => element(name), createTextNode: text => ({kind: 'text', textContent: text}), body: element('body')};
+  owner.document = document;
   return {document, root, screen: () => byId.get('first-run'), made};
 }
 
@@ -956,10 +960,27 @@ test('the agent setup can be shown again from the person\'s card, in the same pl
   assert.equal(typeof run.offerSetup, 'function', 'it takes a fresh code, as the first screen did');
   assert.equal(root.attrs.get('data-first-run'), '', 'the screen is shown');
   assert.ok(screen(), 'in the page it was first shown in');
+  // The person is set up: the setup is what shows, never the sign-in column a
+  // past visit left the screen in.
+  assert.equal(screen().dataset.reopened, 'true', 'the Returning? column has nobody left to sign in');
+  assert.equal(screen().dataset.mode, 'setup', 'the setup is what the card asked for');
+  screen().dataset.mode = 'sign-in';
+  openFirstRun(document, {storage});
+  assert.equal(screen().dataset.mode, 'setup', 'opening it again starts the setup, whatever it showed before');
   // Leaving it takes it off the page without taking it out of the document.
   document.getElementById('first-run').dataset.closing = '';
   assert.notEqual(screen().removed, true, 'the same screen is shown the next time');
   assert.equal(openFirstRun({getElementById: () => null}), null, 'a page without one shows nothing');
+});
+
+test('a setup reopened from the card asks for a fresh code, not one an earlier visit kept', () => {
+  const {document} = stubDocument();
+  const kept = {step: 'done', offer: {code: CODE, expiresAt: Date.now() + 600_000, follow: 'ab'.repeat(32)}};
+  const stored = [];
+  const storage = {getItem: () => JSON.stringify(kept), setItem: (_key, value) => stored.push(JSON.parse(value))};
+  const run = openFirstRun(document, {storage});
+  assert.ok(run);
+  assert.equal(stored.at(-1)?.offer, null, 'the code an earlier visit kept is spent or run out, never offered again');
 });
 
 test('a host that did not answer is named, and one on this computer is not blamed on the connection', () => {

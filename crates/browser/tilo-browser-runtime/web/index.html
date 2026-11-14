@@ -570,6 +570,12 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-for-start { display: none; }
     [data-first-run=connected] .fr-start { display: none; }
     [data-first-run]:not([data-first-run='']) .fr-aside { visibility: hidden; }
+    /* Opened again by a person who is set up already ("Connect an agent"):
+       there is nobody for the Returning? column to sign in. */
+    #first-run[data-reopened=true] .fr-aside { display: none; }
+    @media (min-width: 760px) {
+      #first-run[data-reopened=true] .fr-page { grid-template-columns: minmax(0, 1fr); }
+    }
     /* Stacked under the main column (a phone), the hidden aside would only lengthen the page. */
     @media (max-width: 759.98px) { [data-first-run]:not([data-first-run='']) .fr-aside { display: none; } }
     /* A phone's prompt in a smaller mono size, so most of it fits without scrolling sideways. */

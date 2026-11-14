@@ -1012,6 +1012,9 @@ export function domView(document) {
   return {
     start() {
       state('');
+      // The start is the setup: a screen reopened for a person who is already
+      // set up shows the setup's column, never the one a past sign-in left.
+      $('first-run').dataset.mode = 'setup';
       this.manual(false);
       $('first-run').dataset.handed = 'false';
       $('first-run-heading').focus({preventScroll: true});
@@ -1177,6 +1180,8 @@ function copyBySelection(text, document) {
  * once it can (`offerSetup`, `offerAgentSignIn`, `offerSignIn`). */
 export function startFirstRun(document = globalThis.document, {storage} = {}) {
   if (document?.documentElement?.dataset?.firstRun === undefined || !document.getElementById?.('first-run')) return null;
+  // This screen is the first visit's, not a setup reopened later.
+  document.getElementById('first-run')?.removeAttribute('data-reopened');
   return wireFirstRunScreen(document, storage);
 }
 
@@ -1194,6 +1199,16 @@ export function openFirstRun(document = globalThis.document, {storage} = {}) {
   // Hidden while the fresh screen is written into, so it appears at once and whole.
   root.removeAttribute('data-first-run');
   screen.removeAttribute('data-closing');
+  // The person is set up already: the setup is what this reopens, without the
+  // "Returning? Sign in" column they have no use for, and whichever column a
+  // past visit left the screen in.
+  screen.dataset.reopened = 'true';
+  screen.dataset.mode = 'setup';
+  // A code an earlier visit left on the start is no code to offer now: it was
+  // used with the agent it set up, or ran out. The screen asks the host for a
+  // fresh one, as the card's "Connect an agent" says it does.
+  const kept = readSetup(storage ?? globalThis.localStorage);
+  if (kept?.offer) writeSetup({...kept, offer: null}, storage ?? globalThis.localStorage);
   const run = wireFirstRunScreen(document, storage);
   run?.whenDone(() => {});
   root.setAttribute('data-first-run', '');
