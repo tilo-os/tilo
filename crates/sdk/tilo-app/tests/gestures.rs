@@ -152,11 +152,50 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    // The group submitted now comes first: it applies outside any app, on a thread no app has left
+    // its open undo step and its strict bindings on, as the test it was did.
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
     )]
     fn what_one_gesture_or_one_submission_changes_is_one_undo_step;
+
+    phase a_group_submitted_now_is_one_change;
+    // Several field edits a surface must see at once (a paste) are one action
+    // when submitted now as a group: one change, one entry in history.
+    {
+        use tilo_app::framework::testing::detached_dispatcher;
+        let mut mixer = Replica::<Mixer>::new();
+        let dispatcher = detached_dispatcher::<Mixer>("ada");
+        let p = Mixer::paths();
+        let doc = mixer.doc_mut();
+        let before = doc.get_changes(&[]).len();
+        let original_heads = doc.get_heads();
+        let capture = tilo_app::local_document_action::Queue::new();
+        let _scope = capture.enter("published-group-revision".into());
+        let group = Invoke::group([
+            Invoke::edit(&p.name.replace("Drums")).unwrap(),
+            Invoke::edit(&p.level.set(0.5)).unwrap(),
+        ]);
+        dispatcher
+            .submit_now(&mut tilo_app::widget::Edits::lend(doc), group)
+            .unwrap();
+        assert_eq!(doc.get_changes(&[]).len(), before + 1, "one change");
+        let captured = capture.drain();
+        assert_eq!(captured.len(), 1, "a group is one distinct invocation");
+        assert_eq!(captured[0].revision, "published-group-revision");
+        assert_eq!(
+            captured[0].published.as_ref().unwrap().action,
+            tilo_app::tilo_resource::GROUP
+        );
+        assert_eq!(captured[0].mutation_hashes.len(), 1);
+        let mut expected_heads = original_heads.iter().map(|hash| hash.0).collect::<Vec<_>>();
+        expected_heads.sort_unstable();
+        assert_eq!(captured[0].original_heads, expected_heads);
+        let state = mixer.state().unwrap();
+        assert_eq!(state.name, "Drums");
+        assert!((state.level - 0.5).abs() < f64::EPSILON);
+    }
 
     phase dragging_a_bound_slider_is_one_undo_step_and_the_next_drag_another;
     {
@@ -203,43 +242,6 @@ tilo_test_env::scenario! {
         app.harness().drag_at((at(0.5), y), (at(0.9), y));
         let pan = app.state().pan.expect("the drag set the pan");
         assert!(pan > 0.6, "{pan}");
-    }
-
-    phase a_group_submitted_now_is_one_change;
-    // Several field edits a surface must see at once (a paste) are one action
-    // when submitted now as a group: one change, one entry in history.
-    {
-        use tilo_app::framework::testing::detached_dispatcher;
-        let mut mixer = Replica::<Mixer>::new();
-        let dispatcher = detached_dispatcher::<Mixer>("ada");
-        let p = Mixer::paths();
-        let doc = mixer.doc_mut();
-        let before = doc.get_changes(&[]).len();
-        let original_heads = doc.get_heads();
-        let capture = tilo_app::local_document_action::Queue::new();
-        let _scope = capture.enter("published-group-revision".into());
-        let group = Invoke::group([
-            Invoke::edit(&p.name.replace("Drums")).unwrap(),
-            Invoke::edit(&p.level.set(0.5)).unwrap(),
-        ]);
-        dispatcher
-            .submit_now(&mut tilo_app::widget::Edits::lend(doc), group)
-            .unwrap();
-        assert_eq!(doc.get_changes(&[]).len(), before + 1, "one change");
-        let captured = capture.drain();
-        assert_eq!(captured.len(), 1, "a group is one distinct invocation");
-        assert_eq!(captured[0].revision, "published-group-revision");
-        assert_eq!(
-            captured[0].published.as_ref().unwrap().action,
-            tilo_app::tilo_resource::GROUP
-        );
-        assert_eq!(captured[0].mutation_hashes.len(), 1);
-        let mut expected_heads = original_heads.iter().map(|hash| hash.0).collect::<Vec<_>>();
-        expected_heads.sort_unstable();
-        assert_eq!(captured[0].original_heads, expected_heads);
-        let state = mixer.state().unwrap();
-        assert_eq!(state.name, "Drums");
-        assert!((state.level - 0.5).abs() < f64::EPSILON);
     }
 
     phase undoing_an_autocorrection_gives_back_the_typed_word_and_keeps_the_typing_before_it;
