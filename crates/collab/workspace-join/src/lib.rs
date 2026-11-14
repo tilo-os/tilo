@@ -12,14 +12,12 @@
 //! re-exported by `tilo-relay-protocol`.
 //!
 //! A workspace is named by its [`WorkspaceId`] everywhere here. Signed bytes
-//! the 0.1 releases wrote, which named it by a number and by its UUID as text,
-//! are read in the layout their version names ([`previous`] and
-//! `numbered_layout`), never written.
+//! a build wrote before grants stopped naming the workspace's authority are
+//! read in the layout their version names ([`previous`]), never written.
 
 pub mod agent_cert;
 pub mod delegation;
 pub mod invitations;
-mod numbered_layout;
 /// The invitation and join layouts a build wrote before the grants stopped
 /// naming the workspace's authority: read, never written. A stored record
 /// keeps the bytes its device signed, so a build that reads a record written
@@ -43,9 +41,8 @@ pub use collab_types::{Member, MemberId, Person};
 
 /// The invitation whose grant names its workspace by its [`WorkspaceId`]
 /// alone and no authority: an invitation is issued by a device of a member,
-/// and nothing above it. Versions 1 to 4 are the layouts before it, still
-/// read: 1 and 2 named an authority ([`previous`]), 3 and 4 named the
-/// workspace by a number and its UUID as text (`numbered_layout`).
+/// and nothing above it. Versions 1 and 2 are the layout before it, which
+/// named an authority ([`previous`]), still read.
 const INVITATION_VERSION: u32 = 5;
 /// An invitation that also names who sent it.
 const INVITATION_WITH_INVITER_VERSION: u32 = 6;
@@ -57,9 +54,8 @@ const ADMINISTRATOR_INVITATION_VERSION: u32 = 7;
 /// Longest inviter name an invitation carries, in characters.
 pub const MAX_INVITER_NAME_CHARS: usize = 80;
 /// Challenges carry no authority device, and name the workspace by its
-/// [`WorkspaceId`] alone. Version 1 named an authority ([`previous`]) and
-/// version 2 the workspace by text and number (`numbered_layout`): a stored
-/// Complete in either still verifies.
+/// [`WorkspaceId`] alone. Version 1 named an authority ([`previous`]): a
+/// stored Complete in it still verifies.
 const JOIN_VERSION: u32 = 3;
 /// The variant index of [`JoinTransportRequest::Complete`] in every join
 /// layout: what a stored Complete's bytes start with.
@@ -220,8 +216,8 @@ pub struct VerifiedJoin {
     /// The authority an invitation issued before grants stopped naming one
     /// was delegated from, where it was not its issuer.
     authority: Option<DeviceCert>,
-    /// The number a grant of the layouts that named their workspace twice
-    /// carried beside its UUID, which their join challenges repeat.
+    /// The number the layout that named the workspace's authority carried
+    /// beside its UUID, which its join challenges repeat.
     workspace_number: Option<u64>,
 }
 
@@ -686,8 +682,7 @@ pub fn verify_transport_hint_at(
 /// over one host share: the issuer's certificate and the signed transport
 /// details, each as it is encoded there. Read, not verified: a keeper of
 /// many invitations names these runs once, and checks each invitation whole
-/// when it puts it back together. The layouts that named their workspace by
-/// text carry both the same way. An invitation that named an authority, or
+/// when it puts it back together. An invitation that named an authority, or
 /// one that does not decode, shares nothing.
 #[must_use]
 pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
@@ -704,9 +699,6 @@ pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
             postcard::from_bytes::<SignedAdministratorInvitation>(signed_invitation)
                 .map(|signed| signed.grant)
                 .ok()
-        }
-        Ok((version, _)) if numbered_layout::is_invitation_version(version) => {
-            numbered_layout::unchecked_grant(signed_invitation, version)
         }
         _ => None,
     };
@@ -772,9 +764,6 @@ pub fn decode_and_verify_invitation(
             decode_invitation(signed_invitation, version)?
         }
         ADMINISTRATOR_INVITATION_VERSION => decode_administrator_invitation(signed_invitation)?,
-        _ if numbered_layout::is_invitation_version(version) => {
-            numbered_layout::decode_invitation(signed_invitation, version)?
-        }
         _ if previous::is_invitation_version(version) => {
             previous::decode_invitation(signed_invitation, version)?
         }
@@ -1047,9 +1036,6 @@ pub fn verify_stored_complete(
     let (version, _) = postcard::take_from_bytes::<u32>(challenge).map_err(|_| not_complete())?;
     match version {
         JOIN_VERSION => {}
-        numbered_layout::JOIN_VERSION => {
-            return numbered_layout::verify_complete(bytes, device_cert, revocations, now_ns);
-        }
         previous::JOIN_VERSION => {
             return previous::verify_complete(bytes, device_cert, revocations, now_ns);
         }
@@ -1211,31 +1197,4 @@ pub fn complete_previous_layout(
     key: &ed25519_dalek::SigningKey,
 ) -> Result<Vec<u8>, String> {
     previous::encode_complete(challenge, authority, key)
-}
-
-/// Sign `grant` in the invitation layout of the 0.1 releases (versions 3
-/// and 4), which named the workspace by a number and its UUID as text.
-///
-/// # Errors
-/// Returns an error if the grant cannot be encoded for signing.
-#[cfg(any(test, feature = "test-support"))]
-pub fn issue_numbered_invitation(
-    grant: &InviteGrant,
-    inviter: Option<&Inviter>,
-    key: &ed25519_dalek::SigningKey,
-) -> Result<Vec<u8>, String> {
-    numbered_layout::encode_invitation(grant, inviter, key)
-}
-
-/// A `JoinTransportRequest::Complete` whose challenge is in the layout of
-/// the 0.1 releases (join version 2), signed by `key`.
-///
-/// # Errors
-/// Returns an error if the proof cannot be encoded.
-#[cfg(any(test, feature = "test-support"))]
-pub fn complete_numbered(
-    challenge: &JoinChallenge,
-    key: &ed25519_dalek::SigningKey,
-) -> Result<Vec<u8>, String> {
-    numbered_layout::encode_complete(challenge, key)
 }

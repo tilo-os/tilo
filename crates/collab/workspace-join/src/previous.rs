@@ -1,7 +1,6 @@
 //! The invitation and join layouts issued before the grants stopped naming
 //! the workspace's authority, kept so bytes a build wrote then still decode.
-//! They name the workspace the way [`super::numbered_layout`] does: by a number
-//! and by its UUID as text.
+//! They name the workspace by a number and by its UUID as text.
 //!
 //! Only the layout of the signed bytes changed: the signing domains are the
 //! same, so an old signature verifies over the old layout. A stored record
@@ -9,10 +8,9 @@
 //! sign for it again), and [`super::verify_stored_complete`] reaches this
 //! module because the challenge version names it, never by guessing.
 
-use super::numbered_layout::workspace_of;
 use super::{
     Decoded, DeviceCert, InviteGrant, Inviter, Role, TransportHint, VerifiedRedemption,
-    tagged_digest, validate_certificate, validate_inviter, verify_issuer_signature,
+    WorkspaceId, tagged_digest, validate_certificate, validate_inviter, verify_issuer_signature,
 };
 use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
@@ -32,6 +30,14 @@ pub(super) const fn is_invitation_version(version: u32) -> bool {
         version,
         INVITATION_VERSION | INVITATION_WITH_INVITER_VERSION
     )
+}
+
+/// The workspace a grant or challenge of this layout names: its UUID in the
+/// canonical lowercase text the build that wrote it required.
+fn workspace_of(workspace: &str) -> Result<WorkspaceId, String> {
+    WorkspaceId::parse(workspace)
+        .filter(|parsed| parsed.to_string() == workspace)
+        .ok_or_else(|| "invitation workspace is not a canonical UUID".to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,7 +372,7 @@ pub(super) fn encode_invitation(
         INVITATION_VERSION
     };
     let prior = Grant {
-        workspace_id: super::numbered_layout::workspace_number(grant.workspace_id),
+        workspace_id: grant.workspace_id.released_number(),
         workspace: grant.workspace_id.to_string(),
         authority: authority.clone(),
         issuer: grant.issuer.clone(),
@@ -425,7 +431,7 @@ pub(super) fn encode_complete(
         version: JOIN_VERSION,
         signed_invitation: challenge.signed_invitation.clone(),
         workspace: challenge.workspace_id.to_string(),
-        workspace_id: super::numbered_layout::workspace_number(challenge.workspace_id),
+        workspace_id: challenge.workspace_id.released_number(),
         authority_device_public_key: authority.device_public_key,
         user_public_key: challenge.user_public_key,
         device_public_key: challenge.device_public_key,
