@@ -456,20 +456,20 @@ fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scal
 
 #[test]
 fn a_state_the_run_stages_lays_the_window_out_there() {
-    // Which place a window stands on is the run's, not the app's: `--state place=Task.today` lays
+    // Which place a window stands on is the run's, not the app's: `--state place=Item.done` lays
     // out the place a person has not picked, and a value the app declares no filter for is refused
     // before anything is laid out.
-    let tasks = manifest().join("../../../apps/tl/tasks");
+    let detail = manifest().join("tests/layout_check/detail");
     let report = layout_check::check(&Options {
-        dirs: vec![tasks.clone()],
-        states: vec!["place=Task.today".to_owned()],
+        dirs: vec![detail.clone()],
+        states: vec!["place=Item.done".to_owned()],
         ..Options::default()
     })
     .expect("the app lays out at the place the run stages");
     assert!(report.layouts > 0, "the app is laid out");
     let refused = layout_check::check(&Options {
-        dirs: vec![tasks],
-        states: vec!["place=Task.nonsense".to_owned()],
+        dirs: vec![detail],
+        states: vec!["place=Item.nonsense".to_owned()],
         ..Options::default()
     })
     .expect_err("a state takes a value the app's code names");
@@ -480,57 +480,47 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
     // The units run at the same time, so a failure stops the sweep wherever it stands: the run
     // names the unit that failed rather than the turn the stop left empty.
     assert!(
-        refused.starts_with("tasks: the scenario `"),
+        refused.starts_with("layoutdetail: the scenario `"),
         "the run names the unit that failed: {refused}"
     );
 }
 
 /// A window held in the hand shows its list; the row a person taps opens what it holds in front of
-/// the list.
+/// the list, and a window that opened one already comes back to its list before the tap.
 #[test]
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    for (app, shown) in [
-        // Notes is a tree and the note it opens: at this width the tree is the window's first
-        // screen and a row of it pushes the note in front, with the way back to the tree. One run
-        // of the check dumps both pages.
-        (
-            "notes",
-            &[
-                ", then a note_editor in front at 390×844",
-                ", then Back pressed, then a note_editor in front at 390×844",
-            ][..],
-        ),
-        // A board keeps no detail of its own: the card a finger taps is the page that shows.
-        ("board", &["then a card_page in front at 390×844"][..]),
+    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .arg("layout-check")
+        .arg(manifest().join("tests/layout_check/detail"))
+        .args(["--dump", "390x844"])
+        .output_locked()
+        .expect("the check runs");
+    let doc = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "the fixture is laid out: {}",
+        doc.lines().last().unwrap_or_default()
+    );
+    let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
+    for shows in [
+        // A list with nothing open: the first row a finger reaches opens its page in front.
+        ", then a item_page in front at 390×844",
+        // A window that opened one already brings its list back by its way back, and the row it
+        // taps then opens the page in front, as the listing window's does.
+        ", then Back pressed, then a item_page in front at 390×844",
     ] {
-        let dir = manifest().join("../../../apps/tl").join(app);
-        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-            .arg("layout-check")
-            .arg(&dir)
-            .args(["--dump", "390x844"])
-            .output_locked()
-            .expect("the check runs");
-        let doc = String::from_utf8_lossy(&output.stderr).into_owned();
         assert!(
-            output.status.success(),
-            "{app} is laid out: {}",
-            doc.lines().last().unwrap_or_default()
+            headers.iter().any(|header| header.contains(shows)),
+            "a phone window shows what `{shows}` names:\n{}",
+            headers.join("\n")
         );
-        let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
-        for &shows in shown {
-            assert!(
-                headers.iter().any(|header| header.contains(shows)),
-                "a phone window shows what `{shows}` names in {app}:\n{}",
-                headers.join("\n")
-            );
-        }
     }
 }
 
-/// A row's box is a control of its own, named for what it does to the item (`Mark Buy oat milk and
-/// eggs done`): a run presses it by those words, as a person or an agent does, and the row it
+/// A row's box is a control of its own, named for what it does to the item (`Mark Order boxes
+/// done`): a run presses it by those words, as a person or an agent does, and the row it
 /// belongs to stands where it stood, drawn checked, for the shot.
 #[test]
 fn a_run_presses_a_rows_box_by_its_own_words() {
@@ -541,13 +531,11 @@ fn a_run_presses_a_rows_box_by_its_own_words() {
     std::fs::create_dir_all(&shots).expect("the shots' directory");
     let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
         .arg("layout-check")
-        .arg(manifest().join("../../../apps/tl/tasks"))
-        .arg("--allow")
-        .arg(manifest().join("tests/layout_check/allowed"))
+        .arg(manifest().join("tests/layout_check/detail"))
         .args(["--dump", "390x844"])
         .arg("--shots")
         .arg(&shots)
-        .args(["--press", "Mark Buy oat milk and eggs done"])
+        .args(["--press", "Mark Order boxes done"])
         .output_locked()
         .expect("the check runs");
     let doc = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -557,8 +545,9 @@ fn a_run_presses_a_rows_box_by_its_own_words() {
         doc.lines().last().unwrap_or_default()
     );
     assert!(
-        doc.lines().any(|line| line.starts_with("== ")
-            && line.contains("then Mark Buy oat milk and eggs done pressed")),
+        doc.lines()
+            .any(|line| line.starts_with("== ")
+                && line.contains("then Mark Order boxes done pressed")),
         "the window as the press leaves it is read:\n{doc}"
     );
     let pressed = std::fs::read_dir(&shots)
@@ -621,29 +610,6 @@ fn a_dump_of_findings_holds_the_frames_a_finding_came_from() {
         found.iter().all(|header| every.contains(header)),
         "the frames a finding came from are frames the run read"
     );
-}
-
-#[test]
-fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
-    let dir = manifest().join("../../../apps/tl/gallery");
-    let mut source = String::new();
-    for entry in std::fs::read_dir(&dir).expect("the gallery reads") {
-        let path = entry.expect("the gallery reads").path();
-        if path.extension().is_some_and(|e| e == "tl") {
-            source.push_str(&std::fs::read_to_string(&path).expect("the gallery reads"));
-        }
-    }
-    // Which components the gallery shows, and whether a component's declaration exempts it, is the
-    // toolkit's own check (`tilo_ui::component::gallery`), which a widget's author runs in the
-    // toolkit's tests; this app is laid out below as well.
-    let problems = ui::component::gallery::coverage(&source).problems();
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
-    let report = layout_check::check(&Options {
-        dirs: vec![dir],
-        ..Options::default()
-    })
-    .expect("the gallery lays out, every component of it built");
-    assert!(report.layouts > 0, "the gallery is laid out");
 }
 
 /// An allow-list names one finding a line: blank lines and what follows a `#` are no finding, an
