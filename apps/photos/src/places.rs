@@ -180,9 +180,10 @@ mod tests {
         photo
     }
 
-    #[test]
-    fn places_cluster_canonically_and_project_finitely_across_the_dateline() {
-        eprintln!("phase clusters_are_canonical_collections_not_zoom_dependent_representatives");
+    tilo_test_env::scenario! {
+        fn places_cluster_canonically_and_project_finitely_across_the_dateline;
+
+        phase clusters_are_canonical_collections_not_zoom_dependent_representatives;
         {
             let photos = vec![
                 photo("a.png", 37.7749, -122.4194, "San Francisco"),
@@ -202,7 +203,7 @@ mod tests {
             );
         }
 
-        eprintln!("phase pan_zoom_and_projection_are_finite_and_wrap_the_dateline");
+        phase pan_zoom_and_projection_are_finite_and_wrap_the_dateline;
         {
             let viewport = MapViewport {
                 latitude: 0.0,

@@ -651,71 +651,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_approved_people_are_exported_as_labels_and_photo_ids() {
-        let mut people = PeopleController::new();
-        assert!(people.add_cluster(
-            "manual",
-            [A.to_owned(), B.to_owned()],
-            ProposalOrigin::ImportedOrManual
-        ));
-        assert_eq!(
-            people.confirm_suggestion("manual", "Sam"),
-            PeopleChange::Updated
-        );
-        assert_eq!(
-            people.approve_membership("manual"),
-            Some(("Sam".parse().unwrap(), vec![A.to_owned(), B.to_owned()]))
-        );
+    tilo_test_env::scenario! {
+        fn reviewed_people_are_exported_only_when_approved_and_review_stays_reversible;
 
-        let mut library = PhotoLibrary::default();
-        let mut photo = crate::model::LibraryPhoto::from_image(crate::model::OpenImage::fixture(
-            "one.png", 20, 10,
-        ));
-        photo.people = ["Sam".to_owned(), "Élodie".to_owned()]
-            .into_iter()
-            .collect();
-        let photo_id = photo.id.clone();
-        library.add_photo(photo);
-        assert_eq!(
-            approved_people(&library),
-            vec![
-                SharedPerson {
-                    label: "Sam".to_owned(),
-                    photo_ids: vec![photo_id.clone()],
-                },
-                SharedPerson {
-                    label: "Élodie".to_owned(),
-                    photo_ids: vec![photo_id],
-                },
-            ]
-        );
-    }
+        phase only_approved_people_are_exported_as_labels_and_photo_ids;
+        {
+            let mut people = PeopleController::new();
+            assert!(people.add_cluster(
+                "manual",
+                [A.to_owned(), B.to_owned()],
+                ProposalOrigin::ImportedOrManual
+            ));
+            assert_eq!(
+                people.confirm_suggestion("manual", "Sam"),
+                PeopleChange::Updated
+            );
+            assert_eq!(
+                people.approve_membership("manual"),
+                Some(("Sam".parse().unwrap(), vec![A.to_owned(), B.to_owned()]))
+            );
 
-    #[test]
-    fn local_review_edits_stay_private_and_reversible() {
-        let mut people = PeopleController::new();
-        assert!(people.add_cluster(
-            "one",
-            [A.to_owned(), B.to_owned()],
-            ProposalOrigin::ImportedOrManual,
-        ));
-        assert!(people.add_cluster("two", [B.to_owned()], ProposalOrigin::ImportedOrManual,));
-        assert_eq!(people.remove_photo("one", A), PeopleChange::Updated);
-        assert_eq!(people.merge_clusters("one", "two"), PeopleChange::Updated);
-        assert_eq!(people.set_hidden("one", true), PeopleChange::Updated);
-        assert!(people.visible_clusters().is_empty());
-        assert_eq!(people.reject_suggestion("one"), PeopleChange::Updated);
-        assert_eq!(people.restore_suggestion("one"), PeopleChange::Updated);
-        assert!(!people.cluster("one").unwrap().hidden);
-        assert!(!people.cluster("one").unwrap().rejected);
-        people.delete_all_local_biometric_data();
-        assert_eq!(people.all_clusters().count(), 0);
-        assert_eq!(people.capability(), &FaceCapability::DisabledByOwner);
+            let mut library = PhotoLibrary::default();
+            let mut photo = crate::model::LibraryPhoto::from_image(crate::model::OpenImage::fixture(
+                "one.png", 20, 10,
+            ));
+            photo.people = ["Sam".to_owned(), "Élodie".to_owned()]
+                .into_iter()
+                .collect();
+            let photo_id = photo.id.clone();
+            library.add_photo(photo);
+            assert_eq!(
+                approved_people(&library),
+                vec![
+                    SharedPerson {
+                        label: "Sam".to_owned(),
+                        photo_ids: vec![photo_id.clone()],
+                    },
+                    SharedPerson {
+                        label: "Élodie".to_owned(),
+                        photo_ids: vec![photo_id],
+                    },
+                ]
+            );
+        }
 
-        let mut people = PeopleController::new();
-        assert!(people.add_cluster("single", [B.to_owned()], ProposalOrigin::ImportedOrManual));
-        assert_eq!(people.remove_photo("single", B), PeopleChange::Deleted);
-        assert!(people.cluster("single").is_none());
+        phase local_review_edits_stay_private_and_reversible;
+        {
+            let mut people = PeopleController::new();
+            assert!(people.add_cluster(
+                "one",
+                [A.to_owned(), B.to_owned()],
+                ProposalOrigin::ImportedOrManual,
+            ));
+            assert!(people.add_cluster("two", [B.to_owned()], ProposalOrigin::ImportedOrManual,));
+            assert_eq!(people.remove_photo("one", A), PeopleChange::Updated);
+            assert_eq!(people.merge_clusters("one", "two"), PeopleChange::Updated);
+            assert_eq!(people.set_hidden("one", true), PeopleChange::Updated);
+            assert!(people.visible_clusters().is_empty());
+            assert_eq!(people.reject_suggestion("one"), PeopleChange::Updated);
+            assert_eq!(people.restore_suggestion("one"), PeopleChange::Updated);
+            assert!(!people.cluster("one").unwrap().hidden);
+            assert!(!people.cluster("one").unwrap().rejected);
+            people.delete_all_local_biometric_data();
+            assert_eq!(people.all_clusters().count(), 0);
+            assert_eq!(people.capability(), &FaceCapability::DisabledByOwner);
+
+            let mut people = PeopleController::new();
+            assert!(people.add_cluster("single", [B.to_owned()], ProposalOrigin::ImportedOrManual));
+            assert_eq!(people.remove_photo("single", B), PeopleChange::Deleted);
+            assert!(people.cluster("single").is_none());
+        }
     }
 }

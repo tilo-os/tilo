@@ -743,56 +743,193 @@ mod tests {
         }
     }
 
-    #[test]
-    fn search_pages_and_caller_limits_are_bounded_and_target_exported_actions() {
-        let doc = open_doc("harbour.png");
-        let provider = source(&doc);
-        assert!(
-            provider
-                .search_page(&SearchQuery::new(""), None, 0, 1)
-                .results
-                .is_empty()
-        );
-        assert!(
-            provider
-                .search_page(&SearchQuery::new(""), None, 1, 0)
-                .results
-                .is_empty()
-        );
+    tilo_test_env::scenario! {
+        fn the_library_index_pages_fails_closed_and_follows_the_library;
 
-        let page = provider.search_page(&SearchQuery::new("harbour"), None, 1, 1);
-        assert_eq!(page.inspected, 1);
-        assert_eq!(page.results.len(), 1);
-        let hit = target(&page.results[0]);
-        assert!(
-            opened(&doc, &hit).is_some(),
-            "search address resolves through the canonical publication"
-        );
-
+        phase search_pages_and_caller_limits_are_bounded_and_target_exported_actions;
         {
             let doc = open_doc("harbour.png");
             let provider = source(&doc);
-            let page = provider.search_page(
-                &SearchQuery::new("harbour"),
-                None,
-                DEFAULT_SEARCH_CANDIDATE_LIMIT,
-                DEFAULT_SEARCH_RESULT_LIMIT,
-            );
-            assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
-            assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
-            let (resource_id, _) = target(&page.results[0]);
-            let resource = LibraryIndex::new(&crate::test_doc::library(&doc))
-                .unwrap()
-                .resource(&resource_id)
-                .expect("the library index publishes the hit's canonical resource");
-            assert_eq!(resource.id.0, resource_id);
             assert!(
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "remove-photo"),
-                "every verb on the published photograph remains agent-addressable"
+                provider
+                    .search_page(&SearchQuery::new(""), None, 0, 1)
+                    .results
+                    .is_empty()
             );
+            assert!(
+                provider
+                    .search_page(&SearchQuery::new(""), None, 1, 0)
+                    .results
+                    .is_empty()
+            );
+
+            let page = provider.search_page(&SearchQuery::new("harbour"), None, 1, 1);
+            assert_eq!(page.inspected, 1);
+            assert_eq!(page.results.len(), 1);
+            let hit = target(&page.results[0]);
+            assert!(
+                opened(&doc, &hit).is_some(),
+                "search address resolves through the canonical publication"
+            );
+
+            {
+                let doc = open_doc("harbour.png");
+                let provider = source(&doc);
+                let page = provider.search_page(
+                    &SearchQuery::new("harbour"),
+                    None,
+                    DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                    DEFAULT_SEARCH_RESULT_LIMIT,
+                );
+                assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+                assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+                let (resource_id, _) = target(&page.results[0]);
+                let resource = LibraryIndex::new(&crate::test_doc::library(&doc))
+                    .unwrap()
+                    .resource(&resource_id)
+                    .expect("the library index publishes the hit's canonical resource");
+                assert_eq!(resource.id.0, resource_id);
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "remove-photo"),
+                    "every verb on the published photograph remains agent-addressable"
+                );
+            }
+        }
+
+        phase stale_or_colliding_targets_fail_closed_and_rebuilds_publish_atomically;
+        {
+            let before = open_doc("before.png");
+            let hit = target(&source(&before).search("before").pop().unwrap());
+            let after = open_doc("after.png");
+            assert!(opened(&after, &hit).is_none());
+
+            {
+                let mut doc = open_doc("before.png");
+                let index = LibraryIndex::new(&crate::test_doc::library(&doc)).unwrap();
+                let generation = index.generation();
+                let hit = target(&source(&doc).search("before")[0]);
+
+                crate::test_doc::set_library(&mut doc, &PhotoLibrary::default());
+                index.sync(&crate::test_doc::library(&doc)).unwrap();
+                assert_ne!(index.generation(), generation, "the old pages are stale");
+                assert!(index.resource(&hit.0).is_none());
+                assert!(opened(&doc, &hit).is_none());
+            }
+
+            {
+                let mut place = photo_of("collision.png", 1);
+                place.folder = Some("Collision".into());
+                let mut tagged = photo_of("tagged.png", 1);
+                tagged.tags = crate::model::labels(["Collision"]);
+                let library = PhotoLibrary::of(vec![place, tagged], Vec::new());
+                let folder = crate::derived::folder_resource_id("Collision");
+                assert!(
+                    LibraryIndex::new(&library)
+                        .unwrap()
+                        .resource(&folder)
+                        .is_some(),
+                    "a folder and a tag of one name are two places"
+                );
+            }
+
+            {
+                let doc = open_doc("last-good.png");
+                let library = crate::test_doc::library(&doc);
+                let provider = LibraryIndex::new(&library).unwrap();
+                let before_generation = provider.generation();
+                let (resource, _) = target(&source(&doc).search("last-good")[0]);
+                let before = provider.resource(&resource).unwrap();
+                let before_records = provider.stats().records;
+
+                assert_eq!(
+                    provider.reject_malformed_snapshot_for_test(),
+                    Err(SearchCatalogError::NonCanonicalResult)
+                );
+                assert_eq!(provider.generation(), before_generation);
+                assert_eq!(provider.stats().records, before_records);
+                let after = provider.resource(&resource).unwrap();
+                assert_eq!(after.id, before.id);
+                assert_eq!(after.actions.len(), before.actions.len());
+            }
+
+            {
+                let doc = open_doc("before.png");
+                let provider = LibraryIndex::new(&crate::test_doc::library(&doc)).unwrap();
+                let (before_resource, _) = target(&source(&doc).search("before")[0]);
+
+                let mut replacement = crate::test_doc::library(&doc);
+                replacement.add_photo(photo_of("after.png", 16));
+                let (built_tx, built_rx) = std::sync::mpsc::sync_channel(0);
+                let (publish_tx, publish_rx) = std::sync::mpsc::sync_channel(0);
+                let replacement_provider = provider.clone();
+
+                std::thread::scope(|scope| {
+                    scope.spawn(move || {
+                        replacement_provider
+                            .replace_from_library_before_publish(&replacement, || {
+                                built_tx.send(()).expect("test observes completed rebuild");
+                                publish_rx.recv().expect("test releases publication");
+                            })
+                            .expect("valid replacement publishes");
+                    });
+                    built_rx.recv().expect("replacement finished off-lock work");
+
+                    assert!(
+                        provider
+                            .photo_matches_page("before", None)
+                            .0
+                            .contains(&before_resource)
+                    );
+                    assert!(provider.resource(&before_resource).is_some());
+                    publish_tx.send(()).expect("release publication");
+                });
+
+                assert!(
+                    !provider.photo_matches_page("after", None).0.is_empty(),
+                    "the published replacement finds the new photograph"
+                );
+            }
+        }
+
+        phase a_synced_library_answers_as_a_fresh_index;
+        {
+            let mut photos: Vec<LibraryPhoto> = (0..40)
+                .map(|at| photo_of(&format!("harbour-{at:02}.png"), 1 + at % 7))
+                .collect();
+            let provider = LibraryIndex::new(&PhotoLibrary::of(photos.clone(), Vec::new())).unwrap();
+            let queries = ["harbour", "harbour-3", "golden", "Élodie", "trip", "png"];
+            for step in 0..12_usize {
+                match step % 4 {
+                    0 => photos.push(photo_of(&format!("trip-{step}.png"), 3)),
+                    1 => photos[step].tags = crate::model::labels(["golden-hour"]),
+                    2 => photos[step].people = crate::model::labels(["Élodie"]),
+                    _ => {
+                        photos.remove(step);
+                    }
+                }
+                let library = PhotoLibrary::of(photos.clone(), Vec::new());
+                let generation = provider.generation();
+                provider.sync(&library).unwrap();
+                assert_ne!(
+                    provider.generation(),
+                    generation,
+                    "step {step} changed the library"
+                );
+                let fresh = LibraryIndex::new(&library).unwrap();
+                for query in queries {
+                    assert_eq!(
+                        provider.photo_matches_page(query, None).0,
+                        fresh.photo_matches_page(query, None).0,
+                        "step {step}, query {query:?}"
+                    );
+                }
+                let generation = provider.generation();
+                provider.sync(&library).unwrap();
+                assert_eq!(provider.generation(), generation);
+            }
         }
     }
 
@@ -949,139 +1086,6 @@ mod tests {
             let (resource, action) = target(&hit);
             assert_eq!(action, None);
             assert!(index.resource(&resource).is_some());
-        }
-    }
-
-    #[test]
-    fn stale_or_colliding_targets_fail_closed_and_rebuilds_publish_atomically() {
-        let before = open_doc("before.png");
-        let hit = target(&source(&before).search("before").pop().unwrap());
-        let after = open_doc("after.png");
-        assert!(opened(&after, &hit).is_none());
-
-        {
-            let mut doc = open_doc("before.png");
-            let index = LibraryIndex::new(&crate::test_doc::library(&doc)).unwrap();
-            let generation = index.generation();
-            let hit = target(&source(&doc).search("before")[0]);
-
-            crate::test_doc::set_library(&mut doc, &PhotoLibrary::default());
-            index.sync(&crate::test_doc::library(&doc)).unwrap();
-            assert_ne!(index.generation(), generation, "the old pages are stale");
-            assert!(index.resource(&hit.0).is_none());
-            assert!(opened(&doc, &hit).is_none());
-        }
-
-        {
-            let mut place = photo_of("collision.png", 1);
-            place.folder = Some("Collision".into());
-            let mut tagged = photo_of("tagged.png", 1);
-            tagged.tags = crate::model::labels(["Collision"]);
-            let library = PhotoLibrary::of(vec![place, tagged], Vec::new());
-            let folder = crate::derived::folder_resource_id("Collision");
-            assert!(
-                LibraryIndex::new(&library)
-                    .unwrap()
-                    .resource(&folder)
-                    .is_some(),
-                "a folder and a tag of one name are two places"
-            );
-        }
-
-        {
-            let doc = open_doc("last-good.png");
-            let library = crate::test_doc::library(&doc);
-            let provider = LibraryIndex::new(&library).unwrap();
-            let before_generation = provider.generation();
-            let (resource, _) = target(&source(&doc).search("last-good")[0]);
-            let before = provider.resource(&resource).unwrap();
-            let before_records = provider.stats().records;
-
-            assert_eq!(
-                provider.reject_malformed_snapshot_for_test(),
-                Err(SearchCatalogError::NonCanonicalResult)
-            );
-            assert_eq!(provider.generation(), before_generation);
-            assert_eq!(provider.stats().records, before_records);
-            let after = provider.resource(&resource).unwrap();
-            assert_eq!(after.id, before.id);
-            assert_eq!(after.actions.len(), before.actions.len());
-        }
-
-        {
-            let doc = open_doc("before.png");
-            let provider = LibraryIndex::new(&crate::test_doc::library(&doc)).unwrap();
-            let (before_resource, _) = target(&source(&doc).search("before")[0]);
-
-            let mut replacement = crate::test_doc::library(&doc);
-            replacement.add_photo(photo_of("after.png", 16));
-            let (built_tx, built_rx) = std::sync::mpsc::sync_channel(0);
-            let (publish_tx, publish_rx) = std::sync::mpsc::sync_channel(0);
-            let replacement_provider = provider.clone();
-
-            std::thread::scope(|scope| {
-                scope.spawn(move || {
-                    replacement_provider
-                        .replace_from_library_before_publish(&replacement, || {
-                            built_tx.send(()).expect("test observes completed rebuild");
-                            publish_rx.recv().expect("test releases publication");
-                        })
-                        .expect("valid replacement publishes");
-                });
-                built_rx.recv().expect("replacement finished off-lock work");
-
-                assert!(
-                    provider
-                        .photo_matches_page("before", None)
-                        .0
-                        .contains(&before_resource)
-                );
-                assert!(provider.resource(&before_resource).is_some());
-                publish_tx.send(()).expect("release publication");
-            });
-
-            assert!(
-                !provider.photo_matches_page("after", None).0.is_empty(),
-                "the published replacement finds the new photograph"
-            );
-        }
-    }
-
-    #[test]
-    fn a_synced_library_answers_as_a_fresh_index() {
-        let mut photos: Vec<LibraryPhoto> = (0..40)
-            .map(|at| photo_of(&format!("harbour-{at:02}.png"), 1 + at % 7))
-            .collect();
-        let provider = LibraryIndex::new(&PhotoLibrary::of(photos.clone(), Vec::new())).unwrap();
-        let queries = ["harbour", "harbour-3", "golden", "Élodie", "trip", "png"];
-        for step in 0..12_usize {
-            match step % 4 {
-                0 => photos.push(photo_of(&format!("trip-{step}.png"), 3)),
-                1 => photos[step].tags = crate::model::labels(["golden-hour"]),
-                2 => photos[step].people = crate::model::labels(["Élodie"]),
-                _ => {
-                    photos.remove(step);
-                }
-            }
-            let library = PhotoLibrary::of(photos.clone(), Vec::new());
-            let generation = provider.generation();
-            provider.sync(&library).unwrap();
-            assert_ne!(
-                provider.generation(),
-                generation,
-                "step {step} changed the library"
-            );
-            let fresh = LibraryIndex::new(&library).unwrap();
-            for query in queries {
-                assert_eq!(
-                    provider.photo_matches_page(query, None).0,
-                    fresh.photo_matches_page(query, None).0,
-                    "step {step}, query {query:?}"
-                );
-            }
-            let generation = provider.generation();
-            provider.sync(&library).unwrap();
-            assert_eq!(provider.generation(), generation);
         }
     }
 }

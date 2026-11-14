@@ -1362,60 +1362,64 @@ mod tests {
         }
     }
 
-    #[test]
-    fn edits_compose_rotate_crop_and_clamp_into_the_unit_square() {
-        assert!(Edits::default().is_identity());
-        let mut e = Edits::default();
-        for _ in 0..4 {
-            e = e.rotated_right();
+    tilo_test_env::scenario! {
+        fn edits_compose_and_size_the_image_they_are_applied_to;
+
+        phase edits_compose_rotate_crop_and_clamp_into_the_unit_square;
+        {
+            assert!(Edits::default().is_identity());
+            let mut e = Edits::default();
+            for _ in 0..4 {
+                e = e.rotated_right();
+            }
+            assert!(e.is_identity(), "four right turns");
+            assert!(
+                Edits::default()
+                    .rotated_right()
+                    .rotated_left()
+                    .is_identity(),
+                "left and right cancel"
+            );
+
+            let half = rect(0.0, 0.0, 0.5, 0.5);
+            let out = half.compose(half);
+            assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
+            assert!((out.h - 0.25).abs() < 1e-9, "{out:?}");
+            let right_half = rect(0.5, 0.0, 0.5, 1.0);
+            let out = right_half.compose(right_half);
+            assert!((out.x - 0.75).abs() < 1e-9, "{out:?}");
+            assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
+
+            let r = rect(-0.5, 0.9, 4.0, 4.0).clamped();
+            assert!(r.x >= 0.0 && r.y >= 0.0);
+            assert!(r.x + r.w <= 1.0 + 1e-9, "{r:?}");
+            assert!(r.y + r.h <= 1.0 + 1e-9, "{r:?}");
         }
-        assert!(e.is_identity(), "four right turns");
-        assert!(
-            Edits::default()
-                .rotated_right()
-                .rotated_left()
-                .is_identity(),
-            "left and right cancel"
-        );
 
-        let half = rect(0.0, 0.0, 0.5, 0.5);
-        let out = half.compose(half);
-        assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
-        assert!((out.h - 0.25).abs() < 1e-9, "{out:?}");
-        let right_half = rect(0.5, 0.0, 0.5, 1.0);
-        let out = right_half.compose(right_half);
-        assert!((out.x - 0.75).abs() < 1e-9, "{out:?}");
-        assert!((out.w - 0.25).abs() < 1e-9, "{out:?}");
+        phase open_images_name_themselves_and_size_by_their_edits;
+        {
+            let img = OpenImage::fixture("/var/tmp/tilo/home/user/harbour.png", 1, 1);
+            assert_eq!(img.name, "harbour.png");
 
-        let r = rect(-0.5, 0.9, 4.0, 4.0).clamped();
-        assert!(r.x >= 0.0 && r.y >= 0.0);
-        assert!(r.x + r.w <= 1.0 + 1e-9, "{r:?}");
-        assert!(r.y + r.h <= 1.0 + 1e-9, "{r:?}");
-    }
-
-    #[test]
-    fn open_images_name_themselves_and_size_by_their_edits() {
-        let img = OpenImage::fixture("/var/tmp/tilo/home/user/harbour.png", 1, 1);
-        assert_eq!(img.name, "harbour.png");
-
-        let img = OpenImage::fixture("/x/harbour.png", 800, 400);
-        for (case, edits, size) in [
-            ("identity", Edits::default(), (800, 400)),
-            (
-                "odd turn swaps the axes",
-                Edits::default().rotated_right(),
-                (400, 800),
-            ),
-            (
-                "crop shrinks",
-                Edits {
-                    crop: rect(0.0, 0.0, 0.5, 0.5),
-                    rotate_quarters: 0,
-                },
-                (400, 200),
-            ),
-        ] {
-            assert_eq!(img.edited_size(&edits), size, "case {case}");
+            let img = OpenImage::fixture("/x/harbour.png", 800, 400);
+            for (case, edits, size) in [
+                ("identity", Edits::default(), (800, 400)),
+                (
+                    "odd turn swaps the axes",
+                    Edits::default().rotated_right(),
+                    (400, 800),
+                ),
+                (
+                    "crop shrinks",
+                    Edits {
+                        crop: rect(0.0, 0.0, 0.5, 0.5),
+                        rotate_quarters: 0,
+                    },
+                    (400, 200),
+                ),
+            ] {
+                assert_eq!(img.edited_size(&edits), size, "case {case}");
+            }
         }
     }
 }

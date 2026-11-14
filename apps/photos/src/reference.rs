@@ -48,63 +48,67 @@ mod tests {
         doc
     }
 
-    #[test]
-    fn a_photograph_has_one_whole_published_address_that_edits_keep() {
-        let harbour = photo(PATH);
-        let mut doc = doc_with(&harbour);
-        let r = photo_reference(&harbour);
-        assert_eq!(
-            r.resource_id().as_str(),
-            crate::resource::photo_resource_id(&harbour.id)
-        );
-        assert_eq!(r.kind, PHOTO_KIND);
+    tilo_test_env::scenario! {
+        fn a_photograph_is_referenced_by_one_address_and_labelled_by_its_file;
 
-        let library = crate::test_doc::library(&doc);
-        let published = <crate::model::PhotoLibrary as ui::tilo_resource::Resource>::child(
-            &library,
-            r.resource_id().as_str(),
-        )
-        .unwrap_or_else(|| {
-            panic!(
-                "a remark minted `{}`, which the app never publishes",
-                harbour.id
+        phase a_photograph_has_one_whole_published_address_that_edits_keep;
+        {
+            let harbour = photo(PATH);
+            let mut doc = doc_with(&harbour);
+            let r = photo_reference(&harbour);
+            assert_eq!(
+                r.resource_id().as_str(),
+                crate::resource::photo_resource_id(&harbour.id)
+            );
+            assert_eq!(r.kind, PHOTO_KIND);
+
+            let library = crate::test_doc::library(&doc);
+            let published = <crate::model::PhotoLibrary as ui::tilo_resource::Resource>::child(
+                &library,
+                r.resource_id().as_str(),
             )
-        });
-        assert_eq!(
-            published.kind, r.kind,
-            "the kind tag is the one the door uses"
-        );
-        assert!(
-            published.actions.iter().any(|a| a.id == "crop"),
-            "the referenced photograph carries the crop action"
-        );
+            .unwrap_or_else(|| {
+                panic!(
+                    "a remark minted `{}`, which the app never publishes",
+                    harbour.id
+                )
+            });
+            assert_eq!(
+                published.kind, r.kind,
+                "the kind tag is the one the door uses"
+            );
+            assert!(
+                published.actions.iter().any(|a| a.id == "crop"),
+                "the referenced photograph carries the crop action"
+            );
 
-        assert_eq!(r.span, None);
-        assert!(!r.is_partial());
+            assert_eq!(r.span, None);
+            assert!(!r.is_partial());
 
-        let mut library = crate::test_doc::library(&doc);
-        library.photos.iter_mut().next().unwrap().1.edits =
-            crate::model::Edits::default().rotated_right();
-        crate::test_doc::set_library(&mut doc, &library);
-        let after = photo_reference(&crate::test_doc::photo(&doc, &harbour.id).unwrap());
-        assert_eq!(r.resource_id(), after.resource_id());
-    }
+            let mut library = crate::test_doc::library(&doc);
+            library.photos.iter_mut().next().unwrap().1.edits =
+                crate::model::Edits::default().rotated_right();
+            crate::test_doc::set_library(&mut doc, &library);
+            let after = photo_reference(&crate::test_doc::photo(&doc, &harbour.id).unwrap());
+            assert_eq!(r.resource_id(), after.resource_id());
+        }
 
-    #[test]
-    fn labels_name_the_file_addresses_name_the_picture() {
-        let a = photo_reference(&photo("/var/workspace/a/harbour.png"));
-        let b = photo_reference(&photo("/var/workspace/b/harbour.png"));
-        assert_eq!(a.label, "harbour.png");
-        assert_eq!(b.label, "harbour.png", "same name");
-        assert_ne!(
-            a.resource_id(),
-            b.resource_id(),
-            "two different photographs must not collide on one address"
-        );
-        assert!(
-            !a.label.contains('/'),
-            "the label is for a person: {:?}",
-            a.label
-        );
+        phase labels_name_the_file_addresses_name_the_picture;
+        {
+            let a = photo_reference(&photo("/var/workspace/a/harbour.png"));
+            let b = photo_reference(&photo("/var/workspace/b/harbour.png"));
+            assert_eq!(a.label, "harbour.png");
+            assert_eq!(b.label, "harbour.png", "same name");
+            assert_ne!(
+                a.resource_id(),
+                b.resource_id(),
+                "two different photographs must not collide on one address"
+            );
+            assert!(
+                !a.label.contains('/'),
+                "the label is for a person: {:?}",
+                a.label
+            );
+        }
     }
 }

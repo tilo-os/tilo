@@ -159,13 +159,14 @@ fn press_bar(app: &PhotosApp, name: &str) -> bool {
     true
 }
 
-#[allow(
-    clippy::float_cmp,
-    reason = "the surface must show exactly the factor the gesture answered, and a reset is exactly 1.0"
-)]
-#[test]
-fn the_open_photograph_can_be_presented_slid_and_zoomed() {
-    eprintln!("phase presenting_is_the_window_and_the_slide_show_advances_the_set");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::float_cmp,
+        reason = "the surface must show exactly the factor the gesture answered, and a reset is exactly 1.0"
+    )]
+    fn the_open_photograph_can_be_presented_slid_and_zoomed;
+
+    phase presenting_is_the_window_and_the_slide_show_advances_the_set;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -192,7 +193,7 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
         );
     }
 
-    eprintln!("phase the_slide_show_advances_wraps_and_sets_a_wake");
+    phase the_slide_show_advances_wraps_and_sets_a_wake;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -241,7 +242,7 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
         );
     }
 
-    eprintln!("phase the_picture_zooms_rather_than_the_window_and_never_in_the_library");
+    phase the_picture_zooms_rather_than_the_window_and_never_in_the_library;
     {
         use ui::content_zoom::{ContentZoom, ZoomStep};
         let mut app = test_app();
@@ -355,9 +356,10 @@ fn a_photograph_decodes_off_the_frame_and_appears_when_it_lands() {
     assert!(app.state().has_image());
 }
 
-#[test]
-fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
-    eprintln!("phase unavailable_bytes_and_bad_bytes_have_distinct_honest_canvas_states");
+tilo_test_env::scenario! {
+    fn canvas_and_places_feedback_stay_honest_and_presentation_only;
+
+    phase unavailable_bytes_and_bad_bytes_have_distinct_honest_canvas_states;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -390,7 +392,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
         assert_eq!(app.state().empty_state_text().0, tr("photos-error-title"));
     }
 
-    eprintln!("phase places_camera_feedback_is_presentation_only_and_respects_reduced_motion");
+    phase places_camera_feedback_is_presentation_only_and_respects_reduced_motion;
     {
         let mut app = test_app();
         let original = app.state().places_viewport;
@@ -408,10 +410,11 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn people_review_commits_only_explicit_canonical_actions() {
-    eprintln!("phase people_scan_cursor_only_advances_after_the_admitted_batch_succeeds");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn people_review_commits_only_explicit_canonical_actions;
+
+    phase people_scan_cursor_only_advances_after_the_admitted_batch_succeeds;
     {
         let mut progress = PeopleScanProgress {
             next_offset: 12,
@@ -443,7 +446,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
         assert_eq!(progress.status, "complete");
     }
 
-    eprintln!("phase people_review_commits_only_an_explicit_membership_action");
+    phase people_review_commits_only_an_explicit_membership_action;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -486,9 +489,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
         );
     }
 
-    eprintln!(
-        "phase people_surface_completes_review_browse_rename_and_merge_through_canonical_actions"
-    );
+    phase people_surface_completes_review_browse_rename_and_merge_through_canonical_actions;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -570,7 +571,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
         assert!(!app.state().people_mode);
     }
 
-    eprintln!("phase people_rejection_is_reversible_and_accessibility_activates_the_same_control");
+    phase people_rejection_is_reversible_and_accessibility_activates_the_same_control;
     {
         let app = test_app();
         let doc = crate::test_doc::new_doc();
@@ -666,9 +667,10 @@ fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
     }
 }
 
-#[test]
-fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
-    eprintln!("phase date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor");
+tilo_test_env::scenario! {
+    fn date_index_follows_timeline_rows_boundaries_and_honest_labels;
+
+    phase date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor;
     {
         let app = test_app();
         app.state().timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
@@ -684,7 +686,7 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
         assert!((app.state().timeline_scroll_y - 45.0).abs() < f64::EPSILON);
     }
 
-    eprintln!("phase date_index_labels_keep_non_iso_values_honest");
+    phase date_index_labels_keep_non_iso_values_honest;
     {
         assert_eq!(timeline_date_label("2026-09-18"), "Sep 18, 2026");
         assert_eq!(timeline_date_label("Undated"), "Undated");
@@ -699,7 +701,7 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
         assert_eq!(capture_day("Jun 2026"), "Jun");
     }
 
-    eprintln!("phase date_index_boundaries_are_chronological_and_mark_year_changes");
+    phase date_index_boundaries_are_chronological_and_mark_year_changes;
     {
         let item = |id: &str, day: &str| TimelinePhoto {
             id: id.into(),
@@ -733,7 +735,7 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
         assert_eq!(timeline_date_label(&markers[1].0), "Dec 31, 2025");
     }
 
-    eprintln!("phase canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary");
+    phase canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary;
     {
         let mut doc = crate::test_doc::new_doc();
         let mut newer = LibraryPhoto::from_image(OpenImage::fixture("newer.png", 20, 10));
@@ -794,10 +796,11 @@ fn timeline_anchor_uses_current_library_instead_of_cached_day_offset() {
     );
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
-    eprintln!("phase every_local_analysis_kind_uses_the_same_bounded_queue");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn analysis_queue_is_shared_bounded_and_commits_only_current_results;
+
+    phase every_local_analysis_kind_uses_the_same_bounded_queue;
     {
         let (sender, _receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         let image = OpenImage::fixture("queue.png", 2, 2);
@@ -827,7 +830,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         );
     }
 
-    eprintln!("phase cancelled_or_stale_analysis_can_never_persist");
+    phase cancelled_or_stale_analysis_can_never_persist;
     {
         let app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
@@ -879,7 +882,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         assert!(crate::test_doc::library(&doc).photos.is_empty());
     }
 
-    eprintln!("phase drain_preserves_ocr_and_vision_components_from_separate_jobs");
+    phase drain_preserves_ocr_and_vision_components_from_separate_jobs;
     {
         let mut app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
@@ -960,7 +963,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         assert_eq!(analysis.vision_provenance.unwrap().source, "local-vision");
     }
 
-    eprintln!("phase library_analysis_commits_each_real_result_with_provenance_and_finishes");
+    phase library_analysis_commits_each_real_result_with_provenance_and_finishes;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1028,10 +1031,11 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
-    eprintln!("phase pinch_and_ctrl_wheel_use_the_same_density_event_path");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn density_changes_share_one_event_path_and_reanchor_the_first_photo;
+
+    phase pinch_and_ctrl_wheel_use_the_same_density_event_path;
     {
         use winit::event::{DeviceId, TouchPhase, WindowEvent};
         use winit::keyboard::ModifiersState;
@@ -1063,7 +1067,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         assert_eq!(app.state().timeline_density, after_pinch + 1);
     }
 
-    eprintln!("phase density_reanchors_the_same_first_photo");
+    phase density_reanchors_the_same_first_photo;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1122,7 +1126,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         assert!((restored.y - screen_y).abs() < 0.001);
     }
 
-    eprintln!("phase enlarged_library_keeps_photos_first_with_density_navigation");
+    phase enlarged_library_keeps_photos_first_with_density_navigation;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1186,13 +1190,14 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the end-to-end parity test deliberately compares favorite and membership envelopes across UI, AT, and resource routes"
-)]
-#[test]
-fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
-    eprintln!("phase selection_is_local_but_its_favorite_and_album_results_are_canonical_actions");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the end-to-end parity test deliberately compares favorite and membership envelopes across UI, AT, and resource routes"
+    )]
+    fn selection_and_album_editing_page_everything_and_mint_canonical_actions;
+
+    phase selection_is_local_but_its_favorite_and_album_results_are_canonical_actions;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1304,7 +1309,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         );
     }
 
-    eprintln!("phase destination_chooser_lists_every_album_and_refuses_a_stale_target");
+    phase destination_chooser_lists_every_album_and_refuses_a_stale_target;
     {
         let app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1364,7 +1369,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         );
     }
 
-    eprintln!("phase album_editor_keeps_its_draft_local_while_the_timeline_scrolls");
+    phase album_editor_keeps_its_draft_local_while_the_timeline_scrolls;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1450,7 +1455,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert_eq!(crate::test_doc::library(&doc), before);
     }
 
-    eprintln!("phase concurrent_album_drafts_mint_distinct_stable_ids");
+    phase concurrent_album_drafts_mint_distinct_stable_ids;
     {
         let left = test_app();
         let right = test_app();
@@ -1467,7 +1472,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert_ne!(left_id, right_id);
     }
 
-    eprintln!("phase albums_destination_materializes_bounded_covers_and_semantic_routes");
+    phase albums_destination_materializes_bounded_covers_and_semantic_routes;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1513,9 +1518,10 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     }
 }
 
-#[test]
-fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
-    eprintln!("phase cancelling_a_portal_invocation_is_terminal_and_drops_late_results");
+tilo_test_env::scenario! {
+    fn operations_fail_canonically_cancel_terminally_and_confirm_removal;
+
+    phase cancelling_a_portal_invocation_is_terminal_and_drops_late_results;
     {
         let app = test_app();
         let invocation = tilo_actions::InvocationId::new();
@@ -1538,7 +1544,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         assert!(app.state().pending_resource_open.is_none());
     }
 
-    eprintln!("phase library_removal_requires_confirmation_and_routes_through_the_action_host");
+    phase library_removal_requires_confirmation_and_routes_through_the_action_host;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1571,10 +1577,11 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
-    eprintln!("phase accessibility_exposes_and_routes_every_header_command");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls;
+
+    phase accessibility_exposes_and_routes_every_header_command;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1634,7 +1641,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
     }
 
-    eprintln!("phase narrow_window_keeps_every_command_in_the_window_bar");
+    phase narrow_window_keeps_every_command_in_the_window_bar;
     {
         let mut hosted =
             ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
@@ -1661,7 +1668,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
     }
 
-    eprintln!("phase metadata_sheet_focus_tracks_each_adaptive_section");
+    phase metadata_sheet_focus_tracks_each_adaptive_section;
     {
         let app = test_app();
         for focus in 0..5 {
@@ -1704,7 +1711,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         assert_eq!(app.state().metadata_editor_focus, 5);
     }
 
-    eprintln!("phase metadata_sheet_footer_never_covers_a_focused_field");
+    phase metadata_sheet_footer_never_covers_a_focused_field;
     {
         let _settled = ui::motion::testing::settled();
         for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
@@ -1793,7 +1800,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         }
     }
 
-    eprintln!("phase compact_sheet_field_list_reaches_the_footer");
+    phase compact_sheet_field_list_reaches_the_footer;
     {
         let _settled = ui::motion::testing::settled();
         let (w, h) = (420.0_f32, 800.0_f32);
@@ -1917,9 +1924,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
     }
 
-    eprintln!(
-        "phase opened_viewer_exposes_shared_context_without_creating_a_second_metadata_store"
-    );
+    phase opened_viewer_exposes_shared_context_without_creating_a_second_metadata_store;
     {
         let app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -1977,10 +1982,11 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
-    eprintln!("phase the_system_searches_the_library_and_the_window_keeps_its_own_filter");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn in_app_search_registers_pages_and_keeps_the_last_good_index;
+
+    phase the_system_searches_the_library_and_the_window_keeps_its_own_filter;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -2009,7 +2015,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         assert!(has_resource_id(&published(&doc), &anchor));
     }
 
-    eprintln!("phase platform_search_narrows_photos_by_people_places_and_tags");
+    phase platform_search_narrows_photos_by_people_places_and_tags;
     {
         use ui::search::{FacetFilter, SearchProvider, SearchQuery};
 
@@ -2058,7 +2064,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         );
     }
 
-    eprintln!("phase rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic");
+    phase rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -2123,10 +2129,11 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
-    eprintln!("phase a_large_library_fills_a_bounded_background_thumbnail_queue");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results;
+
+    phase a_large_library_fills_a_bounded_background_thumbnail_queue;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -2152,7 +2159,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
         );
     }
 
-    eprintln!("phase a_stale_thumbnail_result_cannot_populate_a_replaced_library_slice");
+    phase a_stale_thumbnail_result_cannot_populate_a_replaced_library_slice;
     {
         let app = test_app();
         app.state().thumbnail_generation = Some(8);
@@ -2189,7 +2196,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
         );
     }
 
-    eprintln!("phase completed_thumbnail_wakes_its_idle_host_for_success_and_failure");
+    phase completed_thumbnail_wakes_its_idle_host_for_success_and_failure;
     {
         let mut scope = ui::wake::WakeScope::new();
         let _entry = scope.enter();
@@ -2218,7 +2225,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
         }
     }
 
-    eprintln!("phase exhausted_thumbnail_generation_fails_closed_without_reusing_a_token");
+    phase exhausted_thumbnail_generation_fails_closed_without_reusing_a_token;
     {
         let app = test_app();
         app.state().thumbnail_generation = Some(u64::MAX);
@@ -2244,10 +2251,11 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
-    eprintln!("phase library_card_actions_share_one_edge_inset");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn controls_contain_their_text_share_insets_and_keep_pointer_targets;
+
+    phase library_card_actions_share_one_edge_inset;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -2307,7 +2315,7 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
         }
     }
 
-    eprintln!("phase album_management_lives_in_the_header_and_the_inspector");
+    phase album_management_lives_in_the_header_and_the_inspector;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -2362,10 +2370,11 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn background_work_dashboards_pause_cancel_page_and_reflow() {
-    eprintln!("phase visible_analysis_pause_uses_the_published_operation_envelope");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn background_work_dashboards_pause_cancel_page_and_reflow;
+
+    phase visible_analysis_pause_uses_the_published_operation_envelope;
     {
         let app = test_app();
         app.state().library_analysis.begin(
@@ -2385,7 +2394,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         );
     }
 
-    eprintln!("phase analysis_dashboard_reflows_to_phone_width_with_real_shared_controls");
+    phase analysis_dashboard_reflows_to_phone_width_with_real_shared_controls;
     {
         let app = test_app();
         app.state().show_library_analysis();
@@ -2428,7 +2437,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         );
     }
 
-    eprintln!("phase folder_status_effect_and_semantic_stop_share_cancellation");
+    phase folder_status_effect_and_semantic_stop_share_cancellation;
     {
         let mut app = test_app();
         app.state().canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 720.0);
@@ -2483,7 +2492,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         drop(state);
     }
 
-    eprintln!("phase folder_issue_details_are_bounded_paged_and_semantically_operable");
+    phase folder_issue_details_are_bounded_paged_and_semantically_operable;
     {
         let app = test_app();
         app.state().rect = Rect::new(0.0, 0.0, 1_000.0, 760.0);
@@ -2549,7 +2558,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         assert!(app.state().directory_import_receipt.is_none());
     }
 
-    eprintln!("phase folder_status_and_details_adapt_to_phone_geometry");
+    phase folder_status_and_details_adapt_to_phone_geometry;
     {
         let app = test_app();
         app.state().rect = Rect::new(0.0, 0.0, 390.0, 780.0);
@@ -2675,10 +2684,11 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
-    eprintln!("phase edited_content_effect_stores_and_returns_the_exact_transformed_png");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources;
+
+    phase edited_content_effect_stores_and_returns_the_exact_transformed_png;
     {
         let original = pixels::Rgba::new(
             3,
@@ -2787,7 +2797,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         );
     }
 
-    eprintln!("phase edited_content_effect_rejects_missing_or_misdirected_source_bytes");
+    phase edited_content_effect_rejects_missing_or_misdirected_source_bytes;
     {
         let missing = "f".repeat(64);
         let open = OpenImage::named("missing.png", 3, 2, &missing);

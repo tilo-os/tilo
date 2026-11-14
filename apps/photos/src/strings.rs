@@ -21,152 +21,156 @@ pub fn tr_count(key: &str, count: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_key_the_app_uses_resolves() {
-        for key in [
-            "photos-add-to-album",
-            "photos-album-editor-hint",
-            "photos-album-empty-body",
-            "photos-album-empty-title",
-            "photos-albums",
-            "photos-albums-empty-body",
-            "photos-albums-empty-title",
-            "photos-analyze",
-            "photos-app",
-            "photos-cancel",
-            "photos-captured",
-            "photos-clear-selection",
-            "photos-confirm-delete-album",
-            "photos-confirm-remove",
-            "photos-copied",
-            "photos-copy",
-            "photos-copy-failed",
-            "photos-command-crop",
-            "photos-crop-noop",
-            "photos-delete-album",
-            "photos-description",
-            "photos-done",
-            "photos-edit-album",
-            "photos-edit-details",
-            "photos-edited",
-            "photos-edited-state",
-            "photos-empty-body",
-            "photos-empty-title",
-            "photos-error-body",
-            "photos-error-title",
-            "photos-favorite",
-            "photos-favorites",
-            "photos-favorites-empty-body",
-            "photos-favorites-empty-title",
-            "photos-filter-empty-body",
-            "photos-filter-empty-title",
-            "photos-filter-images",
-            "photos-folder",
-            "photos-image",
-            "photos-image-help",
-            "photos-larger-thumbnails",
-            "photos-latitude",
-            "photos-library",
-            "photos-library-empty-body",
-            "photos-library-empty-title",
-            "photos-loading-body",
-            "photos-loading-title",
-            "photos-longitude",
-            "photos-new-album",
-            "photos-open",
-            "photos-open-failed",
-            "photos-open-photo",
-            "photos-open-timeline",
-            "photos-open-timeline-day",
-            "photos-open-timeline-month",
-            "photos-open-title",
-            "photos-organize",
-            "photos-people",
-            "photos-photo-details",
-            "photos-photographs",
-            "photos-place",
-            "photos-places",
-            "photos-places-empty-body",
-            "photos-places-empty-title",
-            "photos-places-list",
-            "photos-remove",
-            "photos-reset",
-            "photos-command-rotate-left",
-            "photos-command-rotate-right",
-            "photos-save",
-            "photos-save-changes",
-            "photos-saved",
-            "photos-save-failed",
-            "photos-save-title",
-            "photos-saved-edited",
-            "photos-save-cancelled",
-            "photos-select",
-            "photos-select-all",
-            "photos-select-photos",
-            "photos-share",
-            "photos-share-copied",
-            "photos-share-failed",
-            "photos-smaller-thumbnails",
-            "photos-state-not-kept",
-            "photos-tags",
-            "photos-time-and-place",
-            "photos-timeline",
-            "photos-timeline-day-description",
-            "photos-timeline-description",
-            "photos-timeline-month-description",
-            "photos-tools",
-            "photos-unfavorite",
-            "photos-zoom-in",
-            "photos-zoom-out",
-        ] {
-            let got = tr(key);
-            assert_ne!(got, key, "`{key}` is not in the bundle");
-            assert!(!got.is_empty(), "`{key}` resolved to nothing");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn every_key_resolves_in_the_bundle;
 
-    #[test]
-    fn every_key_in_the_sources_is_in_the_bundle() {
-        let sources = [
-            include_str!("app.rs"),
-            include_str!("app/accessibility.rs"),
-            include_str!("app/chrome.rs"),
-            include_str!("app/directory_import.rs"),
-            include_str!("app/editors.rs"),
-            include_str!("app/effects.rs"),
-            include_str!("app/jobs.rs"),
-            include_str!("app/navigation.rs"),
-            include_str!("app/paint.rs"),
-            include_str!("app/people.rs"),
-            include_str!("app/widget.rs"),
-            include_str!("analysis.rs"),
-            include_str!("import.rs"),
-            include_str!("lib.rs"),
-            include_str!("people.rs"),
-            include_str!("resource.rs"),
-            include_str!("search.rs"),
-        ];
-        let mut checked = 0;
-        for source in sources {
-            for call in ["tr(\"", "tr_with(\"", "tr_count(\"", "tr_args(\n"] {
-                for (at, _) in source.match_indices(call) {
-                    let rest = source.get(at + call.len() - 1..).unwrap_or_default();
-                    let Some(open) = rest.find("\"photos-") else {
-                        continue;
-                    };
-                    let key_start = open + 1;
-                    let Some(len) = rest.get(key_start..).and_then(|tail| tail.find('"')) else {
-                        continue;
-                    };
-                    let key = &rest[key_start..key_start + len];
-                    if key.contains('{') || open > 40 {
-                        continue;
-                    }
-                    assert_ne!(tr(key), key, "`{key}` is not in the bundle");
-                    checked += 1;
-                }
+        phase every_key_the_app_uses_resolves;
+        {
+            for key in [
+                "photos-add-to-album",
+                "photos-album-editor-hint",
+                "photos-album-empty-body",
+                "photos-album-empty-title",
+                "photos-albums",
+                "photos-albums-empty-body",
+                "photos-albums-empty-title",
+                "photos-analyze",
+                "photos-app",
+                "photos-cancel",
+                "photos-captured",
+                "photos-clear-selection",
+                "photos-confirm-delete-album",
+                "photos-confirm-remove",
+                "photos-copied",
+                "photos-copy",
+                "photos-copy-failed",
+                "photos-command-crop",
+                "photos-crop-noop",
+                "photos-delete-album",
+                "photos-description",
+                "photos-done",
+                "photos-edit-album",
+                "photos-edit-details",
+                "photos-edited",
+                "photos-edited-state",
+                "photos-empty-body",
+                "photos-empty-title",
+                "photos-error-body",
+                "photos-error-title",
+                "photos-favorite",
+                "photos-favorites",
+                "photos-favorites-empty-body",
+                "photos-favorites-empty-title",
+                "photos-filter-empty-body",
+                "photos-filter-empty-title",
+                "photos-filter-images",
+                "photos-folder",
+                "photos-image",
+                "photos-image-help",
+                "photos-larger-thumbnails",
+                "photos-latitude",
+                "photos-library",
+                "photos-library-empty-body",
+                "photos-library-empty-title",
+                "photos-loading-body",
+                "photos-loading-title",
+                "photos-longitude",
+                "photos-new-album",
+                "photos-open",
+                "photos-open-failed",
+                "photos-open-photo",
+                "photos-open-timeline",
+                "photos-open-timeline-day",
+                "photos-open-timeline-month",
+                "photos-open-title",
+                "photos-organize",
+                "photos-people",
+                "photos-photo-details",
+                "photos-photographs",
+                "photos-place",
+                "photos-places",
+                "photos-places-empty-body",
+                "photos-places-empty-title",
+                "photos-places-list",
+                "photos-remove",
+                "photos-reset",
+                "photos-command-rotate-left",
+                "photos-command-rotate-right",
+                "photos-save",
+                "photos-save-changes",
+                "photos-saved",
+                "photos-save-failed",
+                "photos-save-title",
+                "photos-saved-edited",
+                "photos-save-cancelled",
+                "photos-select",
+                "photos-select-all",
+                "photos-select-photos",
+                "photos-share",
+                "photos-share-copied",
+                "photos-share-failed",
+                "photos-smaller-thumbnails",
+                "photos-state-not-kept",
+                "photos-tags",
+                "photos-time-and-place",
+                "photos-timeline",
+                "photos-timeline-day-description",
+                "photos-timeline-description",
+                "photos-timeline-month-description",
+                "photos-tools",
+                "photos-unfavorite",
+                "photos-zoom-in",
+                "photos-zoom-out",
+            ] {
+                let got = tr(key);
+                assert_ne!(got, key, "`{key}` is not in the bundle");
+                assert!(!got.is_empty(), "`{key}` resolved to nothing");
             }
         }
-        assert!(checked > 200, "the scan found only {checked} keys");
+
+        phase every_key_in_the_sources_is_in_the_bundle;
+        {
+            let sources = [
+                include_str!("app.rs"),
+                include_str!("app/accessibility.rs"),
+                include_str!("app/chrome.rs"),
+                include_str!("app/directory_import.rs"),
+                include_str!("app/editors.rs"),
+                include_str!("app/effects.rs"),
+                include_str!("app/jobs.rs"),
+                include_str!("app/navigation.rs"),
+                include_str!("app/paint.rs"),
+                include_str!("app/people.rs"),
+                include_str!("app/widget.rs"),
+                include_str!("analysis.rs"),
+                include_str!("import.rs"),
+                include_str!("lib.rs"),
+                include_str!("people.rs"),
+                include_str!("resource.rs"),
+                include_str!("search.rs"),
+            ];
+            let mut checked = 0;
+            for source in sources {
+                for call in ["tr(\"", "tr_with(\"", "tr_count(\"", "tr_args(\n"] {
+                    for (at, _) in source.match_indices(call) {
+                        let rest = source.get(at + call.len() - 1..).unwrap_or_default();
+                        let Some(open) = rest.find("\"photos-") else {
+                            continue;
+                        };
+                        let key_start = open + 1;
+                        let Some(len) = rest.get(key_start..).and_then(|tail| tail.find('"')) else {
+                            continue;
+                        };
+                        let key = &rest[key_start..key_start + len];
+                        if key.contains('{') || open > 40 {
+                            continue;
+                        }
+                        assert_ne!(tr(key), key, "`{key}` is not in the bundle");
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 200, "the scan found only {checked} keys");
+        }
     }
 }

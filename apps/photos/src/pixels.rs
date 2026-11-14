@@ -244,48 +244,117 @@ pub fn to_peniko(img: &Rgba) -> vello::peniko::ImageData {
 mod tests {
     use super::*;
 
-    #[test]
-    fn decoding_is_bounded_round_trips_png_and_refuses_non_images() {
-        for (bytes, max_bytes, kept) in [
-            (&[1_u8, 2, 3, 4][..], 4, true),
-            (&[1, 2, 3, 4, 5][..], 4, false),
-            (&[0_u8; 0][..], 4, true),
-            (&[0_u8; 0][..], 0, true),
-            (&[1][..], 0, false),
-            (&[1, 2, 3][..], usize::MAX, true),
-        ] {
-            assert_eq!(
-                read_bounded(Cursor::new(bytes), max_bytes),
-                kept.then(|| bytes.to_vec()),
-                "{} bytes read within {max_bytes}",
-                bytes.len()
-            );
+    tilo_test_env::scenario! {
+        fn decoding_and_buffers_hold_their_bounds;
+
+        phase decoding_is_bounded_round_trips_png_and_refuses_non_images;
+        {
+            for (bytes, max_bytes, kept) in [
+                (&[1_u8, 2, 3, 4][..], 4, true),
+                (&[1, 2, 3, 4, 5][..], 4, false),
+                (&[0_u8; 0][..], 4, true),
+                (&[0_u8; 0][..], 0, true),
+                (&[1][..], 0, false),
+                (&[1, 2, 3][..], usize::MAX, true),
+            ] {
+                assert_eq!(
+                    read_bounded(Cursor::new(bytes), max_bytes),
+                    kept.then(|| bytes.to_vec()),
+                    "{} bytes read within {max_bytes}",
+                    bytes.len()
+                );
+            }
+
+            for (w, h, ok) in [
+                (8_000, 4_000, true),
+                (8_193, 4_096, false),
+                (u32::MAX, u32::MAX, false),
+                (0, 1, false),
+                (1, 0, false),
+                (1, 1, true),
+                // Exactly the budget, as a frame and as one row, and one pixel past it.
+                (8_192, 4_096, true),
+                (33_554_432, 1, true),
+                (33_554_433, 1, false),
+            ] {
+                assert_eq!(within_decode_limits(w, h), ok, "decode limits for {w}x{h}");
+            }
+
+            let src = ramp(6, 4);
+            let png = encode_png(&src).expect("encode");
+            assert_eq!(&png[1..4], b"PNG", "not a PNG");
+            let back = decode(&png).expect("decode");
+            assert_eq!((back.w, back.h), (6, 4));
+            assert_eq!(back.bytes, src.bytes, "the round trip changed pixels");
+
+            assert!(decode(b"this is not a picture").is_none());
+            assert!(decode(&[]).is_none());
         }
 
-        for (w, h, ok) in [
-            (8_000, 4_000, true),
-            (8_193, 4_096, false),
-            (u32::MAX, u32::MAX, false),
-            (0, 1, false),
-            (1, 0, false),
-            (1, 1, true),
-            // Exactly the budget, as a frame and as one row, and one pixel past it.
-            (8_192, 4_096, true),
-            (33_554_432, 1, true),
-            (33_554_433, 1, false),
-        ] {
-            assert_eq!(within_decode_limits(w, h), ok, "decode limits for {w}x{h}");
+        phase a_header_past_the_budget_is_refused_before_any_pixel_is_decoded;
+        {
+            // A real 6x4 PNG whose header is rewritten to declare another size: the width and
+            // the height are the eight bytes at 16, big-endian.
+            let png = encode_png(&ramp(6, 4)).expect("encode");
+            assert_eq!(size(&png), Some((6, 4)));
+            for (w, h, kept) in [
+                (8_192_u32, 4_096_u32, true),
+                (33_554_432, 1, true),
+                (8_193, 4_096, false),
+                (33_554_433, 1, false),
+                (u32::MAX, u32::MAX, false),
+                (0, 4, false),
+                (6, 0, false),
+            ] {
+                let mut declared = png.clone();
+                declared[16..20].copy_from_slice(&w.to_be_bytes());
+                declared[20..24].copy_from_slice(&h.to_be_bytes());
+                assert_eq!(
+                    size(&declared),
+                    kept.then_some((w, h)),
+                    "a header declaring {w}x{h}"
+                );
+                if !kept {
+                    assert!(
+                        decode(&declared).is_none(),
+                        "decoding a header declaring {w}x{h}"
+                    );
+                }
+            }
+
+            // The encoded bound is asked before the header is read: exactly the bound is still
+            // an image, one byte past it is not.
+            let mut padded = vec![0_u8; MAX_ENCODED_BYTES + 1];
+            padded[..png.len()].copy_from_slice(&png);
+            assert_eq!(size(&padded[..MAX_ENCODED_BYTES]), Some((6, 4)));
+            assert_eq!(size(&padded), None);
+            assert!(decode(&padded).is_none());
         }
 
-        let src = ramp(6, 4);
-        let png = encode_png(&src).expect("encode");
-        assert_eq!(&png[1..4], b"PNG", "not a PNG");
-        let back = decode(&png).expect("decode");
-        assert_eq!((back.w, back.h), (6, 4));
-        assert_eq!(back.bytes, src.bytes, "the round trip changed pixels");
+        phase a_buffer_is_exactly_its_dimensions_or_it_is_no_image;
+        {
+            for (w, h, len, ok) in [
+                (2_u32, 1_u32, 8_usize, true),
+                (1, 1, 4, true),
+                (2, 1, 7, false),
+                (2, 1, 9, false),
+                (0, 1, 0, false),
+                (1, 0, 0, false),
+                (0, 0, 0, false),
+            ] {
+                assert_eq!(
+                    Rgba::new(w, h, vec![0; len]).is_some(),
+                    ok,
+                    "{len} bytes as {w}x{h}"
+                );
+            }
 
-        assert!(decode(b"this is not a picture").is_none());
-        assert!(decode(&[]).is_none());
+            let image = ramp(3, 2);
+            assert_eq!(image.pixel(2, 1), Some([2, 1, 0, 255]));
+            for (x, y) in [(3, 1), (2, 2), (u32::MAX, 0), (0, u32::MAX)] {
+                assert_eq!(image.pixel(x, y), None, "pixel ({x}, {y}) of a 3x2 image");
+            }
+        }
     }
 
     fn ramp(w: u32, h: u32) -> Rgba {
@@ -309,150 +378,159 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_header_past_the_budget_is_refused_before_any_pixel_is_decoded() {
-        // A real 6x4 PNG whose header is rewritten to declare another size: the width and
-        // the height are the eight bytes at 16, big-endian.
-        let png = encode_png(&ramp(6, 4)).expect("encode");
-        assert_eq!(size(&png), Some((6, 4)));
-        for (w, h, kept) in [
-            (8_192_u32, 4_096_u32, true),
-            (33_554_432, 1, true),
-            (8_193, 4_096, false),
-            (33_554_433, 1, false),
-            (u32::MAX, u32::MAX, false),
-            (0, 4, false),
-            (6, 0, false),
-        ] {
-            let mut declared = png.clone();
-            declared[16..20].copy_from_slice(&w.to_be_bytes());
-            declared[20..24].copy_from_slice(&h.to_be_bytes());
-            assert_eq!(
-                size(&declared),
-                kept.then_some((w, h)),
-                "a header declaring {w}x{h}"
-            );
-            if !kept {
-                assert!(
-                    decode(&declared).is_none(),
-                    "decoding a header declaring {w}x{h}"
+    tilo_test_env::scenario! {
+        fn orientation_crop_and_rotation_move_exactly_the_pixels_they_name;
+
+        phase exif_orientation_uprights_pixels_and_is_read_from_real_jpeg_bytes;
+        {
+            let source = ramp(3, 2);
+            let cases = [
+                (
+                    1,
+                    (3, 2),
+                    vec![(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)],
+                ),
+                (
+                    2,
+                    (3, 2),
+                    vec![(2, 0), (1, 0), (0, 0), (2, 1), (1, 1), (0, 1)],
+                ),
+                (
+                    3,
+                    (3, 2),
+                    vec![(2, 1), (1, 1), (0, 1), (2, 0), (1, 0), (0, 0)],
+                ),
+                (
+                    4,
+                    (3, 2),
+                    vec![(0, 1), (1, 1), (2, 1), (0, 0), (1, 0), (2, 0)],
+                ),
+                (
+                    5,
+                    (2, 3),
+                    vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)],
+                ),
+                (
+                    6,
+                    (2, 3),
+                    vec![(0, 1), (0, 0), (1, 1), (1, 0), (2, 1), (2, 0)],
+                ),
+                (
+                    7,
+                    (2, 3),
+                    vec![(2, 1), (2, 0), (1, 1), (1, 0), (0, 1), (0, 0)],
+                ),
+                (
+                    8,
+                    (2, 3),
+                    vec![(2, 0), (2, 1), (1, 0), (1, 1), (0, 0), (0, 1)],
+                ),
+            ];
+
+            for (orientation, dimensions, expected) in cases {
+                let upright = normalize_exif_orientation(source.clone(), Some(orientation));
+                assert_eq!(
+                    (upright.w, upright.h),
+                    dimensions,
+                    "orientation {orientation}"
                 );
+                assert_eq!(coordinates(&upright), expected, "orientation {orientation}");
+            }
+            assert_eq!(normalize_exif_orientation(source.clone(), None), source);
+            assert_eq!(normalize_exif_orientation(source.clone(), Some(0)), source);
+            assert_eq!(normalize_exif_orientation(source.clone(), Some(9)), source);
+
+            for orientation in 1..=8 {
+                let jpeg = jpeg_with_orientation(orientation);
+                assert_eq!(encoded_exif_orientation(&jpeg), Some(orientation));
+                let upright = decode(&jpeg).expect("decode tagged JPEG");
+                let expected_dimensions = if orientation >= 5 { (2, 3) } else { (3, 2) };
+                assert_eq!(
+                    (upright.w, upright.h),
+                    expected_dimensions,
+                    "orientation {orientation}"
+                );
+            }
+            for orientation in [0, 9, u16::MAX] {
+                let jpeg = jpeg_with_orientation(orientation);
+                assert_eq!(
+                    encoded_exif_orientation(&jpeg),
+                    None,
+                    "orientation {orientation}"
+                );
+                let upright = decode(&jpeg).expect("decode JPEG despite invalid metadata");
+                assert_eq!((upright.w, upright.h), (3, 2), "orientation {orientation}");
             }
         }
 
-        // The encoded bound is asked before the header is read: exactly the bound is still
-        // an image, one byte past it is not.
-        let mut padded = vec![0_u8; MAX_ENCODED_BYTES + 1];
-        padded[..png.len()].copy_from_slice(&png);
-        assert_eq!(size(&padded[..MAX_ENCODED_BYTES]), Some((6, 4)));
-        assert_eq!(size(&padded), None);
-        assert!(decode(&padded).is_none());
-    }
+        phase crops_take_exactly_their_bounded_region;
+        {
+            let src = ramp(4, 4);
+            let out = crop(&src, rect(0.5, 0.5, 0.5, 0.5));
+            assert_eq!((out.w, out.h), (2, 2));
+            assert_eq!(out.pixel(0, 0).unwrap()[0..2], [2, 2]);
+            assert_eq!(out.pixel(1, 1).unwrap()[0..2], [3, 3]);
+            assert_eq!(out.bytes.len(), 2 * 2 * 4);
 
-    #[test]
-    fn a_buffer_is_exactly_its_dimensions_or_it_is_no_image() {
-        for (w, h, len, ok) in [
-            (2_u32, 1_u32, 8_usize, true),
-            (1, 1, 4, true),
-            (2, 1, 7, false),
-            (2, 1, 9, false),
-            (0, 1, 0, false),
-            (1, 0, 0, false),
-            (0, 0, 0, false),
-        ] {
-            assert_eq!(
-                Rgba::new(w, h, vec![0; len]).is_some(),
-                ok,
-                "{len} bytes as {w}x{h}"
-            );
+            let out = crop(&src, rect(0.5, 0.5, 0.0, 0.0));
+            assert_eq!((out.w, out.h), (1, 1), "a zero-area crop must not vanish");
+            assert_eq!(out.bytes.len(), 4);
         }
 
-        let image = ramp(3, 2);
-        assert_eq!(image.pixel(2, 1), Some([2, 1, 0, 255]));
-        for (x, y) in [(3, 1), (2, 2), (u32::MAX, 0), (0, u32::MAX)] {
-            assert_eq!(image.pixel(x, y), None, "pixel ({x}, {y}) of a 3x2 image");
-        }
-    }
-
-    #[test]
-    fn exif_orientation_uprights_pixels_and_is_read_from_real_jpeg_bytes() {
-        let source = ramp(3, 2);
-        let cases = [
-            (
-                1,
-                (3, 2),
-                vec![(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)],
-            ),
-            (
-                2,
-                (3, 2),
-                vec![(2, 0), (1, 0), (0, 0), (2, 1), (1, 1), (0, 1)],
-            ),
-            (
-                3,
-                (3, 2),
-                vec![(2, 1), (1, 1), (0, 1), (2, 0), (1, 0), (0, 0)],
-            ),
-            (
-                4,
-                (3, 2),
-                vec![(0, 1), (1, 1), (2, 1), (0, 0), (1, 0), (2, 0)],
-            ),
-            (
-                5,
-                (2, 3),
-                vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)],
-            ),
-            (
-                6,
-                (2, 3),
-                vec![(0, 1), (0, 0), (1, 1), (1, 0), (2, 1), (2, 0)],
-            ),
-            (
-                7,
-                (2, 3),
-                vec![(2, 1), (2, 0), (1, 1), (1, 0), (0, 1), (0, 0)],
-            ),
-            (
-                8,
-                (2, 3),
-                vec![(2, 0), (2, 1), (1, 0), (1, 1), (0, 0), (0, 1)],
-            ),
-        ];
-
-        for (orientation, dimensions, expected) in cases {
-            let upright = normalize_exif_orientation(source.clone(), Some(orientation));
-            assert_eq!(
-                (upright.w, upright.h),
-                dimensions,
-                "orientation {orientation}"
+        phase rotation_moves_pixels_and_unrotate_inverts_the_view;
+        {
+            let cases = [
+                (
+                    "quarter turn",
+                    rotate(&ramp(4, 2), 1),
+                    (2, 4),
+                    vec![((0, 0), [0, 1]), ((1, 0), [0, 0])],
+                ),
+                (
+                    "square quarter turn",
+                    rotate(&ramp(3, 3), 1),
+                    (3, 3),
+                    vec![((0, 0), [0, 2])],
+                ),
+                (
+                    "render crops then rotates",
+                    render(&ramp(4, 2), rect(0.0, 0.0, 0.5, 1.0), 1),
+                    (2, 2),
+                    vec![((0, 0), [0, 1])],
+                ),
+            ];
+            for (case, out, dims, pixels) in cases {
+                assert_eq!((out.w, out.h), dims, "case {case}");
+                for ((x, y), want) in pixels {
+                    assert_eq!(
+                        out.pixel(x, y).unwrap()[0..2],
+                        want,
+                        "case {case} pixel ({x}, {y})"
+                    );
+                }
+            }
+            assert_ne!(
+                rotate(&ramp(3, 3), 1).bytes,
+                ramp(3, 3).bytes,
+                "a square rotation must still move pixels"
             );
-            assert_eq!(coordinates(&upright), expected, "orientation {orientation}");
-        }
-        assert_eq!(normalize_exif_orientation(source.clone(), None), source);
-        assert_eq!(normalize_exif_orientation(source.clone(), Some(0)), source);
-        assert_eq!(normalize_exif_orientation(source.clone(), Some(9)), source);
+            let src = ramp(5, 3);
+            assert_eq!(rotate(&src, 4), src, "four quarter turns are the identity");
+            assert_eq!(rotate(&src, 0), src);
 
-        for orientation in 1..=8 {
-            let jpeg = jpeg_with_orientation(orientation);
-            assert_eq!(encoded_exif_orientation(&jpeg), Some(orientation));
-            let upright = decode(&jpeg).expect("decode tagged JPEG");
-            let expected_dimensions = if orientation >= 5 { (2, 3) } else { (3, 2) };
-            assert_eq!(
-                (upright.w, upright.h),
-                expected_dimensions,
-                "orientation {orientation}"
-            );
-        }
-        for orientation in [0, 9, u16::MAX] {
-            let jpeg = jpeg_with_orientation(orientation);
-            assert_eq!(
-                encoded_exif_orientation(&jpeg),
-                None,
-                "orientation {orientation}"
-            );
-            let upright = decode(&jpeg).expect("decode JPEG despite invalid metadata");
-            assert_eq!((upright.w, upright.h), (3, 2), "orientation {orientation}");
+            let back = unrotate_rect(rect(0.0, 0.0, 0.5, 0.5), 1);
+            assert!((back.x - 0.0).abs() < 1e-9, "got {back:?}");
+            assert!((back.y - 0.5).abs() < 1e-9, "got {back:?}");
+            assert!((back.w - 0.5).abs() < 1e-9, "got {back:?}");
+            assert!((back.h - 0.5).abs() < 1e-9, "got {back:?}");
+            let r = rect(0.25, 0.125, 0.5, 0.25);
+            for q in 0..4u8 {
+                let back = unrotate_rect(unrotate_rect(r, q), 4 - q);
+                assert!((back.x - r.x).abs() < 1e-9, "q={q} {back:?}");
+                assert!((back.y - r.y).abs() < 1e-9, "q={q} {back:?}");
+                assert!((back.w - r.w).abs() < 1e-9, "q={q} {back:?}");
+                assert!((back.h - r.h).abs() < 1e-9, "q={q} {back:?}");
+            }
         }
     }
 
@@ -504,76 +582,6 @@ mod tests {
             y: top,
             w: width,
             h: height,
-        }
-    }
-
-    #[test]
-    fn crops_take_exactly_their_bounded_region() {
-        let src = ramp(4, 4);
-        let out = crop(&src, rect(0.5, 0.5, 0.5, 0.5));
-        assert_eq!((out.w, out.h), (2, 2));
-        assert_eq!(out.pixel(0, 0).unwrap()[0..2], [2, 2]);
-        assert_eq!(out.pixel(1, 1).unwrap()[0..2], [3, 3]);
-        assert_eq!(out.bytes.len(), 2 * 2 * 4);
-
-        let out = crop(&src, rect(0.5, 0.5, 0.0, 0.0));
-        assert_eq!((out.w, out.h), (1, 1), "a zero-area crop must not vanish");
-        assert_eq!(out.bytes.len(), 4);
-    }
-
-    #[test]
-    fn rotation_moves_pixels_and_unrotate_inverts_the_view() {
-        let cases = [
-            (
-                "quarter turn",
-                rotate(&ramp(4, 2), 1),
-                (2, 4),
-                vec![((0, 0), [0, 1]), ((1, 0), [0, 0])],
-            ),
-            (
-                "square quarter turn",
-                rotate(&ramp(3, 3), 1),
-                (3, 3),
-                vec![((0, 0), [0, 2])],
-            ),
-            (
-                "render crops then rotates",
-                render(&ramp(4, 2), rect(0.0, 0.0, 0.5, 1.0), 1),
-                (2, 2),
-                vec![((0, 0), [0, 1])],
-            ),
-        ];
-        for (case, out, dims, pixels) in cases {
-            assert_eq!((out.w, out.h), dims, "case {case}");
-            for ((x, y), want) in pixels {
-                assert_eq!(
-                    out.pixel(x, y).unwrap()[0..2],
-                    want,
-                    "case {case} pixel ({x}, {y})"
-                );
-            }
-        }
-        assert_ne!(
-            rotate(&ramp(3, 3), 1).bytes,
-            ramp(3, 3).bytes,
-            "a square rotation must still move pixels"
-        );
-        let src = ramp(5, 3);
-        assert_eq!(rotate(&src, 4), src, "four quarter turns are the identity");
-        assert_eq!(rotate(&src, 0), src);
-
-        let back = unrotate_rect(rect(0.0, 0.0, 0.5, 0.5), 1);
-        assert!((back.x - 0.0).abs() < 1e-9, "got {back:?}");
-        assert!((back.y - 0.5).abs() < 1e-9, "got {back:?}");
-        assert!((back.w - 0.5).abs() < 1e-9, "got {back:?}");
-        assert!((back.h - 0.5).abs() < 1e-9, "got {back:?}");
-        let r = rect(0.25, 0.125, 0.5, 0.25);
-        for q in 0..4u8 {
-            let back = unrotate_rect(unrotate_rect(r, q), 4 - q);
-            assert!((back.x - r.x).abs() < 1e-9, "q={q} {back:?}");
-            assert!((back.y - r.y).abs() < 1e-9, "q={q} {back:?}");
-            assert!((back.w - r.w).abs() < 1e-9, "q={q} {back:?}");
-            assert!((back.h - r.h).abs() < 1e-9, "q={q} {back:?}");
         }
     }
 }

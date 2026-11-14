@@ -157,9 +157,10 @@ fn staged(dir: &std::path::Path, w: u32, h: u32) -> (String, Rgba) {
     (path.to_string_lossy().into_owned(), img)
 }
 
-#[test]
-fn library_accessibility_is_certified_and_album_actions_are_canonical() {
-    eprintln!("phase populated_large_text_library_passes_native_accessibility_certification");
+tilo_test_env::scenario! {
+    fn library_accessibility_is_certified_and_album_actions_are_canonical;
+
+    phase populated_large_text_library_passes_native_accessibility_certification;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);
@@ -185,7 +186,7 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         assert!(driver.accessibility_audit().is_clean());
     }
 
-    eprintln!("phase destination_album_chooser_keeps_native_actions_unique_and_canonical");
+    phase destination_album_chooser_keeps_native_actions_unique_and_canonical;
     {
         fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
             if let Some(target) = &node.action_target {
@@ -254,10 +255,11 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn photographs_fit_the_canvas_and_non_images_open_nothing() {
-    eprintln!("phase the_whole_photograph_is_inside_the_canvas_at_every_window_size");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn photographs_fit_the_canvas_and_non_images_open_nothing;
+
+    phase the_whole_photograph_is_inside_the_canvas_at_every_window_size;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 2400, 1600);
@@ -311,7 +313,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         }
     }
 
-    eprintln!("phase a_portrait_photograph_initially_fits_a_narrow_portrait_window");
+    phase a_portrait_photograph_initially_fits_a_narrow_portrait_window;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 800, 1200);
@@ -326,7 +328,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         );
     }
 
-    eprintln!("phase a_loaded_photograph_produces_a_non_empty_scene");
+    phase a_loaded_photograph_produces_a_non_empty_scene;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 300, 200);
@@ -357,7 +359,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         );
     }
 
-    eprintln!("phase nothing_open_publishes_open_and_still_draws");
+    phase nothing_open_publishes_open_and_still_draws;
     {
         let mut hz = Harness::new(900.0, 600.0);
         let scene = hz.frame();
@@ -376,7 +378,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         assert!(!hz.app().state().has_image());
     }
 
-    eprintln!("phase opening_a_non_image_says_so_and_opens_nothing");
+    phase opening_a_non_image_says_so_and_opens_nothing;
     {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notes.txt");
@@ -392,15 +394,16 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "fx/fy are literal fractions in 0..=1 in this test, so (dim - 1) * frac stays within 0..dim"
-)]
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
-    eprintln!("phase rotating_changes_the_exported_pixels");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "fx/fy are literal fractions in 0..=1 in this test, so (dim - 1) * frac stays within 0..dim"
+    )]
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn rotate_crop_and_reset_change_exactly_the_exported_pixels;
+
+    phase rotating_changes_the_exported_pixels;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 300, 200);
@@ -454,7 +457,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         );
     }
 
-    eprintln!("phase cropping_changes_the_exported_pixels");
+    phase cropping_changes_the_exported_pixels;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 400, 400);
@@ -495,7 +498,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         );
     }
 
-    eprintln!("phase reset_restores_the_original_pixels_exactly");
+    phase reset_restores_the_original_pixels_exactly;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 240, 160);
@@ -525,7 +528,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         );
     }
 
-    eprintln!("phase cropping_to_the_view_keeps_what_the_viewport_frames");
+    phase cropping_to_the_view_keeps_what_the_viewport_frames;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 400, 400);
@@ -587,9 +590,10 @@ impl ClipboardBackend for RecordingClipboard {
     }
 }
 
-#[test]
-fn copy_and_save_export_what_was_shown_without_overwriting() {
-    eprintln!("phase copy_puts_the_edited_pixels_on_the_clipboard");
+tilo_test_env::scenario! {
+    fn copy_and_save_export_what_was_shown_without_overwriting;
+
+    phase copy_puts_the_edited_pixels_on_the_clipboard;
     {
         let recorder = Arc::new(RecordingClipboard::default());
         let services = ui::host::HostServices::null().with_clipboard(recorder.clone());
@@ -649,7 +653,7 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         );
     }
 
-    eprintln!("phase save_writes_a_png_that_decodes_to_what_was_shown");
+    phase save_writes_a_png_that_decodes_to_what_was_shown;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 320, 240);
@@ -738,10 +742,11 @@ fn save_asks_the_chooser_with_a_bare_name() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn resource_surface_acts_on_the_open_photograph_without_a_display() {
-    eprintln!("phase the_resource_surface_enumerates_the_open_photograph_and_acts_on_it");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn resource_surface_acts_on_the_open_photograph_without_a_display;
+
+    phase the_resource_surface_enumerates_the_open_photograph_and_acts_on_it;
     {
         use tilo_actions::{ActionRegistry, flatten};
 
@@ -822,7 +827,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         );
     }
 
-    eprintln!("phase a_caller_with_no_display_crops_by_address_and_gets_those_pixels");
+    phase a_caller_with_no_display_crops_by_address_and_gets_those_pixels;
     {
         use tilo_actions::ActionRegistry;
 
@@ -904,13 +909,14 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
-)]
-#[test]
-fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
-    eprintln!("phase every_toolbar_control_is_inside_the_window_at_every_size");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
+    )]
+    fn toolbar_controls_fit_legibly_at_every_size_and_theme;
+
+    phase every_toolbar_control_is_inside_the_window_at_every_size;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);
@@ -939,7 +945,7 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
         }
     }
 
-    eprintln!("phase an_empty_app_reserves_no_status_band");
+    phase an_empty_app_reserves_no_status_band;
     {
         let mut hz = Harness::new(1000.0, 700.0);
         hz.frame();
@@ -973,10 +979,11 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn library_cards_lay_out_inside_the_canvas_at_every_size() {
-    eprintln!("phase library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn library_cards_lay_out_inside_the_canvas_at_every_size;
+
+    phase library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);
@@ -1037,7 +1044,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         }
     }
 
-    eprintln!("phase desktop_library_uses_two_complete_rows_before_leaving_canvas_space");
+    phase desktop_library_uses_two_complete_rows_before_leaving_canvas_space;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);
@@ -1077,7 +1084,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         );
     }
 
-    eprintln!("phase large_text_library_keeps_toolbar_and_card_actions_separate");
+    phase large_text_library_keeps_toolbar_and_card_actions_separate;
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);

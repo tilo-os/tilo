@@ -162,22 +162,23 @@ fn truncate_chars(value: &mut String, max: usize) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn local_analysis_refuses_bad_language_truncates_safely_and_pins_vision_models() {
-        eprintln!("phase invalid_language_is_refused_before_reading_pixels");
+    tilo_test_env::scenario! {
+        fn local_analysis_refuses_bad_language_truncates_safely_and_pins_vision_models;
+
+        phase invalid_language_is_refused_before_reading_pixels;
         {
             let open = OpenImage::fixture("/not/read.png", 1, 1);
             assert!(recognize_text(&open, "eng; rm -rf", &ContentStore::memory()).is_err());
         }
 
-        eprintln!("phase truncation_keeps_unicode_boundaries");
+        phase truncation_keeps_unicode_boundaries;
         {
             let mut value = "ééé".to_owned();
             truncate_chars(&mut value, 2);
             assert_eq!(value, "éé");
         }
 
-        eprintln!("phase vision_output_stays_generic_and_records_the_pinned_model");
+        phase vision_output_stays_generic_and_records_the_pinned_model;
         {
             let open = OpenImage::named("vision.png", 3, 2, &"b".repeat(64));
             let capability = tilo_vision::LocalVisionCapability {

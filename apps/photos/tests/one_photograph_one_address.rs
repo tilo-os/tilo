@@ -130,11 +130,10 @@ impl Session {
     }
 }
 
-#[test]
-fn operations_act_on_the_photograph_addressed_by_its_content() {
-    eprintln!(
-        "phase an_operation_invoked_on_a_photograph_acts_on_it_in_a_session_that_staged_it_elsewhere"
-    );
+tilo_test_env::scenario! {
+    fn operations_act_on_the_photograph_addressed_by_its_content;
+
+    phase an_operation_invoked_on_a_photograph_acts_on_it_in_a_session_that_staged_it_elsewhere;
     {
         let bytes = photograph();
         let mut watcher = Session::handed_the_content("qlvx-", &bytes);
@@ -186,7 +185,7 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
         assert_eq!(third.edited_size(), (600, 600));
     }
 
-    eprintln!("phase a_photograph_asked_for_by_content_is_addressed_by_the_content_asked_for");
+    phase a_photograph_asked_for_by_content_is_addressed_by_the_content_asked_for;
     {
         let bytes = photograph();
         let asked_for = tilo_content::hash_bytes(&bytes);
@@ -224,9 +223,10 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
     }
 }
 
-#[test]
-fn one_content_is_one_openable_address_that_survives_missing_content() {
-    eprintln!("phase the_same_content_under_two_names_is_one_address");
+tilo_test_env::scenario! {
+    fn one_content_is_one_openable_address_that_survives_missing_content;
+
+    phase the_same_content_under_two_names_is_one_address;
     {
         let bytes = photograph();
         let theirs = Session::handed_the_content("qlvx-", &bytes);
@@ -244,7 +244,7 @@ fn one_content_is_one_openable_address_that_survives_missing_content() {
         );
     }
 
-    eprintln!("phase an_address_names_content_this_machine_can_open");
+    phase an_address_names_content_this_machine_can_open;
     {
         let bytes = photograph();
         let session = Session::handed_the_content("qlva-", &bytes);

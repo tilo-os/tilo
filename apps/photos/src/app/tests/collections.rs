@@ -144,12 +144,11 @@ fn collection_actions_leave_unrelated_library_destinations() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn collection_views_are_local_complete_and_refuse_stale_ids() {
-    eprintln!(
-        "phase opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids"
-    );
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn collection_views_are_local_complete_and_refuse_stale_ids;
+
+    phase opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids;
     {
         let app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -202,7 +201,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         assert_eq!(crate::test_doc::library(&doc), before);
     }
 
-    eprintln!("phase opening_favorites_uses_a_local_view_and_refuses_an_empty_stale_collection");
+    phase opening_favorites_uses_a_local_view_and_refuses_an_empty_stale_collection;
     {
         let app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -245,7 +244,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         );
     }
 
-    eprintln!("phase metadata_views_are_local_filters_with_honest_stale_results");
+    phase metadata_views_are_local_filters_with_honest_stale_results;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
@@ -308,7 +307,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         );
     }
 
-    eprintln!("phase people_and_places_keep_complete_paged_collections");
+    phase people_and_places_keep_complete_paged_collections;
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();

@@ -68,9 +68,10 @@ fn setup() -> (PhotosApp, AutoCommit, String) {
     sync(&mut app, &mut doc);
     (app, doc, id)
 }
-#[test]
-fn thumbnails_follow_photo_identity_and_visibility() {
-    eprintln!("phase newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window");
+tilo_test_env::scenario! {
+    fn thumbnails_follow_photo_identity_and_visibility;
+
+    phase newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window;
     {
         let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
@@ -149,7 +150,7 @@ fn thumbnails_follow_photo_identity_and_visibility() {
         );
     }
 
-    eprintln!("phase changed_photo_identity_invalidates_cached_thumbnail_and_late_old_result");
+    phase changed_photo_identity_invalidates_cached_thumbnail_and_late_old_result;
     {
         let (mut app, mut doc, id) = setup();
         let old = app.state().thumbnail_generation.unwrap();
@@ -180,12 +181,11 @@ fn dispatch_unmatched_action(app: &mut PhotosApp, doc: &mut AutoCommit) {
     );
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per phase")]
-#[test]
-fn changed_targets_invalidate_metadata_and_album_drafts() {
-    eprintln!(
-        "phase changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it"
-    );
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per phase")]
+    fn changed_targets_invalidate_metadata_and_album_drafts;
+
+    phase changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it;
     {
         let (mut app, mut doc, id) = setup();
         let mut lib = crate::test_doc::library(&doc);
@@ -236,7 +236,7 @@ fn changed_targets_invalidate_metadata_and_album_drafts() {
         );
     }
 
-    eprintln!("phase changed_second_batch_photo_invalidates_the_whole_metadata_draft");
+    phase changed_second_batch_photo_invalidates_the_whole_metadata_draft;
     {
         let (mut app, mut doc, first) = setup();
         let second =
@@ -271,7 +271,7 @@ fn changed_targets_invalidate_metadata_and_album_drafts() {
         );
     }
 
-    eprintln!("phase changed_album_or_deleted_member_detaches_draft_and_cannot_resurrect_it");
+    phase changed_album_or_deleted_member_detaches_draft_and_cannot_resurrect_it;
     {
         let (mut app, mut doc, id) = setup();
         let selected = doc.get_heads();
@@ -308,10 +308,11 @@ fn changed_targets_invalidate_metadata_and_album_drafts() {
         );
     }
 }
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn late_opens_imports_and_restores_settle_against_current_content() {
-    eprintln!("phase pending_resource_open_cannot_overwrite_changed_content_and_settles_once");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn late_opens_imports_and_restores_settle_against_current_content;
+
+    phase pending_resource_open_cannot_overwrite_changed_content_and_settles_once;
     {
         let (mut app, mut doc, _) = setup();
         let tmp = tempfile::tempdir().unwrap();
@@ -346,9 +347,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         );
     }
 
-    eprintln!(
-        "phase already_dispatched_picker_reports_actual_outcome_without_importing_stale_selection"
-    );
+    phase already_dispatched_picker_reports_actual_outcome_without_importing_stale_selection;
     {
         for outcome in [0, 1, 2] {
             let (mut app, mut doc, _) = setup();
@@ -401,7 +400,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         }
     }
 
-    eprintln!("phase failed_import_reports_failure_even_when_previous_photo_is_still_decoded");
+    phase failed_import_reports_failure_even_when_previous_photo_is_still_decoded;
     {
         let mut doc = crate::test_doc::new_doc();
         let store = ContentStore::memory();
@@ -440,7 +439,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         assert_eq!(crate::test_doc::library(&doc).photos.len(), 1);
     }
 
-    eprintln!("phase content_restore_drops_active_viewer_drag_before_next_pointer_move");
+    phase content_restore_drops_active_viewer_drag_before_next_pointer_move;
     {
         let mut doc = crate::test_doc::new_doc();
         let store = ContentStore::memory();
@@ -584,10 +583,11 @@ fn seed_membership_album(doc: &mut AutoCommit, ids: &[String; 4]) {
     crate::test_doc::set_library(doc, &library);
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn album_membership_edits_save_selected_ids_in_browse_order() {
-    eprintln!("phase album_membership_create_saves_selected_ids_in_browse_order");
+tilo_test_env::scenario! {
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    fn album_membership_edits_save_selected_ids_in_browse_order;
+
+    phase album_membership_create_saves_selected_ids_in_browse_order;
     {
         let (mut app, mut doc, ids) = album_membership_fixture();
         activate_album_control(&mut app, &mut doc, "photos:album-editor:new");
@@ -617,7 +617,7 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
         assert!(!app.state().album_editor);
     }
 
-    eprintln!("phase album_membership_rename_preserves_selected_ids_and_order");
+    phase album_membership_rename_preserves_selected_ids_and_order;
     {
         let (mut app, mut doc, ids) = album_membership_fixture();
         seed_membership_album(&mut doc, &ids);
@@ -641,7 +641,7 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
         assert!(!app.state().album_editor);
     }
 
-    eprintln!("phase album_membership_after_restore_supports_normal_edit_and_browse_order");
+    phase album_membership_after_restore_supports_normal_edit_and_browse_order;
     {
         let (mut app, mut doc, ids) = album_membership_fixture();
         seed_membership_album(&mut doc, &ids);
