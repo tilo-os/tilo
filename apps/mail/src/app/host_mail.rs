@@ -33,7 +33,10 @@ struct Asked {
 
 /// The page's end of the host's mail session.
 pub(crate) struct HostMail {
-    remote: RemoteActions,
+    /// The window's action client, taken on the first frame: a window is
+    /// made before the desktop serves its actions, so asking earlier would
+    /// leave every ask on a connection that answers none of them.
+    remote: Option<RemoteActions>,
     requests: Receiver<EngineRequest>,
     events: Sender<EngineEvent>,
     asking: Vec<Asked>,
@@ -53,8 +56,8 @@ pub(crate) struct HostMail {
 pub(super) fn engine() -> (EngineHandle, HostMail) {
     let (tx, requests) = mpsc::channel();
     let (events, rx) = mpsc::channel();
-    let mut host = HostMail {
-        remote: RemoteActions::current(),
+    let host = HostMail {
+        remote: None,
         requests,
         events,
         asking: Vec::new(),
@@ -64,13 +67,19 @@ pub(super) fn engine() -> (EngineHandle, HostMail) {
         adding: None,
         add_error: None,
     };
-    host.ask_for_accounts();
     (EngineHandle { tx, rx }, host)
 }
 
 impl HostMail {
+    fn remote(&mut self) -> RemoteActions {
+        self.remote
+            .get_or_insert_with(RemoteActions::current)
+            .clone()
+    }
+
     fn ask_for_accounts(&mut self) {
-        self.listing = Some(self.remote.invoke(
+        let remote = self.remote();
+        self.listing = Some(remote.invoke(
             person_accounts::target(person_accounts::LIST),
             InvokeArgument::None,
             None,
@@ -110,7 +119,8 @@ impl HostMail {
             self.add_error = Some("the account could not be asked for".into());
             return;
         };
-        self.adding = Some(self.remote.invoke(
+        let remote = self.remote();
+        self.adding = Some(remote.invoke(
             person_accounts::target(person_accounts::ADD_MAIL),
             argument,
             None,
@@ -124,7 +134,8 @@ impl HostMail {
         while let Ok(request) = self.requests.try_recv() {
             changed = true;
             if let Some((target, argument)) = asking(&request) {
-                let call = self.remote.invoke(target, argument, None);
+                let remote = self.remote();
+                let call = remote.invoke(target, argument, None);
                 self.asking.push(Asked { request, call });
             } else {
                 // Nothing the host cannot do: what the window keeps itself
@@ -198,10 +209,16 @@ impl HostMail {
             if let Some(outcome) = answered(listing) {
                 changed = true;
                 self.listing = None;
-                if let Ok(listed) = outcome
-                    && let Ok(accounts) = serde_json::from_value::<MailAccounts>(listed)
-                {
-                    self.accounts = Some(accounts);
+                match outcome {
+                    Ok(listed) => match serde_json::from_value::<MailAccounts>(listed) {
+                        Ok(accounts) => self.accounts = Some(accounts),
+                        Err(error) => {
+                            tracing::warn!(%error, "mail: the host's accounts are not readable");
+                        }
+                    },
+                    Err(reason) => {
+                        tracing::warn!(%reason, "mail: the host did not answer its accounts");
+                    }
                 }
             }
         } else if self
@@ -577,6 +594,9 @@ mod tests {
         let _served = RemoteActions::enter(serving, Caller::local_person("ada"));
         let (handle, mut mail) = engine();
 
+        // The first frame asks the host for the accounts, the next reads its
+        // answer.
+        mail.poll();
         assert!(mail.poll());
         let listed = mail
             .take_accounts()
