@@ -56,6 +56,7 @@ mod catch_up;
 mod content;
 mod feedback;
 mod found;
+mod found_files;
 mod jobs;
 mod keys;
 mod ledger;

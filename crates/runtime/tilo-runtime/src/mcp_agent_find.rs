@@ -65,6 +65,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             {
                 continue;
             }
+            // A file of the workspace's folder is no resource of an app: it is
+            // named by its path there, which a computer that logged in has
+            // below the workspace's folder and a page shows in Files.
+            if hit.kind == tilo_actions::remote::FOUND_FILE {
+                let path = hit.resource.trim_matches('/');
+                let line = format!("{path}  file in the workspace's folder");
+                if !lines.contains(&line) {
+                    hits.push(json!({"path": path, "kind": "file", "label": path}));
+                    lines.push(line);
+                }
+                continue;
+            }
             let Some(line) = self.found_line(hit, &running, &forms).await else {
                 continue;
             };

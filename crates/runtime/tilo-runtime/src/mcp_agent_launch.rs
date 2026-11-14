@@ -76,13 +76,26 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Ok(listing) = self
             .agent_ls(
                 LsArgs {
-                    path: Some(name),
+                    path: Some(name.clone()),
                     ..LsArgs::default()
                 },
                 false,
             )
             .await
         {
+            // An app that opened on the person's desk but publishes nothing an
+            // agent lists (yet) is not answered as both running and not.
+            if listing
+                .text
+                .starts_with(&Self::not_running_note(&name, true))
+            {
+                if reply.text.ends_with("is running") {
+                    reply.text = format!(
+                        "ok: {name} opened on the person's desk; it lists nothing to agents"
+                    );
+                }
+                return reply;
+            }
             reply.text.push('\n');
             reply.text.push_str(&listing.text);
         }

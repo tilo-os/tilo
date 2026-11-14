@@ -65,6 +65,8 @@ impl Worker {
                 found.push(resource);
             }
         }
+        // And the files of the workspace's folder, by their paths there.
+        found.extend(self.found_files(workspace_id, &cluster_id, needle, MOST_FOUND));
         Ok(found)
     }
 

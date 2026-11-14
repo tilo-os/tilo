@@ -17359,6 +17359,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "feeds",
  "file-explorer",
+ "fs-content",
  "fs-protocol",
  "getrandom 0.4.3",
  "hex",

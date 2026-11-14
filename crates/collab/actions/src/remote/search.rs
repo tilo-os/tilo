@@ -44,6 +44,11 @@ pub struct Found {
     pub provider: Option<String>,
 }
 
+/// The kind of a result that is a file of the workspace's folder: its
+/// [`Found::resource`] is the file's path there (`legal/contract.txt`), which
+/// a computer that logged in has below the workspace's folder.
+pub const FOUND_FILE: &str = "file";
+
 /// A host's search of what its workspace holds, as it offers it to a caller
 /// who asks by words. A desktop answers with its one search, the palette's
 /// ranking, the same results in the same order; a host with no desktop (a

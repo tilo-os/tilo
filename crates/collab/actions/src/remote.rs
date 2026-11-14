@@ -109,7 +109,7 @@ pub use record_read::{
     RecordAddress, RecordAsk, RecordChange, RecordChanges, RecordCopy, RecordReadings, RecordReads,
     RecordWake, answer_read, read_records,
 };
-pub use search::{Found, ResourceSearch, stem_word};
+pub use search::{FOUND_FILE, Found, ResourceSearch, stem_word};
 #[cfg(any(test, feature = "test-support"))]
 pub use test_host::TestHost;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
