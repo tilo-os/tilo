@@ -233,20 +233,30 @@ fn hovering_a_window_leaves_every_window_where_it_was() {
         ("gap", Point::new(gap_x, first_body.center().y)),
         ("gap at the bar", Point::new(gap_x, first_bar.center().y)),
     ];
+    // How long after the step before it the next one comes, on the clock the desktop reads: the
+    // approach and the settle last as long as they say, however fast or loaded the machine is.
+    let mut wait = Duration::ZERO;
     for (name, p) in spots {
         // A slow approach and a settle, so any aim-driven reveal fires.
         for step in 0..8 {
             let t = f64::from(step) / 7.0;
             let q = Point::new(p.x, p.y + (1.0 - t) * 20.0);
-            frame.send(&ui::synthetic_input::cursor_moved(q.x, q.y));
-            frame.relayout();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            on_clock(wait, || {
+                frame.send(&ui::synthetic_input::cursor_moved(q.x, q.y));
+                frame.relayout();
+            });
+            wait = Duration::from_millis(20);
         }
         for _ in 0..20 {
-            frame.relayout();
-            std::thread::sleep(std::time::Duration::from_millis(16));
+            on_clock(wait, || frame.relayout());
+            wait = Duration::from_millis(16);
         }
         assert_eq!(geometry(&frame), rest, "hovering the {name} at {p:?}");
+        // The pointer rests on, past every dwell a resting pointer waits out (a window edge's
+        // 120 ms, a tooltip's 500 ms), and the frame after that one.
+        on_clock(Duration::from_secs(1), || frame.relayout());
+        on_clock(wait, || frame.relayout());
+        assert_eq!(geometry(&frame), rest, "resting on the {name} at {p:?}");
     }
 }
 
