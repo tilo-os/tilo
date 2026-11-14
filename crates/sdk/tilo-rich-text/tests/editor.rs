@@ -238,7 +238,7 @@ fn typed_text_is_attributed_to_its_writer_by_the_splice_itself() {
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
     assert_eq!(verb(context), "splice-text");
-    let writer = context.invoker.as_ref().unwrap().actor.clone();
+    let writer = context.invoker.as_ref().unwrap().key();
     assert!(!writer.is_empty());
     assert_eq!(authors(&app), [(0, 5, writer.clone()), (0, 5, writer)]);
     assert!(app.undo());
