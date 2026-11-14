@@ -7,6 +7,8 @@
 //! a window's picture is [`crate::window_switcher::draw_preview_well`], its title
 //! [`draw_tile_title`], an empty strip [`draw_empty_strip`] and a strip's name [`draw_strip_name`].
 
+use std::ops::Range;
+
 use ui::TextRole;
 use ui::num::f64_of_usize;
 use ui::text_render::TextWeight;
@@ -111,13 +113,186 @@ pub fn band_height(strips: usize, m: &GridMetrics, band: f64) -> f64 {
     n * (m.label_h + band + m.title_h()) + (n - 1.0) * m.row_gap
 }
 
+/// One strip's windows as the layout reads them: their sizes on the display, and which of them are
+/// tabs of the window before.
+struct Windows<'a> {
+    sizes: &'a [Size],
+    joined: &'a [bool],
+}
+
+impl Windows<'_> {
+    /// Air before window `wi` : a tab's against its window, a window's apart.
+    fn gap(&self, wi: usize, m: &GridMetrics) -> f64 {
+        if self.joined.get(wi).copied().unwrap_or(false) {
+            m.tab_gap
+        } else {
+            m.window_gap
+        }
+    }
+
+    /// Width of windows `line` side by side at `scale`, and the height of the tallest.
+    fn extent(&self, line: &Range<usize>, scale: f64, m: &GridMetrics) -> (f64, f64) {
+        let mut extent = (0.0, 0.0_f64);
+        for (wi, size) in self
+            .sizes
+            .iter()
+            .enumerate()
+            .take(line.end)
+            .skip(line.start)
+        {
+            if wi > line.start {
+                extent.0 += self.gap(wi, m);
+            }
+            extent.0 += size.width * scale;
+            extent.1 = extent.1.max(size.height * scale);
+        }
+        extent
+    }
+
+    /// The strip at `scale` across `width`: as many windows on each line as fit, a window's tabs
+    /// never parted, each line as tall as its tallest window. A strip with no windows takes a line
+    /// `empty` tall.
+    fn wrapped(&self, scale: f64, width: f64, empty: f64, m: &GridMetrics) -> Placed {
+        let mut lines: Vec<Range<usize>> = Vec::new();
+        for wi in 0..self.sizes.len() {
+            let next = wi.saturating_add(1);
+            match lines.last_mut() {
+                Some(line)
+                    if self.gap(wi, m) < m.window_gap
+                        || self.extent(&(line.start..next), scale, m).0 <= width =>
+                {
+                    line.end = next;
+                }
+                _ => lines.push(wi..next),
+            }
+        }
+        let lines = if lines.is_empty() {
+            vec![(0..0, empty)]
+        } else {
+            lines
+                .into_iter()
+                .map(|line| {
+                    let tall = self.extent(&line, scale, m).1;
+                    (line, tall)
+                })
+                .collect()
+        };
+        Placed { scale, lines }
+    }
+
+    /// The strip as one line `band` tall across `width`, narrower when it is too wide.
+    fn banded(&self, band: f64, width: f64, empty: f64, m: &GridMetrics) -> Placed {
+        let whole = 0..self.sizes.len();
+        let (gaps, _) = self.extent(&whole, 0.0, m);
+        let (widths, tallest) = self.extent(&whole, 1.0, m);
+        let tallest = if tallest > 0.0 { tallest } else { empty };
+        let narrower = if widths > gaps {
+            (width - gaps).max(0.0) / (widths - gaps)
+        } else {
+            f64::INFINITY
+        };
+        Placed {
+            scale: (band / tallest).min(narrower),
+            lines: vec![(whole, band)],
+        }
+    }
+}
+
+/// How one strip stands in the picture: its windows' scale, and its lines with their heights.
+struct Placed {
+    scale: f64,
+    lines: Vec<(Range<usize>, f64)>,
+}
+
+/// Height of the picture of `placed` : each strip's name, and its lines under their titles.
+fn picture_height(placed: &[Placed], m: &GridMetrics) -> f64 {
+    let count = f64_of_usize(placed.len());
+    count * m.label_h
+        + (count - 1.0) * m.row_gap
+        + placed
+            .iter()
+            .map(|strip| {
+                let gaps = f64_of_usize(strip.lines.len().saturating_sub(1)) * m.window_gap;
+                gaps + strip
+                    .lines
+                    .iter()
+                    .map(|(_, tall)| tall + m.title_h())
+                    .sum::<f64>()
+            })
+            .sum::<f64>()
+}
+
+/// Width of the widest line of `placed` ; a strip with no windows shows a slot 16:10.
+fn picture_width(strips: &[Windows<'_>], placed: &[Placed], m: &GridMetrics) -> f64 {
+    strips
+        .iter()
+        .zip(placed)
+        .flat_map(|(strip, placed)| {
+            placed.lines.iter().map(move |(line, tall)| {
+                if line.is_empty() {
+                    tall * 16.0 / 10.0
+                } else {
+                    strip.extent(line, placed.scale, m).0
+                }
+            })
+        })
+        .fold(0.0, f64::max)
+}
+
+/// Each of `strips` as it stands in `area` : in a band each its own line, else every strip at the
+/// largest one scale at which the picture fits.
+fn place_strips(
+    area: Rect,
+    strips: &[Windows<'_>],
+    m: &GridMetrics,
+    band: Option<f64>,
+) -> Vec<Placed> {
+    let reference = strips
+        .iter()
+        .map(|strip| strip.extent(&(0..strip.sizes.len()), 1.0, m).1)
+        .fold(0.0, f64::max)
+        .max(1.0);
+    if let Some(band) = band {
+        return strips
+            .iter()
+            .map(|strip| strip.banded(band, area.width(), reference, m))
+            .collect();
+    }
+    let at = |scale: f64| -> Vec<Placed> {
+        strips
+            .iter()
+            .map(|strip| strip.wrapped(scale, area.width(), reference * scale, m))
+            .collect()
+    };
+    let fits = |scale: f64| {
+        let placed = at(scale);
+        picture_height(&placed, m) <= area.height()
+            && picture_width(strips, &placed, m) <= area.width()
+    };
+    if fits(MAX_SCALE) {
+        return at(MAX_SCALE);
+    }
+    // More scale only ever adds lines, height and width, so the largest that fits is found by
+    // halving.
+    let (mut lo, mut hi) = (0.0, MAX_SCALE);
+    for _ in 0..32 {
+        let mid = f64::midpoint(lo, hi);
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    at(lo)
+}
+
 /// Lay out `strips`, each a list of its windows' sizes on the display, in
 /// `area` (`joined[s][i]` puts strip `s`'s window `i` against the one before
-/// it, as a tab of the same window): one scale for the whole picture so windows keep their sizes
-/// relative to each other, a smaller one only for a strip too wide for the
-/// picture. With `band`, every strip's windows are that tall and the picture
-/// grows down from the top of `area`; without, it fills `area`'s height,
-/// centred.
+/// it, as a tab of the same window). With `band`, every strip is one line of windows that tall
+/// (narrower only when the line is too wide) and the picture grows down from the top of `area`.
+/// Without, the whole picture takes one scale, the largest at which it fits `area`: a strip wider
+/// than the picture wraps onto more lines rather than shrinking its windows to slivers whose titles
+/// cannot be read, and the picture is centred.
 pub fn layout_strips(
     area: Rect,
     strips: &[Vec<Size>],
@@ -128,94 +303,61 @@ pub fn layout_strips(
     if strips.is_empty() || area.width() <= 0.0 {
         return Vec::new();
     }
-    let gap = |strip: usize, window: usize| {
-        if joined
-            .get(strip)
-            .and_then(|joined| joined.get(window))
-            .copied()
-            .unwrap_or(false)
-        {
-            m.tab_gap
-        } else {
-            m.window_gap
-        }
-    };
-    let gaps = |strip: usize, count: usize| (1..count).map(|i| gap(strip, i)).sum::<f64>();
-    let tallest = |sizes: &Vec<Size>| sizes.iter().map(|s| s.height).fold(0.0, f64::max);
-    let reference = strips.iter().map(tallest).fold(0.0, f64::max).max(1.0);
-    // A strip with no windows takes a row as tall as the others' windows.
-    let heights: Vec<f64> = strips
+    let strips: Vec<Windows<'_>> = strips
         .iter()
-        .map(|sizes| {
-            Some(tallest(sizes))
-                .filter(|h| *h > 0.0)
-                .unwrap_or(reference)
+        .enumerate()
+        .map(|(si, sizes)| Windows {
+            sizes,
+            joined: joined.get(si).map_or(&[][..], Vec::as_slice),
         })
         .collect();
-    let fixed = band_height(strips.len(), m, 0.0);
-    let fill_scale = ((area.height() - fixed) / heights.iter().sum::<f64>()).clamp(0.0, MAX_SCALE);
-    let rows: Vec<(f64, f64)> = strips
-        .iter()
-        .zip(&heights)
-        .enumerate()
-        .map(|(si, (sizes, height))| {
-            let height_scale = band.map_or(fill_scale, |band| band / height);
-            let widths: f64 = sizes.iter().map(|s| s.width).sum();
-            let gaps = gaps(si, sizes.len());
-            let width_scale = if widths > 0.0 {
-                ((area.width() - gaps) / widths).max(0.0)
-            } else {
-                f64::INFINITY
-            };
-            (height_scale.min(width_scale), height * height_scale)
-        })
-        .collect();
-    let row_width = |si: usize, sizes: &Vec<Size>, (scale, band_h): (f64, f64)| {
-        if sizes.is_empty() {
-            return band_h * 16.0 / 10.0;
-        }
-        sizes.iter().map(|s| s.width * scale).sum::<f64>() + gaps(si, sizes.len())
-    };
-    let widest = strips
-        .iter()
-        .zip(&rows)
-        .enumerate()
-        .map(|(si, (sizes, row))| row_width(si, sizes, *row))
-        .fold(0.0, f64::max)
-        .min(area.width());
+    let plan = place_strips(area, &strips, m, band);
+    let widest = picture_width(&strips, &plan, m).min(area.width());
     let x0 = area.x0 + ((area.width() - widest) / 2.0).max(0.0);
-    let total = fixed + rows.iter().map(|(_, band_h)| band_h).sum::<f64>();
     let mut y = if band.is_some() {
         area.y0
     } else {
-        area.y0 + ((area.height() - total) / 2.0).max(0.0)
+        area.y0 + ((area.height() - picture_height(&plan, m)) / 2.0).max(0.0)
     };
-    let mut places = Vec::with_capacity(strips.len());
-    for (si, (sizes, (scale, band_h))) in strips.iter().zip(rows).enumerate() {
+    let mut places = Vec::with_capacity(plan.len());
+    for (strip, placed) in strips.iter().zip(plan) {
         let label = Rect::new(x0, y, x0 + widest, y + m.label_h);
         y = label.y1;
         let mut place = StripPlace {
             label,
             ..StripPlace::default()
         };
-        if sizes.is_empty() {
-            let w = (band_h * 16.0 / 10.0).min(widest);
-            place.empty = Some(Rect::new(x0, y, x0 + w, y + band_h));
-        }
-        let mut x = x0;
-        for (wi, size) in sizes.iter().enumerate() {
-            if wi > 0 {
-                x += gap(si, wi);
+        for (li, (line, line_h)) in placed.lines.into_iter().enumerate() {
+            if li > 0 {
+                y += m.window_gap;
+            }
+            if line.is_empty() {
+                let wide = (line_h * 16.0 / 10.0).min(widest);
+                place.empty = Some(Rect::new(x0, y, x0 + wide, y + line_h));
             }
             let top = y + m.title_h();
-            let well = Rect::new(x, top, x + size.width * scale, top + size.height * scale);
-            place.wells.push(well);
-            place
-                .titles
-                .push(Rect::new(well.x0, y, well.x1, y + m.title_lh));
-            x = well.x1;
+            let mut x = x0;
+            for (wi, size) in strip
+                .sizes
+                .iter()
+                .enumerate()
+                .take(line.end)
+                .skip(line.start)
+            {
+                if wi > line.start {
+                    x += strip.gap(wi, m);
+                }
+                let (wide, tall) = (size.width * placed.scale, size.height * placed.scale);
+                let well = Rect::new(x, top, x + wide, top + tall);
+                place.wells.push(well);
+                place
+                    .titles
+                    .push(Rect::new(well.x0, y, well.x1, y + m.title_lh));
+                x = well.x1;
+            }
+            y += line_h + m.title_h();
         }
-        y += band_h + m.title_h() + m.row_gap;
+        y += m.row_gap;
         places.push(place);
     }
     places
@@ -432,21 +574,45 @@ mod tests {
             assert!((wells[2].x0 - wells[1].x1 - m.window_gap).abs() < 1e-6);
         }
 
-        phase a_strip_too_wide_for_the_picture_shrinks_alone;
+        phase a_strip_too_wide_for_the_picture_wraps_so_its_titles_can_be_read;
         {
+            // The picture beside the panel on a 1280 x 800 display: six windows, two of them tabs
+            // of one window, laid out on the display at half its width.
             let m = metrics();
-            let area = Rect::new(0.0, 0.0, 600.0, 800.0);
+            let area = Rect::new(24.0, 56.0, 712.0, 776.0);
             let strips = vec![
-                vec![Size::new(1000.0, 900.0); 6],
-                vec![Size::new(400.0, 900.0)],
+                vec![Size::new(604.0, 720.0); 6],
+                vec![Size::new(400.0, 720.0)],
             ];
-            let places = layout_strips(area, &strips, &[], &m, None);
-            let wide = places[0].wells.last().expect("windows");
-            assert!(wide.x1 <= area.x1 + 1e-6, "{wide:?}");
+            let joined = vec![vec![false, false, false, true, false, false]];
+            let places = layout_strips(area, &strips, &joined, &m, None);
+            let wells = &places[0].wells;
+            let lines: Vec<f64> = wells.iter().map(|w| w.y0).fold(Vec::new(), |mut ys, y| {
+                if !ys.iter().any(|seen: &f64| (seen - y).abs() < 1e-6) {
+                    ys.push(y);
+                }
+                ys
+            });
+            assert!(lines.len() > 1, "the strip wraps: {wells:?}");
+            for title in &places[0].titles {
+                assert!(
+                    title.width() >= area.width() / 5.0,
+                    "a title has room to be read: {title:?}"
+                );
+            }
             assert!(
-                places[1].wells[0].height() > places[0].wells[0].height(),
-                "the other strip keeps the picture's scale"
+                (wells[3].y0 - wells[2].y0).abs() < 1e-6,
+                "a window's tabs stay on one line"
             );
+            assert!(
+                (places[1].wells[0].height() - wells[0].height()).abs() < 1e-6,
+                "one scale for the whole picture"
+            );
+            for place in &places {
+                let b = place.bounds();
+                assert!(b.x0 >= area.x0 - 1e-6 && b.x1 <= area.x1 + 1e-6, "{b:?}");
+                assert!(b.y0 >= area.y0 - 1e-6 && b.y1 <= area.y1 + 1e-6, "{b:?}");
+            }
         }
 
         phase inside_the_panel_every_strip_is_one_band_tall_and_the_picture_grows_down;
