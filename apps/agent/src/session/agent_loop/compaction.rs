@@ -71,6 +71,12 @@ pub(crate) struct Context {
     answered: Vec<crate::model::Answered>,
     /// History messages `answered` already holds the results of.
     answered_at: usize,
+    /// The last request as the provider counted it: what [`Self::tokens_of`]
+    /// estimated it at, and the input tokens the provider said it read. The
+    /// estimate is made from above (three characters a token), so a run
+    /// measured by it alone puts results aside long before the model's
+    /// context holds them; the provider's own count says how far above.
+    counted: Option<(usize, u64)>,
 }
 
 impl Context {
@@ -91,7 +97,26 @@ impl Context {
             handles: std::collections::HashMap::new(),
             answered: Vec::new(),
             answered_at: 0,
+            counted: None,
         }
+    }
+
+    /// The provider read the request estimated at `sent` tokens as
+    /// `input_tokens`. A provider that counted nothing says nothing.
+    pub(crate) fn counted(&mut self, sent: usize, input_tokens: u64) {
+        if sent > 0 && input_tokens > 0 {
+            self.counted = Some((sent, input_tokens));
+        }
+    }
+
+    /// The most the estimate of what the model is sent may reach: the fill,
+    /// in the estimate's units once the provider counted a request. An
+    /// estimate below the provider's count compacts earlier, never later.
+    fn fill_estimated(&self) -> usize {
+        self.counted.map_or(self.fill_tokens, |(sent, counted)| {
+            let counted = usize::try_from(counted).unwrap_or(usize::MAX);
+            self.fill_tokens.saturating_mul(sent) / counted
+        })
     }
 
     /// The tokens a request body takes, estimated from above.
@@ -104,20 +129,20 @@ impl Context {
     pub(crate) fn compact(&mut self, conversation: &mut Conversation, pages: &mut Pages) -> usize {
         let tools = crate::tools::typed_loop_definitions();
         let measure = |conversation: &Conversation| Self::tokens_of(&conversation.body(&tools));
+        let fill_tokens = self.fill_estimated();
         let mut tokens = measure(conversation);
-        if tokens <= self.fill_tokens {
+        if tokens <= fill_tokens {
             return 0;
         }
         if conversation.put_pictures_aside(PICTURE_ASIDE) > 0 {
             tokens = measure(conversation);
-            if tokens <= self.fill_tokens {
+            if tokens <= fill_tokens {
                 return 0;
             }
         }
         // Each result put aside saves what it was less what replaces it,
         // counted without building the request again.
         let mut aside = 0;
-        let fill_tokens = self.fill_tokens;
         // The results answered so far, extended by the turns since: each is
         // read off the history once, not once per turn.
         self.answered

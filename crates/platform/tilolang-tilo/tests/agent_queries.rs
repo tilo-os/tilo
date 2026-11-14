@@ -227,7 +227,7 @@ fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
 #[test]
 fn single_is_one_result_or_an_error_listing_the_candidates() {
     let w = world();
-    let one = printed(&w.run(r#"find("groceries").single()"#));
+    let one = printed(&w.run(r#"find(notes.Note).filter(n -> n.title == "Groceries").single()"#));
     assert!(one.contains("\"Groceries\""), "{one}");
     let several = refused(&w.run(r#"find("lemon").single()"#));
     assert!(
@@ -378,7 +378,7 @@ fn a_session_of_the_agents_doc_examples() {
         r#"find("lemon")"#,
         r#"find("lemon").take(2)"#,
         r#"find("lemon").single()"#,
-        r#"find("groceries").single()"#,
+        r#"find(notes.Note).filter(n -> n.title == "Groceries").single()"#,
         "find(Task, done: false).sort_by(.title).map(.title)",
         r"read(grep(/sync bug/, in: notes).single().doc, matching: /sync/)",
         "describe(notes)",
@@ -494,4 +494,112 @@ fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
         &tilolang_tilo::runtime::Principal::new("agent:task-1"),
     ));
     assert!(found.contains("Check the launch video"), "{found}");
+}
+
+/// What changed in the person's notes this week: the notes found by when each last changed,
+/// read from each note's own history, and who changed it then. Nothing about a note's time is
+/// one of its fields, so a program that asks a field for it, or the clock, is taught the filter.
+#[test]
+fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
+    let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("notes")]]));
+    let clock = Rc::new(std::cell::RefCell::new("2026-10-01T09:00:00Z".to_owned()));
+    {
+        let mut notes = apps.replica("so.tilo.lang.notes");
+        let now = Rc::clone(&clock);
+        notes.host.set_clock(move || now.borrow().clone());
+        let package = notes.host.package("so.tilo.lang.notes").unwrap();
+        let scenario = package.meta.scenarios.first().unwrap().action.clone();
+        notes
+            .host
+            .runtime()
+            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .unwrap();
+        notes.commit();
+    }
+    let (task, _door) = apps.record_task();
+    task.set_clock(tilolang_tilo::host::system_time);
+    let run = |source: &str| {
+        task.run(
+            source,
+            true,
+            &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        )
+    };
+    // Groceries changes now; every other note was written in October.
+    *clock.borrow_mut() = tilolang_tilo::host::system_time();
+    let pinned = run(r#"notes.pin(find(notes.Note).filter(n -> n.title == "Groceries").single())"#);
+    assert_eq!(pinned["state"], "done", "{pinned:#}");
+
+    let week = printed(&run("find(notes.Note, changed: -7d)"));
+    assert_eq!(week.lines().count(), 1, "{week}");
+    assert!(week.contains("\"Groceries\""), "{week}");
+    let all = printed(&run("find(notes.Note, changed: 2026-09-01..).len()"));
+    assert_eq!(all, "8", "{all}");
+
+    // Who changed it and when, and what it says now.
+    let when = printed(&run(
+        r#"updated(find(notes.Note).filter(n -> n.title == "Groceries").single())"#,
+    ));
+    assert!(
+        !when.starts_with("2026-10-01") && when.contains("  changed by "),
+        "{when}"
+    );
+    let body = printed(&run(
+        r#"find(notes.Note).filter(n -> n.title == "Lentil soup").single().body"#,
+    ));
+    assert!(
+        !body.is_empty() && body != "rich text",
+        "a body prints as its text: {body}"
+    );
+
+    // A note's time asked of a field, or of the clock, is taught the filter.
+    let field = refused(&run("find(notes.Note).filter(n -> n.edited)"));
+    assert!(
+        field.contains("1:32: E021 `Note` has no field `edited`")
+            && field.contains("find(Note, changed: -7d)")
+            && field.contains("updated(r)"),
+        "{field}"
+    );
+    let clocked = refused(&run(
+        "find(notes.Note).filter(n -> if let u = updated(n) { u.at > now - 7d } else { false })",
+    ));
+    assert!(
+        clocked.contains("a program cannot") && clocked.contains("changed: -7d"),
+        "{clocked}"
+    );
+    let typed = refused(&run(r#"grep(notes.Note, "week")"#));
+    assert!(
+        typed.contains("find them with `find(notes.Note)`")
+            && typed.contains("`grep(/word/, in: notes)`"),
+        "{typed}"
+    );
+    let ui = refused(&run(
+        "text(find(notes.Note).filter(n -> n.title == \"Groceries\").single().body)",
+    ));
+    assert!(ui.contains("`read(r)`"), "{ui}");
+    let described = printed(&run("describe(notes.Note)"));
+    assert!(
+        described.contains("changed: when it last changed  (find(Note, changed: -7d))"),
+        "{described}"
+    );
+}
+
+/// "Which of my tasks are due this week?": a program asks a date as search writes it, since a
+/// program reads no clock of its own; what it reaches for first (`today`, `!`, `&&`) is taught.
+#[test]
+fn due_this_week_is_a_filter_and_the_words_a_program_reaches_for_first_are_taught() {
+    let w = world();
+    let week = w.run("find(tasks.Task, due: today..today + 7d, done: false).len()");
+    assert_eq!(week["state"], "done", "{week:#}");
+    let clock = refused(&w.run("print(today)"));
+    assert!(
+        clock.contains("a program cannot") && clock.contains("due: today"),
+        "{clock}"
+    );
+    let negated = refused(&w.run("find(tasks.Task).filter(t -> !t.done && t.title != \"x\")"));
+    assert!(
+        negated.contains("tilolang writes `not x`")
+            && negated.contains("tilolang writes `a and b`"),
+        "{negated}"
+    );
 }

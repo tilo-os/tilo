@@ -599,6 +599,59 @@
       }
     },
     {
+      "name": "Place",
+      "doc": "A resource's view standing on a canvas: the view on the window surface, with a handle shown over its corner on hover and focus that names it, holds its controls and moves it.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the place shows, as its handle names it and assistive technology reads it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "carries",
+          "doc": "The resource the place shows, by its published address: what picking the handle up carries, so letting it go on the canvas moves the place and on a composer attaches it.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        },
+        {
+          "name": "subject",
+          "doc": "The resource the place shows, whose published actions its menu lists, which the host fills as it fills a `ui.MenuButton`'s: a right-click on the place opens them, and typing there filters them as every context menu does (`canvas.md` §1, \"Right-click keeps its menu\"). A right-click on content with a menu of its own (a field, a row) is that content's.",
+          "type": {
+            "option": "resource"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "controls",
+          "doc": "The handle's controls after the name: the resource's actions, pin and close.",
+          "accepts": "view"
+        },
+        {
+          "name": "body",
+          "doc": "The view the place shows, filling it.",
+          "accepts": "view",
+          "default": true
+        },
+        {
+          "name": "items",
+          "doc": "The place's menu: the commands the host filled from its subject.",
+          "accepts": {
+            "component": "MenuItem"
+          },
+          "many": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "Card",
       "doc": "A summary of one thing on a surface of its own: a dashboard's tile, a resource's preview.",
       "props": [
@@ -1359,6 +1412,13 @@
           "name": "icon_only",
           "doc": "Show only the icon, the label naming the button to assistive technology.",
           "type": "bool"
+        },
+        {
+          "name": "faces",
+          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face, one person's at an avatar's full size. The label names it to assistive technology.",
+          "type": {
+            "list": "text"
+          }
         },
         {
           "name": "role",
@@ -2817,8 +2877,22 @@
         },
         {
           "name": "ground",
-          "doc": "Whether it is a shell: the windows it holds stand on the shell's ground ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content colour of the window the map is in.",
+          "doc": "Whether it is a desktop: the windows it holds stand on the desktop's ground ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content colour of the window the map is in.",
           "type": "bool"
+        },
+        {
+          "name": "outline",
+          "doc": "A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the light outline a drag across the canvas draws: the rectangle the person dragged, kept while they say what fills it.",
+          "type": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "hint",
+          "doc": "What the empty map says once, quietly, at the middle of what it shows: what a person does on it (\"Click anywhere and say what you want\"). Drawn only while it holds no pin, and read to assistive technology as the map's description.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "slots": [
@@ -2835,7 +2909,7 @@
       "events": [
         {
           "name": "drop",
-          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y.",
+          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y. The view decides what to do with it; the shell's canvas places it there.",
           "value": "resource",
           "at": {
             "list": "int"
@@ -2843,23 +2917,38 @@
         },
         {
           "name": "press",
-          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag.",
+          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag. What it reports is where the press landed at the camera the map looks with, so the point is right at any pan or zoom; the view decides what stands there (the shell's canvas opens its caret at it).",
           "value": {
             "list": "int"
           }
         },
         {
           "name": "frame",
-          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height.",
+          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height. The rectangle is drawn as a light outline while the drag lasts (the theme's focus colour, never a colour of its own), and the view lays what it answers into that rectangle.",
           "value": {
             "list": "int"
           }
         },
         {
           "name": "context",
-          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y.",
+          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
           "value": "text",
           "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "resize",
+          "doc": "A place's trailing edge, bottom edge or corner was dragged and let go: carries the key of the pin it resized and its new size in canvas pixels, its width then its height. Its corner stays where it stood; the view gives the place that size.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "seen",
+          "doc": "The person pointed on the map's free space (a click, a dragged rectangle, a right press): carries the part of the canvas they see as they point, in canvas pixels, its x, its y, its width and its height. It is reported before the pointing itself (`press`, `frame`, `context`), so what answers it can stand in free room where they look (canvas.md §7, \"Everything stays in view\").",
+          "value": {
             "list": "int"
           }
         }
@@ -3690,6 +3779,11 @@
           }
         },
         {
+          "name": "dense",
+          "doc": "One quiet line among content rather than a row of a list: the caption's size and ink, as tall as that line (an answer's steps, folded under it).",
+          "type": "bool"
+        },
+        {
           "name": "motion",
           "doc": "The pace the body unfolds at, and a view's open or close: the theme's unless said.",
           "type": {
@@ -4370,6 +4464,11 @@
         {
           "name": "both",
           "doc": "Scroll both ways, for a 2D surface wider and taller than its column (a board of strips); takes precedence over `across`.",
+          "type": "bool"
+        },
+        {
+          "name": "shows_bar",
+          "doc": "Show the bar for as long as the content overflows, not only while it is scrolled: a card held to a height whose words go on below it, so the person sees there is more.",
           "type": "bool"
         }
       ],
@@ -5106,6 +5205,11 @@
             "option": "text"
           },
           "data": true
+        },
+        {
+          "name": "caret",
+          "doc": "A caret standing on a surface rather than a field in a form: no well and no fill, only as wide as what it holds, growing as the words are typed. The canvas's caret.",
+          "type": "bool"
         }
       ],
       "events": [
@@ -5118,6 +5222,10 @@
           "name": "select",
           "doc": "The selection settled (a drag let go, a double click, a select all, shift and an arrow key): carries the run selected as `<start>:<end>`, byte offsets into the text, or nothing when the selection collapsed. A read-only field reports it so what reads it — a message answered on just the words someone chose — can act on the run; a field being typed in keeps its selection private.",
           "value": "text"
+        },
+        {
+          "name": "cancel",
+          "doc": "Escape let go of what was being typed: the field clears, and what it stands in goes (a caret on the canvas)."
         }
       ],
       "bindings": [
@@ -6820,6 +6928,29 @@
           "type": {
             "option": "int"
           }
+        },
+        {
+          "name": "band",
+          "doc": "Whether its view keeps a place's handle band over its top edge ([`crate::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the view's own top is at `y`.",
+          "type": "bool"
+        },
+        {
+          "name": "hug",
+          "doc": "`height` is the most it takes: its view hugs what it holds up to it (an answer in the rectangle it was asked in), rather than filling it.",
+          "type": "bool"
+        },
+        {
+          "name": "grows",
+          "doc": "It is an answer: arriving, it grows out of where the person last pointed on the map (the caret or the rectangle it answers), rather than fading in where it stands. The pointing itself (a caret) leaves it unset and stands at once.",
+          "type": "bool"
+        },
+        {
+          "name": "item",
+          "doc": "What the pin stands for, as the view names it: what pointing at the pin (`context`) and sizing it (`resize`) report. Without it, the pin's key.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "slots": [

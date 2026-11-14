@@ -71,6 +71,25 @@ pub enum ReadRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         field: Option<String>,
     },
+    /// The versions of one resource, by its type (an id) and its id, oldest first, as its
+    /// app's log holds them (`history(r)`); only its first (`created(r)`, `last: false`) or its
+    /// last (`updated(r)`, `last: true`) when `last` says which.
+    Versions {
+        app: String,
+        ty: String,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last: Option<bool>,
+    },
+    /// What the change `change` (a version's) wrote to each of `fields` of one resource: each
+    /// field's value before it and after it, as [`crate::store::Store::written`] reads them.
+    Written {
+        app: String,
+        ty: String,
+        id: String,
+        fields: Vec<crate::store::FieldSpec>,
+        change: String,
+    },
 }
 
 impl ReadRequest {
@@ -82,7 +101,9 @@ impl ReadRequest {
             | Self::Find { app, .. }
             | Self::Read { app, .. }
             | Self::Select { app, .. }
-            | Self::Describe { app, .. } => app,
+            | Self::Describe { app, .. }
+            | Self::Versions { app, .. }
+            | Self::Written { app, .. } => app,
         }
     }
 
@@ -641,6 +662,46 @@ impl Core {
                 name.as_deref(),
                 field.as_deref(),
             )?)),
+            ReadRequest::Versions { ty, id, last, .. } => {
+                let target = ResourceRef::parse_id(id, ty.clone())
+                    .ok_or_else(|| format!("`{id}` is no resource id"))?;
+                let store = self.store.borrow();
+                let versions = match last {
+                    Some(last) => store
+                        .version_end(&target, *last)
+                        .map(|end| end.into_iter().collect::<Vec<_>>()),
+                    None => store.versions(&target),
+                }
+                .map_err(|error| error.to_string())?;
+                Ok(to_json(&versions))
+            }
+            ReadRequest::Written {
+                ty,
+                id,
+                fields,
+                change,
+                ..
+            } => {
+                let target = ResourceRef::parse_id(id, ty.clone())
+                    .ok_or_else(|| format!("`{id}` is no resource id"))?;
+                let written = self
+                    .store
+                    .borrow()
+                    .written(&target, fields, change)
+                    .map_err(|error| error.to_string())?;
+                Ok(Json::Array(
+                    written
+                        .iter()
+                        .map(|(field, before, after)| {
+                            serde_json::json!([
+                                field,
+                                crate::store::field_json(before),
+                                crate::store::field_json(after)
+                            ])
+                        })
+                        .collect(),
+                ))
+            }
         }
     }
 }
@@ -688,7 +749,7 @@ impl Core {
         };
         if let Some(t) = meta.types.iter().find(|t| t.name == name) {
             let Some(field) = field else {
-                return Ok(describe_type(meta, t, alias));
+                return Ok(describe_type(meta, t, alias, true));
             };
             let f = t.fields.iter().find(|f| f.name == field).ok_or_else(|| {
                 let names: Vec<&str> = t.fields.iter().map(|f| f.name.as_str()).collect();
@@ -777,8 +838,14 @@ pub fn describe_app(meta: &crate::meta::Meta, alias: &str) -> String {
 }
 
 /// The type `t` of `meta`, as `describe` shows it: its doc, its fields, its filters and the
-/// actions taking it.
-pub fn describe_type(meta: &crate::meta::Meta, t: &crate::meta::TypeMeta, alias: &str) -> String {
+/// actions taking it; and, for an app whose log a program reads (`history`), when its resources
+/// changed.
+pub fn describe_type(
+    meta: &crate::meta::Meta,
+    t: &crate::meta::TypeMeta,
+    alias: &str,
+    history: bool,
+) -> String {
     let app = &meta.app;
     let mut out = String::new();
     if !t.doc.is_empty() {
@@ -800,6 +867,17 @@ pub fn describe_type(meta: &crate::meta::Meta, t: &crate::meta::TypeMeta, alias:
             t.name,
             filters.first().copied().unwrap_or_default()
         );
+    }
+    // What every resource has beside its fields: its history, which a program finds and reads.
+    if history && !filters.contains(&tilolang::agent::CHANGED) {
+        let _ = write!(
+            out,
+            "\nchanged: when it last changed  (find({}, changed: -7d))",
+            t.name
+        );
+    }
+    if history {
+        out.push_str("\nhistory: updated(r), created(r) (who, when), history(r)");
     }
     if let Some(sort) = &t.search.sort {
         let _ = write!(out, "\nsorted by: {}", sort.key);

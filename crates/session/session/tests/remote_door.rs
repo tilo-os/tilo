@@ -1332,6 +1332,7 @@ fn open_action() -> runtime_collab::ExportedAction {
         },
         view: None,
         input: ExportedInput::None,
+        did: None,
     }
 }
 

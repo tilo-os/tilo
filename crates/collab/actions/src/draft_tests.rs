@@ -5,6 +5,7 @@ use crate::{ActionAddress, ActionContract, ActionParam, ExecutionLocus, InputSpe
 
 fn descriptor(action_label: &str, params: Vec<ActionParam>) -> ActionDescriptor {
     ActionDescriptor {
+        did: None,
         state: crate::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new("inbox", "do"),

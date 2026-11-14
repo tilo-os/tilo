@@ -470,6 +470,11 @@ pub struct ResourceViewSpec {
     /// it opens the desktop at this view.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub desktop: bool,
+    /// What a place of the resource shows when it stands as content on its own (a place on the
+    /// canvas, an answer's view) rather than as its app's window: the view the words naming the
+    /// resource, not its app, place it through. At most one view of a resource is so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub place: bool,
 }
 
 impl ResourceViewSpec {
@@ -487,6 +492,7 @@ impl ResourceViewSpec {
             mount: None,
             range: None,
             desktop: false,
+            place: false,
         }
     }
 
@@ -506,6 +512,13 @@ impl ResourceViewSpec {
     #[must_use]
     pub fn with_primary(mut self, primary: bool) -> Self {
         self.primary = primary;
+        self
+    }
+
+    /// Make it what a place of the resource shows standing on its own ([`Self::place`]).
+    #[must_use]
+    pub fn with_place(mut self, place: bool) -> Self {
+        self.place = place;
         self
     }
 
@@ -1080,6 +1093,12 @@ pub struct ActionType {
     /// every surface that lists the action knows them; never a list kept
     /// inside a search provider.
     pub keywords: Vec<String>,
+    /// What the action did, in the app's own words, said after who did it
+    /// ("showed this on the canvas", "added a subtask"): the past-tense form a
+    /// record of what was done reads, declared beside the label rather than
+    /// made from it. `None` where the app declares none; a record then names
+    /// the action by its label.
+    pub did: Option<String>,
     /// The action's own picture beside its label, by its Lucide name.
     pub icon: Option<String>,
     pub description: Option<String>,
@@ -1576,6 +1595,7 @@ impl ActionSpec {
             declared: String::new(),
             label: seed.label,
             keywords: Vec::new(),
+            did: None,
             icon: None,
             description: None,
             state: ActionState::default(),
@@ -2124,6 +2144,15 @@ impl ActionSpec {
     #[must_use]
     pub fn with_keywords<S: Into<String>>(mut self, keywords: impl IntoIterator<Item = S>) -> Self {
         self.type_mut().keywords = keywords.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Declare what the action did, said after who did it ([`Self::did`]):
+    /// "showed this on the canvas", "added a subtask".
+    #[must_use]
+    pub fn with_did(mut self, did: impl Into<String>) -> Self {
+        let did = did.into();
+        self.type_mut().did = Some(did).filter(|did| !did.trim().is_empty());
         self
     }
 

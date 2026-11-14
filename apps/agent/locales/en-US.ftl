@@ -44,7 +44,12 @@ agent-step-searching = Searching the web for “{ $what }”…
 agent-step-reading = Reading { $what }…
 agent-step-editing = Editing { $what }…
 agent-step-exploring = Looking at what { $what } can do…
-agent-step-program = a program
+agent-step-program = Looked things up
+agent-step-looked-up = Looked up { $what }
+agent-step-on = { $action }: { $subject }
+agent-step-edited = Edited { $what }
+agent-step-searched = Searched the web for “{ $what }”
+agent-step-read = Read { $what }
 
 ## A run that stopped
 
@@ -93,3 +98,4 @@ agent-failure-truncated = The model's answer was cut off.
 agent-failure-refused = The model declined this request.
 agent-failure-transport = The model could not be reached. Try again.
 agent-failure-no-answer = The agent finished without doing anything or saying what it did.
+agent-failure-empty-answer = The agent finished without an answer. Try asking again.

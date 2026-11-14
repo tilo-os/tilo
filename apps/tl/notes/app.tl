@@ -39,6 +39,8 @@ default view note_editor for Note
 
 row view note_row for Note
 
+place view notes for Notebook
+
 /// Starts a note at the top of the tree. Its title starts empty: what is typed first names it.
 primary action new_note(nb: Notebook) -> Note (icon: .plus) {
     nb.notes.insert(Note(title: ""))
@@ -466,6 +468,24 @@ view add_child(n: Note) {
 /// A note's row in the tree: a pin when the person pinned it.
 view note_node(n: Note) {
     ui.TreeViewRow(icon: if n.pinned { .pin } else { .file_text }, tone: .secondary)
+}
+
+/// The notes standing on their own, as a place shows them: each note a row, in the notebook's
+/// order, opening beside the list. None of the window's tree, editor or bar is around them.
+view notes(nb: Notebook) {
+    if nb.notes.is_empty() {
+        ui.EmptyState("No notes yet", icon: .file_text)
+    } else {
+        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+            on select(x: Note): open(x, front: false)
+            on activate(x: Note): open(x)
+            for n in nb.notes {
+                ui.ListItem(item: n) {
+                    note_row(n)
+                }
+            }
+        }
+    }
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.

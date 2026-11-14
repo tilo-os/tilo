@@ -99,6 +99,7 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
     let moved = key.to_owned();
     let in_front = key.to_owned();
     let positioned = key.to_owned();
+    let sized = key.to_owned();
     vec![
         action(
             words,
@@ -115,26 +116,65 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 place: count_of(&pinned),
                 pinned: args.boolean("pinned").unwrap_or(true),
             },
-        ),
+        )
+        .with_did("pinned"),
         action(
             words,
             "position",
             "Stand a place at a point on the canvas, as a drag that let it go there",
             vec![
-                required(words, "position", "x", ParamType::Integer, "Its canvas x"),
-                required(words, "position", "y", ParamType::Integer, "Its canvas y"),
+                optional(words, "position", "x", ParamType::Integer, "Its canvas x"),
+                optional(words, "position", "y", ParamType::Integer, "Its canvas y"),
+                // A place moved next to another stands in the free space beside it, as one opened
+                // there does: what "put my notes next to the inbox" asks.
+                optional(
+                    words,
+                    "position",
+                    "beside",
+                    ParamType::Text,
+                    "Without x and y, it stands in the free space beside this: a place (`shell:place:<key>`) or the resource a place shows, by its address",
+                ),
             ],
             move |args| ArrangementAction::Position {
                 place: count_of(&positioned),
                 x: args.integer("x").unwrap_or_default(),
                 y: args.integer("y").unwrap_or_default(),
             },
-        ),
+        )
+        .with_did("moved on the canvas"),
+        action(
+            words,
+            "size",
+            "Give a place a size on the canvas, as dragging its edge does",
+            vec![
+                required(
+                    words,
+                    "size",
+                    "width",
+                    ParamType::Integer,
+                    "Its width in canvas pixels",
+                ),
+                required(
+                    words,
+                    "size",
+                    "height",
+                    ParamType::Integer,
+                    "Its height in canvas pixels",
+                ),
+            ],
+            move |args| ArrangementAction::Size {
+                place: count_of(&sized),
+                width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
+                height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
+            },
+        )
+        .with_did("sized"),
         action(words, "close", "Close a place", Vec::new(), move |_| {
             ArrangementAction::Close {
                 place: count_of(&closed),
             }
-        }),
+        })
+        .with_did("closed"),
         action(
             words,
             "activate",
@@ -143,7 +183,8 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
             move |_| ArrangementAction::Activate {
                 place: count_of(&in_front),
             },
-        ),
+        )
+        .with_did("brought to the front"),
         action(
             words,
             "move",
@@ -180,7 +221,8 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 before: named(args, "before", Item::Place),
                 strip: named(args, "strip", Item::Strip),
             },
-        ),
+        )
+        .with_did("moved"),
     ]
     .into_iter()
     .chain(float_actions(key, words))
@@ -449,6 +491,7 @@ fn show_action(words: &Words) -> ActionSpec {
             view: args.text("view").unwrap_or_default().to_owned(),
         },
     )
+    .with_did("showed in its place")
 }
 
 /// `retry-query`: ask the app the query a place shows again for what the person typed.
@@ -523,6 +566,16 @@ fn place_params(words: &Words) -> Vec<ActionParam> {
         ),
         optional(words, "place", "x", ParamType::Integer, "Its canvas x"),
         optional(words, "place", "y", ParamType::Integer, "Its canvas y"),
+        // Where it stands when it names no point: beside the place showing this resource, in the
+        // free space nearest it. An agent's step names the conversation it was asked in, so what
+        // it places stands next to that conversation (`shell.md` §8.1).
+        optional(
+            words,
+            "place",
+            "beside",
+            ParamType::Text,
+            "Without x and y, it stands beside the place showing this resource, by its address; an agent's step stands it beside the conversation it was asked in",
+        ),
         optional(
             words,
             "place",
@@ -564,12 +617,12 @@ fn place_params(words: &Words) -> Vec<ActionParam> {
     ]
 }
 
-/// Put a resource on the canvas as one of its views.
+/// Show a resource on the canvas, as one of its views.
 fn place_action(words: &Words) -> ActionSpec {
     action(
         words,
         "place",
-        "Put a resource on the canvas as one of its views",
+        "Show a resource on the canvas, as one of its views",
         place_params(words),
         |args| {
             let float = args.text("float").map(|corner| {
@@ -596,12 +649,15 @@ fn place_action(words: &Words) -> ActionSpec {
                 width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
                 height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
                 float,
+                // Named no height, it hugs what it shows up to a window's (canvas.md §7).
+                hugs: args.integer("height").is_none(),
             }
         },
     )
+    .with_did("showed on the canvas")
 }
 
-/// Put what a text finds on the canvas, or into a strip as a tab.
+/// `place-found`: what a text finds, put on the canvas at the caret, or into a strip as a tab.
 fn place_found_action(words: &Words) -> ActionSpec {
     action(
         words,
@@ -643,6 +699,52 @@ fn place_found_action(words: &Words) -> ActionSpec {
                 ParamType::Integer,
                 "Its canvas y",
             ),
+            // A rectangle the person dragged: what is found is laid out to it, and an answer's
+            // views fill it. Left out, it stands at its own size.
+            optional(
+                words,
+                "place-found",
+                "width",
+                ParamType::Integer,
+                "The width of the rectangle it fills, in canvas pixels; its own when left out",
+            ),
+            optional(
+                words,
+                "place-found",
+                "height",
+                ParamType::Integer,
+                "The height of the rectangle it fills, in canvas pixels; its own when left out",
+            ),
+            // What the person saw when they pointed: an answer's views stand in free room
+            // inside it, so everything it places stays in view.
+            optional(
+                words,
+                "place-found",
+                "seen_x",
+                ParamType::Integer,
+                "The canvas x of the part of the canvas the person sees",
+            ),
+            optional(
+                words,
+                "place-found",
+                "seen_y",
+                ParamType::Integer,
+                "The canvas y of the part of the canvas the person sees",
+            ),
+            optional(
+                words,
+                "place-found",
+                "seen_width",
+                ParamType::Integer,
+                "The width of the part of the canvas the person sees, in canvas pixels",
+            ),
+            optional(
+                words,
+                "place-found",
+                "seen_height",
+                ParamType::Integer,
+                "The height of the part of the canvas the person sees, in canvas pixels",
+            ),
         ],
         |args| ArrangementAction::PlaceFound {
             text: text(args, "text"),
@@ -653,8 +755,15 @@ fn place_found_action(words: &Words) -> ActionSpec {
                 .filter(|strip| *strip != 0),
             x: args.integer("x").unwrap_or_default(),
             y: args.integer("y").unwrap_or_default(),
+            width: args.integer("width").unwrap_or_default(),
+            height: args.integer("height").unwrap_or_default(),
+            seen_x: args.integer("seen_x").unwrap_or_default(),
+            seen_y: args.integer("seen_y").unwrap_or_default(),
+            seen_width: args.integer("seen_width").unwrap_or_default(),
+            seen_height: args.integer("seen_height").unwrap_or_default(),
         },
     )
+    .with_did("put on the canvas")
 }
 
 /// Open a resource with its own view, beside what the ask is in.
@@ -692,6 +801,7 @@ fn open_action(words: &Words) -> ActionSpec {
             beside: text(args, "beside"),
         },
     )
+    .with_did("opened")
 }
 
 /// An immediate effect action `id` the session answers itself: a step of the arrangement's history.

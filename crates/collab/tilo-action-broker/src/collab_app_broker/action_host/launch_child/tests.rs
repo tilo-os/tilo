@@ -854,6 +854,7 @@ tilo_test_env::scenario! {
             route: crate::collab_app_broker::CrdtRoute::app("record", &fixture.workspace),
             live: false,
             actions: vec![PublishedAction {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: "document".into(),

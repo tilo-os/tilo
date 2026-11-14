@@ -267,10 +267,16 @@ impl RecordIndex {
     /// Note that `record` of `app` changed in `workspace`, as `replayed` where it is what the
     /// device already held, and queue it for the next pass.
     fn reached(&self, workspace: &str, app: &str, record: &str, replayed: bool) {
-        if record.is_empty() || app.is_empty() {
+        if app.is_empty() {
             return;
         }
+        // An app's record of the workspace (an empty route: a tilolang app's, which its windows
+        // write) is news to whoever follows it, the session's own copy of it among them; search
+        // reads the records with routes of their own, and queues it for none.
         self.changes.note(workspace, app, record, replayed);
+        if record.is_empty() {
+            return;
+        }
         self.queued.lock_recover().insert((
             workspace.to_owned(),
             app.to_owned(),

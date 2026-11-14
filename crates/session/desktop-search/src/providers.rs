@@ -2201,10 +2201,10 @@ mod tests {
         }
 
         phase my_mails_opens_mails_root;
-        // "my mails" means Mail's root, which Mail draws as its inbox: what an app shows of
-        // itself first is its root's default view, which the app decides.
+        // "my mails" means Mail's root, which a place shows through its place view, the inbox's
+        // list: the view is the app's to declare, the resource the search's to find.
         {
-            for asked in ["my mails", "mails", "mail", "Mail"] {
+            for asked in ["my mails", "mails", "mail", "Mail", "open Mail"] {
                 let found = opened(asked, &mail());
                 assert_eq!(
                     found.first().map(String::as_str),

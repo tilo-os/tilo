@@ -100,6 +100,9 @@ type ArrangementStrip (origin: session.arrangement_strip) {
     canvas_y: Int
     canvas_width: Int
     canvas_height: Int
+    /// Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds
+    /// up to it (a thing found where the person clicked).
+    canvas_hugs: Bool
     shell: Text merge register
 }
 

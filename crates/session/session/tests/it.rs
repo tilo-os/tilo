@@ -45,6 +45,8 @@ mod agent_door_room;
 mod agent_environments;
 #[path = "agent_story.rs"]
 mod agent_story;
+#[path = "app_records.rs"]
+mod app_records;
 #[path = "app_sheets.rs"]
 mod app_sheets;
 #[path = "app_side_records.rs"]
@@ -63,6 +65,8 @@ mod automation;
 mod canvas_ask;
 #[path = "canvas_chrome.rs"]
 mod canvas_chrome;
+#[path = "canvas_point.rs"]
+mod canvas_point;
 #[path = "chat_2x2.rs"]
 mod chat_2x2;
 #[path = "chat_view.rs"]
@@ -231,6 +235,8 @@ mod sheets_placement;
 mod shell;
 #[path = "shell_displays.rs"]
 mod shell_displays;
+#[path = "shell_record_persists.rs"]
+mod shell_record_persists;
 #[path = "shell_screen.rs"]
 mod shell_screen;
 #[path = "shell_themes.rs"]

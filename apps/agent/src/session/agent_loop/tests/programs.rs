@@ -5,6 +5,10 @@
 
 use super::*;
 
+/// A task asked on the canvas, whose programs read what its answer then shows there.
+#[path = "canvas.rs"]
+mod canvas;
+
 const BOARD_PEER: u64 = 21;
 const VIEWS_PEER: u64 = 22;
 const CHAT_PEER: u64 = 23;
@@ -369,4 +373,98 @@ tilo_test_env::scenario! {
             }
         );
     }
+}
+
+/// "What changed in my notes this week": the model is told how a program asks by time before it
+/// writes one. It first asks a note for a field it has not got; the error it reads back names
+/// the place in its own program and the filter that answers it, and its next program uses that
+/// filter and answers. The door's answers are the ones the task's host gives these programs
+/// (`tilolang-tilo`'s `what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed`).
+#[test]
+fn a_program_that_asks_a_field_for_when_a_note_changed_is_taught_the_filter_and_answers() {
+    let wrong = "find(notes.Note).filter(n -> n.edited)";
+    let right = "find(notes.Note, changed: -7d)";
+    let taught = "1:32: E021 `Note` has no field `edited`; fields are: title, body, images, \
+                  parent, pinned, tags, source, origin; when it was made or last changed, and by \
+                  whom, is its history, not a field: `updated(r)` and `created(r)` read it, and \
+                  `find(Note, changed: -7d)` finds those changed in the last 7 days";
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![
+            (
+                "n.edited",
+                serde_json::json!({
+                    "text": format!("error: the program does not compile; nothing ran\n{taught}"),
+                    "failed": true,
+                    "answer": {"state": "rejected", "detail": [taught]},
+                }),
+            ),
+            (
+                "changed: -7d",
+                serde_json::json!({
+                    "text": "n1 \"Groceries\"  pinned: true  tags: []",
+                    "failed": false,
+                    "answer": {"state": "done", "output": [], "steps": [], "changed": 0, "apps": []},
+                    "refs": [["n1", "@notes.Note:root/notes:g"]],
+                }),
+            ),
+        ],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "summarise what changed in my notes this week",
+        world,
+        vec![
+            turn(&[tilo(wrong)], 64),
+            turn(&[tilo(right)], 64),
+            turn(
+                &[(
+                    tools::PLAN,
+                    serde_json::json!({
+                        "reply": "Only Groceries changed this week: you pinned it.",
+                        "done": true
+                    }),
+                )],
+                64,
+            ),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "the wrong program, the right one, the finish"
+    );
+    // Before it writes a program, the model reads how one asks by time and what it answers with.
+    let tool = bodies[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == crate::programs::TILO)
+        .unwrap()
+        .to_string();
+    for taught in [
+        "find(notes.Note, changed: -7d)",
+        "read(n2)",
+        "updated(n2)",
+        "describe(notes)",
+        "the value of its last line",
+    ] {
+        assert!(tool.contains(taught), "the tool teaches {taught}: {tool}");
+    }
+    // The error comes back whole: where in its program, and what answers instead.
+    let second = said_last(&bodies[1]);
+    assert!(second.contains("does not compile"), "{second}");
+    assert!(second.contains("1:32: E021"), "{second}");
+    assert!(second.contains("find(Note, changed: -7d)"), "{second}");
+    let third = said_last(&bodies[2]);
+    assert!(third.contains("n1 \"Groceries\""), "{third}");
+    drop(bodies);
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "Only Groceries changed this week: you pinned it.".into()
+        }
+    );
 }
