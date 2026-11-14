@@ -70,7 +70,7 @@ use tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER;
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
-mod host;
+pub(super) mod host;
 
 use super::authority::WorkspaceOp;
 use super::{

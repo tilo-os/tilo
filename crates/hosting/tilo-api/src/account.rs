@@ -765,8 +765,8 @@ impl Server {
                 "account/workspaces#list names them",
             );
         };
-        let found = match self.relay.workspaces(connection).await {
-            Ok(listed) => listed.into_iter().find(|listed| listed.id == workspace),
+        let found = match self.relay.workspace(connection, workspace).await {
+            Ok(found) => found,
             Err(error) => return refused(&error),
         };
         let Some(found) = found else {

@@ -552,11 +552,9 @@ impl<'a> Caller<'a> {
         let workspace = self
             .server
             .relay
-            .workspaces(self.session.connection())
+            .workspace(self.session.connection(), &ws)
             .await
             .map_err(ApiError::from)?
-            .into_iter()
-            .find(|listed| listed.id == ws)
             .ok_or_else(|| ApiError::new("not_found", "no such workspace"))?;
         let mut resources = Vec::new();
         let mut unread = Vec::new();

@@ -189,12 +189,43 @@ fn workspace_params() -> Vec<ActionParam> {
     )]
 }
 
+/// Which of a person's workspaces a listing reads: those labelled with every
+/// one of `labels`, and only `workspace` when it names one. Every one for
+/// the default.
+#[derive(Default)]
+pub(in crate::workspaces) struct Listed {
+    pub(in crate::workspaces) labels: WorkspaceLabels,
+    pub(in crate::workspaces) workspace: Option<String>,
+}
+
+impl Listed {
+    /// Whether the listing reads `workspace` at all, by its id.
+    fn names(&self, workspace: &str) -> bool {
+        self.workspace
+            .as_deref()
+            .is_none_or(|only| only == workspace)
+    }
+
+    /// Whether a workspace of the person's list, labelled `labels`, is one
+    /// the listing names.
+    pub(in crate::workspaces) fn holds(&self, workspace: &str, labels: &WorkspaceLabels) -> bool {
+        self.names(workspace) && labelled(labels, &self.labels)
+    }
+}
+
 fn list_personal_params() -> Vec<ActionParam> {
-    vec![ActionParam::optional(
-        "labels",
-        ParamType::Object,
-        "Only the workspaces of yours labelled with every one of these (names to values).",
-    )]
+    vec![
+        ActionParam::optional(
+            "labels",
+            ParamType::Object,
+            "Only the workspaces of yours labelled with every one of these (names to values).",
+        ),
+        ActionParam::optional(
+            "workspace",
+            ParamType::Text,
+            "Only this workspace (a UUID), when it is yours.",
+        ),
+    ]
 }
 
 fn keep_personal_params() -> Vec<ActionParam> {
@@ -442,7 +473,7 @@ impl Workspaces {
             HostOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                answer(&self.listed(device, &WorkspaceLabels::new()).await)
+                answer(&self.listed(device, &Listed::default()).await)
             }
             HostOperation::DeleteOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -523,10 +554,13 @@ impl Workspaces {
             }
             // A backend finds its customer's workspace by its labels: only
             // the workspaces labelled so are read, however many it has.
-            let labels: WorkspaceLabels = args.object("labels")?.unwrap_or_default();
-            check_labels(&labels).map_err(invalid)?;
-            let here = self.listed(device, &labels).await;
-            return answer(&self.personal(device, &here, &labels));
+            let only = Listed {
+                labels: args.object("labels")?.unwrap_or_default(),
+                workspace: args.text("workspace")?.map(str::to_owned),
+            };
+            check_labels(&only.labels).map_err(invalid)?;
+            let here = self.listed(device, &only).await;
+            return answer(&self.personal(device, &here, &only));
         }
         let list: PersonalList = args
             .object("list")?
@@ -598,15 +632,17 @@ impl Workspaces {
     /// person takes in it: the host's person every one, anyone else the ones
     /// of their own and the ones they were invited into, found by their person
     /// so a host with many workspaces answers a person with a few of them in
-    /// the time those few take. With `labels`, only their own workspaces
-    /// labelled with every one of them, the others never read.
-    async fn listed(&self, device: &DeviceCert, labels: &WorkspaceLabels) -> Vec<WorkspaceListing> {
+    /// the time those few take. With `only`, only the workspaces it names,
+    /// the others never read.
+    async fn listed(&self, device: &DeviceCert, only: &Listed) -> Vec<WorkspaceListing> {
+        let labels = &only.labels;
         let person = device.user_public_key;
         if person != self.inner.host.cert.user_public_key {
             let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
             let mut listed: Vec<WorkspaceListing> = Vec::new();
             for workspace in &own {
-                if !self.lists_to(device, workspace)
+                if !only.names(workspace)
+                    || !self.lists_to(device, workspace)
                     || !self
                         .own()
                         .is_some_and(|own| labelled(&own.labels_of(workspace), labels))
@@ -629,7 +665,10 @@ impl Workspaces {
                 Vec::new()
             };
             for workspace in invited {
-                if own.contains(&workspace) || !self.lists_to(device, &workspace) {
+                if own.contains(&workspace)
+                    || !only.names(&workspace)
+                    || !self.lists_to(device, &workspace)
+                {
                     continue;
                 }
                 let Some(role) = self.role_of(&workspace, person, now).await else {
@@ -650,7 +689,9 @@ impl Workspaces {
         self.list()
             .await
             .iter()
-            .filter(|summary| self.lists_to(device, &summary.workspace))
+            .filter(|summary| {
+                only.names(&summary.workspace) && self.lists_to(device, &summary.workspace)
+            })
             .map(|summary| WorkspaceListing {
                 role: Some(OWNER_ROLE.to_owned()),
                 labels: self

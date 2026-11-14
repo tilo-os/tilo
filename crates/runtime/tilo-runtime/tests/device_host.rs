@@ -343,7 +343,10 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
 
     // The person's workspaces, as the host lists them to a key of theirs.
     let listed = key
-        .personal_list(&tilo_relay_session::workspaces::WorkspaceLabels::new())
+        .personal_list(
+            &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            None,
+        )
         .await
         .unwrap();
     assert!(

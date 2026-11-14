@@ -398,11 +398,9 @@ impl Session {
     ) -> Option<tilo_relay_session::workspaces::WorkspaceHostAddress> {
         let address = self
             .relay
-            .workspaces(&self.connection)
+            .workspace(&self.connection, workspace)
             .await
-            .ok()?
-            .into_iter()
-            .find(|listed| listed.id == workspace)?
+            .ok()??
             .address?;
         // A listed address with a hint is a device's own, never the answering device's.
         address.address().ok()?;

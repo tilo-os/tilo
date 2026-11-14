@@ -392,15 +392,20 @@ impl Device {
     /// The person's workspace list as the host keeps it: every
     /// workspace of theirs their devices said, wherever it is hosted, with the workspaces this host
     /// keeps for them, each naming its host. A key for one workspace reads that one alone. With
-    /// `labels`, only the workspaces labelled with every one of them: the host reads no other.
+    /// `labels`, only the workspaces labelled with every one of them, and with `workspace` only
+    /// that one: the host reads no other.
     ///
     /// # Errors
     /// The host did not answer, refused, or answered something else.
     pub async fn personal_list(
         &self,
         labels: &WorkspaceLabels,
+        workspace: Option<&str>,
     ) -> Result<PersonalList, HostRefusal> {
         let mut arguments = Map::new();
+        if let Some(workspace) = workspace {
+            arguments.insert("workspace".to_owned(), serde_json::Value::from(workspace));
+        }
         if !labels.is_empty() {
             arguments.insert(
                 "labels".to_owned(),

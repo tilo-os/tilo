@@ -186,9 +186,35 @@ impl Relay {
         connection: &Connection,
         labels: &WorkspaceLabels,
     ) -> Result<Vec<Workspace>, RelayError> {
+        self.listed(connection, labels, None).await
+    }
+
+    /// `workspace` as `connection`'s grant reaches it, when it does: the
+    /// relay reads that one alone.
+    ///
+    /// # Errors
+    /// The relay was not reached or refused.
+    pub async fn workspace(
+        &self,
+        connection: &Connection,
+        workspace: &str,
+    ) -> Result<Option<Workspace>, RelayError> {
+        Ok(self
+            .listed(connection, &WorkspaceLabels::new(), Some(workspace))
+            .await?
+            .into_iter()
+            .find(|listed| listed.id == workspace))
+    }
+
+    async fn listed(
+        &self,
+        connection: &Connection,
+        labels: &WorkspaceLabels,
+        workspace: Option<&str>,
+    ) -> Result<Vec<Workspace>, RelayError> {
         let listed = connection
             .device
-            .personal_list(labels)
+            .personal_list(labels, workspace)
             .await
             .map_err(RelayError::from)?;
         Ok(listed
