@@ -249,6 +249,10 @@ fn a_long_history_into_a_blank_document_is_admitted() {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn admitted_input_and_orphans_leave_the_document_a_direct_apply_would;
 
     phase admitted_input_leaves_the_same_document_as_a_direct_apply;
@@ -468,6 +472,10 @@ fn crafted(doc: &mut AutoCommit, start: u64, ops: Vec<automerge::legacy::Op>) ->
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn hostile_input_is_refused_and_costs_only_the_worker;
 
     phase change_graph_sequence_gaps_cost_only_the_worker;

@@ -549,6 +549,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn a_pool_times_routes_and_replaces_its_workers;
 
         phase the_deadline_grows_with_the_input;
