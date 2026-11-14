@@ -538,92 +538,96 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_publisher_sends_the_whole_set_once_then_only_what_changed() {
-        let mut publisher = Publisher::default();
-        let first = publisher.publish(state(1), vec![entry("a", "Alpha"), entry("b", "Beta")]);
-        assert_eq!(first.len(), 1);
-        assert!(first[0].reset);
-        assert_eq!(first[0].upsert.len(), 2);
+    tilo_test_env::scenario! {
+        fn a_search_index_is_published_in_bounded_deltas;
 
-        assert!(!publisher.wants(state(1)));
-        let changed = publisher.publish(state(2), vec![entry("a", "Alpha 2"), entry("c", "Gamma")]);
-        assert_eq!(changed.len(), 1);
-        assert!(!changed[0].reset);
-        let keys: Vec<&str> = changed[0]
-            .upsert
-            .iter()
-            .map(|entry| entry.key.as_str())
-            .collect();
-        assert_eq!(keys, ["a", "c"]);
-        assert_eq!(changed[0].remove, ["b"]);
+        phase a_publisher_sends_the_whole_set_once_then_only_what_changed;
+        {
+            let mut publisher = Publisher::default();
+            let first = publisher.publish(state(1), vec![entry("a", "Alpha"), entry("b", "Beta")]);
+            assert_eq!(first.len(), 1);
+            assert!(first[0].reset);
+            assert_eq!(first[0].upsert.len(), 2);
 
-        let same = publisher.publish(state(3), vec![entry("a", "Alpha 2"), entry("c", "Gamma")]);
-        assert!(same.is_empty(), "nothing changed, nothing is sent");
+            assert!(!publisher.wants(state(1)));
+            let changed = publisher.publish(state(2), vec![entry("a", "Alpha 2"), entry("c", "Gamma")]);
+            assert_eq!(changed.len(), 1);
+            assert!(!changed[0].reset);
+            let keys: Vec<&str> = changed[0]
+                .upsert
+                .iter()
+                .map(|entry| entry.key.as_str())
+                .collect();
+            assert_eq!(keys, ["a", "c"]);
+            assert_eq!(changed[0].remove, ["b"]);
 
-        publisher.reset();
-        let again = publisher.publish(state(3), vec![entry("a", "Alpha 2")]);
-        assert!(again[0].reset, "a new route gets the whole set again");
-    }
+            let same = publisher.publish(state(3), vec![entry("a", "Alpha 2"), entry("c", "Gamma")]);
+            assert!(same.is_empty(), "nothing changed, nothing is sent");
 
-    #[test]
-    fn a_lock_change_alone_is_published() {
-        let mut publisher = Publisher::default();
-        let unlocked = IndexState {
-            generation: 1,
-            secrets_unlocked: Some(true),
-        };
-        publisher.publish(unlocked, vec![entry("a", "Alpha")]);
-        let locked = IndexState {
-            secrets_unlocked: Some(false),
-            ..unlocked
-        };
-        assert!(publisher.wants(locked));
-        let deltas = publisher.publish(locked, vec![entry("a", "Alpha")]);
-        assert_eq!(deltas.len(), 1);
-        assert_eq!(deltas[0].secrets_unlocked, Some(false));
-        assert!(deltas[0].upsert.is_empty());
-    }
-
-    #[test]
-    fn a_large_set_crosses_in_bounded_deltas() {
-        let mut publisher = Publisher::default();
-        let long = "x".repeat(MAX_TEXT_BYTES);
-        let entries: Vec<IndexEntry> = (0..4_000)
-            .map(|at| IndexEntry {
-                subtitle: Some(long.clone()),
-                ..entry(&format!("item-{at}"), &long)
-            })
-            .collect();
-        let deltas = publisher.publish(state(1), entries);
-        assert!(deltas.len() > 1);
-        assert!(deltas[0].reset);
-        assert!(deltas.iter().skip(1).all(|delta| !delta.reset));
-        assert_eq!(
-            deltas.iter().map(|delta| delta.upsert.len()).sum::<usize>(),
-            4_000
-        );
-        for delta in &deltas {
-            let bytes = delta.encode().expect("encodes");
-            assert!(bytes.len() <= MAX_DELTA_BYTES);
-            assert_eq!(IndexDelta::decode(&bytes).expect("decodes"), *delta);
+            publisher.reset();
+            let again = publisher.publish(state(3), vec![entry("a", "Alpha 2")]);
+            assert!(again[0].reset, "a new route gets the whole set again");
         }
-    }
 
-    #[test]
-    fn entries_are_bounded_and_need_something_to_open() {
-        let long = "é".repeat(MAX_TEXT_BYTES);
-        let bounded = IndexEntry {
-            fields: (0..100)
-                .map(|at| (format!("field {at}"), IndexWeight::Metadata))
-                .collect(),
-            ..entry("a", &long)
+        phase a_lock_change_alone_is_published;
+        {
+            let mut publisher = Publisher::default();
+            let unlocked = IndexState {
+                generation: 1,
+                secrets_unlocked: Some(true),
+            };
+            publisher.publish(unlocked, vec![entry("a", "Alpha")]);
+            let locked = IndexState {
+                secrets_unlocked: Some(false),
+                ..unlocked
+            };
+            assert!(publisher.wants(locked));
+            let deltas = publisher.publish(locked, vec![entry("a", "Alpha")]);
+            assert_eq!(deltas.len(), 1);
+            assert_eq!(deltas[0].secrets_unlocked, Some(false));
+            assert!(deltas[0].upsert.is_empty());
         }
-        .bounded()
-        .expect("kept");
-        assert!(bounded.title.len() <= MAX_TEXT_BYTES);
-        assert_eq!(bounded.fields.len(), MAX_FIELDS);
-        assert!(entry("", "Nothing to open").bounded().is_none());
-        assert!(entry("a", "   ").bounded().is_none());
+
+        phase a_large_set_crosses_in_bounded_deltas;
+        {
+            let mut publisher = Publisher::default();
+            let long = "x".repeat(MAX_TEXT_BYTES);
+            let entries: Vec<IndexEntry> = (0..4_000)
+                .map(|at| IndexEntry {
+                    subtitle: Some(long.clone()),
+                    ..entry(&format!("item-{at}"), &long)
+                })
+                .collect();
+            let deltas = publisher.publish(state(1), entries);
+            assert!(deltas.len() > 1);
+            assert!(deltas[0].reset);
+            assert!(deltas.iter().skip(1).all(|delta| !delta.reset));
+            assert_eq!(
+                deltas.iter().map(|delta| delta.upsert.len()).sum::<usize>(),
+                4_000
+            );
+            for delta in &deltas {
+                let bytes = delta.encode().expect("encodes");
+                assert!(bytes.len() <= MAX_DELTA_BYTES);
+                assert_eq!(IndexDelta::decode(&bytes).expect("decodes"), *delta);
+            }
+        }
+
+        phase entries_are_bounded_and_need_something_to_open;
+        {
+            let long = "é".repeat(MAX_TEXT_BYTES);
+            let bounded = IndexEntry {
+                fields: (0..100)
+                    .map(|at| (format!("field {at}"), IndexWeight::Metadata))
+                    .collect(),
+                ..entry("a", &long)
+            }
+            .bounded()
+            .expect("kept");
+            assert!(bounded.title.len() <= MAX_TEXT_BYTES);
+            assert_eq!(bounded.fields.len(), MAX_FIELDS);
+            assert!(entry("", "Nothing to open").bounded().is_none());
+            assert!(entry("a", "   ").bounded().is_none());
+        }
     }
 }

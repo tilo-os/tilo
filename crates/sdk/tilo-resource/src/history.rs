@@ -683,203 +683,235 @@ mod tests {
     use automerge::{ActorId, ROOT, ReadDoc};
     use tilo_automerge::ApplyIncoming as _;
 
-    #[test]
-    fn one_act_is_one_step_and_a_person_alone_is_one_step_beside_their_changes() {
-        use tilo_actions::{ActionId, InvocationId};
-        let (gesture, other) = (ActionId::new(), ActionId::new());
-        let (invocation, elsewhere) = (InvocationId::new(), InvocationId::new());
-        let unnamed = |who| StepFacts {
-            who: Some(who),
-            ..StepFacts::default()
-        };
-        let in_run = |run| StepFacts {
-            run: Some(run),
-            ..StepFacts::default()
-        };
-        let of_gesture = |gesture| StepFacts {
-            gesture: Some(gesture),
-            ..StepFacts::default()
-        };
-        let in_invocation = |invocation| StepFacts {
-            invocation: Some(invocation),
-            ..StepFacts::default()
-        };
-        // The changes of one act are one step, by whichever fact the store names it, and a
-        // person's changes that name none are one step beside each other.
-        assert!(same_step(&unnamed("ada"), &unnamed("ada")));
-        assert!(same_step(&in_run("task@7"), &in_run("task@7")));
-        assert!(same_step(&of_gesture(&gesture), &of_gesture(&gesture)));
-        assert!(same_step(
-            &in_invocation(&invocation),
-            &in_invocation(&invocation)
-        ));
-        // Another act, another hand, or an act beside a change that names none: another step.
-        assert!(!same_step(&unnamed("ada"), &unnamed("bo")));
-        assert!(!same_step(&in_run("task@7"), &in_run("task@8")));
-        assert!(!same_step(&of_gesture(&gesture), &of_gesture(&other)));
-        assert!(!same_step(
-            &in_invocation(&invocation),
-            &in_invocation(&elsewhere)
-        ));
-        assert!(!same_step(&in_run("task@7"), &unnamed("alex")));
-        assert!(!same_step(&in_invocation(&invocation), &unnamed("ada")));
-    }
+    tilo_test_env::scenario! {
+        fn a_history_is_read_in_steps_pages_and_positions;
 
-    #[test]
-    fn the_first_page_of_a_long_history_reads_only_that_page() {
-        let mut doc = Doc::new();
-        for n in 0..2_000_i64 {
-            doc.put(ROOT, "tag", format!("t{}", n % 7)).unwrap();
-            commit_stamped_at(&mut doc, n).unwrap();
+        phase one_act_is_one_step_and_a_person_alone_is_one_step_beside_their_changes;
+        {
+            use tilo_actions::{ActionId, InvocationId};
+            let (gesture, other) = (ActionId::new(), ActionId::new());
+            let (invocation, elsewhere) = (InvocationId::new(), InvocationId::new());
+            let unnamed = |who| StepFacts {
+                who: Some(who),
+                ..StepFacts::default()
+            };
+            let in_run = |run| StepFacts {
+                run: Some(run),
+                ..StepFacts::default()
+            };
+            let of_gesture = |gesture| StepFacts {
+                gesture: Some(gesture),
+                ..StepFacts::default()
+            };
+            let in_invocation = |invocation| StepFacts {
+                invocation: Some(invocation),
+                ..StepFacts::default()
+            };
+            // The changes of one act are one step, by whichever fact the store names it, and a
+            // person's changes that name none are one step beside each other.
+            assert!(same_step(&unnamed("ada"), &unnamed("ada")));
+            assert!(same_step(&in_run("task@7"), &in_run("task@7")));
+            assert!(same_step(&of_gesture(&gesture), &of_gesture(&gesture)));
+            assert!(same_step(
+                &in_invocation(&invocation),
+                &in_invocation(&invocation)
+            ));
+            // Another act, another hand, or an act beside a change that names none: another step.
+            assert!(!same_step(&unnamed("ada"), &unnamed("bo")));
+            assert!(!same_step(&in_run("task@7"), &in_run("task@8")));
+            assert!(!same_step(&of_gesture(&gesture), &of_gesture(&other)));
+            assert!(!same_step(
+                &in_invocation(&invocation),
+                &in_invocation(&elsewhere)
+            ));
+            assert!(!same_step(&in_run("task@7"), &unnamed("alex")));
+            assert!(!same_step(&in_invocation(&invocation), &unnamed("ada")));
         }
-        META_READS.with(|reads| reads.set(0));
-        let page = page(&mut doc, None, 50);
-        let read = META_READS.with(std::cell::Cell::get);
-        assert_eq!(page.versions.len(), 50);
-        assert!(page.older.is_some());
-        // Each listed change and the dependency that queues after it.
-        assert!(read <= 51, "a page of 50 read {read} changes of 2,000");
+
+        phase the_first_page_of_a_long_history_reads_only_that_page;
+        {
+            let mut doc = Doc::new();
+            for n in 0..2_000_i64 {
+                doc.put(ROOT, "tag", format!("t{}", n % 7)).unwrap();
+                commit_stamped_at(&mut doc, n).unwrap();
+            }
+            META_READS.with(|reads| reads.set(0));
+            let page = page(&mut doc, None, 50);
+            let read = META_READS.with(std::cell::Cell::get);
+            assert_eq!(page.versions.len(), 50);
+            assert!(page.older.is_some());
+            // Each listed change and the dependency that queues after it.
+            assert!(read <= 51, "a page of 50 read {read} changes of 2,000");
+        }
+
+        phase positions_mean_the_same_to_every_addressing_function;
+        {
+            let mut doc = combined();
+            let listed: Vec<ChangeHash> = versions(&mut doc).iter().map(|v| v.hash).collect();
+            let replayed: Vec<ChangeHash> = doc
+                .get_changes(&[])
+                .iter()
+                .map(automerge::Change::hash)
+                .collect();
+            assert_eq!(listed, replayed, "metadata and changes list in one order");
+            let changes = doc.get_changes(&[]);
+            for position in 0..listed.len() {
+                let mut rebuilt = Doc::new();
+                rebuilt
+                    .apply_incoming(changes[..=position].to_vec())
+                    .unwrap();
+                let mut heads = rebuilt.get_heads();
+                heads.compact_sort();
+                let mut expected = prefix_heads(&mut doc, position);
+                expected.compact_sort();
+                assert_eq!(heads, expected, "position {position}");
+            }
+        }
     }
 
-    #[test]
-    fn a_change_says_what_it_wrote_with_the_values_before_and_after() {
-        use automerge::transaction::Transactable as _;
-        use automerge::{ObjType, ScalarValue};
-        let mut doc = Doc::new();
-        let note = doc.put_object(ROOT, "note", ObjType::Map).unwrap();
-        let title = doc.put_object(&note, "title", ObjType::Text).unwrap();
-        doc.splice_text(&title, 0, 0, "Groceries").unwrap();
-        doc.put(&note, "due", "2026-10-30").unwrap();
-        doc.put(&note, "pinned", false).unwrap();
-        let first = commit_stamped_at(&mut doc, 1).unwrap();
-        // One step: the title typed into, the due day moved, `pinned` written as it was.
-        doc.splice_text(&title, 0, 9, "Shopping").unwrap();
-        doc.put(&note, "due", "2026-11-02").unwrap();
-        doc.put(&note, "pinned", ScalarValue::Boolean(false))
+    tilo_test_env::scenario! {
+        fn a_change_says_what_it_wrote;
+
+        phase a_change_says_what_it_wrote_with_the_values_before_and_after;
+        {
+            use automerge::transaction::Transactable as _;
+            use automerge::{ObjType, ScalarValue};
+            let mut doc = Doc::new();
+            let note = doc.put_object(ROOT, "note", ObjType::Map).unwrap();
+            let title = doc.put_object(&note, "title", ObjType::Text).unwrap();
+            doc.splice_text(&title, 0, 0, "Groceries").unwrap();
+            doc.put(&note, "due", "2026-10-30").unwrap();
+            doc.put(&note, "pinned", false).unwrap();
+            let first = commit_stamped_at(&mut doc, 1).unwrap();
+            // One step: the title typed into, the due day moved, `pinned` written as it was.
+            doc.splice_text(&title, 0, 9, "Shopping").unwrap();
+            doc.put(&note, "due", "2026-11-02").unwrap();
+            doc.put(&note, "pinned", ScalarValue::Boolean(false))
+                .unwrap();
+            let step = commit_stamped_at(&mut doc, 2).unwrap();
+            // A later step the earlier one's values do not see.
+            doc.put(&note, "due", "2026-12-24").unwrap();
+            commit_stamped_at(&mut doc, 3).unwrap();
+            let wrote = written(doc.document(), &step, &note).unwrap();
+            assert_eq!(
+                wrote,
+                vec![
+                    Written {
+                        prop: "title".into(),
+                        before: "Groceries".into(),
+                        after: "Shopping".into(),
+                    },
+                    Written {
+                        prop: "due".into(),
+                        before: "2026-10-30".into(),
+                        after: "2026-11-02".into(),
+                    },
+                ]
+            );
+            // The first step made everything it wrote: nothing before.
+            let made = written(doc.document(), &first, &ROOT).unwrap();
+            assert_eq!(made.len(), 1);
+            assert_eq!(made[0].prop, "note");
+            assert!(made[0].before.is_null());
+            assert_eq!(made[0].after["title"], "Groceries");
+        }
+
+        phase a_typed_paragraph_says_which_keys_of_characters_it_typed_and_erased;
+        {
+            use automerge::transaction::Transactable as _;
+            use automerge::{ObjType, ScalarValue};
+            let mut doc = Doc::new();
+            let note = doc.put_object(ROOT, "note", ObjType::Map).unwrap();
+            let body = doc.put_object(&note, "body", ObjType::Map).unwrap();
+            let blocks = doc.put_object(&body, "blocks", ObjType::Map).unwrap();
+            let first = doc.put_object(&blocks, "b1", ObjType::Map).unwrap();
+            let text = doc.put_object(&first, "text", ObjType::Text).unwrap();
+            let other = doc.put_object(&blocks, "b2", ObjType::Map).unwrap();
+            let other_text = doc.put_object(&other, "text", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "Groceries and milk").unwrap();
+            doc.splice_text(&other_text, 0, 0, "Untouched").unwrap();
+            commit_stamped_at(&mut doc, 1).unwrap();
+            // One step: a word replaced in the first paragraph, a title written beside it.
+            doc.splice_text(&text, 14, 4, "bread").unwrap();
+            doc.put(&note, "title", ScalarValue::Str("Shopping".into()))
+                .unwrap();
+            let step = commit_stamped_at(&mut doc, 2).unwrap();
+            let edits = spliced_texts(doc.document(), &step, &body).unwrap();
+            assert_eq!(edits.len(), 1, "only the paragraph typed into: {edits:?}");
+            let edit = &edits[0];
+            assert_eq!(edit.path, ["blocks", "b1", "text"]);
+            let inserted: String = edit
+                .inserted
+                .iter()
+                .map(|(_, _, text)| text.as_str())
+                .collect();
+            let deleted: String = edit
+                .deleted
+                .iter()
+                .map(|(_, _, text)| text.as_str())
+                .collect();
+            assert_eq!(inserted, "bread");
+            assert_eq!(deleted, "milk");
+            assert_eq!(edit.before, "Groceries and milk");
+            assert_eq!(edit.after, "Groceries and bread");
+            assert!(!edit.is_empty());
+        }
+
+        phase a_body_retyped_whole_reads_as_what_was_there_and_what_was_written;
+        {
+            use automerge::ObjType;
+            use automerge::transaction::Transactable as _;
+            let mut doc = Doc::new();
+            let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
+            let text = doc.put_object(&body, "text", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "Groceries and milk").unwrap();
+            commit_stamped_at(&mut doc, 1).unwrap();
+            // A control hands over its whole text: the whole of what was there goes, and what
+            // was typed in its place comes.
+            doc.splice_text(&text, 0, 15, "Oat milk and bread").unwrap();
+            let step = commit_stamped_at(&mut doc, 2).unwrap();
+            let edits = spliced_texts(doc.document(), &step, &body).unwrap();
+            let edit = &edits[0];
+            let inserted: String = edit
+                .inserted
+                .iter()
+                .map(|(_, _, text)| text.as_str())
+                .collect();
+            let deleted: String = edit
+                .deleted
+                .iter()
+                .map(|(_, _, text)| text.as_str())
+                .collect();
+            assert_eq!(inserted, "Oat milk and bread");
+            // "il" is shared by "milk" and "bread" at the end, so those two stand outside the
+            // region the change rewrote: the reader sees the part that differs, as anybody
+            // reading the two texts sees it.
+            assert_eq!(deleted, "Groceries and m");
+            assert_eq!(edit.before, "Groceries and milk");
+            // The trailing "il" the record kept is still there, after the typed text.
+            assert_eq!(edit.after, "Oat milk and breadilk");
+        }
+
+        phase a_paragraph_the_change_only_marked_reads_as_no_splice;
+        {
+            use automerge::ObjType;
+            use automerge::marks::Mark;
+            use automerge::transaction::Transactable as _;
+            let mut doc = Doc::new();
+            let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
+            let text = doc.put_object(&body, "text", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "Groceries").unwrap();
+            commit_stamped_at(&mut doc, 1).unwrap();
+            doc.mark(
+                &text,
+                Mark::new("strong".to_owned(), true, 0, 9),
+                automerge::marks::ExpandMark::Both,
+            )
             .unwrap();
-        let step = commit_stamped_at(&mut doc, 2).unwrap();
-        // A later step the earlier one's values do not see.
-        doc.put(&note, "due", "2026-12-24").unwrap();
-        commit_stamped_at(&mut doc, 3).unwrap();
-        let wrote = written(doc.document(), &step, &note).unwrap();
-        assert_eq!(
-            wrote,
-            vec![
-                Written {
-                    prop: "title".into(),
-                    before: "Groceries".into(),
-                    after: "Shopping".into(),
-                },
-                Written {
-                    prop: "due".into(),
-                    before: "2026-10-30".into(),
-                    after: "2026-11-02".into(),
-                },
-            ]
-        );
-        // The first step made everything it wrote: nothing before.
-        let made = written(doc.document(), &first, &ROOT).unwrap();
-        assert_eq!(made.len(), 1);
-        assert_eq!(made[0].prop, "note");
-        assert!(made[0].before.is_null());
-        assert_eq!(made[0].after["title"], "Groceries");
-    }
-
-    #[test]
-    fn a_typed_paragraph_says_which_keys_of_characters_it_typed_and_erased() {
-        use automerge::transaction::Transactable as _;
-        use automerge::{ObjType, ScalarValue};
-        let mut doc = Doc::new();
-        let note = doc.put_object(ROOT, "note", ObjType::Map).unwrap();
-        let body = doc.put_object(&note, "body", ObjType::Map).unwrap();
-        let blocks = doc.put_object(&body, "blocks", ObjType::Map).unwrap();
-        let first = doc.put_object(&blocks, "b1", ObjType::Map).unwrap();
-        let text = doc.put_object(&first, "text", ObjType::Text).unwrap();
-        let other = doc.put_object(&blocks, "b2", ObjType::Map).unwrap();
-        let other_text = doc.put_object(&other, "text", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "Groceries and milk").unwrap();
-        doc.splice_text(&other_text, 0, 0, "Untouched").unwrap();
-        commit_stamped_at(&mut doc, 1).unwrap();
-        // One step: a word replaced in the first paragraph, a title written beside it.
-        doc.splice_text(&text, 14, 4, "bread").unwrap();
-        doc.put(&note, "title", ScalarValue::Str("Shopping".into()))
-            .unwrap();
-        let step = commit_stamped_at(&mut doc, 2).unwrap();
-        let edits = spliced_texts(doc.document(), &step, &body).unwrap();
-        assert_eq!(edits.len(), 1, "only the paragraph typed into: {edits:?}");
-        let edit = &edits[0];
-        assert_eq!(edit.path, ["blocks", "b1", "text"]);
-        let inserted: String = edit
-            .inserted
-            .iter()
-            .map(|(_, _, text)| text.as_str())
-            .collect();
-        let deleted: String = edit
-            .deleted
-            .iter()
-            .map(|(_, _, text)| text.as_str())
-            .collect();
-        assert_eq!(inserted, "bread");
-        assert_eq!(deleted, "milk");
-        assert_eq!(edit.before, "Groceries and milk");
-        assert_eq!(edit.after, "Groceries and bread");
-        assert!(!edit.is_empty());
-    }
-
-    #[test]
-    fn a_body_retyped_whole_reads_as_what_was_there_and_what_was_written() {
-        use automerge::ObjType;
-        use automerge::transaction::Transactable as _;
-        let mut doc = Doc::new();
-        let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
-        let text = doc.put_object(&body, "text", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "Groceries and milk").unwrap();
-        commit_stamped_at(&mut doc, 1).unwrap();
-        // A control hands over its whole text: the whole of what was there goes, and what
-        // was typed in its place comes.
-        doc.splice_text(&text, 0, 15, "Oat milk and bread").unwrap();
-        let step = commit_stamped_at(&mut doc, 2).unwrap();
-        let edits = spliced_texts(doc.document(), &step, &body).unwrap();
-        let edit = &edits[0];
-        let inserted: String = edit
-            .inserted
-            .iter()
-            .map(|(_, _, text)| text.as_str())
-            .collect();
-        let deleted: String = edit
-            .deleted
-            .iter()
-            .map(|(_, _, text)| text.as_str())
-            .collect();
-        assert_eq!(inserted, "Oat milk and bread");
-        // "il" is shared by "milk" and "bread" at the end, so those two stand outside the
-        // region the change rewrote: the reader sees the part that differs, as anybody
-        // reading the two texts sees it.
-        assert_eq!(deleted, "Groceries and m");
-        assert_eq!(edit.before, "Groceries and milk");
-        // The trailing "il" the record kept is still there, after the typed text.
-        assert_eq!(edit.after, "Oat milk and breadilk");
-    }
-
-    #[test]
-    fn a_paragraph_the_change_only_marked_reads_as_no_splice() {
-        use automerge::ObjType;
-        use automerge::marks::Mark;
-        use automerge::transaction::Transactable as _;
-        let mut doc = Doc::new();
-        let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
-        let text = doc.put_object(&body, "text", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "Groceries").unwrap();
-        commit_stamped_at(&mut doc, 1).unwrap();
-        doc.mark(
-            &text,
-            Mark::new("strong".to_owned(), true, 0, 9),
-            automerge::marks::ExpandMark::Both,
-        )
-        .unwrap();
-        let step = commit_stamped_at(&mut doc, 2).unwrap();
-        let edits = spliced_texts(doc.document(), &step, &body).unwrap();
-        assert!(edits.iter().all(TextEdit::is_empty), "{edits:?}");
+            let step = commit_stamped_at(&mut doc, 2).unwrap();
+            let edits = spliced_texts(doc.document(), &step, &body).unwrap();
+            assert!(edits.iter().all(TextEdit::is_empty), "{edits:?}");
+        }
     }
 
     fn check_empty_commit_actor_transition(open_empty: bool) {
@@ -906,31 +938,35 @@ mod tests {
         }] if key == "body" && value.0.as_str() == Some("edited")));
     }
 
-    #[test]
-    fn empty_stamped_commit_does_not_poison_next_actor() {
-        check_empty_commit_actor_transition(false);
-    }
+    tilo_test_env::scenario! {
+        fn an_empty_commit_poisons_no_actor_and_stays_tracked;
 
-    #[test]
-    fn empty_open_transaction_does_not_poison_next_actor() {
-        check_empty_commit_actor_transition(true);
-    }
+        phase empty_stamped_commit_does_not_poison_next_actor;
+        {
+            check_empty_commit_actor_transition(false);
+        }
 
-    #[test]
-    fn an_empty_stamped_commit_keeps_changes_tracked_incrementally() {
-        let mut doc = Doc::new();
-        doc.put(ROOT, "n", 0).unwrap();
-        commit_stamped_at(&mut doc, 1).unwrap();
-        let mut tracker = crate::Tracker::new();
-        tracker.start(&mut doc);
-        for (n, actor) in [(1_i64, 0x10_u8), (2, 0x20)] {
-            doc.set_actor(ActorId::from(vec![actor]));
-            assert_eq!(commit_stamped_at(&mut doc, 2), None);
-            doc.put(ROOT, "n", n).unwrap();
-            commit_stamped_at(&mut doc, 3).unwrap();
-            let delta = tracker.delta(&mut doc);
-            assert!(!delta.is_everything(), "round {n}");
-            assert_eq!(delta.key(&ROOT, "n"), crate::Touch::Written);
+        phase empty_open_transaction_does_not_poison_next_actor;
+        {
+            check_empty_commit_actor_transition(true);
+        }
+
+        phase an_empty_stamped_commit_keeps_changes_tracked_incrementally;
+        {
+            let mut doc = Doc::new();
+            doc.put(ROOT, "n", 0).unwrap();
+            commit_stamped_at(&mut doc, 1).unwrap();
+            let mut tracker = crate::Tracker::new();
+            tracker.start(&mut doc);
+            for (n, actor) in [(1_i64, 0x10_u8), (2, 0x20)] {
+                doc.set_actor(ActorId::from(vec![actor]));
+                assert_eq!(commit_stamped_at(&mut doc, 2), None);
+                doc.put(ROOT, "n", n).unwrap();
+                commit_stamped_at(&mut doc, 3).unwrap();
+                let delta = tracker.delta(&mut doc);
+                assert!(!delta.is_everything(), "round {n}");
+                assert_eq!(delta.key(&ROOT, "n"), crate::Touch::Written);
+            }
         }
     }
 
@@ -952,29 +988,5 @@ mod tests {
         }
         left.merge_incoming(&mut right).unwrap();
         left
-    }
-
-    #[test]
-    fn positions_mean_the_same_to_every_addressing_function() {
-        let mut doc = combined();
-        let listed: Vec<ChangeHash> = versions(&mut doc).iter().map(|v| v.hash).collect();
-        let replayed: Vec<ChangeHash> = doc
-            .get_changes(&[])
-            .iter()
-            .map(automerge::Change::hash)
-            .collect();
-        assert_eq!(listed, replayed, "metadata and changes list in one order");
-        let changes = doc.get_changes(&[]);
-        for position in 0..listed.len() {
-            let mut rebuilt = Doc::new();
-            rebuilt
-                .apply_incoming(changes[..=position].to_vec())
-                .unwrap();
-            let mut heads = rebuilt.get_heads();
-            heads.compact_sort();
-            let mut expected = prefix_heads(&mut doc, position);
-            expected.compact_sort();
-            assert_eq!(heads, expected, "position {position}");
-        }
     }
 }

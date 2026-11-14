@@ -852,46 +852,50 @@ fn arguments_of(schema: &Value) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn optional_values_accept_null_and_keep_their_shape() {
-        assert_eq!(
-            <Option<String>>::json_schema(),
-            json!({"type": ["string", "null"]})
-        );
-        let choice = nullable(one_of(vec![constant("a"), constant("b")]));
-        assert!(tilo_actions::validate_json_schema(&Value::Null, &choice).is_ok());
-        assert!(tilo_actions::validate_json_schema(&json!("a"), &choice).is_ok());
-        assert!(tilo_actions::validate_json_schema(&json!("c"), &choice).is_err());
-        const { assert!(<Option<u8>>::OPTIONAL) };
-        const { assert!(!<Vec<u8>>::OPTIONAL) };
-    }
+    tilo_test_env::scenario! {
+        fn schemas_keep_nulls_tags_and_fields_named_description;
 
-    #[test]
-    fn internal_tags_join_the_variant_fields() {
-        let schema = internal(
-            "kind",
-            "Circle",
-            object(vec![("radius", f64::json_schema(), true)]),
-        );
-        assert!(
-            tilo_actions::validate_json_schema(&json!({"kind": "Circle", "radius": 1.5}), &schema)
-                .is_ok()
-        );
-        assert!(tilo_actions::validate_json_schema(&json!({"radius": 1.5}), &schema).is_err());
-    }
+        phase optional_values_accept_null_and_keep_their_shape;
+        {
+            assert_eq!(
+                <Option<String>>::json_schema(),
+                json!({"type": ["string", "null"]})
+            );
+            let choice = nullable(one_of(vec![constant("a"), constant("b")]));
+            assert!(tilo_actions::validate_json_schema(&Value::Null, &choice).is_ok());
+            assert!(tilo_actions::validate_json_schema(&json!("a"), &choice).is_ok());
+            assert!(tilo_actions::validate_json_schema(&json!("c"), &choice).is_err());
+            const { assert!(<Option<u8>>::OPTIONAL) };
+            const { assert!(!<Vec<u8>>::OPTIONAL) };
+        }
 
-    #[test]
-    fn a_copy_without_descriptions_keeps_fields_named_description() {
-        let schema = describe(
-            object(vec![(
-                "description",
-                describe(String::json_schema(), "Text"),
-                true,
-            )]),
-            "A note",
-        );
-        let copy = undescribed(&schema);
-        assert!(copy.get("description").is_none());
-        assert_eq!(copy["properties"]["description"], json!({"type": "string"}));
+        phase internal_tags_join_the_variant_fields;
+        {
+            let schema = internal(
+                "kind",
+                "Circle",
+                object(vec![("radius", f64::json_schema(), true)]),
+            );
+            assert!(
+                tilo_actions::validate_json_schema(&json!({"kind": "Circle", "radius": 1.5}), &schema)
+                    .is_ok()
+            );
+            assert!(tilo_actions::validate_json_schema(&json!({"radius": 1.5}), &schema).is_err());
+        }
+
+        phase a_copy_without_descriptions_keeps_fields_named_description;
+        {
+            let schema = describe(
+                object(vec![(
+                    "description",
+                    describe(String::json_schema(), "Text"),
+                    true,
+                )]),
+                "A note",
+            );
+            let copy = undescribed(&schema);
+            assert!(copy.get("description").is_none());
+            assert_eq!(copy["properties"]["description"], json!({"type": "string"}));
+        }
     }
 }

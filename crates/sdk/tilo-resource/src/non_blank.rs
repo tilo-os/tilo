@@ -179,29 +179,33 @@ mod tests {
     use super::NonBlank;
     use crate::JsonSchema as _;
 
-    #[test]
-    fn parsing_trims_and_refuses_blank_text() {
-        assert_eq!(NonBlank::parse(" a b ").unwrap(), "a b");
-        assert_eq!(NonBlank::parse(""), None);
-        assert_eq!(NonBlank::parse(" \n\t "), None);
-    }
+    tilo_test_env::scenario! {
+        fn non_blank_text_refuses_blank_however_it_is_read;
 
-    #[test]
-    fn json_is_read_through_the_same_parse() {
-        let read = |value| serde_json::from_value::<NonBlank>(value);
-        assert_eq!(read(serde_json::json!(" Ship it ")).unwrap(), "Ship it");
-        assert!(read(serde_json::json!("   ")).is_err());
-        assert!(read(serde_json::json!("")).is_err());
-        assert!(read(serde_json::json!(null)).is_err());
-        let written = serde_json::to_value(NonBlank::parse("x").unwrap()).unwrap();
-        assert_eq!(written, serde_json::json!("x"));
-    }
+        phase parsing_trims_and_refuses_blank_text;
+        {
+            assert_eq!(NonBlank::parse(" a b ").unwrap(), "a b");
+            assert_eq!(NonBlank::parse(""), None);
+            assert_eq!(NonBlank::parse(" \n\t "), None);
+        }
 
-    #[test]
-    fn the_schema_refuses_what_parsing_refuses() {
-        let schema = NonBlank::json_schema();
-        assert_eq!(schema["minLength"], 1);
-        let pattern = schema["pattern"].as_str().unwrap();
-        assert_eq!(pattern, "\\S");
+        phase json_is_read_through_the_same_parse;
+        {
+            let read = |value| serde_json::from_value::<NonBlank>(value);
+            assert_eq!(read(serde_json::json!(" Ship it ")).unwrap(), "Ship it");
+            assert!(read(serde_json::json!("   ")).is_err());
+            assert!(read(serde_json::json!("")).is_err());
+            assert!(read(serde_json::json!(null)).is_err());
+            let written = serde_json::to_value(NonBlank::parse("x").unwrap()).unwrap();
+            assert_eq!(written, serde_json::json!("x"));
+        }
+
+        phase the_schema_refuses_what_parsing_refuses;
+        {
+            let schema = NonBlank::json_schema();
+            assert_eq!(schema["minLength"], 1);
+            let pattern = schema["pattern"].as_str().unwrap();
+            assert_eq!(pattern, "\\S");
+        }
     }
 }

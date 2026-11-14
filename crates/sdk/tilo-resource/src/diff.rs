@@ -275,65 +275,69 @@ mod tests {
             .join(" ")
     }
 
-    #[test]
-    fn a_local_edit_aligns_everything_else() {
-        let old = ["a", "b", "c", "d", "e"];
-        let new = ["a", "b", "x", "d", "e"];
-        assert_eq!(render(&align(&old, &new)), "=a =b -c +x =d =e");
-        let new = ["a", "d", "b", "c", "e"];
-        assert_eq!(render(&align(&old, &new)), "=a +d =b =c -d =e");
-    }
+    tilo_test_env::scenario! {
+        fn an_alignment_keeps_what_both_sides_share;
 
-    #[test]
-    fn disjoint_and_empty_sides() {
-        let none: [&str; 0] = [];
-        assert_eq!(render(&align(&["a", "b"], &none)), "-a -b");
-        assert_eq!(render(&align(&none, &["a"])), "+a");
-        assert_eq!(render(&align(&["a"], &["b"])), "-a +b");
-    }
+        phase a_local_edit_aligns_everything_else;
+        {
+            let old = ["a", "b", "c", "d", "e"];
+            let new = ["a", "b", "x", "d", "e"];
+            assert_eq!(render(&align(&old, &new)), "=a =b -c +x =d =e");
+            let new = ["a", "d", "b", "c", "e"];
+            assert_eq!(render(&align(&old, &new)), "=a +d =b =c -d =e");
+        }
 
-    #[test]
-    fn alignment_keeps_a_longest_common_order_on_large_inputs() {
-        let old: Vec<String> = (0..20_000).map(|n| format!("id{n}")).collect();
-        let mut new = old.clone();
-        new.remove(5_000);
-        new.insert(15_000, "fresh".into());
-        let moved = new.remove(100);
-        new.push(moved);
-        let steps = align(&old, &new);
-        let both = steps.iter().filter(|s| matches!(s, Step::Both(_))).count();
-        assert_eq!(both, 20_000 - 2);
-        let added = steps
-            .iter()
-            .filter(|s| matches!(s, Step::NewOnly(_)))
-            .count();
-        assert_eq!(added, 2);
-    }
+        phase disjoint_and_empty_sides;
+        {
+            let none: [&str; 0] = [];
+            assert_eq!(render(&align(&["a", "b"], &none)), "-a -b");
+            assert_eq!(render(&align(&none, &["a"])), "+a");
+            assert_eq!(render(&align(&["a"], &["b"])), "-a +b");
+        }
 
-    #[test]
-    fn text_runs_keep_the_common_start_and_end() {
-        let runs = text_runs("the quick fox", "the quick brown fox");
-        assert_eq!(
-            runs,
-            [
-                TextRun {
-                    op: RunOp::Equal,
-                    text: "the quick ".into()
-                },
-                TextRun {
-                    op: RunOp::Insert,
-                    text: "brown ".into()
-                },
-                TextRun {
-                    op: RunOp::Equal,
-                    text: "fox".into()
-                },
-            ]
-        );
-        assert!(text_runs("", "").is_empty());
-        assert_eq!(
-            text_runs("ab", "b").first().map(|r| r.op),
-            Some(RunOp::Delete)
-        );
+        phase alignment_keeps_a_longest_common_order_on_large_inputs;
+        {
+            let old: Vec<String> = (0..20_000).map(|n| format!("id{n}")).collect();
+            let mut new = old.clone();
+            new.remove(5_000);
+            new.insert(15_000, "fresh".into());
+            let moved = new.remove(100);
+            new.push(moved);
+            let steps = align(&old, &new);
+            let both = steps.iter().filter(|s| matches!(s, Step::Both(_))).count();
+            assert_eq!(both, 20_000 - 2);
+            let added = steps
+                .iter()
+                .filter(|s| matches!(s, Step::NewOnly(_)))
+                .count();
+            assert_eq!(added, 2);
+        }
+
+        phase text_runs_keep_the_common_start_and_end;
+        {
+            let runs = text_runs("the quick fox", "the quick brown fox");
+            assert_eq!(
+                runs,
+                [
+                    TextRun {
+                        op: RunOp::Equal,
+                        text: "the quick ".into()
+                    },
+                    TextRun {
+                        op: RunOp::Insert,
+                        text: "brown ".into()
+                    },
+                    TextRun {
+                        op: RunOp::Equal,
+                        text: "fox".into()
+                    },
+                ]
+            );
+            assert!(text_runs("", "").is_empty());
+            assert_eq!(
+                text_runs("ab", "b").first().map(|r| r.op),
+                Some(RunOp::Delete)
+            );
+        }
     }
 }

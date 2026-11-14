@@ -254,49 +254,53 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn at_reads_a_position_the_end_or_a_neighbour_and_writes_back_the_same() {
-        for (text, at) in [
-            (json!(2), At::Index(2)),
-            (json!("end"), At::End),
-            (json!({"after": "b"}), At::After(Id::from("b"))),
-            (json!({"before": "a"}), At::Before(Id::from("a"))),
-        ] {
-            let read: At = serde_json::from_value(text.clone()).unwrap();
-            assert_eq!(read, at);
-            assert_eq!(serde_json::to_value(&read).unwrap(), text);
+    tilo_test_env::scenario! {
+        fn upsert_places_and_keys_read_as_written;
+
+        phase at_reads_a_position_the_end_or_a_neighbour_and_writes_back_the_same;
+        {
+            for (text, at) in [
+                (json!(2), At::Index(2)),
+                (json!("end"), At::End),
+                (json!({"after": "b"}), At::After(Id::from("b"))),
+                (json!({"before": "a"}), At::Before(Id::from("a"))),
+            ] {
+                let read: At = serde_json::from_value(text.clone()).unwrap();
+                assert_eq!(read, at);
+                assert_eq!(serde_json::to_value(&read).unwrap(), text);
+            }
+            assert!(serde_json::from_value::<At>(json!({"after": "a", "before": "b"})).is_err());
+            assert!(serde_json::from_value::<At>(json!("middle")).is_err());
         }
-        assert!(serde_json::from_value::<At>(json!({"after": "a", "before": "b"})).is_err());
-        assert!(serde_json::from_value::<At>(json!("middle")).is_err());
-    }
 
-    #[test]
-    fn at_places_beside_the_item_it_names() {
-        let (a, b, c) = (Id::from("a"), Id::from("b"), Id::from("c"));
-        let others = [&a, &b, &c];
-        assert_eq!(At::Index(9).index(&others).unwrap(), 3);
-        assert_eq!(At::End.index(&others).unwrap(), 3);
-        assert_eq!(At::After(b.clone()).index(&others).unwrap(), 2);
-        assert_eq!(At::Before(a.clone()).index(&others).unwrap(), 0);
-        assert!(At::After(Id::from("gone")).index(&others).is_err());
-    }
+        phase at_places_beside_the_item_it_names;
+        {
+            let (a, b, c) = (Id::from("a"), Id::from("b"), Id::from("c"));
+            let others = [&a, &b, &c];
+            assert_eq!(At::Index(9).index(&others).unwrap(), 3);
+            assert_eq!(At::End.index(&others).unwrap(), 3);
+            assert_eq!(At::After(b.clone()).index(&others).unwrap(), 2);
+            assert_eq!(At::Before(a.clone()).index(&others).unwrap(), 0);
+            assert!(At::After(Id::from("gone")).index(&others).is_err());
+        }
 
-    #[test]
-    fn keys_match_folded_text_and_numbers_by_value() {
-        assert!(same_value(Some(&json!("  Ana  Lima ")), &json!("ana lima")));
-        assert!(same_value(Some(&json!(7)), &json!("7.0")));
-        assert!(same_value(Some(&json!(7.0)), &json!(7)));
-        assert!(!same_value(Some(&json!("Ana")), &json!("Anna")));
-        assert!(!same_value(None, &json!("Ana")));
-        assert!(same_value(None, &json!(null)));
-    }
+        phase keys_match_folded_text_and_numbers_by_value;
+        {
+            assert!(same_value(Some(&json!("  Ana  Lima ")), &json!("ana lima")));
+            assert!(same_value(Some(&json!(7)), &json!("7.0")));
+            assert!(same_value(Some(&json!(7.0)), &json!(7)));
+            assert!(!same_value(Some(&json!("Ana")), &json!("Anna")));
+            assert!(!same_value(None, &json!("Ana")));
+            assert!(same_value(None, &json!(null)));
+        }
 
-    #[test]
-    fn one_key_mints_one_id_however_it_is_written() {
-        let one = key_id(json!({"Name": "Ana Lima"}).as_object().unwrap());
-        let same = key_id(json!({"name": " ana  lima"}).as_object().unwrap());
-        let other = key_id(json!({"Name": "Ben"}).as_object().unwrap());
-        assert_eq!(one, same);
-        assert_ne!(one, other);
+        phase one_key_mints_one_id_however_it_is_written;
+        {
+            let one = key_id(json!({"Name": "Ana Lima"}).as_object().unwrap());
+            let same = key_id(json!({"name": " ana  lima"}).as_object().unwrap());
+            let other = key_id(json!({"Name": "Ben"}).as_object().unwrap());
+            assert_eq!(one, same);
+            assert_ne!(one, other);
+        }
     }
 }

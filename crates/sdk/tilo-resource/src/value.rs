@@ -192,9 +192,10 @@ mod tests {
     use serde_json::json;
     use tilo_automerge::ApplyIncoming;
 
-    #[test]
-    fn a_json_value_is_stored_as_maps_lists_and_scalars() {
-        // phase: it_reads_back_as_written
+    tilo_test_env::scenario! {
+        fn a_json_value_is_stored_and_merged_as_maps_lists_and_scalars;
+
+        phase it_reads_back_as_written;
         {
             let value = json!({
                 "host": "imap.example",
@@ -223,7 +224,8 @@ mod tests {
                 serde_json::Value::Null
             );
         }
-        // phase: an_unchanged_write_makes_no_operation
+
+        phase an_unchanged_write_makes_no_operation;
         {
             let value = json!({"a": [1, 2, {"b": "c"}], "d": "e"});
             let mut doc = Doc::new();
@@ -232,7 +234,8 @@ mod tests {
             write_key(&mut doc, &ROOT, "v", &value).unwrap();
             assert_eq!(doc.pending_ops(), 0);
         }
-        // phase: removed_keys_and_elements_are_removed
+
+        phase removed_keys_and_elements_are_removed;
         {
             let mut doc = Doc::new();
             write_key(&mut doc, &ROOT, "v", &json!({"a": 1, "b": [1, 2, 3]})).unwrap();
@@ -247,57 +250,57 @@ mod tests {
                 json!("whole")
             );
         }
-    }
 
-    #[test]
-    fn concurrent_changes_to_different_keys_both_survive() {
-        let mut base = Doc::new();
-        write_key(&mut base, &ROOT, "config", &json!({"host": "a", "port": 1})).unwrap();
-        base.commit();
-        let mut left = base.fork();
-        let mut right = base.fork();
-        write_key(&mut left, &ROOT, "config", &json!({"host": "b", "port": 1})).unwrap();
-        write_key(
-            &mut right,
-            &ROOT,
-            "config",
-            &json!({"host": "a", "port": 2}),
-        )
-        .unwrap();
-        left.merge_incoming(&mut right).unwrap();
-        assert_eq!(
-            read_key::<serde_json::Value>(&left, &ROOT, "config").unwrap(),
-            json!({"host": "b", "port": 2})
-        );
-    }
+        phase concurrent_changes_to_different_keys_both_survive;
+        {
+            let mut base = Doc::new();
+            write_key(&mut base, &ROOT, "config", &json!({"host": "a", "port": 1})).unwrap();
+            base.commit();
+            let mut left = base.fork();
+            let mut right = base.fork();
+            write_key(&mut left, &ROOT, "config", &json!({"host": "b", "port": 1})).unwrap();
+            write_key(
+                &mut right,
+                &ROOT,
+                "config",
+                &json!({"host": "a", "port": 2}),
+            )
+            .unwrap();
+            left.merge_incoming(&mut right).unwrap();
+            assert_eq!(
+                read_key::<serde_json::Value>(&left, &ROOT, "config").unwrap(),
+                json!({"host": "b", "port": 2})
+            );
+        }
 
-    #[test]
-    fn a_value_model_type_is_stored_as_its_json_form() {
-        let key = tilo_actions::ActionKey::new("so.tilo.notes", "notes.page", "rename");
-        let mut doc = Doc::new();
-        write_key(&mut doc, &ROOT, "action", &Some(key.clone())).unwrap();
-        assert!(matches!(
-            doc.get(&ROOT, "action").unwrap(),
-            Some((Value::Object(ObjType::Map), _))
-        ));
-        assert_eq!(
-            read_key::<Option<tilo_actions::ActionKey>>(&doc, &ROOT, "action").unwrap(),
-            Some(key)
-        );
-        assert_eq!(
-            read_key::<Option<tilo_actions::ActionKey>>(&doc, &ROOT, "absent").unwrap(),
-            None
-        );
-        assert!(read_key::<tilo_actions::ActionKey>(&doc, &ROOT, "absent").is_err());
-        let param = tilo_actions::ActionParam::required(
-            "title",
-            tilo_actions::ParamType::Text,
-            "The page's title",
-        );
-        write_key(&mut doc, &ROOT, "params", &vec![param.clone()]).unwrap();
-        assert_eq!(
-            read_key::<Vec<tilo_actions::ActionParam>>(&doc, &ROOT, "params").unwrap(),
-            vec![param]
-        );
+        phase a_value_model_type_is_stored_as_its_json_form;
+        {
+            let key = tilo_actions::ActionKey::new("so.tilo.notes", "notes.page", "rename");
+            let mut doc = Doc::new();
+            write_key(&mut doc, &ROOT, "action", &Some(key.clone())).unwrap();
+            assert!(matches!(
+                doc.get(&ROOT, "action").unwrap(),
+                Some((Value::Object(ObjType::Map), _))
+            ));
+            assert_eq!(
+                read_key::<Option<tilo_actions::ActionKey>>(&doc, &ROOT, "action").unwrap(),
+                Some(key)
+            );
+            assert_eq!(
+                read_key::<Option<tilo_actions::ActionKey>>(&doc, &ROOT, "absent").unwrap(),
+                None
+            );
+            assert!(read_key::<tilo_actions::ActionKey>(&doc, &ROOT, "absent").is_err());
+            let param = tilo_actions::ActionParam::required(
+                "title",
+                tilo_actions::ParamType::Text,
+                "The page's title",
+            );
+            write_key(&mut doc, &ROOT, "params", &vec![param.clone()]).unwrap();
+            assert_eq!(
+                read_key::<Vec<tilo_actions::ActionParam>>(&doc, &ROOT, "params").unwrap(),
+                vec![param]
+            );
+        }
     }
 }

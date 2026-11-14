@@ -239,35 +239,54 @@ mod tests {
     use super::recorder::MAX_PHASES;
     use super::{Phase, begin_live, measure, observe, take_live, unobserved};
 
-    #[test]
-    fn recording_is_opt_in_and_aggregates_nested_scopes_by_name() {
-        drop(Phase::start("unobserved"));
-        let (value, samples) = observe(|| {
-            let _outer = Phase::start("outer");
-            drop(Phase::start("inner"));
-            measure("inner", || 42)
-        });
-        assert_eq!(value, 42);
-        let calls: Vec<_> = samples
-            .iter()
-            .map(|sample| (sample.phase, sample.calls))
-            .collect();
-        assert_eq!(calls, [("inner", 2), ("outer", 1)]);
-        assert!(observe(|| ()).1.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn an_observation_records_the_scopes_that_run_inside_it;
 
-    #[test]
-    fn unobserved_scopes_are_left_out_and_the_observation_resumes() {
-        let ((), samples) = observe(|| {
+        phase recording_is_opt_in_and_aggregates_nested_scopes_by_name;
+        {
+            drop(Phase::start("unobserved"));
+            let (value, samples) = observe(|| {
+                let _outer = Phase::start("outer");
+                drop(Phase::start("inner"));
+                measure("inner", || 42)
+            });
+            assert_eq!(value, 42);
+            let calls: Vec<_> = samples
+                .iter()
+                .map(|sample| (sample.phase, sample.calls))
+                .collect();
+            assert_eq!(calls, [("inner", 2), ("outer", 1)]);
+            assert!(observe(|| ()).1.is_empty());
+        }
+
+        phase unobserved_scopes_are_left_out_and_the_observation_resumes;
+        {
+            let ((), samples) = observe(|| {
+                drop(Phase::start("before"));
+                unobserved(|| measure("hidden", || ()));
+                drop(Phase::start("after"));
+            });
+            let names: Vec<_> = samples.iter().map(|sample| sample.phase).collect();
+            assert_eq!(names, ["before", "after"]);
+            // Outside an observation it records nothing and leaves none behind.
+            unobserved(|| drop(Phase::start("alone")));
+            assert!(observe(|| ()).1.is_empty());
+        }
+
+        phase a_live_observation_spans_calls_until_taken;
+        {
             drop(Phase::start("before"));
-            unobserved(|| measure("hidden", || ()));
-            drop(Phase::start("after"));
-        });
-        let names: Vec<_> = samples.iter().map(|sample| sample.phase).collect();
-        assert_eq!(names, ["before", "after"]);
-        // Outside an observation it records nothing and leaves none behind.
-        unobserved(|| drop(Phase::start("alone")));
-        assert!(observe(|| ()).1.is_empty());
+            begin_live();
+            drop(Phase::start("key"));
+            measure("frame", || drop(Phase::start("key")));
+            let calls: Vec<_> = take_live()
+                .iter()
+                .map(|sample| (sample.phase, sample.calls))
+                .collect();
+            assert_eq!(calls, [("key", 2), ("frame", 1)]);
+            assert!(take_live().is_empty(), "taking it ended it");
+            assert!(observe(|| ()).1.is_empty());
+        }
     }
 
     #[test]
@@ -288,21 +307,6 @@ mod tests {
             })
         });
         assert!(result.is_err());
-        assert!(observe(|| ()).1.is_empty());
-    }
-
-    #[test]
-    fn a_live_observation_spans_calls_until_taken() {
-        drop(Phase::start("before"));
-        begin_live();
-        drop(Phase::start("key"));
-        measure("frame", || drop(Phase::start("key")));
-        let calls: Vec<_> = take_live()
-            .iter()
-            .map(|sample| (sample.phase, sample.calls))
-            .collect();
-        assert_eq!(calls, [("key", 2), ("frame", 1)]);
-        assert!(take_live().is_empty(), "taking it ended it");
         assert!(observe(|| ()).1.is_empty());
     }
 }

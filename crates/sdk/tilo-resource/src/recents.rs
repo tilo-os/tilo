@@ -165,27 +165,31 @@ impl<T: Serialize + DeserializeOwned + 'static, const KEEP: usize> Model for Rec
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_newest_leads_each_item_once_and_the_oldest_go() {
-        let mut recents = Recents::<u32, 3>::default();
-        for item in [1, 2, 3, 2, 4] {
-            recents.remember(item);
-        }
-        assert_eq!(recents.items(), [4, 2, 3]);
-        assert!(recents.forget(&2));
-        assert!(!recents.forget(&2));
-        let mut searches = Recents::<String, 3>::default();
-        searches.remember("Coffee".into());
-        searches.remember_by("coffee".into(), |a, b| a.eq_ignore_ascii_case(b));
-        assert_eq!(searches.items(), ["coffee"]);
-    }
+    tilo_test_env::scenario! {
+        fn recents_lead_with_the_newest_and_drop_the_oldest_and_the_damaged;
 
-    #[test]
-    fn a_stored_list_drops_damaged_rows_and_keeps_the_newest() {
-        let recents: Recents<u32, 2> = serde_json::from_str(r#"[1, "two", 3, 4]"#).unwrap();
-        assert_eq!(recents.items(), [1, 3]);
-        assert_eq!(serde_json::to_string(&recents).unwrap(), "[1,3]");
-        let damaged: Recents<u32, 2> = serde_json::from_str(r#"{"rows": 1}"#).unwrap();
-        assert!(damaged.is_empty());
+        phase the_newest_leads_each_item_once_and_the_oldest_go;
+        {
+            let mut recents = Recents::<u32, 3>::default();
+            for item in [1, 2, 3, 2, 4] {
+                recents.remember(item);
+            }
+            assert_eq!(recents.items(), [4, 2, 3]);
+            assert!(recents.forget(&2));
+            assert!(!recents.forget(&2));
+            let mut searches = Recents::<String, 3>::default();
+            searches.remember("Coffee".into());
+            searches.remember_by("coffee".into(), |a, b| a.eq_ignore_ascii_case(b));
+            assert_eq!(searches.items(), ["coffee"]);
+        }
+
+        phase a_stored_list_drops_damaged_rows_and_keeps_the_newest;
+        {
+            let recents: Recents<u32, 2> = serde_json::from_str(r#"[1, "two", 3, 4]"#).unwrap();
+            assert_eq!(recents.items(), [1, 3]);
+            assert_eq!(serde_json::to_string(&recents).unwrap(), "[1,3]");
+            let damaged: Recents<u32, 2> = serde_json::from_str(r#"{"rows": 1}"#).unwrap();
+            assert!(damaged.is_empty());
+        }
     }
 }

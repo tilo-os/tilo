@@ -303,81 +303,85 @@ mod tests {
         (key == "add-app-question").then(|| "Zu den Apps hinzufügen".to_owned())
     }
 
-    #[test]
-    fn a_kind_reads_under_its_own_key() {
-        assert_eq!(message_key("add-app.question"), "add-app-question");
-        assert_eq!(message_key("lock.screen"), "lock-screen");
-        assert_eq!(message_key("example.todo_list"), "example-todo-list");
-    }
+    tilo_test_env::scenario! {
+        fn a_kind_and_its_words_read_in_the_persons_language;
 
-    #[test]
-    fn a_kind_is_named_by_its_entry_and_by_its_declaration_without_one() {
-        // The lookup is the process's, so every test here stands on a host
-        // that installed one.
-        install(german, || 0);
-        assert_eq!(
-            localized("add-app.question", "Add to apps", None),
-            "Zu den Apps hinzufügen"
-        );
-        assert_eq!(localized("lock.screen", "Lock screen", None), "Lock screen");
-    }
+        phase a_kind_reads_under_its_own_key;
+        {
+            assert_eq!(message_key("add-app.question"), "add-app-question");
+            assert_eq!(message_key("lock.screen"), "lock-screen");
+            assert_eq!(message_key("example.todo_list"), "example-todo-list");
+        }
 
-    #[test]
-    fn a_words_placeables_are_filled_in_the_language_it_is_read_in() {
-        fn naming(
-            _: Option<&'static Catalogue>,
-            key: &str,
-            arguments: &[(&str, Argument)],
-        ) -> Option<String> {
-            if key != "files-folder-rename-selected" {
-                return None;
+        phase a_kind_is_named_by_its_entry_and_by_its_declaration_without_one;
+        {
+            // The lookup is the process's, so every test here stands on a host
+            // that installed one.
+            install(german, || 0);
+            assert_eq!(
+                localized("add-app.question", "Add to apps", None),
+                "Zu den Apps hinzufügen"
+            );
+            assert_eq!(localized("lock.screen", "Lock screen", None), "Lock screen");
+        }
+
+        phase a_words_placeables_are_filled_in_the_language_it_is_read_in;
+        {
+            fn naming(
+                _: Option<&'static Catalogue>,
+                key: &str,
+                arguments: &[(&str, Argument)],
+            ) -> Option<String> {
+                if key != "files-folder-rename-selected" {
+                    return None;
+                }
+                let named = arguments.iter().find_map(|(name, value)| match value {
+                    Argument::Text(text) if *name == "name" => Some(text.as_str()),
+                    _ => None,
+                });
+                Some(format!("„{}“ umbenennen", named.unwrap_or_default()))
             }
-            let named = arguments.iter().find_map(|(name, value)| match value {
-                Argument::Text(text) if *name == "name" => Some(text.as_str()),
+            install(naming, || 0);
+            let word = Word {
+                key: "files-folder-rename-selected",
+                source: "Rename \u{201c}{ $name }\u{201d}",
+                catalogue: None,
+                arguments: vec![("name", Argument::from("Bericht.pdf"))],
+            };
+            assert_eq!(word.read(), "„Bericht.pdf“ umbenennen");
+        }
+
+        phase a_resource_named_by_its_publisher_keeps_that_name;
+        {
+            install(german, || 0);
+            assert_eq!(
+                published("add-app.question", "Add to apps", "Add to apps", None),
+                "Zu den Apps hinzufügen"
+            );
+            assert_eq!(
+                published("add-app.question", "Frogs, by name", "Add to apps", None),
+                "Frogs, by name"
+            );
+        }
+
+        phase a_kind_refines_its_noun_from_its_entry_and_keeps_the_derived_one_without_it;
+        {
+            install_noun(|key, count| match (key, count) {
+                ("notes-note-noun", 1) => Some("notebook".to_owned()),
+                ("notes-note-noun", 2) => Some("notebooks".to_owned()),
                 _ => None,
             });
-            Some(format!("„{}“ umbenennen", named.unwrap_or_default()))
+            assert_eq!(noun_key("notes.note"), "notes-note-noun");
+            assert_eq!(
+                localized_noun("notes.note", tilo_actions::Noun::of_type("Note")),
+                tilo_actions::Noun::new("notebook", "notebooks"),
+                "the catalogue says what the app calls it"
+            );
+            assert_eq!(
+                localized_noun("lock.screen", tilo_actions::Noun::of_type("Screen")),
+                tilo_actions::Noun::new("screen", "screens"),
+                "a noun no catalogue holds is the derived one"
+            );
         }
-        install(naming, || 0);
-        let word = Word {
-            key: "files-folder-rename-selected",
-            source: "Rename \u{201c}{ $name }\u{201d}",
-            catalogue: None,
-            arguments: vec![("name", Argument::from("Bericht.pdf"))],
-        };
-        assert_eq!(word.read(), "„Bericht.pdf“ umbenennen");
-    }
-
-    #[test]
-    fn a_resource_named_by_its_publisher_keeps_that_name() {
-        install(german, || 0);
-        assert_eq!(
-            published("add-app.question", "Add to apps", "Add to apps", None),
-            "Zu den Apps hinzufügen"
-        );
-        assert_eq!(
-            published("add-app.question", "Frogs, by name", "Add to apps", None),
-            "Frogs, by name"
-        );
-    }
-
-    #[test]
-    fn a_kind_refines_its_noun_from_its_entry_and_keeps_the_derived_one_without_it() {
-        install_noun(|key, count| match (key, count) {
-            ("notes-note-noun", 1) => Some("notebook".to_owned()),
-            ("notes-note-noun", 2) => Some("notebooks".to_owned()),
-            _ => None,
-        });
-        assert_eq!(noun_key("notes.note"), "notes-note-noun");
-        assert_eq!(
-            localized_noun("notes.note", tilo_actions::Noun::of_type("Note")),
-            tilo_actions::Noun::new("notebook", "notebooks"),
-            "the catalogue says what the app calls it"
-        );
-        assert_eq!(
-            localized_noun("lock.screen", tilo_actions::Noun::of_type("Screen")),
-            tilo_actions::Noun::new("screen", "screens"),
-            "a noun no catalogue holds is the derived one"
-        );
     }
 }

@@ -224,169 +224,173 @@ fn after_salted(l: &[u8], salt: u16) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn salted_keys_stay_within_their_bounds_and_differ_by_salt() {
-        use Ordering::Less;
-        type Bound = Option<Vec<u8>>;
-        let bounds: [(Bound, Bound); 6] = [
-            (None, None),
-            (Some(vec![10]), Some(vec![11])),
-            (Some(vec![10, 255, 255]), Some(vec![11])),
-            (None, Some(vec![0, 0, 1])),
-            (Some(vec![255, 255, 255, 255, 255]), None),
-            (
-                Some(vec![1, 2, 3, 4, 5, 6, 7]),
-                Some(vec![1, 2, 3, 4, 5, 6, 8]),
-            ),
-        ];
-        for (lo, hi) in bounds {
-            let mut keys = Vec::new();
-            for salt in [0, 2, 7_000, 20_001, 32_767] {
-                let key = between_salted(lo.as_deref(), hi.as_deref(), salt);
-                if let Some(lo) = &lo {
-                    assert_eq!(cmp(lo, &key), Less, "{lo:?} < {key:?}");
+    tilo_test_env::scenario! {
+        fn byte_order_keys_stay_ordered_short_and_within_their_bounds;
+
+        phase salted_keys_stay_within_their_bounds_and_differ_by_salt;
+        {
+            use Ordering::Less;
+            type Bound = Option<Vec<u8>>;
+            let bounds: [(Bound, Bound); 6] = [
+                (None, None),
+                (Some(vec![10]), Some(vec![11])),
+                (Some(vec![10, 255, 255]), Some(vec![11])),
+                (None, Some(vec![0, 0, 1])),
+                (Some(vec![255, 255, 255, 255, 255]), None),
+                (
+                    Some(vec![1, 2, 3, 4, 5, 6, 7]),
+                    Some(vec![1, 2, 3, 4, 5, 6, 8]),
+                ),
+            ];
+            for (lo, hi) in bounds {
+                let mut keys = Vec::new();
+                for salt in [0, 2, 7_000, 20_001, 32_767] {
+                    let key = between_salted(lo.as_deref(), hi.as_deref(), salt);
+                    if let Some(lo) = &lo {
+                        assert_eq!(cmp(lo, &key), Less, "{lo:?} < {key:?}");
+                    }
+                    if let Some(hi) = &hi {
+                        assert_eq!(cmp(&key, hi), Less, "{key:?} < {hi:?}");
+                    }
+                    keys.push(key);
                 }
-                if let Some(hi) = &hi {
-                    assert_eq!(cmp(&key, hi), Less, "{key:?} < {hi:?}");
-                }
-                keys.push(key);
+                let mut distinct = keys.clone();
+                distinct.sort();
+                distinct.dedup();
+                assert_eq!(distinct.len(), keys.len(), "{keys:?}");
             }
-            let mut distinct = keys.clone();
-            distinct.sort();
-            distinct.dedup();
-            assert_eq!(distinct.len(), keys.len(), "{keys:?}");
-        }
-    }
-
-    #[test]
-    fn a_later_insert_fits_between_two_made_at_once() {
-        let (lo, hi) = (vec![64u8], vec![192u8]);
-        let one = between_salted(Some(&lo), Some(&hi), 11);
-        let other = between_salted(Some(&lo), Some(&hi), 12_345);
-        let (first, second) = if cmp(&one, &other).is_lt() {
-            (one, other)
-        } else {
-            (other, one)
-        };
-        let middle = between_salted(Some(&first), Some(&second), 99);
-        assert!(cmp(&first, &middle).is_lt() && cmp(&middle, &second).is_lt());
-    }
-
-    #[test]
-    fn a_run_of_salted_appends_keeps_its_length() {
-        let mut key = between_salted(None, None, 5);
-        let length = key.len();
-        for salt in 0..2_000u16 {
-            let next = between_salted(Some(&key), None, salt.wrapping_mul(7_919));
-            assert!(cmp(&key, &next).is_lt());
-            key = next;
-        }
-        assert_eq!(key.len(), length);
-    }
-
-    #[test]
-    fn between_orders_strictly_within_its_bounds() {
-        use Ordering::{Equal, Less};
-        let mid = between(None, None);
-        let after = between(Some(&mid), None);
-        let before = between(None, Some(&mid));
-        let (ten, twenty) = (vec![10u8], vec![20u8]);
-        let midpoint = between(Some(&ten), Some(&twenty));
-        for (name, a, b, want) in [
-            (
-                "between empty bounds is past the empty key",
-                &[][..],
-                &mid[..],
-                Less,
-            ),
-            ("append after is greater", &mid[..], &after[..], Less),
-            ("prepend before is smaller", &before[..], &mid[..], Less),
-            (
-                "midpoint is above its lower bound",
-                &ten[..],
-                &midpoint[..],
-                Less,
-            ),
-            (
-                "midpoint is below its upper bound",
-                &midpoint[..],
-                &twenty[..],
-                Less,
-            ),
-            (
-                "trailing zeros compare equal",
-                &[5][..],
-                &[5, 0, 0][..],
-                Equal,
-            ),
-        ] {
-            assert_eq!(cmp(a, b), want, "case {name}");
         }
 
-        // Insert 200 keys always between the first two; each must stay ordered.
-        let mut lo = between(None, None);
-        let hi = between(Some(&lo), None);
-        let mut prev = lo.clone();
-        for _ in 0..200 {
-            let m = between(Some(&lo), Some(&hi));
-            assert_eq!(cmp(&lo, &m), Less, "m must exceed lo");
-            assert_eq!(cmp(&m, &hi), Less, "m must precede hi");
-            assert_eq!(cmp(&prev, &m), Less, "strictly increasing");
-            prev = m.clone();
-            lo = m;
+        phase a_later_insert_fits_between_two_made_at_once;
+        {
+            let (lo, hi) = (vec![64u8], vec![192u8]);
+            let one = between_salted(Some(&lo), Some(&hi), 11);
+            let other = between_salted(Some(&lo), Some(&hi), 12_345);
+            let (first, second) = if cmp(&one, &other).is_lt() {
+                (one, other)
+            } else {
+                (other, one)
+            };
+            let middle = between_salted(Some(&first), Some(&second), 99);
+            assert!(cmp(&first, &middle).is_lt() && cmp(&middle, &second).is_lt());
         }
-    }
 
-    #[test]
-    fn sequential_appends_stay_short_and_ordered() {
-        // A long run of appends (the book-length-document case) must NOT grow keys
-        // one byte per insert — that is the O(n²) trap (every cmp is O(len)).
-        let mut key = between(None, None);
-        let mut max_len = key.len();
-        for _ in 0..1_000_000 {
-            let next = between(Some(&key), None);
-            assert_eq!(
-                cmp(&key, &next),
-                Ordering::Less,
-                "each append is strictly greater"
+        phase a_run_of_salted_appends_keeps_its_length;
+        {
+            let mut key = between_salted(None, None, 5);
+            let length = key.len();
+            for salt in 0..2_000u16 {
+                let next = between_salted(Some(&key), None, salt.wrapping_mul(7_919));
+                assert!(cmp(&key, &next).is_lt());
+                key = next;
+            }
+            assert_eq!(key.len(), length);
+        }
+
+        phase between_orders_strictly_within_its_bounds;
+        {
+            use Ordering::{Equal, Less};
+            let mid = between(None, None);
+            let after = between(Some(&mid), None);
+            let before = between(None, Some(&mid));
+            let (ten, twenty) = (vec![10u8], vec![20u8]);
+            let midpoint = between(Some(&ten), Some(&twenty));
+            for (name, a, b, want) in [
+                (
+                    "between empty bounds is past the empty key",
+                    &[][..],
+                    &mid[..],
+                    Less,
+                ),
+                ("append after is greater", &mid[..], &after[..], Less),
+                ("prepend before is smaller", &before[..], &mid[..], Less),
+                (
+                    "midpoint is above its lower bound",
+                    &ten[..],
+                    &midpoint[..],
+                    Less,
+                ),
+                (
+                    "midpoint is below its upper bound",
+                    &midpoint[..],
+                    &twenty[..],
+                    Less,
+                ),
+                (
+                    "trailing zeros compare equal",
+                    &[5][..],
+                    &[5, 0, 0][..],
+                    Equal,
+                ),
+            ] {
+                assert_eq!(cmp(a, b), want, "case {name}");
+            }
+
+            // Insert 200 keys always between the first two; each must stay ordered.
+            let mut lo = between(None, None);
+            let hi = between(Some(&lo), None);
+            let mut prev = lo.clone();
+            for _ in 0..200 {
+                let m = between(Some(&lo), Some(&hi));
+                assert_eq!(cmp(&lo, &m), Less, "m must exceed lo");
+                assert_eq!(cmp(&m, &hi), Less, "m must precede hi");
+                assert_eq!(cmp(&prev, &m), Less, "strictly increasing");
+                prev = m.clone();
+                lo = m;
+            }
+        }
+
+        phase sequential_appends_stay_short_and_ordered;
+        {
+            // A long run of appends (the book-length-document case) must NOT grow keys
+            // one byte per insert — that is the O(n²) trap (every cmp is O(len)).
+            let mut key = between(None, None);
+            let mut max_len = key.len();
+            for _ in 0..1_000_000 {
+                let next = between(Some(&key), None);
+                assert_eq!(
+                    cmp(&key, &next),
+                    Ordering::Less,
+                    "each append is strictly greater"
+                );
+                key = next;
+                max_len = max_len.max(key.len());
+            }
+            // Logarithmic: a million appends fit in three digits.
+            assert!(
+                max_len <= APPEND_DIGITS,
+                "append keys must stay short (got {max_len} bytes) or insertion is O(n²)"
             );
-            key = next;
-            max_len = max_len.max(key.len());
         }
-        // Logarithmic: a million appends fit in three digits.
-        assert!(
-            max_len <= APPEND_DIGITS,
-            "append keys must stay short (got {max_len} bytes) or insertion is O(n²)"
-        );
-    }
 
-    #[test]
-    fn random_inserts_stay_strictly_ordered() {
-        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
-        for _ in 0..64 {
-            let mut keys: Vec<Vec<u8>> = vec![between(None, None)];
-            for _ in 0..120 {
-                seed = seed
-                    .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407);
-                let slot = usize::try_from(seed >> 40).unwrap_or(0);
-                let idx = slot.checked_rem(keys.len().saturating_add(1)).unwrap_or(0);
-                let lo = idx
-                    .checked_sub(1)
-                    .and_then(|i| keys.get(i))
-                    .map(Vec::as_slice);
-                let hi = keys.get(idx).map(Vec::as_slice);
-                let k = between(lo, hi);
-                if let Some(l) = lo {
-                    assert_eq!(cmp(l, &k), Ordering::Less);
+        phase random_inserts_stay_strictly_ordered;
+        {
+            let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+            for _ in 0..64 {
+                let mut keys: Vec<Vec<u8>> = vec![between(None, None)];
+                for _ in 0..120 {
+                    seed = seed
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    let slot = usize::try_from(seed >> 40).unwrap_or(0);
+                    let idx = slot.checked_rem(keys.len().saturating_add(1)).unwrap_or(0);
+                    let lo = idx
+                        .checked_sub(1)
+                        .and_then(|i| keys.get(i))
+                        .map(Vec::as_slice);
+                    let hi = keys.get(idx).map(Vec::as_slice);
+                    let k = between(lo, hi);
+                    if let Some(l) = lo {
+                        assert_eq!(cmp(l, &k), Ordering::Less);
+                    }
+                    if let Some(h) = hi {
+                        assert_eq!(cmp(&k, h), Ordering::Less);
+                    }
+                    keys.insert(idx, k);
                 }
-                if let Some(h) = hi {
-                    assert_eq!(cmp(&k, h), Ordering::Less);
+                for w in keys.windows(2) {
+                    assert_eq!(cmp(&w[0], &w[1]), Ordering::Less);
                 }
-                keys.insert(idx, k);
-            }
-            for w in keys.windows(2) {
-                assert_eq!(cmp(&w[0], &w[1]), Ordering::Less);
             }
         }
     }

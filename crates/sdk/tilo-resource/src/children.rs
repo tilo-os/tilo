@@ -129,48 +129,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_container_lists_its_children_by_group_and_keeps_the_trashed_aside() {
-        let mut children = Children::new();
-        children.push(Id::from_raw("design"), child("chat.category", None));
-        children.push(Id::from_raw("general"), child("chat.channel", None));
-        children.push(Id::from_raw("ui"), child("chat.channel", Some("design")));
-        children.push(Id::from_raw("ux"), child("chat.channel", Some("design")));
-        assert_eq!(
-            children.listed_of("chat.channel"),
-            [
-                &Id::from_raw("general"),
-                &Id::from_raw("ui"),
-                &Id::from_raw("ux")
-            ]
-        );
-        assert_eq!(
-            children.under(Some(&Id::from_raw("design"))),
-            [&Id::from_raw("ui"), &Id::from_raw("ux")]
-        );
-        children.get_mut(&Id::from_raw("ui")).unwrap().trashed = Some(Trashed { at: 5 });
-        assert_eq!(
-            children.under(Some(&Id::from_raw("design"))),
-            [&Id::from_raw("ux")]
-        );
-        assert_eq!(children.in_trash(), [&Id::from_raw("ui")]);
-        assert!(!children.lists(&Id::from_raw("ui")));
-        assert!(children.contains(&Id::from_raw("ui")), "kept whole");
-    }
+    tilo_test_env::scenario! {
+        fn a_container_lists_and_places_its_children;
 
-    #[test]
-    fn a_new_child_goes_last_or_before_the_sibling_named() {
-        let mut children = Children::new();
-        children.push(Id::from_raw("design"), child("chat.category", None));
-        children.push(Id::from_raw("ui"), child("chat.channel", Some("design")));
-        children.push(Id::from_raw("general"), child("chat.channel", None));
-        let design = Id::from_raw("design");
-        assert_eq!(place(&children, None), 3);
-        assert_eq!(place(&children, Some(&Id::from_raw("ui"))), 1);
-        assert_eq!(place(&children, Some(&Id::from_raw("absent"))), 3);
-        assert_eq!(place(&Children::new(), None), 0);
-        assert!(check_group(&children, &Id::from_raw("ui"), Some(&design)).is_ok());
-        assert!(check_group(&children, &design, Some(&design)).is_err());
-        assert!(check_group(&children, &design, Some(&Id::from_raw("absent"))).is_err());
+        phase a_container_lists_its_children_by_group_and_keeps_the_trashed_aside;
+        {
+            let mut children = Children::new();
+            children.push(Id::from_raw("design"), child("chat.category", None));
+            children.push(Id::from_raw("general"), child("chat.channel", None));
+            children.push(Id::from_raw("ui"), child("chat.channel", Some("design")));
+            children.push(Id::from_raw("ux"), child("chat.channel", Some("design")));
+            assert_eq!(
+                children.listed_of("chat.channel"),
+                [
+                    &Id::from_raw("general"),
+                    &Id::from_raw("ui"),
+                    &Id::from_raw("ux")
+                ]
+            );
+            assert_eq!(
+                children.under(Some(&Id::from_raw("design"))),
+                [&Id::from_raw("ui"), &Id::from_raw("ux")]
+            );
+            children.get_mut(&Id::from_raw("ui")).unwrap().trashed = Some(Trashed { at: 5 });
+            assert_eq!(
+                children.under(Some(&Id::from_raw("design"))),
+                [&Id::from_raw("ux")]
+            );
+            assert_eq!(children.in_trash(), [&Id::from_raw("ui")]);
+            assert!(!children.lists(&Id::from_raw("ui")));
+            assert!(children.contains(&Id::from_raw("ui")), "kept whole");
+        }
+
+        phase a_new_child_goes_last_or_before_the_sibling_named;
+        {
+            let mut children = Children::new();
+            children.push(Id::from_raw("design"), child("chat.category", None));
+            children.push(Id::from_raw("ui"), child("chat.channel", Some("design")));
+            children.push(Id::from_raw("general"), child("chat.channel", None));
+            let design = Id::from_raw("design");
+            assert_eq!(place(&children, None), 3);
+            assert_eq!(place(&children, Some(&Id::from_raw("ui"))), 1);
+            assert_eq!(place(&children, Some(&Id::from_raw("absent"))), 3);
+            assert_eq!(place(&Children::new(), None), 0);
+            assert!(check_group(&children, &Id::from_raw("ui"), Some(&design)).is_ok());
+            assert!(check_group(&children, &design, Some(&design)).is_err());
+            assert!(check_group(&children, &design, Some(&Id::from_raw("absent"))).is_err());
+        }
     }
 }

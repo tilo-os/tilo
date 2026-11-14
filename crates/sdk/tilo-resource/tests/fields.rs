@@ -139,170 +139,883 @@ fn field_edit(published: &tilo_actions::ResourceSpec) -> &tilo_actions::ActionSp
         .unwrap()
 }
 
-#[test]
-fn an_atom_is_written_whole_and_the_last_writer_wins() {
-    let mut a = Replica::<Board>::new();
-    a.apply(Board::paths().layer.set("layer-1".into())).unwrap();
-    let mut b = a.fork();
-    a.apply(Board::paths().layer.set("layer-2".into())).unwrap();
-    b.apply(Board::paths().layer.set("layer-3".into())).unwrap();
-    a.sync_with(&mut b).unwrap();
-    let merged = a.state().unwrap();
-    assert_eq!(merged, b.state().unwrap());
-    assert!(
-        ["layer-2", "layer-3"].contains(&merged.layer.as_str()),
-        "one of the two, not a mix of them: {}",
-        merged.layer
-    );
-    assert!(
-        a.apply(Board::paths().layer.splice(0, 0, "x")).is_err(),
-        "an atom is not edited by character"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_field_is_stored_and_listed_as_it_declares;
 
-#[test]
-fn an_atom_is_listed_as_set_whole_and_a_text_by_character() {
-    let published = Replica::<Board>::new().published().unwrap();
-    let spec = field_edit(&published);
-    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-    let (layer, _) = described(&schema, "layer");
-    assert!(layer.starts_with("- `layer`: set \u{2014}"), "{layer}");
-    let (title, _) = described(&schema, "title");
-    assert!(
-        title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
-        "{title}"
-    );
-}
-
-#[test]
-fn a_skipped_field_reads_as_the_containing_types_default() {
-    let replica = Replica::<Board>::new();
-    assert!(replica.state().unwrap().admin);
-}
-
-#[test]
-fn a_space_ends_the_typed_word_it_follows() {
-    let title = Board::paths().title;
-    let typed = ["h", "e", "y", " ", "y", "o", "u"];
-    let edits: Vec<_> = typed
-        .iter()
-        .enumerate()
-        .map(|(at, text)| title.splice(at, 0, *text))
-        .collect();
-    let breaks: Vec<usize> = edits
-        .windows(2)
-        .enumerate()
-        .filter(|(_, pair)| !pair[0].coalesces(&pair[1]))
-        .map(|(at, _)| at + 1)
-        .collect();
-    assert_eq!(breaks, [4], "`hey ` then `you`: undo leaves `hey `");
-}
-
-/// A text field bound to a record replaces the whole text on every keystroke.
-/// Those replacements still undo a word at a time, like splices: a space
-/// ends the word it follows, erasing runs on, and a paste is its own step.
-#[test]
-fn whole_text_replacements_undo_a_word_at_a_time() {
-    let title = Board::paths().title;
-    let texts = [
-        "h",
-        "he",
-        "hey",
-        "hey ",
-        "hey y",
-        "hey yo",
-        "hey you",
-        "hey yo",
-        "hey y",
-        "hey yesterday",
-        "hey yesterday!",
-    ];
-    let edits: Vec<_> = texts.iter().map(|text| title.replace(*text)).collect();
-    let breaks: Vec<usize> = edits
-        .windows(2)
-        .enumerate()
-        .filter(|(_, pair)| !pair[0].coalesces(&pair[1]))
-        .map(|(at, _)| at + 1)
-        .collect();
-    assert_eq!(
-        breaks,
-        [4, 9],
-        "`hey ` is one step, `you` erased back to `y` another, the pasted \
-         `esterday` a third, typed on by `!`"
-    );
-}
-
-/// A destructive verb of the record is undoable, so it applies at once:
-/// nobody is asked first.
-#[test]
-fn a_nullary_destructive_verb_applies_at_once() {
-    let mut board = Replica::<Board>::new();
-    board.apply(Board::ADD_CARD.with(())).unwrap();
-    board.apply(Board::CLEAR.with(())).unwrap();
-    assert_eq!(board.state().unwrap().cards, 0);
-}
-
-#[test]
-fn a_replicas_author_is_the_invoker_its_verbs_see() {
-    let mut board = Replica::<Board>::new().as_author("ada");
-    board.apply(Board::ADD_CARD.with(())).unwrap();
-    assert_eq!(board.state().unwrap().author, "ada");
-    // An edit converts into an invocation where one is expected.
-    let invoke: Invoke<Board> = Board::paths().title.set("Sprint".into()).into();
-    board.apply(invoke).unwrap();
-    assert_eq!(board.state().unwrap().title, "Sprint");
-    assert_eq!(Id::default().as_str(), "");
-}
-
-/// A field edit changes only the record: removing an item, of any
-/// collection, is undoable and asks nothing.
-#[test]
-fn removing_an_item_by_field_edit_asks_nothing() {
-    let mut board = Replica::<Board>::new();
-    let paths = Board::paths();
-    let note = Id::from_raw("n");
-    board
-        .apply(paths.notes.insert_as(&note, 0, &Note::default()))
-        .unwrap();
-    board
-        .apply(paths.drafts.insert_as(&note, 0, &"draft".to_owned()))
-        .unwrap();
-    board.apply(paths.notes.remove(&note)).unwrap();
-    board.apply(paths.drafts.remove(&note)).unwrap();
-    let state = board.state().unwrap();
-    assert!(state.notes.is_empty() && state.drafts.is_empty());
-}
-
-/// A door without the app's code — the broker, a relay — decides from the
-/// published field edit alone, and as the app does: the record's edits are
-/// undoable, so none asks, whatever it removes.
-#[test]
-fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
-    use tilo_actions::ConfirmationPolicy;
-    let board = Replica::<Board>::new();
-    let published = board.published().unwrap();
-    let spec = field_edit(&published);
-    let paths = Board::paths();
-    let note = Id::from_raw("n");
-    let door = |edit: &dyn erased_edit::Encode| {
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({ "edit": edit.encode() })
+    phase an_atom_is_written_whole_and_the_last_writer_wins;
+    {
+        let mut a = Replica::<Board>::new();
+        a.apply(Board::paths().layer.set("layer-1".into())).unwrap();
+        let mut b = a.fork();
+        a.apply(Board::paths().layer.set("layer-2".into())).unwrap();
+        b.apply(Board::paths().layer.set("layer-3".into())).unwrap();
+        a.sync_with(&mut b).unwrap();
+        let merged = a.state().unwrap();
+        assert_eq!(merged, b.state().unwrap());
+        assert!(
+            ["layer-2", "layer-3"].contains(&merged.layer.as_str()),
+            "one of the two, not a mix of them: {}",
+            merged.layer
         );
-        spec.contract.confirmation_for_argument(Some(&argument))
-    };
-    assert_eq!(door(&paths.notes.remove(&note)), ConfirmationPolicy::None);
-    assert_eq!(door(&paths.drafts.remove(&note)), ConfirmationPolicy::None);
-    assert_eq!(
-        door(&paths.title.set("Plan".to_owned())),
-        ConfirmationPolicy::None
-    );
-    assert_eq!(
-        spec.contract.confirmation_for_argument(Some("not an edit")),
-        ConfirmationPolicy::None,
-        "an argument nobody can read builds nothing; Undo covers whatever does"
-    );
+        assert!(
+            a.apply(Board::paths().layer.splice(0, 0, "x")).is_err(),
+            "an atom is not edited by character"
+        );
+    }
+
+    phase an_atom_is_listed_as_set_whole_and_a_text_by_character;
+    {
+        let published = Replica::<Board>::new().published().unwrap();
+        let spec = field_edit(&published);
+        let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+        let (layer, _) = described(&schema, "layer");
+        assert!(layer.starts_with("- `layer`: set \u{2014}"), "{layer}");
+        let (title, _) = described(&schema, "title");
+        assert!(
+            title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
+            "{title}"
+        );
+    }
+
+    phase a_skipped_field_reads_as_the_containing_types_default;
+    {
+        let replica = Replica::<Board>::new();
+        assert!(replica.state().unwrap().admin);
+    }
+
+    phase a_space_ends_the_typed_word_it_follows;
+    {
+        let title = Board::paths().title;
+        let typed = ["h", "e", "y", " ", "y", "o", "u"];
+        let edits: Vec<_> = typed
+            .iter()
+            .enumerate()
+            .map(|(at, text)| title.splice(at, 0, *text))
+            .collect();
+        let breaks: Vec<usize> = edits
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| !pair[0].coalesces(&pair[1]))
+            .map(|(at, _)| at + 1)
+            .collect();
+        assert_eq!(breaks, [4], "`hey ` then `you`: undo leaves `hey `");
+    }
+
+    phase whole_text_replacements_undo_a_word_at_a_time;
+    // A text field bound to a record replaces the whole text on every keystroke.
+    // Those replacements still undo a word at a time, like splices: a space
+    // ends the word it follows, erasing runs on, and a paste is its own step.
+    {
+        let title = Board::paths().title;
+        let texts = [
+            "h",
+            "he",
+            "hey",
+            "hey ",
+            "hey y",
+            "hey yo",
+            "hey you",
+            "hey yo",
+            "hey y",
+            "hey yesterday",
+            "hey yesterday!",
+        ];
+        let edits: Vec<_> = texts.iter().map(|text| title.replace(*text)).collect();
+        let breaks: Vec<usize> = edits
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| !pair[0].coalesces(&pair[1]))
+            .map(|(at, _)| at + 1)
+            .collect();
+        assert_eq!(
+            breaks,
+            [4, 9],
+            "`hey ` is one step, `you` erased back to `y` another, the pasted \
+         `esterday` a third, typed on by `!`"
+        );
+    }
+
+    phase a_field_publishes_what_it_declares;
+    // What a field declares is published with it, so an agent knows the
+    // bounds, the choices and the default before it changes the field.
+    {
+        let scale = comfort_schema("text_scale");
+        assert_eq!(
+            (&scale["minimum"], &scale["maximum"], &scale["default"]),
+            (
+                &serde_json::json!(0.5),
+                &serde_json::json!(3.0),
+                &serde_json::json!(1.0)
+            )
+        );
+        let schedule = comfort_schema("schedule");
+        assert_eq!(schedule["enum"], serde_json::json!(["sun", "custom"]));
+        assert_eq!(schedule["default"], serde_json::json!("sun"));
+        let cursor = comfort_schema("cursor").to_string();
+        assert!(
+            cursor.contains("\"minimum\":24") && cursor.contains("\"maximum\":64"),
+            "{cursor}"
+        );
+        assert_eq!(comfort_schema("note")["default"], serde_json::json!(""));
+    }
+
+    phase a_field_holds_only_what_it_declares;
+    // A change outside what a field declares is refused, through a field edit
+    // and through a verb alike; within it, it applies.
+    {
+        let paths = Comfort::paths();
+        let mut comfort = Replica::<Comfort>::new();
+        comfort.apply(paths.text_scale.set(2.0)).unwrap();
+        let refused = format!(
+            "{:?}",
+            comfort.apply(paths.text_scale.set(9.0)).unwrap_err()
+        );
+        assert!(refused.contains("between 0.5 and 3"), "{refused}");
+        assert!(comfort.apply(Comfort::SCALE_TEXT.with(0.1)).is_err());
+        assert!(
+            comfort
+                .apply(paths.schedule.set("dusk".to_owned()))
+                .is_err()
+        );
+        comfort
+            .apply(paths.schedule.set("custom".to_owned()))
+            .unwrap();
+        comfort.apply(paths.cursor.set(Some(32))).unwrap();
+        assert!(comfort.apply(paths.cursor.set(Some(8))).is_err());
+        comfort.apply(paths.cursor.set(None)).unwrap();
+        comfort
+            .apply(paths.note.set("anything".to_owned()))
+            .unwrap();
+        let state = comfort.state().unwrap();
+        assert_eq!(
+            (state.text_scale, state.schedule.as_str(), state.cursor),
+            (2.0, "custom", None)
+        );
+    }
+
+    phase an_optional_atom_and_a_list_atom_are_one_of_the_values_set;
+    {
+        let paths = Swatch::paths();
+        let merged = merged_swatch(
+            paths.colour.set(Some("#000000".into())).into(),
+            paths.colour.set(Some("#ff0000".into())).into(),
+            paths.colour.set(Some("#00ff00".into())).into(),
+        );
+        assert!(
+            [Some("#ff0000"), Some("#00ff00")].contains(&merged.colour.as_deref()),
+            "one colour, not a mix: {:?}",
+            merged.colour
+        );
+        let merged = merged_swatch(
+            paths.outline.set(vec![[0.0, 0.0]]).into(),
+            paths.outline.set(vec![[1.0, 1.0], [2.0, 2.0]]).into(),
+            paths.outline.set(vec![[3.0, 3.0]]).into(),
+        );
+        assert!(
+            merged.outline == [[1.0, 1.0], [2.0, 2.0]] || merged.outline == [[3.0, 3.0]],
+            "one outline, not a mix: {:?}",
+            merged.outline
+        );
+        let mut replica = Replica::<Swatch>::new();
+        replica
+            .apply(paths.colour.set(Some("#123456".into())))
+            .unwrap();
+        replica.apply(Swatch::CLEAR.with(())).unwrap();
+        assert_eq!(replica.state().unwrap().colour, None, "`None` is absent");
+    }
+
+    phase a_variants_atoms_are_one_of_the_values_set_and_its_other_fields_merge;
+    {
+        let glyph = Swatch::paths().glyph;
+        let merged = merged_swatch(
+            glyph
+                .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 1.0)))
+                .into(),
+            glyph
+                .set(Some(path("M1 1L2 2", "#ff0000", &[[1.0, 1.0]], 1.0)))
+                .into(),
+            glyph
+                .set(Some(path(
+                    "M3 3",
+                    "#00ff00",
+                    &[[3.0, 3.0], [4.0, 4.0]],
+                    1.0,
+                )))
+                .into(),
+        );
+        let Some(Glyph::Path {
+            d, colour, points, ..
+        }) = merged.glyph
+        else {
+            panic!("still a path: {:?}", merged.glyph);
+        };
+        assert!(["M1 1L2 2", "M3 3"].contains(&d.as_str()), "one path: {d}");
+        assert!(
+            [Some("#ff0000"), Some("#00ff00")].contains(&colour.as_deref()),
+            "one colour: {colour:?}"
+        );
+        assert!(
+            points == [[1.0, 1.0]] || points == [[3.0, 3.0], [4.0, 4.0]],
+            "one list of points: {points:?}"
+        );
+        let merged = merged_swatch(
+            glyph
+                .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 1.0)))
+                .into(),
+            glyph
+                .set(Some(path("M0 0", "#ff0000", &[[0.0, 0.0]], 1.0)))
+                .into(),
+            glyph
+                .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 2.0)))
+                .into(),
+        );
+        assert_eq!(
+            merged.glyph,
+            Some(path("M0 0", "#ff0000", &[[0.0, 0.0]], 2.0)),
+            "a colour and a width changed apart both survive"
+        );
+    }
+
+    phase a_records_fields_only_ever_set_are_named_on_its_line;
+    {
+        let published = Replica::<Frame>::new().published().unwrap();
+        let spec = field_edit(&published);
+        let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+        let (look, _) = described(&schema, "look");
+        assert!(
+            look.ends_with("; set one field of it: `colour`, `width`"),
+            "{look}"
+        );
+        let (caption, _) = described(&schema, "look.caption");
+        assert!(
+            caption.contains("set, splice {at, delete, insert}, replace {text}"),
+            "{caption}"
+        );
+        let listing = schema["description"].as_str().unwrap();
+        assert!(!listing.contains("- `look.colour`"), "{listing}");
+        let edit = serde_json::json!({
+            "path": [{ "field": "look" }, { "field": "width" }],
+            "op": "set",
+            "value": 2.0,
+        });
+        tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the schema");
+        let edit: tilo_resource::Edit<Frame> = serde_json::from_value(edit).unwrap();
+        let mut frame = Replica::<Frame>::new();
+        frame.apply(edit).unwrap();
+        assert_eq!(frame.state().unwrap().look.width, 2.0);
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_verb_takes_its_parameters_invoker_and_group_as_declared;
+
+    phase a_nullary_destructive_verb_applies_at_once;
+    // A destructive verb of the record is undoable, so it applies at once:
+    // nobody is asked first.
+    {
+        let mut board = Replica::<Board>::new();
+        board.apply(Board::ADD_CARD.with(())).unwrap();
+        board.apply(Board::CLEAR.with(())).unwrap();
+        assert_eq!(board.state().unwrap().cards, 0);
+    }
+
+    phase a_replicas_author_is_the_invoker_its_verbs_see;
+    {
+        let mut board = Replica::<Board>::new().as_author("ada");
+        board.apply(Board::ADD_CARD.with(())).unwrap();
+        assert_eq!(board.state().unwrap().author, "ada");
+        // An edit converts into an invocation where one is expected.
+        let invoke: Invoke<Board> = Board::paths().title.set("Sprint".into()).into();
+        board.apply(invoke).unwrap();
+        assert_eq!(board.state().unwrap().title, "Sprint");
+        assert_eq!(Id::default().as_str(), "");
+    }
+
+    phase a_flattened_struct_is_the_verbs_parameters;
+    {
+        let decl = <Board as tilo_resource::Resource>::declarations()
+            .into_iter()
+            .find(|decl| decl.id == "restyle")
+            .unwrap();
+        let params: Vec<(String, bool, tilo_actions::ParamType)> = decl
+            .params
+            .iter()
+            .map(|param| (param.name.to_string(), param.required, param.ty))
+            .collect();
+        assert_eq!(
+            params,
+            [
+                ("title".to_owned(), true, tilo_actions::ParamType::Text),
+                ("cards".to_owned(), false, tilo_actions::ParamType::Integer),
+            ]
+        );
+        let mut board = Replica::<Board>::new();
+        board
+            .apply(Board::RESTYLE.with(BoardStyle {
+                title: "Sprint".into(),
+                cards: Some(3),
+            }))
+            .unwrap();
+        let state = board.state().unwrap();
+        assert_eq!((state.title.as_str(), state.cards), ("Sprint", 3));
+    }
+
+    phase a_flattened_struct_is_the_effects_arguments;
+    {
+        use tilo_resource::Effect as _;
+        let decl = BoardView::declarations().into_iter().next().unwrap();
+        let params: Vec<(String, bool, tilo_actions::ParamType)> = decl
+            .params
+            .iter()
+            .map(|param| (param.name.to_string(), param.required, param.ty))
+            .collect();
+        assert_eq!(
+            params,
+            [
+                ("region".to_owned(), true, tilo_actions::ParamType::Array),
+                ("grid".to_owned(), false, tilo_actions::ParamType::Boolean),
+            ]
+        );
+        let look = BoardView::Look {
+            look: LookAt {
+                region: vec![0, 0, 10, 10],
+                grid: Some(true),
+            },
+        };
+        let arguments = look.arguments();
+        assert_eq!(arguments["region"], serde_json::json!([0, 0, 10, 10]));
+        assert_eq!(BoardView::decode("look", &arguments).unwrap(), look);
+    }
+
+    phase a_flattened_argument_names_the_field_that_does_not_decode;
+    // A flattened struct's field that does not decode is named as the caller
+    // typed it, not by the struct that carries it: a refusal says which
+    // argument to fix.
+    {
+        use tilo_resource::Effect as _;
+        for (arguments, field) in [
+            (serde_json::json!({ "region": "everywhere" }), "region"),
+            (
+                serde_json::json!({ "region": [0, 0, 10, 10], "grid": "yes" }),
+                "grid",
+            ),
+        ] {
+            let error = BoardView::decode("look", arguments.as_object().unwrap()).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    tilo_resource::EffectDecodeError::Argument { name, .. } if name == field
+                ),
+                "`{field}` is named: {error}"
+            );
+        }
+    }
+
+    phase an_optional_parameter_bound_to_nothing_is_left_out;
+    {
+        let decl = Board::RETITLE
+            .bind(board::Retitle::paths().title, "Sprint".to_owned())
+            .and(board::Retitle::paths().suffix, None)
+            .declaration(
+                "retitle-sprint",
+                tilo_resource::word!("test-board-retitle-sprint", catalogue = "tests/locales"),
+            )
+            .unwrap();
+        let action = decl
+            .build_action(&tilo_actions::ActionArgs::default(), 0)
+            .expect("it builds");
+        let mut board = Replica::<Board>::new();
+        board.apply_action(&action).unwrap();
+        assert_eq!(board.state().unwrap().title, "Sprint");
+    }
+
+    phase a_group_is_checked_once_at_its_end;
+    {
+        let mut pair = Replica::<Pair>::new();
+        let paths = Pair::paths();
+        assert!(
+            pair.apply(paths.left.set(1)).is_err(),
+            "alone it breaks the pair"
+        );
+        pair.apply(Invoke::group([
+            paths.left.set(1).into(),
+            paths.right.set(1).into(),
+        ]))
+        .expect("together they keep it");
+        pair.apply(Invoke::group([
+            Pair::MOVE_LEFT.with(2),
+            paths.right.set(2).into(),
+        ]))
+        .expect("a verb and an edit together keep it too");
+        assert!(
+            pair.apply(Invoke::group([
+                paths.left.set(3).into(),
+                paths.right.set(4).into()
+            ]))
+            .is_err(),
+            "a group that ends broken is refused"
+        );
+        let state = pair.state().unwrap();
+        assert_eq!((state.left, state.right), (2, 2));
+    }
+
+    phase a_group_of_one_is_that_action;
+    // A control whose gesture is sometimes several actions is bound to a
+    // group; when it is one, it records that action alone, so an edit in it
+    // continues the undo step of the edit before as the edit itself would.
+    {
+        let mut pair = Replica::<Pair>::new();
+        let paths = Pair::paths();
+        let alone = pair
+            .apply(Pair::MOVE_LEFT.with(0))
+            .expect("a verb")
+            .action
+            .clone();
+        let grouped = pair
+            .apply(Invoke::group([Pair::MOVE_LEFT.with(0)]))
+            .expect("a group of one verb")
+            .action
+            .clone();
+        assert_eq!(grouped.type_id, alone.type_id);
+        let pair_of = pair
+            .apply(Invoke::group([
+                paths.left.set(0).into(),
+                paths.right.set(0).into(),
+            ]))
+            .expect("a group of two")
+            .action
+            .clone();
+        assert_ne!(pair_of.type_id, alone.type_id, "two actions stay a group");
+    }
+
+    phase a_verb_reads_who_its_invoker_acted_for;
+    {
+        let mut board = Replica::<Board>::new().as_agent_for("claude", "ada");
+        board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
+        assert_eq!(board.state().unwrap().author, "Agent for ada");
+    }
+
+    phase a_search_entry_lies_in_a_scope_it_names;
+    {
+        let entry = tilo_resource::SearchEntry::new("Rust 2.0", "news")
+            .anchored("feeds.library/articles/a1")
+            .inside("feeds.library/feeds/f1");
+        assert_eq!(entry.within.as_deref(), Some("feeds.library/feeds/f1"));
+    }
+
+    phase a_verb_prepares_its_arguments_once_where_it_is_invoked;
+    {
+        let mut origin = Replica::<Board>::new();
+        let mut peer = origin.fork();
+        origin.apply(Board::SHOUT.with("sprint")).unwrap();
+        assert_eq!(origin.state().unwrap().title, "SPRINT");
+        for envelope in origin.log().to_vec() {
+            peer.replay(&envelope).unwrap();
+        }
+        assert_eq!(
+            peer.state().unwrap().title,
+            "SPRINT",
+            "the action carries what was prepared"
+        );
+
+        // A flattened struct's absent options are left out.
+        origin
+            .apply(Board::RESTYLE.with(BoardStyle {
+                title: "Plain".into(),
+                cards: None,
+            }))
+            .unwrap();
+        assert_eq!(origin.state().unwrap().title, "Plain");
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_field_edit_is_addressed_guarded_and_confirmed_by_its_contract;
+
+    phase removing_an_item_by_field_edit_asks_nothing;
+    // A field edit changes only the record: removing an item, of any
+    // collection, is undoable and asks nothing.
+    {
+        let mut board = Replica::<Board>::new();
+        let paths = Board::paths();
+        let note = Id::from_raw("n");
+        board
+            .apply(paths.notes.insert_as(&note, 0, &Note::default()))
+            .unwrap();
+        board
+            .apply(paths.drafts.insert_as(&note, 0, &"draft".to_owned()))
+            .unwrap();
+        board.apply(paths.notes.remove(&note)).unwrap();
+        board.apply(paths.drafts.remove(&note)).unwrap();
+        let state = board.state().unwrap();
+        assert!(state.notes.is_empty() && state.drafts.is_empty());
+    }
+
+    phase any_door_reads_a_field_edit_s_confirmation_from_the_published_contract;
+    // A door without the app's code — the broker, a relay — decides from the
+    // published field edit alone, and as the app does: the record's edits are
+    // undoable, so none asks, whatever it removes.
+    {
+        use tilo_actions::ConfirmationPolicy;
+        let board = Replica::<Board>::new();
+        let published = board.published().unwrap();
+        let spec = field_edit(&published);
+        let paths = Board::paths();
+        let note = Id::from_raw("n");
+        let door = |edit: &dyn erased_edit::Encode| {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "edit": edit.encode() })
+            );
+            spec.contract.confirmation_for_argument(Some(&argument))
+        };
+        assert_eq!(door(&paths.notes.remove(&note)), ConfirmationPolicy::None);
+        assert_eq!(door(&paths.drafts.remove(&note)), ConfirmationPolicy::None);
+        assert_eq!(
+            door(&paths.title.set("Plan".to_owned())),
+            ConfirmationPolicy::None
+        );
+        assert_eq!(
+            spec.contract.confirmation_for_argument(Some("not an edit")),
+            ConfirmationPolicy::None,
+            "an argument nobody can read builds nothing; Undo covers whatever does"
+        );
+    }
+
+    phase a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged;
+    // A field's trust decides its every edit, in the app and at any door that
+    // reads only the published contract: a weakening one asks and is
+    // privileged, a sensitive one asks, an ordinary one neither.
+    {
+        use tilo_actions::{ConfirmationPolicy, RiskLevel};
+        let paths = Lock::paths();
+        assert_eq!(paths.minutes.set(10).risk(), RiskLevel::Privileged);
+        assert_eq!(
+            paths.shown_name.set("Ada".to_owned()).risk(),
+            RiskLevel::Destructive
+        );
+        assert_eq!(paths.label.set("Desk".to_owned()).risk(), RiskLevel::Low);
+
+        let mut lock = Replica::<Lock>::new();
+        assert!(matches!(
+            lock.apply(paths.minutes.set(0)),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        assert!(matches!(
+            lock.apply(paths.shown_name.set("Ada".to_owned())),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        lock.apply(paths.label.set("Desk".to_owned())).unwrap();
+        lock.apply_confirmed(paths.minutes.set(0)).unwrap();
+        assert_eq!(lock.state().unwrap().minutes, 0);
+
+        let published = lock.published().unwrap();
+        let spec = field_edit(&published);
+        let door = |edit: &dyn erased_edit::Encode| {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "edit": edit.encode() })
+            );
+            spec.contract.confirmation_for_argument(Some(&argument))
+        };
+        assert_eq!(door(&paths.minutes.set(5)), ConfirmationPolicy::Confirm);
+        assert_eq!(
+            door(&paths.shown_name.set(String::new())),
+            ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            door(&paths.label.set(String::new())),
+            ConfirmationPolicy::None
+        );
+        let need = |edit: &dyn erased_edit::Encode| {
+            let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
+                panic!("an object");
+            };
+            spec.need_for(Some(&json), None)
+        };
+        assert!(
+            need(&paths.minutes.set(5)).privileged,
+            "a weakening edit needs the person's own grant"
+        );
+        assert!(!need(&paths.shown_name.set(String::new())).privileged);
+        assert!(!need(&paths.label.set(String::new())).privileged);
+    }
+
+    phase a_field_edit_may_start_at_the_record_s_own_name;
+    // A record read that nests its fields under the record's name is written
+    // back as `board.title`: a path starting at the record's own name (the
+    // last part of its kind, or its label) edits the field after it, through
+    // the published field edit and when built from JSON alike.
+    {
+        let mut board = Replica::<Board>::new();
+        board.apply(set_at(&["board", "title"], "Plan")).unwrap();
+        board.apply(set_at(&["Board", "author"], "Ada")).unwrap();
+        let state = board.state().unwrap();
+        assert_eq!(
+            (state.title.as_str(), state.author.as_str()),
+            ("Plan", "Ada")
+        );
+
+        let built = tilo_resource::build_action::<Board>(
+            tilo_resource::FIELD_EDIT,
+            &serde_json::Map::from_iter([(
+                "edit".to_owned(),
+                serde_json::json!({ "path": [{ "field": "board" }, { "field": "title" }], "op": "set", "value": "Sprint" }),
+            )]),
+            0,
+        );
+        assert!(built.is_ok(), "{built:?}");
+    }
+
+    phase a_field_edit_naming_neither_a_field_nor_the_record_lists_the_fields;
+    // A field edit naming no field, nor the record, still says which fields
+    // there are; one naming the record alone says to start at a field.
+    {
+        let mut board = Replica::<Board>::new();
+        let unknown = format!(
+            "{:?}",
+            board.apply(set_at(&["deck", "title"], "Plan")).unwrap_err()
+        );
+        assert!(
+            unknown.contains("no field `deck`; the fields here are layer, title, author"),
+            "{unknown}"
+        );
+        let below = format!(
+            "{:?}",
+            board.apply(set_at(&["board", "deck"], "Plan")).unwrap_err()
+        );
+        assert!(
+            below.contains("no field `deck`; the fields here are"),
+            "the field after the record's name is the one refused: {below}"
+        );
+        let bare = format!("{:?}", board.apply(set_at(&["board"], "Plan")).unwrap_err());
+        assert!(
+            bare.contains("`board` is the record itself") && bare.contains("title"),
+            "{bare}"
+        );
+        assert_eq!(board.state().unwrap().title, "");
+    }
+
+    phase a_guarded_field_under_the_record_s_name_is_sent_again_from_the_root;
+    // A door decides an edit's confirmation from the path as sent: a guarded
+    // field under the record's name is not edited, but sent again from the
+    // root, where the door sees which field it is.
+    {
+        let mut lock = Replica::<Lock>::new();
+        for field in ["minutes", "shown_name"] {
+            let refused = format!(
+                "{:?}",
+                lock.apply_confirmed(set_at(&["lock", field], "5"))
+                    .unwrap_err()
+            );
+            assert!(
+                refused.contains(&format!("start the path at `{field}`")),
+                "{refused}"
+            );
+        }
+        lock.apply(set_at(&["lock", "label"], "Desk")).unwrap();
+        let state = lock.state().unwrap();
+        assert_eq!((state.minutes, state.label.as_str()), (0, "Desk"));
+    }
+
+    phase only_a_change_making_a_field_weaker_asks_and_is_privileged;
+    // A field that weakens one way asks, and needs the person's own grant,
+    // only for a change that way from what it holds now: in the app and at any
+    // door that reads only the published contract.
+    {
+        use tilo_actions::{ConfirmationPolicy, RiskLevel};
+        let paths = Screen::paths();
+        assert_eq!(
+            paths.lock_minutes.set(1).risk(),
+            RiskLevel::Privileged,
+            "without the value now, any change counts as weakening"
+        );
+
+        let mut screen = Replica::<Screen>::new();
+        screen
+            .apply(paths.lock_minutes.set(10))
+            .expect("from never, a delay is stricter");
+        screen
+            .apply(paths.lock_minutes.set(5))
+            .expect("sooner is stricter");
+        screen
+            .apply(paths.lock_minutes.set(5))
+            .expect("the same is no weaker");
+        for weaker in [15, 0] {
+            assert!(matches!(
+                screen.apply(paths.lock_minutes.set(weaker)),
+                Err(tilo_actions::DoorError::ConfirmationRequired)
+            ));
+        }
+        assert!(matches!(
+            screen.apply(paths.notifications_when_locked.set(true)),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        screen.apply(paths.guard.set("strict".to_owned())).unwrap();
+        assert!(matches!(
+            screen.apply(paths.guard.set("off".to_owned())),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        screen
+            .apply_confirmed(paths.notifications_when_locked.set(true))
+            .unwrap();
+        screen
+            .apply(paths.notifications_when_locked.set(false))
+            .expect("hiding them is stricter");
+        assert_eq!(screen.state().unwrap().lock_minutes, 5);
+
+        let published = screen.published().unwrap();
+        let spec = field_edit(&published);
+        let door = |edit: &dyn erased_edit::Encode| {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "edit": edit.encode() })
+            );
+            spec.contract.confirmation_for_argument(Some(&argument))
+        };
+        assert_eq!(door(&paths.lock_minutes.set(1)), ConfirmationPolicy::None);
+        assert_eq!(
+            door(&paths.lock_minutes.set(30)),
+            ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            door(&paths.lock_minutes.set(0)),
+            ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            door(&paths.notifications_when_locked.set(true)),
+            ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            door(&paths.guard.set("strict".to_owned())),
+            ConfirmationPolicy::None
+        );
+        assert_eq!(
+            door(&paths.guard.set("normal".to_owned())),
+            ConfirmationPolicy::Confirm
+        );
+
+        // An agent acting for the person needs their own grant only to weaken.
+        let need = |edit: &dyn erased_edit::Encode| {
+            let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
+                panic!("an object");
+            };
+            spec.need_for(Some(&json), None)
+        };
+        assert!(need(&paths.lock_minutes.set(30)).privileged);
+        assert!(need(&paths.lock_minutes.set(0)).privileged);
+        assert!(need(&paths.notifications_when_locked.set(true)).privileged);
+        assert!(!need(&paths.lock_minutes.set(1)).privileged);
+        assert!(!need(&paths.lock_minutes.set(5)).privileged);
+        assert!(!need(&paths.notifications_when_locked.set(false)).privileged);
+    }
+
+    phase a_path_names_the_object_its_value_is_stored_in;
+    {
+        let mut board = Replica::<Board>::new();
+        let paths = Board::paths();
+        let note = Id::from_raw("n");
+        board
+            .apply(paths.notes.insert_as(&note, 0, &Note::default()))
+            .unwrap();
+        let body = paths.notes.item(&note).body.object(board.doc());
+        assert!(
+            body.is_some(),
+            "the body's text object, under the entry's value"
+        );
+        assert!(
+            paths
+                .notes
+                .item(&Id::from_raw("gone"))
+                .body
+                .object(board.doc())
+                .is_none()
+        );
+        assert!(
+            paths.cards.object(board.doc()).is_none(),
+            "a scalar has no object"
+        );
+    }
+
+    phase an_agent_builds_a_field_edit_from_the_published_descriptor_alone;
+    {
+        let mut board = Replica::<Board>::new();
+        board
+            .apply(
+                Board::paths()
+                    .notes
+                    .insert_as(&Id::from_raw("n1"), 0, &Note::default()),
+            )
+            .unwrap();
+        let published = board.published().unwrap();
+        let spec = field_edit(&published);
+        let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+
+        // Every editable path is described: title, ops, value, flags.
+        let (title, _) = described(&schema, "title");
+        assert!(
+            title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
+            "{title}"
+        );
+        assert!(title.contains("(string)"), "{title}");
+        let (notes, _) = described(&schema, "notes");
+        assert!(notes.contains("Undo takes it back"), "{notes}");
+        let (drafts, _) = described(&schema, "drafts");
+        assert!(drafts.contains("asks nothing"), "{drafts}");
+
+        // Built from the descriptor: the example's path with the item's id in
+        // place of its placeholder, an op it lists, a value of its type.
+        let (_, example) = described(&schema, "notes.*.body");
+        let mut path = example["path"].clone();
+        for step in path.as_array_mut().unwrap() {
+            if step.get("item").is_some() {
+                *step = serde_json::json!({ "item": "n1" });
+            }
+        }
+        let edit = serde_json::json!({ "path": path, "op": "set", "value": ["line"] });
+        tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the schema");
+        let edit: tilo_resource::Edit<Board> = serde_json::from_value(edit).unwrap();
+        board.apply(edit).unwrap();
+        assert_eq!(
+            board
+                .state()
+                .unwrap()
+                .notes
+                .get(&Id::from_raw("n1"))
+                .unwrap()
+                .body,
+            ["line"]
+        );
+    }
+
+    phase a_field_edit_refuses_null_for_a_field_that_is_not_optional;
+    // A field edit sets a value of the field's type: `null` only where the
+    // field is optional, never for a number, a flag or a text.
+    {
+        use tilo_resource::{Edit, EditOp, Segment};
+        let mut board = Replica::<Board>::new();
+        for field in ["cards", "title", "layer"] {
+            let edit = Edit::<Board>::new(
+                vec![Segment::Field(field.into())],
+                EditOp::Set {
+                    value: serde_json::Value::Null,
+                },
+            );
+            assert!(board.apply(edit).is_err(), "`{field}` refuses null");
+        }
+        board
+            .apply(Edit::<Board>::new(
+                vec![Segment::Field("cards".into())],
+                EditOp::Set {
+                    value: serde_json::json!(3),
+                },
+            ))
+            .unwrap();
+        assert_eq!(board.state().unwrap().cards, 3);
+    }
 }
 
 /// A lock whose delay can weaken security and whose shown name can expose
@@ -319,66 +1032,6 @@ pub struct Lock {
 #[resource(kind = "test.lock", catalogue = "tests/locales")]
 impl Lock {}
 
-/// A field's trust decides its every edit, in the app and at any door that
-/// reads only the published contract: a weakening one asks and is
-/// privileged, a sensitive one asks, an ordinary one neither.
-#[test]
-fn a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged() {
-    use tilo_actions::{ConfirmationPolicy, RiskLevel};
-    let paths = Lock::paths();
-    assert_eq!(paths.minutes.set(10).risk(), RiskLevel::Privileged);
-    assert_eq!(
-        paths.shown_name.set("Ada".to_owned()).risk(),
-        RiskLevel::Destructive
-    );
-    assert_eq!(paths.label.set("Desk".to_owned()).risk(), RiskLevel::Low);
-
-    let mut lock = Replica::<Lock>::new();
-    assert!(matches!(
-        lock.apply(paths.minutes.set(0)),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    assert!(matches!(
-        lock.apply(paths.shown_name.set("Ada".to_owned())),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    lock.apply(paths.label.set("Desk".to_owned())).unwrap();
-    lock.apply_confirmed(paths.minutes.set(0)).unwrap();
-    assert_eq!(lock.state().unwrap().minutes, 0);
-
-    let published = lock.published().unwrap();
-    let spec = field_edit(&published);
-    let door = |edit: &dyn erased_edit::Encode| {
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({ "edit": edit.encode() })
-        );
-        spec.contract.confirmation_for_argument(Some(&argument))
-    };
-    assert_eq!(door(&paths.minutes.set(5)), ConfirmationPolicy::Confirm);
-    assert_eq!(
-        door(&paths.shown_name.set(String::new())),
-        ConfirmationPolicy::Confirm
-    );
-    assert_eq!(
-        door(&paths.label.set(String::new())),
-        ConfirmationPolicy::None
-    );
-    let need = |edit: &dyn erased_edit::Encode| {
-        let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
-            panic!("an object");
-        };
-        spec.need_for(Some(&json), None)
-    };
-    assert!(
-        need(&paths.minutes.set(5)).privileged,
-        "a weakening edit needs the person's own grant"
-    );
-    assert!(!need(&paths.shown_name.set(String::new())).privileged);
-    assert!(!need(&paths.label.set(String::new())).privileged);
-}
-
 /// The field edit setting `value` at the fields `path`, as a caller sends
 /// it.
 fn set_at<R: tilo_resource::Resource>(path: &[&str], value: &str) -> Invoke<R> {
@@ -390,83 +1043,6 @@ fn set_at<R: tilo_resource::Resource>(path: &[&str], value: &str) -> Invoke<R> {
         value: serde_json::json!(value),
     };
     Invoke::edit(&tilo_resource::Edit::new(path, op)).unwrap()
-}
-
-/// A record read that nests its fields under the record's name is written
-/// back as `board.title`: a path starting at the record's own name (the
-/// last part of its kind, or its label) edits the field after it, through
-/// the published field edit and when built from JSON alike.
-#[test]
-fn a_field_edit_may_start_at_the_record_s_own_name() {
-    let mut board = Replica::<Board>::new();
-    board.apply(set_at(&["board", "title"], "Plan")).unwrap();
-    board.apply(set_at(&["Board", "author"], "Ada")).unwrap();
-    let state = board.state().unwrap();
-    assert_eq!(
-        (state.title.as_str(), state.author.as_str()),
-        ("Plan", "Ada")
-    );
-
-    let built = tilo_resource::build_action::<Board>(
-        tilo_resource::FIELD_EDIT,
-        &serde_json::Map::from_iter([(
-            "edit".to_owned(),
-            serde_json::json!({ "path": [{ "field": "board" }, { "field": "title" }], "op": "set", "value": "Sprint" }),
-        )]),
-        0,
-    );
-    assert!(built.is_ok(), "{built:?}");
-}
-
-/// A field edit naming no field, nor the record, still says which fields
-/// there are; one naming the record alone says to start at a field.
-#[test]
-fn a_field_edit_naming_neither_a_field_nor_the_record_lists_the_fields() {
-    let mut board = Replica::<Board>::new();
-    let unknown = format!(
-        "{:?}",
-        board.apply(set_at(&["deck", "title"], "Plan")).unwrap_err()
-    );
-    assert!(
-        unknown.contains("no field `deck`; the fields here are layer, title, author"),
-        "{unknown}"
-    );
-    let below = format!(
-        "{:?}",
-        board.apply(set_at(&["board", "deck"], "Plan")).unwrap_err()
-    );
-    assert!(
-        below.contains("no field `deck`; the fields here are"),
-        "the field after the record's name is the one refused: {below}"
-    );
-    let bare = format!("{:?}", board.apply(set_at(&["board"], "Plan")).unwrap_err());
-    assert!(
-        bare.contains("`board` is the record itself") && bare.contains("title"),
-        "{bare}"
-    );
-    assert_eq!(board.state().unwrap().title, "");
-}
-
-/// A door decides an edit's confirmation from the path as sent: a guarded
-/// field under the record's name is not edited, but sent again from the
-/// root, where the door sees which field it is.
-#[test]
-fn a_guarded_field_under_the_record_s_name_is_sent_again_from_the_root() {
-    let mut lock = Replica::<Lock>::new();
-    for field in ["minutes", "shown_name"] {
-        let refused = format!(
-            "{:?}",
-            lock.apply_confirmed(set_at(&["lock", field], "5"))
-                .unwrap_err()
-        );
-        assert!(
-            refused.contains(&format!("start the path at `{field}`")),
-            "{refused}"
-        );
-    }
-    lock.apply(set_at(&["lock", "label"], "Desk")).unwrap();
-    let state = lock.state().unwrap();
-    assert_eq!((state.minutes, state.label.as_str()), (0, "Desk"));
 }
 
 /// A screen whose lock delay weakens when longer (`0` is never) and whose
@@ -484,99 +1060,6 @@ pub struct Screen {
 #[resource(kind = "test.screen", catalogue = "tests/locales")]
 impl Screen {}
 
-/// A field that weakens one way asks, and needs the person's own grant,
-/// only for a change that way from what it holds now: in the app and at any
-/// door that reads only the published contract.
-#[test]
-fn only_a_change_making_a_field_weaker_asks_and_is_privileged() {
-    use tilo_actions::{ConfirmationPolicy, RiskLevel};
-    let paths = Screen::paths();
-    assert_eq!(
-        paths.lock_minutes.set(1).risk(),
-        RiskLevel::Privileged,
-        "without the value now, any change counts as weakening"
-    );
-
-    let mut screen = Replica::<Screen>::new();
-    screen
-        .apply(paths.lock_minutes.set(10))
-        .expect("from never, a delay is stricter");
-    screen
-        .apply(paths.lock_minutes.set(5))
-        .expect("sooner is stricter");
-    screen
-        .apply(paths.lock_minutes.set(5))
-        .expect("the same is no weaker");
-    for weaker in [15, 0] {
-        assert!(matches!(
-            screen.apply(paths.lock_minutes.set(weaker)),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ));
-    }
-    assert!(matches!(
-        screen.apply(paths.notifications_when_locked.set(true)),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    screen.apply(paths.guard.set("strict".to_owned())).unwrap();
-    assert!(matches!(
-        screen.apply(paths.guard.set("off".to_owned())),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    screen
-        .apply_confirmed(paths.notifications_when_locked.set(true))
-        .unwrap();
-    screen
-        .apply(paths.notifications_when_locked.set(false))
-        .expect("hiding them is stricter");
-    assert_eq!(screen.state().unwrap().lock_minutes, 5);
-
-    let published = screen.published().unwrap();
-    let spec = field_edit(&published);
-    let door = |edit: &dyn erased_edit::Encode| {
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::json!({ "edit": edit.encode() })
-        );
-        spec.contract.confirmation_for_argument(Some(&argument))
-    };
-    assert_eq!(door(&paths.lock_minutes.set(1)), ConfirmationPolicy::None);
-    assert_eq!(
-        door(&paths.lock_minutes.set(30)),
-        ConfirmationPolicy::Confirm
-    );
-    assert_eq!(
-        door(&paths.lock_minutes.set(0)),
-        ConfirmationPolicy::Confirm
-    );
-    assert_eq!(
-        door(&paths.notifications_when_locked.set(true)),
-        ConfirmationPolicy::Confirm
-    );
-    assert_eq!(
-        door(&paths.guard.set("strict".to_owned())),
-        ConfirmationPolicy::None
-    );
-    assert_eq!(
-        door(&paths.guard.set("normal".to_owned())),
-        ConfirmationPolicy::Confirm
-    );
-
-    // An agent acting for the person needs their own grant only to weaken.
-    let need = |edit: &dyn erased_edit::Encode| {
-        let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
-            panic!("an object");
-        };
-        spec.need_for(Some(&json), None)
-    };
-    assert!(need(&paths.lock_minutes.set(30)).privileged);
-    assert!(need(&paths.lock_minutes.set(0)).privileged);
-    assert!(need(&paths.notifications_when_locked.set(true)).privileged);
-    assert!(!need(&paths.lock_minutes.set(1)).privileged);
-    assert!(!need(&paths.lock_minutes.set(5)).privileged);
-    assert!(!need(&paths.notifications_when_locked.set(false)).privileged);
-}
-
 /// The JSON form of an edit, whatever record it is of.
 mod erased_edit {
     pub trait Encode {
@@ -589,116 +1072,255 @@ mod erased_edit {
     }
 }
 
-#[test]
-fn a_path_names_the_object_its_value_is_stored_in() {
-    let mut board = Replica::<Board>::new();
-    let paths = Board::paths();
-    let note = Id::from_raw("n");
-    board
-        .apply(paths.notes.insert_as(&note, 0, &Note::default()))
-        .unwrap();
-    let body = paths.notes.item(&note).body.object(board.doc());
-    assert!(
-        body.is_some(),
-        "the body's text object, under the entry's value"
-    );
-    assert!(
-        paths
-            .notes
-            .item(&Id::from_raw("gone"))
-            .body
-            .object(board.doc())
-            .is_none()
-    );
-    assert!(
-        paths.cards.object(board.doc()).is_none(),
-        "a scalar has no object"
-    );
-}
+tilo_test_env::scenario! {
+    fn places_and_items_offer_the_edits_and_verbs_of_their_own;
 
-#[test]
-fn a_derived_place_offers_a_bound_edit() {
-    let place = Derived::<Board>::new("Sprint board").with_edit(
-        "name-sprint",
-        "Name it Sprint",
-        Board::paths().title.set("Sprint".into()),
-    );
-    let published = place.publish();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == "name-sprint")
-        .expect("the edit is offered on the place");
-    assert!(spec.params().is_empty(), "its value is bound");
-}
+    phase a_derived_place_offers_a_bound_edit;
+    {
+        let place = Derived::<Board>::new("Sprint board").with_edit(
+            "name-sprint",
+            "Name it Sprint",
+            Board::paths().title.set("Sprint".into()),
+        );
+        let published = place.publish();
+        let spec = published
+            .actions
+            .iter()
+            .find(|spec| spec.id == "name-sprint")
+            .expect("the edit is offered on the place");
+        assert!(spec.params().is_empty(), "its value is bound");
+    }
 
-#[test]
-fn a_flattened_struct_is_the_verbs_parameters() {
-    let decl = <Board as tilo_resource::Resource>::declarations()
-        .into_iter()
-        .find(|decl| decl.id == "restyle")
-        .unwrap();
-    let params: Vec<(String, bool, tilo_actions::ParamType)> = decl
-        .params
-        .iter()
-        .map(|param| (param.name.to_string(), param.required, param.ty))
-        .collect();
-    assert_eq!(
-        params,
-        [
-            ("title".to_owned(), true, tilo_actions::ParamType::Text),
-            ("cards".to_owned(), false, tilo_actions::ParamType::Integer),
-        ]
-    );
-    let mut board = Replica::<Board>::new();
-    board
-        .apply(Board::RESTYLE.with(BoardStyle {
-            title: "Sprint".into(),
-            cards: Some(3),
-        }))
-        .unwrap();
-    let state = board.state().unwrap();
-    assert_eq!((state.title.as_str(), state.cards), ("Sprint", 3));
-}
+    phase a_derived_place_offers_an_edit_that_asks_for_its_value;
+    {
+        let place = Derived::<Board>::new("Sprint board").with_edit_asking(
+            "rename",
+            "Rename the board",
+            "title",
+            "The new name",
+            |title: String| Board::paths().title.replace(title),
+        );
+        let published = place.publish();
+        let spec = published
+            .actions
+            .iter()
+            .find(|spec| spec.id == "rename")
+            .expect("the edit is offered on the place");
+        let params: Vec<(String, tilo_actions::ParamType)> = spec
+            .params()
+            .iter()
+            .map(|param| (param.name.to_string(), param.ty))
+            .collect();
+        assert_eq!(
+            params,
+            [("title".to_owned(), tilo_actions::ParamType::Text)]
+        );
 
-#[test]
-fn a_derived_place_offers_an_edit_that_asks_for_its_value() {
-    let place = Derived::<Board>::new("Sprint board").with_edit_asking(
-        "rename",
-        "Rename the board",
-        "title",
-        "The new name",
-        |title: String| Board::paths().title.replace(title),
-    );
-    let published = place.publish();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == "rename")
-        .expect("the edit is offered on the place");
-    let params: Vec<(String, tilo_actions::ParamType)> = spec
-        .params()
-        .iter()
-        .map(|param| (param.name.to_string(), param.ty))
-        .collect();
-    assert_eq!(
-        params,
-        [("title".to_owned(), tilo_actions::ParamType::Text)]
-    );
+        let encoded = spec
+            .build_json(
+                &serde_json::json!({ "title": "Sprint 12" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        let action: <Board as tilo_resource::Resource>::Action =
+            serde_json::from_slice(&encoded.payload).unwrap();
+        let mut board = Replica::<Board>::new();
+        board.apply_action(&action).unwrap();
+        assert_eq!(board.state().unwrap().title, "Sprint 12");
+    }
 
-    let encoded = spec
-        .build_json(
-            &serde_json::json!({ "title": "Sprint 12" })
-                .as_object()
-                .unwrap()
-                .clone(),
+    phase an_item_resource_offers_the_field_edits_of_its_item;
+    {
+        let mut board = Replica::<Board>::new();
+        board
+            .apply(Board::paths().notes.insert_as(
+                &Id::from_raw("n1"),
+                0,
+                &Note {
+                    title: "Plan".into(),
+                    ..Note::default()
+                },
+            ))
+            .unwrap();
+        let published = board.published().unwrap();
+        let item = published
+            .children
+            .iter()
+            .find(|child| child.id.as_str().ends_with("/notes/n1"))
+            .expect("the note is an item resource");
+        let spec = item
+            .actions
+            .iter()
+            .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+            .expect("its fields are edited from it");
+        let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+        let (_, example) = described(&schema, "body");
+        let edit =
+            serde_json::json!({ "path": example["path"], "op": "set", "value": ["from the item"] });
+        tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the item's schema");
+    }
+
+    phase an_answering_verb_published_on_its_item_still_answers;
+    {
+        let mut board = Replica::<Board>::new();
+        board
+            .apply(Board::paths().notes.insert_as(
+                &Id::from_raw("n1"),
+                0,
+                &Note {
+                    title: "Plan".into(),
+                    ..Note::default()
+                },
+            ))
+            .unwrap();
+        let published = board.published().unwrap();
+        let on_root = published
+            .actions
+            .iter()
+            .find(|spec| spec.id == "clear-note")
+            .unwrap();
+        assert!(matches!(
+            on_root.contract.result,
+            tilo_actions::ResultSpec::Json { .. }
+        ));
+        let item = published
+            .children
+            .iter()
+            .find(|child| child.id.as_str().ends_with("/notes/n1"))
+            .unwrap();
+        let on_item = item
+            .actions
+            .iter()
+            .find(|spec| spec.id == "clear-note")
+            .expect("offered on its item");
+        assert_eq!(
+            on_item.contract.result, on_root.contract.result,
+            "the item's copy declares the same answer"
+        );
+    }
+
+    phase a_place_offers_a_verb_with_nothing_bound;
+    {
+        let place = Derived::<Board>::new("Board").with(Board::RETITLE.unbound());
+        let published = place.publish();
+        let spec = published
+            .actions
+            .iter()
+            .find(|spec| spec.id == "retitle")
+            .expect("offered on the place");
+        let params: Vec<String> = spec.params().iter().map(|p| p.name.to_string()).collect();
+        assert_eq!(params, ["title", "suffix"]);
+    }
+
+    phase items_of_a_nested_collection_are_resources_of_their_own;
+    {
+        let mut deck = Replica::<Deck>::new();
+        let mut slide = Slide {
+            title: "Intro".into(),
+            ..Slide::default()
+        };
+        slide.elements.push(
+            Id::from_raw("e1"),
+            Element {
+                name: "Logo".into(),
+                x: 1.0,
+            },
+        );
+        deck.apply(
+            Deck::paths()
+                .slides
+                .insert_as(&Id::from_raw("s1"), 0, &slide),
         )
         .unwrap();
-    let action: <Board as tilo_resource::Resource>::Action =
-        serde_json::from_slice(&encoded.payload).unwrap();
-    let mut board = Replica::<Board>::new();
-    board.apply_action(&action).unwrap();
-    assert_eq!(board.state().unwrap().title, "Sprint 12");
+        let published = deck.published().unwrap();
+        let element = published
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "test.deck/slides/s1/elements/e1")
+            .expect("the element is a resource of its own");
+        assert_eq!(element.label, "Logo");
+        let edit = element
+            .actions
+            .iter()
+            .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+            .expect("its fields are edited from it");
+        let encoded = edit
+            .build_json(
+                serde_json::json!({ "edit": { "path": [{"field": "x"}], "op": "set", "value": 4.5 } })
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        let action: <Deck as tilo_resource::Resource>::Action =
+            serde_json::from_slice(&encoded.payload).unwrap();
+        deck.apply_action(&action).unwrap();
+
+        // The verbs on elements are offered on each, both ids bound.
+        let published = deck.published().unwrap();
+        let element = published
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "test.deck/slides/s1/elements/e1")
+            .unwrap();
+        let nudge = element
+            .actions
+            .iter()
+            .find(|spec| spec.id == "nudge")
+            .expect("the element's verb");
+        let params: Vec<String> = nudge.params().iter().map(|p| p.name.to_string()).collect();
+        assert_eq!(params, ["by"]);
+        let encoded = nudge
+            .build_json(serde_json::json!({ "by": 0.5 }).as_object().unwrap())
+            .unwrap();
+        let action: <Deck as tilo_resource::Resource>::Action =
+            serde_json::from_slice(&encoded.payload).unwrap();
+        deck.apply_action(&action).unwrap();
+        let state = deck.state().unwrap();
+        let x = state
+            .slides
+            .get(&Id::from_raw("s1"))
+            .unwrap()
+            .elements
+            .get(&Id::from_raw("e1"))
+            .unwrap()
+            .x;
+        assert_eq!(x, 5.0);
+    }
+
+    phase a_nested_item_verb_is_known_offered_without_building_children;
+    {
+        use tilo_resource::Resource as _;
+        let built = |deck: &Deck| -> Vec<&'static str> {
+            let children = Deck::children(deck);
+            let mut ids = Vec::new();
+            for decl in Deck::declarations() {
+                if tilo_resource::items::offered_bound(&children, &decl) {
+                    ids.push(decl.id);
+                }
+            }
+            ids
+        };
+        let mut deck = Deck::default();
+        assert_eq!(Deck::children_offer_bound(&deck), built(&deck), "no slides");
+        deck.slides.push(Id::from_raw("s1"), Slide::default());
+        assert_eq!(
+            Deck::children_offer_bound(&deck),
+            built(&deck),
+            "a slide, no elements"
+        );
+        assert!(Deck::children_offer_bound(&deck).is_empty());
+        if let Some(slide) = deck.slides.get_mut(&Id::from_raw("s1")) {
+            slide.elements.push(Id::from_raw("e1"), Element::default());
+        }
+        assert_eq!(
+            Deck::children_offer_bound(&deck),
+            built(&deck),
+            "an element"
+        );
+        assert_eq!(Deck::children_offer_bound(&deck), ["nudge"]);
+    }
 }
 
 /// What an agent sees of the field edit at `path` (`notes.*.body`): the
@@ -741,127 +1363,6 @@ fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Val
     (line, example)
 }
 
-#[test]
-fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
-    let mut board = Replica::<Board>::new();
-    board
-        .apply(
-            Board::paths()
-                .notes
-                .insert_as(&Id::from_raw("n1"), 0, &Note::default()),
-        )
-        .unwrap();
-    let published = board.published().unwrap();
-    let spec = field_edit(&published);
-    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-
-    // Every editable path is described: title, ops, value, flags.
-    let (title, _) = described(&schema, "title");
-    assert!(
-        title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
-        "{title}"
-    );
-    assert!(title.contains("(string)"), "{title}");
-    let (notes, _) = described(&schema, "notes");
-    assert!(notes.contains("Undo takes it back"), "{notes}");
-    let (drafts, _) = described(&schema, "drafts");
-    assert!(drafts.contains("asks nothing"), "{drafts}");
-
-    // Built from the descriptor: the example's path with the item's id in
-    // place of its placeholder, an op it lists, a value of its type.
-    let (_, example) = described(&schema, "notes.*.body");
-    let mut path = example["path"].clone();
-    for step in path.as_array_mut().unwrap() {
-        if step.get("item").is_some() {
-            *step = serde_json::json!({ "item": "n1" });
-        }
-    }
-    let edit = serde_json::json!({ "path": path, "op": "set", "value": ["line"] });
-    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the schema");
-    let edit: tilo_resource::Edit<Board> = serde_json::from_value(edit).unwrap();
-    board.apply(edit).unwrap();
-    assert_eq!(
-        board
-            .state()
-            .unwrap()
-            .notes
-            .get(&Id::from_raw("n1"))
-            .unwrap()
-            .body,
-        ["line"]
-    );
-}
-
-#[test]
-fn an_item_resource_offers_the_field_edits_of_its_item() {
-    let mut board = Replica::<Board>::new();
-    board
-        .apply(Board::paths().notes.insert_as(
-            &Id::from_raw("n1"),
-            0,
-            &Note {
-                title: "Plan".into(),
-                ..Note::default()
-            },
-        ))
-        .unwrap();
-    let published = board.published().unwrap();
-    let item = published
-        .children
-        .iter()
-        .find(|child| child.id.as_str().ends_with("/notes/n1"))
-        .expect("the note is an item resource");
-    let spec = item
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .expect("its fields are edited from it");
-    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-    let (_, example) = described(&schema, "body");
-    let edit =
-        serde_json::json!({ "path": example["path"], "op": "set", "value": ["from the item"] });
-    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the item's schema");
-}
-
-#[test]
-fn an_answering_verb_published_on_its_item_still_answers() {
-    let mut board = Replica::<Board>::new();
-    board
-        .apply(Board::paths().notes.insert_as(
-            &Id::from_raw("n1"),
-            0,
-            &Note {
-                title: "Plan".into(),
-                ..Note::default()
-            },
-        ))
-        .unwrap();
-    let published = board.published().unwrap();
-    let on_root = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == "clear-note")
-        .unwrap();
-    assert!(matches!(
-        on_root.contract.result,
-        tilo_actions::ResultSpec::Json { .. }
-    ));
-    let item = published
-        .children
-        .iter()
-        .find(|child| child.id.as_str().ends_with("/notes/n1"))
-        .unwrap();
-    let on_item = item
-        .actions
-        .iter()
-        .find(|spec| spec.id == "clear-note")
-        .expect("offered on its item");
-    assert_eq!(
-        on_item.contract.result, on_root.contract.result,
-        "the item's copy declares the same answer"
-    );
-}
-
 /// What to look at.
 #[derive(
     Clone,
@@ -891,75 +1392,6 @@ pub enum BoardView {
     },
 }
 
-#[test]
-fn a_flattened_struct_is_the_effects_arguments() {
-    use tilo_resource::Effect as _;
-    let decl = BoardView::declarations().into_iter().next().unwrap();
-    let params: Vec<(String, bool, tilo_actions::ParamType)> = decl
-        .params
-        .iter()
-        .map(|param| (param.name.to_string(), param.required, param.ty))
-        .collect();
-    assert_eq!(
-        params,
-        [
-            ("region".to_owned(), true, tilo_actions::ParamType::Array),
-            ("grid".to_owned(), false, tilo_actions::ParamType::Boolean),
-        ]
-    );
-    let look = BoardView::Look {
-        look: LookAt {
-            region: vec![0, 0, 10, 10],
-            grid: Some(true),
-        },
-    };
-    let arguments = look.arguments();
-    assert_eq!(arguments["region"], serde_json::json!([0, 0, 10, 10]));
-    assert_eq!(BoardView::decode("look", &arguments).unwrap(), look);
-}
-
-/// A flattened struct's field that does not decode is named as the caller
-/// typed it, not by the struct that carries it: a refusal says which
-/// argument to fix.
-#[test]
-fn a_flattened_argument_names_the_field_that_does_not_decode() {
-    use tilo_resource::Effect as _;
-    for (arguments, field) in [
-        (serde_json::json!({ "region": "everywhere" }), "region"),
-        (
-            serde_json::json!({ "region": [0, 0, 10, 10], "grid": "yes" }),
-            "grid",
-        ),
-    ] {
-        let error = BoardView::decode("look", arguments.as_object().unwrap()).unwrap_err();
-        assert!(
-            matches!(
-                &error,
-                tilo_resource::EffectDecodeError::Argument { name, .. } if name == field
-            ),
-            "`{field}` is named: {error}"
-        );
-    }
-}
-
-#[test]
-fn an_optional_parameter_bound_to_nothing_is_left_out() {
-    let decl = Board::RETITLE
-        .bind(board::Retitle::paths().title, "Sprint".to_owned())
-        .and(board::Retitle::paths().suffix, None)
-        .declaration(
-            "retitle-sprint",
-            tilo_resource::word!("test-board-retitle-sprint", catalogue = "tests/locales"),
-        )
-        .unwrap();
-    let action = decl
-        .build_action(&tilo_actions::ActionArgs::default(), 0)
-        .expect("it builds");
-    let mut board = Replica::<Board>::new();
-    board.apply_action(&action).unwrap();
-    assert_eq!(board.state().unwrap().title, "Sprint");
-}
-
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = Pair::matched)]
 pub struct Pair {
@@ -984,78 +1416,6 @@ impl Pair {
     pub fn move_left(&mut self, to: u32) {
         self.left = to;
     }
-}
-
-#[test]
-fn a_group_is_checked_once_at_its_end() {
-    let mut pair = Replica::<Pair>::new();
-    let paths = Pair::paths();
-    assert!(
-        pair.apply(paths.left.set(1)).is_err(),
-        "alone it breaks the pair"
-    );
-    pair.apply(Invoke::group([
-        paths.left.set(1).into(),
-        paths.right.set(1).into(),
-    ]))
-    .expect("together they keep it");
-    pair.apply(Invoke::group([
-        Pair::MOVE_LEFT.with(2),
-        paths.right.set(2).into(),
-    ]))
-    .expect("a verb and an edit together keep it too");
-    assert!(
-        pair.apply(Invoke::group([
-            paths.left.set(3).into(),
-            paths.right.set(4).into()
-        ]))
-        .is_err(),
-        "a group that ends broken is refused"
-    );
-    let state = pair.state().unwrap();
-    assert_eq!((state.left, state.right), (2, 2));
-}
-
-/// A control whose gesture is sometimes several actions is bound to a
-/// group; when it is one, it records that action alone, so an edit in it
-/// continues the undo step of the edit before as the edit itself would.
-#[test]
-fn a_group_of_one_is_that_action() {
-    let mut pair = Replica::<Pair>::new();
-    let paths = Pair::paths();
-    let alone = pair
-        .apply(Pair::MOVE_LEFT.with(0))
-        .expect("a verb")
-        .action
-        .clone();
-    let grouped = pair
-        .apply(Invoke::group([Pair::MOVE_LEFT.with(0)]))
-        .expect("a group of one verb")
-        .action
-        .clone();
-    assert_eq!(grouped.type_id, alone.type_id);
-    let pair_of = pair
-        .apply(Invoke::group([
-            paths.left.set(0).into(),
-            paths.right.set(0).into(),
-        ]))
-        .expect("a group of two")
-        .action
-        .clone();
-    assert_ne!(pair_of.type_id, alone.type_id, "two actions stay a group");
-}
-
-#[test]
-fn a_place_offers_a_verb_with_nothing_bound() {
-    let place = Derived::<Board>::new("Board").with(Board::RETITLE.unbound());
-    let published = place.publish();
-    let spec = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == "retitle")
-        .expect("offered on the place");
-    let params: Vec<String> = spec.params().iter().map(|p| p.name.to_string()).collect();
-    assert_eq!(params, ["title", "suffix"]);
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -1090,180 +1450,6 @@ impl Deck {
         element.x += by;
         Ok(())
     }
-}
-
-#[test]
-fn items_of_a_nested_collection_are_resources_of_their_own() {
-    let mut deck = Replica::<Deck>::new();
-    let mut slide = Slide {
-        title: "Intro".into(),
-        ..Slide::default()
-    };
-    slide.elements.push(
-        Id::from_raw("e1"),
-        Element {
-            name: "Logo".into(),
-            x: 1.0,
-        },
-    );
-    deck.apply(
-        Deck::paths()
-            .slides
-            .insert_as(&Id::from_raw("s1"), 0, &slide),
-    )
-    .unwrap();
-    let published = deck.published().unwrap();
-    let element = published
-        .children
-        .iter()
-        .find(|child| child.id.as_str() == "test.deck/slides/s1/elements/e1")
-        .expect("the element is a resource of its own");
-    assert_eq!(element.label, "Logo");
-    let edit = element
-        .actions
-        .iter()
-        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
-        .expect("its fields are edited from it");
-    let encoded = edit
-        .build_json(
-            serde_json::json!({ "edit": { "path": [{"field": "x"}], "op": "set", "value": 4.5 } })
-                .as_object()
-                .unwrap(),
-        )
-        .unwrap();
-    let action: <Deck as tilo_resource::Resource>::Action =
-        serde_json::from_slice(&encoded.payload).unwrap();
-    deck.apply_action(&action).unwrap();
-
-    // The verbs on elements are offered on each, both ids bound.
-    let published = deck.published().unwrap();
-    let element = published
-        .children
-        .iter()
-        .find(|child| child.id.as_str() == "test.deck/slides/s1/elements/e1")
-        .unwrap();
-    let nudge = element
-        .actions
-        .iter()
-        .find(|spec| spec.id == "nudge")
-        .expect("the element's verb");
-    let params: Vec<String> = nudge.params().iter().map(|p| p.name.to_string()).collect();
-    assert_eq!(params, ["by"]);
-    let encoded = nudge
-        .build_json(serde_json::json!({ "by": 0.5 }).as_object().unwrap())
-        .unwrap();
-    let action: <Deck as tilo_resource::Resource>::Action =
-        serde_json::from_slice(&encoded.payload).unwrap();
-    deck.apply_action(&action).unwrap();
-    let state = deck.state().unwrap();
-    let x = state
-        .slides
-        .get(&Id::from_raw("s1"))
-        .unwrap()
-        .elements
-        .get(&Id::from_raw("e1"))
-        .unwrap()
-        .x;
-    assert_eq!(x, 5.0);
-}
-
-#[test]
-fn a_verb_reads_who_its_invoker_acted_for() {
-    let mut board = Replica::<Board>::new().as_agent_for("claude", "ada");
-    board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
-    assert_eq!(board.state().unwrap().author, "Agent for ada");
-}
-
-#[test]
-fn a_search_entry_lies_in_a_scope_it_names() {
-    let entry = tilo_resource::SearchEntry::new("Rust 2.0", "news")
-        .anchored("feeds.library/articles/a1")
-        .inside("feeds.library/feeds/f1");
-    assert_eq!(entry.within.as_deref(), Some("feeds.library/feeds/f1"));
-}
-
-#[test]
-fn a_verb_prepares_its_arguments_once_where_it_is_invoked() {
-    let mut origin = Replica::<Board>::new();
-    let mut peer = origin.fork();
-    origin.apply(Board::SHOUT.with("sprint")).unwrap();
-    assert_eq!(origin.state().unwrap().title, "SPRINT");
-    for envelope in origin.log().to_vec() {
-        peer.replay(&envelope).unwrap();
-    }
-    assert_eq!(
-        peer.state().unwrap().title,
-        "SPRINT",
-        "the action carries what was prepared"
-    );
-
-    // A flattened struct's absent options are left out.
-    origin
-        .apply(Board::RESTYLE.with(BoardStyle {
-            title: "Plain".into(),
-            cards: None,
-        }))
-        .unwrap();
-    assert_eq!(origin.state().unwrap().title, "Plain");
-}
-
-/// A field edit sets a value of the field's type: `null` only where the
-/// field is optional, never for a number, a flag or a text.
-#[test]
-fn a_field_edit_refuses_null_for_a_field_that_is_not_optional() {
-    use tilo_resource::{Edit, EditOp, Segment};
-    let mut board = Replica::<Board>::new();
-    for field in ["cards", "title", "layer"] {
-        let edit = Edit::<Board>::new(
-            vec![Segment::Field(field.into())],
-            EditOp::Set {
-                value: serde_json::Value::Null,
-            },
-        );
-        assert!(board.apply(edit).is_err(), "`{field}` refuses null");
-    }
-    board
-        .apply(Edit::<Board>::new(
-            vec![Segment::Field("cards".into())],
-            EditOp::Set {
-                value: serde_json::json!(3),
-            },
-        ))
-        .unwrap();
-    assert_eq!(board.state().unwrap().cards, 3);
-}
-
-#[test]
-fn a_nested_item_verb_is_known_offered_without_building_children() {
-    use tilo_resource::Resource as _;
-    let built = |deck: &Deck| -> Vec<&'static str> {
-        let children = Deck::children(deck);
-        let mut ids = Vec::new();
-        for decl in Deck::declarations() {
-            if tilo_resource::items::offered_bound(&children, &decl) {
-                ids.push(decl.id);
-            }
-        }
-        ids
-    };
-    let mut deck = Deck::default();
-    assert_eq!(Deck::children_offer_bound(&deck), built(&deck), "no slides");
-    deck.slides.push(Id::from_raw("s1"), Slide::default());
-    assert_eq!(
-        Deck::children_offer_bound(&deck),
-        built(&deck),
-        "a slide, no elements"
-    );
-    assert!(Deck::children_offer_bound(&deck).is_empty());
-    if let Some(slide) = deck.slides.get_mut(&Id::from_raw("s1")) {
-        slide.elements.push(Id::from_raw("e1"), Element::default());
-    }
-    assert_eq!(
-        Deck::children_offer_bound(&deck),
-        built(&deck),
-        "an element"
-    );
-    assert_eq!(Deck::children_offer_bound(&deck), ["nudge"]);
 }
 
 /// A record whose fields declare what they may hold.
@@ -1309,64 +1495,6 @@ fn comfort_schema(key: &str) -> serde_json::Value {
     };
     let field = fields.iter().find(|field| field.key == key).unwrap();
     (field.schema)()
-}
-
-/// What a field declares is published with it, so an agent knows the
-/// bounds, the choices and the default before it changes the field.
-#[test]
-fn a_field_publishes_what_it_declares() {
-    let scale = comfort_schema("text_scale");
-    assert_eq!(
-        (&scale["minimum"], &scale["maximum"], &scale["default"]),
-        (
-            &serde_json::json!(0.5),
-            &serde_json::json!(3.0),
-            &serde_json::json!(1.0)
-        )
-    );
-    let schedule = comfort_schema("schedule");
-    assert_eq!(schedule["enum"], serde_json::json!(["sun", "custom"]));
-    assert_eq!(schedule["default"], serde_json::json!("sun"));
-    let cursor = comfort_schema("cursor").to_string();
-    assert!(
-        cursor.contains("\"minimum\":24") && cursor.contains("\"maximum\":64"),
-        "{cursor}"
-    );
-    assert_eq!(comfort_schema("note")["default"], serde_json::json!(""));
-}
-
-/// A change outside what a field declares is refused, through a field edit
-/// and through a verb alike; within it, it applies.
-#[test]
-fn a_field_holds_only_what_it_declares() {
-    let paths = Comfort::paths();
-    let mut comfort = Replica::<Comfort>::new();
-    comfort.apply(paths.text_scale.set(2.0)).unwrap();
-    let refused = format!(
-        "{:?}",
-        comfort.apply(paths.text_scale.set(9.0)).unwrap_err()
-    );
-    assert!(refused.contains("between 0.5 and 3"), "{refused}");
-    assert!(comfort.apply(Comfort::SCALE_TEXT.with(0.1)).is_err());
-    assert!(
-        comfort
-            .apply(paths.schedule.set("dusk".to_owned()))
-            .is_err()
-    );
-    comfort
-        .apply(paths.schedule.set("custom".to_owned()))
-        .unwrap();
-    comfort.apply(paths.cursor.set(Some(32))).unwrap();
-    assert!(comfort.apply(paths.cursor.set(Some(8))).is_err());
-    comfort.apply(paths.cursor.set(None)).unwrap();
-    comfort
-        .apply(paths.note.set("anything".to_owned()))
-        .unwrap();
-    let state = comfort.state().unwrap();
-    assert_eq!(
-        (state.text_scale, state.schedule.as_str(), state.cursor),
-        (2.0, "custom", None)
-    );
 }
 
 /// A swatch: a colour, the outline it fills and the glyph it shows, each
@@ -1425,89 +1553,6 @@ fn merged_swatch(first: Invoke<Swatch>, ours: Invoke<Swatch>, theirs: Invoke<Swa
     merged
 }
 
-#[test]
-fn an_optional_atom_and_a_list_atom_are_one_of_the_values_set() {
-    let paths = Swatch::paths();
-    let merged = merged_swatch(
-        paths.colour.set(Some("#000000".into())).into(),
-        paths.colour.set(Some("#ff0000".into())).into(),
-        paths.colour.set(Some("#00ff00".into())).into(),
-    );
-    assert!(
-        [Some("#ff0000"), Some("#00ff00")].contains(&merged.colour.as_deref()),
-        "one colour, not a mix: {:?}",
-        merged.colour
-    );
-    let merged = merged_swatch(
-        paths.outline.set(vec![[0.0, 0.0]]).into(),
-        paths.outline.set(vec![[1.0, 1.0], [2.0, 2.0]]).into(),
-        paths.outline.set(vec![[3.0, 3.0]]).into(),
-    );
-    assert!(
-        merged.outline == [[1.0, 1.0], [2.0, 2.0]] || merged.outline == [[3.0, 3.0]],
-        "one outline, not a mix: {:?}",
-        merged.outline
-    );
-    let mut replica = Replica::<Swatch>::new();
-    replica
-        .apply(paths.colour.set(Some("#123456".into())))
-        .unwrap();
-    replica.apply(Swatch::CLEAR.with(())).unwrap();
-    assert_eq!(replica.state().unwrap().colour, None, "`None` is absent");
-}
-
-#[test]
-fn a_variants_atoms_are_one_of_the_values_set_and_its_other_fields_merge() {
-    let glyph = Swatch::paths().glyph;
-    let merged = merged_swatch(
-        glyph
-            .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 1.0)))
-            .into(),
-        glyph
-            .set(Some(path("M1 1L2 2", "#ff0000", &[[1.0, 1.0]], 1.0)))
-            .into(),
-        glyph
-            .set(Some(path(
-                "M3 3",
-                "#00ff00",
-                &[[3.0, 3.0], [4.0, 4.0]],
-                1.0,
-            )))
-            .into(),
-    );
-    let Some(Glyph::Path {
-        d, colour, points, ..
-    }) = merged.glyph
-    else {
-        panic!("still a path: {:?}", merged.glyph);
-    };
-    assert!(["M1 1L2 2", "M3 3"].contains(&d.as_str()), "one path: {d}");
-    assert!(
-        [Some("#ff0000"), Some("#00ff00")].contains(&colour.as_deref()),
-        "one colour: {colour:?}"
-    );
-    assert!(
-        points == [[1.0, 1.0]] || points == [[3.0, 3.0], [4.0, 4.0]],
-        "one list of points: {points:?}"
-    );
-    let merged = merged_swatch(
-        glyph
-            .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 1.0)))
-            .into(),
-        glyph
-            .set(Some(path("M0 0", "#ff0000", &[[0.0, 0.0]], 1.0)))
-            .into(),
-        glyph
-            .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 2.0)))
-            .into(),
-    );
-    assert_eq!(
-        merged.glyph,
-        Some(path("M0 0", "#ff0000", &[[0.0, 0.0]], 2.0)),
-        "a colour and a width changed apart both survive"
-    );
-}
-
 /// A frame and how it looks: the look stored field by field.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Frame {
@@ -1532,33 +1577,4 @@ impl Frame {
     pub fn untitle(&mut self) {
         self.title.clear();
     }
-}
-
-#[test]
-fn a_records_fields_only_ever_set_are_named_on_its_line() {
-    let published = Replica::<Frame>::new().published().unwrap();
-    let spec = field_edit(&published);
-    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
-    let (look, _) = described(&schema, "look");
-    assert!(
-        look.ends_with("; set one field of it: `colour`, `width`"),
-        "{look}"
-    );
-    let (caption, _) = described(&schema, "look.caption");
-    assert!(
-        caption.contains("set, splice {at, delete, insert}, replace {text}"),
-        "{caption}"
-    );
-    let listing = schema["description"].as_str().unwrap();
-    assert!(!listing.contains("- `look.colour`"), "{listing}");
-    let edit = serde_json::json!({
-        "path": [{ "field": "look" }, { "field": "width" }],
-        "op": "set",
-        "value": 2.0,
-    });
-    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the schema");
-    let edit: tilo_resource::Edit<Frame> = serde_json::from_value(edit).unwrap();
-    let mut frame = Replica::<Frame>::new();
-    frame.apply(edit).unwrap();
-    assert_eq!(frame.state().unwrap().look.width, 2.0);
 }

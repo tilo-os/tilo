@@ -1252,170 +1252,300 @@ mod tests {
         },
     }
 
-    #[test]
-    fn an_offload_option_declares_a_valid_offloadable_contract() {
-        let specs = Transforms::specs();
-        let shrink = &specs[0];
-        assert_eq!(
-            shrink.contract.offload,
-            Some(tilo_actions::Offload {
-                app: "so.tilo.shrink".into(),
-                entrypoint: "shrink".into(),
-                gpu: false,
-                cpu_time_ms: 60_000,
-                memory_bytes: 512 * 1024 * 1024,
-                output_bytes: 8 * 1024 * 1024,
-            })
-        );
-        assert_eq!(shrink.contract.kind, ActionKind::Read);
-        assert!(
-            shrink.contract.validate_declaration().is_empty(),
-            "{:?}",
-            shrink.contract.validate_declaration()
-        );
-        assert_eq!(specs[1].contract.offload, None, "only where declared");
-        assert!(shrink.params()[0].is_content_list());
-        assert!(specs[1].params()[0].is_content());
-    }
+    tilo_test_env::scenario! {
+        fn an_effect_declares_publishes_and_binds_what_its_type_says;
 
-    #[test]
-    fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
-        let specs = Sample::specs();
-        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [
-                "reload",
-                "rename-thing",
-                "wipe",
-                "copy-key",
-                "paint",
-                "widen"
-            ]
-        );
-
-        let rename = &specs[1];
-        assert_eq!(rename.label, "Rename a thing");
-        assert_eq!(
-            rename.description.as_deref(),
-            Some("Rename a thing. It keeps its id.")
-        );
-        assert_eq!(rename.kind, OperationKind::Effect);
-        assert_eq!(rename.contract.kind, ActionKind::Read);
-        assert!(matches!(rename.contract.result, ResultSpec::Json { .. }));
-        assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
-
-        let paint = &specs[4];
-        assert_eq!(paint.params()[0].description, "The colour");
-        let choices = |index: usize| -> Vec<&str> {
-            paint.params()[index]
-                .choices
-                .iter()
-                .map(std::convert::AsRef::as_ref)
-                .collect()
-        };
-        assert_eq!(choices(0), ["red", "green"]);
-        assert_eq!(choices(1), ["light", "dark"]);
-        assert!(!paint.params()[1].required);
-
-        let wipe = &specs[2];
-        assert_eq!(wipe.label, "Wipe");
-        assert_eq!(wipe.contract.risk, RiskLevel::Destructive);
-        assert_eq!(wipe.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(
-            wipe.contract.execution,
-            ExecutionMode::Background { cancellable: true }
-        );
-
-        // A caller's arguments, encoded by the published spec, decode to the
-        // value the handler receives.
-        let value = Sample::RenameThing {
-            thing: "a".into(),
-            label: None,
-        };
-        let encoded = rename.build_json(&value.arguments()).unwrap();
-        assert_eq!(encoded.type_id, "test.effects");
-        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), value);
-        assert_eq!(
-            Sample::from_payload(
-                &specs[0]
-                    .build_json(&serde_json::Map::new())
-                    .unwrap()
-                    .payload
-            )
-            .unwrap(),
-            Sample::Reload
-        );
-        assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
-
-        let bound = Sample::Wipe { passes: 3 }.bound();
-        assert_eq!(bound.id, "wipe");
-        assert_eq!(bound.label, "Wipe");
-        assert!(bound.params().is_empty());
-        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
-        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
-        assert_eq!(
-            Sample::from_payload(&encoded.payload).unwrap(),
-            Sample::Wipe { passes: 3 }
-        );
-        assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
-
-        let asking = Sample::RenameThing {
-            thing: "a".into(),
-            label: None,
-        }
-        .bound_asking(&["label"]);
-        assert_eq!(asking.id, "rename-thing");
-        let asked: Vec<&str> = asking.params().iter().map(|param| &*param.name).collect();
-        assert_eq!(asked, ["label"]);
-        let mut label = serde_json::Map::new();
-        label.insert("label".into(), "b".into());
-        let encoded = asking.build_json(&label).unwrap();
-        assert_eq!(
-            Sample::from_payload(&encoded.payload).unwrap(),
-            Sample::RenameThing {
-                thing: "a".into(),
-                label: Some("b".into()),
-            }
-        );
-    }
-
-    /// An identity travels as decimal text, and one that names no id is
-    /// refused when the invocation is encoded: the door answers a caller that
-    /// names something the effect cannot act on, rather than a host failing
-    /// to read it.
-    #[test]
-    fn an_identity_argument_is_decimal_text_and_is_refused_otherwise() {
-        let widen = Sample::spec("widen").unwrap();
-        let encoded = |arguments: serde_json::Value| -> Result<String, String> {
-            let arguments: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_value(arguments).expect("a test's call is an object");
-            widen
-                .build_json(&arguments)
-                .map(|built| built.type_id)
-                .map_err(|error| error.to_string())
-        };
-        assert_eq!(
-            encoded(serde_json::json!({"column": "9007199254740993", "width": 80})),
-            Ok("test.effects".to_owned()),
-            "a salted id outgrows a JSON number, and travels as text"
-        );
-        for refused in [
-            serde_json::json!({"column": "left", "width": 80}),
-            serde_json::json!({"column": "07", "width": 80}),
-            serde_json::json!({"column": "1", "table": "wide", "width": 80}),
-        ] {
+        phase an_offload_option_declares_a_valid_offloadable_contract;
+        {
+            let specs = Transforms::specs();
+            let shrink = &specs[0];
             assert_eq!(
-                encoded(refused.clone()),
-                Ok(tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned()),
-                "{refused}"
+                shrink.contract.offload,
+                Some(tilo_actions::Offload {
+                    app: "so.tilo.shrink".into(),
+                    entrypoint: "shrink".into(),
+                    gpu: false,
+                    cpu_time_ms: 60_000,
+                    memory_bytes: 512 * 1024 * 1024,
+                    output_bytes: 8 * 1024 * 1024,
+                })
+            );
+            assert_eq!(shrink.contract.kind, ActionKind::Read);
+            assert!(
+                shrink.contract.validate_declaration().is_empty(),
+                "{:?}",
+                shrink.contract.validate_declaration()
+            );
+            assert_eq!(specs[1].contract.offload, None, "only where declared");
+            assert!(shrink.params()[0].is_content_list());
+            assert!(specs[1].params()[0].is_content());
+        }
+
+        phase a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec;
+        {
+            let specs = Sample::specs();
+            let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                [
+                    "reload",
+                    "rename-thing",
+                    "wipe",
+                    "copy-key",
+                    "paint",
+                    "widen"
+                ]
+            );
+
+            let rename = &specs[1];
+            assert_eq!(rename.label, "Rename a thing");
+            assert_eq!(
+                rename.description.as_deref(),
+                Some("Rename a thing. It keeps its id.")
+            );
+            assert_eq!(rename.kind, OperationKind::Effect);
+            assert_eq!(rename.contract.kind, ActionKind::Read);
+            assert!(matches!(rename.contract.result, ResultSpec::Json { .. }));
+            assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
+
+            let paint = &specs[4];
+            assert_eq!(paint.params()[0].description, "The colour");
+            let choices = |index: usize| -> Vec<&str> {
+                paint.params()[index]
+                    .choices
+                    .iter()
+                    .map(std::convert::AsRef::as_ref)
+                    .collect()
+            };
+            assert_eq!(choices(0), ["red", "green"]);
+            assert_eq!(choices(1), ["light", "dark"]);
+            assert!(!paint.params()[1].required);
+
+            let wipe = &specs[2];
+            assert_eq!(wipe.label, "Wipe");
+            assert_eq!(wipe.contract.risk, RiskLevel::Destructive);
+            assert_eq!(wipe.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert_eq!(
+                wipe.contract.execution,
+                ExecutionMode::Background { cancellable: true }
+            );
+
+            // A caller's arguments, encoded by the published spec, decode to the
+            // value the handler receives.
+            let value = Sample::RenameThing {
+                thing: "a".into(),
+                label: None,
+            };
+            let encoded = rename.build_json(&value.arguments()).unwrap();
+            assert_eq!(encoded.type_id, "test.effects");
+            assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), value);
+            assert_eq!(
+                Sample::from_payload(
+                    &specs[0]
+                        .build_json(&serde_json::Map::new())
+                        .unwrap()
+                        .payload
+                )
+                .unwrap(),
+                Sample::Reload
+            );
+            assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
+
+            let bound = Sample::Wipe { passes: 3 }.bound();
+            assert_eq!(bound.id, "wipe");
+            assert_eq!(bound.label, "Wipe");
+            assert!(bound.params().is_empty());
+            assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+            let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+            assert_eq!(
+                Sample::from_payload(&encoded.payload).unwrap(),
+                Sample::Wipe { passes: 3 }
+            );
+            assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+
+            let asking = Sample::RenameThing {
+                thing: "a".into(),
+                label: None,
+            }
+            .bound_asking(&["label"]);
+            assert_eq!(asking.id, "rename-thing");
+            let asked: Vec<&str> = asking.params().iter().map(|param| &*param.name).collect();
+            assert_eq!(asked, ["label"]);
+            let mut label = serde_json::Map::new();
+            label.insert("label".into(), "b".into());
+            let encoded = asking.build_json(&label).unwrap();
+            assert_eq!(
+                Sample::from_payload(&encoded.payload).unwrap(),
+                Sample::RenameThing {
+                    thing: "a".into(),
+                    label: Some("b".into()),
+                }
             );
         }
-        let not_text = encoded(serde_json::json!({"column": 7, "width": 80}));
-        assert!(
-            not_text.is_err(),
-            "an id is text, never a number: {not_text:?}"
-        );
+
+        phase an_identity_argument_is_decimal_text_and_is_refused_otherwise;
+        // An identity travels as decimal text, and one that names no id is
+        // refused when the invocation is encoded: the door answers a caller that
+        // names something the effect cannot act on, rather than a host failing
+        // to read it.
+        {
+            let widen = Sample::spec("widen").unwrap();
+            let encoded = |arguments: serde_json::Value| -> Result<String, String> {
+                let arguments: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_value(arguments).expect("a test's call is an object");
+                widen
+                    .build_json(&arguments)
+                    .map(|built| built.type_id)
+                    .map_err(|error| error.to_string())
+            };
+            assert_eq!(
+                encoded(serde_json::json!({"column": "9007199254740993", "width": 80})),
+                Ok("test.effects".to_owned()),
+                "a salted id outgrows a JSON number, and travels as text"
+            );
+            for refused in [
+                serde_json::json!({"column": "left", "width": 80}),
+                serde_json::json!({"column": "07", "width": 80}),
+                serde_json::json!({"column": "1", "table": "wide", "width": 80}),
+            ] {
+                assert_eq!(
+                    encoded(refused.clone()),
+                    Ok(tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned()),
+                    "{refused}"
+                );
+            }
+            let not_text = encoded(serde_json::json!({"column": 7, "width": 80}));
+            assert!(
+                not_text.is_err(),
+                "an id is text, never a number: {not_text:?}"
+            );
+        }
+
+        phase views_publish_as_views_and_row_effects_only_bound_to_their_item;
+        {
+            let specs = Rows::specs();
+            let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["search"],
+                "a row effect is not offered on the resource"
+            );
+            let search = &specs[0];
+            assert_eq!(search.kind, OperationKind::View);
+            assert_eq!(search.contract.kind, ActionKind::Read);
+            assert_eq!(search.contract.risk, RiskLevel::None);
+            assert_eq!(search.contract.retry, RetryPolicy::Idempotent);
+
+            let open = Rows::Open { item: "a".into() };
+            let bound = open.bound();
+            assert_eq!(
+                (bound.id.as_str(), bound.kind),
+                ("open", OperationKind::View)
+            );
+            assert!(bound.params().is_empty());
+            let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+            assert_eq!(encoded.type_id, "test.rows");
+            assert_eq!(Rows::from_payload(&encoded.payload).unwrap(), open);
+
+            let connect = Rows::Connect { item: "b".into() }.bound();
+            assert_eq!(connect.kind, OperationKind::Effect);
+            assert_eq!(connect.contract.kind, ActionKind::Outside);
+            assert_eq!(connect.contract.retry, RetryPolicy::Idempotent);
+            assert_eq!(
+                connect.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            );
+            assert_eq!(
+                Sample::specs()[0].contract.retry,
+                RetryPolicy::AtMostOnce,
+                "an effect is not repeated unless it says it may be"
+            );
+        }
+
+        phase a_privileged_effect_asks_first_and_binds_to_the_entity_it_names;
+        {
+            let copy = Sample::CopyKey { thing: "a".into() };
+            let bound = copy.bound();
+            assert_eq!(bound.id, "copy-key");
+            assert_eq!(bound.label, "Copy a thing's key");
+            assert_eq!(bound.kind, OperationKind::Effect);
+            assert!(bound.params().is_empty(), "the row names the thing already");
+            assert_eq!(bound.contract.risk, RiskLevel::Privileged);
+            assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert_eq!(bound.contract.kind, ActionKind::Read);
+            let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+            assert_eq!(encoded.type_id, "test.effects");
+            assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
+        }
+
+        phase a_sensitive_effect_asks_first;
+        {
+            let spec = Exports::ExportBook.bound();
+            assert_eq!(spec.contract.risk, RiskLevel::Sensitive);
+            assert_eq!(spec.contract.confirmation, ConfirmationPolicy::Confirm);
+        }
+
+        phase a_secret_parameter_is_published_as_a_secret;
+        {
+            let specs = Pairing::specs();
+            let params = specs[0].params();
+            assert_eq!(params[0].ty, tilo_actions::ParamType::Secret);
+            assert_eq!(&*params[0].description, "The invite the other device shows");
+            assert_eq!(params[1].ty, tilo_actions::ParamType::Secret);
+            assert!(!params[1].required);
+            let value = Pairing::Pair {
+                invite: "grayjay://invite".into(),
+                pin: None,
+            };
+            let encoded = specs[0].build_json(&value.arguments()).unwrap();
+            assert_eq!(Pairing::from_payload(&encoded.payload).unwrap(), value);
+        }
+
+        phase a_path_parameter_refuses_a_relative_path;
+        {
+            let specs = Files::specs();
+            let params = specs[0].params();
+            assert_eq!(params[0].ty, tilo_actions::ParamType::Text);
+            assert!(params[0].required);
+            assert_eq!(params[1].ty, tilo_actions::ParamType::Text);
+            assert!(!params[1].required);
+            let arguments = |path: &str, folder: Option<&str>| {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("path".into(), path.into());
+                if let Some(folder) = folder {
+                    arguments.insert("folder".into(), folder.into());
+                }
+                arguments
+            };
+            let error = Files::decode("save-copy", &arguments("copy.txt", None)).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    EffectDecodeError::Argument { name, source }
+                        if name == "path" && source.to_string().contains("absolute")
+                ),
+                "{error}"
+            );
+            assert!(Files::decode("save-copy", &arguments("/a/copy.txt", Some("b"))).is_err());
+            let value = Files::decode("save-copy", &arguments("/a/copy.txt", Some("/b"))).unwrap();
+            let encoded = specs[0].build_json(&value.arguments()).unwrap();
+            assert_eq!(Files::from_payload(&encoded.payload).unwrap(), value);
+        }
+
+        phase variant_refs_bind_controls_by_id;
+        {
+            assert_eq!(Sample::RENAME_THING.id, "rename-thing");
+            assert_eq!(
+                Sample::RENAME_THING
+                    .arguments(&("b".to_owned(), Some("B".to_owned())))
+                    .unwrap(),
+                Sample::RenameThing {
+                    thing: "b".into(),
+                    label: Some("B".into())
+                }
+                .arguments()
+            );
+        }
     }
 
     /// A vocabulary with presentation-only effects and effects offered only
@@ -1434,63 +1564,6 @@ mod tests {
         Search,
     }
 
-    #[test]
-    fn views_publish_as_views_and_row_effects_only_bound_to_their_item() {
-        let specs = Rows::specs();
-        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["search"],
-            "a row effect is not offered on the resource"
-        );
-        let search = &specs[0];
-        assert_eq!(search.kind, OperationKind::View);
-        assert_eq!(search.contract.kind, ActionKind::Read);
-        assert_eq!(search.contract.risk, RiskLevel::None);
-        assert_eq!(search.contract.retry, RetryPolicy::Idempotent);
-
-        let open = Rows::Open { item: "a".into() };
-        let bound = open.bound();
-        assert_eq!(
-            (bound.id.as_str(), bound.kind),
-            ("open", OperationKind::View)
-        );
-        assert!(bound.params().is_empty());
-        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
-        assert_eq!(encoded.type_id, "test.rows");
-        assert_eq!(Rows::from_payload(&encoded.payload).unwrap(), open);
-
-        let connect = Rows::Connect { item: "b".into() }.bound();
-        assert_eq!(connect.kind, OperationKind::Effect);
-        assert_eq!(connect.contract.kind, ActionKind::Outside);
-        assert_eq!(connect.contract.retry, RetryPolicy::Idempotent);
-        assert_eq!(
-            connect.contract.execution,
-            ExecutionMode::Background { cancellable: false }
-        );
-        assert_eq!(
-            Sample::specs()[0].contract.retry,
-            RetryPolicy::AtMostOnce,
-            "an effect is not repeated unless it says it may be"
-        );
-    }
-
-    #[test]
-    fn a_privileged_effect_asks_first_and_binds_to_the_entity_it_names() {
-        let copy = Sample::CopyKey { thing: "a".into() };
-        let bound = copy.bound();
-        assert_eq!(bound.id, "copy-key");
-        assert_eq!(bound.label, "Copy a thing's key");
-        assert_eq!(bound.kind, OperationKind::Effect);
-        assert!(bound.params().is_empty(), "the row names the thing already");
-        assert_eq!(bound.contract.risk, RiskLevel::Privileged);
-        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(bound.contract.kind, ActionKind::Read);
-        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
-        assert_eq!(encoded.type_id, "test.effects");
-        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
-    }
-
     /// A copy of private data leaving the app asks first, without being a
     /// credential or a deletion.
     #[derive(Clone, Debug, PartialEq, Effect)]
@@ -1499,13 +1572,6 @@ mod tests {
         /// Export the address book.
         #[effect(job, sensitive)]
         ExportBook,
-    }
-
-    #[test]
-    fn a_sensitive_effect_asks_first() {
-        let spec = Exports::ExportBook.bound();
-        assert_eq!(spec.contract.risk, RiskLevel::Sensitive);
-        assert_eq!(spec.contract.confirmation, ConfirmationPolicy::Confirm);
     }
 
     /// A secret argument is published as one, and still reaches the handler.
@@ -1521,22 +1587,6 @@ mod tests {
         },
     }
 
-    #[test]
-    fn a_secret_parameter_is_published_as_a_secret() {
-        let specs = Pairing::specs();
-        let params = specs[0].params();
-        assert_eq!(params[0].ty, tilo_actions::ParamType::Secret);
-        assert_eq!(&*params[0].description, "The invite the other device shows");
-        assert_eq!(params[1].ty, tilo_actions::ParamType::Secret);
-        assert!(!params[1].required);
-        let value = Pairing::Pair {
-            invite: "grayjay://invite".into(),
-            pin: None,
-        };
-        let encoded = specs[0].build_json(&value.arguments()).unwrap();
-        assert_eq!(Pairing::from_payload(&encoded.payload).unwrap(), value);
-    }
-
     #[derive(Clone, Debug, PartialEq, Effect)]
     #[effect(operation = "test.files", catalogue = "tests/locales")]
     enum Files {
@@ -1546,52 +1596,6 @@ mod tests {
             path: crate::AbsolutePath,
             folder: Option<crate::AbsolutePath>,
         },
-    }
-
-    #[test]
-    fn a_path_parameter_refuses_a_relative_path() {
-        let specs = Files::specs();
-        let params = specs[0].params();
-        assert_eq!(params[0].ty, tilo_actions::ParamType::Text);
-        assert!(params[0].required);
-        assert_eq!(params[1].ty, tilo_actions::ParamType::Text);
-        assert!(!params[1].required);
-        let arguments = |path: &str, folder: Option<&str>| {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("path".into(), path.into());
-            if let Some(folder) = folder {
-                arguments.insert("folder".into(), folder.into());
-            }
-            arguments
-        };
-        let error = Files::decode("save-copy", &arguments("copy.txt", None)).unwrap_err();
-        assert!(
-            matches!(
-                &error,
-                EffectDecodeError::Argument { name, source }
-                    if name == "path" && source.to_string().contains("absolute")
-            ),
-            "{error}"
-        );
-        assert!(Files::decode("save-copy", &arguments("/a/copy.txt", Some("b"))).is_err());
-        let value = Files::decode("save-copy", &arguments("/a/copy.txt", Some("/b"))).unwrap();
-        let encoded = specs[0].build_json(&value.arguments()).unwrap();
-        assert_eq!(Files::from_payload(&encoded.payload).unwrap(), value);
-    }
-
-    #[test]
-    fn variant_refs_bind_controls_by_id() {
-        assert_eq!(Sample::RENAME_THING.id, "rename-thing");
-        assert_eq!(
-            Sample::RENAME_THING
-                .arguments(&("b".to_owned(), Some("B".to_owned())))
-                .unwrap(),
-            Sample::RenameThing {
-                thing: "b".into(),
-                label: Some("B".into())
-            }
-            .arguments()
-        );
     }
 
     /// A content transform whose inputs are the bytes themselves.

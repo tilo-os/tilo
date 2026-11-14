@@ -135,13 +135,14 @@ fn card_ids(replica: &Replica<Board>) -> Vec<Id> {
     replica.state().unwrap().cards.ids().cloned().collect()
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn declared_actions_are_typed_and_apply_through_the_one_door() {
-    // phase: methods_become_declared_typed_actions
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn declared_actions_are_typed_and_apply_through_the_one_door;
+
+    phase methods_become_declared_typed_actions;
     {
         let decls = Board::declarations();
         let ids: Vec<_> = decls.iter().map(|decl| decl.id).collect();
@@ -172,7 +173,8 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert!(published_ids.contains(&"add-card"));
         assert!(published_ids.contains(&tilo_resource::APPLY));
     }
-    // phase: actions_apply_through_the_same_door_as_every_surface
+
+    phase actions_apply_through_the_same_door_as_every_surface;
     {
         let mut board = Replica::<Board>::new();
         board.apply(Board::RENAME.with("Launch")).unwrap();
@@ -200,7 +202,8 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         );
         assert_eq!(board.heads(), heads);
     }
-    // phase: a_group_is_one_change_that_replays_exactly
+
+    phase a_group_is_one_change_that_replays_exactly;
     {
         let mut first = Replica::<Board>::new();
         let mut second = first.fork();
@@ -233,7 +236,8 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         );
         assert_eq!(first.state().unwrap(), state);
     }
-    // phase: actions_on_a_collection_item_are_offered_on_the_item
+
+    phase actions_on_a_collection_item_are_offered_on_the_item;
     {
         let mut board = Replica::<Board>::new();
         board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
@@ -304,86 +308,280 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
                 .reaches_people()
         );
     }
-}
 
-/// An item verb with its item bound takes the item again from a caller
-/// that passes it anyway, by its id or a longer form of its address, and
-/// refuses another item naming the one it acts on; what it publishes
-/// stays the remaining parameters.
-#[test]
-fn an_item_verb_hears_its_bound_item_passed_again_and_refuses_another() {
-    let mut board = Replica::<Board>::new();
-    board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
-    board.apply(Board::ADD_CARD.with("Ship")).unwrap();
-    let state = board.state().unwrap();
-    let published = tilo_resource::publish::<Board>("board", "Board", &state);
-    let ids = card_ids(&board);
-    let (first, second) = (ids[0].as_str(), ids[1].as_str());
-    let card = published.children.first().unwrap();
-    let move_card = card
-        .actions
-        .iter()
-        .find(|spec| spec.id == "move-card")
-        .unwrap();
-    let names: Vec<_> = move_card
-        .params()
-        .iter()
-        .map(|param| param.name.as_ref())
-        .collect();
-    assert_eq!(names, ["index"], "the published parameters stay unbound");
-    let arguments = |card: &str| {
-        serde_json::json!({"card": card, "index": 1})
-            .as_object()
-            .unwrap()
-            .clone()
-    };
-    let alone = move_card
-        .build_json(serde_json::json!({"index": 1}).as_object().unwrap())
-        .unwrap();
-    assert_ne!(
-        alone.type_id,
-        tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-    );
-    for same in [
-        first.to_owned(),
-        format!("cards/{first}"),
-        card.id.as_str().to_owned(),
-    ] {
-        assert_eq!(
-            move_card.build_json(&arguments(&same)).unwrap().type_id,
+    phase an_item_verb_hears_its_bound_item_passed_again_and_refuses_another;
+    // An item verb with its item bound takes the item again from a caller
+    // that passes it anyway, by its id or a longer form of its address, and
+    // refuses another item naming the one it acts on; what it publishes
+    // stays the remaining parameters.
+    {
+        let mut board = Replica::<Board>::new();
+        board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
+        board.apply(Board::ADD_CARD.with("Ship")).unwrap();
+        let state = board.state().unwrap();
+        let published = tilo_resource::publish::<Board>("board", "Board", &state);
+        let ids = card_ids(&board);
+        let (first, second) = (ids[0].as_str(), ids[1].as_str());
+        let card = published.children.first().unwrap();
+        let move_card = card
+            .actions
+            .iter()
+            .find(|spec| spec.id == "move-card")
+            .unwrap();
+        let names: Vec<_> = move_card
+            .params()
+            .iter()
+            .map(|param| param.name.as_ref())
+            .collect();
+        assert_eq!(names, ["index"], "the published parameters stay unbound");
+        let arguments = |card: &str| {
+            serde_json::json!({"card": card, "index": 1})
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        let alone = move_card
+            .build_json(serde_json::json!({"index": 1}).as_object().unwrap())
+            .unwrap();
+        assert_ne!(
             alone.type_id,
-            "{same}"
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
         );
-        move_card.validate_json(&arguments(&same)).unwrap();
+        for same in [
+            first.to_owned(),
+            format!("cards/{first}"),
+            card.id.as_str().to_owned(),
+        ] {
+            assert_eq!(
+                move_card.build_json(&arguments(&same)).unwrap().type_id,
+                alone.type_id,
+                "{same}"
+            );
+            move_card.validate_json(&arguments(&same)).unwrap();
+        }
+        let refused = move_card
+            .build_json(&arguments(second))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(&format!("`card` is `{first}` here"))
+                && refused.contains("acts on that item only"),
+            "{refused}"
+        );
+        let pairs = |card: &str| {
+            [
+                (
+                    "card".to_owned(),
+                    tilo_actions::ArgValue::Text(card.to_owned()),
+                ),
+                ("index".to_owned(), tilo_actions::ArgValue::Integer(1)),
+            ]
+        };
+        assert_eq!(
+            move_card.build_args(pairs(first)).unwrap().type_id,
+            alone.type_id
+        );
+        assert!(move_card.build_args(pairs(second)).is_err());
     }
-    let refused = move_card
-        .build_json(&arguments(second))
-        .unwrap_err()
-        .to_string();
-    assert!(
-        refused.contains(&format!("`card` is `{first}` here"))
-            && refused.contains("acts on that item only"),
-        "{refused}"
-    );
-    let pairs = |card: &str| {
-        [
-            (
-                "card".to_owned(),
-                tilo_actions::ArgValue::Text(card.to_owned()),
+
+    phase apply_and_group_name_the_declared_actions_instead_of_repeating_them;
+    {
+        use serde_json::json;
+
+        let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
+        let schema = |id: &str| {
+            published
+                .actions
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap()
+                .params()
+                .first()
+                .unwrap()
+                .schema
+                .clone()
+                .unwrap()
+        };
+        let declared = json!([
+            "rename",
+            "add-card",
+            "advance",
+            "move-card",
+            "delete-card",
+            "clear"
+        ]);
+        let apply = schema(tilo_resource::APPLY);
+        let operations = apply["properties"]["op"]["oneOf"].as_array().unwrap();
+        assert_eq!(operations.len(), 2, "{apply}");
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation["properties"]["action"]["enum"] == declared),
+            "{apply}"
+        );
+        assert!(
+            operations.iter().any(
+                |operation| operation["properties"]["action"]["const"] == tilo_resource::FIELD_EDIT
             ),
-            ("index".to_owned(), tilo_actions::ArgValue::Integer(1)),
-        ]
-    };
-    assert_eq!(
-        move_card.build_args(pairs(first)).unwrap().type_id,
-        alone.type_id
-    );
-    assert!(move_card.build_args(pairs(second)).is_err());
+            "{apply}"
+        );
+        let group = schema(tilo_resource::GROUP);
+        assert_eq!(
+            group["items"]["oneOf"][0]["properties"]["action"]["enum"],
+            declared
+        );
+        assert_eq!(
+            group["items"]["oneOf"][1]["properties"]["action"]["const"],
+            tilo_resource::FIELD_EDIT,
+            "a gesture's field edits are members too"
+        );
+        // An `apply` member is read as `apply` reads its value: it refers to
+        // `apply`'s schema, published once, rather than copying it.
+        assert_eq!(
+            group["items"]["oneOf"][2]["properties"]["args"]["properties"][tilo_resource::APPLY_PARAM],
+            json!({"type": "object", "description": tilo_resource::resource::APPLY_MEMBER})
+        );
+
+        let invoke = |value: serde_json::Value| {
+            let mut args = serde_json::Map::new();
+            args.insert(tilo_resource::APPLY_PARAM.into(), value);
+            tilo_resource::build_action::<Board>(tilo_resource::APPLY, &args, 0)
+        };
+        assert!(invoke(json!({"op": {"action": "rename", "args": {"title": "Q3"}}})).is_ok());
+        let refused = invoke(json!({"op": {"action": "rename", "args": {"title": 3}}})).unwrap_err();
+        assert!(refused.starts_with("rename: "), "{refused}");
+        let refused = invoke(json!({"op": {"action": "rename", "args": {"name": "Q3"}}})).unwrap_err();
+        assert!(refused.contains("name"), "{refused}");
+
+        let mut args = serde_json::Map::new();
+        args.insert(
+            tilo_resource::GROUP_PARAM.into(),
+            json!([
+                {"action": "rename", "args": {"title": "Q3"}},
+                {"action": "move-card", "args": {"card": "c1"}},
+            ]),
+        );
+        let refused = tilo_resource::group::build_group::<Board>(&args, 0).unwrap_err();
+        assert!(refused.starts_with("member 1 (move-card): "), "{refused}");
+    }
+
+    phase an_action_without_arguments_is_built_when_it_is_taken;
+    {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let takings = Arc::new(AtomicUsize::new(0));
+        let clear = Board::declarations()
+            .into_iter()
+            .find(|decl| decl.id == "clear")
+            .unwrap();
+        let counted = Arc::clone(&takings);
+        let decl = tilo_resource::ActionDecl::<Board>::new("clear", "Clear", Vec::new(), {
+            move |args, now| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                clear.build_action(args, now)
+            }
+        });
+        let resource = tilo_actions::ResourceSpec::new("board", "test.board", "Board")
+            .with_action(tilo_resource::declaration_spec(&decl));
+        assert_eq!(
+            takings.load(Ordering::SeqCst),
+            0,
+            "publishing builds nothing"
+        );
+        assert!(matches!(
+            resource.actions[0].input(),
+            tilo_actions::ActionInput::Deferred { .. }
+        ));
+        let address = tilo_actions::ActionAddress::new("board", "clear");
+        for taken in 1..=2 {
+            let encoded =
+                tilo_actions::door::encode(std::slice::from_ref(&resource), &address, None).unwrap();
+            assert_eq!(encoded.type_id, Board::ACTION_TYPE);
+            assert_eq!(
+                takings.load(Ordering::SeqCst),
+                taken,
+                "each taking builds anew"
+            );
+        }
+
+        let refusing =
+            tilo_resource::ActionDecl::<Board>::new("refuse", "Refuse", Vec::new(), |_, _| {
+                Err("nothing to clear".into())
+            });
+        let resource = tilo_actions::ResourceSpec::new("board", "test.board", "Board")
+            .with_action(tilo_resource::declaration_spec(&refusing));
+        let refused = tilo_actions::door::encode(
+            std::slice::from_ref(&resource),
+            &tilo_actions::ActionAddress::new("board", "refuse"),
+            None,
+        );
+        assert!(
+            matches!(&refused, Err(tilo_actions::DoorError::InvalidArguments(reason)) if reason == "nothing to clear"),
+            "{refused:?}"
+        );
+    }
+
+    phase action_parameter_examples_are_guidance_not_a_value_restriction;
+    {
+        let rename = Board::declarations()
+            .into_iter()
+            .find(|decl| decl.id == "rename")
+            .unwrap();
+        assert_eq!(
+            rename.params[0].schema.as_ref().unwrap()["examples"][0],
+            "A shared board"
+        );
+        let supplied = serde_json::json!({"title": "Another valid title"});
+        let bound =
+            tilo_actions::ActionArgs::bind_json(&rename.params, supplied.as_object().unwrap()).unwrap();
+        let action = rename.build_action(&bound, 0).unwrap();
+        let mut replica = Replica::<Board>::new();
+        replica.apply_action(&action).unwrap();
+        assert_eq!(replica.state().unwrap().title, "Another valid title");
+    }
+
+    phase the_head_is_the_published_record_without_building_a_child;
+    {
+        for count in [0_usize, 1, 3] {
+            let board = Board {
+                title: "Plan".to_owned(),
+                cards: (0..count)
+                    .map(|index| {
+                        let card = Card {
+                            text: format!("Card {index}"),
+                            stage: Stage::Todo,
+                            created_ms: 0,
+                        };
+                        (Id::from_raw(format!("card-{index}")), card)
+                    })
+                    .collect(),
+            };
+            let mut published = tilo_resource::publish::<Board>("board", "Board", &board);
+            assert_eq!(published.children.len(), count);
+            published.children.clear();
+            let head = tilo_resource::publish_head::<Board>("board", "Board", &board);
+            assert!(head.children.is_empty());
+            assert_eq!(
+                tilo_actions::door::survey(&[head]),
+                tilo_actions::door::survey(&[published]),
+                "{count} cards: the head carries the published record's own actions"
+            );
+            // Counted, not built: the card actions are for scripts once a card
+            // offers them.
+            let offered = Board::children_offer_bound(&board);
+            if count == 0 {
+                assert!(offered.is_empty(), "{offered:?}");
+            } else {
+                assert_eq!(offered, ["advance", "move-card", "delete-card"]);
+            }
+        }
+    }
 }
 
-#[test]
-fn documents_replay_converge_version_index_and_migrate() {
-    // phase: replaying_the_log_reproduces_the_document_exactly
+tilo_test_env::scenario! {
+    fn documents_replay_converge_version_index_and_migrate;
+
+    phase replaying_the_log_reproduces_the_document_exactly;
     {
         let mut origin = Replica::<Board>::new();
         let mut peer = origin.fork();
@@ -397,7 +595,8 @@ fn documents_replay_converge_version_index_and_migrate() {
         assert_eq!(peer.heads(), origin.heads());
         assert_eq!(peer.state().unwrap(), origin.state().unwrap());
     }
-    // phase: collaborators_edit_concurrently_and_converge
+
+    phase collaborators_edit_concurrently_and_converge;
     {
         let mut alice = Replica::<Board>::new().as_author("alice");
         alice.apply(Board::ADD_CARD.with("shared")).unwrap();
@@ -418,7 +617,8 @@ fn documents_replay_converge_version_index_and_migrate() {
         assert_eq!(a.cards[&shared].stage, Stage::Doing);
         assert_eq!(a.cards.position(&shared), Some(1));
     }
-    // phase: history_is_attributed_and_any_version_reads_back
+
+    phase history_is_attributed_and_any_version_reads_back;
     {
         let mut board = Replica::<Board>::new().as_author("alice");
         board.apply(Board::RENAME.with("v1")).unwrap();
@@ -440,7 +640,8 @@ fn documents_replay_converge_version_index_and_migrate() {
         assert_eq!(board.state_at(&v1).unwrap().title, "v1");
         assert_eq!(board.state().unwrap().title, "v2");
     }
-    // phase: search_indexes_text_fields_by_default
+
+    phase search_indexes_text_fields_by_default;
     {
         let mut board = Replica::<Board>::new();
         board.apply(Board::RENAME.with("Roadmap")).unwrap();
@@ -458,7 +659,8 @@ fn documents_replay_converge_version_index_and_migrate() {
         );
         assert!(entries[0].text.is_empty() && entries[0].preview.is_none());
     }
-    // phase: a_record_reads_documents_written_by_an_older_schema
+
+    phase a_record_reads_documents_written_by_an_older_schema;
     {
         use automerge::transaction::Transactable;
         let mut doc = tilo_resource::Doc::new();
@@ -468,162 +670,6 @@ fn documents_replay_converge_version_index_and_migrate() {
         assert_eq!(board.title, "legacy scalar title");
         assert!(board.cards.is_empty());
     }
-}
-
-#[test]
-fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
-    use serde_json::json;
-
-    let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
-    let schema = |id: &str| {
-        published
-            .actions
-            .iter()
-            .find(|spec| spec.id == id)
-            .unwrap()
-            .params()
-            .first()
-            .unwrap()
-            .schema
-            .clone()
-            .unwrap()
-    };
-    let declared = json!([
-        "rename",
-        "add-card",
-        "advance",
-        "move-card",
-        "delete-card",
-        "clear"
-    ]);
-    let apply = schema(tilo_resource::APPLY);
-    let operations = apply["properties"]["op"]["oneOf"].as_array().unwrap();
-    assert_eq!(operations.len(), 2, "{apply}");
-    assert!(
-        operations
-            .iter()
-            .any(|operation| operation["properties"]["action"]["enum"] == declared),
-        "{apply}"
-    );
-    assert!(
-        operations.iter().any(
-            |operation| operation["properties"]["action"]["const"] == tilo_resource::FIELD_EDIT
-        ),
-        "{apply}"
-    );
-    let group = schema(tilo_resource::GROUP);
-    assert_eq!(
-        group["items"]["oneOf"][0]["properties"]["action"]["enum"],
-        declared
-    );
-    assert_eq!(
-        group["items"]["oneOf"][1]["properties"]["action"]["const"],
-        tilo_resource::FIELD_EDIT,
-        "a gesture's field edits are members too"
-    );
-    // An `apply` member is read as `apply` reads its value: it refers to
-    // `apply`'s schema, published once, rather than copying it.
-    assert_eq!(
-        group["items"]["oneOf"][2]["properties"]["args"]["properties"][tilo_resource::APPLY_PARAM],
-        json!({"type": "object", "description": tilo_resource::resource::APPLY_MEMBER})
-    );
-
-    let invoke = |value: serde_json::Value| {
-        let mut args = serde_json::Map::new();
-        args.insert(tilo_resource::APPLY_PARAM.into(), value);
-        tilo_resource::build_action::<Board>(tilo_resource::APPLY, &args, 0)
-    };
-    assert!(invoke(json!({"op": {"action": "rename", "args": {"title": "Q3"}}})).is_ok());
-    let refused = invoke(json!({"op": {"action": "rename", "args": {"title": 3}}})).unwrap_err();
-    assert!(refused.starts_with("rename: "), "{refused}");
-    let refused = invoke(json!({"op": {"action": "rename", "args": {"name": "Q3"}}})).unwrap_err();
-    assert!(refused.contains("name"), "{refused}");
-
-    let mut args = serde_json::Map::new();
-    args.insert(
-        tilo_resource::GROUP_PARAM.into(),
-        json!([
-            {"action": "rename", "args": {"title": "Q3"}},
-            {"action": "move-card", "args": {"card": "c1"}},
-        ]),
-    );
-    let refused = tilo_resource::group::build_group::<Board>(&args, 0).unwrap_err();
-    assert!(refused.starts_with("member 1 (move-card): "), "{refused}");
-}
-
-#[test]
-fn an_action_without_arguments_is_built_when_it_is_taken() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let takings = Arc::new(AtomicUsize::new(0));
-    let clear = Board::declarations()
-        .into_iter()
-        .find(|decl| decl.id == "clear")
-        .unwrap();
-    let counted = Arc::clone(&takings);
-    let decl = tilo_resource::ActionDecl::<Board>::new("clear", "Clear", Vec::new(), {
-        move |args, now| {
-            counted.fetch_add(1, Ordering::SeqCst);
-            clear.build_action(args, now)
-        }
-    });
-    let resource = tilo_actions::ResourceSpec::new("board", "test.board", "Board")
-        .with_action(tilo_resource::declaration_spec(&decl));
-    assert_eq!(
-        takings.load(Ordering::SeqCst),
-        0,
-        "publishing builds nothing"
-    );
-    assert!(matches!(
-        resource.actions[0].input(),
-        tilo_actions::ActionInput::Deferred { .. }
-    ));
-    let address = tilo_actions::ActionAddress::new("board", "clear");
-    for taken in 1..=2 {
-        let encoded =
-            tilo_actions::door::encode(std::slice::from_ref(&resource), &address, None).unwrap();
-        assert_eq!(encoded.type_id, Board::ACTION_TYPE);
-        assert_eq!(
-            takings.load(Ordering::SeqCst),
-            taken,
-            "each taking builds anew"
-        );
-    }
-
-    let refusing =
-        tilo_resource::ActionDecl::<Board>::new("refuse", "Refuse", Vec::new(), |_, _| {
-            Err("nothing to clear".into())
-        });
-    let resource = tilo_actions::ResourceSpec::new("board", "test.board", "Board")
-        .with_action(tilo_resource::declaration_spec(&refusing));
-    let refused = tilo_actions::door::encode(
-        std::slice::from_ref(&resource),
-        &tilo_actions::ActionAddress::new("board", "refuse"),
-        None,
-    );
-    assert!(
-        matches!(&refused, Err(tilo_actions::DoorError::InvalidArguments(reason)) if reason == "nothing to clear"),
-        "{refused:?}"
-    );
-}
-
-#[test]
-fn action_parameter_examples_are_guidance_not_a_value_restriction() {
-    let rename = Board::declarations()
-        .into_iter()
-        .find(|decl| decl.id == "rename")
-        .unwrap();
-    assert_eq!(
-        rename.params[0].schema.as_ref().unwrap()["examples"][0],
-        "A shared board"
-    );
-    let supplied = serde_json::json!({"title": "Another valid title"});
-    let bound =
-        tilo_actions::ActionArgs::bind_json(&rename.params, supplied.as_object().unwrap()).unwrap();
-    let action = rename.build_action(&bound, 0).unwrap();
-    let mut replica = Replica::<Board>::new();
-    replica.apply_action(&action).unwrap();
-    assert_eq!(replica.state().unwrap().title, "Another valid title");
 }
 
 #[test]
@@ -691,41 +737,4 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
         1,
         "repeated publications and group reuse the compiled action schema"
     );
-}
-
-#[test]
-fn the_head_is_the_published_record_without_building_a_child() {
-    for count in [0_usize, 1, 3] {
-        let board = Board {
-            title: "Plan".to_owned(),
-            cards: (0..count)
-                .map(|index| {
-                    let card = Card {
-                        text: format!("Card {index}"),
-                        stage: Stage::Todo,
-                        created_ms: 0,
-                    };
-                    (Id::from_raw(format!("card-{index}")), card)
-                })
-                .collect(),
-        };
-        let mut published = tilo_resource::publish::<Board>("board", "Board", &board);
-        assert_eq!(published.children.len(), count);
-        published.children.clear();
-        let head = tilo_resource::publish_head::<Board>("board", "Board", &board);
-        assert!(head.children.is_empty());
-        assert_eq!(
-            tilo_actions::door::survey(&[head]),
-            tilo_actions::door::survey(&[published]),
-            "{count} cards: the head carries the published record's own actions"
-        );
-        // Counted, not built: the card actions are for scripts once a card
-        // offers them.
-        let offered = Board::children_offer_bound(&board);
-        if count == 0 {
-            assert!(offered.is_empty(), "{offered:?}");
-        } else {
-            assert_eq!(offered, ["advance", "move-card", "delete-card"]);
-        }
-    }
 }

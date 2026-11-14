@@ -277,63 +277,67 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_record_root_offers_its_link_without_a_view() {
-        let mut root = tilo_actions::ResourceSpec::new("pdf", "pdf.document", "PDF");
-        offer(&mut root);
-        assert!(
-            root.actions.is_empty(),
-            "a resource without a view has no link"
-        );
-        offer_record(&mut root);
-        let ids: Vec<_> = root.actions.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [SHARE_LINK],
-            "the record opens in its app; it invites no one"
-        );
-        assert_eq!(params(&root.actions[0]), ["view", "mode"]);
-        offer_record(&mut root);
-        assert_eq!(root.actions.len(), 1, "offered once");
+    tilo_test_env::scenario! {
+        fn a_resource_offers_its_link_and_its_views;
 
-        let mut viewed = tilo_actions::ResourceSpec::new("notes", "notes.page", "Page").with_view(
-            tilo_actions::ResourceViewSpec::new("page", "Page", "open-page"),
-        );
-        offer_record(&mut viewed);
-        let ids: Vec<_> = viewed.actions.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, [SHARE_LINK, SHARE_INVITE_LINK]);
-    }
+        phase a_record_root_offers_its_link_without_a_view;
+        {
+            let mut root = tilo_actions::ResourceSpec::new("pdf", "pdf.document", "PDF");
+            offer(&mut root);
+            assert!(
+                root.actions.is_empty(),
+                "a resource without a view has no link"
+            );
+            offer_record(&mut root);
+            let ids: Vec<_> = root.actions.iter().map(|spec| spec.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                [SHARE_LINK],
+                "the record opens in its app; it invites no one"
+            );
+            assert_eq!(params(&root.actions[0]), ["view", "mode"]);
+            offer_record(&mut root);
+            assert_eq!(root.actions.len(), 1, "offered once");
 
-    #[test]
-    fn a_resource_with_a_view_offers_both_and_range_params_only_with_a_range() {
-        let mut plain =
-            tilo_actions::ResourceSpec::new("notes.page:1", "notes.page", "Page").with_view(
+            let mut viewed = tilo_actions::ResourceSpec::new("notes", "notes.page", "Page").with_view(
                 tilo_actions::ResourceViewSpec::new("page", "Page", "open-page"),
             );
-        offer(&mut plain);
-        let ids: Vec<_> = plain.actions.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, [SHARE_LINK, SHARE_INVITE_LINK]);
-        assert_eq!(params(&plain.actions[0]), ["view", "mode"]);
-        assert_eq!(
-            params(&plain.actions[1]),
-            ["view", "mode", "role", "expires_in"]
-        );
+            offer_record(&mut viewed);
+            let ids: Vec<_> = viewed.actions.iter().map(|spec| spec.id.as_str()).collect();
+            assert_eq!(ids, [SHARE_LINK, SHARE_INVITE_LINK]);
+        }
 
-        let mut ranged = tilo_actions::ResourceSpec::new("notes.page:2", "notes.page", "Page")
-            .with_view(
-                tilo_actions::ResourceViewSpec::new("page", "Page", "open-page")
-                    .with_range(tilo_actions::ResourceViewRangeSpec::new("open-page-range")),
+        phase a_resource_with_a_view_offers_both_and_range_params_only_with_a_range;
+        {
+            let mut plain =
+                tilo_actions::ResourceSpec::new("notes.page:1", "notes.page", "Page").with_view(
+                    tilo_actions::ResourceViewSpec::new("page", "Page", "open-page"),
+                );
+            offer(&mut plain);
+            let ids: Vec<_> = plain.actions.iter().map(|spec| spec.id.as_str()).collect();
+            assert_eq!(ids, [SHARE_LINK, SHARE_INVITE_LINK]);
+            assert_eq!(params(&plain.actions[0]), ["view", "mode"]);
+            assert_eq!(
+                params(&plain.actions[1]),
+                ["view", "mode", "role", "expires_in"]
             );
-        offer(&mut ranged);
-        assert_eq!(
-            params(&ranged.actions[0]),
-            ["view", "start", "end", "unit", "mode"]
-        );
-        offer(&mut ranged);
-        assert_eq!(ranged.actions.len(), 2, "offered once");
 
-        let mut viewless = tilo_actions::ResourceSpec::new("notes.tag:1", "notes.tag", "Tag");
-        offer(&mut viewless);
-        assert!(viewless.actions.is_empty());
+            let mut ranged = tilo_actions::ResourceSpec::new("notes.page:2", "notes.page", "Page")
+                .with_view(
+                    tilo_actions::ResourceViewSpec::new("page", "Page", "open-page")
+                        .with_range(tilo_actions::ResourceViewRangeSpec::new("open-page-range")),
+                );
+            offer(&mut ranged);
+            assert_eq!(
+                params(&ranged.actions[0]),
+                ["view", "start", "end", "unit", "mode"]
+            );
+            offer(&mut ranged);
+            assert_eq!(ranged.actions.len(), 2, "offered once");
+
+            let mut viewless = tilo_actions::ResourceSpec::new("notes.tag:1", "notes.tag", "Tag");
+            offer(&mut viewless);
+            assert!(viewless.actions.is_empty());
+        }
     }
 }

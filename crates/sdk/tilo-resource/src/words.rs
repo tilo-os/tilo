@@ -155,46 +155,50 @@ pub fn item_words(kind: &str, field: &str) -> ResourceType {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_app_names_every_kind_it_publishes() {
-        name_app("Word Smith", "wordsmith.library");
-        let (app, root) = app_words_of("wordsmith.library");
-        assert_eq!(app, Noun::new("Word Smith", "word smiths"));
-        assert!(root, "the kind the app is named by is its root");
-        let (also, root) = app_words_of("wordsmith.document");
-        assert_eq!(also, app, "another kind of the app says the same app");
-        assert!(!root);
-    }
+    tilo_test_env::scenario! {
+        fn apps_kinds_and_items_read_as_words;
 
-    #[test]
-    fn a_kind_no_app_named_reads_its_app_in_words() {
-        let (app, root) = app_words_of("no-such-app.thing");
-        assert_eq!(app, Noun::new("no such app", "no such apps"));
-        assert!(!root);
-    }
+        phase an_app_names_every_kind_it_publishes;
+        {
+            name_app("Word Smith", "wordsmith.library");
+            let (app, root) = app_words_of("wordsmith.library");
+            assert_eq!(app, Noun::new("Word Smith", "word smiths"));
+            assert!(root, "the kind the app is named by is its root");
+            let (also, root) = app_words_of("wordsmith.document");
+            assert_eq!(also, app, "another kind of the app says the same app");
+            assert!(!root);
+        }
 
-    #[test]
-    fn a_type_reads_its_noun_from_its_name_in_words() {
-        name_app("Tube", "tube.library");
-        let words = type_words("tube.channel", "Channel");
-        assert_eq!(words.noun, Noun::new("channel", "channels"));
-        assert_eq!(words.app, Noun::new("Tube", "tubes"));
-        assert!(!words.root);
-        assert!(type_words("tube.library", "Tube").root);
-        // A noun an app words otherwise is its catalogue's, never code's.
-        assert_eq!(
-            type_words("tube.person", "Person").noun,
-            Noun::new("person", "people"),
-            "an irregular plural English writes is derived"
-        );
-    }
+        phase a_kind_no_app_named_reads_its_app_in_words;
+        {
+            let (app, root) = app_words_of("no-such-app.thing");
+            assert_eq!(app, Noun::new("no such app", "no such apps"));
+            assert!(!root);
+        }
 
-    #[test]
-    fn an_items_noun_is_its_collections_in_the_singular() {
-        name_app("Tube", "tube.library");
-        let words = item_words("tube.library", "videos");
-        assert_eq!(words.noun, Noun::new("video", "videos"));
-        assert_eq!(words.app, Noun::new("Tube", "tubes"));
-        assert!(!words.root);
+        phase a_type_reads_its_noun_from_its_name_in_words;
+        {
+            name_app("Tube", "tube.library");
+            let words = type_words("tube.channel", "Channel");
+            assert_eq!(words.noun, Noun::new("channel", "channels"));
+            assert_eq!(words.app, Noun::new("Tube", "tubes"));
+            assert!(!words.root);
+            assert!(type_words("tube.library", "Tube").root);
+            // A noun an app words otherwise is its catalogue's, never code's.
+            assert_eq!(
+                type_words("tube.person", "Person").noun,
+                Noun::new("person", "people"),
+                "an irregular plural English writes is derived"
+            );
+        }
+
+        phase an_items_noun_is_its_collections_in_the_singular;
+        {
+            name_app("Tube", "tube.library");
+            let words = item_words("tube.library", "videos");
+            assert_eq!(words.noun, Noun::new("video", "videos"));
+            assert_eq!(words.app, Noun::new("Tube", "tubes"));
+            assert!(!words.root);
+        }
     }
 }

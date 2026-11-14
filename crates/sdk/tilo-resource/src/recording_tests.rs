@@ -77,52 +77,302 @@ fn the_window(doc: &Doc) -> Recording {
     .unwrap()
 }
 
-#[test]
-fn a_recording_holds_the_start_state_and_each_change_of_the_window() {
-    let doc = edited();
-    let recording = the_window(&doc);
-    assert_eq!(recording.steps.len(), 4);
-    assert_eq!(recording.step_count(), 4);
-    assert_eq!((recording.from_ms, recording.to_ms), (100_000, 120_000));
-    let source = doc.committed_document();
-    let recorded = recording.doc().committed_document();
-    let versions = recording.versions();
-    for (step, original) in recording.steps.iter().enumerate() {
-        let at = recording.heads_at(step.saturating_add(1)).unwrap();
-        assert_eq!(at, vec![original.recorded]);
-        let before: Vec<_> = source
+tilo_test_env::scenario! {
+    fn a_recording_holds_a_window_of_history_and_replays_it;
+
+    phase a_recording_holds_the_start_state_and_each_change_of_the_window;
+    {
+        let doc = edited();
+        let recording = the_window(&doc);
+        assert_eq!(recording.steps.len(), 4);
+        assert_eq!(recording.step_count(), 4);
+        assert_eq!((recording.from_ms, recording.to_ms), (100_000, 120_000));
+        let source = doc.committed_document();
+        let recorded = recording.doc().committed_document();
+        let versions = recording.versions();
+        for (step, original) in recording.steps.iter().enumerate() {
+            let at = recording.heads_at(step.saturating_add(1)).unwrap();
+            assert_eq!(at, vec![original.recorded]);
+            let before: Vec<_> = source
+                .get_changes_meta(&[])
+                .into_iter()
+                .map(|meta| meta.hash)
+                .collect();
+            let upto = before
+                .iter()
+                .position(|hash| *hash == original.original)
+                .unwrap();
+            let heads = frontier_of(source, &before[..=upto]);
+            assert!(
+                same_state(source, &heads, recorded, &at).unwrap(),
+                "step {step} replays to the state its change made"
+            );
+            let meta = source.get_change_meta_by_hash(&original.original).unwrap();
+            let version = &versions[step.saturating_add(1)];
+            assert_eq!(
+                version.actor,
+                meta.actor.to_hex_string(),
+                "the author stays"
+            );
+            assert_eq!(version.time_ms, meta.timestamp * 1000, "the time stays");
+        }
+        let start = recording.heads_at(0).unwrap();
+        let before_window: Vec<_> = source
             .get_changes_meta(&[])
             .into_iter()
+            .take(3)
             .map(|meta| meta.hash)
             .collect();
-        let upto = before
-            .iter()
-            .position(|hash| *hash == original.original)
-            .unwrap();
-        let heads = frontier_of(source, &before[..=upto]);
-        assert!(
-            same_state(source, &heads, recorded, &at).unwrap(),
-            "step {step} replays to the state its change made"
-        );
-        let meta = source.get_change_meta_by_hash(&original.original).unwrap();
-        let version = &versions[step.saturating_add(1)];
-        assert_eq!(
-            version.actor,
-            meta.actor.to_hex_string(),
-            "the author stays"
-        );
-        assert_eq!(version.time_ms, meta.timestamp * 1000, "the time stays");
+        let heads = frontier_of(source, &before_window);
+        assert!(same_state(source, &heads, recorded, &start).unwrap());
+        assert!(recording.heads_at(5).is_none());
     }
-    let start = recording.heads_at(0).unwrap();
-    let before_window: Vec<_> = source
-        .get_changes_meta(&[])
-        .into_iter()
-        .take(3)
-        .map(|meta| meta.hash)
-        .collect();
-    let heads = frontier_of(source, &before_window);
-    assert!(same_state(source, &heads, recorded, &start).unwrap());
-    assert!(recording.heads_at(5).is_none());
+
+    phase nothing_from_before_the_window_or_the_records_identity_is_in_it;
+    {
+        let mut doc = edited();
+        let bytes = the_window(&doc).bytes();
+        let contains = |needle: &[u8]| bytes.windows(needle.len()).any(|window| window == needle);
+        // The full document holds the deleted note in its history.
+        let full = doc.save();
+        assert!(full.windows(4).any(|window| window == b"4471"));
+        assert!(
+            !contains(b"4471"),
+            "deleted before the window, so not recorded"
+        );
+        assert!(!contains(b"the-original-record"));
+        let loaded = Recording::load(&bytes, &Limits::default()).unwrap();
+        assert!(loaded.doc().get(ROOT, "tilo:record").unwrap().is_none());
+    }
+
+    phase another_member_loading_the_bytes_replays_the_same_states;
+    {
+        let doc = edited();
+        let recording = the_window(&doc);
+        let loaded = Recording::load(&recording.bytes(), &Limits::default()).unwrap();
+        assert_eq!(loaded.step_count(), recording.step_count());
+        assert_eq!((loaded.from_ms, loaded.to_ms), (100_000, 120_000));
+        assert_eq!(loaded.versions(), recording.versions());
+        for step in 0..=recording.step_count() {
+            let mine = recording.heads_at(step).unwrap();
+            let theirs = loaded.heads_at(step).unwrap();
+            assert!(
+                same_state(
+                    recording.doc().committed_document(),
+                    &mine,
+                    loaded.doc().committed_document(),
+                    &theirs
+                )
+                .unwrap()
+            );
+        }
+    }
+
+    phase a_gesture_begun_before_the_window_keeps_its_action_in_the_recording;
+    {
+        let mut doc = Doc::new();
+        as_actor(&mut doc, ALICE);
+        let gesture = ActionId(uuid::Uuid::from_u128(7));
+        let first = ActionContext::default()
+            .in_gesture(Some(gesture))
+            .with_app("so.tilo.notes", "Notes");
+        let typed = |payload: &str| ActionContext {
+            action: Some(EncodedAction {
+                type_id: "notes.type".into(),
+                payload: payload.as_bytes().to_vec(),
+            }),
+            ..first.clone()
+        };
+        doc.put(ROOT, "body", "a").unwrap();
+        commit(&mut doc, 10, typed("\"a\"").change_message());
+        doc.put(ROOT, "body", "ab").unwrap();
+        let continued = typed("\"ab\"").continuation_of(&typed("\"a\"")).unwrap();
+        commit(&mut doc, 200, Some(continued));
+        let recording = record(
+            &doc,
+            100_000,
+            &doc.committed_document().get_heads(),
+            &Limits::default(),
+        )
+        .unwrap();
+        let versions = recording.versions();
+        let step = versions.last().unwrap();
+        let original = committed_versions(&doc).last().unwrap().context.clone();
+        assert!(
+            original.is_some(),
+            "the original reads its continuation whole"
+        );
+        assert_eq!(step.context, original);
+        assert_eq!(
+            step.context
+                .as_ref()
+                .and_then(|context| context.action.clone()),
+            typed("\"ab\"").action
+        );
+        assert_eq!(
+            versions
+                .first()
+                .unwrap()
+                .context
+                .as_ref()
+                .map(|context| context.change),
+            Some(ChangeKind::External),
+            "the start state is nobody's step"
+        );
+    }
+
+    phase a_window_longer_than_the_limit_starts_later_and_keeps_the_end;
+    {
+        let mut doc = Doc::new();
+        for second in 0..10 {
+            doc.put(ROOT, "count", second).unwrap();
+            commit(&mut doc, second, None);
+        }
+        let limits = Limits {
+            steps: 3,
+            ..Limits::default()
+        };
+        let heads = doc.committed_document().get_heads();
+        let recording = record(&doc, 0, &heads, &limits).unwrap();
+        assert_eq!(recording.step_count(), 3);
+        assert_eq!(
+            plan(&doc, 0, &heads, &limits).unwrap(),
+            Planned {
+                from_ms: recording.from_ms,
+                to_ms: recording.to_ms,
+                steps: 3,
+            },
+            "planning reads what recording makes"
+        );
+        assert_eq!((recording.from_ms, recording.to_ms), (7_000, 9_000));
+        let start = recording.heads_at(0).unwrap();
+        assert_eq!(
+            recording
+                .doc()
+                .get_at(ROOT, "count", &start)
+                .unwrap()
+                .unwrap()
+                .0,
+            Value::from(6_i64)
+        );
+        let bytes = recording.bytes();
+        assert_eq!(
+            Recording::load(&bytes, &limits).unwrap().step_count(),
+            3,
+            "a recording within its limits loads"
+        );
+        let tighter = Limits {
+            steps: 2,
+            ..Limits::default()
+        };
+        assert_eq!(
+            Recording::load(&bytes, &tighter).err(),
+            Some(RecordingError::TooManySteps)
+        );
+        let tiny = Limits {
+            bytes: 16,
+            ..Limits::default()
+        };
+        assert!(matches!(
+            record(&doc, 0, &doc.committed_document().get_heads(), &tiny),
+            Err(RecordingError::TooLarge(_))
+        ));
+    }
+
+    phase an_end_outside_the_history_and_a_document_that_is_no_recording_are_refused;
+    {
+        let mut doc = edited();
+        let mut other = Doc::new();
+        other.put(ROOT, "elsewhere", true).unwrap();
+        commit(&mut other, 5, None);
+        let foreign = other.get_heads();
+        assert_eq!(
+            record(&doc, 0, &foreign, &Limits::default()).err(),
+            Some(RecordingError::UnknownEnd)
+        );
+        assert!(matches!(
+            Recording::load(&doc.save(), &Limits::default()),
+            Err(RecordingError::Invalid(_))
+        ));
+    }
+
+    phase a_window_with_no_changes_is_the_state_alone;
+    {
+        let doc = edited();
+        let recording = record(
+            &doc,
+            1_000_000,
+            &doc.committed_document().get_heads(),
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(recording.step_count(), 0);
+        assert_eq!(recording.to_ms, recording.from_ms);
+        assert!(
+            same_state(
+                doc.committed_document(),
+                &doc.committed_document().get_heads(),
+                recording.doc().committed_document(),
+                &recording.heads_at(0).unwrap()
+            )
+            .unwrap()
+        );
+    }
+
+    phase every_step_of_many_concurrent_edits_replays_to_its_state;
+    {
+        for seed in 1..=12_u64 {
+            let mut rng = Lcg(seed);
+            let mut doc = Doc::new();
+            as_actor(&mut doc, ALICE);
+            doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+            doc.put_object(ROOT, "list", ObjType::List).unwrap();
+            commit(&mut doc, 1, None);
+            let mut bob = doc.fork();
+            as_actor(&mut bob, BOB);
+            for second in 2..80_i64 {
+                let writer = if rng.below(2) == 0 {
+                    &mut doc
+                } else {
+                    &mut bob
+                };
+                for _ in 0..=rng.below(3) {
+                    scribble(writer, &mut rng);
+                }
+                commit_stamped_at_with_message(writer, second, None);
+                if rng.below(5) == 0 {
+                    doc.merge_incoming(&mut bob).unwrap();
+                    bob.merge_incoming(&mut doc).unwrap();
+                }
+            }
+            doc.merge_incoming(&mut bob).unwrap();
+            let heads = doc.get_heads();
+            let recording = record(&doc, 30_000, &heads, &Limits::default()).unwrap();
+            let source = doc.committed_document();
+            let order: Vec<ChangeHash> = source
+                .get_changes_meta(&[])
+                .into_iter()
+                .map(|meta| meta.hash)
+                .collect();
+            for (step, original) in recording.steps.iter().enumerate() {
+                let upto = order
+                    .iter()
+                    .position(|hash| *hash == original.original)
+                    .unwrap();
+                let at = recording.heads_at(step + 1).unwrap();
+                assert!(
+                    same_state(
+                        source,
+                        &frontier_of(source, &order[..=upto]),
+                        recording.doc().committed_document(),
+                        &at
+                    )
+                    .unwrap(),
+                    "seed {seed}, step {step}"
+                );
+            }
+        }
+    }
 }
 
 /// The heads of the run `hashes` of `doc`'s causal order.
@@ -141,197 +391,6 @@ fn frontier_of(doc: &Automerge, hashes: &[ChangeHash]) -> Vec<ChangeHash> {
         })
         .collect();
     frontier(&changes)
-}
-
-#[test]
-fn nothing_from_before_the_window_or_the_records_identity_is_in_it() {
-    let mut doc = edited();
-    let bytes = the_window(&doc).bytes();
-    let contains = |needle: &[u8]| bytes.windows(needle.len()).any(|window| window == needle);
-    // The full document holds the deleted note in its history.
-    let full = doc.save();
-    assert!(full.windows(4).any(|window| window == b"4471"));
-    assert!(
-        !contains(b"4471"),
-        "deleted before the window, so not recorded"
-    );
-    assert!(!contains(b"the-original-record"));
-    let loaded = Recording::load(&bytes, &Limits::default()).unwrap();
-    assert!(loaded.doc().get(ROOT, "tilo:record").unwrap().is_none());
-}
-
-#[test]
-fn another_member_loading_the_bytes_replays_the_same_states() {
-    let doc = edited();
-    let recording = the_window(&doc);
-    let loaded = Recording::load(&recording.bytes(), &Limits::default()).unwrap();
-    assert_eq!(loaded.step_count(), recording.step_count());
-    assert_eq!((loaded.from_ms, loaded.to_ms), (100_000, 120_000));
-    assert_eq!(loaded.versions(), recording.versions());
-    for step in 0..=recording.step_count() {
-        let mine = recording.heads_at(step).unwrap();
-        let theirs = loaded.heads_at(step).unwrap();
-        assert!(
-            same_state(
-                recording.doc().committed_document(),
-                &mine,
-                loaded.doc().committed_document(),
-                &theirs
-            )
-            .unwrap()
-        );
-    }
-}
-
-#[test]
-fn a_gesture_begun_before_the_window_keeps_its_action_in_the_recording() {
-    let mut doc = Doc::new();
-    as_actor(&mut doc, ALICE);
-    let gesture = ActionId(uuid::Uuid::from_u128(7));
-    let first = ActionContext::default()
-        .in_gesture(Some(gesture))
-        .with_app("so.tilo.notes", "Notes");
-    let typed = |payload: &str| ActionContext {
-        action: Some(EncodedAction {
-            type_id: "notes.type".into(),
-            payload: payload.as_bytes().to_vec(),
-        }),
-        ..first.clone()
-    };
-    doc.put(ROOT, "body", "a").unwrap();
-    commit(&mut doc, 10, typed("\"a\"").change_message());
-    doc.put(ROOT, "body", "ab").unwrap();
-    let continued = typed("\"ab\"").continuation_of(&typed("\"a\"")).unwrap();
-    commit(&mut doc, 200, Some(continued));
-    let recording = record(
-        &doc,
-        100_000,
-        &doc.committed_document().get_heads(),
-        &Limits::default(),
-    )
-    .unwrap();
-    let versions = recording.versions();
-    let step = versions.last().unwrap();
-    let original = committed_versions(&doc).last().unwrap().context.clone();
-    assert!(
-        original.is_some(),
-        "the original reads its continuation whole"
-    );
-    assert_eq!(step.context, original);
-    assert_eq!(
-        step.context
-            .as_ref()
-            .and_then(|context| context.action.clone()),
-        typed("\"ab\"").action
-    );
-    assert_eq!(
-        versions
-            .first()
-            .unwrap()
-            .context
-            .as_ref()
-            .map(|context| context.change),
-        Some(ChangeKind::External),
-        "the start state is nobody's step"
-    );
-}
-
-#[test]
-fn a_window_longer_than_the_limit_starts_later_and_keeps_the_end() {
-    let mut doc = Doc::new();
-    for second in 0..10 {
-        doc.put(ROOT, "count", second).unwrap();
-        commit(&mut doc, second, None);
-    }
-    let limits = Limits {
-        steps: 3,
-        ..Limits::default()
-    };
-    let heads = doc.committed_document().get_heads();
-    let recording = record(&doc, 0, &heads, &limits).unwrap();
-    assert_eq!(recording.step_count(), 3);
-    assert_eq!(
-        plan(&doc, 0, &heads, &limits).unwrap(),
-        Planned {
-            from_ms: recording.from_ms,
-            to_ms: recording.to_ms,
-            steps: 3,
-        },
-        "planning reads what recording makes"
-    );
-    assert_eq!((recording.from_ms, recording.to_ms), (7_000, 9_000));
-    let start = recording.heads_at(0).unwrap();
-    assert_eq!(
-        recording
-            .doc()
-            .get_at(ROOT, "count", &start)
-            .unwrap()
-            .unwrap()
-            .0,
-        Value::from(6_i64)
-    );
-    let bytes = recording.bytes();
-    assert_eq!(
-        Recording::load(&bytes, &limits).unwrap().step_count(),
-        3,
-        "a recording within its limits loads"
-    );
-    let tighter = Limits {
-        steps: 2,
-        ..Limits::default()
-    };
-    assert_eq!(
-        Recording::load(&bytes, &tighter).err(),
-        Some(RecordingError::TooManySteps)
-    );
-    let tiny = Limits {
-        bytes: 16,
-        ..Limits::default()
-    };
-    assert!(matches!(
-        record(&doc, 0, &doc.committed_document().get_heads(), &tiny),
-        Err(RecordingError::TooLarge(_))
-    ));
-}
-
-#[test]
-fn an_end_outside_the_history_and_a_document_that_is_no_recording_are_refused() {
-    let mut doc = edited();
-    let mut other = Doc::new();
-    other.put(ROOT, "elsewhere", true).unwrap();
-    commit(&mut other, 5, None);
-    let foreign = other.get_heads();
-    assert_eq!(
-        record(&doc, 0, &foreign, &Limits::default()).err(),
-        Some(RecordingError::UnknownEnd)
-    );
-    assert!(matches!(
-        Recording::load(&doc.save(), &Limits::default()),
-        Err(RecordingError::Invalid(_))
-    ));
-}
-
-#[test]
-fn a_window_with_no_changes_is_the_state_alone() {
-    let doc = edited();
-    let recording = record(
-        &doc,
-        1_000_000,
-        &doc.committed_document().get_heads(),
-        &Limits::default(),
-    )
-    .unwrap();
-    assert_eq!(recording.step_count(), 0);
-    assert_eq!(recording.to_ms, recording.from_ms);
-    assert!(
-        same_state(
-            doc.committed_document(),
-            &doc.committed_document().get_heads(),
-            recording.doc().committed_document(),
-            &recording.heads_at(0).unwrap()
-        )
-        .unwrap()
-    );
 }
 
 /// A small deterministic generator, so the stress test needs no dependency.
@@ -406,61 +465,6 @@ fn scribble(doc: &mut Doc, rng: &mut Lcg) {
                 doc.put(ROOT, key, i64::try_from(rng.below(10)).unwrap())
                     .unwrap();
             }
-        }
-    }
-}
-
-#[test]
-fn every_step_of_many_concurrent_edits_replays_to_its_state() {
-    for seed in 1..=12_u64 {
-        let mut rng = Lcg(seed);
-        let mut doc = Doc::new();
-        as_actor(&mut doc, ALICE);
-        doc.put_object(ROOT, "text", ObjType::Text).unwrap();
-        doc.put_object(ROOT, "list", ObjType::List).unwrap();
-        commit(&mut doc, 1, None);
-        let mut bob = doc.fork();
-        as_actor(&mut bob, BOB);
-        for second in 2..80_i64 {
-            let writer = if rng.below(2) == 0 {
-                &mut doc
-            } else {
-                &mut bob
-            };
-            for _ in 0..=rng.below(3) {
-                scribble(writer, &mut rng);
-            }
-            commit_stamped_at_with_message(writer, second, None);
-            if rng.below(5) == 0 {
-                doc.merge_incoming(&mut bob).unwrap();
-                bob.merge_incoming(&mut doc).unwrap();
-            }
-        }
-        doc.merge_incoming(&mut bob).unwrap();
-        let heads = doc.get_heads();
-        let recording = record(&doc, 30_000, &heads, &Limits::default()).unwrap();
-        let source = doc.committed_document();
-        let order: Vec<ChangeHash> = source
-            .get_changes_meta(&[])
-            .into_iter()
-            .map(|meta| meta.hash)
-            .collect();
-        for (step, original) in recording.steps.iter().enumerate() {
-            let upto = order
-                .iter()
-                .position(|hash| *hash == original.original)
-                .unwrap();
-            let at = recording.heads_at(step + 1).unwrap();
-            assert!(
-                same_state(
-                    source,
-                    &frontier_of(source, &order[..=upto]),
-                    recording.doc().committed_document(),
-                    &at
-                )
-                .unwrap(),
-                "seed {seed}, step {step}"
-            );
         }
     }
 }

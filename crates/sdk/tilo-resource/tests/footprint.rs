@@ -51,142 +51,146 @@ impl Review {
     }
 }
 
-#[test]
-fn a_verb_writes_only_the_units_it_declares() {
-    let mut review = Replica::<Review>::new();
-    review
-        .apply(Review::START_THREAD.with("Typos"))
-        .expect("a declared unit");
-    let err = review
-        .apply(Review::SNEAK_THREAD.with("Hidden"))
-        .unwrap_err();
-    assert!(err.to_string().contains("writes = field"), "{err}");
-    let thread = review
-        .state()
-        .unwrap()
-        .threads
-        .ids()
-        .next()
-        .cloned()
-        .unwrap();
-    review
-        .apply(Review::REPLY.with(thread.clone()))
-        .expect("an item verb writes its item and the record");
-    assert!(review.apply(Review::SUMMARIZE.with(thread)).is_err());
-    let state = review.state().unwrap();
-    assert_eq!(state.threads.len(), 1);
-    assert_eq!(state.summary, "");
+tilo_test_env::scenario! {
+    fn a_change_names_the_units_it_writes;
 
-    let surface = Review::surface();
-    let writes = |id: &str| {
-        surface
-            .verbs
-            .iter()
-            .find(|verb| verb.id == id)
+    phase a_verb_writes_only_the_units_it_declares;
+    {
+        let mut review = Replica::<Review>::new();
+        review
+            .apply(Review::START_THREAD.with("Typos"))
+            .expect("a declared unit");
+        let err = review
+            .apply(Review::SNEAK_THREAD.with("Hidden"))
+            .unwrap_err();
+        assert!(err.to_string().contains("writes = field"), "{err}");
+        let thread = review
+            .state()
             .unwrap()
-            .writes
-            .clone()
-    };
-    assert_eq!(writes("start-thread"), [RECORD_UNIT, "threads.*"]);
-    assert_eq!(writes("reply"), [RECORD_UNIT, "threads.*"]);
-    assert_eq!(writes("summarize"), [RECORD_UNIT, "threads.*"]);
-    assert_eq!(writes("sneak-thread"), [RECORD_UNIT]);
-}
+            .threads
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        review
+            .apply(Review::REPLY.with(thread.clone()))
+            .expect("an item verb writes its item and the record");
+        assert!(review.apply(Review::SUMMARIZE.with(thread)).is_err());
+        let state = review.state().unwrap();
+        assert_eq!(state.threads.len(), 1);
+        assert_eq!(state.summary, "");
 
-#[test]
-fn a_change_names_the_units_it_touched_from_the_documents_index() {
-    let mut review = Replica::<Review>::new();
-    review.apply(Review::START_THREAD.with("Typos")).unwrap();
-    let thread = review
-        .state()
-        .unwrap()
-        .threads
-        .ids()
-        .next()
-        .cloned()
-        .unwrap();
-    assert!(
-        automerge::ReadDoc::get(review.doc(), &automerge::ROOT, UNIT_INDEX)
+        let surface = Review::surface();
+        let writes = |id: &str| {
+            surface
+                .verbs
+                .iter()
+                .find(|verb| verb.id == id)
+                .unwrap()
+                .writes
+                .clone()
+        };
+        assert_eq!(writes("start-thread"), [RECORD_UNIT, "threads.*"]);
+        assert_eq!(writes("reply"), [RECORD_UNIT, "threads.*"]);
+        assert_eq!(writes("summarize"), [RECORD_UNIT, "threads.*"]);
+        assert_eq!(writes("sneak-thread"), [RECORD_UNIT]);
+    }
+
+    phase a_change_names_the_units_it_touched_from_the_documents_index;
+    {
+        let mut review = Replica::<Review>::new();
+        review.apply(Review::START_THREAD.with("Typos")).unwrap();
+        let thread = review
+            .state()
             .unwrap()
-            .is_some(),
-        "the record keeps its unit index"
-    );
+            .threads
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        assert!(
+            automerge::ReadDoc::get(review.doc(), &automerge::ROOT, UNIT_INDEX)
+                .unwrap()
+                .is_some(),
+            "the record keeps its unit index"
+        );
 
-    let before = review.heads();
-    review.apply(Review::REPLY.with(thread.clone())).unwrap();
-    let after = review.heads();
-    let patches = review.doc_mut().diff(&before, &after);
-    let units = units_of(review.doc(), &patches);
-    assert_eq!(
-        units.into_iter().collect::<Vec<_>>(),
-        [RECORD_UNIT.to_owned(), format!("threads/{thread}")]
-    );
+        let before = review.heads();
+        review.apply(Review::REPLY.with(thread.clone())).unwrap();
+        let after = review.heads();
+        let patches = review.doc_mut().diff(&before, &after);
+        let units = units_of(review.doc(), &patches);
+        assert_eq!(
+            units.into_iter().collect::<Vec<_>>(),
+            [RECORD_UNIT.to_owned(), format!("threads/{thread}")]
+        );
 
-    let before = review.heads();
-    review
-        .apply(Review::paths().summary.set("Fine".into()))
-        .unwrap();
-    let after = review.heads();
-    let patches = review.doc_mut().diff(&before, &after);
-    assert_eq!(
-        units_of(review.doc(), &patches)
-            .into_iter()
-            .collect::<Vec<_>>(),
-        ["summary"]
-    );
-}
+        let before = review.heads();
+        review
+            .apply(Review::paths().summary.set("Fine".into()))
+            .unwrap();
+        let after = review.heads();
+        let patches = review.doc_mut().diff(&before, &after);
+        assert_eq!(
+            units_of(review.doc(), &patches)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["summary"]
+        );
+    }
 
-#[test]
-fn a_receiver_reads_kinds_edits_and_footprints_from_the_surface() {
-    use tilo_actions::PathStep;
-    let surface = Review::surface();
-    assert!(surface.verb("reply").is_some());
-    assert!(surface.verb("nothing").is_none());
-    assert!(surface.editable(&[PathStep::Field("title".into())]));
-    assert!(surface.editable(&[
-        PathStep::Field("threads".into()),
-        PathStep::Item("t1".into()),
-        PathStep::Field("replies".into()),
-    ]));
-    assert!(!surface.editable(&[PathStep::Field("nothing".into())]));
-    assert_eq!(
-        surface.edit_unit(&[
+    phase a_receiver_reads_kinds_edits_and_footprints_from_the_surface;
+    {
+        use tilo_actions::PathStep;
+        let surface = Review::surface();
+        assert!(surface.verb("reply").is_some());
+        assert!(surface.verb("nothing").is_none());
+        assert!(surface.editable(&[PathStep::Field("title".into())]));
+        assert!(surface.editable(&[
             PathStep::Field("threads".into()),
             PathStep::Item("t1".into()),
             PathStep::Field("replies".into()),
-        ]),
-        [
-            PathStep::Field("threads".into()),
-            PathStep::Item("t1".into())
-        ]
-    );
-    assert_eq!(
-        surface.edit_unit(&[PathStep::Field("summary".into())]),
-        [PathStep::Field("summary".into())]
-    );
-    assert!(
-        surface
-            .edit_unit(&[PathStep::Field("title".into())])
-            .is_empty()
-    );
-    assert_eq!(
-        surface.footprint("start-thread", None),
-        [
-            vec![],
-            vec![
+        ]));
+        assert!(!surface.editable(&[PathStep::Field("nothing".into())]));
+        assert_eq!(
+            surface.edit_unit(&[
                 PathStep::Field("threads".into()),
-                PathStep::Item("*".into())
-            ]
-        ]
-    );
-    assert_eq!(
-        surface.footprint("reply", Some("t1")),
-        [
-            vec![],
-            vec![
+                PathStep::Item("t1".into()),
+                PathStep::Field("replies".into()),
+            ]),
+            [
                 PathStep::Field("threads".into()),
                 PathStep::Item("t1".into())
             ]
-        ]
-    );
+        );
+        assert_eq!(
+            surface.edit_unit(&[PathStep::Field("summary".into())]),
+            [PathStep::Field("summary".into())]
+        );
+        assert!(
+            surface
+                .edit_unit(&[PathStep::Field("title".into())])
+                .is_empty()
+        );
+        assert_eq!(
+            surface.footprint("start-thread", None),
+            [
+                vec![],
+                vec![
+                    PathStep::Field("threads".into()),
+                    PathStep::Item("*".into())
+                ]
+            ]
+        );
+        assert_eq!(
+            surface.footprint("reply", Some("t1")),
+            [
+                vec![],
+                vec![
+                    PathStep::Field("threads".into()),
+                    PathStep::Item("t1".into())
+                ]
+            ]
+        );
+    }
 }

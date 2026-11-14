@@ -2425,22 +2425,114 @@ mod tests {
         entries
     }
 
-    #[test]
-    fn one_entry_reads_as_the_listing_has_it() {
-        let mut doc = Doc::new();
-        let mut list: Collection<u32> = Collection::new();
-        for n in 0..20_u32 {
-            list.push(Id::from_raw(format!("i{n:02}")), n);
+    tilo_test_env::scenario! {
+        fn a_stored_collection_reads_walks_and_moves_by_key;
+
+        phase one_entry_reads_as_the_listing_has_it;
+        {
+            let mut doc = Doc::new();
+            let mut list: Collection<u32> = Collection::new();
+            for n in 0..20_u32 {
+                list.push(Id::from_raw(format!("i{n:02}")), n);
+            }
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+                panic!("the collection is stored");
+            };
+            for listed in stored_entries(&doc, &map) {
+                let one = stored_entry(&doc, &map, listed.id.as_str()).expect("the entry");
+                assert_eq!((one.id, one.key), (listed.id, listed.key));
+            }
+            assert!(stored_entry(&doc, &map, "nobody").is_none());
         }
-        write_key(&mut doc, &ROOT, "items", &list).unwrap();
-        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
-            panic!("the collection is stored");
-        };
-        for listed in stored_entries(&doc, &map) {
-            let one = stored_entry(&doc, &map, listed.id.as_str()).expect("the entry");
-            assert_eq!((one.id, one.key), (listed.id, listed.key));
+
+        phase one_walk_reads_what_key_by_key_reads;
+        {
+            let mut doc = Doc::new();
+            let mut list: Collection<Vec<i64>> = Collection::new();
+            for n in 0..40 {
+                list.push(Id::from_raw(format!("i{n:02}")), vec![n]);
+            }
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            doc.commit();
+            // History under every key: moved order keys, rewritten values, a
+            // removed item, and a stray non-entry value beside the entries.
+            for round in 0..3_i64 {
+                list.move_to(&Id::from_raw(format!("i{:02}", 39 - round)), 0);
+                if let Some(item) = list.get_mut(&Id::from_raw("i05")) {
+                    item.push(round);
+                }
+                write_key(&mut doc, &ROOT, "items", &list).unwrap();
+                doc.commit();
+            }
+            list.remove(&Id::from_raw("i07"));
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+                panic!("the collection is stored");
+            };
+            doc.put(&map, "stray", 1_i64).unwrap();
+            doc.commit();
+            // Concurrent moves and inserts from two actors: conflicting order keys.
+            let mut left = doc.fork();
+            let mut right = doc.fork();
+            let read: Collection<Vec<i64>> = read_key(&doc, &ROOT, "items").unwrap();
+            let mut l = read.clone();
+            l.move_to(&Id::from_raw("i10"), 2);
+            l.insert(3, Id::from_raw("left"), vec![-1]);
+            write_key(&mut left, &ROOT, "items", &l).unwrap();
+            let mut r = read;
+            r.move_to(&Id::from_raw("i10"), 30);
+            r.insert(3, Id::from_raw("right"), vec![-2]);
+            write_key(&mut right, &ROOT, "items", &r).unwrap();
+            left.merge_incoming(&mut right).unwrap();
+
+            let Some((value, map)) = left.get(&ROOT, "items").unwrap() else {
+                panic!("the collection is stored");
+            };
+            let read = Collection::<Vec<i64>>::load(&left, &value, &map).unwrap();
+            let walked: Vec<_> = read
+                .items
+                .into_iter()
+                .map(|entry| (entry.id, entry.key, (*entry.item).clone()))
+                .collect();
+            assert_eq!(walked, read_key_by_key::<Vec<i64>>(&left, &map));
+            assert_eq!(walked.len(), 41);
         }
-        assert!(stored_entry(&doc, &map, "nobody").is_none());
+
+        phase moves_touch_one_key_and_concurrent_inserts_keep_both;
+        {
+            let mut doc = Doc::new();
+            let mut list: Collection<String> = Collection::new();
+            for (n, word) in ["a", "b", "c", "d"].iter().enumerate() {
+                list.push(Id::from_raw(format!("i{n}")), (*word).to_owned());
+            }
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            doc.commit();
+            list.move_to(&Id::from_raw("i3"), 0);
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            // One order key rewritten.
+            assert_eq!(doc.pending_ops(), 1);
+            doc.commit();
+            let read: Collection<String> = read_key(&doc, &ROOT, "items").unwrap();
+            assert_eq!(ids(&read), ["d", "a", "b", "c"]);
+
+            let mut left = doc.fork();
+            let mut right = doc.fork();
+            let mut l = read.clone();
+            l.insert(1, Id::from_raw("left"), "L".into());
+            write_key(&mut left, &ROOT, "items", &l).unwrap();
+            let mut r = read;
+            r.insert(1, Id::from_raw("right"), "R".into());
+            r.remove(&Id::from_raw("i1"));
+            write_key(&mut right, &ROOT, "items", &r).unwrap();
+            left.merge_incoming(&mut right).unwrap();
+            let merged: Collection<String> = read_key(&left, &ROOT, "items").unwrap();
+            let merged = ids(&merged);
+            assert_eq!(merged.len(), 5);
+            assert_eq!(merged.first().map(String::as_str), Some("d"));
+            assert!(merged.contains(&"L".to_owned()) && merged.contains(&"R".to_owned()));
+            assert!(!merged.contains(&"b".to_owned()));
+        }
     }
 
     #[test]
@@ -2468,93 +2560,5 @@ mod tests {
         assert!(longest <= 5, "longest order key: {longest} characters");
         let read: Collection<u32> = read_key(&doc, &ROOT, "items").unwrap();
         assert!(read.values().copied().eq((0..300).chain(0..10_000)));
-    }
-
-    #[test]
-    fn one_walk_reads_what_key_by_key_reads() {
-        let mut doc = Doc::new();
-        let mut list: Collection<Vec<i64>> = Collection::new();
-        for n in 0..40 {
-            list.push(Id::from_raw(format!("i{n:02}")), vec![n]);
-        }
-        write_key(&mut doc, &ROOT, "items", &list).unwrap();
-        doc.commit();
-        // History under every key: moved order keys, rewritten values, a
-        // removed item, and a stray non-entry value beside the entries.
-        for round in 0..3_i64 {
-            list.move_to(&Id::from_raw(format!("i{:02}", 39 - round)), 0);
-            if let Some(item) = list.get_mut(&Id::from_raw("i05")) {
-                item.push(round);
-            }
-            write_key(&mut doc, &ROOT, "items", &list).unwrap();
-            doc.commit();
-        }
-        list.remove(&Id::from_raw("i07"));
-        write_key(&mut doc, &ROOT, "items", &list).unwrap();
-        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
-            panic!("the collection is stored");
-        };
-        doc.put(&map, "stray", 1_i64).unwrap();
-        doc.commit();
-        // Concurrent moves and inserts from two actors: conflicting order keys.
-        let mut left = doc.fork();
-        let mut right = doc.fork();
-        let read: Collection<Vec<i64>> = read_key(&doc, &ROOT, "items").unwrap();
-        let mut l = read.clone();
-        l.move_to(&Id::from_raw("i10"), 2);
-        l.insert(3, Id::from_raw("left"), vec![-1]);
-        write_key(&mut left, &ROOT, "items", &l).unwrap();
-        let mut r = read;
-        r.move_to(&Id::from_raw("i10"), 30);
-        r.insert(3, Id::from_raw("right"), vec![-2]);
-        write_key(&mut right, &ROOT, "items", &r).unwrap();
-        left.merge_incoming(&mut right).unwrap();
-
-        let Some((value, map)) = left.get(&ROOT, "items").unwrap() else {
-            panic!("the collection is stored");
-        };
-        let read = Collection::<Vec<i64>>::load(&left, &value, &map).unwrap();
-        let walked: Vec<_> = read
-            .items
-            .into_iter()
-            .map(|entry| (entry.id, entry.key, (*entry.item).clone()))
-            .collect();
-        assert_eq!(walked, read_key_by_key::<Vec<i64>>(&left, &map));
-        assert_eq!(walked.len(), 41);
-    }
-
-    #[test]
-    fn moves_touch_one_key_and_concurrent_inserts_keep_both() {
-        let mut doc = Doc::new();
-        let mut list: Collection<String> = Collection::new();
-        for (n, word) in ["a", "b", "c", "d"].iter().enumerate() {
-            list.push(Id::from_raw(format!("i{n}")), (*word).to_owned());
-        }
-        write_key(&mut doc, &ROOT, "items", &list).unwrap();
-        doc.commit();
-        list.move_to(&Id::from_raw("i3"), 0);
-        write_key(&mut doc, &ROOT, "items", &list).unwrap();
-        // One order key rewritten.
-        assert_eq!(doc.pending_ops(), 1);
-        doc.commit();
-        let read: Collection<String> = read_key(&doc, &ROOT, "items").unwrap();
-        assert_eq!(ids(&read), ["d", "a", "b", "c"]);
-
-        let mut left = doc.fork();
-        let mut right = doc.fork();
-        let mut l = read.clone();
-        l.insert(1, Id::from_raw("left"), "L".into());
-        write_key(&mut left, &ROOT, "items", &l).unwrap();
-        let mut r = read;
-        r.insert(1, Id::from_raw("right"), "R".into());
-        r.remove(&Id::from_raw("i1"));
-        write_key(&mut right, &ROOT, "items", &r).unwrap();
-        left.merge_incoming(&mut right).unwrap();
-        let merged: Collection<String> = read_key(&left, &ROOT, "items").unwrap();
-        let merged = ids(&merged);
-        assert_eq!(merged.len(), 5);
-        assert_eq!(merged.first().map(String::as_str), Some("d"));
-        assert!(merged.contains(&"L".to_owned()) && merged.contains(&"R".to_owned()));
-        assert!(!merged.contains(&"b".to_owned()));
     }
 }

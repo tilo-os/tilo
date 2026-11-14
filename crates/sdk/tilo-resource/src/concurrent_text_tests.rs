@@ -51,34 +51,38 @@ fn merged_sets(base: &str, left: &str, right: &str) -> String {
     body(&ada)
 }
 
-#[test]
-fn concurrent_sets_of_different_parts_keep_both() {
-    assert_eq!(
-        merged_sets("hello world", "hello brave world", "hello world!"),
-        "hello brave world!"
-    );
-}
+tilo_test_env::scenario! {
+    fn concurrent_sets_keep_every_inserted_text_whole;
 
-#[test]
-fn concurrent_sets_of_one_part_keep_each_inserted_text_whole() {
-    // Both replaced "hello": the text both deleted stays deleted, and each
-    // replacement comes through in one piece, one after the other.
-    let merged = merged_sets("hello world", "goodbye world", "farewell world");
-    assert!(
-        merged == "goodbyefarewell world" || merged == "farewellgoodbye world",
-        "{merged:?}"
-    );
-    // Both appended to the same end.
-    let merged = merged_sets(
-        "Shared from Ada",
-        "Shared from Ada and then more",
-        "Shared from Ada, edited by Bo",
-    );
-    assert!(
-        merged == "Shared from Ada and then more, edited by Bo"
-            || merged == "Shared from Ada, edited by Bo and then more",
-        "{merged:?}"
-    );
+    phase concurrent_sets_of_different_parts_keep_both;
+    {
+        assert_eq!(
+            merged_sets("hello world", "hello brave world", "hello world!"),
+            "hello brave world!"
+        );
+    }
+
+    phase concurrent_sets_of_one_part_keep_each_inserted_text_whole;
+    {
+        // Both replaced "hello": the text both deleted stays deleted, and each
+        // replacement comes through in one piece, one after the other.
+        let merged = merged_sets("hello world", "goodbye world", "farewell world");
+        assert!(
+            merged == "goodbyefarewell world" || merged == "farewellgoodbye world",
+            "{merged:?}"
+        );
+        // Both appended to the same end.
+        let merged = merged_sets(
+            "Shared from Ada",
+            "Shared from Ada and then more",
+            "Shared from Ada, edited by Bo",
+        );
+        assert!(
+            merged == "Shared from Ada and then more, edited by Bo"
+                || merged == "Shared from Ada, edited by Bo and then more",
+            "{merged:?}"
+        );
+    }
 }
 
 /// splitmix64: a seeded generator, so a failing case names its seed.

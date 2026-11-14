@@ -174,9 +174,10 @@ pub fn sequence(low: Option<&str>, high: Option<&str>, count: usize) -> Vec<Stri
 mod tests {
     use super::*;
 
-    #[test]
-    fn fractional_order_keys_stay_strictly_ordered() {
-        // phase: between_is_strictly_ordered_and_never_ends_in_zero
+    tilo_test_env::scenario! {
+        fn fractional_order_keys_stay_ordered_and_short;
+
+        phase between_is_strictly_ordered_and_never_ends_in_zero;
         {
             let cases = [
                 (None, None),
@@ -198,7 +199,8 @@ mod tests {
                 }
             }
         }
-        // phase: repeated_insertion_at_one_point_stays_ordered
+
+        phase repeated_insertion_at_one_point_stays_ordered;
         {
             let mut low = between(None, None);
             let high = between(Some(&low), None);
@@ -210,18 +212,16 @@ mod tests {
             let keys = sequence(Some("a"), Some("b"), 50);
             assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
         }
-        // phase: only_between_shaped_keys_are_keys
+
+        phase only_between_shaped_keys_are_keys;
         {
             for bad in ["", "a0", "A", "a-b", " a"] {
                 assert!(!is_key(bad), "{bad:?}");
             }
             assert!(is_key("0001") && is_key("i") && is_key("zz"));
         }
-    }
 
-    #[test]
-    fn keys_toward_an_open_end_stay_short() {
-        // phase: appends_step_and_grow_logarithmically
+        phase appends_step_and_grow_logarithmically;
         {
             assert_eq!(between(Some("i"), None), "j");
             assert_eq!(between(Some("y"), None), "z01");
@@ -234,7 +234,8 @@ mod tests {
             let longest = keys.iter().map(String::len).max().unwrap_or_default();
             assert!(longest <= 7, "{longest}");
         }
-        // phase: prepends_mirror_appends
+
+        phase prepends_mirror_appends;
         {
             assert_eq!(between(None, Some("i")), "h");
             assert_eq!(between(None, Some("1")), "0zz");
@@ -247,7 +248,8 @@ mod tests {
             }
             assert!(high.len() <= 7, "{high}");
         }
-        // phase: a_key_minted_by_halving_keeps_its_length
+
+        phase a_key_minted_by_halving_keeps_its_length;
         {
             let old = format!("{}r", "z".repeat(500));
             let next = between(Some(&old), None);

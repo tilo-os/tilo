@@ -386,55 +386,59 @@ mod tests {
         }
     }
 
-    #[test]
-    fn it_reads_as_a_sorted_map_through_random_changes_while_clones_hold_it() {
-        let mut rng = Lcg(7);
-        let mut map = ChunkMap::default();
-        let mut model = BTreeMap::new();
-        let mut held: Vec<(ChunkMap<u64>, BTreeMap<String, u64>)> = Vec::new();
-        for step in 0..4_000 {
-            let key = format!("k{:04}", rng.below(600));
-            match rng.below(10) {
-                0..=4 => {
-                    assert_eq!(map.insert(key.clone(), step), model.insert(key, step));
-                }
-                5..=6 => {
-                    assert_eq!(map.remove(&key), model.remove(&key));
-                }
-                7 => {
-                    if let Some(value) = map.get_mut(&key) {
-                        *value += 1;
-                    }
-                    if let Some(value) = model.get_mut(&key) {
-                        *value += 1;
-                    }
-                }
-                8 => {
-                    let cut = rng.below(4);
-                    map.retain_where(|value| value % 4 == cut, |value| *value % 4 != cut);
-                    model.retain(|_, value| *value % 4 != cut);
-                }
-                _ => held.push((map.clone(), model.clone())),
-            }
-            check(&map, &model);
-        }
-        for (map, model) in &held {
-            check(map, model);
-        }
-        assert_eq!(ChunkMap::from(model.clone()), map);
-    }
+    tilo_test_env::scenario! {
+        fn a_chunk_map_reads_sorted_and_copies_one_chunk_a_clone_holds;
 
-    #[test]
-    fn a_change_copies_one_chunk_of_a_map_a_clone_holds() {
-        let model: BTreeMap<String, u64> = (0..1_000).map(|n| (format!("k{n:04}"), n)).collect();
-        let mut map = ChunkMap::from(model);
-        let held = map.clone();
-        *map.get_mut("k0500").unwrap() = 0;
-        assert_eq!(held.get("k0500"), Some(&500));
-        assert!(!map.shares_chunk_of(&held, "k0500"));
-        let shared = (0..1_000)
-            .filter(|n| map.shares_chunk_of(&held, &format!("k{n:04}")))
-            .count();
-        assert!(shared >= 1_000 - MAX_CHUNK, "{shared} entries still shared");
+        phase it_reads_as_a_sorted_map_through_random_changes_while_clones_hold_it;
+        {
+            let mut rng = Lcg(7);
+            let mut map = ChunkMap::default();
+            let mut model = BTreeMap::new();
+            let mut held: Vec<(ChunkMap<u64>, BTreeMap<String, u64>)> = Vec::new();
+            for step in 0..4_000 {
+                let key = format!("k{:04}", rng.below(600));
+                match rng.below(10) {
+                    0..=4 => {
+                        assert_eq!(map.insert(key.clone(), step), model.insert(key, step));
+                    }
+                    5..=6 => {
+                        assert_eq!(map.remove(&key), model.remove(&key));
+                    }
+                    7 => {
+                        if let Some(value) = map.get_mut(&key) {
+                            *value += 1;
+                        }
+                        if let Some(value) = model.get_mut(&key) {
+                            *value += 1;
+                        }
+                    }
+                    8 => {
+                        let cut = rng.below(4);
+                        map.retain_where(|value| value % 4 == cut, |value| *value % 4 != cut);
+                        model.retain(|_, value| *value % 4 != cut);
+                    }
+                    _ => held.push((map.clone(), model.clone())),
+                }
+                check(&map, &model);
+            }
+            for (map, model) in &held {
+                check(map, model);
+            }
+            assert_eq!(ChunkMap::from(model.clone()), map);
+        }
+
+        phase a_change_copies_one_chunk_of_a_map_a_clone_holds;
+        {
+            let model: BTreeMap<String, u64> = (0..1_000).map(|n| (format!("k{n:04}"), n)).collect();
+            let mut map = ChunkMap::from(model);
+            let held = map.clone();
+            *map.get_mut("k0500").unwrap() = 0;
+            assert_eq!(held.get("k0500"), Some(&500));
+            assert!(!map.shares_chunk_of(&held, "k0500"));
+            let shared = (0..1_000)
+                .filter(|n| map.shares_chunk_of(&held, &format!("k{n:04}")))
+                .count();
+            assert!(shared >= 1_000 - MAX_CHUNK, "{shared} entries still shared");
+        }
     }
 }

@@ -390,107 +390,111 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
 
-    #[test]
-    fn a_splice_touches_the_path_to_its_text_and_nothing_else() {
-        let mut doc = Doc::new();
-        let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
-        let mut texts = Vec::new();
-        for id in ["a", "b", "c"] {
-            let block = doc.put_object(&blocks, id, ObjType::Map).unwrap();
-            texts.push(doc.put_object(&block, "text", ObjType::Text).unwrap());
+    tilo_test_env::scenario! {
+        fn a_delta_names_what_changes_touched;
+
+        phase a_splice_touches_the_path_to_its_text_and_nothing_else;
+        {
+            let mut doc = Doc::new();
+            let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+            let mut texts = Vec::new();
+            for id in ["a", "b", "c"] {
+                let block = doc.put_object(&blocks, id, ObjType::Map).unwrap();
+                texts.push(doc.put_object(&block, "text", ObjType::Text).unwrap());
+            }
+            doc.commit();
+            let mut tracker = Tracker::new();
+            tracker.start(&mut doc);
+
+            doc.splice_text(&texts[1], 0, 0, "hello").unwrap();
+            let delta = tracker.delta(&mut doc);
+            assert_eq!(delta.key(&ROOT, "blocks"), Touch::Below);
+            let under = delta.under(&blocks);
+            assert_eq!(under.keys().collect::<Vec<_>>(), ["b"]);
+            assert_eq!(under.key("b"), Touch::Below);
+            assert_eq!(under.key("a"), Touch::Untouched);
+            assert!(delta.under(&texts[1]).is_all());
+            assert!(!delta.touches(&texts[0]));
+
+            assert!(tracker.delta(&mut doc).is_empty());
+
+            doc.delete(&blocks, "c").unwrap();
+            let delta = tracker.delta(&mut doc);
+            assert_eq!(delta.under(&blocks).key("c"), Touch::Written);
+            assert_eq!(doc.text(&texts[1]).unwrap(), "hello");
         }
-        doc.commit();
-        let mut tracker = Tracker::new();
-        tracker.start(&mut doc);
 
-        doc.splice_text(&texts[1], 0, 0, "hello").unwrap();
-        let delta = tracker.delta(&mut doc);
-        assert_eq!(delta.key(&ROOT, "blocks"), Touch::Below);
-        let under = delta.under(&blocks);
-        assert_eq!(under.keys().collect::<Vec<_>>(), ["b"]);
-        assert_eq!(under.key("b"), Touch::Below);
-        assert_eq!(under.key("a"), Touch::Untouched);
-        assert!(delta.under(&texts[1]).is_all());
-        assert!(!delta.touches(&texts[0]));
+        phase a_replaced_document_reads_as_everything_and_new_objects_locate_themselves;
+        {
+            let mut doc = Doc::new();
+            doc.put(ROOT, "x", 1).unwrap();
+            doc.commit();
+            let mut tracker = Tracker::new();
+            tracker.start(&mut doc);
+            let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+            let block = doc.put_object(&blocks, "new", ObjType::Map).unwrap();
+            let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "fresh").unwrap();
+            doc.commit();
+            let delta = tracker.delta_located(&mut doc, &|_| panic!("created objects need no lookup"));
+            assert_eq!(delta.key(&ROOT, "blocks"), Touch::Written);
+            assert_eq!(delta.under(&blocks).key("new"), Touch::Written);
+            assert!(delta.under(&text).is_all());
 
-        assert!(tracker.delta(&mut doc).is_empty());
+            let mut other = Doc::new();
+            other.put(ROOT, "x", 9).unwrap();
+            other.commit();
+            let delta = tracker.delta(&mut other);
+            assert!(delta.is_everything());
+        }
 
-        doc.delete(&blocks, "c").unwrap();
-        let delta = tracker.delta(&mut doc);
-        assert_eq!(delta.under(&blocks).key("c"), Touch::Written);
-        assert_eq!(doc.text(&texts[1]).unwrap(), "hello");
-    }
+        phase an_edit_located_by_the_state_asks_the_document_nothing;
+        {
+            let mut doc = Doc::new();
+            let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+            let block = doc.put_object(&blocks, "b", ObjType::Map).unwrap();
+            let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
+            doc.commit();
+            let mut tracker = Tracker::new();
+            tracker.start(&mut doc);
+            doc.splice_text(&text, 0, 0, "k").unwrap();
+            doc.commit();
+            let path = vec![
+                (ROOT, Prop::Map("blocks".into())),
+                (blocks.clone(), Prop::Map("b".into())),
+                (block.clone(), Prop::Map("text".into())),
+            ];
+            let asked = std::cell::Cell::new(0);
+            let delta = tracker.delta_located(&mut doc, &|obj| {
+                asked.set(asked.get() + 1);
+                (*obj == text).then(|| path.clone())
+            });
+            assert_eq!(asked.get(), 1);
+            assert_eq!(delta.under(&blocks).key("b"), Touch::Below);
+            assert_eq!(delta.under(&block).key("text"), Touch::Below);
+        }
 
-    #[test]
-    fn a_replaced_document_reads_as_everything_and_new_objects_locate_themselves() {
-        let mut doc = Doc::new();
-        doc.put(ROOT, "x", 1).unwrap();
-        doc.commit();
-        let mut tracker = Tracker::new();
-        tracker.start(&mut doc);
-        let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
-        let block = doc.put_object(&blocks, "new", ObjType::Map).unwrap();
-        let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "fresh").unwrap();
-        doc.commit();
-        let delta = tracker.delta_located(&mut doc, &|_| panic!("created objects need no lookup"));
-        assert_eq!(delta.key(&ROOT, "blocks"), Touch::Written);
-        assert_eq!(delta.under(&blocks).key("new"), Touch::Written);
-        assert!(delta.under(&text).is_all());
-
-        let mut other = Doc::new();
-        other.put(ROOT, "x", 9).unwrap();
-        other.commit();
-        let delta = tracker.delta(&mut other);
-        assert!(delta.is_everything());
-    }
-
-    #[test]
-    fn an_edit_located_by_the_state_asks_the_document_nothing() {
-        let mut doc = Doc::new();
-        let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
-        let block = doc.put_object(&blocks, "b", ObjType::Map).unwrap();
-        let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
-        doc.commit();
-        let mut tracker = Tracker::new();
-        tracker.start(&mut doc);
-        doc.splice_text(&text, 0, 0, "k").unwrap();
-        doc.commit();
-        let path = vec![
-            (ROOT, Prop::Map("blocks".into())),
-            (blocks.clone(), Prop::Map("b".into())),
-            (block.clone(), Prop::Map("text".into())),
-        ];
-        let asked = std::cell::Cell::new(0);
-        let delta = tracker.delta_located(&mut doc, &|obj| {
-            asked.set(asked.get() + 1);
-            (*obj == text).then(|| path.clone())
-        });
-        assert_eq!(asked.get(), 1);
-        assert_eq!(delta.under(&blocks).key("b"), Touch::Below);
-        assert_eq!(delta.under(&block).key("text"), Touch::Below);
-    }
-
-    #[test]
-    fn merged_deltas_read_as_one() {
-        let mut doc = Doc::new();
-        doc.put(ROOT, "a", 1).unwrap();
-        doc.put(ROOT, "b", 1).unwrap();
-        doc.commit();
-        let mut tracker = Tracker::new();
-        tracker.start(&mut doc);
-        doc.put(ROOT, "a", 2).unwrap();
-        doc.commit();
-        let mut merged = tracker.delta(&mut doc);
-        doc.put(ROOT, "b", 2).unwrap();
-        doc.commit();
-        merged.merge(tracker.delta(&mut doc));
-        assert_eq!(merged.key(&ROOT, "a"), Touch::Written);
-        assert_eq!(merged.key(&ROOT, "b"), Touch::Written);
-        let mut nothing = Delta::nothing();
-        nothing.merge(merged.clone());
-        assert_eq!(nothing.key(&ROOT, "b"), Touch::Written);
-        merged.merge(Delta::everything());
-        assert!(merged.is_everything());
+        phase merged_deltas_read_as_one;
+        {
+            let mut doc = Doc::new();
+            doc.put(ROOT, "a", 1).unwrap();
+            doc.put(ROOT, "b", 1).unwrap();
+            doc.commit();
+            let mut tracker = Tracker::new();
+            tracker.start(&mut doc);
+            doc.put(ROOT, "a", 2).unwrap();
+            doc.commit();
+            let mut merged = tracker.delta(&mut doc);
+            doc.put(ROOT, "b", 2).unwrap();
+            doc.commit();
+            merged.merge(tracker.delta(&mut doc));
+            assert_eq!(merged.key(&ROOT, "a"), Touch::Written);
+            assert_eq!(merged.key(&ROOT, "b"), Touch::Written);
+            let mut nothing = Delta::nothing();
+            nothing.merge(merged.clone());
+            assert_eq!(nothing.key(&ROOT, "b"), Touch::Written);
+            merged.merge(Delta::everything());
+            assert!(merged.is_everything());
+        }
     }
 }

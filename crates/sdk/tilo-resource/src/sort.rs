@@ -79,36 +79,40 @@ pub(crate) fn swaps_to_sort(
 mod tests {
     use super::*;
 
-    /// The order is the standard library's stable sort, ties kept in place.
-    #[test]
-    fn sorts_as_the_standard_stable_sort() {
-        let mut seed = 0x2545_f491_u32;
-        for len in 0..40 {
-            let items: Vec<(u8, usize)> = (0..len)
-                .map(|at| {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 17;
-                    seed ^= seed << 5;
-                    ((seed % 5) as u8, at)
-                })
-                .collect();
-            let mut expected = items.clone();
-            expected.compact_sort_by_key(|item| item.0);
-            let mut sorted = items.clone();
-            sort_by_key(&mut sorted, |item| item.0);
-            assert_eq!(sorted, expected, "{items:?}");
-            let mut reversed = items.clone();
-            sort_by(&mut reversed, |a, b| b.0.cmp(&a.0));
-            expected.compact_sort_by_key(|item| std::cmp::Reverse(item.0));
-            assert_eq!(reversed, expected, "{items:?}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn sorting_matches_the_standard_stable_sort;
 
-    /// Items already in order are not touched.
-    #[test]
-    fn sorted_items_need_no_swaps() {
-        let items = [1, 2, 2, 3];
-        let swaps = swaps_to_sort(items.len(), &mut |a, b| items[a].cmp(&items[b]));
-        assert!(swaps.is_empty());
+        phase sorts_as_the_standard_stable_sort;
+        // The order is the standard library's stable sort, ties kept in place.
+        {
+            let mut seed = 0x2545_f491_u32;
+            for len in 0..40 {
+                let items: Vec<(u8, usize)> = (0..len)
+                    .map(|at| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        ((seed % 5) as u8, at)
+                    })
+                    .collect();
+                let mut expected = items.clone();
+                expected.compact_sort_by_key(|item| item.0);
+                let mut sorted = items.clone();
+                sort_by_key(&mut sorted, |item| item.0);
+                assert_eq!(sorted, expected, "{items:?}");
+                let mut reversed = items.clone();
+                sort_by(&mut reversed, |a, b| b.0.cmp(&a.0));
+                expected.compact_sort_by_key(|item| std::cmp::Reverse(item.0));
+                assert_eq!(reversed, expected, "{items:?}");
+            }
+        }
+
+        phase sorted_items_need_no_swaps;
+        // Items already in order are not touched.
+        {
+            let items = [1, 2, 2, 3];
+            let swaps = swaps_to_sort(items.len(), &mut |a, b| items[a].cmp(&items[b]));
+            assert!(swaps.is_empty());
+        }
     }
 }

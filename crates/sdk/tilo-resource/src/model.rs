@@ -2016,9 +2016,10 @@ mod tests {
     use automerge::ROOT;
     use tilo_automerge::ApplyIncoming;
 
-    #[test]
-    fn writes_become_minimal_mergeable_operations() {
-        // phase: unchanged_writes_produce_no_operations
+    tilo_test_env::scenario! {
+        fn writes_become_minimal_mergeable_operations;
+
+        phase unchanged_writes_produce_no_operations;
         {
             let mut doc = Doc::new();
             write_key(&mut doc, &ROOT, "title", &"hello".to_owned()).unwrap();
@@ -2033,7 +2034,8 @@ mod tests {
             assert_eq!(read_key::<Vec<i64>>(&doc, &ROOT, "tags").unwrap(), [1, 2]);
             assert_eq!(read_key::<Option<u8>>(&doc, &ROOT, "absent").unwrap(), None);
         }
-        // phase: text_splices_merge_concurrent_edits
+
+        phase text_splices_merge_concurrent_edits;
         {
             let mut base = Doc::new();
             write_key(&mut base, &ROOT, "body", &"hello world".to_owned()).unwrap();
@@ -2048,7 +2050,8 @@ mod tests {
                 "hello brave world!"
             );
         }
-        // phase: a_text_edit_is_one_splice_of_the_changed_span
+
+        phase a_text_edit_is_one_splice_of_the_changed_span;
         {
             for (old, new) in [
                 ("first thought", "second thought"),

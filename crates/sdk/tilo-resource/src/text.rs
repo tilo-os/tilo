@@ -356,218 +356,222 @@ mod tests {
         doc.text(&obj).unwrap()
     }
 
-    #[test]
-    fn each_authors_typing_is_marked_with_its_author() {
-        use automerge::marks::Mark;
-        let typed_by = |doc: &mut Doc, who: &str, edit: TextEdit| {
-            let encoded = tilo_actions::EncodedAction::encode(TEXT_ACTION_TYPE, &edit).unwrap();
-            let context = tilo_actions::ActionContext::for_resource("text", "tilo.text", "Text")
-                .with_invoker(tilo_actions::ActionInvoker::actor(who));
-            tilo_actions::apply_local_with_context(doc, &edit, encoded, None, context).unwrap();
-        };
-        let mut doc = Doc::new();
-        typed_by(
-            &mut doc,
-            "alice",
+    tilo_test_env::scenario! {
+        fn text_is_spliced_by_character_and_merges_concurrent_typing;
+
+        phase each_authors_typing_is_marked_with_its_author;
+        {
+            use automerge::marks::Mark;
+            let typed_by = |doc: &mut Doc, who: &str, edit: TextEdit| {
+                let encoded = tilo_actions::EncodedAction::encode(TEXT_ACTION_TYPE, &edit).unwrap();
+                let context = tilo_actions::ActionContext::for_resource("text", "tilo.text", "Text")
+                    .with_invoker(tilo_actions::ActionInvoker::actor(who));
+                tilo_actions::apply_local_with_context(doc, &edit, encoded, None, context).unwrap();
+            };
+            let mut doc = Doc::new();
+            typed_by(
+                &mut doc,
+                "alice",
+                TextEdit::Splice {
+                    at: 0,
+                    delete: 0,
+                    insert: "héllo".into(),
+                },
+            );
+            typed_by(
+                &mut doc,
+                "bob",
+                TextEdit::Splice {
+                    at: 5,
+                    delete: 0,
+                    insert: " wörld".into(),
+                },
+            );
+            let obj = PlainText::root_text(&doc).unwrap();
+            let text = doc.text(&obj).unwrap();
+            assert_eq!(text, "héllo wörld");
+            let runs: Vec<(String, String)> = doc
+                .marks(&obj)
+                .unwrap()
+                .into_iter()
+                .filter(|mark: &Mark| mark.name() == AUTHOR_MARK)
+                .map(|mark| {
+                    let run: String = text
+                        .chars()
+                        .skip(mark.start)
+                        .take(mark.end.saturating_sub(mark.start))
+                        .collect();
+                    (mark.value().as_str().unwrap_or_default().to_owned(), run)
+                })
+                .collect();
+            assert_eq!(
+                runs,
+                vec![
+                    ("alice".to_owned(), "héllo".to_owned()),
+                    ("bob".to_owned(), " wörld".to_owned()),
+                ],
+                "each person's typing carries their name"
+            );
+
+            let mut plain = Doc::new();
+            let obj = plain.put_object(ROOT, "body", ObjType::Text).unwrap();
             TextEdit::Splice {
                 at: 0,
                 delete: 0,
-                insert: "héllo".into(),
-            },
-        );
-        typed_by(
-            &mut doc,
-            "bob",
-            TextEdit::Splice {
-                at: 5,
-                delete: 0,
-                insert: " wörld".into(),
-            },
-        );
-        let obj = PlainText::root_text(&doc).unwrap();
-        let text = doc.text(&obj).unwrap();
-        assert_eq!(text, "héllo wörld");
-        let runs: Vec<(String, String)> = doc
-            .marks(&obj)
-            .unwrap()
-            .into_iter()
-            .filter(|mark: &Mark| mark.name() == AUTHOR_MARK)
-            .map(|mark| {
-                let run: String = text
-                    .chars()
-                    .skip(mark.start)
-                    .take(mark.end.saturating_sub(mark.start))
-                    .collect();
-                (mark.value().as_str().unwrap_or_default().to_owned(), run)
-            })
-            .collect();
-        assert_eq!(
-            runs,
-            vec![
-                ("alice".to_owned(), "héllo".to_owned()),
-                ("bob".to_owned(), " wörld".to_owned()),
-            ],
-            "each person's typing carries their name"
-        );
-
-        let mut plain = Doc::new();
-        let obj = plain.put_object(ROOT, "body", ObjType::Text).unwrap();
-        TextEdit::Splice {
-            at: 0,
-            delete: 0,
-            insert: "x".into(),
+                insert: "x".into(),
+            }
+            .apply_under(&mut plain, &obj)
+            .unwrap();
+            assert!(plain.marks(&obj).unwrap().is_empty());
         }
-        .apply_under(&mut plain, &obj)
-        .unwrap();
-        assert!(plain.marks(&obj).unwrap().is_empty());
-    }
 
-    #[test]
-    fn a_copied_text_keeps_its_words_and_its_marks() {
-        use automerge::marks::{ExpandMark, Mark};
-        let mut doc = Doc::new();
-        let from = doc.put_object(ROOT, "from", ObjType::Text).unwrap();
-        doc.splice_text(&from, 0, 0, "hello world").unwrap();
-        doc.mark(
-            &from,
-            Mark::new("strong".to_owned(), true, 0, 5),
-            ExpandMark::After,
-        )
-        .unwrap();
-        let into = doc.put_object(ROOT, "into", ObjType::Text).unwrap();
-        copy_whole(&mut doc, &from, &into).unwrap();
-        assert_eq!(doc.text(&into).unwrap(), "hello world");
-        let marks: Vec<(String, usize, usize)> = doc
-            .marks(&into)
-            .unwrap()
-            .into_iter()
-            .map(|mark| (mark.name().to_owned(), mark.start, mark.end))
-            .collect();
-        assert_eq!(marks, vec![("strong".to_owned(), 0, 5)]);
-    }
-
-    #[test]
-    fn a_splice_counts_characters_not_bytes() {
-        let edit = TextEdit::Splice {
-            at: 2,
-            delete: 1,
-            insert: "ö".into(),
-        };
-        assert_eq!(spliced("naïve", &edit), "naöve");
-    }
-
-    #[test]
-    fn a_splice_past_the_end_is_refused_and_writes_nothing() {
-        let mut doc = Doc::new();
-        let obj = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-        doc.splice_text(&obj, 0, 0, "abc").unwrap();
-        let edit = TextEdit::Splice {
-            at: 2,
-            delete: 5,
-            insert: String::new(),
-        };
-        assert!(matches!(
-            edit.apply_under(&mut doc, &obj),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(doc.text(&obj).unwrap(), "abc");
-    }
-
-    #[test]
-    fn replacing_the_text_keeps_a_collaborators_concurrent_typing() {
-        let mut ours = Doc::new();
-        let obj = ours.put_object(ROOT, "body", ObjType::Text).unwrap();
-        ours.splice_text(&obj, 0, 0, "select 1").unwrap();
-        let mut theirs = ours.fork();
-        theirs.splice_text(&obj, 8, 0, ";").unwrap();
-        TextEdit::ReplaceText {
-            text: "SELECT 1".into(),
+        phase a_copied_text_keeps_its_words_and_its_marks;
+        {
+            use automerge::marks::{ExpandMark, Mark};
+            let mut doc = Doc::new();
+            let from = doc.put_object(ROOT, "from", ObjType::Text).unwrap();
+            doc.splice_text(&from, 0, 0, "hello world").unwrap();
+            doc.mark(
+                &from,
+                Mark::new("strong".to_owned(), true, 0, 5),
+                ExpandMark::After,
+            )
+            .unwrap();
+            let into = doc.put_object(ROOT, "into", ObjType::Text).unwrap();
+            copy_whole(&mut doc, &from, &into).unwrap();
+            assert_eq!(doc.text(&into).unwrap(), "hello world");
+            let marks: Vec<(String, usize, usize)> = doc
+                .marks(&into)
+                .unwrap()
+                .into_iter()
+                .map(|mark| (mark.name().to_owned(), mark.start, mark.end))
+                .collect();
+            assert_eq!(marks, vec![("strong".to_owned(), 0, 5)]);
         }
-        .apply_under(&mut ours, &obj)
-        .unwrap();
-        ours.merge_incoming(&mut theirs).unwrap();
-        assert_eq!(ours.text(&obj).unwrap(), "SELECT 1;");
-    }
 
-    #[test]
-    fn the_smallest_splice_keeps_what_both_texts_share() {
-        assert_eq!(
-            splice_between("hello world", "hello brave world"),
-            Some(TextEdit::Splice {
-                at: 6,
-                delete: 0,
-                insert: "brave ".into()
-            })
-        );
-        assert_eq!(
-            splice_between("aaa", "aa"),
-            Some(TextEdit::Splice {
+        phase a_splice_counts_characters_not_bytes;
+        {
+            let edit = TextEdit::Splice {
                 at: 2,
                 delete: 1,
-                insert: String::new()
-            })
-        );
-        assert_eq!(splice_between("same", "same"), None);
-    }
+                insert: "ö".into(),
+            };
+            assert_eq!(spliced("naïve", &edit), "naöve");
+        }
 
-    #[test]
-    fn byte_ends_land_where_character_ends_do() {
-        let atoms = [
-            "", "a", "é", "e\u{301}", "😀", "😁", "\u{100}", "\u{101}", "\n",
-        ];
-        for a in atoms {
-            for b in atoms {
-                for c in atoms {
-                    for d in atoms {
-                        let (left, right) = (format!("{a}{b}{c}"), format!("{a}{d}{c}"));
-                        let chars = |text: &str| text.chars().collect::<Vec<_>>();
-                        let (prefix, suffix) = common_ends(&chars(&left), &chars(&right));
-                        let (start, end) = common_text_ends(&left, &right);
-                        let (head, _) = left.split_at(start);
-                        let (_, tail) = left.split_at(left.len().saturating_sub(end));
-                        assert_eq!(
-                            (head.chars().count(), tail.chars().count()),
-                            (prefix, suffix),
-                            "{left:?} -> {right:?}"
-                        );
+        phase a_splice_past_the_end_is_refused_and_writes_nothing;
+        {
+            let mut doc = Doc::new();
+            let obj = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&obj, 0, 0, "abc").unwrap();
+            let edit = TextEdit::Splice {
+                at: 2,
+                delete: 5,
+                insert: String::new(),
+            };
+            assert!(matches!(
+                edit.apply_under(&mut doc, &obj),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(doc.text(&obj).unwrap(), "abc");
+        }
+
+        phase replacing_the_text_keeps_a_collaborators_concurrent_typing;
+        {
+            let mut ours = Doc::new();
+            let obj = ours.put_object(ROOT, "body", ObjType::Text).unwrap();
+            ours.splice_text(&obj, 0, 0, "select 1").unwrap();
+            let mut theirs = ours.fork();
+            theirs.splice_text(&obj, 8, 0, ";").unwrap();
+            TextEdit::ReplaceText {
+                text: "SELECT 1".into(),
+            }
+            .apply_under(&mut ours, &obj)
+            .unwrap();
+            ours.merge_incoming(&mut theirs).unwrap();
+            assert_eq!(ours.text(&obj).unwrap(), "SELECT 1;");
+        }
+
+        phase the_smallest_splice_keeps_what_both_texts_share;
+        {
+            assert_eq!(
+                splice_between("hello world", "hello brave world"),
+                Some(TextEdit::Splice {
+                    at: 6,
+                    delete: 0,
+                    insert: "brave ".into()
+                })
+            );
+            assert_eq!(
+                splice_between("aaa", "aa"),
+                Some(TextEdit::Splice {
+                    at: 2,
+                    delete: 1,
+                    insert: String::new()
+                })
+            );
+            assert_eq!(splice_between("same", "same"), None);
+        }
+
+        phase byte_ends_land_where_character_ends_do;
+        {
+            let atoms = [
+                "", "a", "é", "e\u{301}", "😀", "😁", "\u{100}", "\u{101}", "\n",
+            ];
+            for a in atoms {
+                for b in atoms {
+                    for c in atoms {
+                        for d in atoms {
+                            let (left, right) = (format!("{a}{b}{c}"), format!("{a}{d}{c}"));
+                            let chars = |text: &str| text.chars().collect::<Vec<_>>();
+                            let (prefix, suffix) = common_ends(&chars(&left), &chars(&right));
+                            let (start, end) = common_text_ends(&left, &right);
+                            let (head, _) = left.split_at(start);
+                            let (_, tail) = left.split_at(left.len().saturating_sub(end));
+                            assert_eq!(
+                                (head.chars().count(), tail.chars().count()),
+                                (prefix, suffix),
+                                "{left:?} -> {right:?}"
+                            );
+                        }
                     }
                 }
             }
         }
-    }
 
-    #[test]
-    fn typing_a_word_coalesces_until_a_space() {
-        let typed = |at: usize, insert: &str| TextEdit::Splice {
-            at,
-            delete: 0,
-            insert: insert.into(),
-        };
-        assert!(PlainText::coalesces(&typed(0, "h"), &typed(1, "i")));
-        assert!(!PlainText::coalesces(&typed(0, "h"), &typed(3, "i")));
-        assert!(!PlainText::coalesces(&typed(0, " "), &typed(1, "i")));
-        let deleted = |at: usize| TextEdit::Splice {
-            at,
-            delete: 1,
-            insert: String::new(),
-        };
-        assert!(PlainText::coalesces(&deleted(4), &deleted(3)));
-        assert!(!PlainText::coalesces(&typed(4, "x"), &deleted(4)));
-    }
+        phase typing_a_word_coalesces_until_a_space;
+        {
+            let typed = |at: usize, insert: &str| TextEdit::Splice {
+                at,
+                delete: 0,
+                insert: insert.into(),
+            };
+            assert!(PlainText::coalesces(&typed(0, "h"), &typed(1, "i")));
+            assert!(!PlainText::coalesces(&typed(0, "h"), &typed(3, "i")));
+            assert!(!PlainText::coalesces(&typed(0, " "), &typed(1, "i")));
+            let deleted = |at: usize| TextEdit::Splice {
+                at,
+                delete: 1,
+                insert: String::new(),
+            };
+            assert!(PlainText::coalesces(&deleted(4), &deleted(3)));
+            assert!(!PlainText::coalesces(&typed(4, "x"), &deleted(4)));
+        }
 
-    #[test]
-    fn a_record_of_its_own_text_replays_its_edits() {
-        let mut replica = Replica::<PlainText>::new();
-        replica
-            .apply(
-                crate::Invoke::<PlainText>::apply(&TextEdit::Splice {
-                    at: 0,
-                    delete: 0,
-                    insert: "draft".into(),
-                })
-                .unwrap(),
-            )
-            .unwrap();
-        assert_eq!(replica.state().unwrap().as_str(), "draft");
+        phase a_record_of_its_own_text_replays_its_edits;
+        {
+            let mut replica = Replica::<PlainText>::new();
+            replica
+                .apply(
+                    crate::Invoke::<PlainText>::apply(&TextEdit::Splice {
+                        at: 0,
+                        delete: 0,
+                        insert: "draft".into(),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(replica.state().unwrap().as_str(), "draft");
+        }
     }
 }

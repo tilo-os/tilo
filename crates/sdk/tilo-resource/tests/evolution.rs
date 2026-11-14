@@ -66,196 +66,204 @@ fn old_document() -> tilo_resource::Doc {
     old.doc_mut().fork()
 }
 
-#[test]
-fn an_old_document_migrates_once_and_reads_as_the_new_model() {
-    let mut doc = old_document();
-    assert_eq!(evolution::stored_version(&doc), 1);
-    // Unmigrated, it does not read: it never shows stale state as current.
-    let unreadable = evolution::read_checked::<Contact>(&doc).unwrap_err();
-    assert_eq!((unreadable.stored, unreadable.expected), (1, 2));
-    assert!(Contact::read(&doc).is_err());
+tilo_test_env::scenario! {
+    fn a_document_migrates_to_the_model_that_reads_it;
 
-    assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
-    assert!(!evolution::migrate::<Contact>(&mut doc).unwrap(), "once");
-    let contact = evolution::read_checked::<Contact>(&doc).unwrap();
-    assert_eq!(
-        (contact.given.as_str(), contact.family.as_str()),
-        ("Ada", "Lovelace")
-    );
-    let version = tilo_resource::history::versions(&mut doc);
-    let last = version.last().unwrap();
-    assert!(
-        last.context
-            .as_ref()
-            .is_some_and(tilo_actions::ActionContext::is_housekeeping),
-        "a migration is housekeeping"
-    );
-    let mut replica = Replica::<Contact>::from_doc(doc);
-    replica
-        .apply(Contact::RENAME.with(("Grace".to_owned(), "Hopper".to_owned())))
-        .unwrap();
-    assert_eq!(replica.state().unwrap().given, "Grace");
-}
+    phase an_old_document_migrates_once_and_reads_as_the_new_model;
+    {
+        let mut doc = old_document();
+        assert_eq!(evolution::stored_version(&doc), 1);
+        // Unmigrated, it does not read: it never shows stale state as current.
+        let unreadable = evolution::read_checked::<Contact>(&doc).unwrap_err();
+        assert_eq!((unreadable.stored, unreadable.expected), (1, 2));
+        assert!(Contact::read(&doc).is_err());
 
-/// A migration is one change on top of the document's history, so the
-/// document as it was before it is the snapshot a rollback reads: the
-/// previous build finds its own version there, whole.
-#[test]
-fn the_document_before_a_migration_stays_readable_in_its_history() {
-    let mut doc = old_document();
-    let before = doc.get_heads();
-    assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
-    let snapshot = doc.fork_at(&before).unwrap();
-    assert_eq!(evolution::stored_version(&snapshot), 1);
-    assert_eq!(ContactV1::read(&snapshot).unwrap().name, "Ada Lovelace");
-    // The build that wrote it refuses the migrated document rather than
-    // reading it as its own.
-    assert!(evolution::read_checked::<ContactV1>(&doc).is_err());
-}
-
-#[test]
-fn two_devices_migrating_concurrently_make_the_same_change() {
-    let mut left = old_document();
-    let mut right = left.fork();
-    evolution::migrate::<Contact>(&mut left).unwrap();
-    evolution::migrate::<Contact>(&mut right).unwrap();
-    assert_eq!(left.get_heads(), right.get_heads());
-    tilo_automerge::ApplyIncoming::merge_incoming(&mut left, &mut right).unwrap();
-    assert_eq!(left.get_heads().len(), 1);
-    assert_eq!(Contact::read(&left).unwrap().given, "Ada");
-}
-
-#[test]
-fn a_document_from_a_newer_app_is_unreadable() {
-    let mut replica = Replica::<Contact>::new();
-    assert_eq!(evolution::stored_version(replica.doc()), 2);
-    let mut reader = Reader::<Contact>::open(replica.doc_mut()).unwrap();
-    replica
-        .doc_mut()
-        .put(
-            automerge::ROOT,
-            VERSION_KEY,
-            automerge::ScalarValue::Uint(3),
-        )
-        .unwrap();
-    replica.doc_mut().commit();
-    assert!(reader.sync(replica.doc()).is_err());
-    let unreadable = reader.unreadable().unwrap();
-    assert_eq!((unreadable.stored, unreadable.expected), (3, 2));
-    assert!(unreadable.reason.contains("newer version"), "{unreadable}");
-    assert!(
+        assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
+        assert!(!evolution::migrate::<Contact>(&mut doc).unwrap(), "once");
+        let contact = evolution::read_checked::<Contact>(&doc).unwrap();
+        assert_eq!(
+            (contact.given.as_str(), contact.family.as_str()),
+            ("Ada", "Lovelace")
+        );
+        let version = tilo_resource::history::versions(&mut doc);
+        let last = version.last().unwrap();
+        assert!(
+            last.context
+                .as_ref()
+                .is_some_and(tilo_actions::ActionContext::is_housekeeping),
+            "a migration is housekeeping"
+        );
+        let mut replica = Replica::<Contact>::from_doc(doc);
         replica
-            .doc()
-            .get(automerge::ROOT, "given")
-            .unwrap()
-            .is_some()
-    );
+            .apply(Contact::RENAME.with(("Grace".to_owned(), "Hopper".to_owned())))
+            .unwrap();
+        assert_eq!(replica.state().unwrap().given, "Grace");
+    }
+
+    phase the_document_before_a_migration_stays_readable_in_its_history;
+    // A migration is one change on top of the document's history, so the
+    // document as it was before it is the snapshot a rollback reads: the
+    // previous build finds its own version there, whole.
+    {
+        let mut doc = old_document();
+        let before = doc.get_heads();
+        assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
+        let snapshot = doc.fork_at(&before).unwrap();
+        assert_eq!(evolution::stored_version(&snapshot), 1);
+        assert_eq!(ContactV1::read(&snapshot).unwrap().name, "Ada Lovelace");
+        // The build that wrote it refuses the migrated document rather than
+        // reading it as its own.
+        assert!(evolution::read_checked::<ContactV1>(&doc).is_err());
+    }
+
+    phase two_devices_migrating_concurrently_make_the_same_change;
+    {
+        let mut left = old_document();
+        let mut right = left.fork();
+        evolution::migrate::<Contact>(&mut left).unwrap();
+        evolution::migrate::<Contact>(&mut right).unwrap();
+        assert_eq!(left.get_heads(), right.get_heads());
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut left, &mut right).unwrap();
+        assert_eq!(left.get_heads().len(), 1);
+        assert_eq!(Contact::read(&left).unwrap().given, "Ada");
+    }
+
+    phase a_document_from_a_newer_app_is_unreadable;
+    {
+        let mut replica = Replica::<Contact>::new();
+        assert_eq!(evolution::stored_version(replica.doc()), 2);
+        let mut reader = Reader::<Contact>::open(replica.doc_mut()).unwrap();
+        replica
+            .doc_mut()
+            .put(
+                automerge::ROOT,
+                VERSION_KEY,
+                automerge::ScalarValue::Uint(3),
+            )
+            .unwrap();
+        replica.doc_mut().commit();
+        assert!(reader.sync(replica.doc()).is_err());
+        let unreadable = reader.unreadable().unwrap();
+        assert_eq!((unreadable.stored, unreadable.expected), (3, 2));
+        assert!(unreadable.reason.contains("newer version"), "{unreadable}");
+        assert!(
+            replica
+                .doc()
+                .get(automerge::ROOT, "given")
+                .unwrap()
+                .is_some()
+        );
+    }
 }
 
-#[test]
-fn the_surface_lists_verbs_kinds_and_fields() {
-    let surface = Contact::surface();
-    assert_eq!(surface.kind, "test.contact");
-    assert_eq!(surface.version, 2);
-    let invite = surface
-        .verbs
-        .iter()
-        .find(|verb| verb.id == "invite")
-        .unwrap();
-    assert_eq!(invite.kind, ActionKind::Outside);
-    assert!(invite.destructive);
-    assert!(invite.params.is_empty());
-    let rename = surface
-        .verbs
-        .iter()
-        .find(|verb| verb.id == "rename")
-        .unwrap();
-    assert_eq!(rename.kind, ActionKind::Undoable);
-    assert_eq!(
-        rename
-            .params
+tilo_test_env::scenario! {
+    fn a_record_acts_through_the_surface_it_lists;
+
+    phase the_surface_lists_verbs_kinds_and_fields;
+    {
+        let surface = Contact::surface();
+        assert_eq!(surface.kind, "test.contact");
+        assert_eq!(surface.version, 2);
+        let invite = surface
+            .verbs
             .iter()
-            .map(|param| param.name.as_str())
-            .collect::<Vec<_>>(),
-        ["given", "family"]
-    );
-    assert_eq!(rename.params[0].schema["type"], "string");
-    let notes = surface
-        .fields
-        .iter()
-        .find(|field| field.path == "notes")
-        .unwrap();
-    assert!(notes.readonly && notes.unit);
-    let given = surface
-        .fields
-        .iter()
-        .find(|field| field.path == "given")
-        .unwrap();
-    assert!(given.label);
-    assert_eq!(given.title, "Given name");
-    assert_eq!(given.ty, tilo_resource::FieldType::Text);
-    assert!(surface.fields.iter().any(|field| field.path == "outbox"
-        && field.ty == tilo_resource::FieldType::Outbox(Box::new(tilo_resource::FieldType::Text))));
-    // It is data: it survives its own serialization.
-    let json = serde_json::to_string(&surface).unwrap();
-    assert_eq!(
-        serde_json::from_str::<tilo_resource::Surface>(&json).unwrap(),
-        surface
-    );
-}
+            .find(|verb| verb.id == "invite")
+            .unwrap();
+        assert_eq!(invite.kind, ActionKind::Outside);
+        assert!(invite.destructive);
+        assert!(invite.params.is_empty());
+        let rename = surface
+            .verbs
+            .iter()
+            .find(|verb| verb.id == "rename")
+            .unwrap();
+        assert_eq!(rename.kind, ActionKind::Undoable);
+        assert_eq!(
+            rename
+                .params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            ["given", "family"]
+        );
+        assert_eq!(rename.params[0].schema["type"], "string");
+        let notes = surface
+            .fields
+            .iter()
+            .find(|field| field.path == "notes")
+            .unwrap();
+        assert!(notes.readonly && notes.unit);
+        let given = surface
+            .fields
+            .iter()
+            .find(|field| field.path == "given")
+            .unwrap();
+        assert!(given.label);
+        assert_eq!(given.title, "Given name");
+        assert_eq!(given.ty, tilo_resource::FieldType::Text);
+        assert!(surface.fields.iter().any(|field| field.path == "outbox"
+            && field.ty == tilo_resource::FieldType::Outbox(Box::new(tilo_resource::FieldType::Text))));
+        // It is data: it survives its own serialization.
+        let json = serde_json::to_string(&surface).unwrap();
+        assert_eq!(
+            serde_json::from_str::<tilo_resource::Surface>(&json).unwrap(),
+            surface
+        );
+    }
 
-/// A group is undoable only when every member is: one that sends something
-/// away makes a deleting group ask, through any door, as that member alone
-/// does.
-#[test]
-fn a_group_holding_a_change_undo_cannot_take_back_asks_first() {
-    let mut contact = Replica::<Contact>::new();
-    let group = || {
-        tilo_resource::Invoke::group([
-            Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())),
-            Contact::INVITE.invoke(),
-        ])
-    };
-    assert!(matches!(
-        contact.apply(group()),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    assert_eq!(contact.state().unwrap().outbox.len(), 0);
-    contact.apply_confirmed(group()).unwrap();
-    assert_eq!(contact.state().unwrap().outbox.len(), 1);
-}
+    phase a_group_holding_a_change_undo_cannot_take_back_asks_first;
+    // A group is undoable only when every member is: one that sends something
+    // away makes a deleting group ask, through any door, as that member alone
+    // does.
+    {
+        let mut contact = Replica::<Contact>::new();
+        let group = || {
+            tilo_resource::Invoke::group([
+                Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())),
+                Contact::INVITE.invoke(),
+            ])
+        };
+        assert!(matches!(
+            contact.apply(group()),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        assert_eq!(contact.state().unwrap().outbox.len(), 0);
+        contact.apply_confirmed(group()).unwrap();
+        assert_eq!(contact.state().unwrap().outbox.len(), 1);
+    }
 
-#[test]
-fn a_replica_acts_through_the_door() {
-    let mut contact = Replica::<Contact>::new();
-    // A destructive verb asks the person first.
-    assert!(matches!(
-        contact.apply(Contact::INVITE.invoke()),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    assert_eq!(contact.state().unwrap().outbox.len(), 0);
-    contact.apply_confirmed(Contact::INVITE.invoke()).unwrap();
-    assert_eq!(contact.state().unwrap().outbox.len(), 1);
-    // An action the resource does not publish is unknown.
-    let unknown: tilo_resource::ActionRef<Contact, ()> =
-        tilo_resource::ActionRef::new("nope", &[], tilo_resource::ResourceKind::of::<Contact>());
-    assert!(matches!(
-        contact.apply(unknown.invoke()),
-        Err(tilo_actions::DoorError::Unknown(_))
-    ));
-    // The change carries the history entry the door writes.
-    contact
-        .apply(Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())))
-        .unwrap();
-    let versions = contact.versions();
-    let context = versions.last().unwrap().context.clone().unwrap();
-    let Some(tilo_actions::Described {
-        what: tilo_actions::Did::Verb(verb),
-        ..
-    }) = context.described()
-    else {
-        panic!("the change names its verb: {context:?}");
-    };
-    assert_eq!(verb.action.action, "rename");
-    assert_eq!(verb.action.kind, "test.contact");
+    phase a_replica_acts_through_the_door;
+    {
+        let mut contact = Replica::<Contact>::new();
+        // A destructive verb asks the person first.
+        assert!(matches!(
+            contact.apply(Contact::INVITE.invoke()),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        assert_eq!(contact.state().unwrap().outbox.len(), 0);
+        contact.apply_confirmed(Contact::INVITE.invoke()).unwrap();
+        assert_eq!(contact.state().unwrap().outbox.len(), 1);
+        // An action the resource does not publish is unknown.
+        let unknown: tilo_resource::ActionRef<Contact, ()> =
+            tilo_resource::ActionRef::new("nope", &[], tilo_resource::ResourceKind::of::<Contact>());
+        assert!(matches!(
+            contact.apply(unknown.invoke()),
+            Err(tilo_actions::DoorError::Unknown(_))
+        ));
+        // The change carries the history entry the door writes.
+        contact
+            .apply(Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())))
+            .unwrap();
+        let versions = contact.versions();
+        let context = versions.last().unwrap().context.clone().unwrap();
+        let Some(tilo_actions::Described {
+            what: tilo_actions::Did::Verb(verb),
+            ..
+        }) = context.described()
+        else {
+            panic!("the change names its verb: {context:?}");
+        };
+        assert_eq!(verb.action.action, "rename");
+        assert_eq!(verb.action.kind, "test.contact");
+    }
 }

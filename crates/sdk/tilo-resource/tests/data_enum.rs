@@ -152,68 +152,227 @@ impl Rules {
     }
 }
 
-#[test]
-fn a_data_enum_round_trips_through_the_document_and_json() {
-    let mut replica = Replica::<Rules>::new();
-    let host = Matcher::Host {
-        name: "example.org".into(),
-        port: 443,
-    };
-    replica
-        .apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 443_u16)))
-        .unwrap();
-    assert_eq!(replica.state().unwrap().matcher, Some(host.clone()));
-    for value in [host, Matcher::Path("/a".into()), Matcher::Anything] {
-        assert_eq!(Matcher::from_json(&value.to_json()).unwrap(), value);
+tilo_test_env::scenario! {
+    fn a_data_enum_stores_merges_and_migrates_by_variant;
+
+    phase a_data_enum_round_trips_through_the_document_and_json;
+    {
+        let mut replica = Replica::<Rules>::new();
+        let host = Matcher::Host {
+            name: "example.org".into(),
+            port: 443,
+        };
+        replica
+            .apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 443_u16)))
+            .unwrap();
+        assert_eq!(replica.state().unwrap().matcher, Some(host.clone()));
+        for value in [host, Matcher::Path("/a".into()), Matcher::Anything] {
+            assert_eq!(Matcher::from_json(&value.to_json()).unwrap(), value);
+        }
+        assert_eq!(
+            Matcher::Path("/a".into()).to_json(),
+            serde_json::json!({ VARIANT_KEY: "path", "0": "/a" })
+        );
     }
-    assert_eq!(
-        Matcher::Path("/a".into()).to_json(),
-        serde_json::json!({ VARIANT_KEY: "path", "0": "/a" })
-    );
-}
 
-#[test]
-fn concurrent_edits_of_one_variant_merge_field_by_field() {
-    let mut left = Replica::<Rules>::new();
-    left.apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
-        .unwrap();
-    let mut right = Replica::<Rules>::from_doc(left.doc_mut().fork());
-    left.apply(Rules::RENAME_HOST.with("tilo.example".to_owned()))
-        .unwrap();
-    right.apply(Rules::SET_PORT.with(8080_u16)).unwrap();
-    tilo_automerge::ApplyIncoming::merge_incoming(left.doc_mut(), right.doc_mut()).unwrap();
-    let merged = Rules::read(left.doc()).unwrap();
-    assert_eq!(
-        merged.matcher,
-        Some(Matcher::Host {
-            name: "tilo.example".into(),
-            port: 8080,
-        }),
-        "each side's field survives"
-    );
-}
+    phase concurrent_edits_of_one_variant_merge_field_by_field;
+    {
+        let mut left = Replica::<Rules>::new();
+        left.apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
+            .unwrap();
+        let mut right = Replica::<Rules>::from_doc(left.doc_mut().fork());
+        left.apply(Rules::RENAME_HOST.with("tilo.example".to_owned()))
+            .unwrap();
+        right.apply(Rules::SET_PORT.with(8080_u16)).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(left.doc_mut(), right.doc_mut()).unwrap();
+        let merged = Rules::read(left.doc()).unwrap();
+        assert_eq!(
+            merged.matcher,
+            Some(Matcher::Host {
+                name: "tilo.example".into(),
+                port: 8080,
+            }),
+            "each side's field survives"
+        );
+    }
 
-#[test]
-fn changing_the_variant_removes_the_fields_of_the_old_one() {
-    let mut replica = Replica::<Rules>::new();
-    replica
-        .apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
-        .unwrap();
-    replica
-        .apply(Rules::MATCH_PATH.with("/b".to_owned()))
-        .unwrap();
-    let doc = replica.doc();
-    let (_, matcher) = doc.get(automerge::ROOT, "matcher").unwrap().unwrap();
-    let mut keys: Vec<String> = doc.keys(&matcher).collect();
-    keys.sort();
-    assert_eq!(
-        keys,
-        vec!["$field/path/0".to_owned(), VARIANT_KEY.to_owned()]
-    );
-    assert_eq!(
-        replica.state().unwrap().matcher,
-        Some(Matcher::Path("/b".into()))
-    );
+    phase changing_the_variant_removes_the_fields_of_the_old_one;
+    {
+        let mut replica = Replica::<Rules>::new();
+        replica
+            .apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
+            .unwrap();
+        replica
+            .apply(Rules::MATCH_PATH.with("/b".to_owned()))
+            .unwrap();
+        let doc = replica.doc();
+        let (_, matcher) = doc.get(automerge::ROOT, "matcher").unwrap().unwrap();
+        let mut keys: Vec<String> = doc.keys(&matcher).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["$field/path/0".to_owned(), VARIANT_KEY.to_owned()]
+        );
+        assert_eq!(
+            replica.state().unwrap().matcher,
+            Some(Matcher::Path("/b".into()))
+        );
+    }
+
+    phase a_json_field_of_the_old_shape_migrates_to_the_data_enum;
+    {
+        let mut doc = old_document();
+        assert!(
+            evolution::read_checked::<Rules>(&doc).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<Rules>(&mut doc).unwrap());
+        let rules = evolution::read_checked::<Rules>(&doc).unwrap();
+        assert_eq!(
+            rules.matcher,
+            Some(Matcher::Host {
+                name: "old.example".into(),
+                port: 22,
+            })
+        );
+        assert_eq!(
+            rules.all,
+            vec![Matcher::Anything, Matcher::Path("/x".into())]
+        );
+    }
+
+    phase the_active_variant_never_reads_another_variants_field_of_the_same_name;
+    // One person edits a field of the active variant while another changes the
+    // variant to one naming a field alike. However the two merge, the variant
+    // reads its own field: never the other's value in its place (which an
+    // `Option` would read without complaint), and never a value of another
+    // type that leaves the document unreadable.
+    {
+        let merged = |first: Invoke<Card>, ours: Invoke<Card>, theirs: Invoke<Card>| {
+            let mut left = Replica::<Card>::new();
+            left.apply(first).unwrap();
+            let mut right = Replica::<Card>::from_doc(left.doc_mut().fork());
+            left.apply(ours).unwrap();
+            right.apply(theirs).unwrap();
+            tilo_automerge::ApplyIncoming::merge_incoming(left.doc_mut(), right.doc_mut()).unwrap();
+            Card::read(left.doc()).unwrap()
+        };
+
+        let card = merged(
+            Card::DRAW_RECT.with(120.0),
+            Card::WIDEN.with(80.0),
+            Card::DRAW_TEXT.with(None),
+        );
+        assert_eq!(
+            card.figure,
+            Some(Figure::Text { width: None }),
+            "the text's own width, not the box's 80 read as where it wraps"
+        );
+
+        let card = merged(
+            Card::DRAW_TEXT.with(Some(40.0)),
+            Card::SET_WRAP.with(60.0),
+            Card::DRAW_RECT.with(10.0),
+        );
+        assert_eq!(
+            card.figure,
+            Some(Figure::Rect { width: 10.0 }),
+            "the box's own width, not the text's 60"
+        );
+
+        let card = merged(
+            Card::TEXT.with("hello".to_owned()),
+            Card::TEXT.with("world".to_owned()),
+            Card::COUNT.with(7_u64),
+        );
+        assert_eq!(
+            card.either,
+            Some(Either::Count { value: 7 }),
+            "the count reads its own number, not the text's"
+        );
+    }
+
+    phase a_variants_fields_are_stored_under_keys_of_its_own;
+    // A variant's fields are stored under keys of its own, escaped so that no
+    // two variants' fields share one.
+    {
+        let mut doc = tilo_resource::Doc::new();
+        let keys = |doc: &tilo_resource::Doc| {
+            let (_, stored) = doc.get(automerge::ROOT, "value").unwrap().unwrap();
+            let mut keys: Vec<String> = doc.keys(&stored).collect();
+            keys.sort();
+            keys
+        };
+        let slash = Escaped::Slash { value: "a".into() };
+        tilo_resource::write_key(&mut doc, &automerge::ROOT, "value", &slash).unwrap();
+        assert_eq!(
+            keys(&doc),
+            vec![
+                "$field/left%2Fright/value%2Fone".to_owned(),
+                VARIANT_KEY.to_owned()
+            ]
+        );
+        assert_eq!(
+            tilo_resource::read_key::<Escaped>(&doc, &automerge::ROOT, "value").unwrap(),
+            slash
+        );
+        let percent = Escaped::Percent { value: 3 };
+        tilo_resource::write_key(&mut doc, &automerge::ROOT, "value", &percent).unwrap();
+        assert_eq!(
+            keys(&doc),
+            vec![
+                "$field/left%252Fright/value%2Fone".to_owned(),
+                VARIANT_KEY.to_owned()
+            ]
+        );
+        assert_eq!(
+            tilo_resource::read_key::<Escaped>(&doc, &automerge::ROOT, "value").unwrap(),
+            percent
+        );
+    }
+
+    phase a_flat_variant_reads_as_written_and_migrates_to_fields_by_variant;
+    // A document of the flat layout reads as it was written, and its migration
+    // stores each field by its variant, reading what the document holds.
+    {
+        let read = |doc: &tilo_resource::Doc| {
+            (
+                tilo_resource::read_key::<Option<Matcher>>(doc, &automerge::ROOT, "matcher").unwrap(),
+                tilo_resource::read_key::<Vec<Matcher>>(doc, &automerge::ROOT, "all").unwrap(),
+            )
+        };
+        let held = (
+            Some(Matcher::Host {
+                name: "flat.example".into(),
+                port: 2222,
+            }),
+            vec![Matcher::Anything, Matcher::Path("/y".into())],
+        );
+        let mut doc = version_two_document();
+        assert_eq!(read(&doc), held, "the flat fields are the variant's");
+        assert!(
+            evolution::read_checked::<Rules>(&doc).is_err(),
+            "unmigrated"
+        );
+
+        assert!(evolution::migrate::<Rules>(&mut doc).unwrap());
+        assert_eq!(evolution::stored_version(&doc), 3);
+        assert_eq!(read(&doc), held, "the value is what it was");
+        let rules = evolution::read_checked::<Rules>(&doc).unwrap();
+        assert_eq!((rules.matcher, rules.all), held);
+        let (_, stored) = doc.get(automerge::ROOT, "matcher").unwrap().unwrap();
+        let mut keys: Vec<String> = doc.keys(&stored).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "$field/host/name".to_owned(),
+                "$field/host/port".to_owned(),
+                VARIANT_KEY.to_owned(),
+            ],
+            "stored by variant, the flat keys gone"
+        );
+    }
 }
 
 /// The old shape: each field one JSON string, as a field of JSON text stored it.
@@ -237,118 +396,6 @@ fn old_document() -> tilo_resource::Doc {
     doc
 }
 
-#[test]
-fn a_json_field_of_the_old_shape_migrates_to_the_data_enum() {
-    let mut doc = old_document();
-    assert!(
-        evolution::read_checked::<Rules>(&doc).is_err(),
-        "unmigrated"
-    );
-    assert!(evolution::migrate::<Rules>(&mut doc).unwrap());
-    let rules = evolution::read_checked::<Rules>(&doc).unwrap();
-    assert_eq!(
-        rules.matcher,
-        Some(Matcher::Host {
-            name: "old.example".into(),
-            port: 22,
-        })
-    );
-    assert_eq!(
-        rules.all,
-        vec![Matcher::Anything, Matcher::Path("/x".into())]
-    );
-}
-
-/// One person edits a field of the active variant while another changes the
-/// variant to one naming a field alike. However the two merge, the variant
-/// reads its own field: never the other's value in its place (which an
-/// `Option` would read without complaint), and never a value of another
-/// type that leaves the document unreadable.
-#[test]
-fn the_active_variant_never_reads_another_variants_field_of_the_same_name() {
-    let merged = |first: Invoke<Card>, ours: Invoke<Card>, theirs: Invoke<Card>| {
-        let mut left = Replica::<Card>::new();
-        left.apply(first).unwrap();
-        let mut right = Replica::<Card>::from_doc(left.doc_mut().fork());
-        left.apply(ours).unwrap();
-        right.apply(theirs).unwrap();
-        tilo_automerge::ApplyIncoming::merge_incoming(left.doc_mut(), right.doc_mut()).unwrap();
-        Card::read(left.doc()).unwrap()
-    };
-
-    let card = merged(
-        Card::DRAW_RECT.with(120.0),
-        Card::WIDEN.with(80.0),
-        Card::DRAW_TEXT.with(None),
-    );
-    assert_eq!(
-        card.figure,
-        Some(Figure::Text { width: None }),
-        "the text's own width, not the box's 80 read as where it wraps"
-    );
-
-    let card = merged(
-        Card::DRAW_TEXT.with(Some(40.0)),
-        Card::SET_WRAP.with(60.0),
-        Card::DRAW_RECT.with(10.0),
-    );
-    assert_eq!(
-        card.figure,
-        Some(Figure::Rect { width: 10.0 }),
-        "the box's own width, not the text's 60"
-    );
-
-    let card = merged(
-        Card::TEXT.with("hello".to_owned()),
-        Card::TEXT.with("world".to_owned()),
-        Card::COUNT.with(7_u64),
-    );
-    assert_eq!(
-        card.either,
-        Some(Either::Count { value: 7 }),
-        "the count reads its own number, not the text's"
-    );
-}
-
-/// A variant's fields are stored under keys of its own, escaped so that no
-/// two variants' fields share one.
-#[test]
-fn a_variants_fields_are_stored_under_keys_of_its_own() {
-    let mut doc = tilo_resource::Doc::new();
-    let keys = |doc: &tilo_resource::Doc| {
-        let (_, stored) = doc.get(automerge::ROOT, "value").unwrap().unwrap();
-        let mut keys: Vec<String> = doc.keys(&stored).collect();
-        keys.sort();
-        keys
-    };
-    let slash = Escaped::Slash { value: "a".into() };
-    tilo_resource::write_key(&mut doc, &automerge::ROOT, "value", &slash).unwrap();
-    assert_eq!(
-        keys(&doc),
-        vec![
-            "$field/left%2Fright/value%2Fone".to_owned(),
-            VARIANT_KEY.to_owned()
-        ]
-    );
-    assert_eq!(
-        tilo_resource::read_key::<Escaped>(&doc, &automerge::ROOT, "value").unwrap(),
-        slash
-    );
-    let percent = Escaped::Percent { value: 3 };
-    tilo_resource::write_key(&mut doc, &automerge::ROOT, "value", &percent).unwrap();
-    assert_eq!(
-        keys(&doc),
-        vec![
-            "$field/left%252Fright/value%2Fone".to_owned(),
-            VARIANT_KEY.to_owned()
-        ]
-    );
-    assert_eq!(
-        tilo_resource::read_key::<Escaped>(&doc, &automerge::ROOT, "value").unwrap(),
-        percent
-    );
-}
-
 /// A document of the layout version 2 wrote: a variant's name under
 /// `$variant`, and its fields flat beside it.
 fn version_two_document() -> tilo_resource::Doc {
@@ -365,47 +412,4 @@ fn version_two_document() -> tilo_resource::Doc {
     .unwrap();
     doc.commit();
     doc
-}
-
-/// A document of the flat layout reads as it was written, and its migration
-/// stores each field by its variant, reading what the document holds.
-#[test]
-fn a_flat_variant_reads_as_written_and_migrates_to_fields_by_variant() {
-    let read = |doc: &tilo_resource::Doc| {
-        (
-            tilo_resource::read_key::<Option<Matcher>>(doc, &automerge::ROOT, "matcher").unwrap(),
-            tilo_resource::read_key::<Vec<Matcher>>(doc, &automerge::ROOT, "all").unwrap(),
-        )
-    };
-    let held = (
-        Some(Matcher::Host {
-            name: "flat.example".into(),
-            port: 2222,
-        }),
-        vec![Matcher::Anything, Matcher::Path("/y".into())],
-    );
-    let mut doc = version_two_document();
-    assert_eq!(read(&doc), held, "the flat fields are the variant's");
-    assert!(
-        evolution::read_checked::<Rules>(&doc).is_err(),
-        "unmigrated"
-    );
-
-    assert!(evolution::migrate::<Rules>(&mut doc).unwrap());
-    assert_eq!(evolution::stored_version(&doc), 3);
-    assert_eq!(read(&doc), held, "the value is what it was");
-    let rules = evolution::read_checked::<Rules>(&doc).unwrap();
-    assert_eq!((rules.matcher, rules.all), held);
-    let (_, stored) = doc.get(automerge::ROOT, "matcher").unwrap().unwrap();
-    let mut keys: Vec<String> = doc.keys(&stored).collect();
-    keys.sort();
-    assert_eq!(
-        keys,
-        vec![
-            "$field/host/name".to_owned(),
-            "$field/host/port".to_owned(),
-            VARIANT_KEY.to_owned(),
-        ],
-        "stored by variant, the flat keys gone"
-    );
 }

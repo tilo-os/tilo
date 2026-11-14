@@ -87,46 +87,50 @@ fn contested() -> Doc {
     doc
 }
 
-#[test]
-fn slots_are_what_get_answers_per_key() {
-    let doc = contested();
-    let keys = ["both", "card", "gone", "hits", "absent"];
-    let slots = read_slots(&doc, &ROOT, keys);
-    for (key, slot) in keys.iter().zip(slots) {
-        let got = doc.get(&ROOT, *key).unwrap();
-        let got = got.map(|(value, id)| (value.into_owned(), id));
-        assert_eq!(slot, got, "slot {key}");
+tilo_test_env::scenario! {
+    fn one_pass_reads_what_key_by_key_reads;
+
+    phase slots_are_what_get_answers_per_key;
+    {
+        let doc = contested();
+        let keys = ["both", "card", "gone", "hits", "absent"];
+        let slots = read_slots(&doc, &ROOT, keys);
+        for (key, slot) in keys.iter().zip(slots) {
+            let got = doc.get(&ROOT, *key).unwrap();
+            let got = got.map(|(value, id)| (value.into_owned(), id));
+            assert_eq!(slot, got, "slot {key}");
+        }
+        let Some((value, _)) = doc.get(&ROOT, "hits").unwrap() else {
+            panic!("the counter is stored");
+        };
+        assert_eq!(value.as_i64(), Some(6), "both increments are counted");
+        assert!(
+            doc.get_all(&ROOT, "both").unwrap().len() == 2,
+            "the fixture holds a conflict"
+        );
     }
-    let Some((value, _)) = doc.get(&ROOT, "hits").unwrap() else {
-        panic!("the counter is stored");
-    };
-    assert_eq!(value.as_i64(), Some(6), "both increments are counted");
-    assert!(
-        doc.get_all(&ROOT, "both").unwrap().len() == 2,
-        "the fixture holds a conflict"
-    );
-}
 
-#[test]
-fn a_derived_struct_reads_what_key_by_key_reads() {
-    let doc = contested();
-    let Some((value, card)) = doc.get(&ROOT, "card").unwrap() else {
-        panic!("the card is stored");
-    };
-    let walked = Card::load(&doc, &value, &card).unwrap();
-    assert_eq!(walked, card_key_by_key(&doc, &card));
-    assert_eq!(walked, Card::read_fields(&doc, &card).unwrap());
-    assert!(walked.tags.contains_key("both"));
-    assert!(walked.note.is_some());
-}
+    phase a_derived_struct_reads_what_key_by_key_reads;
+    {
+        let doc = contested();
+        let Some((value, card)) = doc.get(&ROOT, "card").unwrap() else {
+            panic!("the card is stored");
+        };
+        let walked = Card::load(&doc, &value, &card).unwrap();
+        assert_eq!(walked, card_key_by_key(&doc, &card));
+        assert_eq!(walked, Card::read_fields(&doc, &card).unwrap());
+        assert!(walked.tags.contains_key("both"));
+        assert!(walked.note.is_some());
+    }
 
-#[test]
-fn a_derived_struct_reports_the_first_bad_field_in_declaration_order() {
-    let mut doc = Doc::new();
-    let card = doc.put_object(&ROOT, "card", ObjType::Map).unwrap();
-    // Both `done` and `n` hold the wrong shape; `done` is declared first.
-    doc.put(&card, "n", "not a number").unwrap();
-    doc.put(&card, "done", "not a bool").unwrap();
-    let error = Card::read_fields(&doc, &card).unwrap_err();
-    assert!(error.to_string().starts_with("done:"), "{error}");
+    phase a_derived_struct_reports_the_first_bad_field_in_declaration_order;
+    {
+        let mut doc = Doc::new();
+        let card = doc.put_object(&ROOT, "card", ObjType::Map).unwrap();
+        // Both `done` and `n` hold the wrong shape; `done` is declared first.
+        doc.put(&card, "n", "not a number").unwrap();
+        doc.put(&card, "done", "not a bool").unwrap();
+        let error = Card::read_fields(&doc, &card).unwrap_err();
+        assert!(error.to_string().starts_with("done:"), "{error}");
+    }
 }
