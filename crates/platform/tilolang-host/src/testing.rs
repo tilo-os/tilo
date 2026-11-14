@@ -1,7 +1,7 @@
 //! The broker's end of an instance's connections, for the host's tests and examples: a fake in
 //! place of the session's broker that admits the routes a connection joins, keeps what it sends
-//! where the test reads it, and relays a change to the connections joined on its route as the
-//! broker does.
+//! where the test reads it, and relays a change and a presence frame to the connections joined on
+//! its route as the broker does.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -69,6 +69,29 @@ impl Bus {
             }
         }
         Ok(())
+    }
+
+    /// Delivers the presence frame `key` and `payload`, which `from` said on `route` as
+    /// `person`, to the other connections joined on that route.
+    fn present(
+        &self,
+        route: &RouteSpec,
+        from: &Inbox,
+        person: &str,
+        key: &ui::presence::PresenceKey,
+        payload: &collaboration::PresencePayload,
+    ) {
+        for (joined, _, inbox) in self.joined.borrow().iter() {
+            if joined == route && !Rc::ptr_eq(inbox, from) {
+                inbox
+                    .borrow_mut()
+                    .push_back(CollabEvent::RemotePresenceUpdate {
+                        user_id: person.to_owned(),
+                        key: key.clone(),
+                        payload: payload.clone(),
+                    });
+            }
+        }
     }
 }
 
@@ -206,6 +229,10 @@ impl PeerTransport for Broker {
                 }
                 self.bus
                     .relay(&self.route, &self.inbox, &self.person, mutation)?;
+            }
+            CollabRequest::Presence { key, payload } => {
+                self.bus
+                    .present(&self.route, &self.inbox, &self.person, key, payload);
             }
             _ => {}
         }

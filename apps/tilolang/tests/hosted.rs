@@ -82,6 +82,8 @@ mod marks;
 mod narrow;
 #[path = "hosted/personal.rs"]
 mod personal;
+#[path = "hosted/presence.rs"]
+mod presence;
 #[path = "hosted/replay.rs"]
 mod replay;
 #[path = "hosted/sync.rs"]

@@ -1054,11 +1054,6 @@ impl Instance {
     /// Someone composing a message in the detail view is a typist there: `composers` names
     /// them, and their lens reads `composing` (`lenses(c)`), so a conversation can say
     /// "… is typing" without reading a draft.
-    pub fn set_peers(&mut self, peers: HashMap<String, String>) {
-        self.set_peers_and_composers(peers, &[]);
-    }
-
-    /// [`Self::set_peers`], with who is composing a message in the detail view's resource.
     pub fn set_peers_and_composers(
         &mut self,
         peers: HashMap<String, String>,

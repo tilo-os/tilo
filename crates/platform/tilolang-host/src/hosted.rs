@@ -54,6 +54,7 @@ use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
 
 use crate::phrases::Phrases;
+use crate::presence::Presence;
 
 thread_local! {
     /// The caller of the invocation being built on this thread, as the broker delivered it.
@@ -820,6 +821,9 @@ pub struct Hosted {
     /// The workspace's record of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalRecord,
+    /// Who else is where in the record, as the connection hears it, and what the instance last
+    /// said of its own person there.
+    presence: Presence,
 }
 
 /// The wake scope a record's code runs in, the record's content store registered for it: an
@@ -919,6 +923,7 @@ impl Hosted {
         let mut registry = ActionRegistry::with(tilolang_tilo::history::register);
         registry.connect_content(record.content().clone());
         drop(in_scope);
+        let presence = Presence::new(&spec.app, &spec.person);
         Self {
             spec,
             bundle,
@@ -949,6 +954,7 @@ impl Hosted {
             scope,
             personal,
             standing,
+            presence,
         }
     }
 
@@ -1088,6 +1094,11 @@ impl Hosted {
         if self.personal.take_moved() && !self.instance.bring_personal(self.personal.state()) {
             self.personal.moved_again();
         }
+        // Who else is here and who is writing, before the views that show it run.
+        let before = events.len();
+        events.retain(|event| !self.presence.take(event));
+        changed |= events.len() != before;
+        self.presence.show(&mut self.instance);
         changed |= self.instance.update();
         let chose = self.chosen();
         changed |= chose;
@@ -1111,6 +1122,13 @@ impl Hosted {
             }
             changed |= self.take_step(&asked);
         }
+        // Where the person is and whether they write there, as the views now stand.
+        let record = &mut self.record;
+        self.presence.say(&self.instance, |request| {
+            if !record.manager_mut().send(request) {
+                tracing::debug!("the connection did not take the person's presence");
+            }
+        });
         // What the person changed of their own state is kept in its record, as theirs.
         let keeps = self.instance.take_personal(self.personal.state());
         self.personal

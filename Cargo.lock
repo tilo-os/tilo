@@ -23279,6 +23279,7 @@ dependencies = [
  "tilo-resource",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-ui",
  "tilo-wake",
  "tilolang",
  "tilolang-host",
