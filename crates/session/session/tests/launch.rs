@@ -628,49 +628,70 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
 
     // The press reaches the app on the connection that described it, as the control's own context
     // menu, not as a point aimed at.
-    let told = host_frames(&mut session, &mut connection, 400);
+    let pressed = FloatingSurfaceHostMessage::PressTarget {
+        name: "Documents".to_owned(),
+        role: "ListItem".to_owned(),
+        identity: None,
+        action: TargetAction::ShowContextMenu,
+    };
+    let told = host_frames(&mut session, &mut connection, |told| {
+        told.contains(&pressed)
+    });
     assert!(
-        told.contains(&FloatingSurfaceHostMessage::PressTarget {
-            name: "Documents".to_owned(),
-            role: "ListItem".to_owned(),
-            identity: None,
-            action: TargetAction::ShowContextMenu,
-        }),
+        told.contains(&pressed),
         "the app is told which of its controls was pressed, and how: {told:?}"
     );
 }
 
-/// Every frame the session wrote back on `connection` within `steps` of its loop: whole lines, each
-/// a host message.
+/// Every frame the session wrote back on `connection` by the turn of its loop on which `heard`
+/// holds of them: whole lines, each a host message. The wait is for the frame the caller names and
+/// ends on the turn the session wrote it, never after a count of turns; a session that never writes
+/// it is left at the suite's hang bound, and what it did write is handed back for the caller's
+/// assertion to report.
 fn host_frames(
     session: &mut Session,
     connection: &mut UnixStream,
-    steps: usize,
+    heard: impl Fn(&[FloatingSurfaceHostMessage]) -> bool,
 ) -> Vec<FloatingSurfaceHostMessage> {
-    connection
-        .set_read_timeout(Some(Duration::from_millis(20)))
-        .unwrap();
+    connection.set_nonblocking(true).unwrap();
     let mut seen = Vec::new();
-    for _ in 0..steps {
-        session.step(Duration::from_millis(1)).unwrap();
+    let mut frames = Vec::new();
+    crate::common::wait_maybe(session, |_| {
         let mut chunk = [0u8; 1024];
-        match std::io::Read::read(connection, &mut chunk) {
-            Ok(read) => seen.extend_from_slice(&chunk[..read]),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => panic!("the connection broke: {error}"),
+        loop {
+            match std::io::Read::read(connection, &mut chunk) {
+                Ok(0) => break,
+                Ok(read) => seen.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("the connection broke: {error}"),
+            }
         }
-    }
-    // A frame still arriving is not one yet: only the lines the session finished are read.
-    let whole = seen
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(&seen[..0], |end| &seen[..end]);
-    String::from_utf8(whole.to_vec())
-        .expect("frames are text")
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line.trim()).expect("the session wrote a host message"))
-        .collect()
+        // A frame still arriving is not one yet: only the lines the session finished are read.
+        let whole = seen
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(&seen[..0], |end| &seen[..end]);
+        frames = String::from_utf8(whole.to_vec())
+            .expect("frames are text")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line.trim()).expect("the session wrote a host message")
+            })
+            .collect();
+        heard(&frames).then_some(())
+    });
+    frames
+}
+
+/// Whether `frames` hold the session's word that it does not answer the message sent as `name` .
+fn unanswered(frames: &[FloatingSurfaceHostMessage], name: &str) -> bool {
+    frames.iter().any(|frame| {
+        matches!(
+            frame,
+            FloatingSurfaceHostMessage::Unanswered { message, .. } if message == name
+        )
+    })
 }
 
 /// A presented frame's marker inventory is read, not refused: the window paints its own markers at
@@ -721,12 +742,26 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
             }],
         },
     );
-    let answered = host_frames(&mut session, &mut connection, 300);
+    // The session takes a connection's messages in the order the window sent them, and says what
+    // it does not answer on the turn it takes the message. So the answer to a message sent after
+    // the markers ends the wait: by then the markers were taken, and a refusal of them would
+    // stand before it.
+    tell(
+        &mut connection,
+        &FloatingSurfaceClientMessage::UpdateRegion {
+            id: "primary".to_owned(),
+            region: [0.0, 0.0, 320.0, 240.0],
+        },
+    );
+    let answered = host_frames(&mut session, &mut connection, |answered| {
+        unanswered(answered, "update_region")
+    });
     assert!(
-        !answered.iter().any(|frame| matches!(
-            frame,
-            FloatingSurfaceHostMessage::Unanswered { message, .. } if message == "action_markers"
-        )),
+        unanswered(&answered, "update_region"),
+        "the session went on to the message after the markers: {answered:?}"
+    );
+    assert!(
+        !unanswered(&answered, "action_markers"),
         "the session reads the markers a window presents: {answered:?}"
     );
     assert_eq!(
@@ -757,12 +792,11 @@ fn a_message_the_session_cannot_answer_is_said_so() {
             region: [0.0, 0.0, 320.0, 240.0],
         },
     );
-    let answered = host_frames(&mut session, &mut connection, 300);
+    let answered = host_frames(&mut session, &mut connection, |answered| {
+        unanswered(answered, "update_region")
+    });
     assert!(
-        answered.iter().any(|frame| matches!(
-            frame,
-            FloatingSurfaceHostMessage::Unanswered { message, .. } if message == "update_region"
-        )),
+        unanswered(&answered, "update_region"),
         "a message the session cannot answer is said so: {answered:?}"
     );
 }
@@ -1458,9 +1492,10 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
         tab,
         &FloatingSurfaceClientMessage::AllowHostShell,
     );
-    let told = host_frames(&mut session, &mut asking, 400);
+    let closed = FloatingSurfaceHostMessage::HostShellAllowed { allowed: false };
+    let told = host_frames(&mut session, &mut asking, |told| told.contains(&closed));
     assert!(
-        told.contains(&FloatingSurfaceHostMessage::HostShellAllowed { allowed: false }),
+        told.contains(&closed),
         "the app is told the target stays closed: {told:?}"
     );
 }
