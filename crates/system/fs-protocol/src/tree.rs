@@ -16,6 +16,46 @@ pub const FILES_APP: &str = <FilesTree as SharedRecord>::OWNER;
 
 /// The map of node objects, at the document's root.
 pub const NODES_KEY: &str = "nodes";
+
+/// The tree's map of node objects in `doc`, made when the document has none
+/// ([`root_map`]).
+///
+/// # Errors
+/// The document refused the change, or holds something else under the key.
+pub fn tree_nodes(doc: &mut Doc) -> Result<ObjId, automerge::AutomergeError> {
+    root_map(doc, NODES_KEY)
+}
+
+/// The map at `key` of `doc`'s root, made when the document has none.
+///
+/// Every replica makes it with the same change, byte for byte: one writer
+/// named for the key, no dependencies, the time zero. A computer that wrote
+/// files before it ever reached the workspace, a page that put the first file
+/// in and a host that put one for an agent each hold that one change, so their
+/// trees merge into one map. A map each made on its own would be the same key
+/// written twice, and the merge would show one of them: every file of the
+/// other gone.
+///
+/// # Errors
+/// The document refused the change, or holds something else under the key.
+pub fn root_map(doc: &mut Doc, key: &str) -> Result<ObjId, automerge::AutomergeError> {
+    use automerge::transaction::Transactable as _;
+    use tilo_automerge::ApplyIncoming as _;
+    if let Some(map) = doc.obj_at(&ROOT, key, ObjType::Map) {
+        return Ok(map);
+    }
+    let writer = format!("tilo.files.tree.v1/{key}");
+    let mut made = Doc::new().with_actor(automerge::ActorId::from(writer.as_bytes()));
+    made.put_object(&ROOT, key, ObjType::Map)?;
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Structure.change_message())
+            .with_time(0),
+    );
+    doc.merge_incoming(&mut made)?;
+    doc.obj_at(&ROOT, key, ObjType::Map)
+        .ok_or_else(|| automerge::AutomergeError::InvalidObjId(key.to_owned()))
+}
 pub const ROOT_ID: &str = "ROOT";
 /// The parent a deleted node is moved under, so that a concurrent child of it
 /// is trashed with it rather than left dangling.
@@ -357,10 +397,7 @@ pub fn place(
         return Err(ModelError::invalid("the folder to put it in is gone"));
     }
     let name = free_name(tree, parent, name);
-    let nodes = match nodes_of(doc) {
-        Some(nodes) => nodes,
-        None => doc.put_object(&ROOT, NODES_KEY, ObjType::Map)?,
-    };
+    let nodes = tree_nodes(doc)?;
     let record_id = FileRecordId::new();
     let id = record_node_id(record_id);
     let node = doc.put_object(&nodes, &id, ObjType::Map)?;

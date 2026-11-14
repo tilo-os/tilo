@@ -20,6 +20,7 @@ path = "src/lib.rs"
 automerge.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-automerge.workspace = true
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 wire-frame = { version = "0.1.0", path = "../wire-frame" }

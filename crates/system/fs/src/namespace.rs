@@ -501,11 +501,13 @@ impl Namespace {
     /// A namespace over `doc` whose `nodes` map is already in place, with only the root
     /// bound and every derived index empty.
     fn over(
-        doc: AutoCommit,
+        mut doc: AutoCommit,
         nodes: ObjId,
         author: String,
         next_id: u64,
     ) -> Result<Self, automerge::AutomergeError> {
+        // The history's map is one every replica makes alike, as the nodes' is.
+        fs_protocol::tree::root_map(&mut doc, history::HISTORY_KEY)?;
         let mut ns = Self {
             doc: ChangeTrackedDoc::new(doc),
             nodes,
@@ -536,16 +538,12 @@ impl Namespace {
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
-        if ns.history_root().is_none() {
-            ns.doc
-                .put_object(&ROOT, history::HISTORY_KEY, ObjType::Map)?;
-        }
         Ok(ns)
     }
 
     pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::new();
-        let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
+        let nodes = fs_protocol::tree::tree_nodes(&mut doc)?;
         let mut ns = Self::over(doc, nodes, author.into(), 0)?;
         let root_record_id = FileRecordId::new();
         let _ = ns
@@ -562,7 +560,7 @@ impl Namespace {
         let mut doc = AutoCommit::load(data)?;
         let nodes = match doc.get(&ROOT, "nodes") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc.put_object(&ROOT, "nodes", ObjType::Map)?,
+            _ => fs_protocol::tree::tree_nodes(&mut doc)?,
         };
         let author = author.into();
         // Resume the id counter past ids we authored before, so a restart can't reuse a node id.

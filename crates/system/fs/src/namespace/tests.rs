@@ -1207,3 +1207,58 @@ impl Namespace {
         Namespace::from_bytes(self.author.clone(), &self.save()).unwrap()
     }
 }
+
+#[test]
+fn trees_founded_apart_merge_with_every_file_of_each() {
+    let names = |ns: &mut Namespace| -> Vec<String> {
+        let mut names: Vec<String> = ns
+            .live_node_ids()
+            .iter()
+            .filter_map(|id| ns.entry_for_node(id))
+            .map(|entry| String::from_utf8_lossy(entry.name.as_bytes()).into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    // Two computers that wrote into their folders before either reached the workspace.
+    let mut laptop = Namespace::new("laptop").unwrap();
+    laptop
+        .create_file(ROOT_INO, "contract.txt", Some(&h(1)), 6, 1)
+        .unwrap();
+    let mut desktop = Namespace::new("desktop").unwrap();
+    desktop
+        .create_file(ROOT_INO, "handbook.md", Some(&h(2)), 6, 1)
+        .unwrap();
+    laptop.merge_remote_and_resolve(&desktop.save()).unwrap();
+    assert_eq!(names(&mut laptop), ["contract.txt", "handbook.md"]);
+
+    // A page that put the first file into the workspace's empty record, before any computer
+    // reached it: the record holds no tree yet, so the page's placing makes its map.
+    let mut record = automerge::AutoCommit::new();
+    let mut tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+    fs_protocol::tree::place(
+        &mut record,
+        &mut tree,
+        ROOT_ID,
+        "notice.pdf",
+        fs_protocol::tree::Placing::File {
+            hash: &h(3).to_hex(),
+            size: 3,
+        },
+        (1, "page"),
+    )
+    .unwrap();
+    let _ = record.commit();
+    laptop.merge_remote_and_resolve(&record.save()).unwrap();
+    assert_eq!(
+        names(&mut laptop),
+        ["contract.txt", "handbook.md", "notice.pdf"]
+    );
+
+    // And the computer's tree read back from what it keeps holds them all.
+    let mut kept = Namespace::from_bytes("laptop", &laptop.save()).unwrap();
+    assert_eq!(
+        names(&mut kept),
+        ["contract.txt", "handbook.md", "notice.pdf"]
+    );
+}
