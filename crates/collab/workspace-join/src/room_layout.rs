@@ -138,6 +138,29 @@ fn read_grant(bytes: &[u8], version: u32) -> Result<(Grant, Option<Inviter>, [u8
     }
 }
 
+/// A signed invitation of this layout as this build reads and writes it
+/// back: the same bytes when the layout's types still encode as that day.
+#[cfg(test)]
+pub(super) fn rewritten_invitation(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let (version, _) =
+        postcard::take_from_bytes::<u32>(bytes).map_err(|error| error.to_string())?;
+    let (grant, inviter, signature) = read_grant(bytes, version)?;
+    match inviter {
+        None => postcard::to_stdvec(&SignedInvitation {
+            version,
+            grant,
+            signature,
+        }),
+        Some(inviter) => postcard::to_stdvec(&SignedInvitationWithInviter {
+            version,
+            grant,
+            inviter,
+            signature,
+        }),
+    }
+    .map_err(|error| error.to_string())
+}
+
 /// The grant a signed invitation of this layout carries, unchecked: for
 /// naming the runs it shares with others, never for admitting anyone.
 pub(super) fn unchecked_grant(bytes: &[u8], version: u32) -> Option<InviteGrant> {

@@ -42,6 +42,11 @@ tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 # Why a delegation is not usable.
 thiserror.workspace = true
 
+[dev-dependencies]
+# Each signed invitation layout's kept bytes are read and written back by the
+# check every stored format uses.
+tilo-files = { path = "../../platform/tilo-files" }
+
 [lints]
 workspace = true
 

@@ -467,7 +467,7 @@ fn a_stored_complete_verifies_in_the_join_layout_its_version_names() {
 /// the workspace by a number and its UUID as text.
 /// (Kept as hex text: two lowercase digits per byte, 16 bytes per line.)
 static RELEASED_OPEN_INVITATION: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
-    include_str!("v0.1.5-lounge-open-invitation.v3.hex")
+    include_str!("../golden/signed-invitation/v3.hex")
         .split_whitespace()
         .map(|byte| u8::from_str_radix(byte, 16).expect("a hex byte"))
         .collect()
@@ -554,4 +554,95 @@ fn the_invitation_the_release_left_open_reads_and_verifies() {
     let last = forged.len() - 1;
     *forged.get_mut(last).unwrap() ^= 1;
     assert!(decode_and_verify_invitation(&forged, None, &revocations, RELEASED_NOW_NS).is_err());
+}
+
+/// An invitation in each layout a build signs, from fixed keys: the bytes
+/// kept for its version. Signing is deterministic, so this build signing the
+/// same grant gives the same bytes, unless the layout changed under the
+/// version.
+fn kept_grant() -> (SigningKey, InviteGrant) {
+    let root = SigningKey::from_bytes(&[41; 32]);
+    let device = SigningKey::from_bytes(&[42; 32]);
+    let issuer = certificate(&root, &device, "Owner", 1);
+    let grant = InviteGrant {
+        workspace_id: crate::WorkspaceId::parse("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71").unwrap(),
+        issuer: issuer.clone(),
+        role: Role::Editor,
+        nonce: [43; 16],
+        recipient_user_public_key: Some([44; 32]),
+        invitee_name: Some("Grace".into()),
+        expires_at_ns: 10_000,
+        transport: vec![
+            sign_transport_hint(
+                TRANSPORT_IROH_OWNER_ENDPOINT_ADDR_V1,
+                r#"{"id":"owner-endpoint"}"#,
+                issuer.clone(),
+                issuer.device_public_key,
+                &device,
+            )
+            .unwrap(),
+        ],
+    };
+    (device, grant)
+}
+
+fn kept_inviter() -> Inviter {
+    Inviter {
+        user_public_key: SigningKey::from_bytes(&[41; 32]).verifying_key().to_bytes(),
+        name: "Ada Lovelace".into(),
+    }
+}
+
+fn golden(text: &str) -> Vec<u8> {
+    text.split_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).expect("a hex byte"))
+        .collect()
+}
+
+/// Every signed invitation layout reads the bytes kept for it and verifies
+/// them, and this build writes them back exactly: the release's open
+/// invitation (version 3) re-encoded as read, versions 5 and 6 signed again.
+/// Invitations are never rewritten (their issuer's signature covers every
+/// byte), so each version a build signed is read in its own layout for good.
+#[test]
+fn each_signed_invitation_layout_reads_and_writes_as_it_was_kept() {
+    let revocations = RevocationList::new();
+    tilo_files::native::migration::assert_golden_bytes(
+        "signed invitation, version 3 (v0.1.5)",
+        &golden(include_str!("../golden/signed-invitation/v3.hex")),
+        |bytes| {
+            let join =
+                decode_and_verify_invitation(bytes, None, &revocations, RELEASED_NOW_NS).unwrap();
+            assert_eq!(join.signed_invitation(), bytes);
+        },
+        || {
+            crate::room_layout::rewritten_invitation(&golden(include_str!(
+                "../golden/signed-invitation/v3.hex"
+            )))
+            .unwrap()
+        },
+    );
+    let (device, grant) = kept_grant();
+    tilo_files::native::migration::assert_golden_bytes(
+        "signed invitation, version 5",
+        &golden(include_str!("../golden/signed-invitation/v5.hex")),
+        |bytes| {
+            assert_eq!(bytes.first(), Some(&5));
+            let join = decode_and_verify_invitation(bytes, None, &revocations, 2).unwrap();
+            assert_eq!(join.grant(), &grant);
+            assert_eq!(join.inviter(), None);
+        },
+        || issue_invitation(grant.clone(), &device).unwrap(),
+    );
+    tilo_files::native::migration::assert_golden_bytes(
+        "signed invitation, version 6",
+        &golden(include_str!("../golden/signed-invitation/v6.hex")),
+        |bytes| {
+            assert_eq!(bytes.first(), Some(&6));
+            let join = decode_and_verify_invitation(bytes, None, &revocations, 2).unwrap();
+            assert_eq!(join.grant(), &grant);
+            assert_eq!(join.inviter(), Some(&kept_inviter()));
+        },
+        || issue_invitation_from(grant.clone(), kept_inviter(), &device).unwrap(),
+    );
 }
