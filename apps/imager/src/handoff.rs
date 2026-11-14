@@ -651,7 +651,7 @@ mod tests {
             relay_endpoint: None,
             label: "setup".into(),
             user_public_key: identity_id.clone(),
-            device_cert: None,
+            device_cert: Some(local_cert.clone()),
             relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(7)],
         };
         fs::write(
