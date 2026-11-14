@@ -93,10 +93,10 @@ impl HostMail {
     }
 
     /// When the window reads the person's accounts again, so an account
-    /// added in another window shows here too. A page asks it; a native
-    /// window's own account reads reach the server itself, so nothing there
-    /// waits on it.
-    #[cfg(any(target_arch = "wasm32", test))]
+    /// added in another window shows here too. A window whose mail is this
+    /// host's session asks it; one with its own account reads reaches the
+    /// server itself, so nothing there waits on it.
+    #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
     pub(super) fn next_listing_at(&self) -> Option<ui::time::Instant> {
         self.listed_at.map(|at| at + ACCOUNTS_FRESH)
     }
