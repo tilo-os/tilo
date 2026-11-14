@@ -1910,7 +1910,7 @@ irrelevant"
             return;
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
-        if let Err(e) = crate::transport::build_mime(&self.content, &from, &draft) {
+        if let Err(e) = crate::transport::check_sendable(&self.content, &from, &draft) {
             self.shared.borrow_mut().status = Some(Notice::error(
                 CATALOG.t_args("mail-status-send-failed", &[("error", ArgValue::Text(e))]),
             ));

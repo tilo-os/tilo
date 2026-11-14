@@ -168,7 +168,7 @@ impl LiveMailSession {
         )
         .await
         .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
-        .map_err(|_| "could not establish the secure IMAP connection".to_string())?;
+        .map_err(|error| format!("could not establish the secure IMAP connection: {error}"))?;
         let client = async_imap::Client::new(tls);
         timeout(NETWORK_TIMEOUT, client.login(user, password))
             .await

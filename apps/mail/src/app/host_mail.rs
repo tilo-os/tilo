@@ -193,6 +193,7 @@ impl HostMail {
                 }
                 Some(Err(reason)) => {
                     changed = true;
+                    tracing::warn!(%reason, "mail: the host refused this window's request");
                     let _ = self.events.send(EngineEvent::Error {
                         request_id: asked.request.request_id(),
                         kind: asked.request.kind(),

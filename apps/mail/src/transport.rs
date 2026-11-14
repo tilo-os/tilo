@@ -33,6 +33,31 @@ pub fn parse_addr_list(s: &str) -> Vec<Addr> {
 /// Returns `Err` if serialisation fails or any portable attachment cannot be
 /// materialized and re-verified. In particular, it never silently omits a
 /// missing attachment and then reports a successful send.
+/// Whether this build can send `draft` itself: a device writes and checks
+/// the message, while a page leaves that to the host that keeps the account,
+/// which is handed no files.
+///
+/// # Errors
+/// What stopped the message being prepared here.
+pub fn check_sendable(
+    content: &tilo_content::ContentStore,
+    from: &Addr,
+    draft: &Draft,
+) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        build_mime(content, from, draft)?;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (content, from);
+        if !draft.attachments.is_empty() || draft.calendar_ics.is_some() {
+            return Err(crate::i18n::t("mail-status-send-files-here"));
+        }
+    }
+    Ok(())
+}
+
 pub fn build_mime(
     content: &tilo_content::ContentStore,
     from: &Addr,
@@ -41,9 +66,14 @@ pub fn build_mime(
     let to = parse_addr_list(&draft.to);
     let cc = parse_addr_list(&draft.cc);
 
+    // The date it leaves is written from the wall clock this app reads, not
+    // the platform's: a page has no platform clock to read, and a message
+    // built there is checked before it is sent.
+    let sent_at = ui::time::unix_now();
     let mut builder = MessageBuilder::new()
         .from((from.display(), from.email.clone()))
         .subject(draft.subject.clone())
+        .date(sent_at)
         .text_body(draft.body.clone());
     // A reply names what it answers, so every mail program, this one
     // included, shows it in its conversation.
