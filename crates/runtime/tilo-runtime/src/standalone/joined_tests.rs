@@ -343,7 +343,73 @@ impl HostedWorkspace {
         tilo_rt::app().spawn(async move {
             let _ = dialed.run(&running).await;
         });
+        self.found_group(&link);
         (link, endpoint)
+    }
+
+    /// The governor's device created the workspace, so it founds the
+    /// workspace's key group, as a creating device's key service does: it
+    /// sends the genesis over `link`, and from then on admits each device the
+    /// workspace's governance names a key holder of once it asks, and follows
+    /// the group's other commits.
+    fn found_group(&self, link: &DirectSync) {
+        let vault = key_group::VaultKey::new([7; 32]);
+        let workspace = collab_types::WorkspaceId::parse(&self.workspace.to_string()).unwrap();
+        let mut group = key_group::GroupPeer::create_now(
+            None,
+            workspace,
+            Box::new(self.governor_key.clone()),
+            &vault,
+        )
+        .unwrap();
+        let authority = Arc::clone(&self.authority);
+        let link = link.clone();
+        let mut heard = link.heard();
+        let wire_workspace = self.workspace.to_string();
+        tilo_rt::app().spawn(async move {
+            let mut delivery = 0_u64;
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                tokio::select! {
+                    heard = heard.recv() => match heard {
+                        Ok(heard) => match heard.message {
+                            NeighbourMsg::MlsAccessRequest { request, .. } => {
+                                let _ = group.learn_request(*request);
+                            }
+                            NeighbourMsg::MlsGovernance { frame, .. } => {
+                                let _ = group.follow(*frame, &vault);
+                            }
+                            _ => continue,
+                        },
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                    _ = tick.tick() => {}
+                }
+                let holders = authority
+                    .lock()
+                    .unwrap()
+                    .peer()
+                    .governance()
+                    .key_holders(SystemTime::now())
+                    .unwrap_or_default();
+                let allowed = holders
+                    .into_iter()
+                    .map(collab_types::Ed25519PublicKey::from_bytes)
+                    .collect();
+                let _ = group.reconcile_now(&allowed, &vault);
+                let frames = group.outbox().to_vec();
+                group.published();
+                for frame in frames {
+                    delivery = delivery.wrapping_add(1);
+                    let _ = link.send(NeighbourMsg::MlsGovernance {
+                        workspace: wire_workspace.clone(),
+                        frame: Box::new(frame),
+                        delivery,
+                    });
+                }
+            }
+        });
     }
 }
 
