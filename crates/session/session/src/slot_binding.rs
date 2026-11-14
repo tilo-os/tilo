@@ -85,7 +85,16 @@ impl Session {
         // costs nothing.
         let namespace = surfaces::namespace(VIEW);
         if self.compositor.layer_shown(&namespace) != Some(up) {
+            if !up {
+                // The keys go back to where the person was typing as the menu goes.
+                self.compositor.return_layer_keyboard(&namespace);
+            }
             self.compositor.show_layer(&namespace, up);
+        }
+        // An open menu takes the keys: typing narrows its rows and Enter chooses one, and none of
+        // it reaches the window under the menu. A view still starting takes them once it stands.
+        if up {
+            self.compositor.lend_layer_keyboard(&namespace);
         }
     }
 
