@@ -392,9 +392,9 @@ tilo_test_env::scenario! {
             check_appearances(&by_bot, Some("bot:other")),
             Err(ReceiptRefusal::Appearance { .. })
         ));
-        // An invoker that names the bot's actor id without being a bot is refused.
+        // An invoker whose key spells a bot's actor id without being one is refused.
         let posing = change_by(
-            tilo_actions::ActionInvoker::bot("7f1c").with_appearance(Some(alice.clone())),
+            tilo_actions::ActionInvoker::person("bot:7f1c").with_appearance(Some(alice.clone())),
         );
         assert!(matches!(
             check_appearances(&posing, Some("bot:7f1c")),
