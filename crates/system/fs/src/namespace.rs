@@ -404,6 +404,8 @@ pub struct Namespace {
     /// concurrent edits and content conflicts can only arrive. Drawn from a process-wide
     /// counter so no two instances share a value.
     merge_generation: u64,
+    /// When this namespace was opened, in milliseconds: the time an empty folder reads as changed.
+    opened_ms: u64,
     #[cfg(test)]
     conflict_scans: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
@@ -528,6 +530,7 @@ impl Namespace {
             #[cfg(test)]
             record_index_rebuilds: 0,
             merge_generation: next_merge_generation(),
+            opened_ms: tilo_clock::unix_now_ns() / 1_000_000,
             #[cfg(test)]
             conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
@@ -2353,10 +2356,27 @@ impl Namespace {
         }
     }
 
+    /// The folder's own attributes: changed when the newest of its entries changed, as a
+    /// directory's time moves with what is put into it, rather than never (the epoch, which a
+    /// file manager shows as 1970). An empty folder reads as changed when this namespace opened.
+    fn root_attr(&self) -> FileAttr {
+        let newest = self
+            .tree
+            .children
+            .get(ROOT_ID)
+            .into_iter()
+            .flat_map(BTreeMap::values)
+            .flatten()
+            .filter_map(|id| self.node_meta(id))
+            .map(|meta| meta.mtime)
+            .max();
+        Self::attr_for(ROOT_INO, NodeKind::Dir, 0, newest.unwrap_or(self.opened_ms))
+    }
+
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
+            return Some(self.root_attr());
         }
         if !self.reaches_root(id) {
             return None;
@@ -2385,7 +2405,7 @@ impl Namespace {
     pub(crate) fn getattr_including_unlinked(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
+            return Some(self.root_attr());
         }
         let meta = self.node_meta(id)?;
         Some(self.node_attr(ino, id, &meta))
@@ -2394,7 +2414,7 @@ impl Namespace {
     pub(crate) fn attr_and_hash(&self, ino: u64) -> Option<(FileAttr, Option<Hash>)> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some((Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0), None));
+            return Some((self.root_attr(), None));
         }
         if !self.reaches_root(id) {
             return None;
@@ -2412,7 +2432,7 @@ impl Namespace {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
             return Some(InodeView {
-                attr: Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0),
+                attr: self.root_attr(),
                 hash: None,
                 live: true,
                 path: query.path.then(|| "/".to_string()),

@@ -1262,3 +1262,22 @@ fn trees_founded_apart_merge_with_every_file_of_each() {
         ["contract.txt", "handbook.md", "notice.pdf"]
     );
 }
+
+#[test]
+fn the_folder_reads_as_changed_with_its_newest_entry() {
+    let mut ns = Namespace::new("laptop").unwrap();
+    let opened = ns.getattr(ROOT_INO).unwrap().mtime;
+    assert!(
+        opened > UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        "an empty folder reads as changed when it opened, not in 1970: {opened:?}"
+    );
+    let newest = 1_790_000_000_000;
+    ns.create_file(ROOT_INO, "terms.txt", Some(&h(1)), 6, newest)
+        .unwrap();
+    ns.create_file(ROOT_INO, "older.txt", Some(&h(2)), 6, newest - 60_000)
+        .unwrap();
+    assert_eq!(
+        ns.getattr(ROOT_INO).unwrap().mtime,
+        UNIX_EPOCH + Duration::from_millis(newest)
+    );
+}
