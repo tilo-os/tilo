@@ -37,7 +37,7 @@ import {followConnection} from './connection-status.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
+import {createWorkspaceActions, invitedLine, mayRemove} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {siteHost} from './site-host.mjs';
 import {
@@ -648,6 +648,103 @@ function waitingCard({load, invite, unlist}) {
  * person this page is in its workspace as: a device paired to a person kept
  * elsewhere holds no root of theirs.
  */
+/** How a member's part is called in the People card. */
+const roleLabel = entry => entry.role === 'owner' ? 'Owner'
+  : entry.administrator === true ? 'Administrator'
+    : entry.role ? entry.role[0].toUpperCase() + entry.role.slice(1) : 'Member';
+
+/** Who is in the workspace, each with their part and, where the workspace's
+ * rules let this person remove them, Remove. `load()` resolves to the host's
+ * member list, read again after every removal; `self` is this person's root
+ * key; `remove(member)` asks the host and rejects with its refusal. Removal
+ * asks first, because it takes the workspace away from someone and cannot be
+ * undone here. Resolves when closed. */
+function peopleCard({load, self, remove}) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card tilo-people';
+    form.dataset.card = 'people';
+    const heading = Object.assign(document.createElement('h2'), {textContent: 'People'});
+    const listed = document.createElement('section');
+    listed.dataset.list = 'people';
+    const error = Object.assign(document.createElement('p'), {className: 'tilo-entry-error'});
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const close = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Close'});
+    form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
+    const said = refusal => { error.textContent = refusal?.message ?? String(refusal); error.hidden = false; };
+    const button = (text, run) => {
+      const made = Object.assign(document.createElement('button'), {type: 'button', textContent: text});
+      made.addEventListener('click', run);
+      return made;
+    };
+    const headingOf = (members, workspace) => {
+      const live = members.filter(entry => entry.removed !== true);
+      heading.textContent = `${workspace ? `${workspace} · ` : ''}People${live.length ? ` · ${live.length}` : ''}`;
+      return live;
+    };
+    const show = async () => {
+      error.hidden = true;
+      let members = [];
+      let workspace = '';
+      try {
+        const list = await load();
+        members = Array.isArray(list?.members) ? list.members : [];
+        workspace = typeof list?.name === 'string' ? list.name : '';
+      } catch (refusal) {
+        said(refusal);
+      }
+      const live = headingOf(members, workspace);
+      listed.replaceChildren();
+      if (!live.length) {
+        listed.append(Object.assign(document.createElement('p'), {className: 'tilo-people-none',
+          textContent: 'Nobody else is in this workspace yet.'}));
+        return;
+      }
+      listed.append(Object.assign(document.createElement('p'), {className: 'tilo-people-note',
+        textContent: 'Removing someone takes this workspace away from them. They can be invited again.'}));
+      const rows = document.createElement('ul');
+      rows.append(...live.map(entry => {
+        const item = document.createElement('li');
+        const who = Object.assign(document.createElement('span'), {className: 'tilo-people-who'});
+        const isSelf = entry.member === self || entry.self === true;
+        who.append(Object.assign(document.createElement('span'), {
+          className: 'tilo-people-name', textContent: entry.name || 'Someone'}),
+        Object.assign(document.createElement('span'), {
+          className: 'tilo-people-role', textContent: isSelf ? `${roleLabel(entry)} (you)` : roleLabel(entry)}));
+        item.append(who);
+        // Only whoever the workspace's rules let remove this member is offered
+        // it, and the press asks first: the host still decides every removal.
+        if (!isSelf && mayRemove(live, self, entry)) {
+          const ask = Object.assign(document.createElement('span'), {className: 'tilo-people-confirm'});
+          const confirm = button('Remove', async () => {
+            ask.replaceChildren();
+            confirm.disabled = true;
+            try { await remove(entry.member); } catch (refusal) { said(refusal); }
+            await show();
+          });
+          confirm.className = 'tilo-people-remove';
+          const keep = button('Keep', () => ask.replaceChildren(askButton));
+          const askButton = button('Remove', () => {
+            ask.replaceChildren(Object.assign(document.createElement('span'), {
+              className: 'tilo-people-question',
+              textContent: `Remove ${entry.name || 'this person'}? They lose access now.`}),
+            confirm, keep);
+          });
+          askButton.className = 'tilo-people-remove';
+          ask.append(askButton);
+          item.append(ask);
+        }
+        return item;
+      }));
+      listed.append(rows);
+    };
+    form.append(heading, listed, error, close);
+    document.body.append(form);
+    void show();
+  });
+}
+
 async function rootOfThisPage(peer) {
   const person = peer?.userPublicKey;
   const identity = currentIdentity() ?? await browserIdentity({create: !person});
@@ -1409,6 +1506,7 @@ export async function startEntryPage({mode}) {
         share: shareCard,
         copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
         waitingList: waitingCard,
+        people: peopleCard,
         fail: text => card(text, [['Close', null]]),
       },
     }) : null;

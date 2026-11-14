@@ -25,6 +25,11 @@
  *   taken off the list by hand (`unlist`). An invitation admits by itself, so
  *   nobody waits to be let in.
  *
+ * - `people`: who is in this workspace, with what each may do and, for
+ *   whoever the workspace's rules let remove them, Remove. The list and every
+ *   removal are the host's answers (`membership.list`, `membership.remove`);
+ *   removal asks first, because it cannot be undone.
+ *
  * Every step is the host's decision: a refusal is said, never worked
  * around.
  */
@@ -40,6 +45,26 @@ export const INVITE_LINK = Object.freeze({id: 'copy-invite-link', title: 'Copy a
   subtitle: 'Anyone with it joins as an editor', source: 'workspace'});
 export const WAITING = Object.freeze({id: 'waiting-to-join', title: 'Waiting to join',
   subtitle: 'Invite people who left their address at the door'});
+export const PEOPLE = Object.freeze({id: 'people', title: 'People',
+  subtitle: 'Who is in this workspace, and who may remove them', source: 'workspace'});
+
+/**
+ * Whether the person `self` (their root key, hex) may remove `target` from a
+ * workspace whose `members` the host listed, by the rules the workspace's governance applies (`crates/collab/action-policy`): the owner
+ * holds everyone and nobody removes them; an administrator reaches every
+ * member who is not an administrator; an administrator is removed only by the
+ * owner or the person the workspace is kept for; anyone may leave, which is
+ * their own row, not a removal here.
+ */
+export function mayRemove(members, self, target) {
+  if (!target) return false;
+  const me = members?.find(member => member.member === self || member.self === true);
+  if (!me || target.member === me.member || target.self === true) return false;
+  if (target.role === 'owner') return false;
+  const governs = me.role === 'owner' || me.administrator === true || me.keeper === true;
+  if (!governs) return false;
+  return target.administrator !== true || me.role === 'owner' || me.keeper === true;
+}
 
 const hex = bytes => Array.from(bytes ?? [], byte => byte.toString(16).padStart(2, '0')).join('');
 
@@ -75,7 +100,9 @@ export const keepsOwn = peer => Boolean(peer?.workspace) && Boolean(peer?.host?.
  * (resolves whether it reached the clipboard),
  * `waitingList({load, invite, unlist})` (`load()` resolves to the wait-list
  * entries; `invite(entry)` makes the invitation for an address and has the
- * host mail it, else shares it, resolving to `{mailed, link}`) and
+ * host mail it, else shares it, resolving to `{mailed, link}`),
+ * `people({load, self, remove})` (`load()` resolves to the workspace's
+ * member list; `remove(person)` asks the host to take them out) and
  * `fail(text)`. Attach the desktop with `attach(mount)`; route its host
  * actions to `perform`.
  */
@@ -89,6 +116,7 @@ export function createWorkspaceActions({
   const inWorkspace = Boolean(peer?.workspace && peer.createInvitation);
   const actions = () => [
     ...(ownHost(peer) || machines().length || keepsOwn(peer) ? [NEW_WORKSPACE] : []),
+    ...(inWorkspace ? [PEOPLE] : []),
     ...(lettingIn ? [INVITE_LINK] : []),
     JOIN_WORKSPACE,
     ...(lettingIn ? [WAITING] : []),
@@ -161,7 +189,7 @@ export function createWorkspaceActions({
   return {
     actions,
     /** Whether `id` is one of these actions. */
-    handles: id => [NEW_WORKSPACE.id, INVITE_LINK.id, WAITING.id].includes(id),
+    handles: id => [NEW_WORKSPACE.id, INVITE_LINK.id, WAITING.id, PEOPLE.id].includes(id),
     /** Show the actions in `mount`'s desktop; whoever the host lets invite
      * is offered a link and the wait list. */
     async attach(target) {
@@ -191,7 +219,12 @@ export function createWorkspaceActions({
     async perform(id) {
       try {
         if (id === NEW_WORKSPACE.id) await newWorkspace();
-        else if (id === INVITE_LINK.id && lettingIn) await copyInviteLink();
+        else if (id === PEOPLE.id) {
+          // Who is in the workspace, and removing whoever this person may:
+          // the host lists them and decides each removal.
+          await ui.people({load: () => peer.membership.list(), self: peer.userPublicKey,
+            remove: person => peer.membership.remove(person)});
+        } else if (id === INVITE_LINK.id && lettingIn) await copyInviteLink();
         else if (id === WAITING.id && lettingIn) {
           // The addresses left at the workspace's door, where the workspace
           // keeps a wait list: a workspace without one lists none.

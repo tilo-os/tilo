@@ -127,7 +127,10 @@ fn millis(nanoseconds: u64) -> u64 {
 
 fn member(value: &Member) -> Value {
     json!({"member": value.id.key(), "name": value.name,
-        "role": value.role.map(Role::key), "removed": value.removed})
+        "role": value.role.map(Role::key), "removed": value.removed,
+        // What the workspace made them, and who reads this row: the page's
+        // People list offers removal where the workspace's rules allow it.
+        "administrator": value.administrator, "self": value.is_self})
 }
 
 fn workspace(value: &Workspace) -> Value {
