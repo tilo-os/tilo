@@ -122,15 +122,21 @@ impl App {
         }
     }
 
-    /// What the session told the window, by the names the messages go by.
+    /// What the session told the window, by the names the messages go by; an ask it did not
+    /// answer with which one and why.
     fn told(&self) -> Vec<String> {
         self.told
             .iter()
             .map(|message| {
-                serde_json::to_value(message)
-                    .ok()
-                    .and_then(|value| value["type"].as_str().map(str::to_owned))
-                    .unwrap_or_default()
+                let value = serde_json::to_value(message).unwrap_or_default();
+                let name = value["type"].as_str().unwrap_or_default().to_owned();
+                match value["reason"].as_str() {
+                    Some(reason) => format!(
+                        "{name} ({}: {reason})",
+                        value["message"].as_str().unwrap_or_default()
+                    ),
+                    None => name,
+                }
             })
             .collect()
     }
@@ -183,24 +189,47 @@ impl Two {
             salt,
         ));
         let mut window = Some(mapped(&mut host.session, APP));
-        let tab = tab_of(&host.session, APP);
         // The window's app runs a page engine, and said so when its window opened.
-        let app = if connected {
+        let (tab, app) = if connected {
             let mut app = App::launched(&host.session);
             app.say(&FloatingSurfaceClientMessage::PaintCapable);
-            until_window(
-                &mut host.session,
-                window.as_mut().expect("the window's client"),
-                |session, _| session.shared.pages.borrow().streamed(tab, WORKSPACE),
+            // The connection names no tab: the session finds the window the app speaks for, its
+            // window in front, and offers the page of the tab that window stands in.
+            let client = window.as_mut().expect("the window's client");
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let tab = loop {
+                client.exchange();
+                host.session.step(Duration::from_millis(2)).expect("step");
+                app.hear();
+                let offered = host.session.shared.pages.borrow().offered();
+                if let [tab] = offered[..] {
+                    break tab;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the app said its window draws a page, and the session offers the pages of \
+                     {offered:?}; it told the app {:?}",
+                    app.told()
+                );
+            };
+            assert!(
+                host.session.shared.pages.borrow().streamed(tab, WORKSPACE),
+                "the page is offered in the workspace the app runs in"
             );
-            Some(app)
+            let tree = host.session.handle().read(Clone::clone);
+            assert!(
+                crate::window_share::window_shown(host.session.compositor(), &tree, tab).is_some(),
+                "the tab the session found for the app is the one its window stands in"
+            );
+            (tab, Some(app))
         } else {
+            let tab = tab_of(&host.session, APP);
             host.session
                 .shared
                 .pages
                 .borrow_mut()
                 .capable(tab, WORKSPACE);
-            None
+            (tab, None)
         };
         let mut viewer = Box::new(member_minting_under(
             seeds[1],
