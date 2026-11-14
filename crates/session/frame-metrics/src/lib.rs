@@ -31,7 +31,6 @@ use trace_writer::TraceWriter;
 
 use std::io::Write;
 use std::time::{Duration, Instant};
-use tilo_lock::MutexRecover as _;
 
 /// One loop iteration's timings, in microseconds; a `u32` covers 71 minutes, far past where these numbers are interesting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -210,53 +209,6 @@ impl DemandOnset {
         self.since = None;
     }
 }
-
-/// Interned `+`-joined app ids for [`FrameSample::paint_clients`]. Bounded:
-/// app ids come from clients, so past [`MAX_CLIENT_LABELS`] distinct labels
-/// every new one reads as [`OTHER_CLIENTS`] instead of leaking more.
-pub fn intern_clients(label: &str) -> &'static str {
-    static LABELS: InternedLabels = InternedLabels::new();
-    LABELS.intern(label)
-}
-
-/// Interned labels for [`FrameSample::paint_animations`], bounded the same
-/// way as [`intern_clients`] and counted apart from it.
-pub fn intern_animations(label: &str) -> &'static str {
-    static LABELS: InternedLabels = InternedLabels::new();
-    LABELS.intern(label)
-}
-
-/// A bounded set of leaked trace labels, so a row can carry a `&'static str`.
-struct InternedLabels(
-    std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static str>>>,
-);
-
-impl InternedLabels {
-    const fn new() -> Self {
-        Self(std::sync::OnceLock::new())
-    }
-
-    fn intern(&self, label: &str) -> &'static str {
-        if label.is_empty() {
-            return "";
-        }
-        let mut labels = self.0.get_or_init(Default::default).lock_recover();
-        if let Some(known) = labels.get(label).copied() {
-            return known;
-        }
-        if labels.len() >= MAX_CLIENT_LABELS {
-            return OTHER_CLIENTS;
-        }
-        let leaked: &'static str = Box::leak(label.to_owned().into_boxed_str());
-        labels.insert(leaked);
-        leaked
-    }
-}
-
-/// Cap on distinct labels of each interned trace column.
-pub const MAX_CLIENT_LABELS: usize = 256;
-/// The label past [`MAX_CLIENT_LABELS`].
-pub const OTHER_CLIENTS: &str = "(other)";
 
 /// The slowest of a phase's consecutive named steps. Each [`Self::step`]
 /// closes the step that began at the previous one; two clock reads per step,
@@ -867,38 +819,12 @@ impl FrameRecorder {
             .zip(thread_cpu_time())
             .map(|(start, end)| us(end.saturating_sub(start)));
     }
-    pub fn mark_clients(&mut self, d: Duration) {
-        self.cur.clients_us = us(d);
-    }
     pub fn mark_sleep(&mut self, d: Duration) {
         self.cur.sleep_us = us(d);
     }
     pub fn mark_wake(&mut self, reason: &'static str) {
         self.cur.wake = reason;
     }
-    /// Why this tick paints and whose commits it carries; see
-    /// [`FrameSample::paint_reasons`].
-    pub fn mark_paint_reasons(&mut self, reasons: u16, clients: &'static str) {
-        if self.enabled {
-            self.cur.paint_reasons = reasons;
-            self.cur.paint_clients = clients;
-        }
-    }
-
-    /// Who asked for this painted tick's motion; see
-    /// [`FrameSample::paint_animations`].
-    pub fn mark_paint_animations(&mut self, owners: &'static str) {
-        if self.enabled {
-            self.cur.paint_animations = owners;
-        }
-    }
-
-    pub fn mark_backpressured(&mut self) {
-        if self.enabled {
-            self.cur.backpressured = true;
-        }
-    }
-
     /// Record the submit phase and close any outstanding input-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
     pub fn mark_submit(
         &mut self,
@@ -929,12 +855,6 @@ impl FrameRecorder {
             } else {
                 self.cur.input_retirement_latency_us = self.cur.input_latency_us;
             }
-        }
-    }
-
-    pub fn mark_deadline_lateness(&mut self, d: Duration) {
-        if self.enabled {
-            self.cur.deadline_late_us = us(d);
         }
     }
 
@@ -1106,23 +1026,6 @@ impl Drop for FrameRecorder {
     }
 }
 
-/// `CLOCK_MONOTONIC` now, in nanoseconds: the clock input events and boot
-/// measurements are stamped with, so the session log can place a frame on it.
-pub fn monotonic_time_ns() -> Option<u128> {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: the out pointer refers to a live timespec for the entire call.
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
-        return None;
-    }
-    u128::try_from(now.tv_sec)
-        .ok()?
-        .checked_mul(1_000_000_000)?
-        .checked_add(u128::try_from(now.tv_nsec).ok()?)
-}
-
 /// CPU time the calling thread has consumed.
 #[cfg(unix)]
 fn thread_cpu_time() -> Option<Duration> {
@@ -1235,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn paint_reasons_name_every_set_bit_and_clients_stay_bounded() {
+    fn paint_reasons_name_every_set_bit() {
         assert_eq!(paint_reason::names(0), "");
         assert_eq!(
             paint_reason::names(paint_reason::APPS | paint_reason::FORCE | paint_reason::LOCK_OSD),
@@ -1245,17 +1148,6 @@ mod tests {
             .iter()
             .fold(0, |bits, (bit, _)| bits | bit);
         assert_eq!(all.count_ones(), 16, "the 16 bits are distinct");
-        assert_eq!(intern_clients(""), "");
-        let first = intern_clients("so.tilo.notes");
-        assert!(
-            std::ptr::eq(first, intern_clients("so.tilo.notes")),
-            "interned once"
-        );
-        for n in 0..MAX_CLIENT_LABELS {
-            let _ = intern_clients(&format!("bounded.{n}"));
-        }
-        assert_eq!(intern_clients("one.more.than.allowed"), OTHER_CLIENTS);
-        assert_eq!(intern_clients("so.tilo.notes"), "so.tilo.notes");
     }
 
     tilo_test_env::scenario! {

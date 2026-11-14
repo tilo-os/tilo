@@ -376,24 +376,6 @@ pub fn launch_failed(id: u64) {
     );
 }
 
-/// Test-facing snapshot of in-flight launch timing, so integration tests can prove
-/// correlation without reaching into storage.
-#[cfg(any(test, feature = "test-support"))]
-#[must_use]
-pub fn launch_snapshot() -> Vec<(u64, String, bool, Option<u64>)> {
-    launch_table()
-        .iter()
-        .map(|launch| {
-            (
-                launch.id,
-                launch.key.clone(),
-                launch.spawned_at.is_some(),
-                launch.surface_id,
-            )
-        })
-        .collect()
-}
-
 /// Global capture state: the first `mark` reads a single atomic pointer.
 static METRICS: OnceLock<Option<Metrics>> = OnceLock::new();
 

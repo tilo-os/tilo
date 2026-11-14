@@ -8,9 +8,6 @@ repository.workspace = true
 homepage.workspace = true
 description = "Lightweight startup-timing capture for Tilo apps."
 
-[features]
-test-support = []
-
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
