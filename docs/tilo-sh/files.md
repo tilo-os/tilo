@@ -99,13 +99,24 @@ echo "the letter is $(wc -c < letter.docx) bytes, a Word file: $([[ $(head -c 2 
 
 ## From a shell
 
+`tilo files put` uploads the bytes and lands each file in the app that opens them: a PDF in PDF Viewer,
+a Word document in Writer, a workbook in Sheets, a picture in Photos, and any text file — a note, but
+also JSON, TOML or a shell script that no app owns — in Notes. Each line it prints is the record the
+file landed in, or, for bytes no app opens, the reference they are kept under:
+
 ```sh
-tilo files put passport.png -w jane-doe                          # prints the reference
+tilo files put passport.png -w jane-doe                 # pdf-viewer@6f1c…  passport.png
+tilo files put ./contracts -w jane-doe                  # a folder goes up whole, keeping its structure
+tilo files put config.json -w jane-doe --store          # the bytes only: prints tilo.content:…
 tilo -w jane-doe do pdf-viewer#import-pdf-content \
-  content=tilo.content:… name=application.pdf
+  content=tilo.content:… name=application.pdf           # an app that takes a reference, by hand
 tilo -w jane-doe do word-processor#export-content format=docx     # answers a reference
 tilo files get tilo.content:… -w jane-doe -o cover-letter.docx    # or straight to standard output
 ```
+
+`--store` imports nothing: the bytes are in the workspace, named by their hash, for an action you name
+yourself. Folders keep their names from the folder you gave: `tilo files put notes/` uploads
+`notes/2026/plan.md` as `2026/plan.md`.
 
 ## Who may
 

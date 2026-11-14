@@ -87,9 +87,9 @@ const NOTES: Landing = Landing {
 /// The app `name` lands in, for a file whose first bytes are `head`.
 ///
 /// A word-processing document is landable as any of the formats the Writer
-/// opens, and a spreadsheet only as a workbook; a text file is a note. The
-/// name decides nothing but text against everything else: a picture, a PDF
-/// or a workbook is what its bytes say, however it was called.
+/// opens, and a spreadsheet only as a workbook; any text file is a note. The
+/// name decides nothing: a picture, a PDF, a workbook or a text file is what
+/// its bytes say, however it was called.
 #[must_use]
 pub fn landing(head: &[u8], name: &str) -> Option<Landing> {
     if crate::image_format(head).is_some() {
@@ -105,17 +105,11 @@ pub fn landing(head: &[u8], name: &str) -> Option<Landing> {
         };
         return Some(landing);
     }
-    // Text is the one the name decides: a markdown or plain-text file is a
-    // note, and a file nothing else lands is not made one by its name.
-    let extension = std::path::Path::new(name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase);
-    let textual = matches!(
-        extension.as_deref(),
-        Some("md" | "markdown" | "txt" | "text")
-    );
-    (textual && crate::is_text(head)).then_some(NOTES)
+    // Text is a note whatever it is called: the bytes say it is text, which
+    // is what a note holds, so a file no other app opens is still a record a
+    // person and an agent can find (`config.json`, `deploy.sh`, a `README`).
+    // Bytes that are not text land nowhere: no note can hold them.
+    (!name.trim().is_empty() && crate::is_text(head)).then_some(NOTES)
 }
 
 #[cfg(test)]
@@ -129,7 +123,11 @@ mod tests {
         assert_eq!(landing(b"\x89PNG\r\n\x1a\n....", "scan.pdf"), Some(PHOTOS));
         assert_eq!(landing(b"# Plan\n\n- one\n", "plan.md"), Some(NOTES));
         assert_eq!(landing(b"plain words\n", "todo.txt"), Some(NOTES));
-        assert_eq!(landing(b"plain words\n", "README"), None);
+        // Text no app owns is still a record a person can open, whatever it
+        // is called.
+        assert_eq!(landing(b"{\"port\": 8080}\n", "config.json"), Some(NOTES));
+        assert_eq!(landing(b"#!/bin/sh\necho hi\n", "deploy.sh"), Some(NOTES));
+        assert_eq!(landing(b"plain words\n", "README"), Some(NOTES));
         assert_eq!(landing(&[0_u8, 1, 2, 3], "blob.bin"), None);
         assert_eq!(landing(b"", "empty.pdf"), None);
     }
