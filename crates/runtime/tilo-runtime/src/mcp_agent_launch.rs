@@ -45,8 +45,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(Done::Launched { value, reply })
     }
 
-    /// `open` of `app_id`, which runs already: it is there, and what is in it.
-    pub(super) async fn running(&self, app_id: &str) -> Done {
+    /// `action` (`open` or `start`) of the app `resolved` names, which runs already: it is there,
+    /// and what is in it. Running is not shown: `open` asks for the app's window on the person's
+    /// desk, or brings the one there into view.
+    pub(super) async fn running(&self, resolved: &super::Resolved, action: &str) -> Done {
+        let app_id = resolved.app_id.as_str();
+        if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
+            self.note_shown(&resolved.provider, app_id);
+        }
         let value = json!({"update": {"state": "succeeded", "output": {}}});
         let reply = self.opened_reply(app_id, &value).await;
         Done::Launched { value, reply }

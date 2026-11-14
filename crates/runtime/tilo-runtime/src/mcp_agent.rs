@@ -2630,7 +2630,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             match self.pick_action_in(&action, &resolved).await {
                 Ok(found) => found,
                 Err(_) if opens && starts_app(&action) => {
-                    return Ok(self.running(&resolved.app_id).await);
+                    return Ok(self.running(&resolved, &action).await);
                 }
                 Err(_) if parsed.segments.is_empty() && starts_app(&action) => {
                     let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
@@ -2653,6 +2653,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms,
         }))
         .await?;
+        self.note_activated(&descriptor.address.action, &value, &resolved);
         Ok(Done::invoked(value, named_at, descriptor, &resolved))
     }
 

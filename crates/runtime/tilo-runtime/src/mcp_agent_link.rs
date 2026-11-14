@@ -205,23 +205,47 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// serves by its provider (`record:<app>:<record>`) is one: a window of a
     /// person's desktop is not a record a link names.
     pub(super) async fn changed_link(&self, provider: &str) -> Option<String> {
-        let (app, record) = tilo_actions::remote::record_parts(provider)?;
-        let changed = crate::mcp::ActedRecord {
-            app: app.to_owned(),
-            record: record.to_owned(),
-        };
-        {
-            let mut held = self.changed.lock_recover();
-            if !held.contains(&changed) {
-                held.push(changed);
-            }
-        }
+        tilo_actions::remote::record_parts(provider)?;
+        self.note_shown(provider, "");
         match self.record_link(provider, serde_json::Map::new()).await {
             Ok(url) => Some(url),
             Err(error) => {
                 tracing::debug!(%error, provider, "mcp: a changed record answered no link");
                 None
             }
+        }
+    }
+
+    /// Keep the record `provider` names for the door that shows its agent to open in front of the
+    /// workspace's people ([`McpServer::take_changed`]), as a record it changed is: what an agent
+    /// opens or asks to see is shown to the person too. A provider that is no record (a window of
+    /// a device) names the app `app_id`'s own record of the workspace; an empty `app_id` then
+    /// names nothing.
+    pub(super) fn note_shown(&self, provider: &str, app_id: &str) {
+        let shown = match tilo_actions::remote::record_parts(provider) {
+            Some((app, record)) => crate::mcp::ActedRecord {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            },
+            None if !app_id.is_empty() => crate::mcp::ActedRecord {
+                app: app_id.to_owned(),
+                record: String::new(),
+            },
+            None => return,
+        };
+        let mut held = self.changed.lock_recover();
+        if !held.contains(&shown) {
+            held.push(shown);
+        }
+    }
+
+    /// "Show this window" (`action`, answered `value`) shows it to the person: its record opens on
+    /// their desk when no window there shows it, and the window comes into view where the agent
+    /// works ([`Self::note_shown`]).
+    pub(super) fn note_activated(&self, action: &str, value: &Value, resolved: &super::Resolved) {
+        let failed = value.pointer("/update/state").and_then(Value::as_str) == Some("failed");
+        if action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION && !failed {
+            self.note_shown(&resolved.provider, &resolved.app_id);
         }
     }
 
