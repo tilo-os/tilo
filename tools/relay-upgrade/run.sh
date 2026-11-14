@@ -18,7 +18,7 @@
 # directory is unchanged, so the release is built once.
 #
 # `upgrade` starts this checkout's relay on a copy of that state and checks all
-# of it is there and works (`persistent_room::release_upgrade`); a refusal or a
+# of it is there and works (`persistent_workspace::release_upgrade`); a refusal or a
 # loss fails it. It then starts the release's relay on the state this checkout
 # left and says whether a rollback could run on it without a restore. That part
 # reports and never fails: the planned rollback is the backup taken before.
@@ -141,7 +141,7 @@ upgrade() {
   tar -xf "$out/state.tar" -C "$TILO_UPGRADE_DIR"
   say "this checkout's relay opens the Lounge $release kept"
   (cd "$repo" && TILO_UPGRADE_RELAY_LOG=${TILO_UPGRADE_RELAY_LOG:-warn} cargo test --locked -p tilo-relay --features agents --test it -- \
-    --ignored --exact persistent_room::release_upgrade::the_lounge_a_release_kept_starts_with_everything_in_it \
+    --ignored --exact persistent_workspace::release_upgrade::the_lounge_a_release_kept_starts_with_everything_in_it \
     --nocapture --test-threads=1) | ran_one
   say "the upgrade kept the Lounge"
   local expected

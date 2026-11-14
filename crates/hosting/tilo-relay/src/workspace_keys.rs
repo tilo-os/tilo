@@ -309,10 +309,11 @@ fn vault_key(device: &SigningKey) -> VaultKey {
 }
 
 /// The key the 0.1 releases sealed the relay's channel state under, from the
-/// same device key.
+/// same device key. Its derivation names `room`, the release's word: it is
+/// what that state was sealed under, so it never follows a rename.
 fn released_vault_key(device: &SigningKey) -> VaultKey {
     VaultKey::new(blake3::derive_key(
-        "tilo-relay governed workspace channel vault v1",
+        "tilo-relay governed room channel vault v1",
         &device.to_bytes(),
     ))
 }

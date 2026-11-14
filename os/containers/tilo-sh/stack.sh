@@ -1518,6 +1518,10 @@ restart() {
   [[ -n $name ]] || die 'restart NAME: relay, api, web, tls, discord or releases'
   [[ $mode == native ]] || die 'restart rebuilds the native stack; the images run as built: stack.sh up --images again'
   native_preflight
+  # What the relay reads of the operator's secrets, on a stack whose state was
+  # kept before this checkout made it: restarting one part must not need a
+  # whole `up` first.
+  make_secrets
   local began=$SECONDS
   if running discord; then discord_api=http://127.0.0.1:$discord_rest_port; fi
   case $name in
@@ -1529,6 +1533,7 @@ restart() {
       wait_relay ;;
     api)
       build_programs
+      stop_native api
       start_native_api
       wait_api ;;
     web)

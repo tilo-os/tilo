@@ -509,6 +509,23 @@ fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
         .with_context(|| format!("write {}", path.display()))
 }
 
+/// The workspace id kept in `id_file`; a state kept before this layout named
+/// its workspace keeps it in `room-id` beside it, which is read and left where
+/// it is (a rollback starts the release's relay on it).
+fn read_workspace_id(id_file: &Path) -> anyhow::Result<Option<String>> {
+    fn read(path: &Path) -> anyhow::Result<Option<String>> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Ok(Some(text.trim().to_owned())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+        }
+    }
+    match read(id_file)? {
+        Some(workspace) => Ok(Some(workspace)),
+        None => read(&id_file.with_file_name("room-id")),
+    }
+}
+
 /// The governed workspace: the one named in `workspace_id_file`, else the only workspace
 /// this relay governs (a start interrupted between keeping the root and
 /// writing the file), else a new one. An id whose state is gone starts again
@@ -520,11 +537,7 @@ async fn governed_workspace(
     store: &tilo_secrets::SecretStore,
     root: &SigningKey,
 ) -> anyhow::Result<String> {
-    let known = match std::fs::read_to_string(id_file) {
-        Ok(text) => Some(text.trim().to_owned()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error).context("read the workspace id file"),
-    };
+    let known = read_workspace_id(id_file)?;
     let workspace = match known {
         Some(workspace)
             if !workspaces
@@ -1939,6 +1952,24 @@ mod tests {
                     .contains("twice")
             );
         }
+    }
+
+    /// A workspace id kept under the earlier layout's file name is read, and
+    /// the file this layout writes wins once it is there.
+    #[test]
+    fn a_workspace_id_kept_as_room_id_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "1ceb1ba6-9190-4b17-8208-5a71662ceb84";
+        let named = dir.path().join("workspace-id");
+        std::fs::write(dir.path().join("room-id"), format!("{id}\n")).unwrap();
+        assert_eq!(read_workspace_id(&named).unwrap().as_deref(), Some(id));
+        std::fs::write(&named, id).unwrap();
+        std::fs::write(dir.path().join("room-id"), "another").unwrap();
+        assert_eq!(
+            read_workspace_id(&named).unwrap().as_deref(),
+            Some(id),
+            "the file this layout writes is the one it reads"
+        );
     }
 
     #[test]
