@@ -303,15 +303,28 @@ fn wide_session(root: &std::path::Path) -> Session {
     session
 }
 
+/// How the place [`a_place_moved_to_a_point_is_drawn_there`] moves came to stand on the canvas.
+#[derive(Clone, Copy, Debug)]
+enum Standing {
+    /// The notes' root, placed at a point by an agent's `place`.
+    PlacedRecord,
+    /// The Notes app's window, opened beside another app's as `session.open_app` opens them.
+    AppWindow,
+}
+
 /// Move the place `key` to `(1600, 0)` with its own `position`, as the agent, and wait until it is
 /// drawn there: its frame as far right of where it was drawn as 1600 is of the strip's point
-/// before, and at the canvas' top.
-fn moved_and_drawn(session: &mut Session, key: &str) {
-    let (name, title) = crate::common::wait_for(session, "the place's name", |session| {
-        crate::common::place(session, crate::common::number(key))
-            .map(|place| (place.name, place.title))
-            .filter(|(name, _)| !name.is_empty())
-    });
+/// before, and at the canvas' top. `row` is how the place came to stand, which every failure names.
+fn moved_and_drawn(session: &mut Session, key: &str, row: Standing) {
+    let (name, title) = crate::common::wait_for(
+        session,
+        format_args!("{row:?}: the place's name"),
+        |session| {
+            crate::common::place(session, crate::common::number(key))
+                .map(|place| (place.name, place.title))
+                .filter(|(name, _)| !name.is_empty())
+        },
+    );
     // The place on the canvas: a window's frame by the name every surface calls it, a place of
     // content by its own title on its handle; the one on the canvas, above the dock that lists it.
     let shown = |session: &Session| {
@@ -325,9 +338,13 @@ fn moved_and_drawn(session: &mut Session, key: &str) {
             })
             .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
     };
-    let (x0, y0, _, _) =
-        crate::common::wait_for(session, "the place drawn", |session| shown(session));
-    let before = crate::common::place(session, crate::common::number(key)).expect("the place");
+    let (x0, y0, _, _) = crate::common::wait_for(
+        session,
+        format_args!("{row:?}: the place drawn"),
+        |session| shown(session),
+    );
+    let before = crate::common::place(session, crate::common::number(key))
+        .unwrap_or_else(|| panic!("{row:?}: the place"));
     let (bx, by, _) = canvas_point(session, &before);
 
     session
@@ -337,18 +354,22 @@ fn moved_and_drawn(session: &mut Session, key: &str) {
             "position",
             &serde_json::json!({"x": 1600, "y": 0}),
         )
-        .unwrap_or_else(|error| panic!("the position runs: {error}"));
-    let (x, y, _) = crate::common::wait_for(session, "the place moved", |session| {
-        let place = crate::common::place(session, crate::common::number(key))?;
-        let point = canvas_point(session, &place);
-        (point.0 == 1600).then_some(point)
-    });
-    assert_eq!((x, y), (1600, 0), "the layout holds the point");
+        .unwrap_or_else(|error| panic!("{row:?}: the position runs: {error}"));
+    let (x, y, _) = crate::common::wait_for(
+        session,
+        format_args!("{row:?}: the place moved"),
+        |session| {
+            let place = crate::common::place(session, crate::common::number(key))?;
+            let point = canvas_point(session, &place);
+            (point.0 == 1600).then_some(point)
+        },
+    );
+    assert_eq!((x, y), (1600, 0), "{row:?}: the layout holds the point");
     #[allow(clippy::cast_precision_loss, reason = "canvas points are small")]
     let (dx, dy) = ((1600 - bx) as f64, (0 - by) as f64);
     crate::common::wait_for(
         session,
-        format_args!("the place drawn at its point, {dx},{dy} from {x0},{y0}"),
+        format_args!("{row:?}: the place drawn at its point, {dx},{dy} from {x0},{y0}"),
         |session| {
             let (nx, ny, _, _) = shown(session)?;
             ((nx - x0 - dx).abs() < 2.0 && (ny - y0 - dy).abs() < 2.0).then_some(())
@@ -358,43 +379,56 @@ fn moved_and_drawn(session: &mut Session, key: &str) {
 
 /// A place moved to a point on the canvas (`position` with `x` and `y`, as the person's drag and an
 /// agent's step move it) is drawn there: its frame stands at that point, as far from where it
-/// stood as the point is.
+/// stood as the point is. So is an app's window opened on the canvas, as `session.open_app` opens
+/// one beside the others: each row is a way a place comes to stand, moved the one way.
+///
+/// Every row has a session of its own, so the place a row moves stands on a canvas no earlier row
+/// stood anything on; the rows share only the app store this process built its apps into.
 #[test]
 fn a_place_moved_to_a_point_is_drawn_there() {
     let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = wide_session(root.path());
-    let notes_root = root_of(&session, "so.tilo.lang.notes");
-    let notes = placed_as_agent(
-        &mut session,
-        &notes_root,
-        serde_json::json!({"resource": notes_root, "x": 240, "y": 160}),
-    );
-    moved_and_drawn(&mut session, &notes.key);
-}
-
-/// An app's window opened on the canvas, as `session.open_app` opens one beside the others, moved
-/// to a point is drawn there too.
-#[test]
-fn an_apps_window_moved_to_a_point_is_drawn_there() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = wide_session(root.path());
-    for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
-        session
-            .invoke(
-                tilo_desktop::verbs::CHROME_RESOURCE,
-                "open-app",
-                serde_json::json!({"app": app})
-                    .as_object()
-                    .expect("an object"),
-            )
-            .unwrap_or_else(|error| panic!("{app} opens: {error}"));
+    for row in [Standing::PlacedRecord, Standing::AppWindow] {
+        let root = private_home();
+        let mut session = wide_session(root.path());
+        let standing = crate::common::places(&session);
+        assert!(
+            standing.is_empty(),
+            "{row:?}: nothing stands on the canvas the row starts on: {standing:?}"
+        );
+        let key = match row {
+            Standing::PlacedRecord => {
+                let notes_root = root_of(&session, "so.tilo.lang.notes");
+                placed_as_agent(
+                    &mut session,
+                    &notes_root,
+                    serde_json::json!({"resource": notes_root, "x": 240, "y": 160}),
+                )
+                .key
+            }
+            Standing::AppWindow => {
+                for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
+                    session
+                        .invoke(
+                            tilo_desktop::verbs::CHROME_RESOURCE,
+                            "open-app",
+                            serde_json::json!({"app": app})
+                                .as_object()
+                                .expect("an object"),
+                        )
+                        .unwrap_or_else(|error| panic!("{row:?}: {app} opens: {error}"));
+                }
+                crate::common::wait_for(
+                    &mut session,
+                    format_args!("{row:?}: the Notes window's place"),
+                    |session| {
+                        crate::common::places(session)
+                            .into_iter()
+                            .find(|place| place.shows == "so.tilo.lang.notes")
+                    },
+                )
+                .key
+            }
+        };
+        moved_and_drawn(&mut session, &key, row);
     }
-    let notes = crate::common::wait_for(&mut session, "the Notes window's place", |session| {
-        crate::common::places(session)
-            .into_iter()
-            .find(|place| place.shows == "so.tilo.lang.notes")
-    });
-    moved_and_drawn(&mut session, &notes.key);
 }
