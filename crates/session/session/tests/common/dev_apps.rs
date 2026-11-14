@@ -70,9 +70,10 @@ struct Built {
 /// [`APPS`] built from this tree into signed `.tapp`s, once for every test process that would
 /// build the same: the build stands in a directory named for what it is made from
 /// ([`revision`]), under the build tree's own temporary directory, which the processes of a run
-/// share. A process that finds it whole reads it; one that does not builds it beside it and moves
-/// it into place, so a build is only ever seen whole, and two processes that build at once both
-/// end with a whole one.
+/// share. A process that finds it whole reads it. One that does not builds the packages where a
+/// test's own files go, as every process did, copies what it built beside the others and moves
+/// the copy into place, so a build is only ever seen whole, and two processes that build at once
+/// both end with a whole one.
 ///
 /// # Panics
 /// A package does not compile, or a file cannot be written.
@@ -83,11 +84,15 @@ fn built() -> &'static Built {
         let dir = builds.join(revision());
         if !dir.join(BUILT).is_file() {
             forget_old(&builds, &dir);
+            // The build writes a few hundred small files, and the build tree's disk is slower
+            // than the test's own temporary directory: only the packages are kept there.
+            let scratch = tempfile::tempdir().expect("a directory to build the apps in");
+            build_into(scratch.path());
             let staging = tempfile::Builder::new()
                 .prefix(".building-")
                 .tempdir_in(&builds)
-                .expect("a directory to build the apps in");
-            build_into(staging.path());
+                .expect("a directory beside the builds");
+            copy_tree(scratch.path(), staging.path());
             let staged = staging.keep();
             // Another process may have finished the same build first: either is whole, so the one
             // that stands is the one read.
@@ -197,7 +202,7 @@ fn build_into(dir: &Path) {
             let name = dir.file_name().expect("a package directory is named");
             let target = source.join(name);
             if !target.is_dir() {
-                copy_package(dir, &target);
+                copy_tree(dir, &target);
             }
         }
         let built = package::build(
@@ -242,10 +247,13 @@ fn build_into(dir: &Path) {
     {
         std::fs::remove_dir_all(&staged).ok();
     }
-    let list: String = apps
-        .iter()
-        .map(|(app, tapp)| format!("{app}\t{tapp}\n"))
-        .collect();
+    let mut list = String::new();
+    for (app, tapp) in &apps {
+        list.push_str(app);
+        list.push('\t');
+        list.push_str(tapp);
+        list.push('\n');
+    }
     std::fs::write(dir.join(BUILT), list).expect("the list of what was built");
 }
 
@@ -332,16 +340,16 @@ pub fn install_package(dir: &Path, store: &Path) -> String {
     installed
 }
 
-/// Copy the package at `from` into `to` , created.
-fn copy_package(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).expect("the package's directory");
-    for entry in std::fs::read_dir(from).expect("the package reads") {
-        let entry = entry.expect("the package's entries read");
+/// Copy the directory at `from` , a package or a build of them, into `to` , created.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("the copy's directory");
+    for entry in std::fs::read_dir(from).expect("the directory reads") {
+        let entry = entry.expect("the directory's entries read");
         let target = to.join(entry.file_name());
         if entry.file_type().expect("an entry's kind").is_dir() {
-            copy_package(&entry.path(), &target);
+            copy_tree(&entry.path(), &target);
         } else {
-            std::fs::copy(entry.path(), target).expect("the package's file");
+            std::fs::copy(entry.path(), target).expect("the copied file");
         }
     }
 }
