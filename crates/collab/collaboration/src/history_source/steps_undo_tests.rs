@@ -19,7 +19,7 @@ fn scope(actor: &[u8]) -> Scope {
 }
 
 #[allow(clippy::unnecessary_wraps, reason = "the shape every compensator has")]
-fn plain(_: &Version) -> Result<Option<Inverse>, String> {
+fn plain(_: &mut AutoCommit, _: &Version) -> Result<Option<Inverse>, String> {
     Ok(None)
 }
 

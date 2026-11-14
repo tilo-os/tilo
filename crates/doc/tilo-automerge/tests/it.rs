@@ -21,6 +21,8 @@ mod committed_readers;
 mod crafted_changes;
 #[path = "diff_marks.rs"]
 mod diff_marks;
+#[path = "diff_walks_what_differs.rs"]
+mod diff_walks_what_differs;
 #[path = "idle_sync.rs"]
 mod idle_sync;
 #[path = "known_hashes.rs"]

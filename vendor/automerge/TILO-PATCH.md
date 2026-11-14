@@ -497,3 +497,21 @@ spots are `TILO(run-delete)` in `transaction/inner.rs` and `op_set.rs`.
 Pinned by `collaboration`'s
 `a_run_deleted_at_once_is_the_change_one_at_a_time_makes` (tombstones, a
 list element two writers set, characters wider than one unit, a rollback).
+
+# Tilo patch: a diff between two versions walks what differs
+
+`diff(before, after)` walked every object of the document, and every op of
+each, to find the few that differ: taking back one word in a record that
+holds a mebibyte of text read the whole text twice (forward and back),
+about 220 ms in a debug build. An object holds a difference only if it holds
+an op that one version has and the other lacks, or one such an op
+succeeds. `OpSet::objects_changed` finds those objects from the ops whose
+counters lie between the two clocks (the column search a change's export
+uses), adds every object above them, and `DiffIter` descends only into
+those, and into everything under an object that appears in the later
+version, as before. An object it leaves out is in both versions with the
+same ops visible, as is everything under it, so the walk logs the same
+patches. A diff of the current state (`ClockRange::Current`) walks
+everything, as it must. Pinned by
+`crates/doc/tilo-automerge/tests/diff_walks_what_differs.rs`, and what an undo
+pays for it by `collaboration`'s `undo_of_a_small_step_costs_the_step_not_the_record`.

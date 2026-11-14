@@ -1295,6 +1295,44 @@ impl Automerge {
         ClockRange::Diff(before, after)
     }
 
+    /// TILO(diff-changed-objects): the objects a diff between the clocks
+    /// `before` and `after` can find a difference in, with every object
+    /// above them: those holding an op that one clock covers and the other
+    /// does not, or one such an op succeeds (vendor/automerge/TILO-PATCH.md).
+    pub(crate) fn objects_changed(&self, before: &Clock, after: &Clock) -> BTreeSet<ObjId> {
+        let mut changed = BTreeSet::new();
+        let counter = |clock: &Clock, actor: usize| clock.0.get(actor).copied().unwrap_or(0);
+        for actor in 0..before.0.len().max(after.0.len()) {
+            let (one, other) = (counter(before, actor), counter(after, actor));
+            let (low, high) = (u64::from(one.min(other)), u64::from(one.max(other)));
+            if low == high {
+                continue;
+            }
+            // The actor's ops between the two clocks are those of its changes
+            // past `low`: an actor's counters start where its first change
+            // starts, not at 1.
+            let Some(start) = self.change_graph.first_op_past(actor, low) else {
+                continue;
+            };
+            let between =
+                |id: &OpId| id.actor() == actor && low < id.counter() && id.counter() <= high;
+            for op in self.ops.iter_ctr_range(start as usize..high as usize + 1) {
+                if between(&op.id) || op.succ().any(|succ| between(&succ)) {
+                    changed.insert(op.obj);
+                }
+            }
+        }
+        let mut below: Vec<ObjId> = changed.iter().copied().collect();
+        while let Some(obj) = below.pop() {
+            if let Some(parent) = self.ops.object_parent(&obj) {
+                if changed.insert(parent) {
+                    below.push(parent);
+                }
+            }
+        }
+        changed
+    }
+
     /// Clock for reading the document as at `heads`.
     ///
     /// Returns `None` — an unscoped read of the present document — when

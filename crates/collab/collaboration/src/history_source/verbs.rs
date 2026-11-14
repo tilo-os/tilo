@@ -1018,7 +1018,6 @@ impl HistoryEdit {
             return review.apply(doc).map_err(ActionError::Refused);
         }
         let registry = tilo_actions::ActionRegistry::with(register);
-        let mut original = doc.fork();
         match self {
             Self::Undo {
                 steps,
@@ -1037,7 +1036,8 @@ impl HistoryEdit {
                         1,
                     ),
                 };
-                let compensate = |version: &Version| inverse(&mut original, &registry, version);
+                let compensate =
+                    |doc: &mut AutoCommit, version: &Version| inverse(doc, &registry, version);
                 match (to, step) {
                     (_, Some(step)) => {
                         steps::resolve(doc, step).and_then(|heads| match heads[..] {
@@ -1060,7 +1060,7 @@ impl HistoryEdit {
                     doc,
                     &scope,
                     limit(*steps, 1),
-                    |version| restoration(&mut original, &registry, version),
+                    |doc, version| restoration(doc, &registry, version),
                     words,
                 )
                 .map(drop)

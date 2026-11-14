@@ -6,15 +6,19 @@
 use std::rc::Rc;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc};
+use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use collab_types::presence::UserId;
 use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
 use collaboration::history_source::steps::{self, Scope};
+use collaboration::history_source::verbs::HistoryEdit;
 use collaboration::history_source::words::HistoryWords;
 use collaboration::record::RecordId;
 use collaboration::record::save::{RecordSaveStatus, record_document};
 use collaboration::state::UndoLog;
 use durable_store::DurableStore;
+
+#[global_allocator]
+static HEAP: tilo_automerge::heap::ThreadCounting = tilo_automerge::heap::ThreadCounting;
 
 const PACKAGE: &str = "dev.tilo.undo-without-toolkit";
 const WORKSPACE: &str = "workspace-1";
@@ -136,7 +140,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
         &mut reloaded,
         &Scope::Invoker("ada".into()),
         1,
-        |_| Ok(None),
+        |_, _| Ok(None),
         &Words,
     )
     .expect("undo by scope");
@@ -144,4 +148,50 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     reloaded.commit();
     assert_eq!(title(&reloaded), None);
     history.rebase(&mut reloaded);
+}
+
+/// Undoing a one-word step in a record that holds a mebibyte of text costs that word: the undo
+/// reads and writes what the step changed, and copies nothing of the rest of the record.
+#[test]
+fn undo_of_a_small_step_costs_the_step_not_the_record() {
+    const MEBIBYTE: usize = 1 << 20;
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(b"grace".as_slice()));
+    let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+    doc.splice_text(&body, 0, 0, &"pasted ".repeat(MEBIBYTE / 7 + 1))
+        .unwrap();
+    doc.commit();
+    doc.set_actor(ActorId::from(b"ada".as_slice()));
+    doc.put(ROOT, "title", "Draft").unwrap();
+    doc.commit();
+
+    let undo = HistoryEdit::Undo {
+        steps: None,
+        run: None,
+        by: None,
+        to: None,
+        step: None,
+    };
+    // Reading the text once: what an undo that walked the record would cost at least.
+    let reading = std::time::Instant::now();
+    assert!(doc.text(&body).unwrap().len() > MEBIBYTE);
+    let read = reading.elapsed();
+    let undoing = std::time::Instant::now();
+    let cost = tilo_automerge::heap::allocated_by(|| {
+        undo.apply_registered(&mut doc, |_| {}, &Words)
+            .expect("undo");
+        doc.commit();
+    });
+    let took = undoing.elapsed();
+
+    assert_eq!(title(&doc), None, "the undo took the title back");
+    assert_eq!(doc.length(&body), "pasted ".len() * (MEBIBYTE / 7 + 1));
+    assert!(
+        cost < MEBIBYTE / 8,
+        "the undo allocated {cost} bytes for a one-word step"
+    );
+    assert!(
+        took < read,
+        "the undo took {took:?}, reading the text {read:?}"
+    );
 }

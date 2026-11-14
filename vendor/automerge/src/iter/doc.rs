@@ -1,3 +1,4 @@
+use super::tools::Diff;
 use super::{
     ListDiff, ListDiffItem, ListRange, ListRangeItem, MapDiff, MapDiffItem, MapRange, MapRangeItem,
     Span, SpanDiff, SpanInternal, SpansDiff, SpansInternal,
@@ -11,7 +12,7 @@ use crate::types::{ObjId, ObjMeta, ObjType, Prop};
 use crate::Automerge;
 use crate::TextEncoding;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -64,7 +65,16 @@ pub(crate) struct DocIterInternal<'a> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DiffIter<'a> {
-    next_objs: BTreeMap<ObjId, IterType>,
+    /// The objects still to walk, each with whether it is new to the diff.
+    next_objs: BTreeMap<ObjId, (IterType, bool)>,
+    /// TILO(diff-changed-objects): the objects a diff between two clocks
+    /// can find a difference in, and every object above them. An object
+    /// outside them that is in both states holds nothing that differs, nor
+    /// does anything below it, so the walk leaves it out.
+    changed: Option<BTreeSet<ObjId>>,
+    /// Whether the object walked now is new to the diff: everything in it
+    /// is walked.
+    fresh: bool,
     path_map: BTreeMap<ObjId, (Prop, ObjId)>,
     obj_id_iter: ObjIdIter<'a>,
     map_iter: MapDiff<'a>,
@@ -104,10 +114,18 @@ impl<'a> DiffIter<'a> {
         let scope = obj_id_iter.seek_to_value(obj);
         let map_iter = MapDiff::new(op_set, scope.clone(), clock.clone());
         let list_iter = ListDiff::new(op_set, scope.clone(), clock.clone());
+        let changed = match &clock {
+            ClockRange::Diff(before, after) if recursive => {
+                Some(doc.objects_changed(before, after))
+            }
+            _ => None,
+        };
         let span_iter = SpansDiff::new(op_set, scope, clock, doc.text_encoding());
         let path_map = BTreeMap::new();
         let next_objs = BTreeMap::new();
         DiffIter {
+            changed,
+            fresh: false,
             map_iter,
             list_iter,
             span_iter,
@@ -123,8 +141,13 @@ impl<'a> DiffIter<'a> {
     fn process_item(&mut self, item: DocDiffItem<'a>) -> Option<DocObjDiffItem<'a>> {
         if let Some((next_obj, next_typ)) = item.make_obj() {
             let prop = item.prop();
-            if self.recursive {
-                self.next_objs.insert(next_obj, next_typ);
+            let fresh = self.fresh || item.added();
+            let differs = self
+                .changed
+                .as_ref()
+                .is_none_or(|changed| changed.contains(&next_obj));
+            if self.recursive && (fresh || differs) {
+                self.next_objs.insert(next_obj, (next_typ, fresh));
             }
             self.path_map.insert(next_obj, (prop, self.obj));
         }
@@ -143,13 +166,14 @@ impl<'a> DiffIter<'a> {
     }
 
     fn next_object(&mut self) -> Option<Option<DocObjDiffItem<'a>>> {
-        let (next, next_type) = self.next_objs.pop_first()?;
+        let (next, (next_type, fresh)) = self.next_objs.pop_first()?;
         let next_range = self.obj_id_iter.seek_to_value(next);
         if next_range.is_empty() {
             Some(None)
         } else if let Some(item) = self.shift(next_type, next_range) {
             self.obj = next;
             self.iter_type = next_type;
+            self.fresh = fresh;
             Some(self.process_item(item))
         } else {
             Some(None)
@@ -414,6 +438,16 @@ impl DocDiffItem<'_> {
                 ..
             }) => Prop::Seq(*index),
         }
+    }
+
+    /// Whether the item is in the later state and not the earlier one.
+    fn added(&self) -> bool {
+        let diff = match self {
+            Self::Map(item) => item.diff,
+            Self::List(item) => item.diff,
+            Self::Text(item) => item.diff,
+        };
+        diff == Diff::Add
     }
 
     fn make_obj(&self) -> Option<(ObjId, IterType)> {

@@ -146,9 +146,9 @@ impl SectionKind {
                 // A section's actions queue nothing outside the document:
                 // a step is taken back by reverting what it wrote.
                 let steps = if undo {
-                    steps::undo_where(doc, &owns, 1, |_| Ok(None), &ThreadWords)
+                    steps::undo_where(doc, &owns, 1, |_, _| Ok(None), &ThreadWords)
                 } else {
-                    steps::redo_where(doc, &owns, 1, |_| Ok(None), &ThreadWords)
+                    steps::redo_where(doc, &owns, 1, |_, _| Ok(None), &ThreadWords)
                 }?;
                 stepped = !steps.is_empty();
                 Ok(())

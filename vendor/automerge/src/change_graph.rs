@@ -225,6 +225,18 @@ impl ChangeGraph {
         self.max_ops.get(node.0 as usize).map(|max| u64::from(*max))
     }
 
+    // TILO(diff-changed-objects): where the ops of a range of an actor's
+    // changes start (vendor/automerge/TILO-PATCH.md).
+    /// The first op counter of `actor`'s first change with an op past the
+    /// counter `after`.
+    pub(crate) fn first_op_past(&self, actor: usize, after: u64) -> Option<u64> {
+        let nodes = self.seq_index.get(actor)?;
+        let first = nodes.partition_point(|n| u64::from(self.max_ops[n.0 as usize]) <= after);
+        let i = nodes.get(first)?.0 as usize;
+        let num_ops = self.num_ops.get(i).unwrap_or_default();
+        Some(u64::from(self.max_ops[i]) + 1 - num_ops)
+    }
+
     pub(crate) fn seq_for_actor(&self, actor: usize) -> u64 {
         self.seq_index
             .get(actor)

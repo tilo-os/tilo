@@ -9,7 +9,7 @@ fn undo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    compensate: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     super::undo(doc, scope, limit, compensate, &TestWords)
 }
@@ -18,14 +18,14 @@ fn redo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    restore: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
 ) -> Result<Vec<Version>, String> {
     super::redo(doc, scope, limit, restore, &TestWords)
 }
 
 /// No step has an inverse action: every one is undone by its patches.
 #[allow(clippy::unnecessary_wraps, reason = "the shape every compensator has")]
-fn plain(_: &Version) -> Result<Option<Inverse>, String> {
+fn plain(_: &mut AutoCommit, _: &Version) -> Result<Option<Inverse>, String> {
     Ok(None)
 }
 
@@ -181,6 +181,32 @@ tilo_test_env::scenario! {
         assert!(undo_preview(&doc, &scope(ALICE), 1).is_empty());
     }
 
+    phase a_refused_inverse_leaves_the_document_as_it_was;
+    {
+        // Two steps undone at once: the newer by its patches, the older by an
+        // inverse that refuses once the patches are written. The compensator
+        // reads the document before the undo writes anything, and the refused
+        // undo leaves every value, the heads and the undone marks as they were.
+        let mut doc = document();
+        add(&mut doc, ALICE, "a1", "red");
+        add(&mut doc, ALICE, "a2", "green");
+        let heads = doc.get_heads();
+        let older = doc.get_change_meta_by_hash(&heads[0]).unwrap().deps[0];
+        let refused = verb(&mut doc, ALICE, |doc| {
+            undo(doc, &scope(ALICE), 2, |doc: &mut AutoCommit, version: &Version| {
+                assert_eq!(doc.pending_ops(), 0, "nothing of the undo is written yet");
+                assert_eq!(doc.get_heads(), heads);
+                Ok((version.hash == older).then(|| Box::new(Refusing) as Inverse))
+            })
+        })
+        .unwrap_err();
+        assert!(refused.contains("nothing to take back"), "{refused}");
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(ids(&doc), ["a1", "a2"]);
+        assert_eq!(colour(&doc, "a2").as_deref(), Some("green"));
+        assert!(undone_is_empty(&doc));
+    }
+
     phase a_named_run_owns_the_steps_of_an_agent_run_or_a_task_run;
     // An agent running an issue stamps its steps with the run's group, so undo
     // naming that run finds them, and the agent's own undo inside the run is
@@ -207,6 +233,19 @@ tilo_test_env::scenario! {
             Scope::of(task.context.as_ref(), "alice"),
             Scope::Run("task:7".into())
         );
+    }
+}
+
+/// An inverse that refuses: what an outside consequence that can no longer be
+/// taken back answers.
+#[derive(Debug)]
+struct Refusing;
+
+impl tilo_actions::Action for Refusing {
+    fn apply(&self, _: &mut AutoCommit) -> Result<(), tilo_actions::ActionError> {
+        Err(tilo_actions::ActionError::Refused(
+            "nothing to take back".into(),
+        ))
     }
 }
 

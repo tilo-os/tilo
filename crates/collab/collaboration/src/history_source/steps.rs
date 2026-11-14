@@ -998,7 +998,8 @@ pub type Inverse = Box<dyn tilo_actions::Action>;
 
 /// Take back `scope`'s last `limit` steps that are in effect, as one new
 /// change in `doc`'s open transaction: each through the inverse `compensate`
-/// gives for it, else by reverting its patches. Returns the steps, newest
+/// gives for it, else by reverting its patches. `compensate` reads `doc` as
+/// it is before the undo writes anything. Returns the steps, newest
 /// first. On a refusal some of it may already be written: the caller
 /// discards the transaction, as the action executor does for a refused
 /// action.
@@ -1011,7 +1012,7 @@ pub fn undo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    compensate: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let targets = undo_targets(doc, scope, limit);
@@ -1032,7 +1033,7 @@ pub fn undo_where(
     doc: &mut AutoCommit,
     owns: &dyn Fn(&Version) -> bool,
     limit: usize,
-    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    compensate: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let targets = owned_undo_targets(doc, owns, limit);
@@ -1052,7 +1053,7 @@ pub fn undo_since(
     doc: &mut AutoCommit,
     scope: &Scope,
     heads: &[ChangeHash],
-    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    compensate: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let since: HashSet<ChangeHash> = doc
@@ -1081,7 +1082,7 @@ pub fn undo_step(
     doc: &mut AutoCommit,
     scope: &Scope,
     hash: &ChangeHash,
-    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    compensate: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     doc.get_heads();
@@ -1101,7 +1102,7 @@ pub fn undo_step(
 fn take_back(
     doc: &mut AutoCommit,
     targets: Vec<Version>,
-    mut compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    mut compensate: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     // Preparing every inversion before writing preserves one open Undo
@@ -1110,7 +1111,7 @@ fn take_back(
     let mut actions = Vec::new();
     let mut patches = Vec::new();
     for target in &targets {
-        match compensate(target)? {
+        match compensate(doc, target)? {
             Some(action) => actions.push((target.hash, action)),
             None => patches.push(target.clone()),
         }
@@ -1164,7 +1165,7 @@ pub fn redo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    restore: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let targets = redo_targets(doc, scope, limit);
@@ -1187,7 +1188,7 @@ pub fn redo_where(
     doc: &mut AutoCommit,
     owns: &dyn Fn(&Version) -> bool,
     limit: usize,
-    restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    restore: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     doc.get_heads();
@@ -1202,7 +1203,7 @@ pub fn redo_where(
 fn bring_back(
     doc: &mut AutoCommit,
     targets: Vec<Version>,
-    mut restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    mut restore: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let versions = tilo_resource::history::versions(doc);
@@ -1220,7 +1221,7 @@ fn bring_back(
                 .iter()
                 .find(|version| version.hash.to_string() == hash)
                 .ok_or("redo cannot resolve its original step")?;
-            if let Some(action) = restore(original)? {
+            if let Some(action) = restore(doc, original)? {
                 outside = true;
                 actions.push((original.hash, action));
                 originals.push(original.hash);
