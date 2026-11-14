@@ -6380,10 +6380,9 @@ async fn dispatch_sdk_request(
                     publish_presence("left", presence.publish_left(&key_bytes)).await;
                 }
                 // Shell chrome originates these directly on the peer-presence
-                // route: following is an authenticated visual cue apps cannot
-                // turn into a viewport command, and availability and waves
-                // are the desktop's own presence, which no app speaks for.
-                PresencePayload::Following { .. } | PresencePayload::Availability { .. } => {}
+                // route: availability and waves are the desktop's own
+                // presence, which no app speaks for.
+                PresencePayload::Availability { .. } => {}
                 PresencePayload::Interaction(update) => {
                     let json = match serde_json::to_string(&update) {
                         Ok(json) => json,
@@ -6902,9 +6901,6 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
             start: usize::try_from(start).unwrap_or(usize::MAX),
             end: usize::try_from(end).unwrap_or(usize::MAX),
         },
-        runtime_collab::PresencePayload::Following { target } => {
-            PresencePayload::Following { target }
-        }
         runtime_collab::PresencePayload::InteractionJson(json) => {
             let update = match serde_json::from_str::<tilo_actions::SemanticInteraction>(&json)
                 .map_err(|error| error.to_string())

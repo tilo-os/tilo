@@ -586,7 +586,9 @@ pub enum ContextUpdate {
         apps: Vec<collab_types::history::NamedApp>,
     },
     /// The person at this desktop started following `peer_id`, or stopped.
-    FollowChanged { peer_id: Option<String> },
+    FollowChanged {
+        peer_id: Option<tilo_actions::MemberId>,
+    },
     /// Publish the document's current state.
     SnapshotRequested,
     /// The next step of a handoff addressed to this instance, as

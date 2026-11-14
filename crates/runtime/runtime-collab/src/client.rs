@@ -1911,7 +1911,6 @@ impl PresenceStream {
                 P::Typing { start, end } => PresencePayload::Typing { start, end },
                 P::Arrived => PresencePayload::Arrived,
                 P::Left => PresencePayload::Left,
-                P::Following { target } => PresencePayload::Following { target },
                 P::InteractionJson(json) => PresencePayload::InteractionJson(json),
                 P::Status { text, automatic } => PresencePayload::Status { text, automatic },
                 P::Composing { composing } => PresencePayload::Composing { composing },

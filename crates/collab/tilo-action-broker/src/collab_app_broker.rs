@@ -6918,7 +6918,7 @@ impl AppBrokerState {
                 apps,
             } => Self::fanout_context(channels, except, members, permissions, apps),
             CollabEvent::FollowChanged { peer_id } => {
-                Self::fanout_follow_changed(channels, except, peer_id.as_deref());
+                Self::fanout_follow_changed(channels, except, peer_id.as_ref());
             }
             CollabEvent::Handoff { request } => {
                 let handoff = ContextUpdate::Handoff(request.encode());
@@ -7097,10 +7097,10 @@ impl AppBrokerState {
     fn fanout_follow_changed<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        peer_id: Option<&str>,
+        peer_id: Option<&tilo_actions::MemberId>,
     ) {
         let env = ContextUpdate::FollowChanged {
-            peer_id: peer_id.map(str::to_owned),
+            peer_id: peer_id.cloned(),
         };
         for subs in channels {
             subs.context.retain(|sub| {
@@ -11067,7 +11067,7 @@ pub mod tests {
             drop(reopened_journal);
             fanout.fanout_to_route(
                 &CollabEvent::FollowChanged {
-                    peer_id: Some("stale".into()),
+                    peer_id: Some(tilo_actions::MemberId::person("stale")),
                 },
                 u64::MAX,
                 &CrdtRoute::cluster("self-drop-workspace"),

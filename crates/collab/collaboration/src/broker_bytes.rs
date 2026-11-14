@@ -27,6 +27,14 @@ impl ByteMeter {
         self.add(value.capacity());
     }
 
+    pub(super) fn member(&mut self, member: &tilo_actions::MemberId) {
+        match member {
+            tilo_actions::MemberId::Person(id)
+            | tilo_actions::MemberId::Agent(id)
+            | tilo_actions::MemberId::Bot(id) => self.string_capacity(id),
+        }
+    }
+
     pub(super) fn bytes(&mut self, value: &Vec<u8>) {
         self.add(value.capacity());
     }
@@ -314,12 +322,6 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
 }
 
 fn presence_payload_bytes(payload: &PresencePayload, meter: &mut ByteMeter) {
-    if let PresencePayload::Following {
-        target: Some(target),
-    } = payload
-    {
-        meter.string_capacity(target);
-    }
     if let PresencePayload::Interaction(update) = payload {
         serialized_bytes(update.as_ref(), meter);
     }
@@ -355,7 +357,7 @@ fn context_event_bytes(
 ) {
     meter.add_product(members_capacity, std::mem::size_of::<Member>());
     for member in members {
-        meter.string_capacity(&member.id.key());
+        meter.member(&member.id);
         meter.string_capacity(&member.name);
     }
     meter.add_product(permission_capacity, std::mem::size_of::<String>());
@@ -468,7 +470,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
         CollabEvent::FollowChanged { peer_id } => {
             if let Some(peer_id) = peer_id {
-                meter.string_capacity(peer_id);
+                meter.member(peer_id);
             }
             "FollowChanged"
         }

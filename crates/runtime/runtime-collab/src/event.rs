@@ -82,7 +82,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     /// participant, or release that binding. This is local session control:
     /// it is never published to collaboration peers.
     FollowChanged {
-        peer_id: Option<String>,
+        peer_id: Option<tilo_actions::MemberId>,
     },
     /// The broker selected this connection as the sole snapshot responder for
     /// a late joiner on the same document route.

@@ -943,15 +943,10 @@ impl App {
             }
             CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
             CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
-            CollabEvent::FollowChanged { peer_id } => {
-                match peer_id
-                    .as_deref()
-                    .and_then(crate::permissions::MemberId::parse)
-                {
-                    Some(peer) => self.follow(peer),
-                    None => self.unfollow(),
-                }
-            }
+            CollabEvent::FollowChanged { peer_id } => match peer_id.clone() {
+                Some(peer) => self.follow(peer),
+                None => self.unfollow(),
+            },
             CollabEvent::DocumentSnapshotRequested { route } => {
                 self.respond_document_snapshot(&route);
             }

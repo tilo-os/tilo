@@ -646,9 +646,6 @@ pub struct PresenceCtx {
     bounces: HashMap<MemberId, crate::motion::Attention>,
     pub selections: HashMap<PresenceKey, Vec<(MemberId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(MemberId, usize)>>,
-    /// Ephemeral visual relationships, keyed by `(workspace, follower)`. They
-    /// never affect document state or anyone's local viewport.
-    following: HashMap<(PresenceKey, MemberId), MemberId>,
     pub remote_cursors: Vec<RemoteCursor>,
     /// Seeded by the shell from `Member::cursor_color`; falls
     /// through to [`user_color`] via [`PresenceCtx::color_for`] when unset.
@@ -1756,15 +1753,6 @@ impl PresenceCtx {
             .map(|c| c.position)
     }
 
-    /// Every live `(follower, target)` relationship announced in `key`.
-    /// This is deliberately a render-only projection of transient presence.
-    pub fn following_in(&self, key: &PresenceKey) -> Vec<(&MemberId, &MemberId)> {
-        self.following
-            .iter()
-            .filter_map(|((scope, follower), target)| (scope == key).then_some((follower, target)))
-            .collect()
-    }
-
     /// Returns the id of the peer whose off-screen mist band (the strips
     /// [`draw_remote_presence`] paints) contains `point`, so clicking a
     /// peer's mist selects them to follow.
@@ -1953,8 +1941,8 @@ impl PresenceCtx {
         now: Instant,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
-            Arrived, Availability, Caret, Composing, Following, Interaction, Left, Pointer,
-            Selection, Status, Typing,
+            Arrived, Availability, Caret, Composing, Interaction, Left, Pointer, Selection, Status,
+            Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -2104,19 +2092,6 @@ impl PresenceCtx {
                     self.availability.insert((workspace, member), (state, call));
                 }
             }
-            Following { target } => {
-                // A follow relationship is only meaningful within a workspace.
-                // Reject narrower scopes rather than letting a document or
-                // widget frame imply control of that content.
-                if matches!(key, PresenceKey::Workspace { .. }) {
-                    let follower = member;
-                    if let Some(target) = target.as_deref().and_then(MemberId::parse) {
-                        self.following.insert((key, follower), target);
-                    } else {
-                        self.following.remove(&(key, follower));
-                    }
-                }
-            }
             Arrived => {
                 // Tab keys move the peer's dot; non-Tab arrivals are (possibly
                 // late) joiners, so the caller should reply with full state.
@@ -2186,8 +2161,6 @@ impl PresenceCtx {
             list.retain(|(u, _)| u != &uid);
         }
         self.typing.retain(|(u, _), _| u != &uid);
-        self.following
-            .retain(|(_, follower), target| follower != &uid && target != &uid);
         self.views.remove(&uid);
         self.names.remove(&uid);
         self.joined.remove(&uid);
@@ -2459,7 +2432,6 @@ mod remote_cursor_tests {
 #[cfg(test)]
 mod string_id_wrapper_tests {
     use super::*;
-    use crate::collaboration::PresencePayload;
 
     tilo_test_env::scenario! {
         #[allow(
@@ -2675,57 +2647,6 @@ mod string_id_wrapper_tests {
                 ctx.upsert_remote_cursor(MemberId::person("alice"), [120.0, 44.0], None);
                 assert_eq!(ctx.peer_pointer(&MemberId::person("alice")), Some([120.0, 44.0]));
                 assert_eq!(ctx.peer_pointer(&MemberId::person("nobody")), None);
-            }
-            // phase: follow_relationship_is_workspace_scoped_ephemeral_and_releasable
-            {
-                let mut ctx = PresenceCtx::empty();
-                let workspace = PresenceKey::Workspace {
-                    id: "studio".into(),
-                };
-                let other_workspace = PresenceKey::Workspace {
-                    id: "elsewhere".into(),
-                };
-                ctx.apply_remote_presence(
-                    MemberId::person("alice"),
-                    workspace.clone(),
-                    PresencePayload::Following {
-                        target: Some("bob".into()),
-                    },
-                );
-                let relationships: Vec<_> = ctx
-                    .following_in(&workspace)
-                    .into_iter()
-                    .map(|(follower, target)| (follower.clone(), target.clone()))
-                    .collect();
-                assert_eq!(
-                    relationships,
-                    vec![(MemberId::person("alice"), MemberId::person("bob"))],
-                    "observers learn only the follower-target relation in this workspace"
-                );
-                assert!(ctx.following_in(&other_workspace).is_empty());
-
-                ctx.apply_remote_presence(
-                    MemberId::person("alice"),
-                    workspace.clone(),
-                    PresencePayload::Following { target: None },
-                );
-                assert!(
-                    ctx.following_in(&workspace).is_empty(),
-                    "stop clears the visual cue"
-                );
-
-                ctx.apply_remote_presence(
-                    MemberId::person("alice"),
-                    workspace.clone(),
-                    PresencePayload::Following {
-                        target: Some("bob".into()),
-                    },
-                );
-                ctx.unregister_peer(&MemberId::person("bob"));
-                assert!(
-                    ctx.following_in(&workspace).is_empty(),
-                    "disconnecting either endpoint removes the ephemeral relationship"
-                );
             }
         }
 

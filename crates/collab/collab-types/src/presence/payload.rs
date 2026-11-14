@@ -28,12 +28,6 @@ pub enum PresencePayload {
     },
     Arrived,
     Left,
-    /// A workspace-scoped, transient follow relationship announced by the
-    /// authenticated sender. It is a visual presence cue only; the local
-    /// Follow command remains private to the follower's session.
-    Following {
-        target: Option<String>,
-    },
     /// Truthful action/resource activity. Identity is supplied by the
     /// authenticated event envelope; this payload never describes a mouse or
     /// keyboard gesture and therefore cannot create a synthetic cursor.

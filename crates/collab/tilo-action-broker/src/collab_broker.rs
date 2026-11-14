@@ -307,7 +307,7 @@ impl SessionFollowDispatcher {
     pub fn new(fanout: Arc<FanoutState>) -> Self {
         Self { fanout }
     }
-    pub fn set(&self, workspace: &str, peer_id: Option<String>) {
+    pub fn set(&self, workspace: &str, peer_id: Option<tilo_actions::MemberId>) {
         self.fanout.fanout_to_route(
             &CollabEvent::FollowChanged { peer_id },
             u64::MAX,

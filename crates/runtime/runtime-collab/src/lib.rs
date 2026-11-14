@@ -939,12 +939,6 @@ pub enum PresencePayload {
         start: u64,
         end: u64,
     },
-    /// The authenticated sender is visually following `target`; `None`
-    /// releases that transient relationship. This is presence, never remote
-    /// viewport control.
-    Following {
-        target: Option<String>,
-    },
     /// Versioned `tilo_actions::InteractionUpdate` JSON. Actor identity is the
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
@@ -985,7 +979,7 @@ pub struct ChannelContext {
     /// `Some` only for a session-local Follow control frame. The inner
     /// `None` means stop following; ordinary context snapshots keep this
     /// field at `None` and replace roster/permissions as before.
-    pub follow_changed: Option<Option<String>>,
+    pub follow_changed: Option<Option<tilo_actions::MemberId>>,
     /// True only on a directed broker request to publish current document
     /// state. It is not a roster update and must not replace local context.
     pub snapshot_requested: bool,

@@ -33,9 +33,6 @@ pub fn payload_to_peer(payload: &PresencePayload) -> Option<PeerPresencePayload>
         },
         PresencePayload::Arrived => PeerPresencePayload::Arrived,
         PresencePayload::Left => PeerPresencePayload::Left,
-        PresencePayload::Following { target } => PeerPresencePayload::Following {
-            target: target.clone(),
-        },
         PresencePayload::Interaction(update) => {
             PeerPresencePayload::InteractionJson(serde_json::to_string(update).ok()?)
         }
@@ -95,7 +92,6 @@ pub fn decode_peer(
         },
         PeerPresencePayload::Arrived => PresencePayload::Arrived,
         PeerPresencePayload::Left => PresencePayload::Left,
-        PeerPresencePayload::Following { target } => PresencePayload::Following { target },
         PeerPresencePayload::InteractionJson(json) => PresencePayload::Interaction(Box::new(
             serde_json::from_str(&json)
                 .map_err(|error| format!("interaction does not decode: {error}"))?,
@@ -111,11 +107,12 @@ pub fn decode_peer(
             call,
         },
         PeerPresencePayload::Composing { composing } => PresencePayload::Composing { composing },
-        // Talking, greeting and waves beside a pointer are the desktop's to
-        // show, never an app's.
+        // Talking, greeting, waves beside a pointer and whose screen a device
+        // follows are the desktop's to show, never an app's.
         PeerPresencePayload::Chat { .. }
         | PeerPresencePayload::Reaction { .. }
         | PeerPresencePayload::Wave { .. }
+        | PeerPresencePayload::Following { .. }
         | PeerPresencePayload::Person { .. }
         | PeerPresencePayload::Profile { .. }
         | PeerPresencePayload::Shell(_) => return Ok(None),
@@ -140,10 +137,6 @@ mod tests {
                 PresencePayload::Typing { start: 6, end: 8 },
                 PresencePayload::Arrived,
                 PresencePayload::Left,
-                PresencePayload::Following {
-                    target: Some("peer@7".into()),
-                },
-                PresencePayload::Following { target: None },
                 PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
                     version: tilo_actions::INTERACTION_VERSION,
                     invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),

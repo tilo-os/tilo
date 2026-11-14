@@ -147,7 +147,7 @@ mod tests {
             "presence alone never navigates"
         );
         app.apply_collab_event_for_test(CollabEvent::FollowChanged {
-            peer_id: Some("presenter".into()),
+            peer_id: Some(ui::permissions::MemberId::person("presenter")),
         });
         let restored = <ui::App as FreezeThaw>::capture_view(&app);
         assert_eq!(restored.scroll, vec![180.0, 0.0]);
@@ -182,7 +182,7 @@ mod tests {
             presenter.scroll = 120.0;
             let view = ui::view::capability::view_state(&presenter).unwrap();
             follower.handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged {
-                peer_id: Some("presenter".into()),
+                peer_id: Some(ui::permissions::MemberId::person("presenter")),
             });
             ui::view::capability::restore_view_state(&mut follower, &view);
             assert_eq!(follower.active_channel, "c_crit");
@@ -212,7 +212,7 @@ mod tests {
             let (_, mut app) = workspace();
             let initial = app.active_channel.clone();
             app.handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged {
-                peer_id: Some("presenter".into()),
+                peer_id: Some(ui::permissions::MemberId::person("presenter")),
             });
             for mode in [
                 r#"{"workspace":"other","channel":"c_general","thread":null}"#,
