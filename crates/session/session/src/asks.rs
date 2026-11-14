@@ -43,6 +43,7 @@ impl Shared {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
                 people::PeopleAsk::Agent { who, client, ask } => self.agent_ask(&who, &client, ask),
+                people::PeopleAsk::GoTo { who } => self.go_to_person(&who),
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
                 people::PeopleAsk::Availability(chosen) => {

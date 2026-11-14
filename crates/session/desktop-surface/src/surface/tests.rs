@@ -2585,3 +2585,142 @@ fn unread_notices_stay_unread_across_a_restart() {
         .collect();
     assert_eq!(unread, ["New"]);
 }
+
+/// A desk of one window that the workspace's desk then gives Notes, opened by this person's own
+/// agent three windows further along the strip than the view reaches: `before` runs first, on the
+/// desk as it was, and the window that had the keyboard before it arrived is returned with Notes.
+fn agent_opens_notes_out_of_sight(
+    before: impl FnOnce(&mut ui::headless::FrameHarness),
+) -> (ui::headless::FrameHarness, DesktopHandle, TabId, Route) {
+    crate::i18n::ensure();
+    let (width, height) = (1440_u32, 900_u32);
+    let (surface, handle) = desktop(1);
+    handle.set_viewport_width(f64::from(width));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (width, height),
+        Theme::dark(),
+    );
+    frame.relayout();
+    let focused = handle
+        .snapshot("g", vec![])
+        .active
+        .expect("a window is focused");
+    before(&mut frame);
+    let mut incoming = handle.shared_tree();
+    let notes = 9_200_003;
+    for (group, tab, title) in [
+        (9_200_100, 9_200_001, "Sheets"),
+        (9_200_200, 9_200_002, "Chat"),
+        (9_200_300, notes, "Notes"),
+    ] {
+        incoming.workspaces[0].strips[0]
+            .window_groups
+            .push(workspace_window(group, tab, title));
+    }
+    on_clock(Duration::from_millis(16), || {
+        handle.replace_shared_tree(incoming, &[]);
+        // The workspace's desk says this person's agent opened Notes; nobody else holds it.
+        handle.set_opened_by(std::collections::BTreeMap::from([(
+            notes,
+            tilo_desktop_model::ownership::OpenedBy {
+                run: "agent-run:1".into(),
+                label: "Claude Code".into(),
+                title: String::new(),
+            },
+        )]));
+    });
+    (frame, handle, notes, focused)
+}
+
+/// Whether the window showing `tab` stands wholly in the desk's view.
+fn in_view(frame: &ui::headless::FrameHarness, tab: TabId) -> bool {
+    let surface = frame.root::<DesktopSurface>();
+    let viewport = surface.get_rect();
+    surface.shown_row_ref().is_some_and(|row| {
+        row.groups
+            .iter()
+            .find(|group| group.tabs().iter().any(|shown| shown.id == tab))
+            .map(ui::widget::Widget::get_rect)
+            .is_some_and(|rect| rect.x0 >= viewport.x0 - 0.5 && rect.x1 <= viewport.x1 + 0.5)
+    })
+}
+
+/// The person sees what their agent does: a window their own agent opens off to the side comes into
+/// view as a window they open would, and the window they were in keeps the keyboard.
+#[test]
+fn a_window_the_persons_agent_opens_out_of_sight_comes_into_view_without_the_keyboard() {
+    let (mut frame, handle, notes, focused) = agent_opens_notes_out_of_sight(|_| {});
+    play_frames(&mut frame, 60);
+    assert!(in_view(&frame, notes), "the agent's Notes is in view");
+    assert_eq!(
+        handle.snapshot("g", vec![]).active,
+        Some(focused),
+        "the window the person was in keeps the keyboard"
+    );
+}
+
+/// A window the agent opens while the person types waits: the strip stays still under their hands,
+/// and comes to the window once they stop.
+#[test]
+fn a_window_the_persons_agent_opens_while_they_type_waits_until_they_stop() {
+    let (mut frame, handle, notes, focused) = agent_opens_notes_out_of_sight(|frame| {
+        on_clock(Duration::from_millis(16), || frame.key("a"));
+    });
+    // Within the pause typing takes, nothing moves.
+    play_frames(&mut frame, 60);
+    assert!(!in_view(&frame, notes), "the strip waits while they type");
+    assert_eq!(handle.reveal_waiting(), Some(notes));
+    // They stopped: the window comes, and the keyboard stays where it was.
+    on_clock(reveals::INPUT_QUIET, || {});
+    play_frames(&mut frame, 60);
+    assert!(in_view(&frame, notes), "the agent's Notes is in view");
+    assert_eq!(handle.reveal_waiting(), None);
+    assert_eq!(handle.snapshot("g", vec![]).active, Some(focused));
+}
+
+/// Someone else's window arriving moves nothing: only the person's own agent's windows come into
+/// view, and someone else's is pointed at from the edge.
+#[test]
+fn a_window_someone_elses_agent_opens_stays_out_of_sight() {
+    let (mut frame, handle, notes, _) = agent_opens_notes_out_of_sight(|_| {});
+    handle.set_holders(HashMap::from([(notes, held_by("Kim"))]));
+    play_frames(&mut frame, 60);
+    assert!(
+        !in_view(&frame, notes),
+        "Kim's window stays where Kim put it"
+    );
+}
+
+/// A window the host asks to show — where the person's agent works — scrolls into view, and the
+/// focused window keeps the keyboard.
+#[test]
+fn revealing_a_window_scrolls_it_into_view_and_leaves_focus_alone() {
+    let (surface, handle) = desktop(6);
+    handle.set_viewport_width(1440.0);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1440, 900),
+        Theme::dark(),
+    );
+    frame.relayout();
+    let first = handle.snapshot("g", vec![]).entries[0].route.clone();
+    assert!(handle.focus_tab(first.tab.parse().unwrap()));
+    play_frames(&mut frame, 60);
+    let last: TabId = handle.snapshot("g", vec![]).entries[5]
+        .route
+        .tab
+        .parse()
+        .unwrap();
+    assert!(
+        !in_view(&frame, last),
+        "the last window starts out of sight"
+    );
+    assert!(handle.reveal_tab(last));
+    play_frames(&mut frame, 60);
+    assert!(in_view(&frame, last), "the window comes into view");
+    assert_eq!(handle.snapshot("g", vec![]).active, Some(first));
+    assert!(!handle.reveal_tab(9_999_999), "no window shows that tab");
+}

@@ -69,6 +69,7 @@ mod paging;
 #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
 pub mod peer_view;
 mod personal_ask;
+mod reveals;
 mod search;
 mod seed;
 mod shared;
@@ -291,6 +292,9 @@ struct Shared {
     personal_ask_revision: u64,
     /// Windows someone else opened lately, for the edge hint.
     arrivals: Vec<arrivals::Arrival>,
+    /// The window to bring into view without its focus once the person's hands rest
+    /// ([`DesktopHandle::reveal_tab`]).
+    revealing: reveals::Revealing,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
     /// Bumped whenever `presentation` changes. Unlike `revision` it never asks a host to save or
@@ -745,21 +749,8 @@ impl DesktopHandle {
     /// Focus a window of application `app_id` in the active workspace (the focused one when it is
     /// that application's), on the next update pass. False when the workspace has none.
     pub fn focus_app(&self, app_id: &str) -> bool {
-        let tab = self.read(|tree| {
-            let shows = |tab: &Tab| {
-                matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id: id, .. } if id == app_id)
-            };
-            if let Some(active) = navigation::active_route(tree)
-                && find_tab(tree, active.strip, active.tab).is_some_and(|(_, tab)| shows(tab))
-            {
-                return Some(active.tab);
-            }
-            tree.active_workspace()?
-                .tabs()
-                .find(|tab| shows(tab))
-                .map(|tab| tab.id)
-        });
-        tab.is_some_and(|tab| self.focus_tab(tab))
+        self.tab_of_app(app_id)
+            .is_some_and(|tab| self.focus_tab(tab))
     }
 }
 
@@ -1993,7 +1984,10 @@ impl Widget for DesktopSurface {
         self.build_deferred();
         self.present();
         let held = self.apply_holders();
+        self.reveal_agent_arrivals();
+        let revealed = self.reveal_asked();
         let changed = self.shared.borrow().revision != before
+            || revealed
             || search_was_open != self.search.borrow().is_open()
             || held;
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
@@ -2219,6 +2213,8 @@ impl Widget for DesktopSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // A window brought into view for the person waits while their hands are busy here.
+        self.note_input(event);
         // Where the pointer is, read before anything answers the event: the strip asks it which
         // window a press landed in.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2439,6 +2435,8 @@ impl Widget for DesktopSurface {
             .chain(ends)
             .chain(answer)
             .chain(self.embed_retry_deadline())
+            // A window waiting for the person's hands to rest comes into view once they do.
+            .chain(self.shared.borrow().revealing.due())
             .min()
     }
 
@@ -2459,6 +2457,8 @@ impl Widget for DesktopSurface {
                 // An app that arrived is built by a pass (`Self::build_deferred`), so it asks for
                 // the frame that takes its component rather than waiting for an unrelated one.
                 || !shared.rebuild.is_empty()
+                // A window to bring into view, once the person's hands rest.
+                || shared.revealing.ready(ui::time::now())
         };
         // The desk asks its search sources a frame at a time, and cuts its rows to the card once
         // the card gives its room: a search with such work left draws the frames that do it, so it

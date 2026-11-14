@@ -73,6 +73,7 @@ impl Shared {
             personal_ask: None,
             personal_ask_revision: 0,
             arrivals: Vec::new(),
+            revealing: super::reveals::Revealing::default(),
             presentation: Presentation::default(),
             presented: 0,
             artwork: std::collections::BTreeMap::new(),

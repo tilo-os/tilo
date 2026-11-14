@@ -66,6 +66,9 @@ pub enum PeopleAsk {
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
     /// back: the choice the ask on their avatar waits for is answered here too.
     HostAction(String),
+    /// Go to where `who` (by its presence key) works: the window of theirs shown here, else their
+    /// app, as following them brings it forward once.
+    GoTo { who: String },
     /// Ask this of the agent of `client`, whose card stands for the member `who` (by its presence
     /// key): an agent this device seats is stopped here, anything else through its card in Console.
     Agent {
@@ -1001,6 +1004,9 @@ impl Panel {
                 }
                 ProfileChoice::Message(key) => {
                     self.asks.borrow_mut().push(PeopleAsk::Message { key });
+                }
+                ProfileChoice::GoTo(who) => {
+                    self.asks.borrow_mut().push(PeopleAsk::GoTo { who });
                 }
                 ProfileChoice::Agent { client, ask } => {
                     let who = self.shown.borrow().card_open.clone().unwrap_or_default();

@@ -19,9 +19,12 @@ use tilo_desktop_model::{DesktopTree, Present, Status, TabId, TileContent, Works
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
+mod agent_work;
 mod following;
 mod screen;
 mod waves;
+
+pub use agent_work::WorkPlace;
 pub use collab_types::presence::{
     ShownFocus as Focus, ShownLayout as MemberLayout, ShownWindow as MemberWindow,
 };
@@ -246,6 +249,8 @@ pub struct HereState {
     /// This person's own agents already met on this page, by publisher
     /// ([`HereState::take_own_agents_arrived`]).
     met_agents: std::collections::BTreeSet<String>,
+    /// Where this person's own agents were last shown working ([`HereState::take_own_agent_work`]).
+    agent_work: agent_work::AgentWork,
     /// Every agent present, by publisher: its name and when it was last here (Unix milliseconds),
     /// so one gone for good is said to have finished ([`HereState::take_agents_finished`]).
     working_agents: HashMap<String, (String, u64)>,

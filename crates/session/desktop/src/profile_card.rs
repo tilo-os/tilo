@@ -291,6 +291,8 @@ pub enum ProfileChoice {
     /// Open the conversation this person has with them in Chat (root key,
     /// hex), on Chat's row for it, its composer ready.
     Message(String),
+    /// Go to where this person (roster id) works: the window of theirs shown here, else their app.
+    GoTo(String),
     /// Ask this of the agent of this client (`AgentFacts::client`).
     Agent {
         client: String,
@@ -308,6 +310,7 @@ impl ProfileChoice {
             self,
             Self::Action(_)
                 | Self::Follow(_)
+                | Self::GoTo(_)
                 | Self::Message(_)
                 | Self::Agent { .. }
                 | Self::EveryoneHere
@@ -808,11 +811,17 @@ impl ProfileCard {
             .push(Box::new(header));
         if let Some(status) = &other.status {
             body = body.push(if other.agent.is_some() {
-                // What an agent is at is its live line, not words it chose: it reads as now.
+                // What an agent is at is its live line, not words it chose: it reads as now. A
+                // press on it goes to where it works, so the person sees what it does.
+                let chosen = Rc::clone(&self.chosen);
+                let id = other.id.clone();
                 Box::new(
                     ListRow::new("profile-other-status", status.text.clone())
                         .two_line_title()
-                        .secondary(t("profile-agent-now")),
+                        .secondary(t("profile-agent-now"))
+                        .on_view(move || {
+                            chosen.borrow_mut().push(ProfileChoice::GoTo(id.clone()));
+                        }),
                 ) as Box<dyn Widget>
             } else {
                 Self::status_row(status)

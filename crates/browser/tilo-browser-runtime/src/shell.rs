@@ -509,6 +509,9 @@ pub(crate) struct BrowserShell {
     /// Whom this page follows, and what of their place it already showed: the same machine a native
     /// session runs.
     follow: RefCell<tilo_session_core::presence::Follow>,
+    /// What showing the person's own agent's work last looked at: who is here, the desk and the
+    /// records its windows show, by their revisions.
+    agent_work_seen: Cell<Option<(u64, u64, usize)>>,
     /// The workspace directory, over the page while it is up: the session's
     /// own sheet, with this page's site, person and workspaces.
     directory: crate::over_page::OverPage<crate::over_page::LazySheet>,
@@ -743,6 +746,7 @@ impl BrowserShell {
             layers,
             jobs,
             follow: RefCell::default(),
+            agent_work_seen: Cell::new(None),
             directory,
             invite,
             guide,
@@ -898,6 +902,47 @@ impl BrowserShell {
         }
     }
 
+    /// Go to where `who` (a roster id) works, once: the window of theirs shown here, else a window
+    /// of the app they are in. Nothing moves when neither stands here.
+    fn go_to_person(&self, who: &str) {
+        let tree = self.handle.read(Clone::clone);
+        let people = here_people(&self.chrome.here, &self.chrome.shared, &tree);
+        let Some(person) = people.iter().find(|person| person.id == who) else {
+            return;
+        };
+        if let Some(tab) = person.tab {
+            self.handle.focus_tab(tab);
+        } else if let Some(app) = person.followed_app() {
+            self.handle.focus_app(app);
+        }
+    }
+
+    /// Where the person's own agent works comes into view each time it moves or acts: they see what
+    /// their agent does. The strip scrolls to the window without taking the keyboard from the field
+    /// they are in, and waits while they type or drag (`DesktopHandle::reveal_tab`). Looked at
+    /// again only when who is here, the desk or the agent's actions moved.
+    fn show_own_agent_work(&self) -> bool {
+        let seen = (
+            self.chrome.here.borrow().revision(),
+            self.handle.revision(),
+            self.chrome.shared.shown_records().len(),
+        );
+        if self.agent_work_seen.get() == Some(seen) && !self.chrome.here.borrow().own_agent_acted()
+        {
+            return false;
+        }
+        self.agent_work_seen.set(Some(seen));
+        let tree = self.handle.read(Clone::clone);
+        let people = here_people(&self.chrome.here, &self.chrome.shared, &tree);
+        let place = self.chrome.here.borrow_mut().take_own_agent_work(&people);
+        let tab = match place {
+            Some(tilo_desktop::here::WorkPlace::Window(tab)) => Some(tab),
+            Some(tilo_desktop::here::WorkPlace::App(app)) => self.handle.tab_of_app(&app),
+            None => None,
+        };
+        tab.is_some_and(|tab| self.handle.reveal_tab(tab))
+    }
+
     /// The person's own agent arriving (the one their setup prompt connected) is followed at once,
     /// its card opened beside them: they watch it work from the moment it is here. One already
     /// followed keeps its place; a second agent does not take the view.
@@ -956,6 +1001,8 @@ impl BrowserShell {
                         tilo_desktop::launchpad::LaunchpadAppAction::message_person(&key),
                     );
                 }
+                // Where they work: their window comes forward, else one of the app they are in.
+                tilo_session::people::PeopleAsk::GoTo { who } => self.go_to_person(&who),
                 // A page seats no agent of its own: whoever the card stands for, the ask goes
                 // through the agent's card in Console.
                 tilo_session::people::PeopleAsk::Agent { client, ask, .. } => {
@@ -1578,6 +1625,10 @@ impl BrowserShell {
                 );
                 return;
             }
+            ProfileChoice::GoTo(id) => {
+                self.go_to_person(&id);
+                return;
+            }
             // An agent's own action in Console, which opens (or brings
             // forward) its card beside the work and carries it out there.
             ProfileChoice::Agent { client, ask } => {
@@ -1797,6 +1848,7 @@ impl Widget for BrowserShell {
         // A window's bar asked for its menu, or the person chose one of its rows.
         changed |= self.follow_window_menu();
         changed |= self.follow_followed();
+        changed |= self.show_own_agent_work();
         // Whether the person may invite someone here, as the roster's footer offers it, and whom
         // they follow, which the windows they are in come forward with.
         // The roster offers its footer only where this page hands out a link and the workspace lets

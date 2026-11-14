@@ -35,6 +35,9 @@ pub(crate) const ARRIVAL_HOLD: Duration = Duration::from_secs(8);
 pub(super) struct Arrival {
     pub tab: TabId,
     pub at: Instant,
+    /// The window was brought into view as one the person's own agent opened
+    /// ([`DesktopSurface::reveal_agent_arrivals`]).
+    pub revealed: bool,
 }
 
 /// Which edge of the strip a window lies beyond.
@@ -97,9 +100,11 @@ impl DesktopHandle {
         shared
             .arrivals
             .retain(|arrival| !tabs.contains(&arrival.tab));
-        shared
-            .arrivals
-            .extend(tabs.into_iter().map(|tab| Arrival { tab, at }));
+        shared.arrivals.extend(tabs.into_iter().map(|tab| Arrival {
+            tab,
+            at,
+            revealed: false,
+        }));
     }
 }
 

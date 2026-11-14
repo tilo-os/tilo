@@ -102,6 +102,16 @@ impl Mount {
         // What the workspace's agents are doing: their cursor travels to the
         // control each action is bound to, over the window that shows it.
         let narrated = crate::peer_sync::take_narrated(peer, &workspace);
+        // An agent acting for this person shows them where it acts, even where it already was.
+        if let Some(desktop) = &self.desktop {
+            for interaction in &narrated {
+                if interaction.actor.kind == tilo_actions::ActorKind::Agent
+                    && let Some(person) = &interaction.actor.for_person
+                {
+                    desktop.here.borrow_mut().note_agent_acted(person);
+                }
+            }
+        }
         if !narrated.is_empty() {
             self.frame.update_presence(|presence| {
                 let mut shown = false;
