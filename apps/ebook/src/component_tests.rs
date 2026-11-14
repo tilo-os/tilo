@@ -48,7 +48,8 @@ fn bundled_library_definition() -> &'static ApplicationDefinition {
 }
 
 const DEVICE: &str = "books-device";
-const WORKSPACE: &str = "books-room";
+/// The workspace these records are kept in: a route names it by id, as a session does.
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 struct Fixture {
     records: RecordStore,
@@ -111,9 +112,9 @@ impl Fixture {
         book: &str,
         host: impl FnOnce(&mut HostContext),
     ) -> (FrameHarness, RecordCheckout) {
-        let Ok(component) = self.component(definition, instance, target, host) else {
-            panic!("Books component");
-        };
+        let component = self
+            .component(definition, instance, target, host)
+            .unwrap_or_else(|why| panic!("Books component: {why}"));
         let checkout = component.record().clone();
         let Ok(mut driver) = FrameHarness::from_component(
             component,
