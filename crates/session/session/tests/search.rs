@@ -1949,11 +1949,18 @@ fn session_with_agents() -> Session {
 /// A request typed into search is the person's send of those words to the workspace's agent — one
 /// where they keep none yet, named as the workspace names its agent — through the session's one
 /// send (`session:send-to#send`), and search closes behind the row.
+///
+/// The agent the first request made is the one every later request goes to: the workspace's record
+/// names it as the person's, so asking again continues that conversation rather than making a
+/// second agent. The second request is the one after the first in the same session, as it is for
+/// the person.
 #[test]
-fn a_request_typed_into_search_is_sent_to_the_workspaces_agent() {
+fn the_first_request_typed_into_search_makes_the_workspaces_agent_and_the_second_goes_to_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = session_with_agents();
+
+    // The first request: the person keeps no agent yet.
     let request = "book a table for two";
     let row = find_row(
         &mut session,
@@ -1980,30 +1987,14 @@ fn a_request_typed_into_search_is_sent_to_the_workspaces_agent() {
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_none()
     });
-}
 
-/// The agent the first request made is the one every later request goes to: the workspace's record
-/// names it as the person's, so asking again continues that conversation rather than making a
-/// second agent.
-#[test]
-fn a_second_request_goes_to_the_agent_the_first_made() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
-    let mut session = session_with_agents();
-    let row = find_row(&mut session, "book a table for two", "Send to Assistant");
-    invoke(
-        &mut session,
-        row.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    crate::common::sent(&mut session, 0);
     // The agent the send made is the workspace's to keep once the pass has read its record, as a
     // person's next search is opened long after.
     for _ in 0..10 {
         session.step(Duration::from_millis(16)).expect("step");
     }
 
+    // The second request: the agent the first one made is kept, and asked.
     let row = find_row(&mut session, "and move it to Friday", "Send to Assistant");
     invoke(
         &mut session,
@@ -2013,6 +2004,8 @@ fn a_second_request_goes_to_the_agent_the_first_made() {
     );
     let second = crate::common::sent(&mut session, 1);
     assert_eq!(second["text"], "and move it to Friday", "{second}");
+    let asked = second["to"].as_array().expect("whom the second went to");
+    assert_eq!(asked.len(), 1, "one agent is asked again: {second}");
     let to = &second["to"][0];
     assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
     assert_eq!(to["name"], "Assistant", "{second}");
@@ -2020,4 +2013,7 @@ fn a_second_request_goes_to_the_agent_the_first_made() {
         to["id"].as_str().is_some_and(|id| !id.is_empty()),
         "named by its id: {second}"
     );
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_none()
+    });
 }

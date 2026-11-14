@@ -60,13 +60,19 @@ fn ask(session: &mut Session, text: &str) {
 /// A question said at the canvas's caret is the person's send of those words to the workspace's
 /// agent: one where they keep none yet, named as the workspace names its agent. Nothing stands on
 /// the canvas for it until Chat holds the message, and no conversation opens over the canvas.
+///
+/// The agent the first ask made is the one every later ask goes to: the workspace's record names it
+/// as the person's, so a second question continues the same conversation rather than making a
+/// second agent. Both asks are one person's on one canvas, so they are asked of one session: the
+/// second is the ask after the first, as it is for the person.
 #[test]
-fn a_question_typed_on_the_canvas_is_sent_to_the_workspaces_agent() {
+fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to_it() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     let places = layout(&session).places.len();
 
+    // The first ask: the person keeps no agent yet.
     ask(&mut session, "what is on my task list?");
 
     let first = crate::common::sent(&mut session, 0);
@@ -83,29 +89,25 @@ fn a_question_typed_on_the_canvas_is_sent_to_the_workspaces_agent() {
         places,
         "the ask stands no place of its own on the canvas"
     );
-}
 
-/// The agent the first ask made is the one every later ask goes to: the workspace's record names it
-/// as the person's, so a second question continues the same conversation rather than making a
-/// second agent.
-#[test]
-fn a_second_ask_goes_to_the_agent_the_first_made() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    crate::common::sent(&mut session, 0);
-
+    // The second ask: the agent the first one made is kept, and asked.
     ask(&mut session, "and what is due today?");
 
     let second = crate::common::sent(&mut session, 1);
     assert_eq!(second["text"], "and what is due today?", "{second}");
+    let asked = second["to"].as_array().expect("whom the second went to");
+    assert_eq!(asked.len(), 1, "one agent is asked again: {second}");
     let to = &second["to"][0];
     assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
     assert_eq!(to["name"], "Assistant", "{second}");
     assert!(
         to["id"].as_str().is_some_and(|id| !id.is_empty()),
         "named by its id: {second}"
+    );
+    assert_eq!(
+        layout(&session).places.len(),
+        places,
+        "the second ask stands no place of its own on the canvas either"
     );
 }
 
