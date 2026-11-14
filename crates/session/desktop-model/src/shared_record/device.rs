@@ -216,7 +216,11 @@ pub fn write(
         .flat_map(|strip| &strip.window_groups)
         .map(|group| group.id)
         .collect();
-    shared.arrangement.places = of_written(&workspace.arrangement.places, &written);
+    // A group this desk has no place for keeps the one the record gives it: the desk may not
+    // have laid it out yet.
+    let mut places = of_written(&shared.arrangement.places, &written);
+    places.extend(of_written(&workspace.arrangement.places, &written));
+    shared.arrangement.places = places;
     shared.arrangement.floats = of_written(&workspace.arrangement.floats, &written);
     let live = ids_of(&shared);
     if let Some(person) = writer.person {
@@ -433,9 +437,7 @@ impl Kept<'_> {
 /// whether anything changed; `false` with nothing done while the record
 /// holds no layout yet.
 pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Kept<'_>) -> bool {
-    let Some((record, _)) =
-        super::read(doc, None).and_then(|desktop| record_workspace(desktop, workspace.id()))
-    else {
+    let Some(record) = recorded(doc, workspace) else {
         return false;
     };
     let local_groups: HashMap<u64, &WindowGroup> = workspace
@@ -536,6 +538,24 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
         changed = true;
     }
     changed
+}
+
+/// The layout `doc` holds of `workspace`: none for a record nobody wrote yet or one about another
+/// workspace, and an empty one for a record whose layout was taken back whole.
+fn recorded(doc: &AutoCommit, workspace: &Workspace) -> Option<Workspace> {
+    match super::read(doc, None) {
+        Some(desktop) => record_workspace(desktop, workspace.id()).map(|(record, _)| record),
+        None if doc.committed_heads().is_empty() => None,
+        None => {
+            let mut empty = workspace.clone();
+            empty.strips.clear();
+            empty.arrangement = crate::arrangement::Arrangement {
+                kind: workspace.arrangement.kind,
+                ..crate::arrangement::Arrangement::default()
+            };
+            Some(empty)
+        }
+    }
 }
 
 /// Put back into `strips`, the record's layout as this device shows it, what

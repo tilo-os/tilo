@@ -2719,7 +2719,7 @@ fn primary_argument(params: &[ActionParam], text: &str) -> Vec<(String, ArgValue
 fn parse_argument(name: &str, ty: ParamType, text: &str) -> Vec<(String, ArgValue)> {
     let parsed = match ty {
         ParamType::Text => Some(ArgValue::Text(text.to_string())),
-        ParamType::Integer => text.trim().parse::<i64>().ok().map(ArgValue::Integer),
+        ParamType::Integer => text.trim().parse::<i128>().ok().map(ArgValue::Integer),
         ParamType::Number => text.trim().parse::<f64>().ok().map(ArgValue::Number),
         ParamType::Boolean => match text.trim() {
             "true" | "yes" | "on" => Some(ArgValue::Boolean(true)),

@@ -16,7 +16,7 @@ pub(crate) type Written = Result<tilo_peer_state::owner::AppWrite, String>;
 
 /// Work under way off the loop, answering `T` once it is done.
 pub(crate) struct Polled<T> {
-    answer: Pending<T>,
+    answer: Option<Pending<T>>,
     /// What the work came to when the task running it went away without answering.
     gone: Option<Box<dyn FnOnce() -> T>>,
     waker: Waker,
@@ -46,20 +46,42 @@ impl<T: tilo_rt::MaybeSend + 'static> Polled<T> {
         gone: impl FnOnce() -> T + 'static,
     ) -> Self {
         Self {
-            answer: crate::landing::off_loop(work),
+            answer: Some(crate::landing::off_loop(work)),
             gone: Some(Box::new(gone)),
             waker: Waker::from(Arc::new(Wakes(wake))),
         }
     }
 
+    /// What the work came to, waiting for it: what the session does as it ends, when the write the
+    /// person's last change made must reach the workspace. `None` when the task never answered.
+    pub(crate) fn finish(&mut self, patience: std::time::Duration) -> Option<T> {
+        self.answer
+            .take()
+            .and_then(|answer| answer.wait_timeout(patience).ok().flatten())
+    }
+
     /// What the work came to, once it is done; `None` while it is under way. Work that answered
     /// is not asked again.
     pub(crate) fn done(&mut self) -> Option<T> {
-        match Pin::new(&mut self.answer).poll(&mut Context::from_waker(&self.waker)) {
-            Poll::Ready(Some(done)) => Some(done),
-            Poll::Ready(None) => self.gone.take().map(|gone| gone()),
+        let Some(answer) = self.answer.as_mut() else {
+            return self.take_gone();
+        };
+        match Pin::new(answer).poll(&mut Context::from_waker(&self.waker)) {
+            Poll::Ready(Some(done)) => {
+                self.answer = None;
+                Some(done)
+            }
+            Poll::Ready(None) => {
+                self.answer = None;
+                self.take_gone()
+            }
             Poll::Pending => None,
         }
+    }
+
+    /// What the work came to when the task running it went away before answering.
+    fn take_gone(&mut self) -> Option<T> {
+        self.gone.take().map(|gone| gone())
     }
 }
 

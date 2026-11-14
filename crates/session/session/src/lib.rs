@@ -153,7 +153,6 @@ pub mod conversations;
 mod desk;
 #[cfg(target_os = "linux")]
 mod desk_changes;
-pub mod desk_doc;
 #[cfg(target_os = "linux")]
 mod desk_resource;
 #[cfg(target_os = "linux")]
@@ -169,6 +168,7 @@ pub mod desktop_services;
 pub mod dev_rust_views;
 #[cfg(target_os = "linux")]
 mod device_actions;
+mod device_state;
 #[cfg(target_os = "linux")]
 mod devices;
 #[cfg(target_os = "linux")]

@@ -16,28 +16,32 @@ fn workspace_a_peer_changed() -> (TestTree, u64) {
     let owner = "test-owner".to_owned();
     tree.adopt_ownerless_workspaces(&owner);
     let workspace = tree.desktop.active;
-    for path in ["/home/ada/notes", "/home/ada/drafts"] {
-        tree.grant_in_workspace(
-            workspace,
-            &owner,
-            CapOverride::grant(
-                Grantee::person("ada"),
-                Scope::FsPath(path.into()),
-                Access::Read,
+    // The grants and the rename are Ada's, as another of the workspace's devices writes them.
+    let ada = ActorId::from(b"ada-device".as_slice());
+    tree.written_as(workspace, &ada, |tree| {
+        for path in ["/home/ada/notes", "/home/ada/drafts"] {
+            tree.grant_in_workspace(
+                workspace,
+                &owner,
+                CapOverride::grant(
+                    Grantee::person("ada"),
+                    Scope::FsPath(path.into()),
+                    Access::Read,
+                )
+                .through("files"),
             )
-            .through("files"),
-        )
-        .expect("the owner grants in their own workspace");
-    }
-    if let Some(workspace) = tree
-        .desktop
-        .workspaces
-        .iter_mut()
-        .find(|candidate| candidate.slot == tree.desktop.active)
-    {
-        workspace.name = "Design review".into();
-    }
-    tree.seed_doc_from_cache();
+            .expect("the owner grants in their own workspace");
+        }
+        if let Some(named) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.slot == workspace)
+        {
+            named.name = "Design review".into();
+        }
+        tree.govern(workspace);
+    });
     tree.doc.set_actor(reader);
     (tree, workspace.raw())
 }

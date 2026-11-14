@@ -18,11 +18,6 @@ impl Session {
         };
         self.shared.handle.read(|tree| sync.follow_desktop(tree));
         sync.follow();
-        // A workspace's strips and windows are the workspace's: what its
-        // members put there — before this device joined, and since — is this
-        // device's desk too, and what this device arranges there is theirs to
-        // see.
-        self.shared.follow_shared_desktops();
         // This device's call, as everyone in the workspace reads it, and
         // theirs as this session's apps show them: a join or leave reaches a
         // channel's roster on the pass it happened on.

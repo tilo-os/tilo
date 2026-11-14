@@ -105,16 +105,25 @@ impl Published for Mailbox {
     }
 }
 
+/// What a session here is started with: a device that holds its workspaces, as a person's own does.
+fn options() -> Options {
+    Options {
+        person: ADA.to_owned(),
+        state: Some(crate::common::seated_state()),
+        collab: false,
+        ..Options::default()
+    }
+}
+
+/// A session on a device that holds its workspaces, as a person's own device does: the desk it
+/// shows is a workspace's, and what the arrangement does to it is that workspace's layout.
 fn session() -> Session {
-    crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        Options {
-            person: ADA.to_owned(),
-            state: None,
-            collab: false,
-            ..Options::default()
-        },
-    )
+    crate::common::headless_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options())
+}
+
+/// The person at this device, as the session's own seat reads it: the identity it holds names them.
+fn person() -> String {
+    tilo_session::identity::seated_person(&options())
 }
 
 fn step(session: &mut Session) {
@@ -126,6 +135,16 @@ fn settle(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
     crate::common::wait_for(session, "the change to land", |session| {
         done(session).then_some(())
     });
+}
+
+/// The place `key` stands as, once the workspace holds the record it shows: a place's record is the
+/// layout's, which the workspace has a look after the action.
+fn placed(session: &mut Session, key: u64) -> tilo_session::arrangement::PlaceReading {
+    crate::common::wait_for(
+        session,
+        "the place's record to reach the workspace",
+        |session| place_of(session, key).filter(|place| !place.record.is_empty()),
+    )
 }
 
 /// The arrangement the session's desk holds now, as a shell reads it.
@@ -221,9 +240,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
             .expect("arguments"),
         )
         .expect("the arranging action runs");
-    settle(&mut session, |session| place_of(session, place).is_some());
-
-    let entry = place_of(&session, place).expect("the entry is in the record");
+    let entry = placed(&mut session, place);
     assert_eq!(
         entry.record, "tl:so.tilo.lang.mail:inbox",
         "it names the resource"
@@ -236,13 +253,8 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
     assert_eq!((held.canvas_x, held.canvas_y), (240, 160));
     assert_eq!((held.canvas_width, held.canvas_height), (720, 520));
     // One attributed, undoable step.
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("it is a step of the record's history");
-    assert_eq!(who, ADA, "attributed to the person");
-    assert_eq!(verb, "place");
+    let who = crate::common::last_step(&mut session, "place");
+    assert_eq!(who, person(), "attributed to the person");
     session.undo_arrangement().expect("undo");
     settle(&mut session, |session| place_of(session, place).is_none());
 }
@@ -283,8 +295,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
             .expect("arguments"),
         )
         .expect("the arranging action runs");
-    settle(&mut session, |session| place_of(session, place).is_some());
-    let entry = place_of(&session, place).expect("the entry is in the record");
+    let entry = placed(&mut session, place);
     assert_eq!(entry.shown_as, "inbox", "the primary published view");
     assert_eq!(entry.shows, app);
     // Showing it ran no action of the app's: the mailbox was never asked to show itself.
@@ -321,7 +332,7 @@ fn session_searching(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: ADA.to_owned(),
-            state: None,
+            state: Some(crate::common::seated_state()),
             collab: false,
             search: tilo_session::SearchOptions {
                 indexes: Some(std::sync::Arc::new(SessionIndexes::new(index, None))),
@@ -425,13 +436,8 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
     assert!(strip.placed, "it stands on the canvas");
     assert_eq!((strip.canvas_x, strip.canvas_y), (320, 96), "at the caret");
     // Attributed to the person, and undone as one step.
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("it is a step of the record's history");
-    assert_eq!(who, ADA);
-    assert_eq!(verb, "place");
+    let who = crate::common::last_step(&mut session, "place");
+    assert_eq!(who, person());
     let id = number(&placed.key);
     session.undo_arrangement().expect("undo");
     settle(&mut session, |session| place_of(session, id).is_none());
@@ -601,9 +607,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
             .expect("arguments"),
         )
         .expect("the arranging action runs");
-    settle(&mut session, |session| place_of(session, place).is_some());
-
-    let entry = place_of(&session, place).expect("the entry is in the record");
+    let entry = placed(&mut session, place);
     let held = strip_of(&session, number(&entry.strip)).expect("its strip is in the record");
     assert!(held.floating, "it stands above the windows");
     assert_eq!(held.float_corner, "top-left", "at the corner it asked for");
@@ -663,7 +667,8 @@ fn the_system_open_brings_what_is_placed_forward() {
             .expect("arguments"),
         )
         .expect("the anchor is placed");
-    settle(&mut session, |session| place_of(session, place).is_some());
+    let anchored = placed(&mut session, place);
+    assert_eq!(anchored.record, "tl:so.tilo.lang.mail:inbox");
 
     session
         .invoke(
@@ -712,20 +717,20 @@ fn the_system_open_stands_a_new_place() {
     settle(&mut session, |session| {
         arrangement(session).places.len() == before + 1
     });
-    let entry = arrangement(&session)
-        .places
-        .into_iter()
-        .find(|held| held.record == "tl:so.tilo.lang.mail:inbox")
-        .expect("the place stands");
+    let entry = crate::common::wait_for(
+        &mut session,
+        "the new place to show its record",
+        |session| {
+            arrangement(session)
+                .places
+                .into_iter()
+                .find(|held| held.record == "tl:so.tilo.lang.mail:inbox")
+        },
+    );
     assert_eq!(entry.shows, app, "it shows the app the resource is of");
     assert_eq!(entry.shown_as, "inbox", "its primary published view");
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("a step of the history");
-    assert_eq!(who, ADA);
-    assert_eq!(verb, "place", "opening is one arranging step");
+    let who = crate::common::last_step(&mut session, "place");
+    assert_eq!(who, person());
 }
 
 /// The live run's failure (shell.md §3, "a place next to where it came from"): an agent that

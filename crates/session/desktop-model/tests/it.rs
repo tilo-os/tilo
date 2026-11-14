@@ -15,8 +15,6 @@ pub mod capability;
 pub mod closed_tabs;
 #[path = "commands.rs"]
 pub mod commands;
-#[path = "desktop_doc.rs"]
-pub mod desktop_doc;
 #[path = "history.rs"]
 pub mod history;
 #[path = "one_desk.rs"]

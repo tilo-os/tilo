@@ -685,7 +685,9 @@ fn validate_shared_schema_definition(
 #[derive(Clone, PartialEq)]
 pub enum ArgValue {
     Text(String),
-    Integer(i64),
+    /// A whole number, as wide as JSON's integers are: a desk's ids span all of `u64`, which `i64`
+    /// does not.
+    Integer(i128),
     Number(f64),
     Boolean(bool),
     Object(serde_json::Map<String, serde_json::Value>),
@@ -749,9 +751,10 @@ impl ArgValue {
         match value {
             serde_json::Value::String(s) => Some(ArgValue::Text(s.clone())),
             serde_json::Value::Bool(b) => Some(ArgValue::Boolean(*b)),
-            serde_json::Value::Number(n) => match n.as_i64() {
-                Some(i) => Some(ArgValue::Integer(i)),
-                None => n.as_f64().map(ArgValue::Number),
+            serde_json::Value::Number(n) => match (n.as_i64(), n.as_u64()) {
+                (Some(i), _) => Some(ArgValue::Integer(i128::from(i))),
+                (None, Some(i)) => Some(ArgValue::Integer(i128::from(i))),
+                (None, None) => n.as_f64().map(ArgValue::Number),
             },
             serde_json::Value::Object(value) => Some(ArgValue::Object(value.clone())),
             serde_json::Value::Array(value) => Some(ArgValue::Array(value.clone())),
@@ -763,7 +766,10 @@ impl ArgValue {
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             ArgValue::Text(s) => serde_json::Value::String(s.clone()),
-            ArgValue::Integer(i) => serde_json::Value::from(*i),
+            ArgValue::Integer(i) => i64::try_from(*i).map_or_else(
+                |_| u64::try_from(*i).map_or(serde_json::Value::Null, serde_json::Value::from),
+                serde_json::Value::from,
+            ),
             ArgValue::Number(f) => serde_json::Number::from_f64(*f)
                 .map_or(serde_json::Value::Null, serde_json::Value::Number),
             ArgValue::Boolean(b) => serde_json::Value::Bool(*b),
@@ -1114,9 +1120,18 @@ impl ActionArgs {
         }
     }
 
+    /// The integer bound to `name`, where it fits one a caller works in.
     pub fn integer(&self, name: &str) -> Option<i64> {
         match self.values.get(name) {
-            Some(ArgValue::Integer(i)) => Some(*i),
+            Some(ArgValue::Integer(i)) => i64::try_from(*i).ok(),
+            _ => None,
+        }
+    }
+
+    /// The whole number bound to `name`, as wide as the id it names.
+    pub fn whole(&self, name: &str) -> Option<u64> {
+        match self.values.get(name) {
+            Some(ArgValue::Integer(i)) => u64::try_from(*i).ok(),
             _ => None,
         }
     }
@@ -1885,6 +1900,26 @@ mod declaration_reuse_tests {
         secret.ty = ParamType::Secret;
         secret.choices.push("private".into());
         assert!(secret.validate_declaration()[0].contains("must not publish possible values"));
+    }
+
+    /// A desk's ids span all of `u64`; a device whose key folds high mints ids above `i64::MAX`,
+    /// and an integer argument has to carry them exactly.
+    #[test]
+    fn an_integer_argument_carries_a_whole_id() {
+        let id = u64::MAX - 7;
+        let params = [ActionParam::required("row", ParamType::Integer, "Row")];
+        let bound = ActionArgs::bind_json(&params, json!({"row": id}).as_object().unwrap())
+            .expect("an integer argument takes the whole id");
+        assert_eq!(bound.to_json()["row"], json!(id), "it reads back exactly");
+        assert_eq!(
+            bound.whole("row"),
+            Some(id),
+            "and a caller reads the whole id"
+        );
+        assert_eq!(bound.integer("row"), None, "which is no i64");
+        let negative = ActionArgs::bind_json(&params, json!({"row": -48}).as_object().unwrap())
+            .expect("a negative integer binds too");
+        assert_eq!(negative.to_json()["row"], json!(-48));
     }
 
     #[test]

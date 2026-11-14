@@ -54,6 +54,8 @@ fn session() -> Session {
     let apps = crate::common::seeded_apps();
     crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
+        // A device that holds its workspaces: the layout and its steps are theirs.
+        state: Some(crate::common::seated_state()),
         shell: false,
         collab: false,
         // The apps installed on this device, as a real session reads them: the launcher opens
@@ -469,10 +471,10 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     session
         .undo_arrangement()
         .expect("the desk undoes the step");
-    step(&mut session);
-    assert!(
-        held(&session, chat).floating,
-        "one undo floats the window again"
+    until(
+        &mut session,
+        "one undo floats the window again",
+        |session| held(session, chat).floating,
     );
 
     // The same, in the light theme, for the pictures.

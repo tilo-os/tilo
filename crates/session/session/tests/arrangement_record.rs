@@ -20,7 +20,6 @@
 
 use std::time::Duration;
 
-use automerge::ReadDoc as _;
 use tilo_compositor::InputEvent;
 use tilo_session::{Options, Session};
 
@@ -33,28 +32,48 @@ fn session() -> Session {
     session_in(None)
 }
 
-/// A session of `person` 's, on a device with no state of its own.
-fn session_as(person: &str) -> Session {
+/// Options for a session on this device, whose workspaces it holds.
+fn options(state: Option<std::path::PathBuf>) -> Options {
+    Options {
+        person: ADA.to_owned(),
+        state: Some(state.unwrap_or_else(crate::common::seated_state)),
+        collab: false,
+        ..Options::default()
+    }
+}
+
+/// The person at this device, as the session's own seat reads it.
+fn person() -> String {
+    tilo_session::identity::seated_person(&options(None))
+}
+
+/// A session of `person` 's: the device's desk is a workspace's layout, so it is one that holds
+/// its workspaces.
+fn session_as(seat: &str) -> Session {
     crate::common::headless(Options {
-        person: person.to_owned(),
+        person: seat.to_owned(),
         state: None,
         collab: false,
         ..Options::default()
     })
 }
 
-/// A session that keeps its state in `state` when it is given.
+/// A session that keeps its state in `state` when it is given, else in this test's own device.
 fn session_in(state: Option<std::path::PathBuf>) -> Session {
-    crate::common::headless(Options {
-        person: ADA.to_owned(),
-        state,
-        collab: false,
-        ..Options::default()
-    })
+    crate::common::headless(options(state))
 }
 
 fn step(session: &mut Session) {
     session.step(Duration::from_millis(1)).expect("a frame");
+}
+
+/// Take back the person's last step, and run frames until `done`: a step is taken once the write
+/// of the record it is in has landed, off the loop.
+fn undone(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
+    session.undo_arrangement().unwrap();
+    crate::common::wait_for(session, "the step to be taken back", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// The arrangement the session's desk holds now, as a shell reads it.
@@ -192,22 +211,13 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
         Some(row),
         "the record holds the move"
     );
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("the move is a step of the record's history");
-    assert_eq!(who, ADA, "attributed to the person");
-    assert_eq!(verb, "move");
+    let who = crate::common::last_step(&mut session, "move");
+    assert_eq!(who, person(), "attributed to the person");
 
     // Undo puts it back.
-    session.undo_arrangement().unwrap();
-    step(&mut session);
-    assert_eq!(
-        strip_of(&session, window).map(|strip| row_of(&session, strip)),
-        Some(from),
-        "undo restored the place to its row"
-    );
+    undone(&mut session, |session| {
+        strip_of(session, window).map(|strip| row_of(session, strip)) == Some(from)
+    });
 }
 
 /// The action that moves `place` to the row `row` .
@@ -283,31 +293,24 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
         !strip_reading_of(&session, other).floating,
         "only the window the person let go floats"
     );
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("floating is a step of the record's history");
-    assert_eq!(who, ADA, "attributed to the person");
-    assert_eq!(verb, "float");
+    let who = crate::common::last_step(&mut session, "float");
+    assert_eq!(who, person(), "attributed to the person");
 
     // Undo takes the one step back, and redo floats it again.
-    session.undo_arrangement().unwrap();
-    step(&mut session);
-    assert!(
-        !strip_reading_of(&session, window).floating,
-        "undone in one step"
-    );
+    undone(&mut session, |session| {
+        !strip_reading_of(session, window).floating
+    });
     session
         .invoke_with_actor(
-            ADA,
+            &person(),
             tilo_session::arrangement::RECORD_RESOURCE,
             "redo",
             &serde_json::json!({}),
         )
         .unwrap();
-    step(&mut session);
-    assert!(strip_reading_of(&session, window).floating);
+    crate::common::wait_for(&mut session, "the step to be brought back", |session| {
+        strip_reading_of(session, window).floating.then_some(())
+    });
 
     // Snapping it back with no target returns it exactly where it was.
     session
@@ -328,28 +331,20 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
         (before.placed, before.canvas_x, before.canvas_y),
         "exactly where it was"
     );
-    let (_, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("snapping back is a step too");
-    assert_eq!(verb, "snap-back");
-    session.undo_arrangement().unwrap();
-    step(&mut session);
-    assert!(
-        strip_reading_of(&session, window).floating,
-        "undo floats it again"
-    );
+    crate::common::last_step(&mut session, "snap-back");
+    undone(&mut session, |session| {
+        strip_reading_of(session, window).floating
+    });
 }
 
-// (7) A float is the workspace's, not the device's: it is in the desk the workspace shares, so the
-// next start shows it floating — and so does every other member of the workspace, who reads the
-// same record.
+// (7) A float is the workspace's, not the device's: it is written in the workspace's layout, so the
+// next start shows it floating.
 #[test]
-fn a_float_is_in_the_shared_desk_so_every_member_sees_it() {
+fn a_float_is_in_the_workspaces_layout_so_the_next_start_shows_it() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let state = home.state().to_path_buf();
+    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
+    // so its engine opens and its layout is the workspace's.
+    let state = crate::common::seated_state();
     let (window, strip) = {
         let mut session = session_in(Some(state.clone()));
         step(&mut session);
@@ -369,28 +364,6 @@ fn a_float_is_in_the_shared_desk_so_every_member_sees_it() {
             .ask_person(&float_at(window, float))
             .unwrap();
         step(&mut session);
-        // It is the desk's record every member of the workspace receives.
-        let desk = ui::automerge::AutoCommit::load(
-            &std::fs::read(state.join("tilo").join("desk.automerge")).expect("the desk's document"),
-        )
-        .expect("the desk's document reads");
-        let (_, workspaces) = desk
-            .get(ui::automerge::ROOT, "workspaces")
-            .expect("the desk is a document")
-            .expect("it holds workspaces");
-        let (_, entry) = desk
-            .get(&workspaces, 0_usize)
-            .expect("a workspace entry")
-            .expect("one workspace");
-        let (_, floats) = desk
-            .get(&entry, "floats_v1")
-            .expect("the desk is read")
-            .expect("the workspace holds floats");
-        assert_eq!(
-            desk.keys(&floats).collect::<Vec<_>>(),
-            vec![strip.to_string()],
-            "the window's float is in the shared record"
-        );
         (window, strip)
     };
 
@@ -477,21 +450,12 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
         Some(second),
         "the agent's move is in the record"
     );
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("it is a step of the record's history");
+    let who = crate::common::last_step(&mut session, "move");
     assert_eq!(who, "agent-task:reading", "attributed to the agent");
-    assert_eq!(verb, "move");
 
-    session.undo_arrangement().unwrap();
-    step(&mut session);
-    assert_eq!(
-        strip_of(&session, window).map(|strip| row_of(&session, strip)),
-        Some(from),
-        "undo restored it to its row"
-    );
+    undone(&mut session, |session| {
+        strip_of(session, window).map(|strip| row_of(session, strip)) == Some(from)
+    });
 }
 
 // (3) One record answers what the arrangement is: the desk's own, which the workspace shares.
@@ -499,8 +463,9 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
 #[test]
 fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let state = home.state().to_path_buf();
+    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
+    // so its engine opens and its layout is the workspace's.
+    let state = crate::common::seated_state();
     let mut here = session_in(Some(state.clone()));
     step(&mut here);
     let window = open_window(&mut here, "org.example.Notes");
@@ -518,11 +483,11 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     );
     drop(here);
 
-    // The desk's one document is what keeps it: no record of the arrangement's own is written
-    // beside it.
+    // The workspace's layout record keeps the arrangement; what this device keeps is what it
+    // shows, and no record of the arrangement's own is written beside either.
     assert!(
-        state.join("tilo").join("desk.automerge").exists(),
-        "the desk's document keeps the arrangement"
+        state.join("tilo").join("shown.json").exists(),
+        "the device keeps what it shows"
     );
     assert!(
         !state.join("tilo").join("arrangement.automerge").exists(),
@@ -544,8 +509,9 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
 #[test]
 fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let state = home.state().to_path_buf();
+    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
+    // so its engine opens and its layout is the workspace's.
+    let state = crate::common::seated_state();
     let place = {
         let mut session = session_in(Some(state.clone()));
         step(&mut session);
@@ -592,8 +558,9 @@ fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
 #[test]
 fn a_launch_that_left_no_window_is_gone_after_a_restart() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let state = home.state().to_path_buf();
+    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
+    // so its engine opens and its layout is the workspace's.
+    let state = crate::common::seated_state();
     let (window, place) = {
         let mut session = session_in(Some(state.clone()));
         step(&mut session);
@@ -654,127 +621,6 @@ fn a_launch_that_left_no_window_is_gone_after_a_restart() {
         tabs.contains(&window),
         "the window that was open is: {tabs:?}"
     );
-}
-
-// (6) The arrangement a build before this one kept beside the desk comes into the desk once: the
-// windows it held are open on the desk again, and the file it was kept in is gone. A window it kept
-// as a live surface comes back as the app it showed, as every window of the desk does.
-#[test]
-fn the_record_a_build_before_this_one_kept_comes_into_the_desk_once() {
-    let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let state = home.state().to_path_buf();
-    // The desk this device had before the build that keeps the arrangement in it: where its
-    // workspace's windows stand.
-    let (workspace, row) = {
-        let mut session = session_in(Some(state.clone()));
-        step(&mut session);
-        session.handle().read(|tree| {
-            (
-                tree.active.0,
-                tree.active_workspace()
-                    .and_then(|workspace| workspace.strips.first())
-                    .expect("a row")
-                    .id
-                    .0,
-            )
-        })
-    };
-    let (strip, place) = (7u64, 9u64);
-    let file = kept_arrangement(&state, workspace, row, strip, place);
-
-    let mut session = session_in(Some(state));
-    step(&mut session);
-    let back = place_of(&session, place).expect("the place came into the desk");
-    assert_eq!(back.shows, "org.example.Notes", "the app it showed");
-    assert_eq!(back.shown_as, "editor", "through the view it showed it in");
-    assert!(back.pinned, "and pinned");
-    assert_eq!(
-        strip_of(&session, place),
-        Some(strip),
-        "in the strip it stood in"
-    );
-    let tile = session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|tab| tab.id == place)
-            .map(|tab| tab.tile.clone())
-    });
-    assert!(
-        matches!(
-            tile,
-            Some(tilo_desktop_model::TileContent::LocalApp { ref app_id, .. })
-                if app_id == "org.example.Notes"
-        ),
-        "a live window comes back as the app it showed: {tile:?}"
-    );
-    assert!(!file.exists(), "the record it came from is gone");
-}
-
-/// The arrangement a build before this one kept beside the desk under `state` , as it wrote it: a
-/// workspace, a row, a strip and a place, each an entry of the document under its own id. The place
-/// shows Notes through its `editor` view, pinned, with a live window of it.
-fn kept_arrangement(
-    state: &std::path::Path,
-    workspace: u64,
-    row: u64,
-    strip: u64,
-    place: u64,
-) -> std::path::PathBuf {
-    use automerge::transaction::Transactable as _;
-    use automerge::{ObjType, ROOT, ReadDoc as _};
-    let mut doc = ui::automerge::AutoCommit::new();
-    let entry = |doc: &mut ui::automerge::AutoCommit, key: &str, id: u64| {
-        let container = match doc.get(&ROOT, key).ok().flatten() {
-            Some((automerge::Value::Object(ObjType::Map), container)) => container,
-            _ => doc
-                .put_object(&ROOT, key, ObjType::Map)
-                .expect("the document takes a map"),
-        };
-        doc.put_object(container, id.to_string(), ObjType::Map)
-            .expect("the document takes an entry")
-    };
-    let held = entry(&mut doc, "workspaces", workspace);
-    doc.put(&held, "order", 0.0).expect("the entry");
-    doc.put(&held, "name", "Home").expect("the entry");
-    let held = entry(&mut doc, "rows", row);
-    doc.put(&held, "order", 0.0).expect("the entry");
-    doc.put(&held, "name", "Writing").expect("the entry");
-    doc.put(&held, "workspace", workspace.to_string())
-        .expect("the entry");
-    let held = entry(&mut doc, "strips", strip);
-    doc.put(&held, "order", 0.0).expect("the entry");
-    doc.put(&held, "workspace", workspace.to_string())
-        .expect("the entry");
-    doc.put(&held, "row", row.to_string()).expect("the entry");
-    doc.put(&held, "active", place.to_string())
-        .expect("the entry");
-    let held = entry(&mut doc, "places", place);
-    doc.put(&held, "strip", strip.to_string())
-        .expect("the entry");
-    doc.put(&held, "order", 0.0).expect("the entry");
-    doc.put(&held, "shows", "org.example.Notes")
-        .expect("the entry");
-    doc.put(&held, "view", "editor").expect("the entry");
-    doc.put(
-        &held,
-        "state",
-        serde_json::json!({
-            "Foreign": {"app_id": "org.example.Notes", "surface_id": 3},
-        })
-        .to_string(),
-    )
-    .expect("the entry");
-    doc.put(&held, "title", "Notes").expect("the entry");
-    doc.put(&held, "pinned", true).expect("the entry");
-    let path = state.join("tilo");
-    std::fs::create_dir_all(&path).expect("the state directory");
-    let file = path.join("arrangement.automerge");
-    std::fs::write(&file, doc.save()).expect("the record is kept");
-    file
 }
 
 // (4) While the person types or drags, an agent's move waits, not drops, and applies after the
@@ -840,11 +686,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         Some(second),
         "it applies once the person is done"
     );
-    let (who, _) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("it is a step of the record's history");
+    let who = crate::common::last_step(&mut session, "move");
     assert_eq!(who, "agent-task:reading", "still attributed to the agent");
 }
 
@@ -996,24 +838,15 @@ fn a_move_the_reading_shows_is_undone_to_where_it_was() {
         .expect("the place's strip reads out");
     assert_eq!(strip.row, second.to_string(), "the reading holds the move");
 
-    session.undo_arrangement().unwrap();
-    step(&mut session);
-    let reading = session.arrangement().borrow().reading();
-    let place = reading
-        .places
-        .iter()
-        .find(|place| place.key == key.as_str())
-        .expect("the place reads out");
-    let strip = reading
-        .strips
-        .iter()
-        .find(|strip| strip.key == place.strip)
-        .expect("the place's strip reads out");
-    assert_eq!(
-        strip.row,
-        was.to_string(),
-        "undo restores the row the reading shows"
-    );
+    undone(&mut session, |session| {
+        let reading = session.arrangement().borrow().reading();
+        reading
+            .places
+            .iter()
+            .find(|place| place.key == key.as_str())
+            .and_then(|place| reading.strips.iter().find(|strip| strip.key == place.strip))
+            .is_some_and(|strip| strip.row == was.to_string())
+    });
 }
 
 // A strip's width is resized through the published action, one step the person undoes.
@@ -1041,12 +874,9 @@ fn resizing_a_strip_is_one_step_and_undone() {
     assert_ne!(now, was.max(333), "the width changed");
     assert_eq!(now, 333, "the strip stands narrow");
 
-    session.undo_arrangement().unwrap();
-    step(&mut session);
-    let back = strip_at(&session, strip)
-        .map(|strip| strip.width)
-        .expect("the strip is in the record");
-    assert_eq!(back, was, "undo restores the width");
+    undone(&mut session, |session| {
+        strip_at(session, strip).map(|strip| strip.width) == Some(was)
+    });
 }
 
 // A window is maximized through the published action, so the desk shows the one window it is,
@@ -1086,12 +916,7 @@ fn maximizing_a_window_is_one_step_and_undone() {
         "and no other window does"
     );
 
-    session.undo_arrangement().unwrap();
-    step(&mut session);
-    assert!(
-        !maximized(&session, strip),
-        "undo restores the windows beside each other"
-    );
+    undone(&mut session, |session| !maximized(session, strip));
 }
 
 /// A session on a device whose salt is the top of an id's high bits: every place, strip and row

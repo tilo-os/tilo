@@ -390,6 +390,9 @@ pub struct WorkspaceActivityPane {
     /// [`Self::history_log`]'s rows revision at the last rebuild: while it holds, the changes since
     /// were all passed over (a workspace switch) and the rows are as derived.
     last_rows: u64,
+    /// The heads of the workspace's own document at the last rebuild: what it governed since is
+    /// read even while the desk's own document stands still.
+    last_governing: Vec<ChangeHash>,
     period: Period,
     /// Every row the document yielded, with the workspace each belongs to (`None` for no single
     /// workspace). [`Self::scope`] selects the subset handed to the timeline.
@@ -460,6 +463,12 @@ pub struct WorkspaceActivityPane {
     /// refresh reads only the changes appended since the last one
     /// ([`HistorySource::entries_since`]).
     pub(super) history_log: ui::history_source::HistoryLog,
+    /// What [`Self::source`] has read of the workspace's own document, kept across refreshes: the
+    /// rows of its governance come from there ([`ActivityTree::governance_document`]).
+    governance_log: ui::history_source::HistoryLog,
+    /// The rows read from the workspace's own document: they address changes in it, not in the
+    /// document the desk is read from, so nothing here diffs or reverts them.
+    governance_rows: HashSet<HistoryEntryId>,
     /// Each workspace change's reading, kept across refreshes; see [`describe_workspace_changes`].
     workspace_changes: HashMap<ChangeHash, WorkspaceChange>,
     /// Each replayed entry's desktop, kept across rebuilds; see [`Self::rebuild_replay_frames`].
@@ -561,19 +570,16 @@ impl WorkspaceActivityPane {
                 t.set_show_day_headings(true);
                 t
             },
-            // A workspace is a cluster of windows saved/reopened collaboratively. Which workspace,
-            // strip or window shows, and how wide it is, is the device's view, written on every
-            // switch and drag: no history, and no place in the window, which switching back and
-            // forth used to fill until nothing anyone did was left.
-            source: HistorySource::new()
-                .with_artifact_kind(ArtifactKind::Cluster)
-                .passing_over(tilo_desktop_model::desktop_doc::only_moves_the_view),
+            // A workspace is a cluster of windows saved/reopened collaboratively: what its layout
+            // record holds is one row per change of the desk.
+            source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
             revert_intent,
             name_intent,
             undo_intent,
             named: Vec::new(),
             last_heads: Vec::new(),
             last_rows: 0,
+            last_governing: Vec::new(),
             period: Period::default(),
             derived: Vec::new(),
             scoped_tree_rows: Vec::new(),
@@ -619,6 +625,8 @@ impl WorkspaceActivityPane {
             replay_presentation_note: None,
             replay_frames: Vec::new(),
             history_log: ui::history_source::HistoryLog::default(),
+            governance_log: ui::history_source::HistoryLog::default(),
+            governance_rows: HashSet::new(),
             workspace_changes: HashMap::new(),
             replay_checkpoints: HashMap::new(),
             replay_index: 0,
@@ -866,6 +874,16 @@ impl WorkspaceActivityPane {
                 detail.can_undo = false;
             }
             origin.get_or_insert(next);
+        }
+        // A row read from the workspace's own document addresses a change the desk's document does
+        // not hold: there is nothing here to compare it with or to take back.
+        if detail
+            .entry_ids
+            .iter()
+            .any(|id| self.governance_rows.contains(id))
+        {
+            detail.can_compare = false;
+            detail.can_undo = false;
         }
         if !app_origins.is_empty() {
             let titles = std::mem::take(&mut detail.resources);
@@ -1546,22 +1564,29 @@ impl WorkspaceActivityPane {
         self.poll_undo();
 
         let heads = tree.document_mut().get_heads();
+        let governing = Self::governing_heads(tree);
         let active = tree.active.raw();
         // A switch writes the document but no row: read just the changes since and, when all of
         // them were passed over, only show the rows of the workspace now active.
-        let only_passed_over = heads != self.last_heads && !self.last_heads.is_empty() && {
-            self.source
-                .follow(tree.document_mut(), &mut self.history_log);
-            self.history_log.rows_revision() == self.last_rows
-        };
-        if only_passed_over || (heads == self.last_heads && !self.timeline.entries().is_empty()) {
+        let only_passed_over = heads != self.last_heads
+            && governing == self.last_governing
+            && !self.last_heads.is_empty()
+            && {
+                self.source
+                    .follow(tree.document_mut(), &mut self.history_log);
+                self.history_log.rows_revision() == self.last_rows
+            };
+        let stayed = heads == self.last_heads && governing == self.last_governing;
+        if only_passed_over || (stayed && !self.timeline.entries().is_empty()) {
             self.last_heads = heads;
+            self.last_governing = governing;
             if self.last_active != Some(active) {
                 self.apply_scope(tree);
             }
             return;
         }
         self.last_heads = heads;
+        self.last_governing = governing;
         seed_roster_colours(self.source.authors_mut(), tree);
         // A change an agent's own key signed reads as the agent's, for its person, once the host
         // verified its delegation for that device.
@@ -1579,27 +1604,11 @@ impl WorkspaceActivityPane {
         }
 
         // Bind the local automerge actor to the Tilo identity, or local user id; a peer's actor
-        // stays unresolved until collaboration says who.
-        let actor = tree.document_mut().get_actor().to_hex_string();
-        if !self.source.authors().is_registered(&actor) {
-            let principal = if let Some(local) = &self.explicit_local_user {
-                Some(local.clone())
-            } else {
-                self.host.local_author(self.source.authors_mut(), &actor)
-            };
-            // The hue follows the person, as receipt rows' does: one person editing from this
-            // device and acting through a receipt is one colour, not one per key.
-            if let Some(principal) = principal {
-                let rgb = self.source.authors().colour_for(&principal);
-                self.source.authors_mut().register(
-                    &actor,
-                    ui::history_source::author_coloured(
-                        principal,
-                        ui::history_source::short_id(&actor),
-                        rgb,
-                    ),
-                );
-            }
+        // stays unresolved until collaboration says who. The workspace's own document is written by
+        // this device too, and its rows read as the same person's.
+        self.register_writer(&tree.document_mut().get_actor().to_hex_string());
+        if let Some(document) = tree.governance_document() {
+            self.register_writer(&document.get_actor().to_hex_string());
         }
 
         let mut entries = self
@@ -1612,6 +1621,14 @@ impl WorkspaceActivityPane {
             &mut entries,
             &mut self.workspace_changes,
         );
+        // The document holding one workspace's layout is that workspace's: every change of it is
+        // the workspace's, whichever part of the record it wrote.
+        if let Some(own) = tree.document_workspace() {
+            tags.fill(Some(own));
+        }
+        // What the workspace governs — who owns it, who it is shared with, what it grants — is
+        // written in the workspace's own document, which the layout is one record of.
+        self.read_governance(tree, &mut entries, &mut tags);
         // A receipt is committed by the workspace host, but its authenticated `actor` is the person
         // (or agent) who performed the semantic action. Attribute the projected CRDT row to that
         // actor rather than to the host's Automerge key; otherwise every collaborative work session
@@ -1692,10 +1709,78 @@ impl WorkspaceActivityPane {
             .collect();
         self.derived
             .compact_sort_by_key(|(entry, _)| entry.timestamp);
+        // One window over the workspace's history, whichever of its documents the rows came from.
+        let excess = self
+            .derived
+            .len()
+            .saturating_sub(ui::history_source::DEFAULT_MAX_ENTRIES);
+        if excess > 0 {
+            self.derived.drain(..excess);
+        }
         // Names come out of the same document as the changes, so a peer's name arrives with their
         // edits.
         self.named = ui::history_groups::read_named_ranges(tree.document(), self.source.authors());
         self.apply_scope(tree);
+    }
+
+    /// Register the actor `actor` as whoever writes here, where it is not known yet.
+    fn register_writer(&mut self, actor: &str) {
+        if self.source.authors().is_registered(actor) {
+            return;
+        }
+        let principal = if let Some(local) = &self.explicit_local_user {
+            Some(local.clone())
+        } else {
+            self.host.local_author(self.source.authors_mut(), actor)
+        };
+        // The hue follows the person, as receipt rows' does: one person editing from this device
+        // and acting through a receipt is one colour, not one per key.
+        if let Some(principal) = principal {
+            let rgb = self.source.authors().colour_for(&principal);
+            self.source.authors_mut().register(
+                actor,
+                ui::history_source::author_coloured(
+                    principal,
+                    ui::history_source::short_id(actor),
+                    rgb,
+                ),
+            );
+        }
+    }
+
+    /// The heads of the workspace's own document, where one is read.
+    fn governing_heads(tree: &impl ActivityTree) -> Vec<ChangeHash> {
+        tree.governance_document()
+            .map(automerge::AutoCommit::committed_heads)
+            .unwrap_or_default()
+    }
+
+    /// Append what the workspace's own document says it governed — who owns it, who it is shared
+    /// with, what it grants — to `entries`, each row tagged with the workspace it governs.
+    fn read_governance(
+        &mut self,
+        tree: &impl ActivityTree,
+        entries: &mut Vec<HistoryEntry>,
+        tags: &mut Vec<Option<u64>>,
+    ) {
+        let Some(document) = tree.governance_document().cloned() else {
+            self.governance_rows.clear();
+            return;
+        };
+        let mut document = document;
+        let mut rows = self
+            .source
+            .entries_since(&mut document, &mut self.governance_log);
+        let row_tags = describe_workspace_changes(
+            &mut document,
+            &self.governance_log,
+            &mut rows,
+            &mut self.workspace_changes,
+        );
+        self.governance_rows = rows.iter().map(|row| row.id).collect();
+        let workspace = Some(tree.active.raw());
+        tags.extend(row_tags.into_iter().map(|tag| tag.or(workspace)));
+        entries.append(&mut rows);
     }
 
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive everything that depends on
@@ -2180,6 +2265,11 @@ impl WorkspaceActivityPane {
         if !self.host.mutations_available() {
             return false;
         }
+        // A row of another record, or of the workspace's own document, is not the desk's to
+        // rewind: the layout's document is this device's to write.
+        if self.governance_rows.contains(id) {
+            return false;
+        }
         let origin = self.projected_origins.get(id).cloned();
         if origin
             .as_ref()
@@ -2571,10 +2661,15 @@ const WORKSPACE_BOOKKEEPING_KEYS: &[&str] = &[
     "retained_empty_v1",
 ];
 
-/// Whether a change only wrote the workspace's bookkeeping.
+/// Whether a change only wrote the workspace's bookkeeping: its own state keys, or the record's
+/// copy of its fields — a name, an owner, a grant — which is state about the workspace, not
+/// something anyone did in it.
 fn is_workspace_bookkeeping(patches: &[automerge::Patch]) -> bool {
     !patches.is_empty()
         && patches.iter().all(|patch| {
+            if in_workspace_copy(patch) {
+                return true;
+            }
             let leaf = match &patch.action {
                 automerge::PatchAction::PutMap { key, .. }
                 | automerge::PatchAction::DeleteMap { key }
@@ -3148,3 +3243,6 @@ include!("workspace_activity_tests.rs");
 #[cfg(test)]
 #[path = "pane_tests.rs"]
 mod pane_tests;
+#[cfg(test)]
+#[path = "pane/resume_tests.rs"]
+mod resume_tests;

@@ -187,7 +187,7 @@ impl PersonView {
 fn field<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Option<T> {
     let (value, id) = doc.get(ROOT, key).ok().flatten()?;
     let json = match &value {
-        Value::Object(automerge::ObjType::Map) => {
+        Value::Object(automerge::ObjType::Map | automerge::ObjType::List) => {
             tilo_automerge::json::read_value(doc, &value, &id).ok()?
         }
         Value::Scalar(scalar) => tilo_automerge::json::scalar_json(scalar.as_ref()).ok()?,
@@ -355,5 +355,19 @@ mod tests {
         assert!(!view.applied(&mut tree, WorkspaceSlot(1)));
         assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), None);
         assert_eq!(PersonView::of(&tree, WorkspaceSlot(1)).front_tab.len(), 3);
+    }
+
+    /// A view reads back as it was written, the groups made as large as their display with it.
+    #[test]
+    fn a_view_reads_back_as_written() {
+        let view = PersonView {
+            front_strip: Some(StripId(11)),
+            widths: [(21, WindowWidth::Fraction(480))].into_iter().collect(),
+            maximized: [22].into_iter().collect(),
+            ..PersonView::default()
+        };
+        let mut doc = AutoCommit::new();
+        assert!(view.write(&mut doc).expect("the view is written"));
+        assert_eq!(PersonView::read(&doc), view);
     }
 }

@@ -39,6 +39,16 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
         Vec::new()
     }
     fn commit_activity_change(&mut self) {}
+    /// The workspace's own document — its governance, and the layout it keeps at its root — where
+    /// the document [`Self::document`] reads is another record of the same workspace.
+    fn governance_document(&self) -> Option<&AutoCommit> {
+        None
+    }
+    /// The workspace whose layout the document holds, where it holds one workspace's: every change
+    /// of it is that workspace's, whichever part of the record it wrote.
+    fn document_workspace(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// What takes the desk a committing snapshot wrote back to where it is kept.
@@ -51,13 +61,29 @@ type Commit = std::rc::Rc<dyn Fn(&DesktopTree)>;
 pub struct ActivitySnapshot {
     pub desktop: DesktopTree,
     pub doc: AutoCommit,
-    /// The workspace whose document this is, or `None` when it is the device's own document of the
-    /// whole desk.
+    /// The workspace whose document this is, or `None` when the document is the desk's own.
     workspace: Option<tilo_desktop_model::WorkspaceId>,
+    /// What the document holds the desk as.
+    shape: Shape,
+    /// The workspace's own document, where this document is one of its records: what it governs —
+    /// who owns it, who it is shared with, what it grants — is read from there.
+    governance: Option<AutoCommit>,
+    /// The workspace whose layout the document holds, where it holds one workspace's.
+    owning: Option<tilo_desktop_model::WorkspaceSlot>,
     /// What takes a change the model wrote back to the desk it came from: a host that keeps the
     /// workspace's own layout applies it here, and a host whose history is read only keeps none.
     commit: Option<Commit>,
 }
+/// What a snapshot's document holds the desk as.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// The device's whole desk, as [`tilo_desktop_model::desktop_doc`] keeps it.
+    Devices,
+    /// One workspace's layout, as the workspace's
+    /// [`tilo_desktop_model::shared_record`] holds it.
+    Layout,
+}
+
 impl ActivitySnapshot {
     /// Snapshot the active workspace of `desktop` from its admitted owner document.
     pub fn new(desktop: DesktopTree, doc: AutoCommit) -> Result<Self, String> {
@@ -69,6 +95,9 @@ impl ActivitySnapshot {
             desktop,
             doc,
             workspace: Some(workspace),
+            shape: Shape::Devices,
+            governance: None,
+            owning: None,
             commit: None,
         };
         tilo_desktop_model::projection::apply_admitted_workspace(
@@ -87,6 +116,30 @@ impl ActivitySnapshot {
             desktop,
             doc,
             workspace: None,
+            shape: Shape::Devices,
+            governance: None,
+            owning: None,
+            commit: None,
+        };
+        let _ = snapshot.resync_activity_cache();
+        snapshot
+    }
+
+    /// Snapshot the desk of `desktop` from `slot`'s layout record: the strips, window groups and
+    /// windows it holds, and the changes of it a history lists.
+    #[must_use]
+    pub fn of_layout(
+        desktop: DesktopTree,
+        slot: tilo_desktop_model::WorkspaceSlot,
+        doc: AutoCommit,
+    ) -> Self {
+        let mut snapshot = Self {
+            desktop,
+            doc,
+            workspace: None,
+            shape: Shape::Layout,
+            governance: None,
+            owning: Some(slot),
             commit: None,
         };
         let _ = snapshot.resync_activity_cache();
@@ -99,6 +152,14 @@ impl ActivitySnapshot {
     #[must_use]
     pub fn committing(mut self, commit: std::rc::Rc<dyn Fn(&DesktopTree)>) -> Self {
         self.commit = Some(commit);
+        self
+    }
+
+    /// Read the workspace's governance from `document` , the workspace's own: this document is one
+    /// of its records, and what the workspace governs is not written there.
+    #[must_use]
+    pub fn governing(mut self, document: AutoCommit) -> Self {
+        self.governance = Some(document);
         self
     }
 }
@@ -120,6 +181,12 @@ impl ActivityTree for ActivitySnapshot {
     fn document_mut(&mut self) -> &mut AutoCommit {
         &mut self.doc
     }
+    fn governance_document(&self) -> Option<&AutoCommit> {
+        self.governance.as_ref()
+    }
+    fn document_workspace(&self) -> Option<u64> {
+        self.owning.map(|slot| slot.raw())
+    }
     fn replay_presentation_note(&self) -> Option<String> {
         // A workspace document records which windows the workspace holds and how they are arranged,
         // never how wide they are or which is in front: those are the device's. The device's own
@@ -129,10 +196,32 @@ impl ActivityTree for ActivitySnapshot {
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         let Some(workspace) = self.workspace else {
-            // The whole desk, out of the device's document: its topology,
-            // and the view it was left in.
-            tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
-            tilo_desktop_model::desktop_doc::rebuild_view(&self.doc, &mut self.desktop);
+            match self.shape {
+                // The whole desk, out of the device's document: its topology, and the view it was
+                // left in.
+                Shape::Devices => {
+                    tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+                    tilo_desktop_model::desktop_doc::rebuild_view(&self.doc, &mut self.desktop);
+                }
+                // The layout one workspace holds, and no other: what it says is what the window
+                // showed then.
+                Shape::Layout => {
+                    let Some(layout) = tilo_desktop_model::shared_record::read(&self.doc, None)
+                    else {
+                        return Ok(());
+                    };
+                    for held in &mut self.desktop.workspaces {
+                        if let Some(found) = layout
+                            .tree
+                            .workspaces
+                            .iter()
+                            .find(|found| found.id() == held.id())
+                        {
+                            held.strips.clone_from(&found.strips);
+                        }
+                    }
+                }
+            }
             return Ok(());
         };
         // A historical projection must not retain tabs that only exist in the current cache.

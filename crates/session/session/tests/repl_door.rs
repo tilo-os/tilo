@@ -160,14 +160,13 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         on_screen(session, NOTE_TITLE).is_some()
     });
     assert_eq!(placed(session, note), 1, "one place shows the note");
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("it is a step of the arrangement's history");
+    let who = crate::common::last_step(session, "place");
     assert_eq!(
-        (who.as_str(), verb.as_str()),
-        (PERSON, "place"),
+        who,
+        tilo_session::identity::seated_person(&Options {
+            person: PERSON.to_owned(),
+            ..Options::default()
+        }),
         "the person's step, not an agent's"
     );
 
@@ -1171,6 +1170,7 @@ fn the_repl_finds_what_place_found_places() {
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
+        state: Some(crate::common::seated_state()),
         shell: true,
         collab: false,
         services: vec![Box::new(apps)],
