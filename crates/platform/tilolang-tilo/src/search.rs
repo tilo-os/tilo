@@ -293,7 +293,7 @@ fn record_of(resource: &str) -> &str {
 /// The longest text an entry keeps as a short field: a name, a subject, a sender.
 const SHORT_TEXT: usize = 80;
 
-/// The whole of a workspace's search index, read on a thread of its own: every resource with
+/// The whole of a workspace's search index, read on a worker thread: every resource with
 /// text, one pass over the indexes, as publication's first trees are read. A frame after it ends
 /// takes it in and sends what it holds; until then the window shows.
 pub struct WholeIndex {
@@ -325,15 +325,14 @@ impl WholeIndex {
         let catalogue = catalogue(host);
         Self {
             building: crate::background::Pending::start(
-                move || read(&snapshot, &catalogue, publisher, state),
+                move || read(&snapshot, &catalogue, publisher.clone(), state),
                 wake,
             ),
         }
     }
 
-    /// What it read, once it has; [`crate::background::Poll::Lost`] when the thread that read it
-    /// ended without an answer.
-    pub fn poll(&self) -> crate::background::Poll<Published> {
+    /// What it read, once it has.
+    pub fn poll(&mut self) -> Option<Published> {
         self.building.poll()
     }
 }

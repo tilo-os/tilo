@@ -19,7 +19,7 @@ use tilolang_runtime::store::doc_of;
 
 use super::reading::{build, everything, mirror_of, scan};
 use super::{Doc, Inner, Nested, TiloStore};
-use crate::background::{Pending, Poll};
+use crate::background::Pending;
 use crate::chunk::{self, ChunkNo, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached};
 use crate::index::view::View;
@@ -271,15 +271,17 @@ impl TiloStore {
             let Some(held) = inner.apps.get_mut(&app) else {
                 continue;
             };
-            let IndexState::Building(pending, step) = &held.state else {
+            let IndexState::Building(pending, step) = &mut held.state else {
                 continue;
             };
             let step = *step;
-            let poll = if wait { pending.wait() } else { pending.poll() };
-            let ended = match poll {
-                Poll::Running => continue,
-                Poll::Ready(ended) => ended,
-                Poll::Lost => Err(IndexError::Io("the build ended without a result".into())),
+            let poll = if wait {
+                Some(pending.wait())
+            } else {
+                pending.poll()
+            };
+            let Some(ended) = poll else {
+                continue;
             };
             any = true;
             if let Ok((heads, reads)) = ended {

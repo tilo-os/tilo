@@ -298,7 +298,7 @@ pub struct IndexState {
 }
 
 /// What one route last published, so only what changed is sent again.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Publisher {
     published: Option<HashMap<String, IndexEntry>>,
     state: Option<IndexState>,

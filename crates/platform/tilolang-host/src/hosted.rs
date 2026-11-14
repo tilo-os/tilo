@@ -1318,32 +1318,14 @@ impl Hosted {
     }
 
     /// Take in the whole index read off the frame and send it: whether it ended this turn, which
-    /// leaves the frame with nothing else to publish. The thread that read it ended without an
-    /// answer only by panicking, and then the frame reads it.
+    /// leaves the frame with nothing else to publish.
     fn index_read_off_frame(&mut self) -> bool {
-        let Some((moved, read)) = self.search_index_whole.take() else {
+        let Some((moved, mut read)) = self.search_index_whole.take() else {
             return false;
         };
-        let published = match read.poll() {
-            tilolang_tilo::background::Poll::Running => {
-                self.search_index_whole = Some((moved, read));
-                return true;
-            }
-            tilolang_tilo::background::Poll::Ready(published) => published,
-            tilolang_tilo::background::Poll::Lost => {
-                let Some(host) = self.instance.host() else {
-                    return true;
-                };
-                tilolang_tilo::search::read(
-                    &host.store().snapshot(),
-                    &tilolang_tilo::search::catalogue(&host),
-                    std::mem::take(&mut self.search_index),
-                    tilo_resource::search_index::IndexState {
-                        generation: self.search_index_build,
-                        secrets_unlocked: None,
-                    },
-                )
-            }
+        let Some(published) = read.poll() else {
+            self.search_index_whole = Some((moved, read));
+            return true;
         };
         self.search_entries = published.entries;
         self.search_index = published.publisher;
