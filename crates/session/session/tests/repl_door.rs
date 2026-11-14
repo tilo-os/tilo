@@ -833,7 +833,7 @@ fn an_app_no_place_shows_is_unloaded() {
     for place in places {
         session
             .invoke(
-                &tilo_session::arrangement::Item::Place.resource(&place.to_string()),
+                &tilo_session_core::arrangement::Item::Place.resource(&place.to_string()),
                 "close",
                 &serde_json::Map::new(),
             )

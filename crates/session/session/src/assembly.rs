@@ -365,7 +365,7 @@ pub(crate) struct Shared {
     pub(crate) clipboard: Rc<crate::clipboard::Clipboard>,
     /// The person's arrangement: the desk this session holds, with history and
     /// undo (shell.md §2), and the app places its windows from it.
-    pub(crate) arrangement: Rc<RefCell<crate::arrangement::Arrangement>>,
+    pub(crate) arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what an arranging action that is not their own waits for.
     pub(crate) underway: Rc<Cell<tilo_session_core::arrangement::Busy>>,

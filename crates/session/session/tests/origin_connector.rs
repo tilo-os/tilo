@@ -397,7 +397,9 @@ fn record_says(session: &Session, text: &str) -> bool {
 
 /// The query a place of `session` shows, by the place whose record is that query: the session's
 /// own arrangement reading, which the shell draws it from.
-fn query_shown(session: &Session) -> Option<tilo_session::arrangement::ArrangementQueryReading> {
+fn query_shown(
+    session: &Session,
+) -> Option<tilo_session_core::arrangement::ArrangementQueryReading> {
     let arrangement = session.arrangement().borrow();
     let reading = arrangement.reading();
     // The place a query stands in shows the query's own resource (`shell:query:<place>`).

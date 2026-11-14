@@ -58,9 +58,13 @@ pub trait AppActions {
     /// What the apps publish through the action host, by app and workspace: those open now and
     /// those that closed after publishing, which a chosen row starts again. `workspace` narrows it
     /// to one workspace, and the empty string asks for every workspace's.
-    fn published(&self, workspace: &str) -> Vec<PublishedActions>;
+    fn published(&self, _workspace: &str) -> Vec<PublishedActions> {
+        Vec::new()
+    }
     /// The invocations the action host follows for the person.
-    fn jobs(&self) -> Vec<JobEntry>;
+    fn jobs(&self) -> Vec<JobEntry> {
+        Vec::new()
+    }
     /// Whether this host carries out `target` itself rather than leaving it to the desk.
     ///
     /// A host that starts windows carries out every row: it reaches an app's window whether the
@@ -101,18 +105,33 @@ pub trait AppActions {
     ///
     /// # Errors
     /// The host's refusal: no such invocation, or it cannot be stopped.
-    fn cancel(&self, app: &str, workspace: &str, invocation: &str) -> Result<(), DoorError>;
+    fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {
+        Err(DoorError::Unavailable {
+            code: "unknown_invocation".into(),
+            reason: "This host runs no invocations".into(),
+        })
+    }
     /// Open `uri` in `workspace`, in the app that takes its scheme: a file,
     /// a Store page, a web address.
     ///
     /// # Errors
     /// Nothing takes it.
-    fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError>;
+    fn open_uri(&self, _workspace: &str, _uri: &str) -> Result<(), DoorError> {
+        Err(DoorError::Unavailable {
+            code: "no_uri_opener".into(),
+            reason: "This host opens no addresses".into(),
+        })
+    }
     /// Start the machine's own app `desktop_id`.
     ///
     /// # Errors
     /// It did not start.
-    fn start_host_app(&self, desktop_id: &str) -> Result<(), DoorError>;
+    fn start_host_app(&self, _desktop_id: &str) -> Result<(), DoorError> {
+        Err(DoorError::Unavailable {
+            code: "no_host_apps".into(),
+            reason: "This host runs no programs of the machine's".into(),
+        })
+    }
 
     /// Open the content whose hash is `hash`, called `name`, in the app its bytes say opens it: a
     /// file of a workspace's tree, which a host that holds the workspace's content carries out. A
@@ -306,7 +325,7 @@ pub(crate) enum FindAnswer {
     },
     /// Text typed on the canvas: the hits in the ranking's order, which the arrangement places
     /// through its own catalogue (never a second reading of what a place can show).
-    Canvas(crate::arrangement::FindDone),
+    Canvas(tilo_session_core::arrangement::FindDone),
 }
 
 /// Answer `answer` with the hits a search has: a door's find as the resources they name, the
@@ -719,7 +738,7 @@ impl SessionSearch {
         needle: &str,
         workspace: Option<&str>,
         within: std::time::Duration,
-        done: crate::arrangement::FindDone,
+        done: tilo_session_core::arrangement::FindDone,
     ) {
         self.find_off_loop(needle, workspace, within, FindAnswer::Canvas(done));
     }
@@ -1627,22 +1646,7 @@ mod tests {
     /// nothing else.
     struct Opening(Rc<std::cell::RefCell<Vec<(String, String)>>>);
 
-    fn unsupported() -> DoorError {
-        DoorError::Unavailable {
-            code: "action_host_unavailable".into(),
-            reason: "The test host runs no actions".into(),
-        }
-    }
-
     impl AppActions for Opening {
-        fn published(&self, _: &str) -> Vec<PublishedActions> {
-            Vec::new()
-        }
-
-        fn jobs(&self) -> Vec<JobEntry> {
-            Vec::new()
-        }
-
         fn invoke(
             &self,
             target: RemoteActionTarget,
@@ -1654,19 +1658,11 @@ mod tests {
             Ok(())
         }
 
-        fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
-            Err(unsupported())
-        }
-
         fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
             self.0
                 .borrow_mut()
                 .push((workspace.to_owned(), uri.to_owned()));
             Ok(())
-        }
-
-        fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
-            Err(unsupported())
         }
     }
 
@@ -2042,14 +2038,6 @@ mod tests {
             matches!(target, Target::Invoke(_))
         }
 
-        fn published(&self, _: &str) -> Vec<PublishedActions> {
-            Vec::new()
-        }
-
-        fn jobs(&self) -> Vec<JobEntry> {
-            Vec::new()
-        }
-
         fn invoke(
             &self,
             target: RemoteActionTarget,
@@ -2062,18 +2050,6 @@ mod tests {
                 arguments,
             ));
             Ok(())
-        }
-
-        fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
-            Err(unsupported())
-        }
-
-        fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
-            Err(unsupported())
-        }
-
-        fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
-            Err(unsupported())
         }
     }
 

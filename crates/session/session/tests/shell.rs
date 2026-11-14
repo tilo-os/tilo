@@ -1349,32 +1349,12 @@ struct Apps {
 }
 
 impl tilo_session::AppActions for Apps {
-    fn published(&self, _: &str) -> Vec<tilo_desktop_search::providers::PublishedActions> {
-        Vec::new()
-    }
-
-    fn jobs(&self) -> Vec<tilo_desktop_search::providers::jobs::JobEntry> {
-        Vec::new()
-    }
-
     fn invoke(
         &self,
         target: tilo_actions::remote::RemoteActionTarget,
         _: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), tilo_actions::DoorError> {
         self.invoked.borrow_mut().push(target);
-        Ok(())
-    }
-
-    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
-        Ok(())
-    }
-
-    fn open_uri(&self, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
-        Ok(())
-    }
-
-    fn start_host_app(&self, _: &str) -> Result<(), tilo_actions::DoorError> {
         Ok(())
     }
 }

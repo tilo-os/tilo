@@ -56,18 +56,6 @@ impl Door {
         self.arrangement.borrow().resources()
     }
 
-    /// Where what it publishes stands ([`Arrangement::revision`]).
-    #[must_use]
-    pub fn revision(&self) -> u64 {
-        self.arrangement.borrow().revision()
-    }
-
-    /// The names an assistive technology reads for what it publishes: none of its own.
-    #[must_use]
-    pub fn accessible_labels(&self) -> Vec<String> {
-        Vec::new()
-    }
-
     /// Carry out `address` with `arguments`.
     ///
     /// # Errors
@@ -351,5 +339,39 @@ impl Door {
     /// The person whose arrangement it is.
     fn person(&self) -> String {
         self.arrangement.borrow().person().to_owned()
+    }
+}
+
+impl crate::door::Published for Door {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        Self::resources(self)
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.arrangement.borrow().revision())
+    }
+
+    fn invoke(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, Json>,
+        _look: &mut crate::door::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        Self::invoke(self, address, arguments)
+    }
+
+    fn invoke_as(
+        &mut self,
+        actor: &str,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, Json>,
+        _look: &mut crate::door::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        Self::invoke_as(self, actor, address, arguments)
+    }
+
+    /// The names an assistive technology reads for what it publishes: none of its own.
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
     }
 }

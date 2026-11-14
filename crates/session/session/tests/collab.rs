@@ -30,8 +30,6 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_desktop_search::SHOW_PEOPLE;
-use tilo_desktop_search::providers::PublishedActions;
-use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_session::sync::{Client, Event, OwnPresence};
 use tilo_session::{AppActions, Options, Session};
 
@@ -313,28 +311,8 @@ struct Host {
 }
 
 impl AppActions for Host {
-    fn published(&self, _: &str) -> Vec<PublishedActions> {
-        Vec::new()
-    }
-
-    fn jobs(&self) -> Vec<JobEntry> {
-        Vec::new()
-    }
-
     fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), DoorError> {
         self.invoked.borrow_mut().push((target, arguments));
-        Ok(())
-    }
-
-    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
-        Ok(())
-    }
-
-    fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
-        Ok(())
-    }
-
-    fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
         Ok(())
     }
 }

@@ -25,8 +25,6 @@ use tilo_actions::DoorError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
-use tilo_desktop_search::providers::PublishedActions;
-use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_quick_settings::RowPart;
 use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, SOUND_KEY};
 use tilo_session::platform::fabric::SpeakerFabricState;
@@ -373,28 +371,8 @@ struct Host {
 }
 
 impl AppActions for Host {
-    fn published(&self, _: &str) -> Vec<PublishedActions> {
-        Vec::new()
-    }
-
-    fn jobs(&self) -> Vec<JobEntry> {
-        Vec::new()
-    }
-
     fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), DoorError> {
         self.invoked.borrow_mut().push((target, arguments));
-        Ok(())
-    }
-
-    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
-        Ok(())
-    }
-
-    fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
-        Ok(())
-    }
-
-    fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
         Ok(())
     }
 }

@@ -29,7 +29,8 @@ pub(super) fn with_turn_beside(
     arguments: &serde_json::Map<String, serde_json::Value>,
     beside: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let system_open = address.resource == crate::arrangement::RESOURCE && address.action == "open";
+    let system_open =
+        address.resource == tilo_session_core::arrangement::RESOURCE && address.action == "open";
     if !system_open || beside.is_empty() || arguments.contains_key("beside") {
         return arguments.clone();
     }

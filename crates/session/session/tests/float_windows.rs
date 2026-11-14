@@ -25,9 +25,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tilo_compositor::InputEvent;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
-use tilo_session::arrangement::StripReading;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
+use tilo_session_core::arrangement::StripReading;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 
 use crate::common::until;

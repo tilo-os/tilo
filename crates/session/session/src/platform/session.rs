@@ -11,6 +11,7 @@ use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{
     Compositor, DisplayConfig, Error, LoopTurns, NestedConfig, OutputConfig, WindowPolicy,
 };
+use tilo_session_core::arrangement;
 
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
@@ -345,13 +346,20 @@ impl Session {
             handle.replace_tree(tree);
         }
         // The person's arrangement: the desk this session holds, whose layout the workspaces keep.
-        let arrangement =
-            crate::arrangement::open(&options.person, handle.clone(), Rc::clone(&desktops));
-        let arrangement = Rc::new(RefCell::new(arrangement));
+        let arrangement = Rc::new(RefCell::new(arrangement::Arrangement::new(
+            &options.person,
+            handle.clone(),
+            Rc::new(crate::shared_desktop::Steps::new(
+                Rc::clone(&desktops),
+                handle.clone(),
+            )),
+            Rc::new(crate::app_names::window_name),
+            Rc::new(crate::i18n::word),
+        )));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
         // reads before it moves anything.
-        let busy = Rc::new(Cell::new(crate::arrangement::Busy::default()));
+        let busy = Rc::new(Cell::new(arrangement::Busy::default()));
         let underway = Rc::clone(&busy);
         // The one search text typed on the canvas places through: the
         // session search's own, the same `find` the palette and an agent's
@@ -363,16 +371,16 @@ impl Session {
         // sources answer on their own threads, and what they found reaches `done` on a later pass,
         // where the place stands. A source that never answers is cut off at the canvas's own
         // deadline with what is in, so a wedged index costs the person a place, never a frame.
-        let find: crate::arrangement::Find = {
+        let find: arrangement::Find = {
             let search = Rc::clone(&session_search);
-            Rc::new(move |needle: &str, done: crate::arrangement::FindDone| {
+            Rc::new(move |needle: &str, done: arrangement::FindDone| {
                 let Some(search) = search.get() else {
                     done(Vec::new());
                     return;
                 };
                 // What the text finds is what the arrangement places, through its own catalogue:
                 // the hits reach the door's callback, which places what a place can show.
-                search.place_soon(needle, None, crate::arrangement::canvas_find_within(), done);
+                search.place_soon(needle, None, arrangement::canvas_find_within(), done);
             })
         };
         // The conversations this session's agents answer in, and the agents each workspace keeps,
@@ -388,7 +396,7 @@ impl Session {
         // A cell the closure reads the session's services through, filled once they are mounted.
         let origin_services: Rc<std::cell::OnceCell<Rc<RefCell<tilo_service::Services>>>> =
             Rc::default();
-        let ask_origin: crate::arrangement::AskOrigin = {
+        let ask_origin: arrangement::AskOrigin = {
             let search = Rc::clone(&session_search);
             let services = Rc::clone(&origin_services);
             Rc::new(move |text: &str| {
@@ -459,7 +467,7 @@ impl Session {
         // the agent they keep in the workspace in front — a new one where they keep none — through
         // `session:send-to#send`, so it lands in their conversation with it exactly as a send-to
         // box's message does, and Chat opens it.
-        let ask: crate::arrangement::Ask = {
+        let ask: arrangement::Ask = {
             let handle = handle.clone();
             let person = options.person.clone();
             let agents = Rc::clone(&agents);
@@ -489,15 +497,13 @@ impl Session {
                 }
             })
         };
-        doors.add(Rc::new(RefCell::new(
-            crate::arrangement::ArrangementDoor::new(
-                Rc::clone(&arrangement),
-                Rc::new(move || underway.get()),
-                find.clone(),
-                ask,
-                ask_origin,
-            ),
-        )));
+        doors.add(Rc::new(RefCell::new(arrangement::Door::new(
+            Rc::clone(&arrangement),
+            Rc::new(move || underway.get()),
+            find.clone(),
+            ask,
+            ask_origin,
+        ))));
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
         // the pictures this device kept for them until the setting changes.
@@ -2211,7 +2217,7 @@ impl Session {
 
     /// The person's arrangement: the desk this session holds, with its history and undo.
     #[must_use]
-    pub fn arrangement(&self) -> &Rc<RefCell<crate::arrangement::Arrangement>> {
+    pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement
     }
 
@@ -2259,7 +2265,7 @@ impl Session {
     /// # Errors
     /// The door's refusal: there is no step to take back.
     pub fn undo_arrangement(&mut self) -> Result<(), DoorError> {
-        let address = ActionAddress::new(crate::arrangement::RECORD_RESOURCE, "undo");
+        let address = ActionAddress::new(arrangement::RECORD_RESOURCE, "undo");
         self.shared.doors.invoke(
             &address,
             &serde_json::Map::new(),

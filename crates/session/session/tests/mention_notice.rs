@@ -22,7 +22,6 @@ use automerge::{AutoCommit, ObjType, ROOT};
 use durable_store::{StorageKey, WriteOp};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{RemoteActionTarget, application_provider, application_provider_record};
-use tilo_desktop_search::providers::PublishedActions;
 use tilo_session::platform::Store;
 use tilo_session::platform::notice::OPEN_ACTION;
 use tilo_session::{AppActions, Options, Records, SearchOptions};
@@ -114,10 +113,6 @@ struct Opens(
 );
 
 impl AppActions for Opens {
-    fn published(&self, _workspace: &str) -> Vec<PublishedActions> {
-        Vec::new()
-    }
-
     fn invoke(
         &self,
         target: RemoteActionTarget,
@@ -125,22 +120,6 @@ impl AppActions for Opens {
     ) -> Result<(), tilo_actions::DoorError> {
         self.0.lock().expect("the opens").push((target, arguments));
         Ok(())
-    }
-
-    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
-        Err(tilo_actions::DoorError::Unknown(ActionAddress::new("", "")))
-    }
-
-    fn open_uri(&self, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
-        Err(tilo_actions::DoorError::Unknown(ActionAddress::new("", "")))
-    }
-
-    fn start_host_app(&self, _: &str) -> Result<(), tilo_actions::DoorError> {
-        Err(tilo_actions::DoorError::Unknown(ActionAddress::new("", "")))
-    }
-
-    fn jobs(&self) -> Vec<tilo_desktop_search::providers::jobs::JobEntry> {
-        Vec::new()
     }
 }
 

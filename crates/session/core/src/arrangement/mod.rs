@@ -18,7 +18,7 @@ use tilo_actions::ResourceSpec;
 use tilo_actions::remote::session_actions;
 use tilo_desktop_model::{
     ArrangementKind, FloatPlace, GroupId, Layout, Strip, StripId, Tab, TabId, TileContent,
-    WindowGroup, WindowWidth, WorkspaceId,
+    WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopHandle;
 
@@ -248,7 +248,7 @@ pub enum ArrangementAction {
     },
     /// Ask the app the query `place` shows again for what the person typed: the query goes back to
     /// searching and the app's search action runs once more. Resolved where the app's action is
-    /// (`ArrangementDoor`), never in the record: the record holds no running query. Appended last.
+    /// ([`Door`]), never in the record: the record holds no running query. Appended last.
     RetryQuery { place: u64 },
 }
 
@@ -1052,51 +1052,6 @@ impl Arrangement {
         })
     }
 
-    /// Show the resource `resource` as the app the session itself runs shows it
-    /// (`docs/designs/app-language/one-app-model.md` §3): a place of the person's arrangement in
-    /// `workspace`, drawn by the shell from what the session publishes, exactly as a place made by
-    /// `place` is. There is no window process behind it — the place's frame, bar and tabs are the
-    /// shell's.
-    ///
-    /// A workspace that already holds a place of `resource` brings that place forward rather than
-    /// standing a second one: opening an app the person already has open raises what shows it.
-    ///
-    /// `resource` and `view` are placed as `place` places them: it must be one what the session
-    /// publishes now ([`Catalog`]), and `view` empty shows its primary view.
-    ///
-    /// Returns the place's id, or `None` when the workspace already held one.
-    ///
-    /// # Errors
-    /// The workspace is not on this layout, or `resource` names nothing published.
-    pub fn place_root(
-        &mut self,
-        asked: &str,
-        workspace: WorkspaceId,
-        resource: &str,
-        view: &str,
-    ) -> Result<Option<u64>, String> {
-        if let Some(held) = self.place_in(workspace, resource) {
-            self.bring_forward(asked, held, Busy::default())?;
-            return Ok(None);
-        }
-        let surface = self.surface_on(Some(workspace), None)?;
-        let action = ArrangementAction::Place {
-            workspace: surface.workspace,
-            row: surface.row,
-            strip: surface.strip,
-            place: surface.place,
-            resource: resource.to_owned(),
-            view: view.to_owned(),
-            x: 0,
-            y: 0,
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
-            float: None,
-        };
-        self.ask(asked, action, Busy::default())?;
-        Ok(Some(surface.place))
-    }
-
     /// Bring the place `place` forward as `asked`'s step, for a caller that is raising what
     /// already stands rather than making it: a place already in front is where it should be, so
     /// the activation that would refuse ("that place is in front already") is no failure — a
@@ -1180,22 +1135,6 @@ impl Arrangement {
         };
         self.ask(asked, action, Busy::default())?;
         Ok(Some(surface.place))
-    }
-
-    /// The place of `workspace` that already shows `resource`, if one
-    /// stands: what opening an app the workspace already shows brings forward.
-    fn place_in(&self, workspace: WorkspaceId, resource: &str) -> Option<u64> {
-        let records = self.records();
-        self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .filter(|held| held.id() == workspace)
-                .flat_map(|held| held.strips.iter())
-                .flat_map(|row| row.window_groups.iter())
-                .flat_map(|group| group.tabs.iter())
-                .find(|tab| records.get(&tab.id) == Some(&resource.to_owned()))
-                .map(|tab| tab.id)
-        })
     }
 
     /// The arrangement as a shell's views read it: every workspace, row, strip and place, each by
@@ -1587,7 +1526,7 @@ fn change(
             resource,
             view,
         } => show_at(tree, catalog, *place, resource, view),
-        // Resolved where the app's own search action is (`ArrangementDoor`), never in the record.
+        // Resolved where the app's own search action is ([`Door`]), never in the record.
         ArrangementAction::RetryQuery { .. } => {
             Err("a retried search is resolved before it reaches the record".into())
         }
@@ -1653,41 +1592,14 @@ fn pin(tree: &mut Layout, place: u64, pinned: bool) -> Result<bool, String> {
 
 /// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the layout changed.
 fn position(tree: &mut Layout, place: u64, x: i32, y: i32) -> Result<bool, String> {
-    let Some((workspace, row, group, _)) = locate(tree, place) else {
-        return Err("that place is not in the arrangement".into());
-    };
-    let Some(id) = tree
-        .workspaces
-        .get(workspace)
-        .and_then(|held| held.strips.get(row))
-        .and_then(|row| row.window_groups.get(group))
-        .map(|group| group.id)
-    else {
-        return Err("that place is not in the arrangement".into());
-    };
-    let Some(held) = tree.workspaces.get_mut(workspace) else {
-        return Err("that place is not in the arrangement".into());
-    };
-    Ok(held.arrangement.set_position(id, x, y))
+    let (held, group) = holding(tree, place)?;
+    Ok(held.arrangement.set_position(group, x, y))
 }
 
 /// Float the place `place` above its workspace's windows at `float` .
 fn float_place(tree: &mut Layout, place: u64, float: FloatPlace) -> Result<bool, String> {
-    let Some((workspace, row, group, _)) = locate(tree, place) else {
-        return Err("that place is not in the arrangement".into());
-    };
-    let Some(held) = tree.workspaces.get_mut(workspace) else {
-        return Err("that place is not in the arrangement".into());
-    };
-    let Some(id) = held
-        .strips
-        .get(row)
-        .and_then(|strip| strip.window_groups.get(group))
-        .map(|group| group.id)
-    else {
-        return Err("that place is not in the arrangement".into());
-    };
-    Ok(held.arrangement.set_float(id, Some(float)))
+    let (held, group) = holding(tree, place)?;
+    Ok(held.arrangement.set_float(group, Some(float)))
 }
 
 /// Snap the floating place `place` back among its workspace's windows,
@@ -1700,26 +1612,28 @@ fn snap_back(
     before: Option<u64>,
     by_the_person: bool,
 ) -> Result<bool, String> {
-    let Some((workspace, at, group, _)) = locate(tree, place) else {
-        return Err("that place is not in the arrangement".into());
-    };
-    let Some(id) = tree
-        .workspaces
-        .get(workspace)
-        .and_then(|held| held.strips.get(at))
-        .and_then(|strip| strip.window_groups.get(group))
-        .map(|group| group.id)
-    else {
-        return Err("that place is not in the arrangement".into());
-    };
-    let mut changed = match tree.workspaces.get_mut(workspace) {
-        Some(held) => held.arrangement.set_float(id, None),
-        None => return Err("that place is not in the arrangement".into()),
-    };
+    let (held, group) = holding(tree, place)?;
+    let mut changed = held.arrangement.set_float(group, None);
     if let Some(row) = row {
         changed |= move_place(tree, place, StripId(row), before, None, by_the_person)?;
     }
     Ok(changed)
+}
+
+/// The workspace of `tree` holding the window `place`, and the group it stands in.
+fn holding(tree: &mut Layout, place: u64) -> Result<(&mut Workspace, GroupId), String> {
+    tree.workspaces
+        .iter_mut()
+        .find_map(|held| {
+            let group = held
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|tab| tab.id == place))?
+                .id;
+            Some((held, group))
+        })
+        .ok_or_else(|| "that place is not in the arrangement".to_owned())
 }
 
 /// The window `place` and where it stands in `tree`: its workspace, its row,

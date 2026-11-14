@@ -22,6 +22,7 @@
 
 use std::rc::Rc;
 use std::time::Duration;
+use tilo_session_core::arrangement;
 
 use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec};
 use tilo_compositor::OutputConfig;
@@ -139,7 +140,7 @@ fn settle(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
 
 /// The place `key` stands as, once the workspace holds the record it shows: a place's record is the
 /// layout's, which the workspace has a look after the action.
-fn placed(session: &mut Session, key: u64) -> tilo_session::arrangement::PlaceReading {
+fn placed(session: &mut Session, key: u64) -> arrangement::PlaceReading {
     crate::common::wait_for(
         session,
         "the place's record to reach the workspace",
@@ -148,12 +149,12 @@ fn placed(session: &mut Session, key: u64) -> tilo_session::arrangement::PlaceRe
 }
 
 /// The arrangement the session's desk holds now, as a shell reads it.
-fn arrangement(session: &Session) -> tilo_session::arrangement::Reading {
+fn arrangement(session: &Session) -> arrangement::Reading {
     session.arrangement().borrow().reading()
 }
 
 /// The place of the arrangement `key` names.
-fn place_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::PlaceReading> {
+fn place_of(session: &Session, key: u64) -> Option<arrangement::PlaceReading> {
     let key = key.to_string();
     arrangement(session)
         .places
@@ -162,7 +163,7 @@ fn place_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::Pl
 }
 
 /// The strip of the arrangement `key` names.
-fn strip_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+fn strip_of(session: &Session, key: u64) -> Option<arrangement::StripReading> {
     let key = key.to_string();
     arrangement(session)
         .strips

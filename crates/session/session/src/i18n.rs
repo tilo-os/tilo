@@ -15,6 +15,7 @@ ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// The message `key` in the person's language with `args`, and `source` where the catalogue holds
 /// no such message: what a host says for a thing the catalogue has no word for.
+#[cfg(target_os = "linux")]
 pub(crate) fn word(key: &str, args: &[(&str, String)], source: &str) -> String {
     let args: Vec<(&str, ui::i18n::ArgValue)> = args
         .iter()

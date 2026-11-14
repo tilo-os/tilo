@@ -6,7 +6,8 @@ use crate::platform::surfaces::WidgetHost;
 use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::Seat as _;
 
-use crate::{Shared, arrangement, workspace_settings};
+use crate::{Shared, workspace_settings};
+use tilo_session_core::arrangement;
 
 impl Shared {
     /// Keep what this device shows: the workspace in front and the displays' partition, so the next
@@ -390,7 +391,8 @@ impl Shared {
                 }
                 arguments
             };
-            let address = tilo_actions::ActionAddress::new(crate::arrangement::RESOURCE, "open");
+            let address =
+                tilo_actions::ActionAddress::new(tilo_session_core::arrangement::RESOURCE, "open");
             let run = self.doors.invoke_as(
                 &invoker.key(),
                 &address,

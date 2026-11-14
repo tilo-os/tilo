@@ -28,6 +28,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
+use tilo_session_core::arrangement;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
@@ -735,7 +736,7 @@ pub fn repl_session(
 
 /// The person's arrangement as a shell reads it: the desk as it stands now,
 /// every workspace, row, strip and place by key.
-pub fn arrangement(session: &Session) -> tilo_session::arrangement::Reading {
+pub fn arrangement(session: &Session) -> arrangement::Reading {
     session.arrangement().borrow().reading()
 }
 
@@ -745,23 +746,23 @@ pub fn number(key: &str) -> u64 {
 }
 
 /// The places of the arrangement, by key.
-pub fn places(session: &Session) -> Vec<tilo_session::arrangement::PlaceReading> {
+pub fn places(session: &Session) -> Vec<arrangement::PlaceReading> {
     arrangement(session).places
 }
 
 /// The rows of the arrangement, by key.
-pub fn rows(session: &Session) -> Vec<tilo_session::arrangement::RowReading> {
+pub fn rows(session: &Session) -> Vec<arrangement::RowReading> {
     arrangement(session).rows
 }
 
 /// The place of the arrangement `key` names.
-pub fn place(session: &Session, key: u64) -> Option<tilo_session::arrangement::PlaceReading> {
+pub fn place(session: &Session, key: u64) -> Option<arrangement::PlaceReading> {
     let key = key.to_string();
     places(session).into_iter().find(|place| place.key == key)
 }
 
 /// The strip of the arrangement `key` names.
-pub fn strip(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+pub fn strip(session: &Session, key: u64) -> Option<arrangement::StripReading> {
     let key = key.to_string();
     arrangement(session)
         .strips
@@ -770,7 +771,7 @@ pub fn strip(session: &Session, key: u64) -> Option<tilo_session::arrangement::S
 }
 
 /// The strip the place `key` stands in, as the arrangement reads it.
-pub fn strip_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+pub fn strip_of(session: &Session, key: u64) -> Option<arrangement::StripReading> {
     let place = place(session, key)?;
     strip(session, number(&place.strip))
 }

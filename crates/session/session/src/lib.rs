@@ -91,7 +91,6 @@ pub mod app_tabs;
 mod app_tiers;
 #[cfg(target_os = "linux")]
 pub mod apps;
-pub mod arrangement;
 #[cfg(target_os = "linux")]
 mod asks;
 #[cfg(target_os = "linux")]

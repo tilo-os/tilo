@@ -19,6 +19,7 @@
 )]
 
 use std::time::Duration;
+use tilo_session_core::arrangement;
 
 use tilo_compositor::InputEvent;
 use tilo_session::{Options, Session};
@@ -77,7 +78,7 @@ fn undone(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
 }
 
 /// The arrangement the session's desk holds now, as a shell reads it.
-fn arrangement(session: &Session) -> tilo_session::arrangement::Reading {
+fn arrangement(session: &Session) -> arrangement::Reading {
     session.arrangement().borrow().reading()
 }
 
@@ -97,7 +98,7 @@ fn strip_of(session: &Session, tab: u64) -> Option<u64> {
 }
 
 /// The place `tab` is, as the arrangement reads it.
-fn place_of(session: &Session, tab: u64) -> Option<tilo_session::arrangement::PlaceReading> {
+fn place_of(session: &Session, tab: u64) -> Option<arrangement::PlaceReading> {
     let key = tab.to_string();
     arrangement(session)
         .places
@@ -106,7 +107,7 @@ fn place_of(session: &Session, tab: u64) -> Option<tilo_session::arrangement::Pl
 }
 
 /// The strip `strip` is, as the arrangement reads it.
-fn strip_at(session: &Session, strip: u64) -> Option<tilo_session::arrangement::StripReading> {
+fn strip_at(session: &Session, strip: u64) -> Option<arrangement::StripReading> {
     let key = strip.to_string();
     arrangement(session)
         .strips
@@ -221,8 +222,8 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
 }
 
 /// The action that moves `place` to the row `row` .
-fn move_to(place: u64, row: u64) -> tilo_session::arrangement::ArrangementAction {
-    tilo_session::arrangement::ArrangementAction::Move {
+fn move_to(place: u64, row: u64) -> arrangement::ArrangementAction {
+    arrangement::ArrangementAction::Move {
         place,
         row,
         before: None,
@@ -231,16 +232,13 @@ fn move_to(place: u64, row: u64) -> tilo_session::arrangement::ArrangementAction
 }
 
 /// The action that floats `place` where the person let it go.
-fn float_at(
-    place: u64,
-    float: tilo_desktop_model::FloatPlace,
-) -> tilo_session::arrangement::ArrangementAction {
-    tilo_session::arrangement::ArrangementAction::Float { place, float }
+fn float_at(place: u64, float: tilo_desktop_model::FloatPlace) -> arrangement::ArrangementAction {
+    arrangement::ArrangementAction::Float { place, float }
 }
 
 /// The action that snaps the floating `place` back where it stands.
-fn snap_back(place: u64) -> tilo_session::arrangement::ArrangementAction {
-    tilo_session::arrangement::ArrangementAction::Snap {
+fn snap_back(place: u64) -> arrangement::ArrangementAction {
+    arrangement::ArrangementAction::Snap {
         place,
         row: None,
         before: None,
@@ -248,7 +246,7 @@ fn snap_back(place: u64) -> tilo_session::arrangement::ArrangementAction {
 }
 
 /// The strip holding `place` , as the arrangement reads it.
-fn strip_reading_of(session: &Session, place: u64) -> tilo_session::arrangement::StripReading {
+fn strip_reading_of(session: &Session, place: u64) -> arrangement::StripReading {
     let strip = strip_of(session, place).expect("it has a strip");
     strip_at(session, strip).expect("the strip is in the record")
 }
@@ -303,7 +301,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
     session
         .invoke_with_actor(
             &person(),
-            tilo_session::arrangement::RECORD_RESOURCE,
+            arrangement::RECORD_RESOURCE,
             "redo",
             &serde_json::json!({}),
         )
@@ -399,17 +397,17 @@ fn published_actions(resource: &tilo_actions::ResourceSpec, out: &mut Vec<(Strin
 
 /// The resource the session publishes the place `key` as: what its own actions are pressed on.
 fn place_resource(key: u64) -> String {
-    tilo_session::arrangement::Item::Place.resource(&key.to_string())
+    arrangement::Item::Place.resource(&key.to_string())
 }
 
 /// The resource the session publishes the row `key` as: what a place's move names.
 fn row_resource(key: u64) -> String {
-    tilo_session::arrangement::Item::Row.resource(&key.to_string())
+    arrangement::Item::Row.resource(&key.to_string())
 }
 
 /// The resource the session publishes the strip `key` as: what its own resize is pressed on.
 fn strip_resource(key: u64) -> String {
-    tilo_session::arrangement::Item::Strip.resource(&key.to_string())
+    arrangement::Item::Strip.resource(&key.to_string())
 }
 
 // (2) An agent moves a window through the published action, attributed to the agent and undoable.

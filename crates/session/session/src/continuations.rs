@@ -11,7 +11,7 @@
 //! That is the one source. The session reads it on every pass, writes the
 //! record beside the window in the workspace's layout
 //! ([`crate::shared_desktop`]), places the window by it in the person's
-//! arrangement ([`crate::arrangement`]) and answers what this device's desk
+//! arrangement ([`tilo_session_core::arrangement`]) and answers what this device's desk
 //! asks of it ([`tilo_desktop_policy::WindowNotes`]). No report from an app
 //! writes a note.
 //!
