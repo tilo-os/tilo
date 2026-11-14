@@ -166,7 +166,7 @@ fn a_filed_report_reads_as_its_message_with_its_picture() {
     let picture = "cd".repeat(32);
     let submission = json!({
         "id": report,
-        "destination": {"room": "workspace", "provider": "demo-chat", "channel": channel},
+        "destination": {"workspace": "workspace", "provider": "demo-chat", "channel": channel},
         "feedback": {
             "text": "Saving does nothing",
             "context": [],
