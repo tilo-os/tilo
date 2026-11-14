@@ -1400,7 +1400,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
     );
 }
 
-/// The live order: one turn asked in a dragged rectangle, whose agent fills it, then a second
+/// The live order: one turn asked in a dragged rectangle, whose agent places a thing, then a second
 /// asked by a click elsewhere. The second turn's agent `place` stands what it shows beside the
 /// second turn: never above the first, and never at the canvas' origin as a place that names no
 /// turn does.
@@ -1445,11 +1445,16 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
         canvas_box(session, "so.tilo.lang.notes")
     });
 
-    point_and_say(
-        &mut session,
-        (x + w * 0.6, y + h * 0.55),
-        "show me my mails",
-    );
+    // A click on free canvas, below everything the first turn stood.
+    let below = places(&session)
+        .iter()
+        .filter_map(|place| canvas_box(&session, &place.record))
+        .map(|(_, py, _, ph)| py + ph)
+        .max()
+        .unwrap_or_default();
+    #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
+    let at = (x + w * 0.5, (y + below as f64 + y + h) / 2.0);
+    point_and_say(&mut session, at, "show me my mails");
     sent(&mut session, 2);
     chat_holds(&session, CONVERSATION, "q10");
     let (bx, by, bw, bh) = wait_for(&mut session, "the second turn placed", |session| {
