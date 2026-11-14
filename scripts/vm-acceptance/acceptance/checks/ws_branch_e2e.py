@@ -867,6 +867,9 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                 "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
                 "| tail -n 30 | cut -c1-300", timeout=120, check=False)
         running = app_processes(ctx, CHAT)
+        # The launcher drops an app's own output: keep it from the session's next start on (WB05
+        # restarts it), so Chat says itself why it shows nothing.
+        keep_app_output(ctx)
         said = crash + "\n" + running + "\n" + said
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; it offers "
@@ -915,6 +918,33 @@ for top in ("/usr/lib/tilo-runtime", "/usr/lib64", "/usr/lib", "/usr/libexec", "
                 pass
 print("verity scan:", found, "file(s) match")
 """
+
+
+DEBUG_OUTPUT_DROPIN = "/etc/systemd/system/tilo-vm-session@.service.d/90-e2e-app-output.conf"
+
+
+def keep_app_output(ctx) -> None:
+    """From the slot session's next start on, its launchers keep each app's own stdout and stderr
+    in the app's data home (`launcher-debug-output.log`) instead of dropping them."""
+    ctx.vm.root_exec(f"mkdir -p \"$(dirname {DEBUG_OUTPUT_DROPIN})\" && "
+                     f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {DEBUG_OUTPUT_DROPIN} && "
+                     "systemctl daemon-reload", timeout=60, check=False)
+
+
+def app_output(ctx, ws: dict, app: str) -> str:
+    """What `app` itself wrote when opened in `ws` (where [`keep_app_output`] took effect), and the
+    end the session saw of it."""
+    try:
+        ae.select_workspace(ctx, ws)
+        open_by_id(ctx, app)
+    except (CheckFailed, Unobservable, VmError) as exc:
+        return f"(it did not open: {exc})"
+    time.sleep(60)
+    return ctx.vm.root_exec(
+        f"grep -c TILO_LAUNCHER_DEBUG_STDERR {DEBUG_OUTPUT_DROPIN} 2>&1; "
+        "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
+        f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
+        "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + app_processes(ctx, app)[-3000:]
 
 
 def app_processes(ctx, app: str) -> str:
@@ -1173,7 +1203,10 @@ def after_restart(ctx, res):
     # takes a line of its own, and its records' history is not held back; the source keeps its chat.
     first = scene["branches"][0]
     if not scene["chat"]:
-        problems.append("Chat after the restart is unobservable: the source's chat was never set up (WB01)")
+        # The session restarted with the launcher keeping its apps' own output (WB01 asked for it):
+        # Chat opened once more says, in its data home, why it shows no window.
+        problems.append("Chat after the restart is unobservable: the source's chat was never set up (WB01); "
+                        f"what Chat itself said, opened again: {app_output(ctx, scene['source'], CHAT)[-4000:]}")
     else:
         try:
             before = chat_says(ctx, first, scene["chat"], "restarted-branch")
