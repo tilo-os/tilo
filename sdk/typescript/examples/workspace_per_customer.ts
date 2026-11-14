@@ -87,6 +87,9 @@ async function attempt(work: () => Promise<unknown>): Promise<string | null> {
 /** Every failure of a step, counted by why. */
 const failed = new Map<string, Map<string, number>>();
 
+/** How long each agent's MCP call took, end to end, in ms. */
+const calls: number[] = [];
+
 /** Count the failures of `step` in `results` (`null` for each that worked), and say them. */
 function failures(step: string, results: (string | null)[]): number {
   const why = new Map<string, number>();
@@ -258,6 +261,7 @@ class Agent {
   }
 
   async post(message: Record<string, unknown>): Promise<McpReply> {
+    const began = performance.now();
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.token}`,
       accept: "application/json",
@@ -272,6 +276,7 @@ class Agent {
       this.session = session;
     }
     const text = await reply.text();
+    calls.push(performance.now() - began);
     let body: Record<string, any> = {};
     try {
       body = text === "" ? {} : JSON.parse(text);
@@ -574,6 +579,20 @@ async function main(): Promise<void> {
   }));
   timings.deleted_keys_stop = report("every key of a deleted workspace stopped", gone);
   timings.deleted_keys_stop_failed = failures("keys of deleted workspaces", gone.results);
+
+  const ordered = [...calls].sort((a, b) => a - b);
+  const callRow = {
+    n: ordered.length,
+    p50_ms: Math.round(quantile(ordered, 0.5)),
+    p95_ms: Math.round(quantile(ordered, 0.95)),
+    p99_ms: Math.round(quantile(ordered, 0.99)),
+    max_ms: Math.round(quantile(ordered, 1)),
+  };
+  say(
+    "agents' calls",
+    `${callRow.n} in all, p50 ${callRow.p50_ms} ms, p95 ${callRow.p95_ms} ms, p99 ${callRow.p99_ms} ms, max ${callRow.max_ms} ms`,
+  );
+  timings.agent_calls = callRow;
 
   const host = sampler.stop();
   const why = Object.fromEntries([...failed].map(([step, reasons]) => [step, Object.fromEntries(reasons)]));

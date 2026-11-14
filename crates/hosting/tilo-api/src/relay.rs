@@ -440,13 +440,25 @@ impl Connection {
     /// one the person does not have is not found, as one never made.
     async fn enter(&self, workspace: &str) -> Result<WorkspaceId, RelayError> {
         let label = self.key.cert().device_label.clone();
+        let began = std::time::Instant::now();
         let Ok(entered) =
             tokio::time::timeout(ENTERING, self.device.enter_workspace(workspace, &label)).await
         else {
+            tracing::warn!(
+                workspace,
+                waited_ms = began.elapsed().as_millis(),
+                "api: a workspace did not admit the key in time"
+            );
             return Err(RelayError::Unavailable(
                 "the workspace did not admit this key in time".to_owned(),
             ));
         };
+        tracing::debug!(
+            workspace,
+            waited_ms = began.elapsed().as_millis(),
+            admitted = entered.is_ok(),
+            "api: a key entered its workspace"
+        );
         entered.map_err(|refusal| match RelayError::from(refusal) {
             // Not theirs, or not one at all: the same answer, so a guess learns nothing.
             RelayError::Refused(_) => RelayError::NotFound,
