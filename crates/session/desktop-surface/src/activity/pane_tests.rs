@@ -1168,10 +1168,22 @@ mod tests {
         );
     }
 
+    /// The half-hour of [`busy_workspace`], read once in Explore: which rows the feed holds, whom
+    /// they are attributed to, when they are stamped, how a capability is worded and how the rows
+    /// band. They are five readings of one pane, each handed it as it was made (`&`), so none
+    /// leaves the next anything; each was a test that built the same workspace and pane again.
     #[test]
-    fn rows_come_from_the_workspaces_own_change_graph() {
+    fn a_busy_workspaces_feed_is_its_own_changes_attributed_stamped_worded_and_banded() {
         let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
+        rows_come_from_the_workspaces_own_change_graph(&pane);
+        the_local_users_own_rows_are_attributed_to_them(&pane);
+        every_row_carries_a_real_timestamp(&pane);
+        a_capability_is_described_in_the_workspaces_vocabulary(&pane);
+        the_workspaces_history_reads_as_bands_rather_than_one_row_per_change(&pane);
+    }
+
+    fn rows_come_from_the_workspaces_own_change_graph(pane: &WorkspaceActivityPane) {
         assert!(
             pane.entries().len() >= 3,
             "the grants, the revoke and the rename stay; setup writes do not, got {}",
@@ -1412,10 +1424,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_local_users_own_rows_are_attributed_to_them() {
-        let (mut tree, _, _) = busy_workspace();
-        let pane = pane_over(&mut tree);
+    fn the_local_users_own_rows_are_attributed_to_them(pane: &WorkspaceActivityPane) {
         let me = crate::activity::testing::LOCAL_USER.to_string();
         assert!(!me.is_empty(), "there is always a local user id");
         assert!(
@@ -1433,11 +1442,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_row_carries_a_real_timestamp() {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a reading the test above makes: the lint exempts a test function's own body only"
+    )]
+    fn every_row_carries_a_real_timestamp(pane: &WorkspaceActivityPane) {
         // The whole date filter rests on this — an epoch row can never be selected by a date range.
-        let (mut tree, _, _) = busy_workspace();
-        let pane = pane_over(&mut tree);
         assert!(!pane.entries().is_empty());
         for e in pane.entries() {
             assert!(
@@ -1721,10 +1731,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_capability_is_described_in_the_workspaces_vocabulary() {
-        let (mut tree, _, _) = busy_workspace();
-        let pane = pane_over(&mut tree);
+    fn a_capability_is_described_in_the_workspaces_vocabulary(pane: &WorkspaceActivityPane) {
         let grant = pane
             .entries()
             .iter()
@@ -1912,10 +1919,9 @@ mod tests {
     // Grouping and names
     // -----------------------------------------------------------------
 
-    #[test]
-    fn the_workspaces_history_reads_as_bands_rather_than_one_row_per_change() {
-        let (mut tree, _, _) = busy_workspace();
-        let pane = pane_over(&mut tree);
+    fn the_workspaces_history_reads_as_bands_rather_than_one_row_per_change(
+        pane: &WorkspaceActivityPane,
+    ) {
         assert!(pane.entries().len() >= 4);
         // Bands, not a wall: every rendered line is either a band header or a change, and there are
         // fewer lines than changes.
