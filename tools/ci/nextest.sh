@@ -111,16 +111,29 @@ if tests tilo-pdf pdf-viewer tilo-thumbnail; then
     export TILO_REQUIRE_PDF_SANDBOX=$pdf_sandbox
 fi
 
+# The program a run was handed, if any: t builds it once in the family's build (t.toml's `starts`)
+# and names it to every shard as NEXTEST_BIN_EXE_<bin>, so a shard builds nothing. Built here
+# instead, every shard of the package compiled the program's ~1,000 units again. A run handed none
+# (a developer's) builds it below.
+# A hand that cannot be run is the handoff's fault, said as such: building here would hide it and
+# compile the program in every shard again (as tools/ci/capability_filter.py answers for the probe).
+handed() { # BIN: its path, or nothing when the run was handed none
+    local path
+    path=$(printenv "NEXTEST_BIN_EXE_$1" || true)
+    if [[ -n $path && ! -x $path ]]; then
+        echo "nextest.sh: NEXTEST_BIN_EXE_$1 names $path, which is not an executable" >&2
+        exit 1
+    fi
+    [[ -z $path ]] || printf '%s' "$path"
+}
+
 # An agent's host answers video renders in the `tilo-video-render` helper, which no
 # package depends on; named explicitly, it is found also where an archive of
 # test binaries runs away from the build directory.
-# A run handed the program already (t builds it once in the family's build, t.toml's `starts`, and
-# names it to every shard as NEXTEST_BIN_EXE_<bin>) builds nothing: built here, every shard of the
-# package compiled its ~1,030 units again.
 if tests tilo-agent-participant; then
-    handed=$(printenv NEXTEST_BIN_EXE_tilo-video-render || true)
-    if [[ -n $handed && -x $handed ]]; then
-        export TILO_VIDEO_RENDER=$handed
+    path=$(handed tilo-video-render)
+    if [[ -n $path ]]; then
+        export TILO_VIDEO_RENDER=$path
     else
         cargo build --locked -p tilo-video-render --bin tilo-video-render
         export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
@@ -128,11 +141,10 @@ if tests tilo-agent-participant; then
 fi
 
 # The app-cli and app-host trust tests execute the installer, which no package
-# depends on. A run handed it already (t's `starts`, NEXTEST_BIN_EXE_tilo-install) has it where the
-# build left it, beside the tests' own build, and builds nothing.
+# depends on. A run handed it has it where the build left it, beside the tests' own build.
 if tests app-cli app-host; then
-    handed=$(printenv NEXTEST_BIN_EXE_tilo-install || true)
-    [[ -n $handed && -x $handed ]] || cargo build --locked -p install --bin tilo-install
+    path=$(handed tilo-install)
+    [[ -n $path ]] || cargo build --locked -p install --bin tilo-install
 fi
 
 # The sign-in and rollback tests observe an emulated TPM, which the builder has
@@ -143,7 +155,8 @@ if tests tilo-auth tilo-rollback tilo-test-env; then
 fi
 
 # pam_tilo's tests load the module as libpam does: the cdylib, which no test
-# binary links and an archive of test binaries does not carry.
+# binary links and an archive of test binaries does not carry. t's `starts` names a `package:bin`
+# only, so it cannot hand a cdylib yet: this is the one program a shard still builds for itself.
 if tests pam-tilo; then
     cargo build --locked -p pam-tilo --lib
     export TILO_PAM_TILO_MODULE="${CARGO_TARGET_DIR:-$root/target}/debug/libpam_tilo.so"

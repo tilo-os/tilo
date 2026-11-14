@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -16,6 +20,18 @@ T_NEXTEST = REPO / "tools" / "ci" / "nextest.sh"
 T_TOML = REPO / "t.toml"
 sys.path.insert(0, str(REPO / "tools" / "ci"))
 import package_features  # noqa: E402
+
+
+def load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# What a `[[cargo]]` family tests, as the nested-sandbox check reads it.
+families = load("nested_sandboxes_test", Path(__file__).with_name("test_nested_sandboxes.py"))
+
 COST_TABLE = REPO / "apps" / "tilolang" / "tests" / "hosted" / "cost.rs"
 # The test binary and module path the file is compiled into: the crate's tests are modules of one
 # `tests/it.rs`, so a test's name carries every module from there down.
@@ -230,6 +246,169 @@ class NextestPolicyTests(unittest.TestCase):
                 self.assertEqual(sorted(",".join(given).split(",")) if given else [],
                                  sorted(expected[1].split(",")) if expected else [])
         self.assertGreater(unified, 0, "the unified families this holds are read")
+
+
+PACKAGE = re.compile(r"package\(\s*([^)\s]+)\s*\)")
+
+
+class SetupHandedProgramTests(unittest.TestCase):
+    """A plain program a nextest setup builds is handed to the shards that need it.
+
+    A setup builds another package's program with tools/build-sibling-binaries.sh, which builds
+    only what the run was not handed: t's family build builds and names what t.toml's `starts` give
+    the tested package. So a `package:bin` a setup names belongs in the `starts` of every package
+    whose tests run that setup, or each shard of them compiles the program again.
+    """
+
+    # What `starts` cannot name yet, so every shard that needs it still builds it: a program its
+    # package only builds with features (`starts` names `package:bin`). Naming the list keeps a
+    # plain program from joining it by accident, and makes leaving one here a decision.
+    BUILT_WITH_FEATURES = {"tilo-relay:tilo-relay=tilo-relay/agents"}
+
+    def config(self) -> dict:
+        return tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
+
+    def setups(self) -> dict[str, list[str]]:
+        """setup name -> the PACKAGE:BIN entries it builds, for the setups that build programs."""
+        builds = {}
+        for name, script in self.config().get("scripts", {}).get("setup", {}).items():
+            command = script["command"]
+            if len(command) > 2 and command[1].endswith("tools/build-sibling-binaries.sh"):
+                builds[name] = command[2:]
+        return builds
+
+    def packages_running(self, setup: str) -> set[str]:
+        """The packages whose tests run `setup`, as the rules that name it say."""
+        packages = set()
+        for profile in ("default", "ci"):
+            for rule in self.config().get("profile", {}).get(profile, {}).get("scripts", []):
+                if rule.get("setup") == setup:
+                    packages |= set(PACKAGE.findall(rule["filter"]))
+        return packages
+
+    def families_testing(self, package: str) -> list[dict]:
+        members = families.workspace_packages()
+        found = []
+        for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
+            tested = families.tested(family, members)
+            if tested and package in tested:
+                found.append(family)
+        return found
+
+    def test_a_plain_program_a_setup_builds_is_in_the_starts_of_the_packages_that_run_it(self):
+        setups = self.setups()
+        self.assertIn("session-siblings", setups, "the setups that build programs are read")
+        checked = 0
+        for name, entries in setups.items():
+            for entry in entries:
+                if "=" in entry:
+                    continue
+                for tested in sorted(self.packages_running(name)):
+                    with self.subTest(setup=name, program=entry, tested=tested):
+                        testing = self.families_testing(tested)
+                        self.assertTrue(testing, f"{tested} is a package a family tests")
+                        for family in testing:
+                            self.assertIn(
+                                entry,
+                                family.get("starts", {}).get(tested, []),
+                                f"t.toml's {family['name']} hands {tested} no {entry}, so every "
+                                "shard of it builds the program again",
+                            )
+                        checked += 1
+        self.assertGreater(checked, 0, "a plain program a setup builds is checked")
+
+    def test_only_a_program_built_with_features_is_left_to_the_shards(self):
+        built_with_features = {
+            entry for entries in self.setups().values() for entry in entries if "=" in entry
+        }
+        self.assertEqual(built_with_features, self.BUILT_WITH_FEATURES)
+
+
+class WrapperHandedProgramTests(unittest.TestCase):
+    """tools/ci/nextest.sh builds only a program the run was not handed.
+
+    t builds the programs a package's tests start once in the family's build (t.toml's `starts`)
+    and names each to every shard as NEXTEST_BIN_EXE_<bin>. A shard that built them again placed
+    the program's ~1,000 compiled units for itself; a run handed none (a developer's) builds it.
+    """
+
+    # The run's cargo argv, as the fake cargo records it: everything after `cargo`.
+    RUN = "nextest run --locked --profile ci -E all() --test it --no-fail-fast"
+    # Package whose shards run the wrapper -> the program they need and the build a run handed
+    # none makes.
+    PROGRAMS = {
+        "tilo-agent-participant": (
+            "tilo-video-render",
+            "build --locked -p tilo-video-render --bin tilo-video-render",
+        ),
+        "app-host": ("tilo-install", "build --locked -p install --bin tilo-install"),
+        "app-cli": ("tilo-install", "build --locked -p install --bin tilo-install"),
+    }
+
+    def run_wrapper(self, packages: str, handed: tuple[str, ...] = (), broken: str = ""):
+        """A shard of PACKAGES as t starts one, through the production wrapper: the result, the
+        cargo invocations it made, the TILO_VIDEO_RENDER each run was given, and where the handed
+        programs are."""
+        with tempfile.TemporaryDirectory() as work:
+            tree, programs = Path(work) / "tree", Path(work) / "bin"
+            (tree / "tools" / "ci").mkdir(parents=True)
+            programs.mkdir()
+            shutil.copy(T_NEXTEST, tree / "tools" / "ci" / "nextest.sh")
+            argv, video = Path(work) / "argv", Path(work) / "video"
+            (programs / "cargo").write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$*" >>"$GIVEN"\n'
+                'printf "%s\\n" "${TILO_VIDEO_RENDER:-}" >>"$VIDEO"\n'
+            )
+            (programs / "cargo").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "T_NEXTEST_PACKAGES": packages, "GIVEN": str(argv), "VIDEO": str(video)}
+            paths = {}
+            for name in handed:
+                path = Path(work) / name
+                path.write_text("#!/bin/sh\n")
+                path.chmod(0o755)
+                paths[name] = str(path)
+                env[f"NEXTEST_BIN_EXE_{name}"] = str(path)
+            if broken:
+                path = Path(work) / "not-executable"
+                path.write_text("")
+                env[f"NEXTEST_BIN_EXE_{broken}"] = str(path)
+            command = ["cargo", "nextest", "run", "--locked", "--profile", "ci",
+                       "-E", "all()", "--test", "it"]
+            result = subprocess.run(["bash", str(tree / "tools" / "ci" / "nextest.sh"), *command],
+                                    env=env, capture_output=True, text=True, check=False)
+            ran = argv.read_text().splitlines() if argv.exists() else []
+            named = video.read_text().splitlines() if video.exists() else []
+            return result, ran, named, paths
+
+    def test_a_handed_program_is_not_built(self):
+        for package, (program, _) in self.PROGRAMS.items():
+            with self.subTest(package=package, program=program):
+                result, ran, _, _ = self.run_wrapper(package, handed=(program,))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(ran, [self.RUN], "the run, and no build")
+
+    def test_a_handed_render_helper_is_named_to_the_run(self):
+        result, _, named, paths = self.run_wrapper("tilo-agent-participant",
+                                                  handed=("tilo-video-render",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(named, [paths["tilo-video-render"]])
+
+    def test_a_run_not_handed_builds_the_program(self):
+        # A developer's run has no NEXTEST_BIN_EXE_<bin>: it builds the program, as it always did.
+        for package, (_, build) in self.PROGRAMS.items():
+            with self.subTest(package=package):
+                result, ran, _, _ = self.run_wrapper(package)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(ran, [build, self.RUN])
+
+    def test_a_handed_program_that_cannot_run_fails_instead_of_building(self):
+        # Building here would hide a broken handoff and compile the program in every shard again.
+        result, ran, _, _ = self.run_wrapper("app-host", broken="tilo-install")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NEXTEST_BIN_EXE_tilo-install", result.stderr)
+        self.assertEqual(ran, [])
+
 
 if __name__ == "__main__":
     unittest.main()
