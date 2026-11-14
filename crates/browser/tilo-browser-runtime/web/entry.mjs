@@ -250,6 +250,12 @@ async function recordArrived(peer, {app, record}) {
  * page's choice, never the link's. */
 export const HTML_APPS = new Set(['so.tilo.notes']);
 
+/** The apps whose window shows what only the desktop keeps: Activity reads
+ * the workspace's history, which the desktop's session gathers from every
+ * window and record. A page showing one app alone mounts no session, so a
+ * link opening one of these alone opens it on the desktop instead. */
+export const DESKTOP_APPS = new Set(['so.tilo.activity']);
+
 /** Mount what `route` shows, then show its target. `directory` is what the
  * desktop's workspace directory browses (`deps.directory`), handed to
  * whichever mount draws the shell: the page's own, or a peer's. */
@@ -328,6 +334,12 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   } catch (error) {
     say(error?.message ?? String(error));
     throw error;
+  }
+  // Activity alone would have no history to show: the desktop page opens
+  // it, before this page asks the workspace to let it in.
+  if (route.mode === 'app' && DESKTOP_APPS.has(route.target.app)) {
+    window.location.replace((await linked).format({...route, mode: 'desktop'}));
+    return null;
   }
   // A link whose workspace reads but whose document (or item, or view) is
   // damaged names that workspace: it opens, and the page says what of the

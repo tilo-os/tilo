@@ -259,6 +259,31 @@ test('the catalogue is never read before admission', async () => {
   assert.deepEqual(order, ['accounts', 'admitted', 'ready', 'record', 'mount', 'catalogue']);
 });
 
+test('a link opening Activity alone opens it on the desktop, before admission', async () => {
+  const order = [];
+  const target = {scope: {kind: 'room', host: 'https://h.example', room: 'r'}, app: 'so.tilo.activity', record: ''};
+  const runtime = runtimeFake({
+    parseLink: () => JSON.stringify({mode: 'app', target}),
+    formatLink: route => { order.push(JSON.parse(route)); return 'https://tilo.so/#/@h.example/w/r/so.tilo.activity/-'; },
+  });
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {
+      href: 'https://tilo.so/app/#/@h.example/w/r/so.tilo.activity/-', hash: '#/@h.example/w/r/so.tilo.activity/-',
+      replace: url => order.push(url),
+    },
+    history: {replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime, fetch: async () => ({ok: false}),
+    readAccounts: async () => { order.push('accounts'); return []; },
+    connectMember: async () => { order.push('admitted'); return null; },
+  };
+  assert.equal(await boot({mode: 'app', window, deps}), null);
+  assert.deepEqual(order, [{mode: 'desktop', target}, 'https://tilo.so/#/@h.example/w/r/so.tilo.activity/-']);
+});
+
 test('the home workspace opens through its host door under its listed name, and the address becomes its canonical link', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const formatted = [];
