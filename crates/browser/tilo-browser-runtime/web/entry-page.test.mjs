@@ -111,7 +111,8 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
     .replace('hostToReconnect, joinGranted, joinViaHost,', 'hostToReconnect, joinGranted,')
-    .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst PAGE_BUILD')
+    .replace('identityProfile, inspectInvitation, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, openInvitation,')
+    .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst joinWorkspace = (...args) => globalThis.__entryPageFixture.joinWorkspace(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
   const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
@@ -469,6 +470,27 @@ test('the page that loads after the gesture joins as this browser’s own person
   assert.match(joined[0].displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
   assert.deepEqual(requests, [], 'no request was made for a visitor');
   assert.equal(session.has('tilo-embed-join'), false, 'the gesture is spent');
+});
+
+test('a person who joins through an invitation joins under the name their key draws', async () => {
+  globalThis.window = globalThis;
+  globalThis.parent = {postMessage: () => {}};
+  const joined = [];
+  const {failure} = await fixture({boot: async (options, booted) => {
+    const {deps} = options;
+    deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/'}});
+    globalThis.__entryPageFixture.joinWorkspace = async options => { joined.push(options); return {workspace: 'WORKSPACE'}; };
+    await deps.joinWorkspace({origin: 'https://home.example', invitation: 'INVITATION'});
+    return null;
+  }});
+  assert.equal(failure, null);
+  assert.equal(joined.length, 1);
+  assert.equal(joined[0].identity.userPublicKey, USER);
+  // Never nameless, so nobody here sees them as a guest: the same name the
+  // page's own door gives this person.
+  assert.match(joined[0].displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  const {defaultDisplayName} = await import('./workspaces.mjs');
+  assert.equal(joined[0].displayName, defaultDisplayName(USER));
 });
 
 test('an uncaught page error reaches the door the site names', async () => {

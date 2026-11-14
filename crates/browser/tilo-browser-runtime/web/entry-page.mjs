@@ -1083,7 +1083,11 @@ export async function startEntryPage({mode}) {
     },
     joinWorkspace: async options => {
       const identity = await browserPerson();
-      const peer = await joinWorkspace({...options, identity, runtime});
+      // A person joins under a name from their first moment in a workspace:
+      // the one they chose here, else the one their key draws, as the page's
+      // own door names them. Nobody shows as a guest while the name catches up.
+      displayName = options.displayName || chosenDisplayName(identity?.userPublicKey) || defaultDisplayName(identity?.userPublicKey);
+      const peer = await joinWorkspace({...options, identity, runtime, displayName});
       // Kept, so the next visit reconnects as the person let in.
       keepJoinedHost({origin: options.origin, room: peer.workspace, userPublicKey: identity.userPublicKey});
       return peer;

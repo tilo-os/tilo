@@ -510,6 +510,14 @@ pub(crate) fn take_narrated(peer: u32, workspace: &str) -> Vec<tilo_actions::Sem
     })
 }
 
+/// This page's own word, as its session says it, before the page takes part
+/// in any workspace: the name the person joined under is the page's from the
+/// moment its peer starts, so nothing shows them as a guest while the
+/// workspace's board catches up ([`view`]).
+pub(crate) fn own(peer: u32) -> Option<Shown> {
+    PAGES.with_borrow(|pages| pages.get(&peer).map(|page| page.client.own_here()))
+}
+
 /// What `peer`'s board for `workspace` holds: what the mount draws and lists. `None` while this page
 /// takes no part there.
 pub(crate) fn view(peer: u32, workspace: &str) -> Option<BoardView> {

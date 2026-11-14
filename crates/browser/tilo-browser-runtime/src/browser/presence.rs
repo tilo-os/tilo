@@ -92,9 +92,22 @@ impl Mount {
         };
         let workspace = self.workspace.clone();
         let Some(view) = crate::peer_sync::view(peer, &workspace) else {
+            // Not in the workspace's board yet: the page still names its own
+            // person as the session does, so the bar never shows them as a
+            // guest while the board catches up.
+            self.own_before_board(peer);
             return;
         };
-        if view.revision != self.presence.revision {
+        // A board nobody has said anything on yet stands at the revision a
+        // desktop starts from, so the page's own word is taken while the
+        // desktop has none: until then the bar would show its person as a
+        // guest.
+        let unnamed = self
+            .desktop
+            .as_ref()
+            .is_some_and(|desktop| desktop.here.borrow().own_label().is_none())
+            && !view.own.label.trim().is_empty();
+        if view.revision != self.presence.revision || unnamed {
             self.presence.revision = view.revision;
             self.here_from(&view);
             self.names_from(&view);
@@ -140,6 +153,29 @@ impl Mount {
         if self.frame.follow_view(&followed, &mut self.followed_view) {
             self.pending = true;
             self.window.request_redraw();
+        }
+    }
+
+    /// This page's own person, as its session names them, while the
+    /// workspace's board has not come in: who else is here is not known yet.
+    fn own_before_board(&mut self, peer: u32) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        if desktop.here.borrow().own_label().is_some() {
+            return;
+        }
+        let Some(own) = crate::peer_sync::own(peer) else {
+            return;
+        };
+        let own = LiveMember::of(&own);
+        if own.label.trim().is_empty() {
+            return;
+        }
+        let changed = desktop.here.borrow_mut().set_members(Some(own), None);
+        if changed {
+            desktop.shared.wake();
+            self.apply_here();
         }
     }
 
