@@ -1,6 +1,7 @@
 // Adapted from wasm-split-cli 0.7.10 (Dioxus, https://github.com/DioxusLabs/dioxus,
 // MIT OR Apache-2.0); see ../PROVENANCE.md for what changed.
 
+use crate::cache::{EmitCache, Key};
 use crate::data::{Claimant, DataLayout, DataPlan};
 use anyhow::{Context, Result};
 use itertools::Itertools;
@@ -55,8 +56,17 @@ pub struct Splitter<'a> {
     data_sizes: HashMap<usize, usize>,
 }
 
+/// What every emission's key starts from (`Splitter::emit_key_base`), and
+/// the bound module's function bodies, by defined index.
+struct KeyBase {
+    key: Key,
+    bodies: Vec<Range<usize>>,
+    imported: usize,
+}
+
 /// What one split module or shared chunk defines, imports and deletes (in
 /// the source module's ids), and the function bodies it is parsed with.
+#[derive(Clone)]
 struct SplitParts {
     unique_symbols: HashSet<Node>,
     symbols_to_import: HashSet<Node>,
@@ -87,6 +97,15 @@ const EMIT_MEMORY_BUDGET: u64 = 16 << 30;
 /// to be a chunk of its own; smaller groups share one chunk, so a module
 /// does not fetch hundreds of tiny files.
 const MIN_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Report on stderr how long a step of the split took, so a slow split
+/// says where its time went.
+fn took(step: &str, started: std::time::Instant) {
+    eprintln!(
+        "wasm-split: {step} in {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+}
 
 /// Bytes this process can still allocate: what its cgroup's memory limit
 /// leaves, or the system's available memory, whichever is less. `None` when
@@ -127,6 +146,10 @@ pub struct OutputModules {
 
     /// The chunks that might be imported by the main modules
     pub chunks: Vec<SplitModule>,
+
+    /// How many split modules and chunks were read back from the cache
+    /// rather than emitted.
+    pub reused: usize,
 }
 
 /// A wasm module that was split from the main module.
@@ -159,7 +182,9 @@ impl<'a> Splitter<'a> {
     /// It's important to compile the wasm with --emit-relocs such that the relocations are available
     /// to construct the callgraph.
     pub fn new(original: &'a [u8], bindgened: &'a [u8]) -> Result<Self> {
+        let started = std::time::Instant::now();
         let (module, ids, fns_to_ids) = parse_module_with_ids(bindgened)?;
+        took("parsed the bindgened module", started);
 
         let split_points = accumulate_split_points(&module, &lazy_exports(original)?)?;
         let entry_slots = split_points.iter().map(|split| split.entries.len()).sum();
@@ -183,8 +208,12 @@ impl<'a> Splitter<'a> {
             data_sizes: Default::default(),
         };
 
+        let started = std::time::Instant::now();
         module.build_call_graph()?;
+        took("built the call graph", started);
+        let started = std::time::Instant::now();
         module.build_split_chunks()?;
+        took("grouped the shared code", started);
 
         Ok(module)
     }
@@ -197,30 +226,43 @@ impl<'a> Splitter<'a> {
     /// that will only be removed by the memory-packing step of wasm-opt.
     ///
     /// This returns the list of chunks, an import map, and some javascript to link everything together.
-    pub fn emit(mut self) -> Result<OutputModules> {
+    pub fn emit(self) -> Result<OutputModules> {
+        let cache = EmitCache::from_env()?;
+        self.emit_with(cache.as_ref())
+    }
+
+    /// [`Self::emit`], reading back from `cache` each module emitted before
+    /// from exactly what it is emitted from now, and keeping the others there.
+    pub fn emit_with(mut self, cache: Option<&EmitCache>) -> Result<OutputModules> {
         tracing::info!("Emitting split modules.");
 
         // What each split module holds is settled while the whole program is
         // parsed. The main module is emitted next and takes that parse with
         // it, so the split modules are emitted without it in memory.
+        let started = std::time::Instant::now();
         let chunk_parts = (0..self.chunks.len())
             .map(|idx| self.split_chunk_parts(idx))
             .collect::<Vec<_>>();
         let module_parts = (0..self.split_points.len())
             .map(|idx| self.split_module_parts(idx))
             .collect::<Vec<_>>();
+        took("settled what each module holds", started);
 
         // Which static data each module reaches is read from the code it
         // carries (see data.rs); the main module's is known once it is
         // pruned.
+        let started = std::time::Instant::now();
         let data_layout = DataLayout::new(self.original)?;
         let data_refs = data_layout.function_refs(&self.source_module);
         let data_claimants = self.data_claimants(&chunk_parts, &module_parts);
         let loaded = loaded_with(&module_parts, chunk_parts.len());
+        took("read the static data's references", started);
 
+        let started = std::time::Instant::now();
         let (main, data) =
             self.emit_main_module(&data_layout, &data_refs, data_claimants, &loaded)?;
         let main = merged(main)?;
+        took("emitted the start module", started);
 
         // Each module being emitted holds a parse of its own; run only as
         // many at once as there is memory for.
@@ -235,6 +277,25 @@ impl<'a> Splitter<'a> {
             .clamp(1, cores);
         let count = chunk_parts.len() + module_parts.len();
         let started = std::time::Instant::now();
+        // With WASM_SPLIT_CACHE, a module emitted before from exactly what
+        // this one is emitted from is read back instead (cache.rs).
+        let base = cache.map(|_| self.emit_key_base()).transpose()?;
+        let reused = std::sync::atomic::AtomicUsize::new(0);
+        let cached = |key: Option<&Key>,
+                      emit: &dyn Fn() -> Result<SplitModule>,
+                      held: &dyn Fn(Vec<u8>) -> SplitModule| {
+            let (Some(cache), Some(key)) = (cache, key) else {
+                return emit();
+            };
+            let key = key.finish();
+            if let Some(bytes) = cache.get(&key) {
+                reused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(held(bytes));
+            }
+            let module = emit()?;
+            cache.put(&key, &module.bytes)?;
+            Ok(module)
+        };
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
@@ -243,17 +304,63 @@ impl<'a> Splitter<'a> {
             let chunks = chunk_parts
                 .into_par_iter()
                 .enumerate()
-                .map(|(idx, parts)| self.emit_split_chunk(idx, parts, &data).and_then(merged))
+                .map(|(idx, parts)| {
+                    let key = base
+                        .as_ref()
+                        .map(|base| self.emit_key(base, idx, None, &parts, &data));
+                    let held = |bytes| SplitModule {
+                        bytes,
+                        module_name: "split".to_string(),
+                        component_name: None,
+                        relies_on_chunks: Default::default(),
+                        hash_id: None,
+                    };
+                    cached(
+                        key.as_ref(),
+                        &|| {
+                            self.emit_split_chunk(idx, parts.clone(), &data)
+                                .and_then(merged)
+                        },
+                        &held,
+                    )
+                })
                 .collect::<Result<Vec<SplitModule>>>();
             let modules = module_parts
                 .into_par_iter()
                 .enumerate()
-                .map(|(idx, parts)| self.emit_split_module(idx, parts, &data).and_then(merged))
+                .map(|(idx, parts)| {
+                    let split = &self.split_points[idx];
+                    let key = base
+                        .as_ref()
+                        .map(|base| self.emit_key(base, idx, Some(split), &parts, &data));
+                    let held = |bytes| SplitModule {
+                        bytes,
+                        module_name: split.module_name.clone(),
+                        component_name: split
+                            .point
+                            .as_ref()
+                            .map(|point| point.component_name.clone()),
+                        relies_on_chunks: parts.relies_on_chunks.clone(),
+                        hash_id: split.point.as_ref().map(|point| point.hash_name.clone()),
+                    };
+                    cached(
+                        key.as_ref(),
+                        &|| {
+                            self.emit_split_module(idx, parts.clone(), &data)
+                                .and_then(merged)
+                        },
+                        &held,
+                    )
+                })
                 .collect::<Result<Vec<SplitModule>>>();
             (chunks, modules)
         });
+        if let Some(cache) = cache {
+            cache.prune()?;
+        }
+        let reused = reused.into_inner();
         eprintln!(
-            "wasm-split: emitted {count} modules, {threads} at a time, in {:.1} s",
+            "wasm-split: emitted {count} modules ({reused} kept from the last split), {threads} at a time, in {:.1} s",
             started.elapsed().as_secs_f64()
         );
 
@@ -261,7 +368,96 @@ impl<'a> Splitter<'a> {
             modules: modules?,
             chunks: chunks?,
             main,
+            reused,
         })
+    }
+
+    /// What every module's emission reads alike (see cache.rs): the bound
+    /// module but for its function bodies, the table slots the entries and
+    /// the shared functions take, in order.
+    fn emit_key_base(&self) -> Result<KeyBase> {
+        let mut key = Key::new();
+        let code = code_section(self.bindgened)?;
+        match &code {
+            Some(code) => key
+                .add(&self.bindgened[..code.start])
+                .add(&self.bindgened[code.end..]),
+            None => key.add(self.bindgened),
+        };
+        key.add(&self.split_points.len()).add(&self.entry_slots);
+        let shared: Vec<_> = self
+            .shared_symbols
+            .iter()
+            .map(|node| self.node_key(node))
+            .collect();
+        key.add(&shared);
+        Ok(KeyBase {
+            key,
+            bodies: code.map(|code| code.bodies).unwrap_or_default(),
+            imported: imported_functions(self.bindgened)?,
+        })
+    }
+
+    /// The key of emitting split module `idx` (`split`), or shared chunk
+    /// `idx` (no `split`): `base`, and what this one keeps, defines, imports
+    /// and deletes, and the static data it writes.
+    fn emit_key(
+        &self,
+        base: &KeyBase,
+        idx: usize,
+        split: Option<&SplitPoint>,
+        parts: &SplitParts,
+        data: &DataPlan,
+    ) -> Key {
+        let (what, data_index) = match split {
+            Some(_) => ("module", idx),
+            None => ("chunk", self.split_points.len() + idx),
+        };
+        let mut key = base.key.clone();
+        key.add(what).add(&idx);
+        if let Some(split) = split {
+            key.add(&split.module_name)
+                .add(&format!("{:?}", split.point))
+                .add(&format!("{:?}", split.entries));
+        }
+        key.add_set(parts.unique_symbols.iter().map(|node| self.node_key(node)))
+            .add_set(
+                parts
+                    .symbols_to_import
+                    .iter()
+                    .map(|node| self.node_key(node)),
+            )
+            .add_set(
+                parts
+                    .symbols_to_delete
+                    .iter()
+                    .map(|node| self.node_key(node)),
+            )
+            .add_set(parts.relies_on_chunks.iter().copied());
+        // The bodies the parse keeps, each with its code: the parse leaves
+        // every other one `unreachable`.
+        let bodies: BTreeSet<usize> = parts.bodies.iter().copied().collect();
+        key.add(&bodies.len());
+        for index in bodies {
+            key.add(&index);
+            if let Some(body) = index
+                .checked_sub(base.imported)
+                .and_then(|at| base.bodies.get(at))
+            {
+                key.add(&self.bindgened[body.clone()]);
+            }
+        }
+        key.add(&data.moved.get(data_index));
+        key
+    }
+
+    /// A node as the emission sees it: a function by its index in the bound
+    /// module, a data symbol by its symbol index.
+    fn node_key(&self, node: &Node) -> (u8, usize) {
+        match node {
+            Node::Function(id) => (0, self.fns_to_ids.get(id).copied().unwrap_or(usize::MAX)),
+            Node::DataSymbol(index) => (1, *index),
+        }
     }
 
     /// Emit the main module.
@@ -1656,16 +1852,7 @@ fn keep_function_bodies(bytes: &[u8], keep: &HashSet<usize>) -> Result<Vec<u8>> 
     let Some(code) = code_section(bytes)? else {
         return Ok(bytes.to_vec());
     };
-    let mut imported = 0usize;
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let Payload::ImportSection(reader) = payload? {
-            for import in reader {
-                if matches!(import?.ty, wasmparser::TypeRef::Func(_)) {
-                    imported += 1;
-                }
-            }
-        }
-    }
+    let imported = imported_functions(bytes)?;
     let mut contents = Vec::with_capacity(code.end - code.contents);
     push_leb(&mut contents, code.bodies.len());
     for (index, body) in (imported..).zip(&code.bodies) {
@@ -1683,6 +1870,26 @@ fn keep_function_bodies(bytes: &[u8], keep: &HashSet<usize>) -> Result<Vec<u8>> 
     out.extend_from_slice(&contents);
     out.extend_from_slice(&bytes[code.end..]);
     Ok(out)
+}
+
+/// How many functions `bytes` imports: the index its first defined
+/// function has.
+fn imported_functions(bytes: &[u8]) -> Result<usize> {
+    let mut imported = 0usize;
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        match payload? {
+            Payload::ImportSection(reader) => {
+                for import in reader {
+                    if matches!(import?.ty, wasmparser::TypeRef::Func(_)) {
+                        imported += 1;
+                    }
+                }
+            }
+            Payload::CodeSectionStart { .. } => break,
+            _ => {}
+        }
+    }
+    Ok(imported)
 }
 
 /// Parse a module and return the mapping of index to FunctionID.

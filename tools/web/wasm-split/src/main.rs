@@ -29,6 +29,7 @@
 //! exports the page calls once it loaded the module, which the linked
 //! module names in its `tilo_split_exports` section (`split::LAZY_EXPORTS`).
 
+mod cache;
 mod data;
 mod dedupe;
 mod parts;
@@ -130,10 +131,11 @@ fn main() -> Result<()> {
         serde_json::to_string_pretty(&manifest)? + "\n",
     )?;
     eprintln!(
-        "wasm-split: start module {} bytes, {} modules, {} shared, in {:.1} s",
+        "wasm-split: start module {} bytes, {} modules, {} shared ({} of them kept from the last split), in {:.1} s",
         outputs.main.bytes.len(),
         outputs.modules.len(),
         outputs.chunks.len(),
+        outputs.reused,
         started.elapsed().as_secs_f64()
     );
     Ok(())

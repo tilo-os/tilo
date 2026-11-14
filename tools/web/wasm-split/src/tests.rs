@@ -10,6 +10,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail, ensure};
 use wasmparser::{Linking, LinkingSectionReader, Payload, SymbolInfo};
 
+use crate::cache::EmitCache;
 use crate::split::{OutputModules, Splitter};
 
 const LEN: usize = 4096;
@@ -39,11 +40,16 @@ struct Fixture {
 /// Compile the fixture with the toolchain running the tests, in a
 /// directory of its own per test (`test`).
 fn build_fixture(test: &str) -> Result<Fixture> {
+    build_fixture_from(test, include_str!("../fixtures/data_split.rs"))
+}
+
+/// [`build_fixture`] from `source`, the fixture as a test changed it.
+fn build_fixture_from(test: &str, source_text: &str) -> Result<Fixture> {
     let dir = std::env::temp_dir().join(format!("wasm-split-{test}-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let result = (|| {
         let source = dir.join("data_split.rs");
-        std::fs::write(&source, include_str!("../fixtures/data_split.rs"))?;
+        std::fs::write(&source, source_text)?;
         let mut blobs = HashMap::new();
         for (seed, name) in BLOBS.iter().enumerate() {
             let bytes = blob(seed as u32 + 1);
@@ -177,6 +183,118 @@ fn checksum(bytes: &[u8]) -> u32 {
     bytes
         .iter()
         .fold(0u32, |sum, byte| sum.rotate_left(5) ^ u32::from(*byte))
+}
+
+/// `module` without its `linking` and `reloc.*` custom sections.
+fn without_link_sections(module: &[u8]) -> Result<Vec<u8>> {
+    let mut out = module[..8].to_vec();
+    for payload in wasmparser::Parser::new(0).parse_all(module) {
+        let Some((id, range)) = payload?.as_section() else {
+            continue;
+        };
+        let section = &module[range.clone()];
+        if id == 0 {
+            let name = wasmparser::CustomSectionReader::new(wasmparser::BinaryReader::new(
+                section,
+                range.start,
+            ))?;
+            if name.name() == "linking" || name.name().starts_with("reloc.") {
+                continue;
+            }
+        }
+        out.push(id);
+        let mut size = section.len();
+        loop {
+            let byte = (size & 0x7f) as u8;
+            size >>= 7;
+            if size == 0 {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
+        out.extend_from_slice(section);
+    }
+    Ok(out)
+}
+
+/// Every module a split writes, by name, with the shared code it needs.
+fn written_modules(outputs: OutputModules) -> Vec<(String, Vec<usize>, Vec<u8>)> {
+    let mut modules = vec![("main".to_string(), Vec::new(), outputs.main.bytes)];
+    for (index, chunk) in outputs.chunks.into_iter().enumerate() {
+        modules.push((format!("shared{index}"), Vec::new(), chunk.bytes));
+    }
+    for module in outputs.modules {
+        let mut needs: Vec<usize> = module.relies_on_chunks.into_iter().collect();
+        needs.sort_unstable();
+        modules.push((module.module_name, needs, module.bytes));
+    }
+    modules
+}
+
+/// A split that reads modules back from the cache writes exactly what one
+/// that emits every module writes: for the input it was filled from, and
+/// after a change to one module's code, where it emits that module again and
+/// reads the others back.
+#[test]
+fn a_split_from_the_cache_writes_what_emitting_writes() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    // A constant in `later_step`, which only the `later` module's code holds.
+    let changed = source.replace("0x5bd1_e995", "0x5bd1_e996");
+    assert_ne!(source, changed);
+    // Built at one path: the module's static data holds the source's path.
+    let before = build_fixture("cache")?.linked;
+    let after = build_fixture_from("cache", &changed)?.linked;
+    // The module the local bundle binds goes without the sections whose
+    // offsets every change to code moves (without-link-sections.py).
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = std::env::temp_dir().join(format!("wasm-split-cache-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            let outputs = Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?;
+            let reused = outputs.reused;
+            let count = outputs.modules.len() + outputs.chunks.len();
+            Ok((written_modules(outputs), reused, count))
+        };
+        let (first, reused, _) = cached(&before, &before_bound)?;
+        assert_eq!(reused, 0, "an empty cache holds no module");
+        assert!(
+            first == fresh(&before, &before_bound)?,
+            "a split filling the cache wrote other modules"
+        );
+        let (again, reused, count) = cached(&before, &before_bound)?;
+        assert_eq!(
+            reused, count,
+            "the same input emitted modules the cache held"
+        );
+        assert!(
+            again == first,
+            "modules read back from the cache differ from the emitted ones"
+        );
+        let (changed, reused, count) = cached(&after, &after_bound)?;
+        assert!(
+            changed == fresh(&after, &after_bound)?,
+            "after a change, the cache gave other modules than emitting does"
+        );
+        assert!(changed != first, "the change reached no module");
+        assert!(
+            reused > 0 && reused < count,
+            "a change to one module's code emitted {} of {count} modules again",
+            count - reused
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
 }
 
 /// The same linked input splits into the same bytes every time, so web
