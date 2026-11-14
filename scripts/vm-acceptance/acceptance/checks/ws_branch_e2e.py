@@ -494,9 +494,10 @@ class Problems(list):
                      "and a checkout in it, windows on its desk, a few hundred MB of data")
 def set_up(ctx, res):
     ctx.facts["wsb:why"] = "WB01 failed"
-    ctx.reset()
+    # The session restarts first, so what the run keeps of the desk is the restarted session's.
     since = debug_session(ctx)
     ctx.facts["wsb:since"] = since
+    ctx.reset()
     run = uuid.uuid4().hex[:8]
     ws = ae.create_workspace(ctx, f"{SOURCE} {run}")
     ws["name"] = f"{SOURCE} {run}"
@@ -883,7 +884,8 @@ def post_chat(ctx, ws: dict, text: str) -> None:
         # The launcher drops an app's own output: keep it from the session's next start on (WB05
         # restarts it), so Chat says itself why it shows nothing.
         evidence = chat_evidence(ctx, ctx.facts.get("wsb:since", 0))
-        said = crash + "\n" + running + "\n" + said
+        # The report prints a data file's last 4 KiB: the evidence goes last.
+        said = crash + "\n" + running + "\n" + said + "\n" + evidence
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; {evidence}; it offers "
                            f"{offered(ctx, CHAT)}; Chat's crash: {crash[-3000:]}; "
@@ -970,6 +972,8 @@ def debug_session(ctx) -> int:
     watch_drawing_threads(ctx)
     since = int((ctx.vm.root_exec("date +%s", timeout=30, check=False) or "0").strip() or 0)
     ctx.vm.restart_session()
+    # A fresh session publishes its catalogue of apps a few seconds after it answers.
+    ctx.vm.wait_catalogue(120)
     return since
 
 
