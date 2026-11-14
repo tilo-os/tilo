@@ -75,7 +75,7 @@ fn workspaces(session: &Session) -> Vec<(String, String)> {
 const OPEN_APP: &str = "open-app";
 
 /// A session whose device holds no channel keys arranges its layout — an app is opened in the
-/// workspace in front — and no workspace is said to have refused the arrangement: the layout stays
+/// workspace in front — and no workspace is said to have refused the layout: the layout stays
 /// this device's, and the person hears nothing.
 #[test]
 fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
