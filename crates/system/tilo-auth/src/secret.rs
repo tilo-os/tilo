@@ -48,31 +48,35 @@ impl std::fmt::Debug for Secret {
 mod tests {
     use super::*;
 
-    #[test]
-    fn composed_and_decomposed_input_is_one_secret() {
-        let composed = Secret::new("caf\u{e9}");
-        let decomposed = Secret::new("cafe\u{301}");
-        assert_eq!(composed.as_bytes(), decomposed.as_bytes());
-        assert_eq!(*composed.auth_value(), *decomposed.auth_value());
-        assert_ne!(*composed.auth_value(), *Secret::new("cafe").auth_value());
-    }
+    tilo_test_env::scenario! {
+        fn a_secret_is_normalised_and_digested_as_the_contract_says;
 
-    #[test]
-    fn the_auth_value_is_the_contract_digest() {
-        let mut hasher = Sha256::new();
-        hasher.update(b"tilo-signin-v1\x00123456");
-        let expected: [u8; 32] = hasher.finalize().into();
-        assert_eq!(*Secret::new("123456").auth_value(), expected);
-    }
+        phase composed_and_decomposed_input_is_one_secret;
+        {
+            let composed = Secret::new("caf\u{e9}");
+            let decomposed = Secret::new("cafe\u{301}");
+            assert_eq!(composed.as_bytes(), decomposed.as_bytes());
+            assert_eq!(*composed.auth_value(), *decomposed.auth_value());
+            assert_ne!(*composed.auth_value(), *Secret::new("cafe").auth_value());
+        }
 
-    #[test]
-    fn a_file_loses_one_trailing_newline_only() {
-        assert_eq!(Secret::from_file_bytes(b"pin\n").unwrap().as_str(), "pin");
-        assert_eq!(
-            Secret::from_file_bytes(b"pin\n\n").unwrap().as_str(),
-            "pin\n"
-        );
-        assert_eq!(Secret::from_file_bytes(b"pin").unwrap().as_str(), "pin");
-        assert!(Secret::from_file_bytes(&[0xff]).is_none());
+        phase the_auth_value_is_the_contract_digest;
+        {
+            let mut hasher = Sha256::new();
+            hasher.update(b"tilo-signin-v1\x00123456");
+            let expected: [u8; 32] = hasher.finalize().into();
+            assert_eq!(*Secret::new("123456").auth_value(), expected);
+        }
+
+        phase a_file_loses_one_trailing_newline_only;
+        {
+            assert_eq!(Secret::from_file_bytes(b"pin\n").unwrap().as_str(), "pin");
+            assert_eq!(
+                Secret::from_file_bytes(b"pin\n\n").unwrap().as_str(),
+                "pin\n"
+            );
+            assert_eq!(Secret::from_file_bytes(b"pin").unwrap().as_str(), "pin");
+            assert!(Secret::from_file_bytes(&[0xff]).is_none());
+        }
     }
 }

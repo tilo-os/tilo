@@ -707,139 +707,182 @@ fn a_key_is_held_for_its_sessions_and_the_login_screen_learns_whether_the_secret
     assert_eq!(held(ROOT, "ada").key_held, Some(true));
 }
 
-#[test]
-fn people_may_only_ask_about_themselves() {
-    let m = machine!(false, &[("ada", "correct horse battery staple")]);
-    let daemon = m.daemon();
-    assert_eq!(
-        verify(&daemon, BOB, "ada", "correct horse battery staple"),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(
-        verify(&daemon, BOB, "eve", "x"),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(
-        verify(&daemon, ROOT, "eve", "x"),
-        refused(Refusal::NotEnrolled)
-    );
-    assert_eq!(verify(&daemon, ADA, "ada", ""), refused(Refusal::Wrong));
-    let strong = "correct horse battery staple";
-    for (peer, user, typed, refusal) in [
-        (BOB, "ada", strong, Refusal::NotPermitted),
-        (BOB, "eve", "x", Refusal::NotPermitted),
-        (ROOT, "eve", "x", Refusal::NotEnrolled),
-        (ADA, "ada", "", Refusal::Wrong),
-        (ADA, "ada", "incorrect horse", Refusal::Wrong),
-    ] {
+tilo_test_env::scenario! {
+    fn the_daemon_answers_each_peer_by_its_own_rights;
+
+    phase people_may_only_ask_about_themselves;
+    {
+        let m = machine!(false, &[("ada", "correct horse battery staple")]);
+        let daemon = m.daemon();
         assert_eq!(
-            enroll(&daemon, peer, user, typed),
-            refused(refusal),
-            "{user} enrolled by uid {} with {typed:?}",
-            peer.uid
+            verify(&daemon, BOB, "ada", "correct horse battery staple"),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(
+            verify(&daemon, BOB, "eve", "x"),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(
+            verify(&daemon, ROOT, "eve", "x"),
+            refused(Refusal::NotEnrolled)
+        );
+        assert_eq!(verify(&daemon, ADA, "ada", ""), refused(Refusal::Wrong));
+        let strong = "correct horse battery staple";
+        for (peer, user, typed, refusal) in [
+            (BOB, "ada", strong, Refusal::NotPermitted),
+            (BOB, "eve", "x", Refusal::NotPermitted),
+            (ROOT, "eve", "x", Refusal::NotEnrolled),
+            (ADA, "ada", "", Refusal::Wrong),
+            (ADA, "ada", "incorrect horse", Refusal::Wrong),
+        ] {
+            assert_eq!(
+                enroll(&daemon, peer, user, typed),
+                refused(refusal),
+                "{user} enrolled by uid {} with {typed:?}",
+                peer.uid
+            );
+        }
+        assert_eq!(
+            m.record(ADA.uid),
+            None,
+            "a refused request leaves no record"
+        );
+        assert_eq!(
+            reply(daemon.handle(
+                ADA,
+                Request::SetSecret {
+                    user: "ada".into(),
+                    current: Some(secret(strong)),
+                    recovery: None,
+                    new: secret("violet ladder orbit pancake"),
+                }
+            )),
+            refused(Refusal::NotEnrolled),
+            "there is no secret here to change yet"
+        );
+        assert_eq!(
+            reply(daemon.handle(
+                ROOT,
+                Request::AddRecovery {
+                    user: "ada".into(),
+                    secret: secret(strong),
+                    recovery: secret(&m.recovery.formatted()),
+                }
+            )),
+            refused(Refusal::NotEnrolled)
+        );
+        assert_eq!(
+            reply(daemon.handle(BOB, Request::ClaimBootSignIn { user: "bob".into() })),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(
+            reply(daemon.handle(
+                ADA,
+                Request::AddRecovery {
+                    user: "ada".into(),
+                    secret: secret("correct horse battery staple"),
+                    recovery: secret(&m.recovery.formatted()),
+                }
+            )),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(pending(&daemon, BOB), None);
+        let status = || reply(daemon.handle(ADA, Request::Status { user: "ada".into() }));
+        assert_eq!(status().enrolled, Some(false));
+        assert!(status().factors.is_empty());
+
+        // Asked for herself with her old password, the explicit request moves
+        // her as her first sign-in would.
+        assert_eq!(enroll(&daemon, ADA, "ada", strong), Reply::success());
+        assert_eq!(status().enrolled, Some(true));
+        assert_eq!(status().factors, ["password"]);
+        assert_eq!(m.old.locked(), ["ada"]);
+    }
+
+    phase the_login_screen_gets_no_status_and_an_unmade_boot_sign_in_is_neither_seen_nor_claimed;
+    // Status is for root and the person themselves, not for the login screen,
+    // which has its own two questions; and a boot sign-in nobody made is neither
+    // shown to anyone nor claimed by anyone.
+    {
+        let m = machine!(false, &[("ada", "correct horse battery staple")]);
+        let daemon = m.daemon();
+        let status =
+            |peer: Peer, user: &str| reply(daemon.handle(peer, Request::Status { user: user.into() }));
+        for (peer, user, refusal) in [
+            (BOB, "ada", Refusal::NotPermitted),
+            (GREETER, "ada", Refusal::NotPermitted),
+            (GREETER, "eve", Refusal::NotPermitted),
+            (ROOT, "eve", Refusal::NotEnrolled),
+        ] {
+            assert_eq!(
+                status(peer, user),
+                refused(refusal),
+                "the status of {user} asked by uid {}",
+                peer.uid
+            );
+        }
+        let not_enrolled = Reply {
+            enrolled: Some(false),
+            ..Reply::success()
+        };
+        assert_eq!(status(ROOT, "ada"), not_enrolled);
+        assert_eq!(status(BOB, "bob"), not_enrolled);
+
+        let claim =
+            |peer: Peer| reply(daemon.handle(peer, Request::ClaimBootSignIn { user: "ada".into() }));
+        for peer in [ADA, GREETER] {
+            assert_eq!(
+                claim(peer),
+                refused(Refusal::NotPermitted),
+                "claimed by uid {}",
+                peer.uid
+            );
+        }
+        assert_eq!(claim(ROOT), refused(Refusal::NoBootSignIn));
+        for peer in [ROOT, GREETER, ADA] {
+            assert_eq!(pending(&daemon, peer), None, "asked by uid {}", peer.uid);
+        }
+        assert_eq!(m.record(ADA.uid), None, "asking leaves no record");
+    }
+
+    phase the_socket_answers_with_the_peers_own_rights;
+    {
+        let me = rustix::process::getuid().as_raw();
+        let m = machine!(false, &[("ada", "correct horse battery staple")], me);
+        let daemon = Arc::new(m.daemon_with(Config {
+            privileged_uid: u32::MAX,
+            ..m.config()
+        }));
+        let listener = server::bind(&daemon).unwrap();
+        {
+            let daemon = Arc::clone(&daemon);
+            std::thread::spawn(move || server::serve(&daemon, &listener));
+        }
+        let socket: &Path = &m.path("socket");
+        let mut client = Client::connect(socket).unwrap();
+        assert_eq!(
+            client
+                .call(&Request::Verify {
+                    user: "ada".into(),
+                    secret: secret("correct horse battery staple"),
+                })
+                .unwrap(),
+            Reply::success()
+        );
+        assert_eq!(
+            client
+                .call(&Request::Status { user: "bob".into() })
+                .unwrap(),
+            refused(Refusal::NotPermitted)
+        );
+        assert_eq!(client.pending_sign_in().unwrap(), None);
+        assert_eq!(
+            client
+                .call(&Request::ClaimBootSignIn { user: "ada".into() })
+                .unwrap(),
+            refused(Refusal::NotPermitted)
         );
     }
-    assert_eq!(
-        m.record(ADA.uid),
-        None,
-        "a refused request leaves no record"
-    );
-    assert_eq!(
-        reply(daemon.handle(
-            ADA,
-            Request::SetSecret {
-                user: "ada".into(),
-                current: Some(secret(strong)),
-                recovery: None,
-                new: secret("violet ladder orbit pancake"),
-            }
-        )),
-        refused(Refusal::NotEnrolled),
-        "there is no secret here to change yet"
-    );
-    assert_eq!(
-        reply(daemon.handle(
-            ROOT,
-            Request::AddRecovery {
-                user: "ada".into(),
-                secret: secret(strong),
-                recovery: secret(&m.recovery.formatted()),
-            }
-        )),
-        refused(Refusal::NotEnrolled)
-    );
-    assert_eq!(
-        reply(daemon.handle(BOB, Request::ClaimBootSignIn { user: "bob".into() })),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(
-        reply(daemon.handle(
-            ADA,
-            Request::AddRecovery {
-                user: "ada".into(),
-                secret: secret("correct horse battery staple"),
-                recovery: secret(&m.recovery.formatted()),
-            }
-        )),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(pending(&daemon, BOB), None);
-    let status = || reply(daemon.handle(ADA, Request::Status { user: "ada".into() }));
-    assert_eq!(status().enrolled, Some(false));
-    assert!(status().factors.is_empty());
-
-    // Asked for herself with her old password, the explicit request moves
-    // her as her first sign-in would.
-    assert_eq!(enroll(&daemon, ADA, "ada", strong), Reply::success());
-    assert_eq!(status().enrolled, Some(true));
-    assert_eq!(status().factors, ["password"]);
-    assert_eq!(m.old.locked(), ["ada"]);
-}
-
-/// Status is for root and the person themselves, not for the login screen,
-/// which has its own two questions; and a boot sign-in nobody made is neither
-/// shown to anyone nor claimed by anyone.
-#[test]
-fn the_login_screen_gets_no_status_and_an_unmade_boot_sign_in_is_neither_seen_nor_claimed() {
-    let m = machine!(false, &[("ada", "correct horse battery staple")]);
-    let daemon = m.daemon();
-    let status =
-        |peer: Peer, user: &str| reply(daemon.handle(peer, Request::Status { user: user.into() }));
-    for (peer, user, refusal) in [
-        (BOB, "ada", Refusal::NotPermitted),
-        (GREETER, "ada", Refusal::NotPermitted),
-        (GREETER, "eve", Refusal::NotPermitted),
-        (ROOT, "eve", Refusal::NotEnrolled),
-    ] {
-        assert_eq!(
-            status(peer, user),
-            refused(refusal),
-            "the status of {user} asked by uid {}",
-            peer.uid
-        );
-    }
-    let not_enrolled = Reply {
-        enrolled: Some(false),
-        ..Reply::success()
-    };
-    assert_eq!(status(ROOT, "ada"), not_enrolled);
-    assert_eq!(status(BOB, "bob"), not_enrolled);
-
-    let claim =
-        |peer: Peer| reply(daemon.handle(peer, Request::ClaimBootSignIn { user: "ada".into() }));
-    for peer in [ADA, GREETER] {
-        assert_eq!(
-            claim(peer),
-            refused(Refusal::NotPermitted),
-            "claimed by uid {}",
-            peer.uid
-        );
-    }
-    assert_eq!(claim(ROOT), refused(Refusal::NoBootSignIn));
-    for peer in [ROOT, GREETER, ADA] {
-        assert_eq!(pending(&daemon, peer), None, "asked by uid {}", peer.uid);
-    }
-    assert_eq!(m.record(ADA.uid), None, "asking leaves no record");
 }
 
 #[test]
@@ -1201,45 +1244,6 @@ mod keyring {
         );
         assert_eq!(pending(&daemon, GREETER), None);
     }
-}
-
-#[test]
-fn the_socket_answers_with_the_peers_own_rights() {
-    let me = rustix::process::getuid().as_raw();
-    let m = machine!(false, &[("ada", "correct horse battery staple")], me);
-    let daemon = Arc::new(m.daemon_with(Config {
-        privileged_uid: u32::MAX,
-        ..m.config()
-    }));
-    let listener = server::bind(&daemon).unwrap();
-    {
-        let daemon = Arc::clone(&daemon);
-        std::thread::spawn(move || server::serve(&daemon, &listener));
-    }
-    let socket: &Path = &m.path("socket");
-    let mut client = Client::connect(socket).unwrap();
-    assert_eq!(
-        client
-            .call(&Request::Verify {
-                user: "ada".into(),
-                secret: secret("correct horse battery staple"),
-            })
-            .unwrap(),
-        Reply::success()
-    );
-    assert_eq!(
-        client
-            .call(&Request::Status { user: "bob".into() })
-            .unwrap(),
-        refused(Refusal::NotPermitted)
-    );
-    assert_eq!(client.pending_sign_in().unwrap(), None);
-    assert_eq!(
-        client
-            .call(&Request::ClaimBootSignIn { user: "ada".into() })
-            .unwrap(),
-        refused(Refusal::NotPermitted)
-    );
 }
 
 #[test]

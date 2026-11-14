@@ -200,86 +200,90 @@ mod tests {
         p_cost: 1,
     };
 
-    #[test]
-    fn a_passphrase_wrapper_opens_with_its_secret_for_its_person_only() {
-        let key = UserKey::generate().unwrap();
-        let secret = Secret::new("seven unrelated words in a row");
-        let wrapper = Wrapper::passphrase(&key, 1000, &secret, CHEAP).unwrap();
-        match wrapper.open_with_secret(None, 1000, &secret).unwrap() {
-            Some(Outcome::Key(opened)) => assert_eq!(opened.expose(), key.expose()),
-            _ => panic!("the right secret opens the wrapper"),
-        }
-        assert!(matches!(
-            wrapper
-                .open_with_secret(None, 1000, &Secret::new("six unrelated words in a row"))
-                .unwrap(),
-            Some(Outcome::Wrong(None))
-        ));
-        assert!(matches!(
-            wrapper.open_with_secret(None, 1001, &secret).unwrap(),
-            Some(Outcome::Wrong(None))
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn a_wrapper_opens_only_with_its_own_factor_and_keeps_what_it_does_not_know;
 
-    #[test]
-    fn the_passphrase_wrapper_keeps_its_cost_in_the_envelope() {
-        let key = UserKey::generate().unwrap();
-        let wrapper = Wrapper::passphrase(&key, 7, &Secret::new("x"), CHEAP).unwrap();
-        let Wrapper::Passphrase { envelope: sealed } = &wrapper else {
-            panic!("a passphrase wrapper");
-        };
-        let bytes = STANDARD.decode(sealed).unwrap();
-        match envelope::Envelope::parse(&bytes).unwrap().source {
-            envelope::KeySource::Password { params, salt } => {
-                assert_eq!(params, CHEAP);
-                assert_eq!(salt.len(), 16);
+        phase a_passphrase_wrapper_opens_with_its_secret_for_its_person_only;
+        {
+            let key = UserKey::generate().unwrap();
+            let secret = Secret::new("seven unrelated words in a row");
+            let wrapper = Wrapper::passphrase(&key, 1000, &secret, CHEAP).unwrap();
+            match wrapper.open_with_secret(None, 1000, &secret).unwrap() {
+                Some(Outcome::Key(opened)) => assert_eq!(opened.expose(), key.expose()),
+                _ => panic!("the right secret opens the wrapper"),
             }
-            envelope::KeySource::Key(_) => panic!("a password envelope"),
+            assert!(matches!(
+                wrapper
+                    .open_with_secret(None, 1000, &Secret::new("six unrelated words in a row"))
+                    .unwrap(),
+                Some(Outcome::Wrong(None))
+            ));
+            assert!(matches!(
+                wrapper.open_with_secret(None, 1001, &secret).unwrap(),
+                Some(Outcome::Wrong(None))
+            ));
         }
-    }
 
-    #[test]
-    fn a_recovery_wrapper_opens_with_its_recovery_key_only() {
-        let key = UserKey::generate().unwrap();
-        let recovery = RecoveryKey::from_bytes([3; 32]);
-        let wrapper = Wrapper::recovery(&key, 1000, &recovery).unwrap();
-        assert_eq!(
-            wrapper
-                .open_with_recovery(1000, &recovery)
-                .unwrap()
-                .unwrap()
-                .expose(),
-            key.expose()
-        );
-        assert!(
-            wrapper
-                .open_with_recovery(1000, &RecoveryKey::from_bytes([4; 32]))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            wrapper
-                .open_with_recovery(1001, &recovery)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            wrapper
-                .open_with_secret(None, 1000, &Secret::new("anything"))
-                .unwrap()
-                .is_none()
-        );
-    }
+        phase the_passphrase_wrapper_keeps_its_cost_in_the_envelope;
+        {
+            let key = UserKey::generate().unwrap();
+            let wrapper = Wrapper::passphrase(&key, 7, &Secret::new("x"), CHEAP).unwrap();
+            let Wrapper::Passphrase { envelope: sealed } = &wrapper else {
+                panic!("a passphrase wrapper");
+            };
+            let bytes = STANDARD.decode(sealed).unwrap();
+            match envelope::Envelope::parse(&bytes).unwrap().source {
+                envelope::KeySource::Password { params, salt } => {
+                    assert_eq!(params, CHEAP);
+                    assert_eq!(salt.len(), 16);
+                }
+                envelope::KeySource::Key(_) => panic!("a password envelope"),
+            }
+        }
 
-    #[test]
-    fn records_keep_wrappers_this_build_does_not_know() {
-        let json = r#"[{"kind":"recovery","envelope":"AA=="},{"kind":"fido2","credential":"x"}]"#;
-        let entries: Vec<Entry> = serde_json::from_str(json).unwrap();
-        assert_eq!(entries[0].known().map(Wrapper::kind), Some(Kind::Recovery));
-        assert!(entries[1].known().is_none());
-        assert_eq!(
-            serde_json::to_value(&entries).unwrap(),
-            serde_json::from_str::<serde_json::Value>(json).unwrap()
-        );
+        phase a_recovery_wrapper_opens_with_its_recovery_key_only;
+        {
+            let key = UserKey::generate().unwrap();
+            let recovery = RecoveryKey::from_bytes([3; 32]);
+            let wrapper = Wrapper::recovery(&key, 1000, &recovery).unwrap();
+            assert_eq!(
+                wrapper
+                    .open_with_recovery(1000, &recovery)
+                    .unwrap()
+                    .unwrap()
+                    .expose(),
+                key.expose()
+            );
+            assert!(
+                wrapper
+                    .open_with_recovery(1000, &RecoveryKey::from_bytes([4; 32]))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                wrapper
+                    .open_with_recovery(1001, &recovery)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                wrapper
+                    .open_with_secret(None, 1000, &Secret::new("anything"))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        phase records_keep_wrappers_this_build_does_not_know;
+        {
+            let json = r#"[{"kind":"recovery","envelope":"AA=="},{"kind":"fido2","credential":"x"}]"#;
+            let entries: Vec<Entry> = serde_json::from_str(json).unwrap();
+            assert_eq!(entries[0].known().map(Wrapper::kind), Some(Kind::Recovery));
+            assert!(entries[1].known().is_none());
+            assert_eq!(
+                serde_json::to_value(&entries).unwrap(),
+                serde_json::from_str::<serde_json::Value>(json).unwrap()
+            );
+        }
     }
 }

@@ -377,96 +377,100 @@ mod tests {
         (dir, ws)
     }
 
-    #[test]
-    fn the_comforts_token_is_written_beside_others_and_rewritten_in_place() {
-        let tpm2 = serde_json::json!({"type": "systemd-tpm2", "keyslots": ["1"]});
-        let signin = serde_json::json!({"type": "tilo-signin", "keyslots": ["2"], "uid": 1000});
-        let header = Header::with(&[(0, tpm2.clone()), (1, signin.clone())]);
-        let (_dir, ws) = scratch();
-        let device = Path::new("/dev/vda3");
-        assert_eq!(comforts(&header, device).unwrap(), None);
+    tilo_test_env::scenario! {
+        fn the_headers_tokens_are_written_and_read_in_their_contract_shape;
 
-        let on = SignInComforts {
-            screen_reader: true,
-            screen_reader_rate: 150,
-            ..SignInComforts::default()
-        };
-        assert_eq!(write_comforts(&header, &ws, device, &on).unwrap(), 2);
-        assert_eq!(
-            header.token(2).unwrap(),
-            serde_json::json!({
-                "type": "tilo-comforts",
-                "keyslots": [],
-                "screen_reader": true,
-                "screen_reader_rate": 150,
-                "screen_reader_voice": "system",
-                "text_scale": 1.0,
-                "high_contrast": false,
-            })
-        );
-        assert_eq!(comforts(&header, device).unwrap(), Some(on));
+        phase the_comforts_token_is_written_beside_others_and_rewritten_in_place;
+        {
+            let tpm2 = serde_json::json!({"type": "systemd-tpm2", "keyslots": ["1"]});
+            let signin = serde_json::json!({"type": "tilo-signin", "keyslots": ["2"], "uid": 1000});
+            let header = Header::with(&[(0, tpm2.clone()), (1, signin.clone())]);
+            let (_dir, ws) = scratch();
+            let device = Path::new("/dev/vda3");
+            assert_eq!(comforts(&header, device).unwrap(), None);
 
-        let larger = SignInComforts {
-            text_scale: 1.5,
-            ..SignInComforts::default()
-        };
-        assert_eq!(write_comforts(&header, &ws, device, &larger).unwrap(), 2);
-        assert_eq!(comforts(&header, device).unwrap(), Some(larger));
-        assert_eq!(header.token(0), Some(tpm2));
-        assert_eq!(header.token(1), Some(signin));
-        assert_eq!(header.tokens.borrow().len(), 3);
-    }
-
-    #[test]
-    fn a_comforts_token_someone_else_wrote_is_read_clamped() {
-        let header = Header::with(&[
-            (
-                3,
+            let on = SignInComforts {
+                screen_reader: true,
+                screen_reader_rate: 150,
+                ..SignInComforts::default()
+            };
+            assert_eq!(write_comforts(&header, &ws, device, &on).unwrap(), 2);
+            assert_eq!(
+                header.token(2).unwrap(),
                 serde_json::json!({
                     "type": "tilo-comforts",
                     "keyslots": [],
                     "screen_reader": true,
-                    "screen_reader_rate": 900,
-                    "text_scale": "huge",
-                    "language": "de-DE\u{202e}",
-                    "xkb_layout": "us,ru",
-                }),
-            ),
-            (
-                7,
-                serde_json::json!({"type": "tilo-comforts", "keyslots": [], "high_contrast": true}),
-            ),
-        ]);
-        assert_eq!(
-            comforts(&header, Path::new("/dev/vda3")).unwrap(),
-            Some(SignInComforts {
-                screen_reader: true,
-                screen_reader_rate: 200,
-                ..SignInComforts::default()
-            })
-        );
-    }
+                    "screen_reader_rate": 150,
+                    "screen_reader_voice": "system",
+                    "text_scale": 1.0,
+                    "high_contrast": false,
+                })
+            );
+            assert_eq!(comforts(&header, device).unwrap(), Some(on));
 
-    #[test]
-    fn the_token_mirrors_the_record_in_the_contract_shape() {
-        let mut record = Record::new(1000, "ada", "Ada Lovelace");
-        record.set_secret_wrapper(Wrapper::Tpm {
-            public: "cA==".into(),
-            private: "cQ==".into(),
-        });
-        let token = SigninToken::mirror(&record, 4);
-        assert_eq!(token.keyslot(), Some(4));
-        assert_eq!(token.factors(), [Factor::Password]);
-        assert_eq!(
-            serde_json::to_value(&token).unwrap(),
-            serde_json::json!({
-                "type": "tilo-signin",
-                "keyslots": ["4"],
-                "uid": 1000,
-                "name": "ada",
-                "display_name": "Ada Lovelace",
-                "wrappers": [{"kind": "tpm", "public": "cA==", "private": "cQ=="}],
-            })
-        );
+            let larger = SignInComforts {
+                text_scale: 1.5,
+                ..SignInComforts::default()
+            };
+            assert_eq!(write_comforts(&header, &ws, device, &larger).unwrap(), 2);
+            assert_eq!(comforts(&header, device).unwrap(), Some(larger));
+            assert_eq!(header.token(0), Some(tpm2));
+            assert_eq!(header.token(1), Some(signin));
+            assert_eq!(header.tokens.borrow().len(), 3);
+        }
+
+        phase a_comforts_token_someone_else_wrote_is_read_clamped;
+        {
+            let header = Header::with(&[
+                (
+                    3,
+                    serde_json::json!({
+                        "type": "tilo-comforts",
+                        "keyslots": [],
+                        "screen_reader": true,
+                        "screen_reader_rate": 900,
+                        "text_scale": "huge",
+                        "language": "de-DE\u{202e}",
+                        "xkb_layout": "us,ru",
+                    }),
+                ),
+                (
+                    7,
+                    serde_json::json!({"type": "tilo-comforts", "keyslots": [], "high_contrast": true}),
+                ),
+            ]);
+            assert_eq!(
+                comforts(&header, Path::new("/dev/vda3")).unwrap(),
+                Some(SignInComforts {
+                    screen_reader: true,
+                    screen_reader_rate: 200,
+                    ..SignInComforts::default()
+                })
+            );
+        }
+
+        phase the_token_mirrors_the_record_in_the_contract_shape;
+        {
+            let mut record = Record::new(1000, "ada", "Ada Lovelace");
+            record.set_secret_wrapper(Wrapper::Tpm {
+                public: "cA==".into(),
+                private: "cQ==".into(),
+            });
+            let token = SigninToken::mirror(&record, 4);
+            assert_eq!(token.keyslot(), Some(4));
+            assert_eq!(token.factors(), [Factor::Password]);
+            assert_eq!(
+                serde_json::to_value(&token).unwrap(),
+                serde_json::json!({
+                    "type": "tilo-signin",
+                    "keyslots": ["4"],
+                    "uid": 1000,
+                    "name": "ada",
+                    "display_name": "Ada Lovelace",
+                    "wrappers": [{"kind": "tpm", "public": "cA==", "private": "cQ=="}],
+                })
+            );
+        }
     }
 }

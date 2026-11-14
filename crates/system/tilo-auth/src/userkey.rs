@@ -63,31 +63,35 @@ impl std::fmt::Debug for UserKey {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_slot_passphrase_is_lowercase_hex_of_the_contract_hmac() {
-        let key = UserKey::from_bytes([7; KEY_LEN]);
-        let passphrase = key.system_volume_passphrase();
-        assert_eq!(passphrase.len(), 64);
-        assert!(
-            passphrase
-                .chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-        );
-        assert_eq!(
-            *passphrase,
-            hex::encode(hmac_sha256(&[7; KEY_LEN], b"tilo-system-volume-v1").as_slice())
-        );
-        assert_ne!(
-            *passphrase,
-            *UserKey::from_bytes([8; KEY_LEN]).system_volume_passphrase()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_slot_passphrase_is_the_contract_hmac_of_the_user_key;
 
-    #[test]
-    fn hmac_matches_rfc_4231_case_2() {
-        assert_eq!(
-            hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?").as_slice()),
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
-        );
+        phase the_slot_passphrase_is_lowercase_hex_of_the_contract_hmac;
+        {
+            let key = UserKey::from_bytes([7; KEY_LEN]);
+            let passphrase = key.system_volume_passphrase();
+            assert_eq!(passphrase.len(), 64);
+            assert!(
+                passphrase
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+            );
+            assert_eq!(
+                *passphrase,
+                hex::encode(hmac_sha256(&[7; KEY_LEN], b"tilo-system-volume-v1").as_slice())
+            );
+            assert_ne!(
+                *passphrase,
+                *UserKey::from_bytes([8; KEY_LEN]).system_volume_passphrase()
+            );
+        }
+
+        phase hmac_matches_rfc_4231_case_2;
+        {
+            assert_eq!(
+                hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?").as_slice()),
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+            );
+        }
     }
 }
