@@ -377,7 +377,10 @@ impl StatePeer {
                 return Err(format!("grant {:?} names another workspace", grant.id));
             }
             match held.iter().find(|kept| kept.id == grant.id) {
-                Some(kept) if kept == grant => continue,
+                // Held unchanged and not revoked by this change: it stands.
+                // One this change revokes is granted again below, so an update
+                // that keeps a rule does not take it away.
+                Some(kept) if kept == grant && !write.revoke.contains(&grant.id) => continue,
                 Some(_) if !write.revoke.contains(&grant.id) => {
                     changes.push(tilo_action_policy::Change::Revoke(grant.id.clone()));
                 }
