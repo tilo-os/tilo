@@ -529,9 +529,11 @@ fn counted(key: &str, count: usize) -> String {
 /// The name an actor is shown under: an agent by its own name, anyone else
 /// by the name the action door admitted them under, and one that worked
 /// from another of the person's devices with that device, by its name or,
-/// where it has none, the start of its key. `None` for the tab's one unnamed
-/// actor, the person at this window.
-fn actor_name(actor: &str, device: Option<&Device>) -> Option<String> {
+/// where it has none, the start of its key. One the record says it no
+/// longer knows the device of (`device_unknown`) is shown as that, never as
+/// an actor on this device. `None` for the tab's one unnamed actor, the
+/// person at this window.
+fn actor_name(actor: &str, device: Option<&Device>, device_unknown: bool) -> Option<String> {
     let actor = actor.trim();
     if actor.is_empty() {
         return None;
@@ -544,6 +546,10 @@ fn actor_name(actor: &str, device: Option<&Device>) -> Option<String> {
                 ("name", ArgValue::Text(name)),
                 ("device", ArgValue::Text(device.shown_as().to_owned())),
             ],
+        ),
+        None if device_unknown => CATALOG.t_args(
+            "browser-review-actor-device-unknown",
+            &[("name", ArgValue::Text(name))],
         ),
         None => name,
     })
@@ -565,7 +571,12 @@ fn holds_text(holds: &Holds) -> String {
 /// say.
 fn set_by_text(set: &SetBy) -> Option<String> {
     Some(match set {
-        SetBy::Action { actor, device, .. } => match actor_name(actor, device.as_ref()) {
+        SetBy::Action {
+            actor,
+            device,
+            device_unknown,
+            ..
+        } => match actor_name(actor, device.as_ref(), *device_unknown) {
             Some(name) => named("browser-review-set-by", &name),
             None => t("browser-review-set-by-you"),
         },
@@ -689,7 +700,7 @@ fn record_section(record: &Record, secrets: &[&str]) -> Section {
 /// waits for the person, or how that ended, with what it was, who did it and
 /// when.
 fn hold_row(step: &Step, hold: HoldStep) -> Element {
-    let who = actor_name(&step.actor, step.device.as_ref());
+    let who = actor_name(&step.actor, step.device.as_ref(), step.device_unknown);
     let waits = |key: &str| CATALOG.t_args(key, &[("what", ArgValue::Text(step.leaving.clone()))]);
     let title = match (hold, &who) {
         (HoldStep::Allowed, Some(name)) => named("browser-review-hold-allowed-by", name),
@@ -755,7 +766,7 @@ fn step_row(step: &Step, secrets: &[&str]) -> Element {
         // shares it: no actor's action.
         t("browser-review-by-typing")
     } else {
-        match actor_name(&step.actor, step.device.as_ref()) {
+        match actor_name(&step.actor, step.device.as_ref(), step.device_unknown) {
             Some(name) => named("browser-review-by", &name),
             None => t("browser-review-by-you"),
         }

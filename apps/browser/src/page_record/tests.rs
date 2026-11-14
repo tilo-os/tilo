@@ -25,6 +25,8 @@ use super::*;
 use crate::effects::BrowserEffect;
 use crate::resource::BrowserShell;
 
+mod many_actors;
+
 type App = TestApp<BrowserShell>;
 
 /// The workspace Browser is open in: one with an id, so its records have a

@@ -457,7 +457,8 @@ impl BrowserWidget {
     /// it is.
     pub(crate) fn answering(&mut self, invoker: Option<&ActionInvoker>) -> AnsweredBy {
         let actor = invoker.and_then(|invoker| PageActor::named(&invoker.actor));
-        self.page_record.acts_as(actor.as_ref(), invoker);
+        let working = self.working_in_page();
+        self.page_record.acts_as(actor.as_ref(), invoker, &working);
         AnsweredBy::admitted(actor)
     }
 

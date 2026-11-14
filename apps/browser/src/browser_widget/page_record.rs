@@ -63,13 +63,33 @@ impl BrowserWidget {
         invoker: Option<&ui::tilo_actions::ActionInvoker>,
         operation: &crate::effects::BrowserOperation,
     ) {
+        let working = self.working_in_page();
         match operation {
             crate::effects::BrowserOperation::Page(request) => {
-                self.page_record.admitted(actor, invoker, request);
+                self.page_record.admitted(actor, invoker, request, &working);
             }
-            crate::effects::BrowserOperation::Form(_) => self.page_record.acts_as(actor, invoker),
+            crate::effects::BrowserOperation::Form(_) => {
+                self.page_record.acts_as(actor, invoker, &working);
+            }
             _ => {}
         }
+    }
+
+    /// The actors whose page action runs or waits its turn in this tab, by
+    /// the names the engine keeps them under: what the engine sets down for
+    /// them is still to come, so the tab's record does not forget whom they
+    /// were admitted as ([`crate::page_record::TabRecorder::acts_as`]).
+    pub(super) fn working_in_page(&self) -> Vec<String> {
+        self.page_operation
+            .iter()
+            .filter_map(|operation| operation.actor.as_ref())
+            .chain(
+                self.page_waiting
+                    .iter()
+                    .filter_map(|waiting| waiting.actor.as_ref()),
+            )
+            .map(|actor| actor.as_str().to_owned())
+            .collect()
     }
 
     /// The engine the page runs in now, told apart by where it lives.
@@ -105,6 +125,22 @@ impl BrowserWidget {
         // ([`Self::page_record_reply`]).
         if self.reads_page_record(request_id) {
             return Some(result);
+        }
+        // The engine set the action that holds the tab down as it answered
+        // it: its actor is remembered until this window has written that
+        // entry, though the action holds the tab no longer.
+        let set_down_at = match &result {
+            Ok(reply) => reply.record.seq,
+            Err(failure) => failure.record.seq,
+        };
+        if let Some(seq) = set_down_at
+            && let Some(actor) = self
+                .page_operation
+                .as_ref()
+                .filter(|operation| operation.request_id == request_id)
+                .and_then(|operation| operation.actor.as_ref())
+        {
+            self.page_record.owes(actor, seq);
         }
         let (mut result, news) = self.page_record.placed(result);
         // The review screen draws the tab's record from the engine's own

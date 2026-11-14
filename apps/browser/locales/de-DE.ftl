@@ -312,6 +312,7 @@ browser-review-earlier = { $count ->
 browser-review-by = Von { $name }
 browser-review-by-you = Von Ihnen
 browser-review-actor-on-device = { $name } auf { $device }
+browser-review-actor-device-unknown = { $name }, Gerät nicht bekannt
 browser-review-failed = Fehlgeschlagen
 browser-review-did-click = { $target } angeklickt
 browser-review-did-fill = { $target } ausgefüllt

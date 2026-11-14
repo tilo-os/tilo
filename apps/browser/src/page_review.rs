@@ -52,10 +52,13 @@ impl Device {
 pub(crate) enum SetBy {
     /// An actor's action: the name the action door admitted it under, empty
     /// for the person at the window, the other device it worked from, and
-    /// the action's place in the record.
+    /// the action's place in the record. `device_unknown` says the answer
+    /// names no device because the window no longer knows where the actor
+    /// worked from, not because it worked on the device that runs the page.
     Action {
         actor: String,
         device: Option<Device>,
+        device_unknown: bool,
         seq: u64,
     },
     /// Typed straight into the page, as a person does.
@@ -225,11 +228,15 @@ fn list_alone(out: &mut Vec<Form>, frame: Option<&str>, fields: &[&Value]) {
 fn set_of(field: &Value) -> Option<(SetBy, bool)> {
     let set = field.get("set")?;
     let by = match text(set, "how") {
-        "action" => SetBy::Action {
-            actor: text(set, "by").to_owned(),
-            device: Device::read(set),
-            seq: whole(set.get("seq")).unwrap_or(0),
-        },
+        "action" => {
+            let device = Device::read(set);
+            SetBy::Action {
+                actor: text(set, "by").to_owned(),
+                device_unknown: device.is_none() && flag(set, "device_unknown"),
+                device,
+                seq: whole(set.get("seq")).unwrap_or(0),
+            }
+        }
         "input" => SetBy::Input,
         "page" => SetBy::Page,
         _ => return None,
@@ -548,6 +555,9 @@ pub(crate) struct Step {
     /// The other device they worked from; `None` on the device that runs the
     /// page.
     pub(crate) device: Option<Device>,
+    /// The record names no device because where they worked from is not
+    /// known: the window had forgotten whom it admitted under their name.
+    pub(crate) device_unknown: bool,
     /// What was asked, by the engine's name for it (`fill`, `click`); empty
     /// for what was typed straight into the page.
     pub(crate) action: String,
@@ -606,10 +616,12 @@ impl Step {
             "hold" => StepKind::Hold(HoldStep::read(text(entry, "action"))),
             _ => StepKind::Action,
         };
+        let device = Device::read(entry);
         Some(Self {
             seq: whole(entry.get("seq"))?,
             actor: text(entry, "actor").to_owned(),
-            device: Device::read(entry),
+            device_unknown: device.is_none() && flag(entry, "device_unknown"),
+            device,
             action: text(entry, "action").to_owned(),
             kind,
             leaving: if matches!(kind, StepKind::Hold(_)) {
@@ -768,6 +780,7 @@ mod tests {
             SetBy::Action {
                 actor: "agent:ada".into(),
                 device: None,
+                device_unknown: false,
                 seq: 1
             }
         );
@@ -783,6 +796,7 @@ mod tests {
             SetBy::Action {
                 actor: "agent:ben".into(),
                 device: None,
+                device_unknown: false,
                 seq: 2
             }
         );

@@ -29,6 +29,14 @@
 //! there, never from what the engine lists, and the record's door refuses an
 //! entry that names any other device than its author's.
 //!
+//! A window remembers whom the action system admitted under a name for the
+//! [`MAX_ACTORS`] actors it admitted last, and for every actor whose page
+//! action still runs or waits its turn, or was answered and is not written
+//! here yet. What the engine lists under a name the window has forgotten is
+//! still set down as that actor's, and says that where the actor worked from
+//! is not known (`device_unknown`): it never reads as an actor on the device
+//! that runs the page.
+//!
 //! Never a secret: what was written into a secret field is not in what the
 //! engine lists, whatever wrote it, and the entry says so (`secret`). The
 //! record keeps of such an entry that the field was set and none of its
@@ -87,8 +95,9 @@ const MAX_VALUES: usize = 64;
 const MAX_ANSWERS: usize = 200;
 /// The longest tab id.
 const MAX_TAB_ID_BYTES: usize = 64;
-/// How many actors a window remembers the admitted invoker of.
-const MAX_ACTORS: usize = 64;
+/// How many actors a window remembers the admitted invoker of, beside the
+/// ones whose page action runs or waits its turn.
+pub(crate) const MAX_ACTORS: usize = 64;
 /// How many secrets a window remembers it sent, to keep them out.
 const MAX_WITHHELD: usize = 256;
 
@@ -119,6 +128,12 @@ pub struct PageAction {
     pub device: Atom,
     /// What that device's certificate calls it; empty when it names none.
     pub device_name: Atom,
+    /// Where its actor worked from is not known: the window that set this
+    /// down no longer remembered whom the action system admitted under the
+    /// actor's name ([`MAX_ACTORS`]). `device` is then empty because nothing
+    /// is known, not because the actor worked on the device that runs the
+    /// page.
+    pub device_unknown: bool,
     /// `input` for what was typed straight into the page and `hold` for what
     /// the window held the page from sending; empty for an action.
     pub how: Atom,
@@ -429,6 +444,7 @@ impl PageAction {
             actor: text("actor", MAX_NAME_BYTES),
             device: text("device", MAX_NAME_BYTES),
             device_name: text("device_name", MAX_NAME_BYTES),
+            device_unknown: entry.get("device_unknown").and_then(Value::as_bool) == Some(true),
             how,
             action,
             ok,
@@ -470,11 +486,13 @@ impl PageAction {
 
     /// Whether this action names the device its actor was admitted from:
     /// `device`, the one the door set on the invoker the change is authored
-    /// by, and no device for an invoker the door named none for.
+    /// by, and no device for an invoker the door named none for. Only an
+    /// action that names no device may say that its actor's is not known.
     fn is_from(&self, device: Option<&InvokerDevice>) -> bool {
         match device {
             Some(device) => {
-                self.device.0 == clipped(&device.id, MAX_NAME_BYTES)
+                !self.device_unknown
+                    && self.device.0 == clipped(&device.id, MAX_NAME_BYTES)
                     && self.device_name.0 == clipped(&device.name, MAX_NAME_BYTES)
             }
             None => self.device.0.is_empty() && self.device_name.0.is_empty(),
@@ -509,6 +527,10 @@ impl PageAction {
             if !self.device_name.0.is_empty() {
                 entry.insert("device_name".into(), self.device_name.0.clone().into());
             }
+        } else if self.device_unknown {
+            // Said so a reader does not take the actor for one on the device
+            // that runs the page.
+            entry.insert("device_unknown".into(), true.into());
         }
         entry.insert("ok".into(), self.ok.into());
         if !self.role.0.is_empty() || !self.name.0.is_empty() {
@@ -623,8 +645,17 @@ pub(crate) struct TabRecorder {
     /// Something ended while that read was with the engine.
     again: bool,
     /// The invoker each actor of this tab was admitted as, by the name the
-    /// engine keeps it under.
+    /// engine keeps it under, the one admitted longest ago first.
     actors: Vec<(String, ActionInvoker)>,
+    /// The actions the engine said it set down, in answers this window has
+    /// taken, that it has not written yet: each by its actor's name and its
+    /// place in the engine's record ([`Self::owes`]).
+    owed: Vec<(String, u64)>,
+    /// This window has forgotten an actor it admitted. Until it has, a name
+    /// it does not remember is one it never admitted; from then on such a
+    /// name may be one it admitted from another device, and what is said of
+    /// it says that its device is not known.
+    forgot: bool,
     /// What the secrets this window sent are told apart by: their keyed
     /// digests, never their text.
     key: [u8; 32],
@@ -695,22 +726,25 @@ impl TabRecorder {
         self.cursor = 0;
         self.pull = None;
         self.again = false;
+        self.owed.clear();
     }
 
     /// `request` was admitted for `invoker`, who acts in the tab as `actor`:
     /// what the engine sets down under that name is authored by that
     /// invoker. The text of a secret fill is remembered by its digest, so
-    /// it is never written whatever the engine lists.
+    /// it is never written whatever the engine lists. `working` is as
+    /// [`Self::acts_as`] takes it.
     pub(crate) fn admitted(
         &mut self,
         actor: Option<&PageActor>,
         invoker: Option<&ActionInvoker>,
         request: &PageRequest,
+        working: &[String],
     ) {
         if !self.attached() {
             return;
         }
-        self.acts_as(actor, invoker);
+        self.acts_as(actor, invoker, working);
         if let PageRequest::Fill {
             secret: true, text, ..
         } = request
@@ -741,18 +775,63 @@ impl TabRecorder {
     /// `invoker` acts in the tab as `actor`: what the engine sets down under
     /// that name is authored by that invoker, whether it is a page action of
     /// theirs or their answer to something the window held.
-    pub(crate) fn acts_as(&mut self, actor: Option<&PageActor>, invoker: Option<&ActionInvoker>) {
+    ///
+    /// The window remembers [`MAX_ACTORS`] of them. One more makes it forget
+    /// the one admitted longest ago, but never one of `working`: the actors
+    /// whose page action runs or waits its turn in the tab, by the names the
+    /// engine keeps them under. What the engine sets down for those is still
+    /// to come, so a crowd asking for a busy tab does not cost the actors
+    /// already working in it their names. Nor is one forgotten whose
+    /// answered action this window has yet to write ([`Self::owes`]).
+    pub(crate) fn acts_as(
+        &mut self,
+        actor: Option<&PageActor>,
+        invoker: Option<&ActionInvoker>,
+        working: &[String],
+    ) {
         if !self.attached() {
             return;
         }
         if let (Some(actor), Some(invoker)) = (actor, invoker) {
             self.actors.retain(|(name, _)| name != actor.as_str());
             if self.actors.len() >= MAX_ACTORS {
-                self.actors.remove(0);
+                // Fewer work in a tab at once than it remembers, so there is
+                // always one to forget that nothing is still to come for.
+                let owed = &self.owed;
+                let oldest = self
+                    .actors
+                    .iter()
+                    .position(|(name, _)| {
+                        !working.contains(name) && !owed.iter().any(|(actor, _)| actor == name)
+                    })
+                    .unwrap_or(0);
+                self.actors.remove(oldest);
+                self.forgot = true;
             }
             self.actors
                 .push((actor.as_str().to_owned(), invoker.clone()));
         }
+    }
+
+    /// The engine answered a page action of `actor` and says it set the
+    /// action down at its place `seq`. Until this window has written that
+    /// entry, `actor` is not forgotten, though the action holds the tab no
+    /// longer: actors turned away from a busy tab ask again the moment an
+    /// action answers, which is before its entry is read from the engine.
+    pub(crate) fn owes(&mut self, actor: &PageActor, seq: u64) {
+        if !self.attached() || seq <= self.cursor {
+            return;
+        }
+        if self.owed.len() >= MAX_ACTORS {
+            self.owed.remove(0);
+        }
+        self.owed.push((actor.as_str().to_owned(), seq));
+    }
+
+    /// Owe nothing for what this window has written.
+    fn settle_owed(&mut self) {
+        let cursor = self.cursor;
+        self.owed.retain(|(_, seq)| *seq > cursor);
     }
 
     fn digest(&self, text: &str) -> [u8; 32] {
@@ -789,16 +868,13 @@ impl TabRecorder {
         }
     }
 
-    /// Who the engine's `actor` was admitted as. A name this window no
-    /// longer remembers is still an actor of that name.
-    fn invoker(&self, actor: &str) -> ActionInvoker {
+    /// Whom the action system admitted under the engine's name `actor`;
+    /// `None` for a name this window does not remember.
+    fn admitted_as(&self, actor: &str) -> Option<&ActionInvoker> {
         self.actors
             .iter()
             .find(|(name, _)| name == actor)
-            .map_or_else(
-                || ActionInvoker::actor(actor).with_kind(ActorKind::Agent),
-                |(_, invoker)| invoker.clone(),
-            )
+            .map(|(_, invoker)| invoker)
     }
 
     /// Write what the engine's record lists in `data` and this window has
@@ -828,7 +904,18 @@ impl TabRecorder {
             let typed = listed.get("how").and_then(Value::as_str) == Some("input");
             // Who the action is written as: its actor, as the door admitted
             // it; the person for what was typed and for the unnamed actor.
-            let by = (!typed && !actor.is_empty()).then(|| self.invoker(actor));
+            let named = !typed && !actor.is_empty();
+            let admitted = named.then(|| self.admitted_as(actor).cloned()).flatten();
+            // A name this window does not remember is still an actor of
+            // that name, and the action is set down as theirs. Once the
+            // window has forgotten an actor, what the door said of this one
+            // may be gone: the entry then says that where they worked from
+            // is not known instead of naming no device, which would read as
+            // an actor on this one.
+            let forgotten = named && admitted.is_none() && self.forgot;
+            let by = named.then(|| {
+                admitted.unwrap_or_else(|| ActionInvoker::actor(actor).with_kind(ActorKind::Agent))
+            });
             let mut entry = listed.clone();
             if let Some(fields) = entry.as_object_mut() {
                 fields.insert("seq".into(), self.base.saturating_add(seq).into());
@@ -836,11 +923,15 @@ impl TabRecorder {
                 // it says, never what the engine lists.
                 fields.remove("device");
                 fields.remove("device_name");
+                fields.remove("device_unknown");
                 if let Some(device) = by.as_ref().and_then(|by| by.device.as_ref()) {
                     fields.insert("device".into(), device.id.clone().into());
                     if !device.name.is_empty() {
                         fields.insert("device_name".into(), device.name.clone().into());
                     }
+                }
+                if forgotten {
+                    fields.insert("device_unknown".into(), true.into());
                 }
             }
             self.withhold(&mut entry);
@@ -861,10 +952,12 @@ impl TabRecorder {
             if let Err(error) = written {
                 // It is read from the engine again with the next action.
                 tracing::warn!(%error, "a page action was not set down in the tab's record");
+                self.settle_owed();
                 return false;
             }
             self.cursor = seq;
         }
+        self.settle_owed();
         data.get("more").and_then(Value::as_bool).unwrap_or(false)
     }
 
@@ -1001,7 +1094,10 @@ impl TabRecorder {
     /// Write into `said`, an entry or who set a field, the device `actor`
     /// worked from when it did the action at `place` of the tab's record,
     /// and take out whatever device it named before: only this window says
-    /// one, from what the door that admitted the actor said.
+    /// one, from what the door that admitted the actor said. Where the
+    /// record keeps no such action and this window has forgotten the actor,
+    /// it says that the device is not known (`device_unknown`), as the
+    /// record does of an action set down so.
     fn say_device(
         &self,
         said: &mut serde_json::Map<String, Value>,
@@ -1010,6 +1106,7 @@ impl TabRecorder {
     ) {
         said.remove("device");
         said.remove("device_name");
+        said.remove("device_unknown");
         let Some(actor) = actor.filter(|actor| !actor.is_empty()) else {
             return;
         };
@@ -1019,18 +1116,27 @@ impl TabRecorder {
                     .actions
                     .get(&action_key(&self.tab, place))
                     .filter(|kept| kept.actor.0 == actor)
-                    .map(|kept| (kept.device.0.clone(), kept.device_name.0.clone()))
+                    .map(|kept| {
+                        (
+                            kept.device.0.clone(),
+                            kept.device_name.0.clone(),
+                            kept.device_unknown,
+                        )
+                    })
             })
         });
-        let (device, name) = kept.unwrap_or_else(|| {
-            self.actors
-                .iter()
-                .find(|(named, _)| named == actor)
-                .and_then(|(_, invoker)| invoker.device.as_ref())
-                .map(|device| (device.id.clone(), device.name.clone()))
-                .unwrap_or_default()
+        let (device, name, unknown) = kept.unwrap_or_else(|| match self.admitted_as(actor) {
+            Some(invoker) => invoker
+                .device
+                .as_ref()
+                .map(|device| (device.id.clone(), device.name.clone(), false))
+                .unwrap_or_default(),
+            None => (String::new(), String::new(), self.forgot),
         });
         if device.is_empty() {
+            if unknown {
+                said.insert("device_unknown".into(), true.into());
+            }
             return;
         }
         said.insert("device".into(), device.into());
