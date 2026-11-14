@@ -399,15 +399,12 @@ pub fn coalesce(
     let mut ordered: Vec<&FileVersionV1> = versions.iter().collect();
     ordered.sort_by_key(|version| (version.timestamp_ms, version.id));
     let mut changes: Vec<FileChange> = Vec::new();
-    let mut open: Option<(WriterKey, Duration)> = None;
+    let mut open: Option<WriterKey> = None;
     for version in ordered {
         let attribution = attributions.get(&version.id);
         let writer = WriterKey::of(version, attribution);
         let continues = changes.last().is_some_and(|change| {
-            let Some((key, gap)) = &open else {
-                return false;
-            };
-            if *key != writer {
+            if open.as_ref() != Some(&writer) {
                 return false;
             }
             let last = change.last();
@@ -422,7 +419,7 @@ pub fn coalesce(
                 return true;
             }
             elapsed <= quiet
-                || (elapsed <= ATOMIC_SAVE.max(*gap)
+                || (elapsed <= ATOMIC_SAVE
                     && matches!(
                         last.provenance,
                         FileProvenance::Rename | FileProvenance::Move
@@ -440,10 +437,7 @@ pub fn coalesce(
                 why: None,
             });
         }
-        if let Some((_, gap)) = open.as_mut() {
-            *gap = quiet;
-        }
-        open = Some((writer, quiet));
+        open = Some(writer);
     }
     changes
 }
