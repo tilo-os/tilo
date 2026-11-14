@@ -26,7 +26,7 @@
 //! which History groups its actions under; the workspace shows the agent
 //! present with what it does while it runs.
 
-mod held;
+pub(crate) mod held;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -258,7 +258,8 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         &key.verifying_key().to_bytes(),
     );
     if hold {
-        return held::hold(&place.map_err(anyhow::Error::msg)?, shared(device));
+        let home = tilo_paths::home().ok_or_else(|| anyhow::anyhow!("HOME is missing"))?;
+        return held::hold(&place.map_err(anyhow::Error::msg)?, shared(device), home);
     }
     match place.and_then(|place| held::reach(&place).map(|stream| (stream, place))) {
         Ok((stream, place)) => held::relay(stream, &place),
@@ -291,6 +292,14 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
             );
         }
     };
+    if request.get("method").and_then(Value::as_str) == Some(PEER_STATUS) {
+        // Asked by `tilo status`: no agent run, and nothing entered for it.
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        return Some(
+            json!({"jsonrpc": "2.0", "id": id, "result": peer_status(connection).await})
+                .to_string(),
+        );
+    }
     let served = connection.served().await.and_then(|served| {
         // The person stopped this agent: its session ended for good, and every call says so.
         match served.session.stopped() {
@@ -306,6 +315,67 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
         show(&served, &request);
     }
     Some(answer.to_string())
+}
+
+/// What `tilo status` asks this computer's peer: who it is, which workspaces it shows where, and
+/// whether they are in sync.
+pub(crate) const PEER_STATUS: &str = "tilo/peer";
+
+/// The peer's answer to [`PEER_STATUS`].
+async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
+    let device = connection.shared.device.as_ref().ok();
+    let session = connection.shared.session.lock().await.clone();
+    let phase = session.as_ref().map_or_else(
+        || "entering".to_owned(),
+        |session| format!("{:?}", session.device.session().status().phase).to_lowercase(),
+    );
+    let (mounted, failed, workspaces) = match held::PEER.get() {
+        Some(peer) => (
+            peer.mounted().await,
+            peer.failures(),
+            peer.workspaces().await,
+        ),
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
+    let not_in = held::NOT_IN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    json!({
+        "pid": std::process::id(),
+        "device": device.map(|device| &device.label),
+        "person": device.map(|device| &device.user),
+        "host": device.map(|device| &device.host_origin),
+        "session": phase,
+        "not_in": not_in,
+        "mounted": mounted,
+        "workspaces": workspaces,
+        "failed": failed.into_iter().map(|(workspace, why)| json!({"workspace": workspace, "why": why})).collect::<Vec<_>>(),
+    })
+}
+
+/// Ask the peer this computer runs for its [`PEER_STATUS`]; `None` when none runs (it is not
+/// started for asking).
+pub(crate) fn ask_peer() -> Option<Value> {
+    use std::io::{BufRead as _, Write as _};
+    let (key, _) = crate::login::load(&crate::login::device_dir().ok()?).ok()??;
+    let place = held::Place::of(
+        &crate::login::device_dir().ok()?,
+        &key.verifying_key().to_bytes(),
+    )
+    .ok()?;
+    let mut stream = held::connect(&place)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    writeln!(
+        stream,
+        "{}",
+        json!({"jsonrpc": "2.0", "id": 1, "method": PEER_STATUS})
+    )
+    .ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(stream).read_line(&mut line).ok()?;
+    let answer: Value = serde_json::from_str(&line).ok()?;
+    answer.get("result").cloned()
 }
 
 /// What the server answers while the workspace cannot be reached: who it is,

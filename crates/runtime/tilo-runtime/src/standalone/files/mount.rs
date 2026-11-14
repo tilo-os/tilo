@@ -6,25 +6,15 @@ use super::{INTERVAL, NamespaceFile};
 use std::{
     ffi::OsStr,
     io,
-    os::unix::fs::PermissionsExt as _,
     path::Path,
     sync::{Arc, mpsc},
     thread::JoinHandle,
 };
+use tilo_fs::fuse_session::clear_stale_mount;
 
-/// The helper an unprivileged process mounts FUSE through.
-const FUSERMOUNT: &str = "fusermount3";
-
-/// Whether this user can mount FUSE: the device `dev_fuse` exists and
-/// [`FUSERMOUNT`] is an executable on `path`.
+/// Whether this user can mount FUSE ([`tilo_fs::fuse_session::mountable`]).
 pub(super) fn available_in(dev_fuse: &Path, path: Option<&OsStr>) -> bool {
-    dev_fuse.exists()
-        && path.is_some_and(|path| {
-            std::env::split_paths(path).any(|dir| {
-                std::fs::metadata(dir.join(FUSERMOUNT))
-                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-            })
-        })
+    tilo_fs::fuse_session::mountable(dev_fuse, path)
 }
 
 /// A mounted workspace; unmounted when dropped.
@@ -86,27 +76,5 @@ impl Drop for Mount {
 fn save(namespace: &NamespaceFile) {
     if let Err(error) = namespace.save_if_changed() {
         tracing::warn!(%error, "the workspace namespace was not saved");
-    }
-}
-
-/// A mount a crashed runtime left behind answers `ENOTCONN`; unmount it
-/// so the folder's path can be mounted again.
-fn clear_stale_mount(at: &Path) -> io::Result<()> {
-    match std::fs::metadata(at) {
-        Err(error) if error.raw_os_error() == Some(libc::ENOTCONN) => {
-            let status = std::process::Command::new(FUSERMOUNT)
-                .args(["-u", "-z"])
-                .arg(at)
-                .status()?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other(format!(
-                    "{FUSERMOUNT} could not remove the stale mount at {}",
-                    at.display()
-                )))
-            }
-        }
-        _ => Ok(()),
     }
 }

@@ -37,7 +37,7 @@ tilo-files = { path = "../../platform/tilo-files" }
 # What an uploaded file is, from its own bytes: which app opens it, so
 # `tilo files put` lands it in that app's record.
 tilo-content-types = { path = "../content-types" }
-rustix = { workspace = true, features = ["fs", "std"] }
+rustix = { workspace = true, features = ["fs", "std", "process"] }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
 # control protocol's one client, shared with tilo-control.
@@ -62,7 +62,7 @@ ed25519-dalek.workspace = true
 postcard.workspace = true
 hex.workspace = true
 rand.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std", "signal"] }
 # `tilo mcp`: the runtime's own MCP projection of a workspace, its actions
 # asked of the workspace's host through this device's session, as the person
 # their workspaces name.
@@ -80,6 +80,25 @@ collab-types = { path = "../../collab/collab-types" }
 # and narrates what its actions are doing on the live plane.
 tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The peer `tilo login` leaves running: the person's workspaces' file trees,
+# held over the device's session and mounted at ~/Tilo with the filesystem
+# Tilo OS mounts.
+tilo-fs = { package = "tilo-fs", path = "../fs" }
+fs-protocol = { path = "../fs-protocol" }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+automerge.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+tracing.workspace = true
+# A workspace's name as a folder name, composed as macOS and Linux read it back.
+unicode-normalization = "0.1.25"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

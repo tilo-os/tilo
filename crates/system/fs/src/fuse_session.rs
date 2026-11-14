@@ -57,3 +57,45 @@ fn end_connection(mount_point: &Path) -> io::Result<bool> {
 fn end_connection(_mount_point: &Path) -> io::Result<bool> {
     Ok(false)
 }
+
+/// The helper an unprivileged process mounts FUSE through.
+pub const FUSERMOUNT: &str = "fusermount3";
+
+/// Whether this user can mount FUSE: the device `dev_fuse` exists and
+/// [`FUSERMOUNT`] is an executable on `path`.
+#[must_use]
+pub fn mountable(dev_fuse: &Path, path: Option<&std::ffi::OsStr>) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    dev_fuse.exists()
+        && path.is_some_and(|path| {
+            std::env::split_paths(path).any(|dir| {
+                std::fs::metadata(dir.join(FUSERMOUNT))
+                    .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            })
+        })
+}
+
+/// A mount a crashed daemon left behind answers `ENOTCONN`; unmount it so
+/// its path can be mounted again.
+///
+/// # Errors
+/// [`FUSERMOUNT`] could not remove it.
+pub fn clear_stale_mount(at: &Path) -> io::Result<()> {
+    match std::fs::metadata(at) {
+        Err(error) if error.raw_os_error() == Some(libc::ENOTCONN) => {
+            let status = std::process::Command::new(FUSERMOUNT)
+                .args(["-u", "-z"])
+                .arg(at)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "{FUSERMOUNT} could not remove the stale mount at {}",
+                    at.display()
+                )))
+            }
+        }
+        _ => Ok(()),
+    }
+}

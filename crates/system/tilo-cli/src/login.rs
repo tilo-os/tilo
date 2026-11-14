@@ -740,6 +740,18 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
         Ok(entered) => {
             println!("Entered {place}: their tab shows you there.");
             entered.close();
+            // The workspace's one folder, on this computer too.
+            match crate::folders::after_login(&device.workspace, device.workspace_name.as_deref()) {
+                Ok(folder) => println!(
+                    "Its files are in {}, kept in sync both ways: anything written there is in the \
+                     workspace, named for who wrote it (`tilo folders` lists the folders).",
+                    folder.display()
+                ),
+                Err(error) => println!(
+                    "Its files are not in a folder on this computer yet: {error:#} \
+                     (`tilo folders start` tries again)."
+                ),
+            }
             // An agent that adds Tilo's tools itself confirms them first: the
             // tab leaves only once they are in, and the agent's own check
             // tells it that they are.

@@ -27,10 +27,6 @@ use super::{Connection, Enter, Shared, answer};
 const REACHING: Duration = Duration::from_secs(10);
 /// How long a holder starting waits for one that is leaving to let go.
 const TAKING_OVER: Duration = Duration::from_secs(5);
-/// How long the holder stays in the workspace after its last connection
-/// ended, for the next one (an agent restarted, `tilo agent check` before
-/// it) to find it there.
-const LINGER: Duration = Duration::from_secs(10);
 /// How often a connection looks for a holder that has not started listening.
 const POLL: Duration = Duration::from_millis(50);
 
@@ -96,6 +92,20 @@ fn socket_dir(device_dir: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// A connection to the device's holder when one listens, starting none.
+pub(crate) fn connect(place: &Place) -> Option<UnixStream> {
+    UnixStream::connect(&place.socket).ok()
+}
+
+/// Start the device's holder, the peer, unless one listens already: what
+/// `tilo login` and `tilo mount` leave running.
+///
+/// # Errors
+/// It did not start, or did not listen in time.
+pub(crate) fn ensure(place: &Place) -> Result<(), String> {
+    reach(place).map(drop)
+}
+
 /// A connection to the device's holder, starting it when none listens.
 pub(crate) fn reach(place: &Place) -> Result<UnixStream, String> {
     reach_starting(place, || start_holder(place))
@@ -136,7 +146,7 @@ fn reach_starting(
     }
 }
 
-/// Start `tilo mcp --hold` on its own: in a process group of its own, so the
+/// Start the peer (`tilo mcp --hold`) on its own: in a process group of its own, so the
 /// agent that ends this connection does not end it with the others', and
 /// writing what it says to its log.
 fn start_holder(place: &Place) -> std::io::Result<std::process::Child> {
@@ -211,26 +221,57 @@ async fn converse<E: Enter>(
     while answering.join_next().await.is_some() {}
 }
 
-/// Hold the device's session for every connection at `place`, until none
-/// came for [`LINGER`]. Another holder already there keeps it: this one
-/// ends at once.
-pub(crate) fn hold<E: Enter>(place: &Place, shared: Arc<Shared<E>>) -> Result<ExitCode> {
-    hold_for(place, shared, LINGER, TAKING_OVER)
+/// This computer as the person's peer: the device's session held for every
+/// connection at `place` for as long as this process runs, and the person's
+/// workspaces' files shown below `home` over it ([`crate::peer`]). Another
+/// holder already there keeps it: this one ends at once.
+pub(crate) fn hold<E: Enter>(
+    place: &Place,
+    shared: Arc<Shared<E>>,
+    home: PathBuf,
+) -> Result<ExitCode> {
+    let device_dir = place
+        .lock
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    hold_for(
+        place,
+        shared,
+        Holding::Peer {
+            home,
+            state: device_dir,
+        },
+        TAKING_OVER,
+    )
 }
 
-/// [`hold`], lingering `linger` after the last connection, and waiting up to
-/// `taking_over` for a holder that is leaving.
+/// How long a holder holds, and what else it does.
+enum Holding {
+    /// Until no connection came for this long.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "a holder that lingers out is a test's")
+    )]
+    Linger(Duration),
+    /// For as long as it runs, as the peer that shows the workspaces' files
+    /// below `home`, keeping their state in `state`.
+    Peer { home: PathBuf, state: PathBuf },
+}
+
+/// [`hold`], holding as `holding` says, and waiting up to `taking_over` for a
+/// holder that is leaving.
 fn hold_for<E: Enter>(
     place: &Place,
     shared: Arc<Shared<E>>,
-    linger: Duration,
+    holding: Holding,
     taking_over: Duration,
 ) -> Result<ExitCode> {
     let Some(_held) = take_lock(&place.lock, taking_over)? else {
         return Ok(ExitCode::SUCCESS);
     };
     let runtime = bridge_runtime()?;
-    runtime.block_on(serve_held(place, shared, linger))?;
+    runtime.block_on(serve_held(place, shared, holding))?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -260,7 +301,7 @@ fn take_lock(path: &Path, taking_over: Duration) -> Result<Option<advisory_lock:
 async fn serve_held<E: Enter>(
     place: &Place,
     shared: Arc<Shared<E>>,
-    linger: Duration,
+    holding: Holding,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     // A socket left by a holder that ended without removing it.
@@ -268,11 +309,21 @@ async fn serve_held<E: Enter>(
     let listener = tokio::net::UnixListener::bind(&place.socket)
         .with_context(|| format!("listen at {}", place.socket.display()))?;
     std::fs::set_permissions(&place.socket, std::fs::Permissions::from_mode(0o600))?;
-    // Enter the workspace while the first agent starts, not at its first call.
-    let entering = Arc::clone(&shared);
-    tokio::spawn(async move {
-        let _ = entering.session(false).await;
-    });
+    let linger = match holding {
+        Holding::Linger(linger) => {
+            // Enter the workspace while the first agent starts, not at its first call.
+            let entering = Arc::clone(&shared);
+            tokio::spawn(async move {
+                let _ = entering.session(false).await;
+            });
+            Some(linger)
+        }
+        Holding::Peer { home, state } => {
+            tokio::spawn(keep_peer(Arc::clone(&shared), home, state));
+            None
+        }
+    };
+    let mut ended = ending()?;
     let (count, mut live) = tokio::sync::watch::channel(0_usize);
     let count = Arc::new(count);
     loop {
@@ -288,7 +339,11 @@ async fn serve_held<E: Enter>(
                 });
             }
             () = idle(&mut live, linger) => break,
+            _ = ended.recv() => break,
         }
+    }
+    if let Some(peer) = PEER.get() {
+        peer.close().await;
     }
     // No connection is left to cut off: the next one starts a holder anew.
     let _ = std::fs::remove_file(&place.socket);
@@ -297,8 +352,83 @@ async fn serve_held<E: Enter>(
     Ok(())
 }
 
-/// Once no connection has been open for `linger`.
-async fn idle(live: &mut tokio::sync::watch::Receiver<usize>, linger: Duration) {
+/// What ends a holder from outside: the user service stopping it, or a
+/// person's Ctrl-C.
+fn ending() -> Result<tokio::sync::mpsc::UnboundedReceiver<()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (said, ended) = tokio::sync::mpsc::unbounded_channel();
+    for kind in [
+        SignalKind::terminate(),
+        SignalKind::interrupt(),
+        SignalKind::hangup(),
+    ] {
+        let mut signal = signal(kind)?;
+        let said = said.clone();
+        tokio::spawn(async move {
+            if signal.recv().await.is_some() {
+                let _ = said.send(());
+            }
+        });
+    }
+    Ok(ended)
+}
+
+/// The peer this holder runs, once it does.
+pub(crate) static PEER: std::sync::OnceLock<Arc<crate::peer::Peer>> = std::sync::OnceLock::new();
+/// Why this holder's device is not in the workspace, while it is not.
+pub(crate) static NOT_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// How often the peer looks whether its session is still the device's.
+const PEER_LOOK: Duration = Duration::from_secs(5);
+
+/// Run the peer: enter the workspace, and show the person's workspaces' folders
+/// over the session, mounted again whenever the session is a new one, and as
+/// `tilo folders` changes them.
+async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathBuf) {
+    let peer = match crate::peer::Peer::open(&state, &home, true).await {
+        Ok(peer) => Arc::new(peer),
+        Err(error) => {
+            *NOT_IN
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!(
+                "the workspaces' files cannot be kept here: {error:#}"
+            ));
+            return;
+        }
+    };
+    let _ = PEER.set(Arc::clone(&peer));
+    let mut shown: Option<Arc<super::Session>> = None;
+    loop {
+        match shared.session(false).await {
+            Ok(session) => {
+                *NOT_IN
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                if shown
+                    .as_ref()
+                    .is_none_or(|shown| !Arc::ptr_eq(shown, &session))
+                {
+                    peer.close().await;
+                    shown = Some(Arc::clone(&session));
+                }
+                // The folders as the person set them last (`tilo folders`).
+                peer.reconcile(&session.device).await;
+            }
+            Err(why) => {
+                *NOT_IN
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why);
+            }
+        }
+        tokio::time::sleep(PEER_LOOK).await;
+    }
+}
+
+/// Once no connection has been open for `linger`; never without one.
+async fn idle(live: &mut tokio::sync::watch::Receiver<usize>, linger: Option<Duration>) {
+    let Some(linger) = linger else {
+        return std::future::pending().await;
+    };
     loop {
         if *live.borrow_and_update() == 0 {
             if tokio::time::timeout(linger, live.changed()).await.is_err() {
@@ -492,7 +622,9 @@ mod tests {
         let linger = Duration::from_millis(300);
         let holding = {
             let (place, shared) = (place.clone(), Arc::clone(&shared));
-            std::thread::spawn(move || hold_for(&place, shared, linger, Duration::ZERO).unwrap())
+            std::thread::spawn(move || {
+                hold_for(&place, shared, Holding::Linger(linger), Duration::ZERO).unwrap()
+            })
         };
         let never = || -> std::io::Result<std::process::Child> {
             Err(std::io::Error::other("the holder runs already"))
@@ -520,7 +652,12 @@ mod tests {
         );
         // A second holder (another agent's `tilo mcp` starting one at the same moment) finds
         // the device held and ends, leaving the first listening.
-        let second_holder = hold_for(&place, Arc::clone(&shared), linger, Duration::ZERO);
+        let second_holder = hold_for(
+            &place,
+            Arc::clone(&shared),
+            Holding::Linger(linger),
+            Duration::ZERO,
+        );
         assert!(second_holder.is_ok());
         let mut third = UnixStream::connect(&place.socket).unwrap();
         assert_eq!(

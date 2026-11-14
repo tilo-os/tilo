@@ -114,8 +114,10 @@ fn a_new_identity_is_made_once() {
     assert!(said.contains("already holds Ada's"), "{said}");
 }
 
-/// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge.
-const MCP_IDLE_KB: u64 = 6 * 1024;
+/// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge. Most
+/// of it (about 5 MB) is the program's own data, relocated as it loads, which grows with the
+/// program: the same program is the peer that keeps the person's folders.
+const MCP_IDLE_KB: u64 = 7 * 1024;
 
 /// `tilo mcp` answers an agent's first calls and then idles small: a bridge between the agent
 /// and the person's workspace holds a few megabytes of its own (its private, anonymous memory;

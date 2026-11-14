@@ -33,6 +33,7 @@ mod api;
 mod cleanup;
 mod desktop;
 mod docs;
+mod folders;
 mod health;
 mod hosted;
 mod identity;
@@ -40,7 +41,9 @@ mod login;
 mod mcp;
 mod nouns;
 mod os;
+mod peer;
 mod sdk;
+mod service;
 mod settings;
 mod status;
 
@@ -338,6 +341,18 @@ enum Cmd {
         #[arg(long, hide = true)]
         hold: bool,
     },
+    /// Your workspaces' synced folders on this computer: each workspace's
+    /// one folder, at ~/<workspace> unless moved (`tilo login` adds the first).
+    #[command(
+        after_help = "Examples:\n  tilo folders\n  cp -r ~/Documents/contracts ~/Acme/\n  tilo folders add \"Book club\"\n  tilo folders free ~/Acme/videos\n  tilo folders pause Acme"
+    )]
+    Folders {
+        /// The answer as JSON.
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        cmd: Option<folders::FoldersCmd>,
+    },
     /// Connect agents to this desktop, and choose their models.
     Agent {
         #[command(subcommand)]
@@ -518,15 +533,18 @@ fn command_here(here: Here) -> clap::Command {
                 "open" | "action" | "workspace" => !here.desktop,
                 "app" => !here.apps,
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
-                "status" | "rollback" => !here.system,
+                // A computer logged in as one of the person's devices tells of its folders.
+                "status" => !(here.system || login::logged_in()),
+                "rollback" => !here.system,
                 "update" => !(here.apps || here.system),
                 "agent" => {
                     !((here.has)(agent::DOOR) || (here.has)(agent::MODELS) || login::logged_in())
                 }
                 "package" => !nouns::any_present(nouns::PACKAGE, here.has),
                 // A desktop's agents use its own door; elsewhere this
-                // computer logs in to the person's workspace instead.
-                "login" => here.desktop || (here.has)(agent::DOOR),
+                // computer logs in to the person's workspace instead, and its
+                // folders are what a Tilo desktop's own files are there.
+                "login" | "folders" => here.desktop || (here.has)(agent::DOOR),
                 // Started by agent tools (`tilo agent connect`), not typed.
                 "mcp" => true,
                 _ => return sub,
@@ -1000,6 +1018,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             site.as_deref(),
         ),
         Cmd::Mcp { hold } => mcp::serve(hold),
+        Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
@@ -1009,7 +1028,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Store { args } => run_app(&args, "tilo store"),
         // Read-only, so it never needs to become anything. A person diagnosing a machine should not
         // have to authenticate to be told what is on it.
+        Cmd::Status { json } if !system_available() && login::logged_in() => Ok(peer_status(json)),
         Cmd::Status { json } => {
+            if login::logged_in() && !json {
+                peer_status(false);
+            }
             require_system_provider()?;
             let code = deployment_status(json)?;
             if !json {
@@ -1303,6 +1326,27 @@ fn app_available() -> bool {
 
 fn system_available() -> bool {
     command_available(std::ffi::OsStr::new(&helper()))
+}
+
+/// `tilo status` on a computer logged in as one of the person's devices:
+/// who it is, which workspaces it shows where, and whether they are in sync.
+fn peer_status(json: bool) -> ExitCode {
+    let Some(status) = mcp::ask_peer() else {
+        if json {
+            println!("{}", serde_json::json!({"running": false}));
+        } else {
+            println!(
+                "This computer is logged in, but nothing keeps its folders in sync: run `tilo folders start`."
+            );
+        }
+        return ExitCode::from(1);
+    };
+    if json {
+        println!("{status}");
+        return ExitCode::SUCCESS;
+    }
+    print!("{}", peer::describe(&status));
+    ExitCode::SUCCESS
 }
 
 fn require_system_provider() -> Result<()> {
@@ -2070,7 +2114,7 @@ mod tests {
                 listed(elsewhere),
                 [
                     "app", "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
-                    "login"
+                    "login", "folders"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2090,7 +2134,7 @@ mod tests {
                 listed(nothing),
                 [
                     "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
-                    "login"
+                    "login", "folders"
                 ]
             );
             let bare = command_here(nothing).render_help().to_string();
