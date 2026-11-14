@@ -102,6 +102,7 @@ async fn main() {
             fetch_proxy: None,
             door: None,
             link: None,
+            site: None,
         })
         .await
         .expect("serve browsers");

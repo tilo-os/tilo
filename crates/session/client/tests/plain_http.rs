@@ -60,6 +60,7 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             fetch_proxy: None,
             door: None,
             link: None,
+            site: None,
         })
         .await
         .is_err();

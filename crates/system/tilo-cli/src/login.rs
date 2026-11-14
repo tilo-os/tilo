@@ -266,6 +266,21 @@ pub fn label(agent: &str, host: &str) -> String {
     format!("{agent} on {host}").chars().take(64).collect()
 }
 
+/// The workspace this computer's login entered: its id, and the name the
+/// device keeps for it, which is how a command that acts in it says which
+/// workspace it used. `None` when this computer is not logged in — an agent's
+/// key, say, which names no workspace.
+pub(crate) fn entered_workspace() -> Result<Option<(String, String)>> {
+    let Some((_, device)) = load(&device_dir()?)? else {
+        return Ok(None);
+    };
+    let name = device
+        .workspace_name
+        .clone()
+        .unwrap_or_else(|| device.workspace.clone());
+    Ok(Some((device.workspace, name)))
+}
+
 fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread()
         .enable_all()

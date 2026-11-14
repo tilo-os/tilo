@@ -380,8 +380,13 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
     // Ada comes to the relay once, as every person does.
     approved_key(&on_relay, &ada, &page, "Visa backend").await;
     let laptop = enrol(&ada, "Ada's script", DeviceCapabilities::member());
-    let file =
-        tilo_api::direct::KeyFile::new(&on_relay.relay, "Ada's script", &laptop.key, &laptop.cert);
+    let file = tilo_api::direct::KeyFile::new(
+        &on_relay.relay,
+        Some(&on_relay.web_entry),
+        "Ada's script",
+        &laptop.key,
+        &laptop.cert,
+    );
     let direct = tilo_api::direct::Direct::new(&file).unwrap();
     let json = [("content-type".to_owned(), "application/json".to_owned())];
 

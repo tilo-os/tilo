@@ -83,6 +83,25 @@ pub struct Reach<'a> {
     pub json: bool,
 }
 
+impl Reach<'_> {
+    /// Whether these calls act as the device `tilo login` made of this
+    /// computer — the one transport that knows the workspace it entered. A
+    /// key file and an API key are someone else's key, and name no workspace.
+    fn as_device(self) -> bool {
+        self.key_file.is_none() && api_key().is_none()
+    }
+}
+
+/// The workspace this computer's login entered, which `-w` means when nobody
+/// named one: its id, and the name the device keeps for it. `None` when these
+/// calls act as some other key, or this computer is not logged in.
+pub fn entered_workspace(reach: Reach<'_>) -> Result<Option<(String, String)>> {
+    if !reach.as_device() {
+        return Ok(None);
+    }
+    crate::login::entered_workspace()
+}
+
 /// One answer of the API: its status and its body.
 struct Answer {
     status: u16,
@@ -656,6 +675,9 @@ pub fn login_key(name: Option<&str>) -> Result<Option<tilo_api::direct::KeyFile>
         .map_err(|error| anyhow!("this computer's certificate: {error}"))?;
     Ok(Some(tilo_api::direct::KeyFile {
         host: device.host_origin.clone(),
+        // The site the device logged in with: links this key asks the host
+        // for are built on it, as the site's own page builds them.
+        site: Some(device.site.trim_end_matches('/').to_owned()),
         name: name.map_or_else(|| device.label.clone(), str::to_owned),
         key: hex::encode(key.to_bytes()),
         cert: hex::encode(canonical),
@@ -789,6 +811,11 @@ mod tests {
             .unwrap()
             .expect("a logged-in computer has a key");
         assert_eq!(file.host, "https://eu1.tilo.test");
+        assert_eq!(
+            file.site.as_deref(),
+            Some("https://tilo.sh"),
+            "the device keeps the site it logged in with: links are built there"
+        );
         assert_eq!(file.name, "Claude Code on build-box");
         assert_eq!(file.key, hex::encode(key.to_bytes()));
         assert_eq!(
@@ -798,6 +825,31 @@ mod tests {
         );
         // It is a key the API in process takes, as it stands.
         tilo_api::direct::Direct::new(&file).unwrap();
+
+        // The workspace the device entered is the one a command acts in when
+        // `-w` names none: its id, and the name the device keeps for it.
+        assert_eq!(
+            entered_workspace(Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            })
+            .unwrap(),
+            Some((
+                "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".to_owned(),
+                "Studio".to_owned()
+            ))
+        );
+        // A key file is someone else's key: it names no workspace of its own.
+        assert_eq!(
+            entered_workspace(Reach {
+                api: None,
+                key_file: Some(Path::new("visa.json")),
+                json: false,
+            })
+            .unwrap(),
+            None
+        );
 
         // And `tilo keys export` writes it, named, readable by this account.
         let out = dir.path().join("visa.json");
@@ -821,6 +873,7 @@ mod tests {
         let written = tilo_api::direct::KeyFile::read(&out).unwrap();
         assert_eq!(written.name, "Visa backend");
         assert_eq!(written.cert, file.cert);
+        assert_eq!(written.site, file.site, "an exported key keeps its site");
         tilo_api::direct::Direct::new(&written).unwrap();
     }
 }

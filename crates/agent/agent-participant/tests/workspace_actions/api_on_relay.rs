@@ -563,6 +563,7 @@ pub async fn serve(command: &[std::ffi::OsString]) -> std::process::ExitCode {
         &key_file,
         serde_json::to_vec(&tilo_api::direct::KeyFile::new(
             &on_relay.relay,
+            Some(&on_relay.web_entry),
             "Ada's script",
             &script.key,
             &script.cert,

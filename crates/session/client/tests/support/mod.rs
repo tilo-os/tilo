@@ -327,6 +327,7 @@ pub async fn start_host_serving(
             fetch_proxy,
             door: None,
             link: None,
+            site: None,
         })
         .await
         .unwrap();
@@ -403,6 +404,7 @@ pub async fn start_workspace_host_relaying(
             fetch_proxy: None,
             door: None,
             link: None,
+            site: None,
         })
         .await
         .unwrap();

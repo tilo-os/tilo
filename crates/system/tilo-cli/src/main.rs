@@ -77,7 +77,7 @@ struct Cli {
         short = 'w',
         long,
         global = true,
-        help = "A hosted workspace to act in, by name or id"
+        help = "A hosted workspace to act in, by name or id; this computer's own when not given"
     )]
     workspace: Option<String>,
     #[arg(
@@ -990,13 +990,55 @@ fn help_markdown() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The line that says which workspace `-w` meant when nobody named one, so
+/// an answer is never read without knowing where it came from. Standard
+/// error, so a `--json` answer stays the typed answer alone.
+fn entered_workspace_note(name: &str) -> String {
+    format!("acting in the workspace {name:?} (-w <name or id> names another)")
+}
+
+/// Which commands act in a workspace, so `-w` means something to them. `do` is
+/// not one: without `-w` it acts on this desktop, which is what a person
+/// typing it there means.
+fn acts_in_a_workspace(cmd: &Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::Keys { .. }
+            | Cmd::Members { .. }
+            | Cmd::Files { .. }
+            | Cmd::Run { .. }
+            | Cmd::Ls { .. }
+            | Cmd::Read { .. }
+            | Cmd::Sdk { .. }
+    )
+}
+
+/// `-w` when it was not given: the workspace this computer's `tilo login`
+/// entered, which is the one its device is in, said as it is used. A command
+/// that acts on no workspace never reads the login.
+fn workspace_or_entered(cli: &Cli) -> Result<Option<String>> {
+    if cli.workspace.is_some() || !acts_in_a_workspace(&cli.cmd) {
+        return Ok(cli.workspace.clone());
+    }
+    let entered = api::entered_workspace(api::Reach {
+        api: cli.api.as_deref(),
+        key_file: cli.key_file.as_deref(),
+        json: false,
+    })?;
+    Ok(entered.map(|(workspace, name)| {
+        eprintln!("{}", entered_workspace_note(&name));
+        workspace
+    }))
+}
+
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
+    let workspace = workspace_or_entered(&cli)?;
     let cmd = match run_hosted(
         cli.api.as_deref(),
         cli.key_file.as_deref(),
         cli.json,
-        cli.workspace,
+        workspace,
         cli.cmd,
         &spelling,
     ) {
@@ -1752,6 +1794,81 @@ mod tests {
     use super::*;
     use clap::{CommandFactory, FromArgMatches};
 
+    /// The line a command prints when `-w` was not given says which
+    /// workspace it acted in, and how to name another.
+    #[test]
+    fn an_unnamed_workspace_is_said() {
+        assert_eq!(
+            entered_workspace_note("Studio"),
+            "acting in the workspace \"Studio\" (-w <name or id> names another)"
+        );
+    }
+
+    /// A command that takes `-w` acts in the workspace this computer logged
+    /// into when nobody names one; `-w` still names another, and `do` without
+    /// it stays on this desktop.
+    #[test]
+    fn an_unnamed_workspace_is_the_one_this_computer_entered() {
+        const ENTERED: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
+
+        /// A command line with `cmd`, `-w` and `--key-file` as given.
+        fn with(cmd: Cmd, workspace: Option<&str>, key_file: Option<&str>) -> Cli {
+            Cli {
+                workspace: workspace.map(str::to_owned),
+                key_file: key_file.map(std::path::PathBuf::from),
+                json: false,
+                api: None,
+                cmd,
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let device = crate::login::Device {
+            site: "https://tilo.sh/".into(),
+            host_origin: "https://eu1.tilo.test".into(),
+            workspace: ENTERED.into(),
+            workspace_name: Some("Studio".into()),
+            user: "00".into(),
+            agent: "Claude Code".into(),
+            label: "Claude Code on build-box".into(),
+            cert: "00".into(),
+            host_cert: "00".into(),
+        };
+        crate::login::store(dir.path(), &key, &device).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_DEVICE_DIR", dir.path());
+        env.remove(api::KEY_ENV);
+
+        let members = || Cmd::Members {
+            cmd: hosted::MembersCmd::Ls,
+        };
+        assert_eq!(
+            workspace_or_entered(&with(members(), None, None)).unwrap(),
+            Some(ENTERED.to_owned()),
+            "the workspace the device entered is the one acted in"
+        );
+        assert_eq!(
+            workspace_or_entered(&with(members(), Some("jane-doe"), None)).unwrap(),
+            Some("jane-doe".to_owned()),
+            "`-w` names another"
+        );
+        let act = Cmd::Do {
+            action: "mute".into(),
+            args: Vec::new(),
+        };
+        assert_eq!(
+            workspace_or_entered(&with(act, None, None)).unwrap(),
+            None,
+            "`do` without `-w` acts on this desktop"
+        );
+        assert_eq!(
+            workspace_or_entered(&with(members(), None, Some("visa.json"))).unwrap(),
+            None,
+            "a key file is someone else's key: it names no workspace"
+        );
+    }
+
     tilo_test_env::scenario! {
         fn the_command_takes_json_anywhere_and_shows_what_it_does;
 
@@ -2098,7 +2215,7 @@ mod tests {
                     "  help       Print this message or the help of the given subcommand(s)\n",
                     "\n",
                     "Options:\n",
-                    "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id\n",
+                    "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id; this computer's own when not given\n",
                     "      --key-file <FILE>        A key this computer holds (`tilo keys export`), instead of TILO_API_KEY\n",
                     "      --json                   The answer as JSON, typed as the SDK gets it\n",
                     "  -h, --help                   Print help\n",

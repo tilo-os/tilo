@@ -73,6 +73,11 @@ pub struct WebConfig {
     /// HTTPS arrives through a proxy that carries no UDP names a way around
     /// it. `None` listens beside the HTTPS listener.
     pub link: Option<LinkListen>,
+    /// The site this host belongs to (`https://tilo.sh/`), when it knows one:
+    /// its `/i/<handle>` answers a browser that opens the host's own address
+    /// by sending it to the site's page, which is the page that can take a
+    /// sealed invitation's link.
+    pub site: Option<String>,
 }
 
 /// A WebTransport listener of its own ([`WebConfig::link`]).
@@ -156,6 +161,9 @@ struct Web {
     /// The sealed invitations this site keeps in place of their clerk: what a
     /// short link names, in bytes the site has no key for.
     shelf: shelf::Shelf,
+    /// The site this host belongs to, when it knows one: where a browser that
+    /// opened a link at the host's own address is sent.
+    site: Option<Site>,
     /// The login codes tabs hand their agents.
     login_codes: Arc<login_codes::LoginCodes>,
     /// The stand-in approvers this host keeps for people.
@@ -169,6 +177,56 @@ struct Web {
 #[must_use]
 pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
     state_root.join("stand-ins")
+}
+
+/// The site a host belongs to, as a link opened at the host's own address is
+/// answered: the page that takes it is the site's.
+#[derive(Clone, Debug)]
+struct Site {
+    /// The site's origin (`https://tilo.sh`), below which `i/<handle>` is the
+    /// page an invitation's link opens.
+    origin: String,
+    /// The `host:port` a request names when it already reached the site, and so
+    /// arrived through it: sending it on would be sending it to itself.
+    authority: String,
+}
+
+impl Site {
+    /// `entry` (`https://tilo.sh/`) as the site it names, if it names one.
+    fn new(entry: &str) -> Option<Self> {
+        let entry = entry.trim().trim_end_matches('/');
+        let uri: hyper::Uri = entry.parse().ok()?;
+        let authority = without_default_port(uri.authority()?.as_str()).to_owned();
+        Some(Self {
+            origin: entry.to_owned(),
+            authority,
+        })
+    }
+
+    /// Where the site's page for `handle` is. The key that opens the
+    /// invitation stays in the link's fragment, which a browser carries over
+    /// this redirect by itself: the site is never told it.
+    fn invitation(&self, handle: &str) -> String {
+        format!("{}/i/{handle}", self.origin)
+    }
+
+    /// Whether the request reached the host through the site itself.
+    fn served_it(&self, request: &Request<hyper::body::Incoming>) -> bool {
+        request
+            .headers()
+            .get(header::HOST)
+            .and_then(|host| host.to_str().ok())
+            .is_some_and(|host| without_default_port(host).eq_ignore_ascii_case(&self.authority))
+    }
+}
+
+/// `authority` without the port its scheme implies (`tilo.sh:443` is
+/// `tilo.sh`), which a browser leaves out of a `Host` as often as it writes it.
+fn without_default_port(authority: &str) -> &str {
+    authority
+        .strip_suffix(":443")
+        .or_else(|| authority.strip_suffix(":80"))
+        .unwrap_or(authority)
 }
 
 /// Make this host the stand-in approver of `root`'s person, with a certificate
@@ -355,6 +413,7 @@ impl Relay {
                 self.state_root().join("invitations"),
                 tilo_clock::unix_now_ns(),
             ),
+            site: config.site.as_deref().and_then(Site::new),
             login_codes: Arc::new(kept_login_codes(self.state_root(), public_origin.clone())),
             stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             door: config.door.clone(),

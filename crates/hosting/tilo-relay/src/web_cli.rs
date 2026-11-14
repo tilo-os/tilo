@@ -410,6 +410,9 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
             .link_listen
             .zip(args.link_origin.clone())
             .map(|(listen, origin)| tilo_relay::web::LinkListen { listen, origin }),
+        // The site this host belongs to, which it already announces as the
+        // web entry: a link opened at the host's own address is sent there.
+        site: args.web_entry.clone(),
     }
 }
 

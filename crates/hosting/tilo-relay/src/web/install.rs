@@ -560,6 +560,7 @@ mod tests {
             fetch_proxy: None,
             door: None,
             link: None,
+            site: None,
         }
     }
 

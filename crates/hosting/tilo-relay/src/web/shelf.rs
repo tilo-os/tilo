@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode, header};
 use tilo_relay_protocol::sealed_invitations::{
     Fetched, MAX_SEALED_BYTES, MAX_STORED_SECONDS, Stored, TakeBack,
 };
@@ -351,10 +351,22 @@ pub(super) async fn handle(
     let now_ns = tilo_clock::unix_now_ns();
     match *request.method() {
         Method::OPTIONS => reply(StatusCode::NO_CONTENT, Vec::new()),
-        Method::GET => match web.shelf.get(handle, now_ns) {
-            Some(fetched) => json_status(StatusCode::OK, &fetched),
-            None => gone(),
-        },
+        Method::GET => {
+            // A person who opens an invitation's link at the host's own
+            // address asks for a page, not for the ciphertext: the page that
+            // takes the link is the site's, so the browser goes there. The key
+            // stays in the fragment, which the browser carries over by itself.
+            if let Some(site) = &web.site
+                && wants_a_page(&request)
+                && !site.served_it(&request)
+            {
+                return at_the_site(&site.invitation(handle));
+            }
+            match web.shelf.get(handle, now_ns) {
+                Some(fetched) => json_status(StatusCode::OK, &fetched),
+                None => gone(),
+            }
+        }
         Method::POST => {
             let (_, bytes) = match body(request, MAX_SEALED_BYTES + 1024).await {
                 Ok(body) => body,
@@ -392,6 +404,37 @@ fn gone() -> Response<Body> {
         StatusCode::GONE,
         "this invitation is gone: it lapsed, or its inviter took it back",
     )
+}
+
+/// Whether the request asks for a page a person reads, as a browser opening a
+/// link does, rather than for the invitation's bytes as a caller takes them.
+fn wants_a_page(request: &Request<hyper::body::Incoming>) -> bool {
+    request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|accept| accept.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"))
+}
+
+/// The answer to a browser that opened the link at the host's address: the
+/// site's page for it. The fragment, which holds the key, is never sent, so
+/// there is nothing here to lose by sending the browser on.
+fn at_the_site(link: &str) -> Response<Body> {
+    let said = format!("this invitation's page is at {link}");
+    let mut response = reply(StatusCode::FOUND, said.into_bytes());
+    let Ok(location) = header::HeaderValue::from_str(link) else {
+        return status(StatusCode::INTERNAL_SERVER_ERROR, "the invitation is here");
+    };
+    response.headers_mut().insert(header::LOCATION, location);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 fn refused(refusal: &Refused) -> Response<Body> {

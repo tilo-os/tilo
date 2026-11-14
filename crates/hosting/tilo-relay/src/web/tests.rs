@@ -85,6 +85,11 @@ async fn relay_at(
 /// The web `relay` serves its pages, with every door a test does not open
 /// closed.
 fn web_of(relay: &Relay, host: &Host) -> Web {
+    web_of_at(relay, host, None)
+}
+
+/// [`web_of`] for a host that belongs to `site`.
+fn web_of_at(relay: &Relay, host: &Host, site: Option<&str>) -> Web {
     Web {
         context: relay.web_context().clone(),
         host_info: HostInfo {
@@ -106,6 +111,7 @@ fn web_of(relay: &Relay, host: &Host) -> Web {
             relay.state_root().join("invitations"),
             tilo_clock::unix_now_ns(),
         ),
+        site: site.and_then(Site::new),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
         stand_ins: Arc::new(stand_in::StandIns::new(
             relay.state_root().join("stand-ins"),
@@ -554,6 +560,89 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
         "the refusal says the invitation is gone: {}",
         String::from_utf8_lossy(&body)
     );
+
+    stop(relay, serving).await;
+}
+
+/// A site named with the port its scheme implies is the same site a browser
+/// names without it, so a request that came through the site is still known
+/// to have: sending it on would be a redirect to itself.
+#[test]
+fn a_site_named_with_its_default_port_is_the_same_site() {
+    assert_eq!(
+        Site::new("https://tilo.sh:443/").unwrap().authority,
+        "tilo.sh"
+    );
+    assert_eq!(
+        Site::new("http://tilo.localhost:24820/").unwrap().authority,
+        "tilo.localhost:24820",
+        "a port that is not the default is part of the site"
+    );
+    assert!(Site::new("not an address").is_none());
+}
+
+/// A person who opens an invitation's link at the host's own address is sent
+/// to the site's page for it, which is the page that takes the link: a link
+/// handed out before links moved to the site still works. The page's own
+/// request for the invitation's bytes — and any request that already reached
+/// the host through the site — is answered here, as it was.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay holds the shelf until it shuts down at the end"
+)]
+async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
+    let root = SigningKey::from_bytes(&[141; 32]);
+    let host = host(&root, 142, tilo_user_identity::DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let site = "https://app.example";
+    let (addr, serving) = serve_web(Arc::new(web_of_at(
+        &relay,
+        &host,
+        Some(&format!("{site}/")),
+    )))
+    .await;
+
+    let handle = "abcdefghijklmnop";
+    let browser = format!(
+        "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: text/html,application/xhtml+xml\r\n\r\n"
+    );
+    let (status, head, _) = exchange(addr, &browser, b"").await;
+    assert_eq!(status, 302, "{head}");
+    let page = format!("{site}/i/{handle}");
+    assert_eq!(
+        header_value(&head, "location"),
+        Some(page.as_str()),
+        "the browser is sent to the site's page, with the key still in its fragment: {head}"
+    );
+    assert_eq!(
+        header_value(&head, "cache-control"),
+        Some("no-store"),
+        "nothing keeps a link's stop"
+    );
+
+    // The page's own request for the invitation's bytes asks for no page, and
+    // is answered by the shelf, which holds nothing under that handle.
+    let bytes = format!(
+        "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+    );
+    let (status, head, _) = exchange(addr, &bytes, b"").await;
+    assert_eq!(status, 410, "{head}");
+
+    // A request that arrived through the site already is not sent on: the
+    // site's page fetched it from here, and sending it back would be a loop.
+    let through = format!(
+        "GET /i/{handle} HTTP/1.1\r\nHost: app.example\r\nConnection: close\r\nAccept: text/html\r\n\r\n"
+    );
+    let (status, head, _) = exchange(addr, &through, b"").await;
+    assert_eq!(status, 410, "{head}");
+
+    // A host that knows no site answers as it always has.
+    let (unhosted, second) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let (status, head, _) = exchange(unhosted, &browser, b"").await;
+    assert_eq!(status, 410, "{head}");
+    second.abort();
 
     stop(relay, serving).await;
 }
