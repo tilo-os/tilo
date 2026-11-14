@@ -8,8 +8,6 @@ tilo_test_env::scenario! {
     phase task_run_wire_is_typed_and_rejects_unknown_fields;
     {
         let envelope = TaskRunEnvelope {
-            paused: None,
-            model: None,
             version: 1,
             task_id: "task:1".into(),
             title: "Review proposal".into(),
@@ -69,8 +67,6 @@ tilo_test_env::scenario! {
                 .at(tilo_actions::SelectionPlace::range("block-1", 0, 20)),
         };
         let envelope = TaskRunEnvelope {
-            paused: None,
-            model: None,
             version: 1,
             task_id: "task:2".into(),
             presentation_version: None,
@@ -94,8 +90,6 @@ tilo_test_env::scenario! {
             Some(subject)
         );
         let without = TaskRunEnvelope {
-            paused: None,
-            model: None,
             subject: None,
             ..envelope
         };
@@ -111,8 +105,6 @@ tilo_test_env::scenario! {
     phase the_request_is_the_persons_own_words_without_context_or_conversation;
     {
         let envelope = |instruction: &str| TaskRunEnvelope {
-            paused: None,
-            model: None,
             version: 1,
             task_id: "task:3".into(),
             presentation_version: None,

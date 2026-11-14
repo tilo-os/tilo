@@ -759,7 +759,6 @@ impl InvocationEnvelope {
 
 #[derive(Clone, Debug)]
 struct TaskRunEnvelope {
-    paused: Option<runtime_collab::TaskRunPausedStep>,
     task_id: String,
     title: String,
     instruction: Option<String>,
@@ -769,7 +768,6 @@ struct TaskRunEnvelope {
     planning: runtime_collab::TaskRunPlanning,
     execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     action_context: tilo_actions::ActionContext,
-    model: Option<runtime_collab::TaskRunModel>,
     spend: Option<runtime_collab::TaskRunSpend>,
 }
 
@@ -9161,7 +9159,6 @@ struct InvocationStreamServer {
 /// JSON.
 fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
     let payload = runtime_collab::TaskRunEnvelope {
-        paused: run.paused,
         version: 1,
         task_id: run.task_id,
         title: run.title,
@@ -9174,7 +9171,6 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
         execution_budget: run.execution_budget,
         action_context: serde_json::to_value(run.action_context)
             .map_err(|error| BrokerError::failed(error.to_string()))?,
-        model: run.model,
         spend: run.spend,
     };
     serde_json::to_string(&payload).map_err(|error| BrokerError::failed(error.to_string()))

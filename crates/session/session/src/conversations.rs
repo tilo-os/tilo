@@ -985,7 +985,6 @@ fn turns(
                     paused_through: None,
                     budget: None,
                     subject,
-                    model: None,
                     directions: Vec::new(),
                     question: None,
                     turn: Some(Turn::new(address, message_id.to_string())),

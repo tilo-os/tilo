@@ -1392,8 +1392,6 @@ fn execution_fixture(
     });
     let link = host_link(&world, &sent);
     let mut run = runtime_collab::TaskRunEnvelope {
-        paused: None,
-        model: None,
         version: 1,
         task_id: "chat.workspace/channels/loop/messages/asked".into(),
         title: title.into(),
@@ -1434,7 +1432,6 @@ fn execution_fixture(
             agent_provider_config::ProviderProtocol::OpenAiCompatible,
             Arc::new(Scripted(script.clone())),
         ),
-        managed: false,
         task_deadline: None,
         native_task: None,
         broker_catalogue: catalogue_of(&surfaces),

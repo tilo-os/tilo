@@ -233,8 +233,6 @@ mod tests {
             .with_purpose("Tighten this")
             .with_group("task:1", "Tighten this", "task");
         runtime_collab::TaskRunEnvelope {
-            paused: None,
-            model: None,
             version: 1,
             task_id: "task:1".into(),
             presentation_version: None,

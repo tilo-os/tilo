@@ -135,15 +135,6 @@ fn native_task_benchmark() {
     }
 }
 
-/// The descriptor of Writer's `append-paragraph`, as the agent reads it.
-fn drafted(f: &mut Fixture) -> tilo_actions::ActionDescriptor {
-    let catalogue = f.session.task_catalogue();
-    surface::find(&catalogue.offers, &op("append-paragraph"))
-        .unwrap()
-        .descriptor
-        .clone()
-}
-
 tilo_test_env::scenario! {
     fn native_steps_run_wait_and_stop_as_their_plan_says;
 
@@ -517,33 +508,6 @@ tilo_test_env::scenario! {
                 message: "The line is appended.".into()
             }
         );
-    }
-
-    phase a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model;
-    // A paused step whose draft does not give back the exact arguments it was
-    // confirmed for is not guessed at: nothing runs before the model, which is
-    // told what waits so that it asks for that step again.
-    {
-        let mut f = fixture(
-            "add a closing line",
-            World::default(),
-            vec![turn(&[finish("Waiting on the person.", true)], 24)],
-        );
-        let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
-        let descriptor = drafted(&mut f);
-        f.run.paused = Some(runtime_collab::TaskRunPausedStep {
-            app: "so.tilo.word-processor".into(),
-            resource: DOC.into(),
-            action: "append-paragraph".into(),
-            draft: tilo_actions::Draft::render(&descriptor, &arguments),
-            arguments_digest: [7; 32],
-        });
-        f.session.run_task(&f.run).unwrap();
-        assert!(children_started(&f.sent.borrow()).is_empty());
-        let bodies = f.script.bodies.lock().unwrap().clone();
-        let first = bodies[0].to_string();
-        assert!(first.contains("still waits for them"), "{first}");
-        assert!(first.contains("Kind regards"), "{first}");
     }
 
     phase a_native_child_id_names_its_request_not_its_position;

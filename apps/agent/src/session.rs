@@ -202,9 +202,6 @@ pub struct Session {
     link: Link,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
-    /// Launched by the launcher with a managed context: limited to its
-    /// task-bound broker surface and to native task leases.
-    managed: bool,
     /// Monotonic deadline from an explicit broker-minted owner task policy.
     task_deadline: Option<Instant>,
     native_task: Option<native_task::NativeTaskState>,
@@ -290,7 +287,6 @@ impl Session {
             name = %cfg.name,
             "joined the workspace; waiting for the document"
         );
-        let is_managed = managed.is_some();
         let chooser = match managed {
             Some(selection) => {
                 let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
@@ -310,7 +306,6 @@ impl Session {
             cfg,
             link,
             chooser,
-            managed: is_managed,
             task_deadline: None,
             native_task: None,
             broker_catalogue: ui::collaboration::ActionCatalogue::default(),
@@ -411,17 +406,6 @@ impl Session {
         }
     }
 
-    /// Run `run`, planning with the model chosen for it when it names one.
-    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
-        let chosen = run.model.as_ref().and_then(|model| self.run_chooser(model));
-        let own = chosen.map(|chooser| std::mem::replace(&mut self.chooser, chooser));
-        let result = self.run_task_steps(run);
-        if let Some(own) = own {
-            self.chooser = own;
-        }
-        result
-    }
-
     /// Answer one turn, `run`, as [`Self::run`] answers the ones the broker
     /// delivers: the same planning, per-step reporting and terminal update,
     /// without waiting for a broker to hand it over. What a harness that
@@ -447,50 +431,11 @@ impl Session {
         &self.chooser
     }
 
-    /// The chooser that plans with `model` for one run: the provider's
-    /// profile as Settings keeps it, or for a managed agent its gateway's
-    /// selection with that model. `None`, and the agent's own model, when
-    /// the model is not offered here.
-    fn run_chooser(&self, model: &runtime_collab::TaskRunModel) -> Option<Chooser> {
-        let config = agent_provider_config::ProviderConfig::load();
-        let found = config
-            .profiles
-            .iter()
-            .find(|profile| profile.id == model.profile && profile.enabled)
-            .and_then(|profile| {
-                profile
-                    .models
-                    .iter()
-                    .find(|offered| offered.id == model.model)
-                    .map(|offered| (profile, offered.clone()))
-            });
-        let Some((profile, descriptor)) = found else {
-            tracing::warn!(profile = %model.profile, model = %model.model, "the run's model is not offered here; planning with the agent's own");
-            return None;
-        };
-        let selection = if self.managed {
-            let mut selection = self.chooser.selection()?.clone();
-            if selection.profile_id != profile.id {
-                tracing::warn!(profile = %model.profile, "a managed agent plans only through its own provider");
-                return None;
-            }
-            selection.model = descriptor;
-            selection
-        } else {
-            crate::providers::ProviderSelection::from_profile(profile, descriptor)
-        };
-        Some(Chooser::with_provider(
-            self.managed || self.cfg.model,
-            self.cfg.model_timeout,
-            selection,
-        ))
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "one task run keeps planning, per-step reporting and the terminal update in a single auditable sequence"
     )]
-    fn run_task_steps(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
         // What this run says is the person's language as it stands now: they
         // may have changed it since the app started.
         crate::i18n::follow();

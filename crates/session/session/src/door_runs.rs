@@ -273,7 +273,6 @@ pub(crate) fn mint(
         paused_through: None,
         budget: None,
         subject: None,
-        model: None,
         directions: Vec::new(),
         question: None,
         // The person's admission at the door is its cause, not a message: the run acts on the

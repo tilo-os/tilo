@@ -62,7 +62,6 @@ const MOST_STEPS_TOLD: usize = 64;
 mod pictures;
 use pictures::MOST_PICTURES;
 mod program_steps;
-mod resume;
 
 mod compaction;
 mod failure;
@@ -1178,16 +1177,11 @@ impl Session {
         // the operations named for it included, so a run that acted at the
         // wrong place can be told apart from one that was never told where.
         tracing::info!(task_id = %run.task_id, %request, "task request");
-        let resumed = match self.resume_paused_step(run, state)? {
-            resume::Resumed::Fresh => String::new(),
-            resume::Resumed::Told(told) => format!("\n\n{told}"),
-            resume::Resumed::Ended(end) => return Ok(end),
-        };
         self.program_world(run, state)?;
         let place = program_steps::where_section(run, &state.programs, state.turns);
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!("{place}\nThe request:\n\n{request}{resumed}"),
+            task: format!("{place}\nThe request:\n\n{request}"),
         };
         let mut conversation = if self.chooser.uses_neutral_protocol() {
             Conversation::neutral_first(LOOP_SYSTEM, &first)

@@ -152,7 +152,6 @@ pub(super) fn admit(f: &Fixture) -> DoorAgent {
         paused_through: None,
         budget: None,
         subject: None,
-        model: None,
         directions: Vec::new(),
         turn: None,
         question: None,

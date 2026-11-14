@@ -288,7 +288,6 @@ impl NativeTaskActionRequirement {
             paused_through: None,
             budget: None,
             subject: None,
-            model: None,
             directions: Vec::new(),
             turn: binding.turn.clone(),
             question: None,

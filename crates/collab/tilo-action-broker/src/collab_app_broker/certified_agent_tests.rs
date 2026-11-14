@@ -86,7 +86,6 @@ impl Fixture {
             paused_through: None,
             budget: None,
             subject: None,
-            model: None,
             directions: Vec::new(),
             turn: None,
             question: None,

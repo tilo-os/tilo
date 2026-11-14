@@ -7,7 +7,7 @@
 
 use serde_json::json;
 
-use super::{answered, control_of, paused_step, reports_on_own_issue};
+use super::{answered, control_of, reports_on_own_issue};
 use crate::services::{TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun};
 
 fn direction(id: &str, incorporated: bool) -> TrackerDirection {
@@ -33,7 +33,6 @@ fn run() -> TrackerRun {
         paused_through: None,
         budget: None,
         subject: None,
-        model: None,
         directions: vec![direction("a", true), direction("b", false)],
         turn: None,
         question: None,
@@ -87,22 +86,6 @@ tilo_test_env::scenario! {
             control_of(&run, 2).is_err(),
             "a lease cannot claim a message the agent never took in"
         );
-    }
-
-    phase a_run_resumes_at_the_question_its_person_has_not_answered;
-    {
-        let waiting = asked(TrackerAnswer::Waiting, "Send");
-        let paused = paused_step(&waiting).unwrap();
-        assert_eq!(
-            (paused.app.as_str(), paused.action.as_str()),
-            ("so.tilo.mail", "send")
-        );
-        assert_eq!(
-            paused.arguments_digest,
-            tilo_actions::draft::arguments_digest(&arguments())
-        );
-        let confirmed = asked(TrackerAnswer::Confirmed { edits: json!(null) }, "Send");
-        assert!(paused_step(&confirmed).is_none());
     }
 
     phase a_confirmation_admits_only_the_arguments_and_draft_the_person_saw;

@@ -747,16 +747,6 @@ pub struct TaskRunEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
-    /// The step this run is paused at for its person's answer, when the run
-    /// is delivered again (its agent restarted while a draft waited). The
-    /// agent resumes there instead of planning the task over. Absent on a
-    /// first delivery, and from older senders.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub paused: Option<TaskRunPausedStep>,
-    /// The model chosen for this run, in place of the one chosen for its
-    /// agent. Absent: the agent's own. Older senders omit it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<TaskRunModel>,
     /// What the run's agent may spend on the day its keeper counts. Absent for
     /// a host that reads no record of the workspace's agents, and from older
     /// senders.
@@ -795,32 +785,6 @@ impl TaskRunSpend {
         };
         Some(limit.saturating_sub(spent))
     }
-}
-
-/// A model of one provider profile, chosen for a run.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskRunModel {
-    /// The provider profile, by id.
-    pub profile: String,
-    /// The model, by its id at that provider.
-    pub model: String,
-}
-
-/// A run's step that asks its person first and is still unsettled: the draft
-/// they are shown, and the digest binding it to the exact arguments the
-/// agent asked with. The arguments themselves are not carried; the agent
-/// rebuilds them from the draft and asks only when they digest the same.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskRunPausedStep {
-    /// The application that publishes the step's action, by package id.
-    pub app: String,
-    pub resource: String,
-    pub action: String,
-    pub draft: tilo_actions::Draft,
-    /// [`tilo_actions::draft::arguments_digest`] of the step's arguments.
-    pub arguments_digest: [u8; 32],
 }
 
 /// What opens the part of a task's instruction that says what the request is

@@ -283,7 +283,6 @@ mod tests {
             paused_through: None,
             budget: None,
             subject: None,
-            model: None,
             directions: Vec::new(),
             question: None,
             turn: None,

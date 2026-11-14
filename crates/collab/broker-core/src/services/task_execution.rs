@@ -482,8 +482,6 @@ pub struct TrackerRun {
     /// What the issue is about, when it was asked about a selection: where
     /// to act, granting nothing.
     pub subject: Option<tilo_actions::SelectionSubject>,
-    /// The model chosen for the run; the agent's own without.
-    pub model: Option<runtime_collab::TaskRunModel>,
     /// The messages to this run, in thread order.
     pub directions: Vec<TrackerDirection>,
     /// What the run asks or last asked its person.

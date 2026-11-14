@@ -444,8 +444,6 @@ mod tests {
     /// its action context bound as the broker binds it.
     fn run(task_id: &str) -> runtime_collab::TaskRunEnvelope {
         let mut run = runtime_collab::TaskRunEnvelope {
-            paused: None,
-            model: None,
             version: 1,
             task_id: task_id.into(),
             title: "Split the launch checklist".into(),
