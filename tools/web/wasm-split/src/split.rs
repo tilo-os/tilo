@@ -64,6 +64,8 @@ pub struct Splitter<'a> {
     /// code holds, in index order among them (analysis.rs): the bodies this
     /// run walked, and the ones a run before it did.
     bodies: Vec<Body>,
+    /// How many of `bodies` a run before this one had read.
+    bodies_reused: usize,
 }
 
 /// What every emission's key starts from (`Splitter::emit_key_base`), and
@@ -148,6 +150,9 @@ fn available_memory() -> Option<u64> {
 
 /// The results of splitting the wasm module with some additional metadata for later use.
 pub struct OutputModules {
+    /// How many of the module's bodies a run before this one had read
+    /// (analysis.rs).
+    pub bodies_reused: usize,
     /// The main chunk
     pub main: SplitModule,
 
@@ -224,12 +229,10 @@ impl<'a> Splitter<'a> {
             .as_ref()
             .map_or(0, |code| module.funcs.iter().count() - code.bodies.len());
         let mut structure = Key::new();
-        match &code {
-            Some(code) => structure
-                .add(&bindgened[..code.start])
-                .add(&bindgened[code.end..]),
-            None => structure.add(bindgened),
-        };
+        // A body's answers are its code's, so the sections that are not code
+        // are what says which bodies they belong to: the data section is one
+        // module's own ranges, written from the plan.
+        hash_sections(&mut structure, bindgened, &sections_not_read(bindgened)?);
         structure.add(&imported).add(&hashes.len());
         let structure = structure.finish();
         assert_eq!(structure.len(), STRUCTURE_LEN);
@@ -268,6 +271,7 @@ impl<'a> Splitter<'a> {
             data_sizes: Default::default(),
             imported,
             bodies: Vec::new(),
+            bodies_reused: bodies.len(),
         };
 
         let started = std::time::Instant::now();
@@ -347,6 +351,7 @@ impl<'a> Splitter<'a> {
         let data_claimants = self.data_claimants(&chunk_parts, &module_parts);
         let loaded = loaded_with(&module_parts, chunk_parts.len());
         took("read the static data's references", started);
+        let bodies_reused = self.bodies_reused;
 
         let started = std::time::Instant::now();
         let (main, data) =
@@ -459,6 +464,7 @@ impl<'a> Splitter<'a> {
             chunks: chunks?,
             main,
             reused,
+            bodies_reused,
         })
     }
 
@@ -468,12 +474,15 @@ impl<'a> Splitter<'a> {
     fn emit_key_base(&self) -> Result<KeyBase> {
         let mut key = Key::new();
         let code = code_section(self.bindgened)?;
-        match &code {
-            Some(code) => key
-                .add(&self.bindgened[..code.start])
-                .add(&self.bindgened[code.end..]),
-            None => key.add(self.bindgened),
-        };
+        // What a module's emission reads that is not the code or the data:
+        // its own bodies are keyed one by one, and the data it writes is the
+        // plan's ranges for it (which its key holds), so a change to the
+        // data section alone leaves every module's key as it was.
+        hash_sections(
+            &mut key,
+            self.bindgened,
+            &sections_not_read(self.bindgened)?,
+        );
         key.add(&self.split_points.len()).add(&self.entry_slots);
         let shared: Vec<_> = self
             .shared_symbols
@@ -1984,6 +1993,40 @@ fn push_leb(out: &mut Vec<u8>, mut value: usize) {
             return;
         }
         out.push(byte | 0x80);
+    }
+}
+
+/// The sections a module's emission reads function by function or range by
+/// range, not as bytes: its code (10, its bodies are keyed one by one), its
+/// data (11, each module writes the ranges the plan hands it) and the data
+/// count (12, which follows from the data).
+pub(crate) fn sections_not_read(bytes: &[u8]) -> Result<Vec<Range<usize>>> {
+    let mut skipped = Vec::new();
+    let mut at = 8;
+    while at < bytes.len() {
+        let start = at;
+        let id = bytes[at];
+        at += 1;
+        let size = read_leb(bytes, &mut at)?;
+        at += size;
+        if (10..=12).contains(&id) {
+            skipped.push(start..at.min(bytes.len()));
+        }
+    }
+    Ok(skipped)
+}
+
+/// `key` over `bytes` without `skipped`, which must be in order.
+fn hash_sections(key: &mut Key, bytes: &[u8], skipped: &[Range<usize>]) {
+    let mut at = 0;
+    for range in skipped {
+        if range.start > at {
+            key.add(&bytes[at..range.start]);
+        }
+        at = at.max(range.end);
+    }
+    if at < bytes.len() {
+        key.add(&bytes[at..]);
     }
 }
 

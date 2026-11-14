@@ -62,6 +62,16 @@ fn build_fixture(test: &str) -> Result<Fixture> {
 
 /// [`build_fixture`] from `source`, the fixture as a test changed it.
 fn build_fixture_from(test: &str, source_text: &str) -> Result<Fixture> {
+    build_fixture_edited(test, source_text, &HashMap::new())
+}
+
+/// [`build_fixture_from`] with some blobs' bytes replaced: a change to the
+/// module's static data that leaves its code as it was.
+fn build_fixture_edited(
+    test: &str,
+    source_text: &str,
+    edits: &HashMap<&'static str, (usize, u8)>,
+) -> Result<Fixture> {
     // One path per test name: a test that builds the same fixture again with
     // a change needs both at one path, since the module's static data holds
     // the source's path.
@@ -72,7 +82,10 @@ fn build_fixture_from(test: &str, source_text: &str) -> Result<Fixture> {
         std::fs::write(&source, source_text)?;
         let mut blobs = HashMap::new();
         for (seed, name) in BLOBS.iter().enumerate() {
-            let bytes = blob(seed as u32 + 1);
+            let mut bytes = blob(seed as u32 + 1);
+            if let Some((at, byte)) = edits.get(name) {
+                bytes[*at] = *byte;
+            }
             std::fs::write(dir.join(format!("{name}.bin")), &bytes)?;
             blobs.insert(*name, bytes);
         }
@@ -376,6 +389,75 @@ fn a_split_from_the_analysis_cache_writes_what_emitting_writes() -> Result<()> {
         assert!(
             written_modules(read) == fresh(&other, &other_bound)?,
             "another module's answers were read for this one"
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// A change to the module's static data alone leaves every module's code as
+/// it was, so a split reads the modules that do not carry those bytes back
+/// instead of emitting them again, and writes what emitting them writes.
+#[test]
+fn a_change_to_static_data_alone_reads_the_modules_back() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    let before = build_fixture("data-change")?.linked;
+    // One byte of a blob only `reader` reaches: its code, and every other
+    // module's, is the same.
+    let mut edits = HashMap::new();
+    edits.insert("reader", (0usize, 0x5a_u8));
+    let after = build_fixture_edited("data-change", source, &edits)?.linked;
+    assert_ne!(before, after, "the blob's byte did not reach the module");
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = scratch("data-change-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            let outputs = Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?;
+            let reused = outputs.reused;
+            let count = outputs.modules.len() + outputs.chunks.len();
+            Ok((written_modules(outputs), reused, count))
+        };
+        let (first, reused, _) = cached(&before, &before_bound)?;
+        assert_eq!(reused, 0, "an empty cache holds no module");
+        assert!(
+            first == fresh(&before, &before_bound)?,
+            "a split filling the cache wrote other modules"
+        );
+        let (changed, reused, count) = cached(&after, &after_bound)?;
+        assert!(
+            changed == fresh(&after, &after_bound)?,
+            "after a data change, the cache gave other modules than emitting does"
+        );
+        assert!(changed != first, "the change reached no module");
+        assert!(
+            reused > 0 && reused < count,
+            "a change to one static's bytes emitted {} of {count} modules again",
+            count - reused
+        );
+        // The bodies' analysis belongs to their bytes: a change to a static
+        // the code reads by address leaves every body as it was.
+        let analysis = AnalysisCache::at(&dir);
+        let first =
+            Splitter::with_analysis(&before, &before_bound, Some(&analysis))?.emit_with(None)?;
+        assert_eq!(
+            first.bodies_reused, 0,
+            "an empty analysis cache held bodies"
+        );
+        let second =
+            Splitter::with_analysis(&after, &after_bound, Some(&analysis))?.emit_with(None)?;
+        assert!(
+            second.bodies_reused > 0,
+            "a change to static data alone walked every body again"
         );
         Ok(())
     })();

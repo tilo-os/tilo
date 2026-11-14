@@ -157,6 +157,10 @@ fn main() -> Result<()> {
         outputs.reused,
         started.elapsed().as_secs_f64()
     );
+    eprintln!(
+        "wasm-split: read {} of the module's bodies from the last split",
+        outputs.bodies_reused
+    );
     Ok(())
 }
 
