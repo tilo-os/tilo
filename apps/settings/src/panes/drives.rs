@@ -667,73 +667,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn forgetting_and_switching_reach_the_service() {
-        let running = Running::start(&[
-            grant("a1", "Windows", true, Mode::Open),
-            grant("b2", "Stick", false, Mode::OpenSafely),
-        ]);
-        let mut model = DrivesModel::over(running.service());
-        model.settle();
+    tilo_test_env::scenario! {
+        fn drive_requests_reach_the_service_only_when_well_formed;
 
-        model.start(
-            &DrivesEffect::SetDriveOpensSafely {
-                grant: "a1".into(),
-                safely: true,
-            },
-            None,
-        );
-        model.settle();
-        assert_eq!(model.outcome, Some(Ok(t("settings-drives-now-safely"))));
-        let stored = running.grants.load(UID).unwrap();
-        assert_eq!(stored[0].mode, Mode::OpenSafely);
-        assert_eq!(model.shown()[0].mode, Mode::OpenSafely, "read again after");
+        phase forgetting_and_switching_reach_the_service;
+        {
+            let running = Running::start(&[
+                grant("a1", "Windows", true, Mode::Open),
+                grant("b2", "Stick", false, Mode::OpenSafely),
+            ]);
+            let mut model = DrivesModel::over(running.service());
+            model.settle();
 
-        // The service refuses the fast driver for an external drive, and
-        // the card says so instead of pretending.
-        model.start(
-            &DrivesEffect::SetDriveOpensSafely {
-                grant: "b2".into(),
-                safely: false,
-            },
-            None,
-        );
-        model.settle();
-        assert!(
-            matches!(&model.outcome, Some(Err(_))),
-            "{:?}",
-            model.outcome
-        );
-        assert_eq!(running.grants.load(UID).unwrap()[1].mode, Mode::OpenSafely);
+            model.start(
+                &DrivesEffect::SetDriveOpensSafely {
+                    grant: "a1".into(),
+                    safely: true,
+                },
+                None,
+            );
+            model.settle();
+            assert_eq!(model.outcome, Some(Ok(t("settings-drives-now-safely"))));
+            let stored = running.grants.load(UID).unwrap();
+            assert_eq!(stored[0].mode, Mode::OpenSafely);
+            assert_eq!(model.shown()[0].mode, Mode::OpenSafely, "read again after");
 
-        model.start(&DrivesEffect::ForgetDrive { grant: "a1".into() }, None);
-        model.settle();
-        assert_eq!(model.outcome, Some(Ok(t("settings-drives-forgotten"))));
-        let left: Vec<String> = running
-            .grants
-            .load(UID)
-            .unwrap()
-            .into_iter()
-            .map(|grant| grant.id)
-            .collect();
-        assert_eq!(left, ["b2"]);
-        assert_eq!(model.shown().len(), 1);
-    }
+            // The service refuses the fast driver for an external drive, and
+            // the card says so instead of pretending.
+            model.start(
+                &DrivesEffect::SetDriveOpensSafely {
+                    grant: "b2".into(),
+                    safely: false,
+                },
+                None,
+            );
+            model.settle();
+            assert!(
+                matches!(&model.outcome, Some(Err(_))),
+                "{:?}",
+                model.outcome
+            );
+            assert_eq!(running.grants.load(UID).unwrap()[1].mode, Mode::OpenSafely);
 
-    #[test]
-    fn a_malformed_grant_never_reaches_the_service() {
-        assert_eq!(
-            request_for(&DrivesEffect::ForgetDrive {
-                grant: "../../x".into()
-            }),
-            Err(t("settings-drives-bad-request"))
-        );
-        assert!(
-            request_for(&DrivesEffect::ForgetDrive {
-                grant: String::new()
-            })
-            .is_err()
-        );
+            model.start(&DrivesEffect::ForgetDrive { grant: "a1".into() }, None);
+            model.settle();
+            assert_eq!(model.outcome, Some(Ok(t("settings-drives-forgotten"))));
+            let left: Vec<String> = running
+                .grants
+                .load(UID)
+                .unwrap()
+                .into_iter()
+                .map(|grant| grant.id)
+                .collect();
+            assert_eq!(left, ["b2"]);
+            assert_eq!(model.shown().len(), 1);
+        }
+
+        phase a_malformed_grant_never_reaches_the_service;
+        {
+            assert_eq!(
+                request_for(&DrivesEffect::ForgetDrive {
+                    grant: "../../x".into()
+                }),
+                Err(t("settings-drives-bad-request"))
+            );
+            assert!(
+                request_for(&DrivesEffect::ForgetDrive {
+                    grant: String::new()
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]

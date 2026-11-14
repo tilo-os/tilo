@@ -293,122 +293,126 @@ impl Category {
 mod tests {
     use super::*;
 
-    /// A build without the device's own panes carries exactly the pages
-    /// search offers on the web, so a page found there opens.
-    #[test]
-    fn the_web_build_carries_the_pages_web_search_offers() {
-        let built: Vec<&str> = Category::WEB.iter().map(|c| c.slug()).collect();
-        assert_eq!(built, settings_store::index::WEB_PAGES);
-    }
+    tilo_test_env::scenario! {
+        fn the_category_catalogue_is_whole_and_searchable;
 
-    #[test]
-    fn category_catalogue_is_complete_unique_and_partitioned() {
-        let mut categories = std::collections::HashSet::new();
-        let mut slugs = std::collections::HashSet::new();
-        for c in Category::ALL {
-            assert!(categories.insert(*c), "duplicate category {c:?}");
-            assert!(!c.label().is_empty(), "{c:?} missing label");
-            assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
-            assert!(!c.slug().is_empty(), "{c:?} missing slug");
-            let _ = c.icon();
-            assert!(slugs.insert(c.slug()), "duplicate slug {}", c.slug());
-            assert!(
-                Section::ALL.contains(&c.section()),
-                "{c:?} section not in Section::ALL"
-            );
-            assert!(
-                !c.search_terms().is_empty(),
-                "{c:?} must carry search terms"
-            );
+        phase the_web_build_carries_the_pages_web_search_offers;
+        // A build without the device's own panes carries exactly the pages
+        // search offers on the web, so a page found there opens.
+        {
+            let built: Vec<&str> = Category::WEB.iter().map(|c| c.slug()).collect();
+            assert_eq!(built, settings_store::index::WEB_PAGES);
         }
-        assert_eq!(categories.len(), Category::ALL.len());
 
-        let count: usize = Section::ALL
-            .iter()
-            .map(|s| Category::in_section(*s).count())
-            .sum();
-        assert_eq!(count, Category::ALL.len());
+        phase category_catalogue_is_complete_unique_and_partitioned;
+        {
+            let mut categories = std::collections::HashSet::new();
+            let mut slugs = std::collections::HashSet::new();
+            for c in Category::ALL {
+                assert!(categories.insert(*c), "duplicate category {c:?}");
+                assert!(!c.label().is_empty(), "{c:?} missing label");
+                assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
+                assert!(!c.slug().is_empty(), "{c:?} missing slug");
+                let _ = c.icon();
+                assert!(slugs.insert(c.slug()), "duplicate slug {}", c.slug());
+                assert!(
+                    Section::ALL.contains(&c.section()),
+                    "{c:?} section not in Section::ALL"
+                );
+                assert!(
+                    !c.search_terms().is_empty(),
+                    "{c:?} must carry search terms"
+                );
+            }
+            assert_eq!(categories.len(), Category::ALL.len());
 
-        // The device privacy destination does not claim workspace authority.
-        assert_eq!(
-            Category::Permissions.label(),
-            "Device privacy & security",
-            "the navigation destination names its system-wide scope"
-        );
-        assert!(
-            Category::Permissions.subtitle().contains("per workspace"),
-            "the destination explains that workspace access belongs to each workspace"
-        );
-    }
+            let count: usize = Section::ALL
+                .iter()
+                .map(|s| Category::in_section(*s).count())
+                .sum();
+            assert_eq!(count, Category::ALL.len());
 
-    #[test]
-    fn category_queries_match_label_subtitle_and_keyword() {
-        for c in Category::ALL {
-            assert!(c.matches(""), "{c:?} should match an empty query");
-            assert!(c.matches("   "), "{c:?} should match a whitespace query");
-        }
-        // (category, query, should match, why)
-        let cases = [
-            (Category::Network, "net", true, "label substring"),
-            (Category::Bluetooth, "BLUE", true, "case-insensitive"),
-            (Category::Bluetooth, "pair", true, "subtitle substring"),
-            // Keyword-only terms land on the owning pane.
-            (
-                Category::Displays,
-                "night light",
-                true,
-                "night light → Displays",
-            ),
-            (Category::Network, "vpn", true, "vpn → Network"),
-            (
-                Category::Keyboard,
-                "keyboard layout",
-                true,
-                "keyboard layout → Keyboard",
-            ),
-            (Category::Keyboard, "qwertz", true, "qwertz → Keyboard"),
-            (Category::Keyboard, "language", true, "language → Keyboard"),
-            (Category::Power, "battery", true, "battery → Power"),
-            (
-                Category::Appearance,
-                "dark mode",
-                true,
-                "dark mode → Appearance",
-            ),
-            (
-                Category::ExternalAccounts,
-                "imap",
-                true,
-                "imap → External Accounts",
-            ),
-            (
-                Category::KeyboardShortcuts,
-                "hotkeys",
-                true,
-                "hotkeys → Keyboard Shortcuts",
-            ),
-            (
-                Category::DeviceMesh,
-                "file transfer",
-                true,
-                "file transfer → Sync between devices",
-            ),
-            (
-                Category::DeviceMesh,
-                "typed gamepad",
-                true,
-                "typed gamepad → Sync between devices",
-            ),
-            (Category::Network, "battery", false, "non-matching keyword"),
-            (Category::About, "wifi", false, "non-matching keyword"),
-            (Category::Sound, "zzzznope", false, "nonsense query"),
-        ];
-        for (category, query, want, why) in cases {
+            // The device privacy destination does not claim workspace authority.
             assert_eq!(
-                category.matches(query),
-                want,
-                "{category:?} matches {query:?}: {why}"
+                Category::Permissions.label(),
+                "Device privacy & security",
+                "the navigation destination names its system-wide scope"
             );
+            assert!(
+                Category::Permissions.subtitle().contains("per workspace"),
+                "the destination explains that workspace access belongs to each workspace"
+            );
+        }
+
+        phase category_queries_match_label_subtitle_and_keyword;
+        {
+            for c in Category::ALL {
+                assert!(c.matches(""), "{c:?} should match an empty query");
+                assert!(c.matches("   "), "{c:?} should match a whitespace query");
+            }
+            // (category, query, should match, why)
+            let cases = [
+                (Category::Network, "net", true, "label substring"),
+                (Category::Bluetooth, "BLUE", true, "case-insensitive"),
+                (Category::Bluetooth, "pair", true, "subtitle substring"),
+                // Keyword-only terms land on the owning pane.
+                (
+                    Category::Displays,
+                    "night light",
+                    true,
+                    "night light → Displays",
+                ),
+                (Category::Network, "vpn", true, "vpn → Network"),
+                (
+                    Category::Keyboard,
+                    "keyboard layout",
+                    true,
+                    "keyboard layout → Keyboard",
+                ),
+                (Category::Keyboard, "qwertz", true, "qwertz → Keyboard"),
+                (Category::Keyboard, "language", true, "language → Keyboard"),
+                (Category::Power, "battery", true, "battery → Power"),
+                (
+                    Category::Appearance,
+                    "dark mode",
+                    true,
+                    "dark mode → Appearance",
+                ),
+                (
+                    Category::ExternalAccounts,
+                    "imap",
+                    true,
+                    "imap → External Accounts",
+                ),
+                (
+                    Category::KeyboardShortcuts,
+                    "hotkeys",
+                    true,
+                    "hotkeys → Keyboard Shortcuts",
+                ),
+                (
+                    Category::DeviceMesh,
+                    "file transfer",
+                    true,
+                    "file transfer → Sync between devices",
+                ),
+                (
+                    Category::DeviceMesh,
+                    "typed gamepad",
+                    true,
+                    "typed gamepad → Sync between devices",
+                ),
+                (Category::Network, "battery", false, "non-matching keyword"),
+                (Category::About, "wifi", false, "non-matching keyword"),
+                (Category::Sound, "zzzznope", false, "nonsense query"),
+            ];
+            for (category, query, want, why) in cases {
+                assert_eq!(
+                    category.matches(query),
+                    want,
+                    "{category:?} matches {query:?}: {why}"
+                );
+            }
         }
     }
 }

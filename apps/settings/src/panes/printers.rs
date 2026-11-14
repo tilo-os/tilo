@@ -1027,24 +1027,133 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    #[test]
-    fn sample_area_rows_do_not_wait_for_workers() {
-        let profile = tempfile::tempdir().unwrap();
-        let area = PrintersArea::new(&crate::area::AreaContext::in_profile(
-            profile.path().to_path_buf(),
-        ));
-        assert_eq!(
-            area.rows().len(),
-            2,
-            "printer and job rows publish on the first read"
-        );
-        let model = area.model().borrow();
-        assert!(
-            model.refresh_rx.is_none(),
-            "sample rows are ready when the area reads"
-        );
-        assert_eq!(model.printers.len(), 1);
-        assert_eq!(model.jobs.len(), 1);
+    tilo_test_env::scenario! {
+        fn the_printers_model_changes_and_follows_the_print_service;
+
+        phase sample_area_rows_do_not_wait_for_workers;
+        {
+            let profile = tempfile::tempdir().unwrap();
+            let area = PrintersArea::new(&crate::area::AreaContext::in_profile(
+                profile.path().to_path_buf(),
+            ));
+            assert_eq!(
+                area.rows().len(),
+                2,
+                "printer and job rows publish on the first read"
+            );
+            let model = area.model().borrow();
+            assert!(
+                model.refresh_rx.is_none(),
+                "sample rows are ready when the area reads"
+            );
+            assert_eq!(model.printers.len(), 1);
+            assert_eq!(model.jobs.len(), 1);
+        }
+
+        phase the_shown_page_reads_the_queues_again_when_the_print_service_reports_a_change;
+        {
+            let service = Arc::new(FollowedPrinters {
+                recording: RecordingService::new(),
+                reads: std::sync::atomic::AtomicUsize::new(0),
+                follower: Mutex::new(None),
+            });
+            let mut model = PrintersModel::new(Arc::clone(&service) as Arc<dyn PrintService>, false);
+            let reads = || service.reads.load(std::sync::atomic::Ordering::Relaxed);
+            let read_until = |model: &mut PrintersModel, count: usize| {
+                let deadline = tilo_test_env::hang_deadline();
+                while reads() < count || model.refresh_rx.is_some() {
+                    model.poll();
+                    assert!(std::time::Instant::now() < deadline, "never read again");
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            };
+            let following = model.follow();
+            let changed = service
+                .follower
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("the print service is followed while the page shows");
+            read_until(&mut model, 1);
+            model.poll();
+            assert_eq!(reads(), 1, "showing the page reads once");
+
+            changed();
+            read_until(&mut model, 2);
+            model.poll();
+            assert_eq!(reads(), 2, "one change, one read");
+
+            drop(following);
+            changed();
+            model.poll();
+            assert!(model.refresh_rx.is_none(), "a closed page reads nothing");
+            assert_eq!(reads(), 2);
+        }
+
+        phase changes_reach_one_typed_backend;
+        {
+            let service = RecordingService::new();
+            let nearby = service.discover().unwrap();
+            for effect in [
+                PrinterEffect::SetDefaultPrinter {
+                    printer: "Office".into(),
+                },
+                PrinterEffect::CancelPrintJob {
+                    job: "Office-42".into(),
+                },
+                PrinterEffect::SetPrinterPaused {
+                    printer: "Office".into(),
+                    paused: true,
+                },
+                PrinterEffect::AddPrinter {
+                    uri: "ipps://office/ipp/print".into(),
+                },
+            ] {
+                carry_out(&service, &nearby, &[], &effect).unwrap();
+            }
+            assert!(
+                carry_out(
+                    &service,
+                    &nearby,
+                    &[],
+                    &PrinterEffect::AddPrinter {
+                        uri: "ipps://elsewhere".into()
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(
+                service.calls.lock().unwrap().as_slice(),
+                [
+                    "default:Office",
+                    "cancel:Office-42",
+                    "enabled:Office:false",
+                    "add:ipps://office/ipp/print"
+                ]
+            );
+        }
+
+        phase a_printer_already_added_is_neither_offered_nor_added_again;
+        {
+            let service = RecordingService::new();
+            let nearby = service.discover().unwrap();
+            let mut added = queue();
+            added.device_uri = Some("ipp://office:631/ipp/print/".into());
+            let queues = [added];
+            assert!(os_actions::printing::not_added(&nearby, &queues).is_empty());
+            assert!(
+                carry_out(
+                    &service,
+                    &nearby,
+                    &queues,
+                    &PrinterEffect::AddPrinter {
+                        uri: "ipps://office/ipp/print".into()
+                    }
+                )
+                .is_err()
+            );
+            assert!(service.calls.lock().unwrap().is_empty());
+        }
     }
 
     struct RecordingService {
@@ -1167,111 +1276,6 @@ mod tests {
             *self.follower.lock().unwrap() = Some(Arc::from(changed));
             Some(Box::new(()))
         }
-    }
-
-    #[test]
-    fn the_shown_page_reads_the_queues_again_when_the_print_service_reports_a_change() {
-        let service = Arc::new(FollowedPrinters {
-            recording: RecordingService::new(),
-            reads: std::sync::atomic::AtomicUsize::new(0),
-            follower: Mutex::new(None),
-        });
-        let mut model = PrintersModel::new(Arc::clone(&service) as Arc<dyn PrintService>, false);
-        let reads = || service.reads.load(std::sync::atomic::Ordering::Relaxed);
-        let read_until = |model: &mut PrintersModel, count: usize| {
-            let deadline = tilo_test_env::hang_deadline();
-            while reads() < count || model.refresh_rx.is_some() {
-                model.poll();
-                assert!(std::time::Instant::now() < deadline, "never read again");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-        };
-        let following = model.follow();
-        let changed = service
-            .follower
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("the print service is followed while the page shows");
-        read_until(&mut model, 1);
-        model.poll();
-        assert_eq!(reads(), 1, "showing the page reads once");
-
-        changed();
-        read_until(&mut model, 2);
-        model.poll();
-        assert_eq!(reads(), 2, "one change, one read");
-
-        drop(following);
-        changed();
-        model.poll();
-        assert!(model.refresh_rx.is_none(), "a closed page reads nothing");
-        assert_eq!(reads(), 2);
-    }
-
-    #[test]
-    fn changes_reach_one_typed_backend() {
-        let service = RecordingService::new();
-        let nearby = service.discover().unwrap();
-        for effect in [
-            PrinterEffect::SetDefaultPrinter {
-                printer: "Office".into(),
-            },
-            PrinterEffect::CancelPrintJob {
-                job: "Office-42".into(),
-            },
-            PrinterEffect::SetPrinterPaused {
-                printer: "Office".into(),
-                paused: true,
-            },
-            PrinterEffect::AddPrinter {
-                uri: "ipps://office/ipp/print".into(),
-            },
-        ] {
-            carry_out(&service, &nearby, &[], &effect).unwrap();
-        }
-        assert!(
-            carry_out(
-                &service,
-                &nearby,
-                &[],
-                &PrinterEffect::AddPrinter {
-                    uri: "ipps://elsewhere".into()
-                }
-            )
-            .is_err()
-        );
-        assert_eq!(
-            service.calls.lock().unwrap().as_slice(),
-            [
-                "default:Office",
-                "cancel:Office-42",
-                "enabled:Office:false",
-                "add:ipps://office/ipp/print"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_printer_already_added_is_neither_offered_nor_added_again() {
-        let service = RecordingService::new();
-        let nearby = service.discover().unwrap();
-        let mut added = queue();
-        added.device_uri = Some("ipp://office:631/ipp/print/".into());
-        let queues = [added];
-        assert!(os_actions::printing::not_added(&nearby, &queues).is_empty());
-        assert!(
-            carry_out(
-                &service,
-                &nearby,
-                &queues,
-                &PrinterEffect::AddPrinter {
-                    uri: "ipps://office/ipp/print".into()
-                }
-            )
-            .is_err()
-        );
-        assert!(service.calls.lock().unwrap().is_empty());
     }
 
     #[test]

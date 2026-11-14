@@ -70,46 +70,50 @@ pub fn sections() -> Vec<NavSection> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn list_holds_every_category_once_under_its_section() {
-        let sections = sections();
-        let shown: Vec<Section> = Section::ALL
-            .iter()
-            .copied()
-            .filter(|section| Category::in_section(*section).next().is_some())
-            .collect();
-        assert_eq!(sections.len(), shown.len());
-        assert!(
-            sections.iter().all(|section| !section.items.is_empty()),
-            "no heading stands over nothing"
-        );
-        let mut seen = std::collections::HashSet::new();
-        for (section, rendered) in shown.iter().zip(&sections) {
-            for category in Category::in_section(*section) {
-                assert!(seen.insert(category.slug()), "{category:?} listed twice");
-                assert_eq!(category.section(), *section);
-            }
-            assert!(!rendered.title.is_empty(), "{section:?} has a header");
-        }
-        assert_eq!(seen.len(), Category::ALL.len());
-    }
+    tilo_test_env::scenario! {
+        fn the_sidebar_lists_every_page_once_with_its_own_icon;
 
-    #[test]
-    fn section_headers_are_sentence_case() {
-        for section in Section::ALL {
-            let label = section.label();
-            assert_ne!(label, label.to_uppercase(), "{label} is all caps");
-        }
-    }
-
-    #[test]
-    fn every_category_has_its_own_icon() {
-        let mut icons = std::collections::HashSet::new();
-        for category in Category::ALL {
+        phase list_holds_every_category_once_under_its_section;
+        {
+            let sections = sections();
+            let shown: Vec<Section> = Section::ALL
+                .iter()
+                .copied()
+                .filter(|section| Category::in_section(*section).next().is_some())
+                .collect();
+            assert_eq!(sections.len(), shown.len());
             assert!(
-                icons.insert(category.icon()),
-                "{category:?} shares its icon with another page"
+                sections.iter().all(|section| !section.items.is_empty()),
+                "no heading stands over nothing"
             );
+            let mut seen = std::collections::HashSet::new();
+            for (section, rendered) in shown.iter().zip(&sections) {
+                for category in Category::in_section(*section) {
+                    assert!(seen.insert(category.slug()), "{category:?} listed twice");
+                    assert_eq!(category.section(), *section);
+                }
+                assert!(!rendered.title.is_empty(), "{section:?} has a header");
+            }
+            assert_eq!(seen.len(), Category::ALL.len());
+        }
+
+        phase section_headers_are_sentence_case;
+        {
+            for section in Section::ALL {
+                let label = section.label();
+                assert_ne!(label, label.to_uppercase(), "{label} is all caps");
+            }
+        }
+
+        phase every_category_has_its_own_icon;
+        {
+            let mut icons = std::collections::HashSet::new();
+            for category in Category::ALL {
+                assert!(
+                    icons.insert(category.icon()),
+                    "{category:?} shares its icon with another page"
+                );
+            }
         }
     }
 

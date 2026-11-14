@@ -1459,85 +1459,107 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_storage_summary_names_no_file() {
-        let summary = &crate::scenarios::storage_fixture()[0].summary;
-        let value = serde_json::to_value(summary).unwrap();
-        let workspaces = value["workspaces"].as_array().unwrap();
-        assert_eq!(workspaces.len(), 2);
-        for workspace in workspaces {
-            let mut keys: Vec<_> = workspace.as_object().unwrap().keys().cloned().collect();
-            keys.sort();
-            assert_eq!(keys, ["kept_here", "split", "workspace"]);
-            assert!(
-                workspace["split"]
-                    .as_object()
-                    .unwrap()
-                    .values()
-                    .all(serde_json::Value::is_u64),
-                "only counts: {workspace}"
-            );
-        }
-    }
-    #[test]
-    fn storage_pane_reports_real_roots_and_reclaims_only_approved_files() {
+    tilo_test_env::scenario! {
+        fn the_storage_model_reports_counts_roots_and_cache_sizes;
+
+        phase the_storage_summary_names_no_file;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let cache = tmp.path().join("cache");
-            std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
-            std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
-            let mut pane = StorageModel::over(
-                false,
-                std::sync::Arc::new(DeviceStorage {
-                    roots: StorageRoots {
-                        app_payloads: None,
-                        room_data: None,
-                        app_cache: Some(cache),
-                        sync_replica: None,
-                    },
-                    disk: None,
-                    reaches_shell: false,
-                }),
-            );
-            let deadline = tilo_test_env::hang_deadline();
-            while pane.scan.is_none() {
-                assert!(std::time::Instant::now() < deadline, "the scan lands");
-                pane.take_in();
-                std::thread::yield_now();
+            let summary = &crate::scenarios::storage_fixture()[0].summary;
+            let value = serde_json::to_value(summary).unwrap();
+            let workspaces = value["workspaces"].as_array().unwrap();
+            assert_eq!(workspaces.len(), 2);
+            for workspace in workspaces {
+                let mut keys: Vec<_> = workspace.as_object().unwrap().keys().cloned().collect();
+                keys.sort();
+                assert_eq!(keys, ["kept_here", "split", "workspace"]);
+                assert!(
+                    workspace["split"]
+                        .as_object()
+                        .unwrap()
+                        .values()
+                        .all(serde_json::Value::is_u64),
+                    "only counts: {workspace}"
+                );
             }
-            let scan = pane.scan.as_ref().unwrap();
-            assert_eq!(scan.snapshot.reclaimable_bytes(), 24);
-            assert_eq!(scan.cleanup.as_ref().unwrap().total_bytes, 24);
         }
 
+        phase storage_pane_reports_real_roots_and_reclaims_only_approved_files;
         {
-            let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
-                workspace: "work".into(),
-                app: None,
-                logical_path: format!("/{identity}"),
-                identity: identity.into(),
-                inode: 1,
-                version: "v".into(),
-                logical_bytes: 10,
-                hydrated_bytes: 10,
-                remote_only: false,
-                dirty: reclaimable_bytes == 0,
-                pinned: false,
-                in_flight: false,
-                remotely_durable: reclaimable_bytes > 0,
-                reclaimable_bytes,
-            };
-            let snapshot = SyncStorageSnapshot {
-                online: true,
-                files: vec![file("clean", 10), file("dirty", 0)],
-                ..SyncStorageSnapshot::default()
-            };
-            let selected = reclaimable_selections(&snapshot);
-            assert_eq!(selected.len(), 1);
-            assert_eq!(selected[0].identity, "clean");
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let cache = tmp.path().join("cache");
+                std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
+                std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
+                let mut pane = StorageModel::over(
+                    false,
+                    std::sync::Arc::new(DeviceStorage {
+                        roots: StorageRoots {
+                            app_payloads: None,
+                            room_data: None,
+                            app_cache: Some(cache),
+                            sync_replica: None,
+                        },
+                        disk: None,
+                        reaches_shell: false,
+                    }),
+                );
+                let deadline = tilo_test_env::hang_deadline();
+                while pane.scan.is_none() {
+                    assert!(std::time::Instant::now() < deadline, "the scan lands");
+                    pane.take_in();
+                    std::thread::yield_now();
+                }
+                let scan = pane.scan.as_ref().unwrap();
+                assert_eq!(scan.snapshot.reclaimable_bytes(), 24);
+                assert_eq!(scan.cleanup.as_ref().unwrap().total_bytes, 24);
+            }
+
+            {
+                let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
+                    workspace: "work".into(),
+                    app: None,
+                    logical_path: format!("/{identity}"),
+                    identity: identity.into(),
+                    inode: 1,
+                    version: "v".into(),
+                    logical_bytes: 10,
+                    hydrated_bytes: 10,
+                    remote_only: false,
+                    dirty: reclaimable_bytes == 0,
+                    pinned: false,
+                    in_flight: false,
+                    remotely_durable: reclaimable_bytes > 0,
+                    reclaimable_bytes,
+                };
+                let snapshot = SyncStorageSnapshot {
+                    online: true,
+                    files: vec![file("clean", 10), file("dirty", 0)],
+                    ..SyncStorageSnapshot::default()
+                };
+                let selected = reclaimable_selections(&snapshot);
+                assert_eq!(selected.len(), 1);
+                assert_eq!(selected[0].identity, "clean");
+            }
+        }
+
+        phase cache_sizes_round_trip_and_stay_above_the_daemons_minimum;
+        {
+            assert_eq!(cache_budget("Automatic"), Ok(None));
+            assert_eq!(cache_budget("25 GB"), Ok(Some(25_000_000_000)));
+            for size in CACHE_SIZES {
+                let budget = cache_budget(size).unwrap();
+                assert!(
+                    budget.is_none_or(|bytes| bytes >= runtime_fs::storage::MIN_CACHE_BUDGET_BYTES)
+                );
+                assert_eq!(cache_size(budget), Some(*size));
+                assert_eq!(cache_size_from_label(&cache_size_shown(size)), *size);
+                assert_eq!(cache_size_from_label(size), *size);
+            }
+            assert!(cache_budget("7 GB").is_err());
+            assert!(cache_budget("lots").is_err());
+            assert_eq!(cache_size(Some(123)), None);
         }
     }
-
     struct StalledStorage(Gate);
 
     impl StalledStorage {
@@ -1729,24 +1751,6 @@ mod tests {
             asked[1].1.is_some(),
             "the agent's open names its invocation"
         );
-    }
-
-    #[test]
-    fn cache_sizes_round_trip_and_stay_above_the_daemons_minimum() {
-        assert_eq!(cache_budget("Automatic"), Ok(None));
-        assert_eq!(cache_budget("25 GB"), Ok(Some(25_000_000_000)));
-        for size in CACHE_SIZES {
-            let budget = cache_budget(size).unwrap();
-            assert!(
-                budget.is_none_or(|bytes| bytes >= runtime_fs::storage::MIN_CACHE_BUDGET_BYTES)
-            );
-            assert_eq!(cache_size(budget), Some(*size));
-            assert_eq!(cache_size_from_label(&cache_size_shown(size)), *size);
-            assert_eq!(cache_size_from_label(size), *size);
-        }
-        assert!(cache_budget("7 GB").is_err());
-        assert!(cache_budget("lots").is_err());
-        assert_eq!(cache_size(Some(123)), None);
     }
 
     struct FixedScan(StorageScan);

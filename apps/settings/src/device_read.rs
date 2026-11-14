@@ -391,28 +391,32 @@ fn erased_job(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_started_read_runs_off_the_calling_thread_once() {
-        let read = DeviceRead::default();
-        let caller = std::thread::current().id();
-        assert!(read.start(move || std::thread::current().id() != caller));
-        assert!(!read.start(|| false), "one read at a time");
-        tilo_test_env::wait_until("the read to finish", || read.is_finished());
-        assert_eq!(read.take(), Some(true), "the read ran on another thread");
-        assert_eq!(read.take(), None, "a result is adopted once");
-    }
+    tilo_test_env::scenario! {
+        fn a_device_read_runs_once_off_the_calling_thread;
 
-    #[test]
-    fn taking_a_running_read_waits_for_it() {
-        let read = DeviceRead::default();
-        let (release, gate) = std::sync::mpsc::channel::<()>();
-        assert!(read.start(move || {
-            let _ = gate.recv();
-            7
-        }));
-        assert!(!read.is_finished(), "the read is held at its gate");
-        release.send(()).unwrap();
-        assert_eq!(read.take(), Some(7));
-        assert!(read.is_finished(), "nothing is left on its way");
+        phase a_started_read_runs_off_the_calling_thread_once;
+        {
+            let read = DeviceRead::default();
+            let caller = std::thread::current().id();
+            assert!(read.start(move || std::thread::current().id() != caller));
+            assert!(!read.start(|| false), "one read at a time");
+            tilo_test_env::wait_until("the read to finish", || read.is_finished());
+            assert_eq!(read.take(), Some(true), "the read ran on another thread");
+            assert_eq!(read.take(), None, "a result is adopted once");
+        }
+
+        phase taking_a_running_read_waits_for_it;
+        {
+            let read = DeviceRead::default();
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            assert!(read.start(move || {
+                let _ = gate.recv();
+                7
+            }));
+            assert!(!read.is_finished(), "the read is held at its gate");
+            release.send(()).unwrap();
+            assert_eq!(read.take(), Some(7));
+            assert!(read.is_finished(), "nothing is left on its way");
+        }
     }
 }

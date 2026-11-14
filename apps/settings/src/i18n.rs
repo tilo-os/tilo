@@ -77,48 +77,52 @@ mod tests {
         vars
     }
 
-    #[test]
-    fn native_agent_copy_precedes_shared_fallback() {
-        assert_eq!(t("agent-vertex-title"), CATALOG.t("agent-vertex-title"));
-        assert_ne!(t("agent-vertex-title"), "agent-vertex-title");
-        assert_eq!(
-            t("agent-sign-in-custody"),
-            provider_settings_ui::i18n::t("agent-sign-in-custody")
-        );
-        let args = [("error", "diagnostic".into())];
-        assert_eq!(
-            t_args("agent-sign-in-forget-err", &args),
-            CATALOG.t_args("agent-sign-in-forget-err", &args)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_catalogues_resolve_every_key_in_both_languages;
 
-    #[test]
-    fn every_catalogue_entry_resolves_to_a_real_string() {
-        let keys = messages(SOURCE_FTL);
-        assert!(!keys.is_empty());
-        for key in keys.keys() {
-            let value = t(key);
-            assert_ne!(value, *key, "{key} has no entry in the catalogue");
-            assert!(!value.trim().is_empty(), "{key} resolves to nothing");
-        }
-    }
-
-    #[test]
-    fn the_german_catalogue_matches_the_source_key_for_key() {
-        let source = messages(SOURCE_FTL);
-        let german = messages(DE_FTL);
-        assert_eq!(
-            source.keys().collect::<Vec<_>>(),
-            german.keys().collect::<Vec<_>>(),
-            "de-DE must translate exactly the en-US keys"
-        );
-        for (key, pattern) in &source {
+        phase native_agent_copy_precedes_shared_fallback;
+        {
+            assert_eq!(t("agent-vertex-title"), CATALOG.t("agent-vertex-title"));
+            assert_ne!(t("agent-vertex-title"), "agent-vertex-title");
             assert_eq!(
-                variables(pattern),
-                variables(german[key]),
-                "placeholders changed in the German {key}"
+                t("agent-sign-in-custody"),
+                provider_settings_ui::i18n::t("agent-sign-in-custody")
             );
-            assert!(!german[key].trim().is_empty(), "{key} is empty in de-DE");
+            let args = [("error", "diagnostic".into())];
+            assert_eq!(
+                t_args("agent-sign-in-forget-err", &args),
+                CATALOG.t_args("agent-sign-in-forget-err", &args)
+            );
+        }
+
+        phase every_catalogue_entry_resolves_to_a_real_string;
+        {
+            let keys = messages(SOURCE_FTL);
+            assert!(!keys.is_empty());
+            for key in keys.keys() {
+                let value = t(key);
+                assert_ne!(value, *key, "{key} has no entry in the catalogue");
+                assert!(!value.trim().is_empty(), "{key} resolves to nothing");
+            }
+        }
+
+        phase the_german_catalogue_matches_the_source_key_for_key;
+        {
+            let source = messages(SOURCE_FTL);
+            let german = messages(DE_FTL);
+            assert_eq!(
+                source.keys().collect::<Vec<_>>(),
+                german.keys().collect::<Vec<_>>(),
+                "de-DE must translate exactly the en-US keys"
+            );
+            for (key, pattern) in &source {
+                assert_eq!(
+                    variables(pattern),
+                    variables(german[key]),
+                    "placeholders changed in the German {key}"
+                );
+                assert!(!german[key].trim().is_empty(), "{key} is empty in de-DE");
+            }
         }
     }
 }

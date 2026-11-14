@@ -809,29 +809,73 @@ mod tests {
         app.harness().inspection_json().unwrap()
     }
 
-    /// The helper's answer becomes volumes only when every field Settings
-    /// would hand back to pkexec is well-formed.
-    #[test]
-    fn only_well_formed_enrolments_are_read() {
-        let json = serde_json::json!([{
-            "volume": VOLUME,
-            "device": format!("/dev/disk/by-uuid/{VOLUME}"),
-            "keyslot": 2,
-            "sealing": "cleartext",
-            "networks": ["Home"],
-            "siblings": ["laptop"],
-        }])
-        .to_string();
-        let volumes = parse_volumes(&json).unwrap();
-        assert_eq!(volumes[0].sealing, Sealing::Cleartext);
-        assert_eq!(volumes[0].networks, ["Home"]);
-        assert!(parse_volumes("[]").unwrap().is_empty());
+    tilo_test_env::scenario! {
+        fn disk_unlock_enrolments_are_read_and_changed_only_when_well_formed;
 
-        let elsewhere = json.replace("/dev/disk/by-uuid/", "/dev/");
-        assert!(parse_volumes(&elsewhere).is_err());
-        let hostile = json.replace("\"Home\"", "\"../../etc/x\"");
-        assert!(parse_volumes(&hostile).is_err());
-        assert!(parse_volumes("{\"volume\":1}").is_err());
+        phase only_well_formed_enrolments_are_read;
+        // The helper's answer becomes volumes only when every field Settings
+        // would hand back to pkexec is well-formed.
+        {
+            let json = serde_json::json!([{
+                "volume": VOLUME,
+                "device": format!("/dev/disk/by-uuid/{VOLUME}"),
+                "keyslot": 2,
+                "sealing": "cleartext",
+                "networks": ["Home"],
+                "siblings": ["laptop"],
+            }])
+            .to_string();
+            let volumes = parse_volumes(&json).unwrap();
+            assert_eq!(volumes[0].sealing, Sealing::Cleartext);
+            assert_eq!(volumes[0].networks, ["Home"]);
+            assert!(parse_volumes("[]").unwrap().is_empty());
+
+            let elsewhere = json.replace("/dev/disk/by-uuid/", "/dev/");
+            assert!(parse_volumes(&elsewhere).is_err());
+            let hostile = json.replace("\"Home\"", "\"../../etc/x\"");
+            assert!(parse_volumes(&hostile).is_err());
+            assert!(parse_volumes("{\"volume\":1}").is_err());
+        }
+
+        phase a_refused_or_stale_change_reports_and_changes_nothing;
+        {
+            let authority = Arc::new(FakeAuthority {
+                volumes: Mutex::new(Ok(vec![volume(Sealing::Tpm2, &[])])),
+                wifi: vec!["Home".into()],
+                calls: Mutex::new(Vec::new()),
+                refuse: true,
+            });
+            let mut card = DiskUnlockModel::with_authority(authority);
+            card.settle();
+            card.start(
+                &network_change(&volume(Sealing::Tpm2, &[]), "Home", true),
+                None,
+            );
+            card.settle();
+            assert!(
+                matches!(&card.outcome, Some(Err(message)) if message == &t("settings-disk-unlock-not-authorised"))
+            );
+
+            let authority = FakeAuthority::new(Ok(Vec::new()));
+            assert_eq!(
+                change(
+                    authority.as_ref(),
+                    &network_change(&volume(Sealing::Tpm2, &[]), "Home", true)
+                ),
+                Err(t("settings-disk-unlock-gone"))
+            );
+            assert_eq!(
+                change(
+                    authority.as_ref(),
+                    &DiskUnlockEffect::SetDiskUnlockNetworks {
+                        volume: "../../dev/sda".into(),
+                        networks: Vec::new(),
+                    }
+                ),
+                Err(t("settings-disk-unlock-bad-request"))
+            );
+            assert!(authority.calls.lock().unwrap().is_empty());
+        }
     }
 
     /// Cleartext secrets are said to be readable by anyone holding the disk;
@@ -964,45 +1008,5 @@ mod tests {
             );
         })
         .unwrap();
-    }
-
-    #[test]
-    fn a_refused_or_stale_change_reports_and_changes_nothing() {
-        let authority = Arc::new(FakeAuthority {
-            volumes: Mutex::new(Ok(vec![volume(Sealing::Tpm2, &[])])),
-            wifi: vec!["Home".into()],
-            calls: Mutex::new(Vec::new()),
-            refuse: true,
-        });
-        let mut card = DiskUnlockModel::with_authority(authority);
-        card.settle();
-        card.start(
-            &network_change(&volume(Sealing::Tpm2, &[]), "Home", true),
-            None,
-        );
-        card.settle();
-        assert!(
-            matches!(&card.outcome, Some(Err(message)) if message == &t("settings-disk-unlock-not-authorised"))
-        );
-
-        let authority = FakeAuthority::new(Ok(Vec::new()));
-        assert_eq!(
-            change(
-                authority.as_ref(),
-                &network_change(&volume(Sealing::Tpm2, &[]), "Home", true)
-            ),
-            Err(t("settings-disk-unlock-gone"))
-        );
-        assert_eq!(
-            change(
-                authority.as_ref(),
-                &DiskUnlockEffect::SetDiskUnlockNetworks {
-                    volume: "../../dev/sda".into(),
-                    networks: Vec::new(),
-                }
-            ),
-            Err(t("settings-disk-unlock-bad-request"))
-        );
-        assert!(authority.calls.lock().unwrap().is_empty());
     }
 }

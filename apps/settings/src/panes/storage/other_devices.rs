@@ -176,38 +176,42 @@ mod tests {
         .unwrap()
     }
 
-    /// A device is asked when it first appears and again when it comes
-    /// back online, not at every reading.
-    #[test]
-    fn a_device_is_asked_again_when_it_comes_back() {
-        let asked = |before: bool, now: (&str, bool)| {
-            newly_reachable(
-                &[device("bb", "", false, before)],
-                &device(now.0, "", false, now.1),
-            )
-        };
-        assert!(
-            asked(false, ("cc", false)),
-            "a device listed for the first time"
-        );
-        assert!(!asked(false, ("bb", false)), "a device still offline");
-        assert!(asked(false, ("bb", true)), "a device that came back online");
-        assert!(!asked(true, ("bb", true)), "a device that stayed online");
-    }
+    tilo_test_env::scenario! {
+        fn another_devices_storage_is_asked_and_answered_by_the_listed_device;
 
-    /// An answer is taken in only for a device the session lists as one of
-    /// the person's other devices; one from any other key is ignored.
-    #[test]
-    fn an_answer_from_a_device_outside_the_list_is_ignored() {
-        let others = [device("bb", "Laptop", false, true)];
-        let card = residency_of(&others, "bb", Some(summary())).expect("a listed device");
-        assert_eq!(card.label, "Laptop");
-        assert_eq!(card.key, "bb");
-        assert!(!card.current);
-        assert_eq!(card.summary.workspaces[0].split.only_here_bytes, 7);
-        assert!(residency_of(&others, "zz", Some(summary())).is_none());
-        assert!(residency_of(&others, "bb", Some(serde_json::json!("x"))).is_none());
-        assert!(residency_of(&others, "bb", None).is_none());
+        phase a_device_is_asked_again_when_it_comes_back;
+        // A device is asked when it first appears and again when it comes
+        // back online, not at every reading.
+        {
+            let asked = |before: bool, now: (&str, bool)| {
+                newly_reachable(
+                    &[device("bb", "", false, before)],
+                    &device(now.0, "", false, now.1),
+                )
+            };
+            assert!(
+                asked(false, ("cc", false)),
+                "a device listed for the first time"
+            );
+            assert!(!asked(false, ("bb", false)), "a device still offline");
+            assert!(asked(false, ("bb", true)), "a device that came back online");
+            assert!(!asked(true, ("bb", true)), "a device that stayed online");
+        }
+
+        phase an_answer_from_a_device_outside_the_list_is_ignored;
+        // An answer is taken in only for a device the session lists as one of
+        // the person's other devices; one from any other key is ignored.
+        {
+            let others = [device("bb", "Laptop", false, true)];
+            let card = residency_of(&others, "bb", Some(summary())).expect("a listed device");
+            assert_eq!(card.label, "Laptop");
+            assert_eq!(card.key, "bb");
+            assert!(!card.current);
+            assert_eq!(card.summary.workspaces[0].split.only_here_bytes, 7);
+            assert!(residency_of(&others, "zz", Some(summary())).is_none());
+            assert!(residency_of(&others, "bb", Some(serde_json::json!("x"))).is_none());
+            assert!(residency_of(&others, "bb", None).is_none());
+        }
     }
 
     #[test]

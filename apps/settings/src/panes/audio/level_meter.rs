@@ -226,41 +226,45 @@ impl Widget for LevelMeter {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_meter_rises_at_once_and_settles() {
-        let level = Level::default();
-        level.set_live(true);
-        let mut meter = LevelMeter::new(&level, "Microphone");
-        level.set(0.8);
-        assert!(meter.step());
-        assert!((meter.shown - 0.8).abs() < 1e-6);
-        level.set(0.0);
-        meter.step();
-        assert!(meter.shown > 0.5 && meter.shown < 0.8, "{}", meter.shown);
-        assert!(meter.peak > meter.shown);
-        for _ in 0..200 {
-            meter.step();
-        }
-        assert!(meter.shown.abs() < f32::EPSILON);
-        level.set_live(false);
-        assert!(!meter.needs_animation_frame());
-    }
+    tilo_test_env::scenario! {
+        fn the_level_meter_follows_the_level_and_rests;
 
-    #[test]
-    fn a_meter_over_silence_asks_for_no_frames() {
-        let level = Level::default();
-        level.set_live(true);
-        let mut meter = LevelMeter::new(&level, "Speakers");
-        assert!(!meter.needs_animation_frame());
-        level.set(0.5);
-        assert!(meter.needs_animation_frame());
-        meter.step();
-        assert!(!meter.needs_animation_frame(), "a steady level is still");
-        level.set(0.0);
-        assert!(meter.needs_animation_frame());
-        for _ in 0..400 {
+        phase the_meter_rises_at_once_and_settles;
+        {
+            let level = Level::default();
+            level.set_live(true);
+            let mut meter = LevelMeter::new(&level, "Microphone");
+            level.set(0.8);
+            assert!(meter.step());
+            assert!((meter.shown - 0.8).abs() < 1e-6);
+            level.set(0.0);
             meter.step();
+            assert!(meter.shown > 0.5 && meter.shown < 0.8, "{}", meter.shown);
+            assert!(meter.peak > meter.shown);
+            for _ in 0..200 {
+                meter.step();
+            }
+            assert!(meter.shown.abs() < f32::EPSILON);
+            level.set_live(false);
+            assert!(!meter.needs_animation_frame());
         }
-        assert!(!meter.needs_animation_frame(), "it settles and stops");
+
+        phase a_meter_over_silence_asks_for_no_frames;
+        {
+            let level = Level::default();
+            level.set_live(true);
+            let mut meter = LevelMeter::new(&level, "Speakers");
+            assert!(!meter.needs_animation_frame());
+            level.set(0.5);
+            assert!(meter.needs_animation_frame());
+            meter.step();
+            assert!(!meter.needs_animation_frame(), "a steady level is still");
+            level.set(0.0);
+            assert!(meter.needs_animation_frame());
+            for _ in 0..400 {
+                meter.step();
+            }
+            assert!(!meter.needs_animation_frame(), "it settles and stops");
+        }
     }
 }

@@ -463,20 +463,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn personal_apps_copy_comes_from_the_catalogue() {
-        assert_eq!(
-            t("settings-personal-apps-files-title"),
-            "Open files and links with"
-        );
-        assert_eq!(
-            resource_label(&ResourceKind::extension("pdf").unwrap()),
-            "PDF documents"
-        );
-        assert_eq!(
-            resource_label(&ResourceKind::scheme("https").unwrap()),
-            "Secure web links"
-        );
+    tilo_test_env::scenario! {
+        fn default_apps_are_worded_from_the_catalogue_and_checked_by_the_section;
+
+        phase personal_apps_copy_comes_from_the_catalogue;
+        {
+            assert_eq!(
+                t("settings-personal-apps-files-title"),
+                "Open files and links with"
+            );
+            assert_eq!(
+                resource_label(&ResourceKind::extension("pdf").unwrap()),
+                "PDF documents"
+            );
+            assert_eq!(
+                resource_label(&ResourceKind::scheme("https").unwrap()),
+                "Secure web links"
+            );
+        }
+
+        phase the_section_refuses_what_is_not_a_kind_or_an_app;
+        // A kind that is not one, or no app, is refused at the section.
+        {
+            let mut apps = DefaultApps::default();
+            assert!(apps.open_with("pdf".into(), "so.tilo.pdf".into()).is_err());
+            assert!(apps.open_with("ext:pdf".into(), " ".into()).is_err());
+            assert!(apps.handlers.is_empty());
+            apps.open_with("ext:pdf".into(), "so.tilo.pdf".into())
+                .unwrap();
+            assert_eq!(
+                apps.handlers.get("ext:pdf").map(String::as_str),
+                Some("so.tilo.pdf")
+            );
+        }
     }
 
     /// A choice is the person's `default_apps` section, which the launcher
@@ -582,20 +601,5 @@ mod tests {
             .unwrap();
         app.settle();
         assert_eq!(shown(&mut app).as_deref(), Some("so.tilo.b"));
-    }
-
-    /// A kind that is not one, or no app, is refused at the section.
-    #[test]
-    fn the_section_refuses_what_is_not_a_kind_or_an_app() {
-        let mut apps = DefaultApps::default();
-        assert!(apps.open_with("pdf".into(), "so.tilo.pdf".into()).is_err());
-        assert!(apps.open_with("ext:pdf".into(), " ".into()).is_err());
-        assert!(apps.handlers.is_empty());
-        apps.open_with("ext:pdf".into(), "so.tilo.pdf".into())
-            .unwrap();
-        assert_eq!(
-            apps.handlers.get("ext:pdf").map(String::as_str),
-            Some("so.tilo.pdf")
-        );
     }
 }

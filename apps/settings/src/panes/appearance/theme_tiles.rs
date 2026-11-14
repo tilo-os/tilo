@@ -648,106 +648,110 @@ impl ui::widget::controls::ActionControls for ThemeTiles {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_offered_theme_has_a_tile_in_its_own_colours() {
-        let tiles = tiles();
-        assert_eq!(
-            tiles.iter().map(|tile| tile.name).collect::<Vec<_>>(),
-            AppearancePrefs::THEMES
-        );
-        let automatic = tiles.iter().find(|tile| tile.name == "Automatic").unwrap();
-        assert_eq!(automatic.themes.len(), 2);
-        let light = tiles.iter().find(|tile| tile.name == "Light").unwrap();
-        let dark = tiles.iter().find(|tile| tile.name == "Dark").unwrap();
-        assert_ne!(
-            light.themes[0].tokens.colors.surfaces.content,
-            dark.themes[0].tokens.colors.surfaces.content
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_theme_tiles_show_every_theme_by_name_in_even_lines;
 
-    /// Every tile is named in words, never by the message id it looks its
-    /// name up under.
-    #[test]
-    fn every_tile_has_a_name() {
-        for tile in tiles().iter() {
-            let label = ThemeTiles::label_of(tile.name);
-            assert!(
-                !label.starts_with("settings-"),
-                "the {} tile shows its message id: {label}",
-                tile.name
+        phase every_offered_theme_has_a_tile_in_its_own_colours;
+        {
+            let tiles = tiles();
+            assert_eq!(
+                tiles.iter().map(|tile| tile.name).collect::<Vec<_>>(),
+                AppearancePrefs::THEMES
+            );
+            let automatic = tiles.iter().find(|tile| tile.name == "Automatic").unwrap();
+            assert_eq!(automatic.themes.len(), 2);
+            let light = tiles.iter().find(|tile| tile.name == "Light").unwrap();
+            let dark = tiles.iter().find(|tile| tile.name == "Dark").unwrap();
+            assert_ne!(
+                light.themes[0].tokens.colors.surfaces.content,
+                dark.themes[0].tokens.colors.surfaces.content
             );
         }
-    }
 
-    #[test]
-    fn the_tiles_fill_even_lines() {
-        let offered = AppearancePrefs::THEMES.len();
-        let mut tiles = ThemeTiles::new("Dark");
-        let mut previous = usize::MAX;
-        for width in [720.0, 400.0, 260.0] {
-            tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
-            let columns = tiles.columns();
-            assert!(
-                offered.is_multiple_of(columns),
-                "at {width}: {columns} tiles a line"
-            );
-            assert!(
-                columns <= previous,
-                "at {width}: a narrower pane shows no more columns"
-            );
-            previous = columns;
+        phase every_tile_has_a_name;
+        // Every tile is named in words, never by the message id it looks its
+        // name up under.
+        {
+            for tile in tiles().iter() {
+                let label = ThemeTiles::label_of(tile.name);
+                assert!(
+                    !label.starts_with("settings-"),
+                    "the {} tile shows its message id: {label}",
+                    tile.name
+                );
+            }
         }
-        assert_eq!(tiles.columns(), 2);
-        assert_eq!(tiles.columns(), 2);
-        assert!(tiles.tile_rect(2).y0 > tiles.tile_rect(0).y1);
-        assert_eq!(tiles.tile_at(tiles.tile_rect(3).center()), Some(3));
-    }
 
-    /// From a phone to a wide window, every line of tiles spans the whole
-    /// width: the tiles grow with the window instead of leaving a gap at
-    /// the end of the line, and the column count reflows as it widens.
-    #[test]
-    fn the_tiles_fill_the_line_at_every_width() {
-        let mut tiles = ThemeTiles::new("Dark");
-        let mut counts = Vec::new();
-        let mut first_width = Vec::new();
-        for width in [260.0, 360.0, 420.0, 560.0, 640.0, 720.0, 900.0, 1400.0] {
-            tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
-            let columns = tiles.columns();
-            let line_end = tiles.tile_rect(columns - 1).x1;
-            assert!(
-                (line_end - width).abs() < 0.5,
-                "at {width}: the line of {columns} tiles ends at {line_end}"
-            );
-            assert!(
-                (tiles.tile_rect(0).x0).abs() < 0.5,
-                "at {width}: the line starts at the edge"
-            );
-            let widths: Vec<f64> = (0..columns).map(|i| tiles.tile_rect(i).width()).collect();
-            assert!(
-                widths.iter().all(|w| (w - widths[0]).abs() < 0.01),
-                "at {width}: the tiles share the line evenly: {widths:?}"
-            );
-            counts.push(columns);
-            first_width.push(widths[0]);
+        phase the_tiles_fill_even_lines;
+        {
+            let offered = AppearancePrefs::THEMES.len();
+            let mut tiles = ThemeTiles::new("Dark");
+            let mut previous = usize::MAX;
+            for width in [720.0, 400.0, 260.0] {
+                tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
+                let columns = tiles.columns();
+                assert!(
+                    offered.is_multiple_of(columns),
+                    "at {width}: {columns} tiles a line"
+                );
+                assert!(
+                    columns <= previous,
+                    "at {width}: a narrower pane shows no more columns"
+                );
+                previous = columns;
+            }
+            assert_eq!(tiles.columns(), 2);
+            assert_eq!(tiles.columns(), 2);
+            assert!(tiles.tile_rect(2).y0 > tiles.tile_rect(0).y1);
+            assert_eq!(tiles.tile_at(tiles.tile_rect(3).center()), Some(3));
         }
-        assert!(
-            counts.windows(2).all(|pair| pair[1] >= pair[0]),
-            "a wider pane never shows fewer columns: {counts:?}"
-        );
-        assert_eq!(counts.first(), Some(&2), "a phone shows two columns");
-        assert!(
-            counts
-                .iter()
-                .all(|columns| AppearancePrefs::THEMES.len().is_multiple_of(*columns)),
-            "every line holds as many tiles as the others: {counts:?}"
-        );
-        assert!(
-            counts
-                .windows(2)
-                .zip(first_width.windows(2))
-                .all(|(columns, widths)| columns[0] != columns[1] || widths[1] > widths[0]),
-            "while the columns stay, the tiles keep growing with the window: {first_width:?}"
-        );
+
+        phase the_tiles_fill_the_line_at_every_width;
+        // From a phone to a wide window, every line of tiles spans the whole
+        // width: the tiles grow with the window instead of leaving a gap at
+        // the end of the line, and the column count reflows as it widens.
+        {
+            let mut tiles = ThemeTiles::new("Dark");
+            let mut counts = Vec::new();
+            let mut first_width = Vec::new();
+            for width in [260.0, 360.0, 420.0, 560.0, 640.0, 720.0, 900.0, 1400.0] {
+                tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
+                let columns = tiles.columns();
+                let line_end = tiles.tile_rect(columns - 1).x1;
+                assert!(
+                    (line_end - width).abs() < 0.5,
+                    "at {width}: the line of {columns} tiles ends at {line_end}"
+                );
+                assert!(
+                    (tiles.tile_rect(0).x0).abs() < 0.5,
+                    "at {width}: the line starts at the edge"
+                );
+                let widths: Vec<f64> = (0..columns).map(|i| tiles.tile_rect(i).width()).collect();
+                assert!(
+                    widths.iter().all(|w| (w - widths[0]).abs() < 0.01),
+                    "at {width}: the tiles share the line evenly: {widths:?}"
+                );
+                counts.push(columns);
+                first_width.push(widths[0]);
+            }
+            assert!(
+                counts.windows(2).all(|pair| pair[1] >= pair[0]),
+                "a wider pane never shows fewer columns: {counts:?}"
+            );
+            assert_eq!(counts.first(), Some(&2), "a phone shows two columns");
+            assert!(
+                counts
+                    .iter()
+                    .all(|columns| AppearancePrefs::THEMES.len().is_multiple_of(*columns)),
+                "every line holds as many tiles as the others: {counts:?}"
+            );
+            assert!(
+                counts
+                    .windows(2)
+                    .zip(first_width.windows(2))
+                    .all(|(columns, widths)| columns[0] != columns[1] || widths[1] > widths[0]),
+                "while the columns stay, the tiles keep growing with the window: {first_width:?}"
+            );
+        }
     }
 }

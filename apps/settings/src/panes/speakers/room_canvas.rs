@@ -1010,49 +1010,53 @@ impl Widget for RoomCanvas {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_held_speaker_snaps_to_the_centre_line_and_the_mirror_of_another() {
-        let near_centre = snap((120, 2_400), &[], 150);
-        assert_eq!(near_centre.at, (0, 2_400));
-        assert_eq!(
-            near_centre.guides,
-            [RoomGuide {
-                vertical: true,
-                at: 0,
-            }]
-        );
-        let left = (-1_500, 2_000);
-        let pair = snap((1_430, 2_090), &[left], 150);
-        assert_eq!(pair.at, (1_500, 2_000));
-        assert_eq!(pair.guides.len(), 2);
-        assert!(
-            pair.guides
-                .iter()
-                .any(|guide| !guide.vertical && guide.at == 2_000)
-        );
-        assert!(
-            pair.guides
-                .iter()
-                .any(|guide| guide.vertical && guide.at == 1_500)
-        );
-        assert_eq!(snap((900, 3_100), &[left], 150).at, (900, 3_100));
-    }
+    tilo_test_env::scenario! {
+        fn a_speaker_snaps_while_held_and_rests_when_let_go;
 
-    #[test]
-    fn a_let_go_speaker_rests_inside_the_room_and_on_nothing_else() {
-        let gap = 400;
-        let others = [(0, 2_000)];
-        let dropped = rest((0, 2_100), &others, gap);
-        let distance = f64::from(dropped.0).hypot(f64::from(dropped.1 - 2_000));
-        assert!((distance - f64::from(gap)).abs() <= 1.0, "{dropped:?}");
-        // Dropped on the listener: never on them.
-        let on_you = rest((10, -10), &[], gap);
-        assert!(f64::from(on_you.0).hypot(f64::from(on_you.1)) >= f64::from(gap) - 1.0);
-        assert_eq!(
-            rest((ROOM_EXTENT_MM + 900, 1_000), &[], gap),
-            (ROOM_EXTENT_MM, 1_000)
-        );
-        assert_eq!(rest((1_200, 1_800), &others, gap), (1_200, 1_800));
+        phase a_held_speaker_snaps_to_the_centre_line_and_the_mirror_of_another;
+        {
+            let near_centre = snap((120, 2_400), &[], 150);
+            assert_eq!(near_centre.at, (0, 2_400));
+            assert_eq!(
+                near_centre.guides,
+                [RoomGuide {
+                    vertical: true,
+                    at: 0,
+                }]
+            );
+            let left = (-1_500, 2_000);
+            let pair = snap((1_430, 2_090), &[left], 150);
+            assert_eq!(pair.at, (1_500, 2_000));
+            assert_eq!(pair.guides.len(), 2);
+            assert!(
+                pair.guides
+                    .iter()
+                    .any(|guide| !guide.vertical && guide.at == 2_000)
+            );
+            assert!(
+                pair.guides
+                    .iter()
+                    .any(|guide| guide.vertical && guide.at == 1_500)
+            );
+            assert_eq!(snap((900, 3_100), &[left], 150).at, (900, 3_100));
+        }
+
+        phase a_let_go_speaker_rests_inside_the_room_and_on_nothing_else;
+        {
+            let gap = 400;
+            let others = [(0, 2_000)];
+            let dropped = rest((0, 2_100), &others, gap);
+            let distance = f64::from(dropped.0).hypot(f64::from(dropped.1 - 2_000));
+            assert!((distance - f64::from(gap)).abs() <= 1.0, "{dropped:?}");
+            // Dropped on the listener: never on them.
+            let on_you = rest((10, -10), &[], gap);
+            assert!(f64::from(on_you.0).hypot(f64::from(on_you.1)) >= f64::from(gap) - 1.0);
+            assert_eq!(
+                rest((ROOM_EXTENT_MM + 900, 1_000), &[], gap),
+                (ROOM_EXTENT_MM, 1_000)
+            );
+            assert_eq!(rest((1_200, 1_800), &others, gap), (1_200, 1_800));
+        }
     }
 
     fn points() -> Vec<(i32, i32)> {

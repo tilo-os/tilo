@@ -520,59 +520,73 @@ fn codes_given_to_the_effects_change_the_sim_directly() {
     assert!(model.asking.is_none(), "nothing was asked");
 }
 
-#[test]
-fn the_network_type_is_chosen_by_its_key_or_its_words() {
-    let (device, mut model) = scripted(Some(MobileSample::Registered));
-    run(
-        &mut model,
-        MobileEffect::SetPreferredNetwork {
-            network: "4g".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        model
-            .modem()
-            .unwrap()
-            .modes
-            .map(NetworkModes::key)
-            .as_deref(),
-        Some("4g")
-    );
-    run(
-        &mut model,
-        MobileEffect::SetPreferredNetwork {
-            network: "2G to 4G, 4G preferred".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        model
-            .modem()
-            .unwrap()
-            .modes
-            .map(NetworkModes::preferred_generation),
-        Some(Some(4))
-    );
-    assert!(
+tilo_test_env::scenario! {
+    fn mobile_settings_are_changed_on_the_modems_profile;
+
+    phase the_network_type_is_chosen_by_its_key_or_its_words;
+    {
+        let (device, mut model) = scripted(Some(MobileSample::Registered));
         run(
             &mut model,
             MobileEffect::SetPreferredNetwork {
-                network: "6g".into(),
+                network: "4g".into(),
             },
         )
-        .is_err()
-    );
-    assert_eq!(device.changes().len(), 2);
-}
+        .unwrap();
+        assert_eq!(
+            model
+                .modem()
+                .unwrap()
+                .modes
+                .map(NetworkModes::key)
+                .as_deref(),
+            Some("4g")
+        );
+        run(
+            &mut model,
+            MobileEffect::SetPreferredNetwork {
+                network: "2G to 4G, 4G preferred".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            model
+                .modem()
+                .unwrap()
+                .modes
+                .map(NetworkModes::preferred_generation),
+            Some(Some(4))
+        );
+        assert!(
+            run(
+                &mut model,
+                MobileEffect::SetPreferredNetwork {
+                    network: "6g".into(),
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(device.changes().len(), 2);
+    }
 
-#[test]
-fn the_apn_is_automatic_or_a_name_never_empty() {
-    let (device, mut model) = scripted(Some(MobileSample::Registered));
-    run(&mut model, MobileEffect::ShowApnEditor).unwrap();
-    assert!(model.apn_automatic.get());
-    model.apn_automatic.set(false);
-    assert_eq!(
+    phase the_apn_is_automatic_or_a_name_never_empty;
+    {
+        let (device, mut model) = scripted(Some(MobileSample::Registered));
+        run(&mut model, MobileEffect::ShowApnEditor).unwrap();
+        assert!(model.apn_automatic.get());
+        model.apn_automatic.set(false);
+        assert_eq!(
+            run(
+                &mut model,
+                MobileEffect::SetMobileApn {
+                    automatic: None,
+                    apn: None,
+                },
+            )
+            .unwrap_err(),
+            "Enter an access point name, or choose it automatically."
+        );
+        model.apn_text.set(" internet.telekom ".into());
         run(
             &mut model,
             MobileEffect::SetMobileApn {
@@ -580,68 +594,129 @@ fn the_apn_is_automatic_or_a_name_never_empty() {
                 apn: None,
             },
         )
-        .unwrap_err(),
-        "Enter an access point name, or choose it automatically."
-    );
-    model.apn_text.set(" internet.telekom ".into());
-    run(
-        &mut model,
-        MobileEffect::SetMobileApn {
-            automatic: None,
-            apn: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        model
-            .profile
-            .as_ref()
-            .and_then(|p| p.apn.clone())
-            .as_deref(),
-        Some("internet.telekom")
-    );
-    assert!(!model.apn_open);
-    run(
-        &mut model,
-        MobileEffect::SetMobileApn {
-            automatic: Some(true),
-            apn: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(model.profile.as_ref().and_then(|p| p.apn.clone()), None);
-    assert_eq!(device.changes().len(), 2);
-}
+        .unwrap();
+        assert_eq!(
+            model
+                .profile
+                .as_ref()
+                .and_then(|p| p.apn.clone())
+                .as_deref(),
+            Some("internet.telekom")
+        );
+        assert!(!model.apn_open);
+        run(
+            &mut model,
+            MobileEffect::SetMobileApn {
+                automatic: Some(true),
+                apn: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(model.profile.as_ref().and_then(|p| p.apn.clone()), None);
+        assert_eq!(device.changes().len(), 2);
+    }
 
-#[test]
-fn metering_and_data_follow_the_profile() {
-    let (_, mut model) = scripted(Some(MobileSample::Registered));
-    run(
-        &mut model,
-        MobileEffect::SetMobileMetered {
-            metered: "unmetered".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        model.profile.as_ref().map(|p| p.metered),
-        Some(MeteredPolicy::Unmetered)
-    );
-    run(
-        &mut model,
-        MobileEffect::SetMobileMetered {
-            metered: "Metered".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        model.profile.as_ref().map(|p| p.metered),
-        Some(MeteredPolicy::Metered)
-    );
-    run(&mut model, MobileEffect::SetMobileBroadband { on: false }).unwrap();
-    assert!(!model.data_on());
-    run(&mut model, MobileEffect::SetMobileBroadband { on: true }).unwrap();
-    assert!(model.data_on());
+    phase metering_and_data_follow_the_profile;
+    {
+        let (_, mut model) = scripted(Some(MobileSample::Registered));
+        run(
+            &mut model,
+            MobileEffect::SetMobileMetered {
+                metered: "unmetered".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            model.profile.as_ref().map(|p| p.metered),
+            Some(MeteredPolicy::Unmetered)
+        );
+        run(
+            &mut model,
+            MobileEffect::SetMobileMetered {
+                metered: "Metered".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            model.profile.as_ref().map(|p| p.metered),
+            Some(MeteredPolicy::Metered)
+        );
+        run(&mut model, MobileEffect::SetMobileBroadband { on: false }).unwrap();
+        assert!(!model.data_on());
+        run(&mut model, MobileEffect::SetMobileBroadband { on: true }).unwrap();
+        assert!(model.data_on());
+    }
+
+    phase the_other_sim_is_used_by_its_slot;
+    {
+        let (_, mut model) = scripted(Some(MobileSample::Registered));
+        run(
+            &mut model,
+            MobileEffect::UseSim {
+                sim: "Vodafone.de".into(),
+            },
+        )
+        .unwrap();
+        let switched = model.modem().unwrap();
+        assert_eq!(switched.active_sim().map(|sim| sim.slot), Some(Some(2)));
+        assert!(
+            run(
+                &mut model,
+                MobileEffect::UseSim {
+                    sim: "Nobody".into(),
+                },
+            )
+            .is_err()
+        );
+    }
+
+    phase the_shown_section_reads_the_modems_again_when_they_change;
+    {
+        let device = Arc::new(FollowedModem {
+            modem: ScriptedModem::new(Some(MobileSample::Registered)),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            follower: Mutex::new(None),
+        });
+        let mut model = MobileModel::loaded_from(
+            Reach::of(&cx()),
+            Arc::clone(&device) as Arc<dyn MobileService>,
+        );
+        let reads = || device.reads.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(reads(), 1);
+        let poll_until_read = |model: &mut MobileModel, count: usize| {
+            let deadline = tilo_test_env::hang_deadline();
+            while reads() < count || model.snapshot.is_some() {
+                model.poll();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the modems were never read again"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+
+        let following = model.follow();
+        let changed = device
+            .follower
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the modems are followed while the section shows");
+        poll_until_read(&mut model, 2);
+        model.poll();
+        assert_eq!(reads(), 2, "showing the section reads the modems once");
+
+        changed();
+        poll_until_read(&mut model, 3);
+        model.poll();
+        assert_eq!(reads(), 3, "one change, one read");
+
+        drop(following);
+        changed();
+        model.poll();
+        assert!(model.snapshot.is_none(), "a closed section reads nothing");
+        assert_eq!(reads(), 3);
+    }
 }
 
 #[test]
@@ -651,29 +726,6 @@ fn a_change_the_device_refuses_is_said() {
     let error = run(&mut model, MobileEffect::SetDataRoaming { on: true }).unwrap_err();
     assert!(error.contains("nmcli is not installed"), "{error}");
     assert!(says(&mut model, "nmcli is not installed"));
-}
-
-#[test]
-fn the_other_sim_is_used_by_its_slot() {
-    let (_, mut model) = scripted(Some(MobileSample::Registered));
-    run(
-        &mut model,
-        MobileEffect::UseSim {
-            sim: "Vodafone.de".into(),
-        },
-    )
-    .unwrap();
-    let switched = model.modem().unwrap();
-    assert_eq!(switched.active_sim().map(|sim| sim.slot), Some(Some(2)));
-    assert!(
-        run(
-            &mut model,
-            MobileEffect::UseSim {
-                sim: "Nobody".into(),
-            },
-        )
-        .is_err()
-    );
 }
 
 fn counted(total: u64, at: i64) -> serde_json::Value {
@@ -776,52 +828,4 @@ impl MobileService for FollowedModem {
         *self.follower.lock().unwrap() = Some(Arc::from(changed));
         Some(Box::new(()))
     }
-}
-
-#[test]
-fn the_shown_section_reads_the_modems_again_when_they_change() {
-    let device = Arc::new(FollowedModem {
-        modem: ScriptedModem::new(Some(MobileSample::Registered)),
-        reads: std::sync::atomic::AtomicUsize::new(0),
-        follower: Mutex::new(None),
-    });
-    let mut model = MobileModel::loaded_from(
-        Reach::of(&cx()),
-        Arc::clone(&device) as Arc<dyn MobileService>,
-    );
-    let reads = || device.reads.load(std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(reads(), 1);
-    let poll_until_read = |model: &mut MobileModel, count: usize| {
-        let deadline = tilo_test_env::hang_deadline();
-        while reads() < count || model.snapshot.is_some() {
-            model.poll();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the modems were never read again"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    };
-
-    let following = model.follow();
-    let changed = device
-        .follower
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("the modems are followed while the section shows");
-    poll_until_read(&mut model, 2);
-    model.poll();
-    assert_eq!(reads(), 2, "showing the section reads the modems once");
-
-    changed();
-    poll_until_read(&mut model, 3);
-    model.poll();
-    assert_eq!(reads(), 3, "one change, one read");
-
-    drop(following);
-    changed();
-    model.poll();
-    assert!(model.snapshot.is_none(), "a closed section reads nothing");
-    assert_eq!(reads(), 3);
 }

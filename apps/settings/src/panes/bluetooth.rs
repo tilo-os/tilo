@@ -1346,37 +1346,134 @@ mod tests {
         }
     }
 
-    #[test]
-    fn changes_reach_the_device_by_its_path() {
-        let mock = Mock {
-            calls: Mutex::new(vec![]),
-            devices: vec![dev()],
-        };
-        let path = dev().path;
-        carry_out(
-            &mock,
-            &BluetoothEffect::ConnectDevice {
-                device: path.clone(),
-            },
-            "Headphones",
-        )
-        .unwrap();
-        carry_out(&mock, &BluetoothEffect::SetBluetooth { on: false }, "").unwrap();
-        carry_out(
-            &mock,
-            &BluetoothEffect::ForgetDevice { device: path },
-            "Headphones",
-        )
-        .unwrap();
-        assert_eq!(
-            mock.calls.lock().unwrap().as_slice(),
-            [
-                "connect:/org/bluez/hci0/dev_AA",
-                "power:false",
-                "forget:/org/bluez/hci0/dev_AA"
-            ]
-        );
-        assert_eq!(mock.devices().unwrap()[0].battery, Some(0));
+    tilo_test_env::scenario! {
+        fn the_bluetooth_model_reaches_and_follows_the_adapter;
+
+        phase changes_reach_the_device_by_its_path;
+        {
+            let mock = Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            };
+            let path = dev().path;
+            carry_out(
+                &mock,
+                &BluetoothEffect::ConnectDevice {
+                    device: path.clone(),
+                },
+                "Headphones",
+            )
+            .unwrap();
+            carry_out(&mock, &BluetoothEffect::SetBluetooth { on: false }, "").unwrap();
+            carry_out(
+                &mock,
+                &BluetoothEffect::ForgetDevice { device: path },
+                "Headphones",
+            )
+            .unwrap();
+            assert_eq!(
+                mock.calls.lock().unwrap().as_slice(),
+                [
+                    "connect:/org/bluez/hci0/dev_AA",
+                    "power:false",
+                    "forget:/org/bluez/hci0/dev_AA"
+                ]
+            );
+            assert_eq!(mock.devices().unwrap()[0].battery, Some(0));
+        }
+
+        phase availability_never_reads_the_adapter;
+        {
+            use crate::radios::Present;
+
+            let profile = tempfile::tempdir().unwrap();
+            let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+            let area = BluetoothArea::new(&cx);
+            assert!(
+                area.statuses().is_empty(),
+                "radios not read offer everything"
+            );
+            cx.radios.set(Present::NONE);
+            assert_eq!(area.statuses().len(), RADIO.len());
+            assert!(!area.is_open(), "the adapter was not read");
+        }
+
+        phase a_device_connecting_by_itself_shows_while_the_page_is_open;
+        {
+            let control = Arc::new(WatchedAdapter::default());
+            control.devices.lock().unwrap().push(dev());
+            let read = read_adapter_of(control.as_ref());
+            let mut model = BluetoothModel::with_read(
+                crate::radios::Radios::unread(),
+                Arc::clone(&control) as _,
+                read,
+            );
+            assert!(!model.devices[0].connected);
+            let adapter_reads = || control.reads.load(std::sync::atomic::Ordering::Relaxed);
+            let poll_until = |model: &mut BluetoothModel, connected: bool| {
+                let deadline = tilo_test_env::hang_deadline();
+                let mut recomposed = false;
+                while model.devices[0].connected != connected {
+                    recomposed |= model.poll();
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the adapter was never read again"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                recomposed
+            };
+
+            control.devices.lock().unwrap()[0].connected = true;
+            let following = model.follow();
+            let changed = control
+                .follower
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("BlueZ is followed while the pane shows it");
+            assert!(poll_until(&mut model, true), "the page shows it");
+            assert_eq!(
+                adapter_reads(),
+                2,
+                "showing the page reads the adapter once"
+            );
+
+            control.devices.lock().unwrap()[0].connected = false;
+            changed();
+            assert!(poll_until(&mut model, false), "the page shows the change");
+            assert_eq!(adapter_reads(), 3, "one change, one read");
+
+            drop(following);
+            changed();
+            model.poll();
+            assert!(model.reread.is_finished(), "a closed page reads nothing");
+            assert_eq!(adapter_reads(), 3);
+        }
+
+        phase discovery_wakes_the_window_only_while_bluez_is_not_followed;
+        {
+            let control = Arc::new(WatchedAdapter::default());
+            let read = read_adapter_of(control.as_ref());
+            let mut model = BluetoothModel::with_read(
+                crate::radios::Radios::unread(),
+                Arc::clone(&control) as _,
+                read,
+            );
+            model.scanning = true;
+            assert!(
+                model.next_wake().is_some(),
+                "discovery with nothing followed reads on a timer"
+            );
+            let following = model.follow();
+            assert_eq!(
+                model.next_wake(),
+                None,
+                "a followed BlueZ wakes the window, not a timer"
+            );
+            drop(following);
+            assert!(model.next_wake().is_some());
+        }
     }
 
     #[test]
@@ -1618,22 +1715,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn availability_never_reads_the_adapter() {
-        use crate::radios::Present;
-
-        let profile = tempfile::tempdir().unwrap();
-        let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
-        let area = BluetoothArea::new(&cx);
-        assert!(
-            area.statuses().is_empty(),
-            "radios not read offer everything"
-        );
-        cx.radios.set(Present::NONE);
-        assert_eq!(area.statuses().len(), RADIO.len());
-        assert!(!area.is_open(), "the adapter was not read");
-    }
-
     #[derive(Default)]
     struct WatchedAdapter {
         devices: Mutex<Vec<DeviceInfo>>,
@@ -1687,83 +1768,6 @@ mod tests {
             *self.follower.lock().unwrap() = Some(Arc::from(changed));
             Some(Box::new(()))
         }
-    }
-
-    #[test]
-    fn a_device_connecting_by_itself_shows_while_the_page_is_open() {
-        let control = Arc::new(WatchedAdapter::default());
-        control.devices.lock().unwrap().push(dev());
-        let read = read_adapter_of(control.as_ref());
-        let mut model = BluetoothModel::with_read(
-            crate::radios::Radios::unread(),
-            Arc::clone(&control) as _,
-            read,
-        );
-        assert!(!model.devices[0].connected);
-        let adapter_reads = || control.reads.load(std::sync::atomic::Ordering::Relaxed);
-        let poll_until = |model: &mut BluetoothModel, connected: bool| {
-            let deadline = tilo_test_env::hang_deadline();
-            let mut recomposed = false;
-            while model.devices[0].connected != connected {
-                recomposed |= model.poll();
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the adapter was never read again"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            recomposed
-        };
-
-        control.devices.lock().unwrap()[0].connected = true;
-        let following = model.follow();
-        let changed = control
-            .follower
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("BlueZ is followed while the pane shows it");
-        assert!(poll_until(&mut model, true), "the page shows it");
-        assert_eq!(
-            adapter_reads(),
-            2,
-            "showing the page reads the adapter once"
-        );
-
-        control.devices.lock().unwrap()[0].connected = false;
-        changed();
-        assert!(poll_until(&mut model, false), "the page shows the change");
-        assert_eq!(adapter_reads(), 3, "one change, one read");
-
-        drop(following);
-        changed();
-        model.poll();
-        assert!(model.reread.is_finished(), "a closed page reads nothing");
-        assert_eq!(adapter_reads(), 3);
-    }
-
-    #[test]
-    fn discovery_wakes_the_window_only_while_bluez_is_not_followed() {
-        let control = Arc::new(WatchedAdapter::default());
-        let read = read_adapter_of(control.as_ref());
-        let mut model = BluetoothModel::with_read(
-            crate::radios::Radios::unread(),
-            Arc::clone(&control) as _,
-            read,
-        );
-        model.scanning = true;
-        assert!(
-            model.next_wake().is_some(),
-            "discovery with nothing followed reads on a timer"
-        );
-        let following = model.follow();
-        assert_eq!(
-            model.next_wake(),
-            None,
-            "a followed BlueZ wakes the window, not a timer"
-        );
-        drop(following);
-        assert!(model.next_wake().is_some());
     }
 
     #[test]

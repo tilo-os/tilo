@@ -248,52 +248,305 @@ fn readonly_display_surface_keeps_inspection_and_has_no_stale_admin_controls() {
     }
 }
 
-#[test]
-fn readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes() {
-    let mut model = model(vec![classify_connector("eDP-1", "connected")]);
-    let mode = OutputMode {
-        width: 2944,
-        height: 1840,
-        refresh_mhz: 89999,
-    };
-    let observed = DisplayHardwareSnapshot {
-        outputs: vec![settings_store::hardware::DisplayOutputSnapshot {
-            descriptor: OutputDescriptor {
-                connector: "eDP-1".into(),
-                connector_label: "eDP-1".into(),
-                modes: vec![mode],
-                hdr: false,
-                vrr: false,
-                color_profiles: vec![],
-                monitor: None,
+tilo_test_env::scenario! {
+    fn the_display_model_stages_what_the_person_arranges;
+
+    phase readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes;
+    {
+        let mut model = model(vec![classify_connector("eDP-1", "connected")]);
+        let mode = OutputMode {
+            width: 2944,
+            height: 1840,
+            refresh_mhz: 89999,
+        };
+        let observed = DisplayHardwareSnapshot {
+            outputs: vec![settings_store::hardware::DisplayOutputSnapshot {
+                descriptor: OutputDescriptor {
+                    connector: "eDP-1".into(),
+                    connector_label: "eDP-1".into(),
+                    modes: vec![mode],
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: vec![],
+                    monitor: None,
+                },
+                current_mode: mode,
+                scale: 2.0,
+                builtin: true,
+                sink_hdr: false,
+                hdr_unavailable_reason: None,
+                sink_vrr: false,
+                vrr_unavailable_reason: None,
+                unavailable_reason: None,
+                color_profile_labels: BTreeMap::new(),
+            }],
+            ..DisplayHardwareSnapshot::default()
+        };
+        model.accept_host_reply(settings_store::display_control::DisplayReply {
+            identify: None,
+            observed,
+            transaction: None,
+            committed: DisplayConfig::default(),
+        });
+        let inspection = model.inspection();
+        assert_eq!(
+            inspection["observed_outputs"][0]["current_mode"]["refresh_mhz"],
+            89999
+        );
+        assert_eq!(inspection["observed_outputs"][0]["scale"], 2.0);
+        assert_eq!(inspection["has_staged_changes"], false);
+        assert!(inspection["transaction"].is_null());
+        assert!(model.pending_candidate.is_none());
+    }
+
+    phase followed_displays_are_read_on_a_change_not_on_a_timer;
+    {
+        let _config = crate::prefs::test_env::ConfigGuard::new();
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let snapshot = settings_store::hardware::display_snapshot_path().unwrap();
+        std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        let long_ago = || ui::time::now().checked_sub(Duration::from_secs(5)).unwrap();
+        let mut pane = model(vec![panel()]);
+        pane.of_device = true;
+        let watched = Rc::new(crate::watch::Watched::by_hand());
+        pane.following = Rc::downgrade(&watched);
+
+        std::fs::write(&snapshot, "{}").unwrap();
+        pane.last_snapshot_check = long_ago();
+        assert!(
+            pane.poll(),
+            "the first look reads the snapshot that appeared"
+        );
+        assert_eq!(pane.next_wake(), None, "an idle pane sets no deadline");
+
+        let read = pane.snapshot_stamp;
+        assert!(read.is_some());
+        std::fs::write(&snapshot, "{\"moved\":1}").unwrap();
+        // A write within the file system's timestamp granularity keeps its
+        // stamp; this one is a second later however fast it came.
+        std::fs::File::options()
+            .write(true)
+            .open(&snapshot)
+            .unwrap()
+            .set_modified(read.unwrap() + Duration::from_secs(1))
+            .unwrap();
+        pane.last_snapshot_check = long_ago();
+        assert!(!pane.poll(), "nothing is read without the watch's word");
+        assert_eq!(pane.snapshot_stamp, read);
+
+        watched.touch();
+        assert!(pane.poll(), "the change is read once the watch reports it");
+        assert_ne!(pane.snapshot_stamp, read);
+        assert!(!pane.poll(), "and only once");
+
+        pane.settling = true;
+        assert!(
+            pane.next_wake().is_some(),
+            "a change awaiting confirmation counts down each second"
+        );
+        pane.settling = false;
+
+        let unwatchable = Rc::new(crate::watch::Watched::files(&[runtime
+            .path()
+            .join("absent")
+            .join("display-state.json")]));
+        pane.following = Rc::downgrade(&unwatchable);
+        assert!(
+            pane.next_wake().is_some(),
+            "snapshots that cannot be watched are read on the old timer"
+        );
+        drop(unwatchable);
+        assert_eq!(
+            pane.next_wake(),
+            None,
+            "displays no page shows are not looked at"
+        );
+    }
+
+    phase brightness_reaches_the_panel_and_each_monitor;
+    {
+        let (mut pane, rec) = recording(vec![panel()]);
+        pane.apply(&DisplayEffect::SetBrightness { brightness: 0.75 })
+            .unwrap();
+        assert_eq!(rec.calls(), ["set_brightness(75.00)"]);
+        assert!((pane.brightness - 0.75).abs() < f32::EPSILON);
+
+        let level = |connector: &str, level: f32| os_actions::MonitorLevel {
+            connector: connector.into(),
+            level,
+            kind: if connector == "eDP-1" {
+                os_actions::BrightnessKind::Backlight
+            } else {
+                os_actions::BrightnessKind::Ddc
             },
-            current_mode: mode,
-            scale: 2.0,
-            builtin: true,
-            sink_hdr: false,
-            hdr_unavailable_reason: None,
-            sink_vrr: false,
-            vrr_unavailable_reason: None,
-            unavailable_reason: None,
-            color_profile_labels: BTreeMap::new(),
-        }],
-        ..DisplayHardwareSnapshot::default()
-    };
-    model.accept_host_reply(settings_store::display_control::DisplayReply {
-        identify: None,
-        observed,
-        transaction: None,
-        committed: DisplayConfig::default(),
-    });
-    let inspection = model.inspection();
-    assert_eq!(
-        inspection["observed_outputs"][0]["current_mode"]["refresh_mhz"],
-        89999
-    );
-    assert_eq!(inspection["observed_outputs"][0]["scale"], 2.0);
-    assert_eq!(inspection["has_staged_changes"], false);
-    assert!(inspection["transaction"].is_null());
-    assert!(model.pending_candidate.is_none());
+        };
+        let (mut pane, rec) = recording(vec![
+            display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
+            display_with_modes("DP-2", "Dell U2720Q", false, Vec::new()),
+            display_with_modes("DP-3", "LG 27GL850", false, Vec::new()),
+        ]);
+        pane.output_brightness =
+            output_brightness_from(&pane.outputs, &[level("eDP-1", 0.5), level("DP-2", 0.3)]);
+        assert_eq!(
+            pane.output_brightness.keys().collect::<Vec<_>>(),
+            ["DP-2"],
+            "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
+        );
+        let dimmed = dimmed_by_tilo_from(
+            &pane.outputs,
+            &[os_actions::MonitorLevel {
+                connector: "DP-3".into(),
+                level: 1.0,
+                kind: os_actions::BrightnessKind::Software,
+            }],
+        );
+        assert_eq!(
+            dimmed.into_iter().collect::<Vec<_>>(),
+            ["DP-3"],
+            "a monitor the compositor dims says so beside its slider"
+        );
+        pane.apply(&DisplayEffect::SetMonitorBrightness {
+            display: "DP-2".into(),
+            brightness: 0.8,
+        })
+        .unwrap();
+        assert!(
+            rec.calls()
+                .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
+            "{:?}",
+            rec.calls()
+        );
+        assert!(
+            pane.apply(&DisplayEffect::SetMonitorBrightness {
+                display: "DP-3".into(),
+                brightness: 0.8,
+            })
+            .is_err()
+        );
+    }
+
+    phase mirroring_and_extending_are_staged;
+    {
+        let full_hd_60 = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let full_hd_5994 = OutputMode {
+            refresh_mhz: 59_940,
+            ..full_hd_60
+        };
+        let panel = display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]);
+        let usb_c = display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]);
+        assert_eq!(
+            best_mirror_modes(&usb_c, &panel),
+            Some((full_hd_5994, full_hd_60)),
+            "software mirroring needs a shared extent, not identical connector clocks"
+        );
+
+        let mut pane = model(vec![panel, usb_c]);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                mode: Some(full_hd_60),
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "DP-1".into(),
+            OutputConfig {
+                x: 1920,
+                mode: Some(full_hd_5994),
+                ..Default::default()
+            },
+        );
+        pane.apply(&DisplayEffect::MirrorDisplay {
+            display: "DP-1".into(),
+            mirror: "Mirror Built-in display".into(),
+        })
+        .unwrap();
+        let mirrored = pane.pending_candidate.clone().expect("mirror plan staged");
+        assert_eq!(mirrored.outputs["DP-1"].mirror_of.as_deref(), Some("eDP-1"));
+        assert_eq!(mirrored.outputs["DP-1"].mode, Some(full_hd_5994));
+        assert_eq!(mirrored.outputs["eDP-1"].mode, Some(full_hd_60));
+
+        pane.output_config = mirrored;
+        pane.pending_candidate = None;
+        pane.apply(&DisplayEffect::MirrorDisplay {
+            display: "DP-1".into(),
+            mirror: "Extend workspace".into(),
+        })
+        .unwrap();
+        let extended = pane.pending_candidate.as_ref().expect("extend plan staged");
+        assert_eq!(extended.outputs["DP-1"].mirror_of, None);
+        assert_eq!(
+            (extended.outputs["DP-1"].x, extended.outputs["DP-1"].y),
+            (1920, 0)
+        );
+
+        let shown = model(vec![
+            self::panel(),
+            DisplayOutput {
+                connected: false,
+                ..display_with_modes("DP-2", "DP-2", false, Vec::new())
+            },
+        ]);
+        assert_eq!(
+            shown.connected_outputs().len(),
+            1,
+            "idle ports are not listed"
+        );
+    }
+
+    phase the_arrangement_numbers_and_sizes_displays_like_identify;
+    {
+        let pane = laptop_with_monitor();
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
+        let monitor = displays.iter().find(|d| d.connector == "HDMI-A-1").unwrap();
+        assert_eq!((panel.number, monitor.number), (1, 2));
+        assert!(panel.primary && !monitor.primary);
+        assert_eq!(
+            monitor.placement,
+            super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
+        );
+    }
+
+    phase an_unconfigured_display_is_drawn_and_staged_at_the_compositors_scale;
+    {
+        // Nothing saved: the compositor runs the HiDPI panel at the 2x it
+        // chose itself, so the canvas draws it 1280 wide and staging a
+        // change keeps that scale rather than writing 1x.
+        let mut panel = display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![OutputMode {
+                width: 2560,
+                height: 1600,
+                refresh_mhz: 60_000,
+            }],
+        );
+        panel.scale = 2.0;
+        let mut pane = model(vec![panel]);
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        assert_eq!(displays[0].placement.width, 1280);
+        assert_eq!(displays[0].placement.height, 800);
+        pane.apply(&DisplayEffect::RotateDisplay {
+            display: "eDP-1".into(),
+            rotation: "Landscape".into(),
+        })
+        .unwrap();
+        assert!(
+            (pane.staged().outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON,
+            "staging keeps the scale the display runs at"
+        );
+    }
 }
 
 fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
@@ -358,72 +611,6 @@ fn panel() -> DisplayOutput {
 }
 
 #[test]
-fn followed_displays_are_read_on_a_change_not_on_a_timer() {
-    let _config = crate::prefs::test_env::ConfigGuard::new();
-    let runtime = tempfile::tempdir().unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_RUNTIME_DIR", runtime.path());
-    let snapshot = settings_store::hardware::display_snapshot_path().unwrap();
-    std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
-    let long_ago = || ui::time::now().checked_sub(Duration::from_secs(5)).unwrap();
-    let mut pane = model(vec![panel()]);
-    pane.of_device = true;
-    let watched = Rc::new(crate::watch::Watched::by_hand());
-    pane.following = Rc::downgrade(&watched);
-
-    std::fs::write(&snapshot, "{}").unwrap();
-    pane.last_snapshot_check = long_ago();
-    assert!(
-        pane.poll(),
-        "the first look reads the snapshot that appeared"
-    );
-    assert_eq!(pane.next_wake(), None, "an idle pane sets no deadline");
-
-    let read = pane.snapshot_stamp;
-    assert!(read.is_some());
-    std::fs::write(&snapshot, "{\"moved\":1}").unwrap();
-    // A write within the file system's timestamp granularity keeps its
-    // stamp; this one is a second later however fast it came.
-    std::fs::File::options()
-        .write(true)
-        .open(&snapshot)
-        .unwrap()
-        .set_modified(read.unwrap() + Duration::from_secs(1))
-        .unwrap();
-    pane.last_snapshot_check = long_ago();
-    assert!(!pane.poll(), "nothing is read without the watch's word");
-    assert_eq!(pane.snapshot_stamp, read);
-
-    watched.touch();
-    assert!(pane.poll(), "the change is read once the watch reports it");
-    assert_ne!(pane.snapshot_stamp, read);
-    assert!(!pane.poll(), "and only once");
-
-    pane.settling = true;
-    assert!(
-        pane.next_wake().is_some(),
-        "a change awaiting confirmation counts down each second"
-    );
-    pane.settling = false;
-
-    let unwatchable = Rc::new(crate::watch::Watched::files(&[runtime
-        .path()
-        .join("absent")
-        .join("display-state.json")]));
-    pane.following = Rc::downgrade(&unwatchable);
-    assert!(
-        pane.next_wake().is_some(),
-        "snapshots that cannot be watched are read on the old timer"
-    );
-    drop(unwatchable);
-    assert_eq!(
-        pane.next_wake(),
-        None,
-        "displays no page shows are not looked at"
-    );
-}
-
-#[test]
 fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
     let mut model = model(vec![panel()]);
     let (probe_tx, probe_rx) = crate::channel::channel();
@@ -454,137 +641,87 @@ fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
     assert!(model.ambient_sensor_available);
 }
 
-#[test]
-fn sdr_brightness_slider_round_trips_whole_nits_and_reasons_have_copy() {
-    use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
-    for nits in [80, 203, 300, 480] {
-        assert_eq!(sdr_brightness_nits(sdr_brightness_fraction(nits)), nits);
+tilo_test_env::scenario! {
+    fn display_names_positions_and_modes_are_worked_out_from_the_hardware;
+
+    phase sdr_brightness_slider_round_trips_whole_nits_and_reasons_have_copy;
+    {
+        use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
+        for nits in [80, 203, 300, 480] {
+            assert_eq!(sdr_brightness_nits(sdr_brightness_fraction(nits)), nits);
+        }
+        assert!((sdr_brightness_fraction(80) - 0.0).abs() < f64::EPSILON);
+        assert!((sdr_brightness_fraction(480) - 1.0).abs() < f64::EPSILON);
+        assert_eq!(
+            sdr_brightness_nits(f64::NAN),
+            80,
+            "garbage lands on the dim end"
+        );
+        assert_eq!(sdr_brightness_nits(7.0), 480);
+        let keys = [
+            hdr_unavailable_key(false, None),
+            hdr_unavailable_key(true, None),
+            hdr_unavailable_key(true, Some(HdrUnavailable::DriverUnsupported)),
+            hdr_unavailable_key(true, Some(HdrUnavailable::FormatUnsupported)),
+            hdr_unavailable_key(true, Some(HdrUnavailable::DriverRejected)),
+            adaptive_sync_unavailable_key(false, None),
+            adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverUnsupported)),
+            adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverRejected)),
+        ];
+        for key in keys {
+            let copy = crate::i18n::t(key);
+            assert_ne!(copy, key, "{key} has no en-US copy");
+        }
     }
-    assert!((sdr_brightness_fraction(80) - 0.0).abs() < f64::EPSILON);
-    assert!((sdr_brightness_fraction(480) - 1.0).abs() < f64::EPSILON);
-    assert_eq!(
-        sdr_brightness_nits(f64::NAN),
-        80,
-        "garbage lands on the dim end"
-    );
-    assert_eq!(sdr_brightness_nits(7.0), 480);
-    let keys = [
-        hdr_unavailable_key(false, None),
-        hdr_unavailable_key(true, None),
-        hdr_unavailable_key(true, Some(HdrUnavailable::DriverUnsupported)),
-        hdr_unavailable_key(true, Some(HdrUnavailable::FormatUnsupported)),
-        hdr_unavailable_key(true, Some(HdrUnavailable::DriverRejected)),
-        adaptive_sync_unavailable_key(false, None),
-        adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverUnsupported)),
-        adaptive_sync_unavailable_key(true, Some(AdaptiveSyncUnavailable::DriverRejected)),
-    ];
-    for key in keys {
-        let copy = crate::i18n::t(key);
-        assert_ne!(copy, key, "{key} has no en-US copy");
-    }
-}
 
-#[test]
-fn relative_positions_use_the_neighbour_s_logical_extent() {
-    let mode = |width, height| {
-        Some(OutputMode {
-            width,
-            height,
-            refresh_mhz: 60_000,
-        })
-    };
-    let panel = DisplayOutput {
-        current_mode: mode(2560, 1600),
-        ..classify_connector("card0-eDP-1", "connected")
-    };
-    let monitor = DisplayOutput {
-        current_mode: mode(1920, 1080),
-        ..classify_connector("card0-HDMI-A-1", "connected")
-    };
-    let connected = [panel, monitor];
-    let mut next = DisplayConfig::default();
-    next.outputs.insert(
-        "eDP-1".into(),
-        OutputConfig {
-            scale: 2.0,
-            ..Default::default()
-        },
-    );
-    let place = |label: &str, cfg: &mut OutputConfig| {
-        place_beside("HDMI-A-1", label, cfg, &next, &connected)
-    };
-
-    // The 2x panel is 1280 logical pixels wide, so its right-hand
-    // neighbour starts there — not at its 2560-pixel mode width.
-    let mut cfg = OutputConfig::default();
-    place("Right of Built-in display", &mut cfg).unwrap();
-    assert_eq!((cfg.x, cfg.y), (1280, 0));
-    place("Below of Built-in display", &mut cfg).unwrap();
-    assert_eq!((cfg.x, cfg.y), (0, 800));
-
-    let mut portrait = OutputConfig {
-        transform: OutputTransform::Rotate90,
-        ..Default::default()
-    };
-    place("Left of Built-in display", &mut portrait).unwrap();
-    assert_eq!((portrait.x, portrait.y), (-1080, 0));
-    assert!(place("Left of Nowhere", &mut portrait).is_err());
-}
-
-#[test]
-fn identical_monitors_are_named_apart_by_number_in_settings() {
-    let first = OutputDescriptor {
-        connector: "pci:0000:01:00.0/HDMI-A-1".into(),
-        connector_label: "HDMI-A-1".into(),
-        modes: vec![],
-        hdr: false,
-        vrr: false,
-        color_profiles: vec![],
-        monitor: Some(MonitorIdentity {
-            make: "Dell".into(),
-            model: "DELL U2720Q".into(),
-            ..MonitorIdentity::default()
-        }),
-    };
-    let second = OutputDescriptor {
-        connector: "pci:0000:03:00.0/HDMI-A-1".into(),
-        ..first.clone()
-    };
-    let observed =
-        |descriptor: &OutputDescriptor| settings_store::hardware::DisplayOutputSnapshot {
-            descriptor: descriptor.clone(),
-            current_mode: OutputMode {
-                width: 3840,
-                height: 2160,
+    phase relative_positions_use_the_neighbour_s_logical_extent;
+    {
+        let mode = |width, height| {
+            Some(OutputMode {
+                width,
+                height,
                 refresh_mhz: 60_000,
-            },
-            scale: 1.0,
-            builtin: false,
-            sink_hdr: false,
-            hdr_unavailable_reason: None,
-            sink_vrr: false,
-            vrr_unavailable_reason: None,
-            unavailable_reason: None,
-            color_profile_labels: BTreeMap::new(),
+            })
         };
-    let snapshot = DisplayHardwareSnapshot {
-        outputs: vec![observed(&first), observed(&second)],
-        ..DisplayHardwareSnapshot::default()
-    };
-    let labels: Vec<_> = outputs_from_snapshot(&snapshot)
-        .into_iter()
-        .map(|output| output.label)
-        .collect();
-    assert_eq!(labels, ["Dell U2720Q (1)", "Dell U2720Q (2)"]);
-    let alone = DisplayHardwareSnapshot {
-        outputs: vec![observed(&first)],
-        ..DisplayHardwareSnapshot::default()
-    };
-    assert_eq!(outputs_from_snapshot(&alone)[0].label, "Dell U2720Q");
-}
+        let panel = DisplayOutput {
+            current_mode: mode(2560, 1600),
+            ..classify_connector("card0-eDP-1", "connected")
+        };
+        let monitor = DisplayOutput {
+            current_mode: mode(1920, 1080),
+            ..classify_connector("card0-HDMI-A-1", "connected")
+        };
+        let connected = [panel, monitor];
+        let mut next = DisplayConfig::default();
+        next.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                scale: 2.0,
+                ..Default::default()
+            },
+        );
+        let place = |label: &str, cfg: &mut OutputConfig| {
+            place_beside("HDMI-A-1", label, cfg, &next, &connected)
+        };
 
-#[test]
-fn display_connectors_are_labelled_and_filtered() {
+        // The 2x panel is 1280 logical pixels wide, so its right-hand
+        // neighbour starts there — not at its 2560-pixel mode width.
+        let mut cfg = OutputConfig::default();
+        place("Right of Built-in display", &mut cfg).unwrap();
+        assert_eq!((cfg.x, cfg.y), (1280, 0));
+        place("Below of Built-in display", &mut cfg).unwrap();
+        assert_eq!((cfg.x, cfg.y), (0, 800));
+
+        let mut portrait = OutputConfig {
+            transform: OutputTransform::Rotate90,
+            ..Default::default()
+        };
+        place("Left of Built-in display", &mut portrait).unwrap();
+        assert_eq!((portrait.x, portrait.y), (-1080, 0));
+        assert!(place("Left of Nowhere", &mut portrait).is_err());
+    }
+
+    phase identical_monitors_are_named_apart_by_number_in_settings;
     {
         let first = OutputDescriptor {
             connector: "pci:0000:01:00.0/HDMI-A-1".into(),
@@ -593,200 +730,150 @@ fn display_connectors_are_labelled_and_filtered() {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
-            monitor: None,
+            monitor: Some(MonitorIdentity {
+                make: "Dell".into(),
+                model: "DELL U2720Q".into(),
+                ..MonitorIdentity::default()
+            }),
         };
-        let display = DisplayOutput {
-            label: "Dell U2720Q (1)".into(),
-            connector: first.connector.clone(),
-            connector_label: first.label().to_string(),
-            ..classify_connector("card0-HDMI-A-1", "connected")
+        let second = OutputDescriptor {
+            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+            ..first.clone()
         };
-        let staged = DisplayModel::output_descriptor(&display);
-        assert_eq!(staged.connector, "pci:0000:01:00.0/HDMI-A-1");
-        assert_eq!(
-            staged.connector_label, "HDMI-A-1",
-            "the card qualifier is UI-only, never folded into descriptor data"
-        );
+        let observed =
+            |descriptor: &OutputDescriptor| settings_store::hardware::DisplayOutputSnapshot {
+                descriptor: descriptor.clone(),
+                current_mode: OutputMode {
+                    width: 3840,
+                    height: 2160,
+                    refresh_mhz: 60_000,
+                },
+                scale: 1.0,
+                builtin: false,
+                sink_hdr: false,
+                hdr_unavailable_reason: None,
+                sink_vrr: false,
+                vrr_unavailable_reason: None,
+                unavailable_reason: None,
+                color_profile_labels: BTreeMap::new(),
+            };
+        let snapshot = DisplayHardwareSnapshot {
+            outputs: vec![observed(&first), observed(&second)],
+            ..DisplayHardwareSnapshot::default()
+        };
+        let labels: Vec<_> = outputs_from_snapshot(&snapshot)
+            .into_iter()
+            .map(|output| output.label)
+            .collect();
+        assert_eq!(labels, ["Dell U2720Q (1)", "Dell U2720Q (2)"]);
+        let alone = DisplayHardwareSnapshot {
+            outputs: vec![observed(&first)],
+            ..DisplayHardwareSnapshot::default()
+        };
+        assert_eq!(outputs_from_snapshot(&alone)[0].label, "Dell U2720Q");
     }
 
+    phase display_connectors_are_labelled_and_filtered;
     {
-        let first = "pci:0000:01:00.0/HDMI-A-1";
-        let second = "pci:0000:03:00.0/HDMI-A-1";
-        let mut pane = model(vec![
-            DisplayOutput {
-                label: "HDMI-A-1 on pci:0000:01:00.0".into(),
-                connector: first.into(),
+        {
+            let first = OutputDescriptor {
+                connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+                connector_label: "HDMI-A-1".into(),
+                modes: vec![],
+                hdr: false,
+                vrr: false,
+                color_profiles: vec![],
+                monitor: None,
+            };
+            let display = DisplayOutput {
+                label: "Dell U2720Q (1)".into(),
+                connector: first.connector.clone(),
+                connector_label: first.label().to_string(),
                 ..classify_connector("card0-HDMI-A-1", "connected")
-            },
-            DisplayOutput {
-                label: "HDMI-A-1 on pci:0000:03:00.0".into(),
-                connector: second.into(),
-                ..classify_connector("card1-HDMI-A-1", "connected")
-            },
-        ]);
-        pane.output_config.outputs.insert(
-            "HDMI-A-1".into(),
-            OutputConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        );
-        pane.apply(&DisplayEffect::SetPrimaryDisplay {
-            display: second.into(),
-        })
-        .unwrap();
-        let staged = pane.pending_candidate.as_ref().unwrap();
-        assert!(!staged.outputs["HDMI-A-1"].enabled, "the old key is kept");
-        assert!(staged.outputs[second].primary);
-        assert!(!staged.outputs[first].primary);
+            };
+            let staged = DisplayModel::output_descriptor(&display);
+            assert_eq!(staged.connector, "pci:0000:01:00.0/HDMI-A-1");
+            assert_eq!(
+                staged.connector_label, "HDMI-A-1",
+                "the card qualifier is UI-only, never folded into descriptor data"
+            );
+        }
+
+        {
+            let first = "pci:0000:01:00.0/HDMI-A-1";
+            let second = "pci:0000:03:00.0/HDMI-A-1";
+            let mut pane = model(vec![
+                DisplayOutput {
+                    label: "HDMI-A-1 on pci:0000:01:00.0".into(),
+                    connector: first.into(),
+                    ..classify_connector("card0-HDMI-A-1", "connected")
+                },
+                DisplayOutput {
+                    label: "HDMI-A-1 on pci:0000:03:00.0".into(),
+                    connector: second.into(),
+                    ..classify_connector("card1-HDMI-A-1", "connected")
+                },
+            ]);
+            pane.output_config.outputs.insert(
+                "HDMI-A-1".into(),
+                OutputConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
+            pane.apply(&DisplayEffect::SetPrimaryDisplay {
+                display: second.into(),
+            })
+            .unwrap();
+            let staged = pane.pending_candidate.as_ref().unwrap();
+            assert!(!staged.outputs["HDMI-A-1"].enabled, "the old key is kept");
+            assert!(staged.outputs[second].primary);
+            assert!(!staged.outputs[first].primary);
+        }
+
+        // The compositor's writeback connector and other virtual connectors are
+        // not displays a user plugs into, so they are filtered from the list.
+        {
+            assert!(is_virtual_connector("card0-Writeback-1"));
+            assert!(is_virtual_connector("card0-Virtual-1"));
+            assert!(!is_virtual_connector("card0-eDP-1"));
+            assert!(!is_virtual_connector("card0-HDMI-A-1"));
+            assert!(!is_virtual_connector("card0-DP-2"));
+            assert!(!is_virtual_connector("card0-USB-1"));
+        }
     }
 
-    // The compositor's writeback connector and other virtual connectors are
-    // not displays a user plugs into, so they are filtered from the list.
+    phase resolution_and_refresh_rate_each_choose_one_mode;
     {
-        assert!(is_virtual_connector("card0-Writeback-1"));
-        assert!(is_virtual_connector("card0-Virtual-1"));
-        assert!(!is_virtual_connector("card0-eDP-1"));
-        assert!(!is_virtual_connector("card0-HDMI-A-1"));
-        assert!(!is_virtual_connector("card0-DP-2"));
-        assert!(!is_virtual_connector("card0-USB-1"));
+        let mode = |width, height, refresh_mhz| OutputMode {
+            width,
+            height,
+            refresh_mhz,
+        };
+        let modes = [
+            mode(2560, 1440, 144_000),
+            mode(2560, 1440, 59_940),
+            mode(1920, 1080, 144_000),
+            mode(1920, 1080, 60_000),
+        ];
+        assert_eq!(resolution_choices(&modes), ["2560 × 1440", "1920 × 1080"]);
+        assert_eq!(refresh_choices(&modes, modes[0]), ["144 Hz", "59.94 Hz"]);
+        assert_eq!(
+            mode_for_resolution(&modes, modes[0], "1920 × 1080"),
+            Some(modes[2]),
+            "a new resolution keeps the refresh rate where it can"
+        );
+        assert_eq!(
+            mode_for_resolution(&modes, modes[1], "1920 × 1080"),
+            Some(modes[2]),
+            "else it takes the fastest"
+        );
+        assert_eq!(
+            mode_for_refresh(&modes, modes[0], "59.94 Hz"),
+            Some(modes[1])
+        );
+        assert_eq!(mode_for_refresh(&modes, modes[2], "59.94 Hz"), None);
     }
-}
-
-#[test]
-fn brightness_reaches_the_panel_and_each_monitor() {
-    let (mut pane, rec) = recording(vec![panel()]);
-    pane.apply(&DisplayEffect::SetBrightness { brightness: 0.75 })
-        .unwrap();
-    assert_eq!(rec.calls(), ["set_brightness(75.00)"]);
-    assert!((pane.brightness - 0.75).abs() < f32::EPSILON);
-
-    let level = |connector: &str, level: f32| os_actions::MonitorLevel {
-        connector: connector.into(),
-        level,
-        kind: if connector == "eDP-1" {
-            os_actions::BrightnessKind::Backlight
-        } else {
-            os_actions::BrightnessKind::Ddc
-        },
-    };
-    let (mut pane, rec) = recording(vec![
-        display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
-        display_with_modes("DP-2", "Dell U2720Q", false, Vec::new()),
-        display_with_modes("DP-3", "LG 27GL850", false, Vec::new()),
-    ]);
-    pane.output_brightness =
-        output_brightness_from(&pane.outputs, &[level("eDP-1", 0.5), level("DP-2", 0.3)]);
-    assert_eq!(
-        pane.output_brightness.keys().collect::<Vec<_>>(),
-        ["DP-2"],
-        "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
-    );
-    let dimmed = dimmed_by_tilo_from(
-        &pane.outputs,
-        &[os_actions::MonitorLevel {
-            connector: "DP-3".into(),
-            level: 1.0,
-            kind: os_actions::BrightnessKind::Software,
-        }],
-    );
-    assert_eq!(
-        dimmed.into_iter().collect::<Vec<_>>(),
-        ["DP-3"],
-        "a monitor the compositor dims says so beside its slider"
-    );
-    pane.apply(&DisplayEffect::SetMonitorBrightness {
-        display: "DP-2".into(),
-        brightness: 0.8,
-    })
-    .unwrap();
-    assert!(
-        rec.calls()
-            .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
-        "{:?}",
-        rec.calls()
-    );
-    assert!(
-        pane.apply(&DisplayEffect::SetMonitorBrightness {
-            display: "DP-3".into(),
-            brightness: 0.8,
-        })
-        .is_err()
-    );
-}
-
-#[test]
-fn mirroring_and_extending_are_staged() {
-    let full_hd_60 = OutputMode {
-        width: 1920,
-        height: 1080,
-        refresh_mhz: 60_000,
-    };
-    let full_hd_5994 = OutputMode {
-        refresh_mhz: 59_940,
-        ..full_hd_60
-    };
-    let panel = display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]);
-    let usb_c = display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]);
-    assert_eq!(
-        best_mirror_modes(&usb_c, &panel),
-        Some((full_hd_5994, full_hd_60)),
-        "software mirroring needs a shared extent, not identical connector clocks"
-    );
-
-    let mut pane = model(vec![panel, usb_c]);
-    pane.output_config.outputs.insert(
-        "eDP-1".into(),
-        OutputConfig {
-            primary: true,
-            mode: Some(full_hd_60),
-            ..Default::default()
-        },
-    );
-    pane.output_config.outputs.insert(
-        "DP-1".into(),
-        OutputConfig {
-            x: 1920,
-            mode: Some(full_hd_5994),
-            ..Default::default()
-        },
-    );
-    pane.apply(&DisplayEffect::MirrorDisplay {
-        display: "DP-1".into(),
-        mirror: "Mirror Built-in display".into(),
-    })
-    .unwrap();
-    let mirrored = pane.pending_candidate.clone().expect("mirror plan staged");
-    assert_eq!(mirrored.outputs["DP-1"].mirror_of.as_deref(), Some("eDP-1"));
-    assert_eq!(mirrored.outputs["DP-1"].mode, Some(full_hd_5994));
-    assert_eq!(mirrored.outputs["eDP-1"].mode, Some(full_hd_60));
-
-    pane.output_config = mirrored;
-    pane.pending_candidate = None;
-    pane.apply(&DisplayEffect::MirrorDisplay {
-        display: "DP-1".into(),
-        mirror: "Extend workspace".into(),
-    })
-    .unwrap();
-    let extended = pane.pending_candidate.as_ref().expect("extend plan staged");
-    assert_eq!(extended.outputs["DP-1"].mirror_of, None);
-    assert_eq!(
-        (extended.outputs["DP-1"].x, extended.outputs["DP-1"].y),
-        (1920, 0)
-    );
-
-    let shown = model(vec![
-        self::panel(),
-        DisplayOutput {
-            connected: false,
-            ..display_with_modes("DP-2", "DP-2", false, Vec::new())
-        },
-    ]);
-    assert_eq!(
-        shown.connected_outputs().len(),
-        1,
-        "idle ports are not listed"
-    );
 }
 
 pub(super) fn display_with_modes(
@@ -817,128 +904,243 @@ pub(super) fn display_with_modes(
     }
 }
 
-#[test]
-fn preview_and_keep_preserve_the_staged_refresh_rate() {
-    let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let current = OutputMode {
-        width: 2944,
-        height: 1840,
-        refresh_mhz: 59_999,
-    };
-    let requested = OutputMode {
-        refresh_mhz: 89_999,
-        ..current
-    };
-    let mut pane = model(vec![display_with_modes(
-        "eDP-1",
-        "Built-in display",
-        true,
-        vec![current, requested],
-    )]);
-    pane.apply(&DisplayEffect::SetDisplayMode {
-        display: "eDP-1".into(),
-        mode: requested.label(),
-    })
-    .unwrap();
-    pane.apply(&DisplayEffect::ApplyDisplayChanges).unwrap();
-    let mut transaction = DisplayTransaction::load().expect("Apply requests a preview");
-    assert_eq!(transaction.state, DisplayTransactionState::Requested);
-    assert_eq!(transaction.candidate.outputs["eDP-1"].mode, Some(requested));
-    let preview_id = transaction.id;
-    pane.settle(&transaction);
-    assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+tilo_test_env::scenario! {
+    fn a_staged_display_change_is_kept_confirmed_or_reverted_in_the_settings_files;
 
-    transaction.state = DisplayTransactionState::AwaitingConfirmation;
-    transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
-    transaction.save().unwrap();
-    pane.settle(&transaction);
-    pane.apply(&DisplayEffect::KeepDisplayChanges).unwrap();
-    let mut kept = DisplayTransaction::load().unwrap();
-    assert_eq!(kept.id, preview_id, "Keep confirms the original preview");
-    assert_eq!(kept.state, DisplayTransactionState::ConfirmRequested);
-    assert_eq!(kept.candidate.outputs["eDP-1"].mode, Some(requested));
-    pane.settle(&kept);
-    assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
-
-    kept.candidate.save_for(&kept.set).unwrap();
-    kept.state = DisplayTransactionState::Confirmed;
-    kept.deadline_unix_ms = None;
-    kept.save().unwrap();
-    pane.settle(&DisplayTransaction::load().unwrap());
-    assert!(pane.pending_candidate.is_none());
-    assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
-}
-
-#[test]
-fn display_scale_and_plans_persist_confirm_and_revert() {
-    for (label, factor) in DISPLAY_SCALES {
-        assert_eq!(scale_label(*factor), *label);
-        assert_eq!(scale_factor_of(label), Some(*factor));
-    }
-    assert_eq!(scale_label(1.48), "150%");
-    assert_eq!(scale_factor_of("bogus"), None);
-
-    let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let mut pane = model(vec![panel()]);
-    pane.storage
-        .settings::<DisplayPrefs>()
-        .update(|prefs| prefs.scale = 1.5)
+    phase preview_and_keep_preserve_the_staged_refresh_rate;
+    {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let current = OutputMode {
+            width: 2944,
+            height: 1840,
+            refresh_mhz: 59_999,
+        };
+        let requested = OutputMode {
+            refresh_mhz: 89_999,
+            ..current
+        };
+        let mut pane = model(vec![display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![current, requested],
+        )]);
+        pane.apply(&DisplayEffect::SetDisplayMode {
+            display: "eDP-1".into(),
+            mode: requested.label(),
+        })
         .unwrap();
-    assert!((pane.storage.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
+        pane.apply(&DisplayEffect::ApplyDisplayChanges).unwrap();
+        let mut transaction = DisplayTransaction::load().expect("Apply requests a preview");
+        assert_eq!(transaction.state, DisplayTransactionState::Requested);
+        assert_eq!(transaction.candidate.outputs["eDP-1"].mode, Some(requested));
+        let preview_id = transaction.id;
+        pane.settle(&transaction);
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
 
-    let mut committed = DisplayConfig::default();
-    committed.outputs.insert(
-        "eDP-1".into(),
-        OutputConfig {
-            primary: true,
-            mode: pane.outputs[0].current_mode,
-            ..Default::default()
-        },
-    );
-    let set = pane.display_set();
-    committed.save_for(&set).unwrap();
-    pane.output_config = committed.clone();
-    pane.apply(&DisplayEffect::RotateDisplay {
-        display: "eDP-1".into(),
-        rotation: "Portrait right".into(),
-    })
-    .unwrap();
-    assert_eq!(
-        pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].transform,
-        OutputTransform::Rotate90
-    );
-    assert_eq!(
-        DisplayConfig::load_for(&set),
-        committed,
-        "editing is only staged"
-    );
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
+        transaction.save().unwrap();
+        pane.settle(&transaction);
+        pane.apply(&DisplayEffect::KeepDisplayChanges).unwrap();
+        let mut kept = DisplayTransaction::load().unwrap();
+        assert_eq!(kept.id, preview_id, "Keep confirms the original preview");
+        assert_eq!(kept.state, DisplayTransactionState::ConfirmRequested);
+        assert_eq!(kept.candidate.outputs["eDP-1"].mode, Some(requested));
+        pane.settle(&kept);
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
 
-    pane.apply(&DisplayEffect::ApplyDisplayChanges).unwrap();
-    let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
-    assert_eq!(transaction.state, DisplayTransactionState::Requested);
-    assert_eq!(
-        transaction.set, set,
-        "the plan is for the monitors it was arranged on"
-    );
-    transaction.state = DisplayTransactionState::AwaitingConfirmation;
-    transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
-    transaction.save().unwrap();
-    pane.apply(&DisplayEffect::KeepDisplayChanges).unwrap();
-    assert_eq!(
-        DisplayTransaction::load().unwrap().state,
-        DisplayTransactionState::ConfirmRequested
-    );
+        kept.candidate.save_for(&kept.set).unwrap();
+        kept.state = DisplayTransactionState::Confirmed;
+        kept.deadline_unix_ms = None;
+        kept.save().unwrap();
+        pane.settle(&DisplayTransaction::load().unwrap());
+        assert!(pane.pending_candidate.is_none());
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+    }
 
-    transaction.state = DisplayTransactionState::Reverted;
-    transaction.deadline_unix_ms = None;
-    transaction.save().unwrap();
-    pane.settle(&DisplayTransaction::load().unwrap());
-    assert!(pane.pending_candidate.is_none());
-    assert_eq!(
-        pane.staged().outputs["eDP-1"].transform,
-        OutputTransform::Normal,
-        "revert shows the last known-good arrangement, not the failed plan"
-    );
+    phase display_scale_and_plans_persist_confirm_and_revert;
+    {
+        for (label, factor) in DISPLAY_SCALES {
+            assert_eq!(scale_label(*factor), *label);
+            assert_eq!(scale_factor_of(label), Some(*factor));
+        }
+        assert_eq!(scale_label(1.48), "150%");
+        assert_eq!(scale_factor_of("bogus"), None);
+
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = model(vec![panel()]);
+        pane.storage
+            .settings::<DisplayPrefs>()
+            .update(|prefs| prefs.scale = 1.5)
+            .unwrap();
+        assert!((pane.storage.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
+
+        let mut committed = DisplayConfig::default();
+        committed.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                mode: pane.outputs[0].current_mode,
+                ..Default::default()
+            },
+        );
+        let set = pane.display_set();
+        committed.save_for(&set).unwrap();
+        pane.output_config = committed.clone();
+        pane.apply(&DisplayEffect::RotateDisplay {
+            display: "eDP-1".into(),
+            rotation: "Portrait right".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].transform,
+            OutputTransform::Rotate90
+        );
+        assert_eq!(
+            DisplayConfig::load_for(&set),
+            committed,
+            "editing is only staged"
+        );
+
+        pane.apply(&DisplayEffect::ApplyDisplayChanges).unwrap();
+        let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
+        assert_eq!(transaction.state, DisplayTransactionState::Requested);
+        assert_eq!(
+            transaction.set, set,
+            "the plan is for the monitors it was arranged on"
+        );
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
+        transaction.save().unwrap();
+        pane.apply(&DisplayEffect::KeepDisplayChanges).unwrap();
+        assert_eq!(
+            DisplayTransaction::load().unwrap().state,
+            DisplayTransactionState::ConfirmRequested
+        );
+
+        transaction.state = DisplayTransactionState::Reverted;
+        transaction.deadline_unix_ms = None;
+        transaction.save().unwrap();
+        pane.settle(&DisplayTransaction::load().unwrap());
+        assert!(pane.pending_candidate.is_none());
+        assert_eq!(
+            pane.staged().outputs["eDP-1"].transform,
+            OutputTransform::Normal,
+            "revert shows the last known-good arrangement, not the failed plan"
+        );
+    }
+
+    phase a_dropped_display_stages_its_exact_position;
+    {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        pane.apply(&DisplayEffect::MoveDisplay {
+            display: "HDMI-A-1".into(),
+            x: -2560,
+            y: -360,
+        })
+        .unwrap();
+        let staged = pane.pending_candidate.as_ref().expect("the drop is staged");
+        assert_eq!(
+            (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
+            (-2560, -360)
+        );
+        assert!(
+            DisplayTransaction::load().is_none(),
+            "a drop is staged like every other edit, not applied"
+        );
+        pane.apply(&DisplayEffect::PlaceDisplay {
+            display: "HDMI-A-1".into(),
+            position: "Right of Built-in display".into(),
+        })
+        .unwrap();
+        let staged = pane.pending_candidate.as_ref().unwrap();
+        assert_eq!(
+            (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
+            (1920, 0)
+        );
+    }
+
+    phase identify_asks_the_compositor_to_number_the_displays;
+    {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        assert!(settings_store::display_identify::IdentifyRequest::load().is_none());
+        let before = unix_now_ms();
+        pane.apply(&DisplayEffect::IdentifyDisplays).unwrap();
+        let after = unix_now_ms();
+        let request = settings_store::display_identify::IdentifyRequest::load()
+            .expect("Identify writes the request the compositor polls");
+        assert!((before..=after).contains(&request.requested_unix_ms));
+        assert_eq!(
+            request.remaining_ms(request.requested_unix_ms),
+            Some(settings_store::display_identify::IDENTIFY_MS)
+        );
+        let (shown, until) = pane
+            .identify_window
+            .expect("the canvas shows the numbers in the accent while they show");
+        assert_eq!(
+            until - shown,
+            Duration::from_millis(settings_store::display_identify::IDENTIFY_MS)
+        );
+    }
+
+    phase a_trusted_display_tool_is_listed_and_can_be_asked_again;
+    {
+        use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        pane.of_device = true;
+        assert!(pane.trusted_tools().is_empty());
+        let kanshi = DisplayTool::new("/usr/bin/kanshi");
+        TrustedDisplayTools::trust(kanshi.clone()).expect("trust");
+        assert!(pane.trusted_tools().contains(&kanshi));
+        pane.apply(&DisplayEffect::ForgetDisplayTool {
+            tool: kanshi.executable.clone(),
+        })
+        .unwrap();
+        assert!(!TrustedDisplayTools::load().contains(&kanshi));
+        assert!(pane.trusted_tools().is_empty());
+    }
+
+    phase arrangement_scale_and_rotation_apply_at_once_a_mode_asks_first;
+    {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        for effect in [
+            DisplayEffect::MoveDisplay {
+                display: "HDMI-A-1".into(),
+                x: 1920,
+                y: 120,
+            },
+            DisplayEffect::SetOutputScale {
+                display: "HDMI-A-1".into(),
+                scale: "125%".into(),
+            },
+            DisplayEffect::RotateDisplay {
+                display: "HDMI-A-1".into(),
+                rotation: "Portrait right".into(),
+            },
+        ] {
+            pane.pending_candidate = None;
+            pane.apply(&effect).unwrap();
+            assert!(pane.staged_applies_at_once(), "{effect:?} applies at once");
+        }
+        pane.pending_candidate = None;
+        let full_hd = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        pane.outputs[0].modes.push(full_hd);
+        pane.apply(&DisplayEffect::SetDisplayMode {
+            display: "HDMI-A-1".into(),
+            mode: full_hd.label(),
+        })
+        .unwrap();
+        assert!(!pane.staged_applies_at_once(), "a new mode is tried first");
+    }
 }
 
 fn laptop_with_monitor() -> DisplayModel {
@@ -971,21 +1173,6 @@ fn laptop_with_monitor() -> DisplayModel {
         },
     );
     pane
-}
-
-#[test]
-fn the_arrangement_numbers_and_sizes_displays_like_identify() {
-    let pane = laptop_with_monitor();
-    let connected = pane.connected_outputs();
-    let displays = pane.arranged_displays(&connected);
-    let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
-    let monitor = displays.iter().find(|d| d.connector == "HDMI-A-1").unwrap();
-    assert_eq!((panel.number, monitor.number), (1, 2));
-    assert!(panel.primary && !monitor.primary);
-    assert_eq!(
-        monitor.placement,
-        super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
-    );
 }
 
 #[test]
@@ -1034,111 +1221,6 @@ fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
     // that logical edge, never onto the panel's mode width.
     let dropped = settle(monitor.placement.at(1300, 12), &[panel.placement], 24);
     assert_eq!((dropped.x, dropped.y), (1280, 0));
-}
-
-#[test]
-fn an_unconfigured_display_is_drawn_and_staged_at_the_compositors_scale() {
-    // Nothing saved: the compositor runs the HiDPI panel at the 2x it
-    // chose itself, so the canvas draws it 1280 wide and staging a
-    // change keeps that scale rather than writing 1x.
-    let mut panel = display_with_modes(
-        "eDP-1",
-        "Built-in display",
-        true,
-        vec![OutputMode {
-            width: 2560,
-            height: 1600,
-            refresh_mhz: 60_000,
-        }],
-    );
-    panel.scale = 2.0;
-    let mut pane = model(vec![panel]);
-    let connected = pane.connected_outputs();
-    let displays = pane.arranged_displays(&connected);
-    assert_eq!(displays[0].placement.width, 1280);
-    assert_eq!(displays[0].placement.height, 800);
-    pane.apply(&DisplayEffect::RotateDisplay {
-        display: "eDP-1".into(),
-        rotation: "Landscape".into(),
-    })
-    .unwrap();
-    assert!(
-        (pane.staged().outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON,
-        "staging keeps the scale the display runs at"
-    );
-}
-
-#[test]
-fn a_dropped_display_stages_its_exact_position() {
-    let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let mut pane = laptop_with_monitor();
-    pane.apply(&DisplayEffect::MoveDisplay {
-        display: "HDMI-A-1".into(),
-        x: -2560,
-        y: -360,
-    })
-    .unwrap();
-    let staged = pane.pending_candidate.as_ref().expect("the drop is staged");
-    assert_eq!(
-        (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
-        (-2560, -360)
-    );
-    assert!(
-        DisplayTransaction::load().is_none(),
-        "a drop is staged like every other edit, not applied"
-    );
-    pane.apply(&DisplayEffect::PlaceDisplay {
-        display: "HDMI-A-1".into(),
-        position: "Right of Built-in display".into(),
-    })
-    .unwrap();
-    let staged = pane.pending_candidate.as_ref().unwrap();
-    assert_eq!(
-        (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
-        (1920, 0)
-    );
-}
-
-#[test]
-fn identify_asks_the_compositor_to_number_the_displays() {
-    let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let mut pane = laptop_with_monitor();
-    assert!(settings_store::display_identify::IdentifyRequest::load().is_none());
-    let before = unix_now_ms();
-    pane.apply(&DisplayEffect::IdentifyDisplays).unwrap();
-    let after = unix_now_ms();
-    let request = settings_store::display_identify::IdentifyRequest::load()
-        .expect("Identify writes the request the compositor polls");
-    assert!((before..=after).contains(&request.requested_unix_ms));
-    assert_eq!(
-        request.remaining_ms(request.requested_unix_ms),
-        Some(settings_store::display_identify::IDENTIFY_MS)
-    );
-    let (shown, until) = pane
-        .identify_window
-        .expect("the canvas shows the numbers in the accent while they show");
-    assert_eq!(
-        until - shown,
-        Duration::from_millis(settings_store::display_identify::IDENTIFY_MS)
-    );
-}
-
-#[test]
-fn a_trusted_display_tool_is_listed_and_can_be_asked_again() {
-    use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
-    let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let mut pane = laptop_with_monitor();
-    pane.of_device = true;
-    assert!(pane.trusted_tools().is_empty());
-    let kanshi = DisplayTool::new("/usr/bin/kanshi");
-    TrustedDisplayTools::trust(kanshi.clone()).expect("trust");
-    assert!(pane.trusted_tools().contains(&kanshi));
-    pane.apply(&DisplayEffect::ForgetDisplayTool {
-        tool: kanshi.executable.clone(),
-    })
-    .unwrap();
-    assert!(!TrustedDisplayTools::load().contains(&kanshi));
-    assert!(pane.trusted_tools().is_empty());
 }
 #[test]
 fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
@@ -1448,76 +1530,6 @@ fn choosing_or_dragging_a_display_shows_nothing_on_the_screens() {
     // Only Identify does.
     pane.apply(&DisplayEffect::IdentifyDisplays).unwrap();
     assert!(settings_store::display_identify::IdentifyRequest::load().is_some());
-}
-
-#[test]
-fn arrangement_scale_and_rotation_apply_at_once_a_mode_asks_first() {
-    let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let mut pane = laptop_with_monitor();
-    for effect in [
-        DisplayEffect::MoveDisplay {
-            display: "HDMI-A-1".into(),
-            x: 1920,
-            y: 120,
-        },
-        DisplayEffect::SetOutputScale {
-            display: "HDMI-A-1".into(),
-            scale: "125%".into(),
-        },
-        DisplayEffect::RotateDisplay {
-            display: "HDMI-A-1".into(),
-            rotation: "Portrait right".into(),
-        },
-    ] {
-        pane.pending_candidate = None;
-        pane.apply(&effect).unwrap();
-        assert!(pane.staged_applies_at_once(), "{effect:?} applies at once");
-    }
-    pane.pending_candidate = None;
-    let full_hd = OutputMode {
-        width: 1920,
-        height: 1080,
-        refresh_mhz: 60_000,
-    };
-    pane.outputs[0].modes.push(full_hd);
-    pane.apply(&DisplayEffect::SetDisplayMode {
-        display: "HDMI-A-1".into(),
-        mode: full_hd.label(),
-    })
-    .unwrap();
-    assert!(!pane.staged_applies_at_once(), "a new mode is tried first");
-}
-
-#[test]
-fn resolution_and_refresh_rate_each_choose_one_mode() {
-    let mode = |width, height, refresh_mhz| OutputMode {
-        width,
-        height,
-        refresh_mhz,
-    };
-    let modes = [
-        mode(2560, 1440, 144_000),
-        mode(2560, 1440, 59_940),
-        mode(1920, 1080, 144_000),
-        mode(1920, 1080, 60_000),
-    ];
-    assert_eq!(resolution_choices(&modes), ["2560 × 1440", "1920 × 1080"]);
-    assert_eq!(refresh_choices(&modes, modes[0]), ["144 Hz", "59.94 Hz"]);
-    assert_eq!(
-        mode_for_resolution(&modes, modes[0], "1920 × 1080"),
-        Some(modes[2]),
-        "a new resolution keeps the refresh rate where it can"
-    );
-    assert_eq!(
-        mode_for_resolution(&modes, modes[1], "1920 × 1080"),
-        Some(modes[2]),
-        "else it takes the fastest"
-    );
-    assert_eq!(
-        mode_for_refresh(&modes, modes[0], "59.94 Hz"),
-        Some(modes[1])
-    );
-    assert_eq!(mode_for_refresh(&modes, modes[2], "59.94 Hz"), None);
 }
 
 fn device_on_displays() -> (App, ui::storage::SettingsDocument) {

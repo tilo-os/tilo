@@ -501,42 +501,211 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     );
 }
 
-#[test]
-fn cancelling_a_vertex_setup_forgets_its_grant() {
-    let vault = tempfile::tempdir().unwrap();
-    let root = vault.path().to_path_buf();
-    let window = std::thread::spawn(move || {
-        let mut pane = model_over(mock(snapshot(None)));
-        pane.custodian = account_custody::Custodian::for_root(Some(root));
-        pane.vertex = Some(VertexSetup::adding());
-        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
-        pane.custodian
-            .seal_oauth(
-                &agent_vertex::grant_id(&id),
-                &account_custody::TokenSet {
-                    access_token: "a".into(),
-                    scope: None,
-                    refresh_token: "r".into(),
-                    expires_in: 3600,
-                    obtained_at: 0,
-                },
-            )
-            .unwrap();
-        ui::rt::mark_ui_thread();
-        pane.cancel_vertex();
-        assert!(pane.vertex.is_none());
-        assert!(
-            !pane.forgetting.is_empty(),
-            "the grant is forgotten on a worker"
+tilo_test_env::scenario! {
+    fn the_agent_models_model_reads_and_controls_local_models_without_a_window;
+
+    phase cancelling_a_vertex_setup_forgets_its_grant;
+    {
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path().to_path_buf();
+        let window = std::thread::spawn(move || {
+            let mut pane = model_over(mock(snapshot(None)));
+            pane.custodian = account_custody::Custodian::for_root(Some(root));
+            pane.vertex = Some(VertexSetup::adding());
+            let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+            pane.custodian
+                .seal_oauth(
+                    &agent_vertex::grant_id(&id),
+                    &account_custody::TokenSet {
+                        access_token: "a".into(),
+                        scope: None,
+                        refresh_token: "r".into(),
+                        expires_in: 3600,
+                        obtained_at: 0,
+                    },
+                )
+                .unwrap();
+            ui::rt::mark_ui_thread();
+            pane.cancel_vertex();
+            assert!(pane.vertex.is_none());
+            assert!(
+                !pane.forgetting.is_empty(),
+                "the grant is forgotten on a worker"
+            );
+            forgotten(&mut pane);
+            id
+        });
+        let id = window
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        let custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        assert!(!agent_vertex::signed_in(&custodian, &id));
+    }
+
+    phase local_model_lifecycle_exposes_only_safe_controls;
+    {
+        assert_eq!(
+            available_actions(&LocalModelPhase::Ready {
+                running: false,
+                endpoint: None
+            }),
+            [ModelAction::Start, ModelAction::Remove]
         );
-        forgotten(&mut pane);
-        id
-    });
-    let id = window
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-    let custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
-    assert!(!agent_vertex::signed_in(&custodian, &id));
+        assert_eq!(
+            available_actions(&LocalModelPhase::Ready {
+                running: true,
+                endpoint: None
+            }),
+            [ModelAction::Stop, ModelAction::Remove]
+        );
+        assert!(
+            available_actions(&LocalModelPhase::Downloading {
+                downloaded_bytes: 4,
+                total_bytes: 10,
+            })
+            .is_empty()
+        );
+        let control = mock(LocalModelSnapshot {
+            accelerator_setup: Some(AcceleratorSetup {
+                boot_pack_id: "gpu-stack".into(),
+                status: AcceleratorSetupState::Available,
+            }),
+            ..snapshot(Some(LocalModelPhase::Ready {
+                running: false,
+                endpoint: None,
+            }))
+        });
+        let pane = model_over(control.clone());
+        for effect in [
+            AgentModelsEffect::StartModel {
+                model: "test/model".into(),
+            },
+            AgentModelsEffect::RemoveModel {
+                model: "test/model".into(),
+            },
+            AgentModelsEffect::SetUpAccelerator,
+        ] {
+            pane.manager_work(&effect)
+                .unwrap()
+                .run(control.as_ref())
+                .unwrap();
+        }
+        assert!(
+            pane.manager_work(&AgentModelsEffect::StopModel {
+                model: "test/model".into()
+            })
+            .is_err(),
+            "a stopped model is not stopped again"
+        );
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["start:test/model", "remove:test/model", "stage-accelerator"]
+        );
+    }
+
+    phase local_profile_uses_the_ready_manager_endpoint_not_port_8000;
+    {
+        let mut package = package();
+        package.vision = true;
+        package.face_recognition = true;
+        let model_id = package.id.clone();
+        let models = vec![InstalledLocalModel {
+            package,
+            phase: LocalModelPhase::Ready {
+                running: true,
+                endpoint: Some(agent_provider_config::local::LocalEndpoint {
+                    url: "http://127.0.0.1:43127/v1".into(),
+                    model_id,
+                }),
+            },
+        }];
+        let profile = synced_local_profile(None, &models).expect("ready local profile");
+        assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
+        assert_eq!(profile.default_model.as_deref(), Some("test/model"));
+        assert_eq!(
+            profile.models[0].revision.as_deref(),
+            Some("0123456789abcdef")
+        );
+        assert!(profile.models[0].vision);
+        assert!(profile.models[0].face_recognition);
+        assert!(profile.enabled);
+        let mut configured = profile;
+        configured.models[0].context_window = Some(262_144);
+        configured.models[0].request_limits = Some(ModelRequestLimits {
+            max_output_tokens: 512,
+            runtime_context_tokens: Some(4096),
+            plan_timeout_ms: Some(120_000),
+        });
+        let refreshed = synced_local_profile(Some(configured.clone()), &models).unwrap();
+        assert_eq!(
+            refreshed.models[0].request_limits,
+            configured.models[0].request_limits
+        );
+        assert_eq!(refreshed.models[0].context_window, Some(262_144));
+    }
+
+    phase the_area_builds_its_model_from_the_read_it_started;
+    {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+        let area = AgentModelsArea::new(&cx);
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read.is_finished());
+        let installed = area.model().borrow().snapshot.recommendation.clone();
+        assert!(area.is_open());
+        assert_eq!(
+            installed.map(|package| package.id),
+            SampleManager
+                .snapshot()
+                .unwrap()
+                .recommendation
+                .map(|package| package.id),
+            "the model shows what the read asked"
+        );
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    phase a_model_shows_what_its_read_asked;
+    {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+        let control = mock(snapshot(None));
+        let read = AgentModelsRead::of(control.as_ref(), Vec::new());
+        let model = AgentModelsModel::from_read(
+            &cx.storage,
+            cx.sections.clone(),
+            cx.provider_admin.clone(),
+            control.clone(),
+            read,
+        );
+        assert!(model.manager_available);
+        assert_eq!(
+            model
+                .snapshot
+                .recommendation
+                .as_ref()
+                .map(|package| package.id.clone()),
+            Some(package().id)
+        );
+        let down = AgentModelsRead {
+            snapshot: Err("the manager is not running".into()),
+            keys: HashMap::new(),
+            hub_token: Ok(HubTokenState::None),
+        };
+        let model =
+            AgentModelsModel::from_read(&cx.storage, cx.sections, cx.provider_admin, control, down);
+        assert!(!model.manager_available);
+        assert_eq!(
+            model.notice,
+            Some(t_args(
+                "agent-notice-service-down",
+                &[("error", "the manager is not running".into())]
+            )),
+            "the person is told the manager is down"
+        );
+    }
 }
 
 pub(super) fn forgotten(pane: &mut AgentModelsModel) {
@@ -622,108 +791,6 @@ fn the_catalog_is_honest_and_installs_what_it_reported() {
     let progress = ProgressBar::new(phase_progress(&phase).unwrap()).with_label("Download");
     let access = Widget::accessibility(&progress).expect("labelled progress is accessible");
     assert_eq!(access.value.as_deref(), Some("75%"));
-}
-
-#[test]
-fn local_model_lifecycle_exposes_only_safe_controls() {
-    assert_eq!(
-        available_actions(&LocalModelPhase::Ready {
-            running: false,
-            endpoint: None
-        }),
-        [ModelAction::Start, ModelAction::Remove]
-    );
-    assert_eq!(
-        available_actions(&LocalModelPhase::Ready {
-            running: true,
-            endpoint: None
-        }),
-        [ModelAction::Stop, ModelAction::Remove]
-    );
-    assert!(
-        available_actions(&LocalModelPhase::Downloading {
-            downloaded_bytes: 4,
-            total_bytes: 10,
-        })
-        .is_empty()
-    );
-    let control = mock(LocalModelSnapshot {
-        accelerator_setup: Some(AcceleratorSetup {
-            boot_pack_id: "gpu-stack".into(),
-            status: AcceleratorSetupState::Available,
-        }),
-        ..snapshot(Some(LocalModelPhase::Ready {
-            running: false,
-            endpoint: None,
-        }))
-    });
-    let pane = model_over(control.clone());
-    for effect in [
-        AgentModelsEffect::StartModel {
-            model: "test/model".into(),
-        },
-        AgentModelsEffect::RemoveModel {
-            model: "test/model".into(),
-        },
-        AgentModelsEffect::SetUpAccelerator,
-    ] {
-        pane.manager_work(&effect)
-            .unwrap()
-            .run(control.as_ref())
-            .unwrap();
-    }
-    assert!(
-        pane.manager_work(&AgentModelsEffect::StopModel {
-            model: "test/model".into()
-        })
-        .is_err(),
-        "a stopped model is not stopped again"
-    );
-    assert_eq!(
-        control.calls.lock().unwrap().as_slice(),
-        ["start:test/model", "remove:test/model", "stage-accelerator"]
-    );
-}
-
-#[test]
-fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
-    let mut package = package();
-    package.vision = true;
-    package.face_recognition = true;
-    let model_id = package.id.clone();
-    let models = vec![InstalledLocalModel {
-        package,
-        phase: LocalModelPhase::Ready {
-            running: true,
-            endpoint: Some(agent_provider_config::local::LocalEndpoint {
-                url: "http://127.0.0.1:43127/v1".into(),
-                model_id,
-            }),
-        },
-    }];
-    let profile = synced_local_profile(None, &models).expect("ready local profile");
-    assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
-    assert_eq!(profile.default_model.as_deref(), Some("test/model"));
-    assert_eq!(
-        profile.models[0].revision.as_deref(),
-        Some("0123456789abcdef")
-    );
-    assert!(profile.models[0].vision);
-    assert!(profile.models[0].face_recognition);
-    assert!(profile.enabled);
-    let mut configured = profile;
-    configured.models[0].context_window = Some(262_144);
-    configured.models[0].request_limits = Some(ModelRequestLimits {
-        max_output_tokens: 512,
-        runtime_context_tokens: Some(4096),
-        plan_timeout_ms: Some(120_000),
-    });
-    let refreshed = synced_local_profile(Some(configured.clone()), &models).unwrap();
-    assert_eq!(
-        refreshed.models[0].request_limits,
-        configured.models[0].request_limits
-    );
-    assert_eq!(refreshed.models[0].context_window, Some(262_144));
 }
 
 #[test]
@@ -1002,67 +1069,4 @@ fn until_finished(finished: impl Fn() -> bool) {
         assert!(std::time::Instant::now() < deadline, "the read ends");
         std::thread::yield_now();
     }
-}
-
-#[test]
-fn the_area_builds_its_model_from_the_read_it_started() {
-    let profile = tempfile::tempdir().unwrap();
-    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
-    let area = AgentModelsArea::new(&cx);
-    assert!(area.start_read(), "the first read starts");
-    assert!(!area.start_read(), "one read at a time");
-    assert!(!area.is_open(), "a running read publishes nothing yet");
-    until_finished(|| area.read.is_finished());
-    let installed = area.model().borrow().snapshot.recommendation.clone();
-    assert!(area.is_open());
-    assert_eq!(
-        installed.map(|package| package.id),
-        SampleManager
-            .snapshot()
-            .unwrap()
-            .recommendation
-            .map(|package| package.id),
-        "the model shows what the read asked"
-    );
-    assert!(!area.start_read(), "a built model is not read again");
-}
-
-#[test]
-fn a_model_shows_what_its_read_asked() {
-    let profile = tempfile::tempdir().unwrap();
-    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
-    let control = mock(snapshot(None));
-    let read = AgentModelsRead::of(control.as_ref(), Vec::new());
-    let model = AgentModelsModel::from_read(
-        &cx.storage,
-        cx.sections.clone(),
-        cx.provider_admin.clone(),
-        control.clone(),
-        read,
-    );
-    assert!(model.manager_available);
-    assert_eq!(
-        model
-            .snapshot
-            .recommendation
-            .as_ref()
-            .map(|package| package.id.clone()),
-        Some(package().id)
-    );
-    let down = AgentModelsRead {
-        snapshot: Err("the manager is not running".into()),
-        keys: HashMap::new(),
-        hub_token: Ok(HubTokenState::None),
-    };
-    let model =
-        AgentModelsModel::from_read(&cx.storage, cx.sections, cx.provider_admin, control, down);
-    assert!(!model.manager_available);
-    assert_eq!(
-        model.notice,
-        Some(t_args(
-            "agent-notice-service-down",
-            &[("error", "the manager is not running".into())]
-        )),
-        "the person is told the manager is down"
-    );
 }

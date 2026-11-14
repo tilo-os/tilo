@@ -638,64 +638,68 @@ pub(crate) fn format_uptime(seconds: f64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn system_facts_parse_and_format() {
-        for (input, want) in [
-            (
-                "NAME=Fedora\nPRETTY_NAME=\"Fedora Linux 42\"\nID=fedora\n",
-                Some("Fedora Linux 42"),
-            ),
-            ("PRETTY_NAME=Fedora42\n", Some("Fedora42")),
-            ("NAME=Foo\n", None),
-        ] {
+    tilo_test_env::scenario! {
+        fn system_facts_are_parsed_or_fall_back;
+
+        phase system_facts_parse_and_format;
+        {
+            for (input, want) in [
+                (
+                    "NAME=Fedora\nPRETTY_NAME=\"Fedora Linux 42\"\nID=fedora\n",
+                    Some("Fedora Linux 42"),
+                ),
+                ("PRETTY_NAME=Fedora42\n", Some("Fedora42")),
+                ("NAME=Foo\n", None),
+            ] {
+                assert_eq!(
+                    parse_os_release_pretty_name(input).as_deref(),
+                    want,
+                    "{input:?}"
+                );
+            }
+
+            // Only the first field is the uptime.
+            assert_eq!(parse_uptime_seconds("12345.67 6789.01\n"), Some(12345.67));
+            for (seconds, want) in [(93_780.0, "1d 2h 3m"), (7_380.0, "2h 3m"), (420.0, "7m")] {
+                assert_eq!(format_uptime(seconds), want, "{seconds}s");
+            }
+
+            let s = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 7 7840U\nprocessor\t: 1\nmodel name\t: AMD Ryzen 7 7840U\n";
+            assert_eq!(parse_cpu_model(s).as_deref(), Some("AMD Ryzen 7 7840U"));
+            assert!(parse_cpu_model("no model here\n").is_none());
+
             assert_eq!(
-                parse_os_release_pretty_name(input).as_deref(),
-                want,
-                "{input:?}"
+                parse_mem_total_kb("MemTotal:       16330124 kB\n"),
+                Some(16_330_124)
             );
+            assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
+            assert_eq!(format_memory(16_330_124), "15.6 GiB");
+            assert_eq!(format_memory(512 * 1024), "512 MiB");
         }
 
-        // Only the first field is the uptime.
-        assert_eq!(parse_uptime_seconds("12345.67 6789.01\n"), Some(12345.67));
-        for (seconds, want) in [(93_780.0, "1d 2h 3m"), (7_380.0, "2h 3m"), (420.0, "7m")] {
-            assert_eq!(format_uptime(seconds), want, "{seconds}s");
+        phase about_info_falls_back_when_nothing_can_be_read;
+        {
+            let missing = Path::new("/nonexistent/tilo/settings/test/path");
+            let info = AboutInfo::from_paths(
+                missing,
+                missing,
+                missing,
+                missing,
+                &[missing, missing],
+                missing,
+            );
+            assert_eq!(info.pretty_name, "unknown");
+            assert_eq!(info.kernel, "unknown");
+            assert_eq!(info.uptime, "unknown");
+            assert_eq!(info.hostname, "this-device");
+            assert_eq!(info.cpu, "unknown");
+            assert_eq!(info.memory, "unknown");
+            assert!(!info.arch.is_empty());
+
+            let intent = portable_identity_backup_intent();
+            assert_eq!(intent, os_actions::ToolIntent::IdentityBackup);
+            assert_eq!(intent.package_id(), None);
         }
-
-        let s = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 7 7840U\nprocessor\t: 1\nmodel name\t: AMD Ryzen 7 7840U\n";
-        assert_eq!(parse_cpu_model(s).as_deref(), Some("AMD Ryzen 7 7840U"));
-        assert!(parse_cpu_model("no model here\n").is_none());
-
-        assert_eq!(
-            parse_mem_total_kb("MemTotal:       16330124 kB\n"),
-            Some(16_330_124)
-        );
-        assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
-        assert_eq!(format_memory(16_330_124), "15.6 GiB");
-        assert_eq!(format_memory(512 * 1024), "512 MiB");
-    }
-
-    #[test]
-    fn about_info_falls_back_when_nothing_can_be_read() {
-        let missing = Path::new("/nonexistent/tilo/settings/test/path");
-        let info = AboutInfo::from_paths(
-            missing,
-            missing,
-            missing,
-            missing,
-            &[missing, missing],
-            missing,
-        );
-        assert_eq!(info.pretty_name, "unknown");
-        assert_eq!(info.kernel, "unknown");
-        assert_eq!(info.uptime, "unknown");
-        assert_eq!(info.hostname, "this-device");
-        assert_eq!(info.cpu, "unknown");
-        assert_eq!(info.memory, "unknown");
-        assert!(!info.arch.is_empty());
-
-        let intent = portable_identity_backup_intent();
-        assert_eq!(intent, os_actions::ToolIntent::IdentityBackup);
-        assert_eq!(intent.package_id(), None);
     }
 
     #[test]

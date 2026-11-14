@@ -1202,16 +1202,51 @@ mod tests {
         said
     }
 
-    #[test]
-    fn the_secret_store_listing_is_read_as_the_service_prints_it() {
-        let json = r#"[{"id":"binary:/usr/bin/chromium","name":"chromium","access":"allowed","first_seen":1,"last_used":2,"uses":9,"items":3},
+    tilo_test_env::scenario! {
+        fn device_security_readings_are_parsed_as_the_services_print_them;
+
+        phase the_secret_store_listing_is_read_as_the_service_prints_it;
+        {
+            let json = r#"[{"id":"binary:/usr/bin/chromium","name":"chromium","access":"allowed","first_seen":1,"last_used":2,"uses":9,"items":3},
                        {"id":"local-process:/home/a/t","name":"t (not part of the system)","access":"revoked","uses":1,"items":0}]"#;
-        let apps = parse_secret_apps(json).unwrap();
-        assert_eq!(apps.len(), 2);
-        assert_eq!(apps[0].items, 3);
-        assert_eq!(apps[1].access, "revoked");
-        assert!(parse_secret_apps("not json").is_err());
-        assert_eq!(parse_secret_apps("[]").unwrap(), Vec::new());
+            let apps = parse_secret_apps(json).unwrap();
+            assert_eq!(apps.len(), 2);
+            assert_eq!(apps[0].items, 3);
+            assert_eq!(apps[1].access, "revoked");
+            assert!(parse_secret_apps("not json").is_err());
+            assert_eq!(parse_secret_apps("[]").unwrap(), Vec::new());
+        }
+
+        phase an_unreadable_firewall_is_not_reported_as_off;
+        // "Not active" is only said about a ruleset that was read and is empty.
+        // A ruleset this session may not read (nft needs privileges) and no
+        // running firewalld is not a firewall that is off.
+        {
+            let denied = || Err("nft: Operation not permitted (you must be root)".to_string());
+            assert_eq!(
+                firewall_from(Ok("running".into()), denied),
+                Ok("perm-firewall-firewalld")
+            );
+            assert_eq!(
+                firewall_from(Err("firewall-cmd: not running".into()), denied),
+                Err(
+                    "firewall-cmd: not running; nft: Operation not permitted (you must be root)".into()
+                )
+            );
+            assert_eq!(
+                firewall_from(
+                    Err("firewall-cmd: not running".into()),
+                    || Ok(String::new())
+                ),
+                Ok("perm-firewall-off")
+            );
+            assert_eq!(
+                firewall_from(Err("firewall-cmd: not running".into()), || {
+                    Ok("table inet filter {}".into())
+                }),
+                Ok("perm-firewall-nftables")
+            );
+        }
     }
 
     #[test]
@@ -1379,37 +1414,6 @@ mod tests {
                         && frame.contains(&t("perm-desktop-control"))
                         && !frame.contains(&t("perm-reading")))),
             "what the device reports is shown"
-        );
-    }
-
-    /// "Not active" is only said about a ruleset that was read and is empty.
-    /// A ruleset this session may not read (nft needs privileges) and no
-    /// running firewalld is not a firewall that is off.
-    #[test]
-    fn an_unreadable_firewall_is_not_reported_as_off() {
-        let denied = || Err("nft: Operation not permitted (you must be root)".to_string());
-        assert_eq!(
-            firewall_from(Ok("running".into()), denied),
-            Ok("perm-firewall-firewalld")
-        );
-        assert_eq!(
-            firewall_from(Err("firewall-cmd: not running".into()), denied),
-            Err(
-                "firewall-cmd: not running; nft: Operation not permitted (you must be root)".into()
-            )
-        );
-        assert_eq!(
-            firewall_from(
-                Err("firewall-cmd: not running".into()),
-                || Ok(String::new())
-            ),
-            Ok("perm-firewall-off")
-        );
-        assert_eq!(
-            firewall_from(Err("firewall-cmd: not running".into()), || {
-                Ok("table inet filter {}".into())
-            }),
-            Ok("perm-firewall-nftables")
         );
     }
     /// A real state.json fragment: one workspace, one app holding a camera
