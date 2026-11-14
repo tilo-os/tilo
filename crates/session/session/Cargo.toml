@@ -124,6 +124,9 @@ tilo-reference = { path = "../../collab/reference" }
 tilo-feedback = { path = "../../collab/feedback" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 collab-types = { path = "../../collab/collab-types" }
+# The workspace's folder, as the record its files' versions are: the history
+# reads it wherever the session runs, a page included.
+fs-protocol = { path = "../../system/fs-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true

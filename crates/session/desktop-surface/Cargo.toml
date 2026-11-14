@@ -58,6 +58,9 @@ serde_json.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# The folder's file versions, which the workspace's history lists as the
+# changes they are: the same reader the filesystem serves them through.
+fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

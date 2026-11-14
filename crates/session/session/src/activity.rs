@@ -819,6 +819,26 @@ fn read_workspace_records(
             });
         }
     }
+    // The workspace's folder is a record of its own, and its changes belong in
+    // the history beside the apps': a page holds it without listing it among
+    // the packages it opened, and a computer's folder writes are its versions.
+    let tree_id = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
+    if seen.insert((fs_protocol::tree::FILES_APP.to_owned(), tree_id.clone()))
+        && let Some(record_id) = RecordId::parse(&tree_id)
+        && let Some(document) = crate::platform::records::document(
+            store,
+            fs_protocol::tree::FILES_APP,
+            workspace,
+            &tree_id,
+        )
+    {
+        noted(document.get_actor());
+        read.push(DetachedRecordHistory {
+            app: fs_protocol::tree::FILES_APP.to_owned(),
+            checkout: RecordCheckout::new(record_id, RecordKind::new(fs_protocol::tree::TREE_KIND)),
+            document: Some(document),
+        });
+    }
     read
 }
 

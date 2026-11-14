@@ -301,6 +301,81 @@ impl Default for WorkspaceHistoryIndex {
     }
 }
 
+/// The changes a folder record's document holds: one row per file and session,
+/// coalesced as Files' own history coalesces them, attributed to the person
+/// whose device signed the version and the agent that wrote for them when one
+/// did.
+fn folder_rows(doc: &AutoCommit, authors: &AuthorDirectory, limit: usize) -> Vec<HistoryEntry> {
+    use fs_protocol::history;
+    use ui::history_source::WriterPlace;
+    use ui::history_source::file_changes::{
+        NoTurnBoundary, QUIET, change_summary, coalesce, unknown_file_author,
+    };
+
+    let Ok(tree) = <fs_protocol::tree::FilesTree as tilo_resource::Resource>::read(doc) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for (id, node) in &tree.nodes {
+        if tree.trashed(id) {
+            continue;
+        }
+        let Some(record_id) = node.record_id else {
+            continue;
+        };
+        let path = fs_protocol::tree::path_of(&tree, id);
+        let folder = match node.parent.as_deref() {
+            Some(parent) if parent != fs_protocol::tree::ROOT_ID => {
+                format!("/{}", fs_protocol::tree::path_of(&tree, parent))
+            }
+            _ => "/".to_owned(),
+        };
+        let versions: Vec<_> = history::record_versions(doc, record_id)
+            .into_values()
+            .collect();
+        let attributed = history::record_attributions(doc, record_id);
+        let attributions: BTreeMap<_, _> = attributed
+            .iter()
+            .map(|(version, attributed)| (*version, attributed.attribution.clone()))
+            .collect();
+        for change in coalesce(&versions, &attributions, QUIET, &NoTurnBoundary) {
+            let version = change.last();
+            let person = version.actor.person.as_bytes();
+            let author = authors
+                .resolve_attributed_file_actor_in(
+                    person,
+                    version.actor.device.as_bytes(),
+                    attributions.get(&version.id),
+                    WriterPlace {
+                        folder: Some(&folder),
+                    },
+                )
+                .unwrap_or_else(|| unknown_file_author(person));
+            rows.push(HistoryEntry {
+                id: HistoryEntryId(*version.id.0.as_bytes()),
+                author,
+                entry_kind: ui::widget::EntryKind::Compaction,
+                artifact_kind: ArtifactKind::File,
+                timestamp: ui::time::UNIX_EPOCH
+                    .checked_add(ui::time::Duration::from_millis(version.timestamp_ms))
+                    .unwrap_or(ui::time::UNIX_EPOCH),
+                summary: change_summary(&change, &path),
+                text_delta: None,
+                diff_payload: None,
+                redaction: None,
+                context: None,
+            });
+        }
+    }
+    // Keep the newest: the index bounds what it shows, and a folder can hold
+    // more changes than one history pane lists.
+    rows.sort_by_key(|row| row.timestamp);
+    if rows.len() > limit {
+        rows.drain(..rows.len().saturating_sub(limit));
+    }
+    rows
+}
+
 /// The rows of `doc` , each saying what a model described it as when one did: a description stands
 /// in place of the change's own summary, never beside it, and never replaces its author, time or
 /// kind.
@@ -433,6 +508,14 @@ impl WorkspaceHistoryIndex {
             let key = origin.key();
             documents.insert(key.clone(), doc.get_heads());
             let mut log = self.logs.remove(&key).unwrap_or_default();
+            // A folder's files are not actions: a record's own steps say
+            // nothing of them. Their changes are the versions it holds, one
+            // row per file and session, as Files' own history lists them.
+            let folder = if record.checkout.kind.as_str() == fs_protocol::tree::TREE_KIND {
+                folder_rows(doc, &self.authors, limit)
+            } else {
+                Vec::new()
+            };
             // What people did: a record's genesis names no one.
             let rows = described(
                 HistorySource::new()
@@ -449,6 +532,7 @@ impl WorkspaceHistoryIndex {
                 .filter(|entry| record.holds(entry))
                 .collect::<Vec<_>>();
             insert_rows(&mut by_id, &origin, rows);
+            insert_rows(&mut by_id, &origin, folder);
             coverage.indexed_records = coverage.indexed_records.saturating_add(1);
         }
         self.logs = logs;
@@ -570,5 +654,165 @@ fn artifact_kind(kind: &RecordKind) -> ArtifactKind {
         ArtifactKind::Note
     } else {
         ArtifactKind::File
+    }
+}
+
+#[cfg(test)]
+mod folder_rows_tests {
+    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+
+    use super::*;
+    use fs_protocol::tree::Placing;
+    use fs_protocol::{
+        ContentHash, Ed25519PublicKey, FileActor, FileAttributionV1, FileProvenance,
+        FileVersionAttributionV1, FileVersionId, FileVersionV1,
+    };
+    use uuid::Uuid;
+
+    fn person() -> [u8; 32] {
+        [7; 32]
+    }
+
+    fn device() -> [u8; 32] {
+        [9; 32]
+    }
+
+    fn write_version(
+        doc: &mut AutoCommit,
+        record_id: fs_protocol::FileRecordId,
+        id: u128,
+        agent: Option<&str>,
+    ) {
+        let version = FileVersionV1 {
+            id: FileVersionId(Uuid::from_u128(id)),
+            record_id,
+            parents: Vec::new(),
+            actor: FileActor {
+                person: Ed25519PublicKey(person()),
+                device: Ed25519PublicKey(device()),
+            },
+            timestamp_ms: u64::try_from(id).unwrap().saturating_mul(1_000),
+            content_hash: Some(ContentHash([1; 32])),
+            metadata_hash: ContentHash([2; 32]),
+            provenance: FileProvenance::Edit,
+        };
+        let root = match doc.get(automerge::ROOT, "history") {
+            Ok(Some((automerge::Value::Object(automerge::ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(automerge::ROOT, "history", automerge::ObjType::Map)
+                .unwrap(),
+        };
+        let record = doc
+            .put_object(&root, record_id.0.to_string(), automerge::ObjType::Map)
+            .unwrap();
+        let versions = doc
+            .put_object(&record, "versions", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(
+            &versions,
+            version.id.0.to_string(),
+            collab_types::canonical_bytes(&version).unwrap(),
+        )
+        .unwrap();
+        if let Some(actor) = agent {
+            let attributed = FileVersionAttributionV1 {
+                version_id: version.id,
+                attribution: FileAttributionV1 {
+                    actor: actor.to_owned(),
+                    label: "Claude Code".into(),
+                    color: [10, 20, 30],
+                },
+            };
+            let map = doc
+                .put_object(&record, "attributions", automerge::ObjType::Map)
+                .unwrap();
+            doc.put(
+                &map,
+                version.id.0.to_string(),
+                collab_types::canonical_bytes(&attributed).unwrap(),
+            )
+            .unwrap();
+        }
+        doc.commit();
+    }
+
+    fn authors() -> AuthorDirectory {
+        let person = hex::encode(person());
+        let mut authors = AuthorDirectory::new();
+        authors.register_person(
+            &person,
+            ui::history_source::author_for_identity("Ada".to_owned(), &person),
+        );
+        authors.register_device(&hex::encode(device()), "Ada's laptop");
+        authors
+    }
+
+    /// A folder's changes are one row per file and session, coalesced, named
+    /// as Files names them.
+    #[test]
+    fn folder_rows_coalesce_a_files_versions_by_session() {
+        let mut doc = AutoCommit::new();
+        let mut tree = fs_protocol::tree::Tree::default();
+        let placed = fs_protocol::tree::place(
+            &mut doc,
+            &mut tree,
+            fs_protocol::tree::ROOT_ID,
+            "terms.txt",
+            Placing::File {
+                hash: &"a".repeat(64),
+                size: 12,
+            },
+            (1_000, &hex::encode(device())),
+        )
+        .unwrap();
+        let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
+        // One session's run: two versions, minutes apart, coalesced into one row.
+        write_version(&mut doc, record_id, 1, Some("agent:claude:abc"));
+        write_version(&mut doc, record_id, 2, Some("agent:claude:abc"));
+
+        let rows = folder_rows(&doc, &authors(), 100);
+        assert_eq!(rows.len(), 1, "one row for the one session's run");
+        assert_eq!(rows[0].summary, "Edited · terms.txt");
+        assert_eq!(
+            ui::row_people(&rows[0].author),
+            ("Ada".to_owned(), Some("Claude Code".to_owned()))
+        );
+        assert_eq!(
+            ui::attribution_hover(&rows[0].author).as_deref(),
+            Some("External agent · Claude Code · Ada's laptop · /")
+        );
+    }
+
+    /// The person at their own device is one writer; a second file is its own row.
+    #[test]
+    fn folder_rows_name_each_file_and_the_person_at_their_device() {
+        let mut doc = AutoCommit::new();
+        let mut tree = fs_protocol::tree::Tree::default();
+        for name in ["terms.txt", "logo.png"] {
+            let placed = fs_protocol::tree::place(
+                &mut doc,
+                &mut tree,
+                fs_protocol::tree::ROOT_ID,
+                name,
+                Placing::File {
+                    hash: &"b".repeat(64),
+                    size: 3,
+                },
+                (1_000, &hex::encode(device())),
+            )
+            .unwrap();
+            let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
+            write_version(
+                &mut doc,
+                record_id,
+                u128::from(name.len() as u64) + 10,
+                None,
+            );
+        }
+        let rows = folder_rows(&doc, &authors(), 100);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"));
+        assert!(rows.iter().any(|row| row.summary == "Edited · terms.txt"));
+        assert!(rows.iter().any(|row| row.summary == "Edited · logo.png"));
     }
 }
