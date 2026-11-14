@@ -825,6 +825,10 @@ fn lay_out_window(
                     &mut app.text_renderer,
                 )?;
             }
+            // A part that did not settle is drawn as it last stood, said once.
+            if let Some(line) = crate::widget::take_unsettled_report() {
+                tracing::error!("{line}");
+            }
             t_compute_us = t_compute_us.saturating_add(start.elapsed().as_micros());
         }
         let start = crate::time::now();
@@ -866,7 +870,7 @@ fn lay_out_window(
         Ok((Some(geometry), dirty || remount_next))
     });
     if let Err(error) = result {
-        if let Some(line) = app.layout.skipped_frames.skip(&error, crate::time::now()) {
+        if let Some(line) = app.layout.skipped_frames.skip(&error) {
             tracing::error!("{line}");
         }
         app.layout.layout_dirty = true;

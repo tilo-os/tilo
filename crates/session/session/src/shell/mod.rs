@@ -990,6 +990,14 @@ impl Shell {
             .collect()
     }
 
+    /// What the parts' layouts said went wrong since this was last asked.
+    pub(crate) fn take_layout_reports(&self) -> Vec<String> {
+        self.parts
+            .iter()
+            .filter_map(|(_, part)| part.borrow_mut().take_layout_report())
+            .collect()
+    }
+
     /// Whether a shown part lays out `text` for assistive technology.
     pub(crate) fn says(&self, text: &str) -> bool {
         self.parts
@@ -1746,6 +1754,17 @@ impl crate::Session {
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
+    }
+
+    /// What the shell's layout said went wrong since this was last asked: each frame it skipped
+    /// because its layout failed, and each part that did not settle and was drawn as it last
+    /// stood, said once. A test that drives the canvas reads that none was.
+    #[must_use]
+    pub fn take_shell_layout_reports(&self) -> Vec<String> {
+        self.shell
+            .as_ref()
+            .map(Shell::take_layout_reports)
+            .unwrap_or_default()
     }
 
     /// Where every control the shell shows by `name` stands, logical `(x, y, w, h)` : a menu item

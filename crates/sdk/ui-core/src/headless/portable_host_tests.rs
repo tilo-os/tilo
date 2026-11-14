@@ -975,12 +975,13 @@ fn history_composition_keeps_app_modal_typing_and_focus_inside_the_dialog() {
     assert!(focused(&frame, "background"));
 }
 
-/// A layout that does not settle skips its frame and nothing else, as the
-/// browser host and the native one run it: the failure is reported once
-/// rather than on every frame that fails again, input still reaches the
-/// controls, and the next frame whose layout settles paints.
+/// A layout whose styles do not settle is drawn as its last pass left it, as
+/// the browser host and the native one run it: the window around the part
+/// that keeps changing never stops, the part is reported once rather than on
+/// every frame, input still reaches the controls, and a layout that fails
+/// outright skips its frame, reported once too.
 #[test]
-fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
+fn a_frame_whose_layout_does_not_settle_still_paints_and_is_reported_once() {
     let looping = Rc::new(Cell::new(false));
     let policy = {
         let looping = looping.clone();
@@ -1001,35 +1002,40 @@ fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
     frame.relayout_at((400, 240)).expect("a settled frame");
 
     looping.set(true);
-    let error = frame
+    frame
         .recompose()
-        .expect_err("the flipping size never settles");
-    assert!(
-        matches!(error, crate::widget::WidgetLayoutError::DidNotSettle { .. }),
-        "{error}"
-    );
-    // The next frame the harness runs itself, as input's, fails too: it is
-    // skipped, and its report kept for a host whose log is not `tracing`'s.
-    frame.relayout();
+        .expect("the flipping size is laid out as its last pass left it");
     let report = frame
         .take_skip_report()
-        .expect("the first failure is reported");
+        .expect("the part that does not settle is reported");
     assert!(report.contains("did not settle"), "{report}");
-    assert_eq!(frame.take_skip_report(), None, "it is handed over once");
-    // The host skipping its own frame at once after is not reported again.
-    assert_eq!(
-        frame.skip_frame(&error),
-        None,
-        "a failure right after is not reported again"
+    assert!(
+        !frame
+            .frame_render_input()
+            .scene
+            .encoding()
+            .draw_tags
+            .is_empty(),
+        "the frame paints"
     );
+    // The frames after lay it out again, and say nothing more.
+    frame.recompose().expect("laid out again");
+    frame.relayout();
+    assert_eq!(frame.take_skip_report(), None, "it is reported once");
 
     frame
         .click_named("target")
         .expect("the button is still there");
     assert!(
         focused(&frame, "target"),
-        "a press still lands while frames are skipped"
+        "a press still lands while the part keeps changing"
     );
+
+    // A layout that fails outright skips its frame: reported once, however
+    // many frames fail the same way.
+    let failed = crate::widget::WidgetLayoutError::CompositionDidNotSettle;
+    assert!(frame.skip_frame(&failed).is_some(), "the first is reported");
+    assert_eq!(frame.skip_frame(&failed), None, "the same again is not");
 
     looping.set(false);
     frame.recompose().expect("the layout settles again");

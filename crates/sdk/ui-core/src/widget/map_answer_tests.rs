@@ -325,3 +325,93 @@ fn a_found_list_in_its_place_hugs_its_rows() {
         "the place hugs its six rows: {inbox:?}"
     );
 }
+
+/// The person asked near the bottom of the canvas, and the agent's turn opened a long inbox
+/// beside it: the camera frames the two together, as visible as the viewport lets them, centred
+/// top to bottom, never the turn at the foot with the viewport empty above it and the inbox
+/// running past the edge. It only pans.
+#[test]
+fn a_turn_and_the_place_it_opened_are_framed_together() {
+    let _frame = crate::motion::pin_frame();
+    let old = pointed((40.0, 480.0));
+    let mut turn = answer(
+        "turn",
+        (40.0, 480.0),
+        (300.0, 2000.0),
+        "Here are your mails.",
+    );
+    drop(old);
+    lay_out(&mut turn);
+    draw(&mut turn);
+    let zoom = turn.camera().zoom;
+    // The inbox arrives beside the turn: a list longer than the room, so it stands at its most.
+    let both = Map::new()
+        .pin(
+            "turn",
+            grown(40.0, 480.0, 300.0, 2000.0),
+            words("Here are your mails."),
+        )
+        .pin("inbox", grown(380.0, 480.0, 400.0, 2000.0), list(400));
+    drop(turn);
+    let mut both = both;
+    lay_out(&mut both);
+    draw(&mut both);
+    lay_out(&mut both);
+    assert_eq!(both.answer.as_deref(), Some("turn"), "the turn answers");
+    let turn = both.area_of("turn").expect("the turn");
+    let inbox = both.area_of("inbox").expect("the inbox");
+    assert!(
+        in_view(&both, turn),
+        "the turn in view: {turn:?} in {:?}",
+        both.seen_rect()
+    );
+    assert!(
+        in_view(&both, inbox),
+        "the inbox beside it in view: {inbox:?} in {:?}",
+        both.seen_rect()
+    );
+    let seen = both.seen_rect().expect("laid out");
+    let group = turn.union(inbox);
+    let (above, below) = (group.y0 - seen.y0, seen.y1 - group.y1);
+    assert!(
+        (above - below).abs() <= 1.0,
+        "centred top to bottom: {above} above, {below} below"
+    );
+    assert!(
+        (both.camera().zoom - zoom).abs() < f64::EPSILON,
+        "panned, never zoomed"
+    );
+}
+
+/// A short turn and a short place it opened, asked near the foot of the canvas: both fit, so the
+/// pair is centred rather than left hanging at the bottom edge with the top half empty.
+#[test]
+fn a_short_pair_asked_at_the_foot_is_centred() {
+    let _frame = crate::motion::pin_frame();
+    let old = pointed((40.0, 520.0));
+    let both = Map::new()
+        .pin(
+            "turn",
+            grown(40.0, 520.0, 300.0, 2000.0),
+            words("Two tasks are due."),
+        )
+        .pin("tasks", grown(380.0, 520.0, 400.0, 2000.0), list(6));
+    drop(old);
+    let mut both = both;
+    lay_out(&mut both);
+    draw(&mut both);
+    lay_out(&mut both);
+    let group = both
+        .area_of("turn")
+        .expect("the turn")
+        .union(both.area_of("tasks").expect("the tasks"));
+    let seen = both.seen_rect().expect("laid out");
+    assert!(in_view(&both, group), "both in view: {group:?} in {seen:?}");
+    let (above, below) = (group.y0 - seen.y0, seen.y1 - group.y1);
+    assert!(
+        (above - below).abs() <= 1.0,
+        "centred top to bottom: {above} above, {below} below; turn {:?}, tasks {:?}, seen {seen:?}",
+        both.area_of("turn"),
+        both.area_of("tasks"),
+    );
+}

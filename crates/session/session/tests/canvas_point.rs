@@ -1730,3 +1730,117 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
         (bx, by, bw, bh)
     );
 }
+
+/// The canvas in the order a person used it when every frame stopped laying out: a question asked
+/// near the top, its turn; a question asked near the foot, its turn and the inbox the agent
+/// opened beside it; then "my notes" found at a click left of the inbox; then a pan and a zoom.
+/// Every frame lays out: the shell reports no frame skipped and no part that did not settle, and
+/// every place stays drawn. (The turn's long scrolling answer itself is the toolkit's, in
+/// `scrollable::lane_tests`: Chat's process is not part of this session, so its turns here stand
+/// in for its record.)
+#[test]
+fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let sent = |session: &mut Session, count: usize| {
+        until(session, "the ask sent", |session| {
+            session.settle_services();
+            session
+                .read("session:send-to")
+                .and_then(|sent| sent.as_array().map(|sent| sent.len() >= count))
+                .unwrap_or(false)
+        });
+    };
+    let steps = |session: &mut Session| {
+        for _ in 0..30 {
+            session.step(Duration::from_millis(16)).unwrap();
+        }
+    };
+
+    point_and_say(
+        &mut session,
+        (x + w * 0.3, y + h * 0.1),
+        "which of my tasks are due this week?",
+    );
+    sent(&mut session, 1);
+    chat_holds(&session, CONVERSATION, "q20");
+    wait_for(&mut session, "the first turn placed", |session| {
+        turn_box(session, "q20")
+    });
+    steps(&mut session);
+
+    point_and_say(
+        &mut session,
+        (x + w * 0.3, y + h * 0.85),
+        "show me my mails",
+    );
+    sent(&mut session, 2);
+    chat_holds(&session, CONVERSATION, "q21");
+    wait_for(&mut session, "the second turn placed", |session| {
+        turn_box(session, "q21")
+    });
+    let mails = root_of(&session, "so.tilo.lang.mail");
+    session
+        .invoke_in_turn(
+            "agent:assistant",
+            (CONVERSATION, "q21"),
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({ "resource": mails }),
+        )
+        .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
+    let inbox = wait_for(&mut session, "the inbox placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.mail"))
+    });
+    steps(&mut session);
+    let (ix, _, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
+        place_on_screen(session, &inbox)
+    });
+    // Free canvas left of the inbox: a point clear of every place on screen and the caption over
+    // it, wherever the camera has framed them.
+    let boxes: Vec<(f64, f64, f64, f64)> = places(&session)
+        .iter()
+        .filter_map(|place| place_on_screen(&session, place))
+        .collect();
+    let clear = |(px, py): (f64, f64)| {
+        boxes.iter().all(|&(bx, by, bw, bh)| {
+            px < bx - 24.0 || px > bx + bw + 24.0 || py < by - 48.0 || py > by + bh + 24.0
+        })
+    };
+    let left = (0..40)
+        .flat_map(|row| (0..40).map(move |column| (column, row)))
+        .map(|(column, row)| {
+            (
+                x + w * 0.03 + f64::from(column) * 24.0,
+                y + h * 0.15 + f64::from(row) * 24.0,
+            )
+        })
+        .find(|&(px, py)| px < ix - 24.0 && py < y + h * 0.9 && clear((px, py)))
+        .unwrap_or_else(|| panic!("free canvas left of the inbox among {boxes:?}"));
+
+    point_and_say(&mut session, left, "my notes");
+    until(&mut session, "the notes as rows on the canvas", |session| {
+        session.shell_says(crate::common::NOTE_TITLE)
+    });
+    steps(&mut session);
+    pan_and_zoom(&mut session, (-120.0, -80.0));
+    steps(&mut session);
+
+    let reports = session.take_shell_layout_reports();
+    assert!(
+        reports.is_empty(),
+        "every frame laid out and settled: {reports:#?}"
+    );
+    for place in places(&session) {
+        assert!(
+            place_on_screen(&session, &place).is_some()
+                || canvas_box(&session, &place.record).is_some(),
+            "{} stays drawn",
+            place.record
+        );
+    }
+}

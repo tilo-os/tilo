@@ -2069,7 +2069,7 @@ impl FrameHarness {
     /// to log when one is due ([`crate::widget::SkippedFrames`]).
     pub fn skip_frame(&mut self, error: &crate::widget::WidgetLayoutError) -> Option<String> {
         self.invalidate_local();
-        self.skipped_frames.skip(error, crate::time::now())
+        self.skipped_frames.skip(error)
     }
 
     /// Let following frames replay windows at rest when they only move laid-out content (the
@@ -3870,6 +3870,12 @@ impl FrameHarness {
                         &self.bindings,
                         &mut self.text,
                     )?;
+                }
+                // A part that did not settle is drawn as it last stood; it is
+                // said once, to the log and to a host that logs elsewhere.
+                if let Some(line) = crate::widget::take_unsettled_report() {
+                    tracing::error!("headless: {line}");
+                    self.skip_report = Some(line);
                 }
             }
             layout_phase.end();

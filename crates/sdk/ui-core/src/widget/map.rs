@@ -439,9 +439,16 @@ pub struct Map {
     /// The place that answers the person's last pointing, by its key: of the places arriving
     /// after it that grow from where it was asked, the one standing nearest that point (the turn
     /// at the caret, the thing found at a click). The camera keeps it whole in view as it grows,
-    /// and a place arriving later (an agent's view beside it) is shown only as far as that keeps
-    /// it in view (`map_answer.rs`). The person's own pan or zoom lets it go.
+    /// framed with the places arriving after it (an agent's view beside it) as far as they fit
+    /// in view together (`map_answer.rs`). The person's own pan or zoom lets it go.
     answer: Option<String>,
+    /// The places standing when the person last pointed, by key: every other place is what
+    /// arrived since, the answer and what it opened beside it, framed with it (`map_answer.rs`).
+    asked_among: Vec<String>,
+    /// Whether the camera has moved to frame the answer since the person pointed: it then keeps
+    /// it framed as the places settle their sizes, where an answer that stood in view from the
+    /// first leaves the camera where the person had it.
+    framing_answer: bool,
 }
 
 /// What a map leaves for the one a rebuild puts in its place ([`crate::motion::keep`]): the
@@ -457,6 +464,8 @@ struct Lens {
     reveal: Option<String>,
     asked: Option<Point>,
     answer: Option<String>,
+    asked_among: Vec<String>,
+    framing_answer: bool,
 }
 
 impl Drop for Map {
@@ -475,6 +484,8 @@ impl Drop for Map {
                 reveal: self.reveal.take(),
                 asked: self.asked,
                 answer: self.answer.take(),
+                asked_among: std::mem::take(&mut self.asked_among),
+                framing_answer: self.framing_answer,
             },
         );
     }
@@ -531,6 +542,8 @@ impl Map {
             hint: None,
             asked: None,
             answer: None,
+            asked_among: Vec::new(),
+            framing_answer: false,
         }
     }
 
@@ -559,6 +572,7 @@ impl Map {
         self.dirty = true;
         // The person moved the lens themselves: the camera no longer keeps their answer in view.
         self.answer = None;
+        self.framing_answer = false;
         // The person's own hand is on the canvas: it stands where they put it, whether or not a
         // reveal was on its way there.
         self.glide = None;
@@ -585,7 +599,11 @@ impl Map {
         self.placed.borrow_mut().extend(lens.placed);
         // What the person pointed at before the map was built again is still what an arriving
         // place answers.
-        self.asked = self.asked.or(lens.asked);
+        if self.asked.is_none() {
+            self.asked = lens.asked;
+            self.asked_among = lens.asked_among;
+            self.framing_answer = lens.framing_answer;
+        }
         self.take_answer(&lens.pins, lens.answer);
         self.reveal = self
             .pins
@@ -815,6 +833,11 @@ impl Map {
                 (place.width.max(1.0), height + band),
             )
         };
+        // The person's answer is framed with what arrives beside it once both are laid out, at
+        // the sizes they stand at ([`Self::keep_answer`]).
+        if self.answer.as_deref().is_some_and(|answer| answer != key) {
+            return;
+        }
         let area = canvas(place);
         // What the person was looking at: every other place standing wholly in the viewport.
         let seen = Rect::from_origin_size(
@@ -839,19 +862,6 @@ impl Map {
             .filter(|rect| within(rect))
             .collect();
         let margin = ARRIVAL_MARGIN / self.camera.zoom.max(f64::EPSILON);
-        // The person's answer wins over what arrives after it: the camera shows what arrived only
-        // as far as the answer stays whole in view, and never chases a place put off-screen.
-        if let Some(held) = self
-            .answer
-            .clone()
-            .filter(|answer| *answer != key)
-            .and_then(|answer| self.area_of(&answer))
-        {
-            if let Some(camera) = self.revealing_keeping(area, margin, &kept, held) {
-                self.pan_to(camera);
-            }
-            return;
-        }
         if let Some(camera) = self.revealing_with(area, margin, &kept) {
             self.pan_to(camera);
         }

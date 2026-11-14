@@ -1860,6 +1860,13 @@ impl ShellPart {
             .collect()
     }
 
+    /// What this part's layout said went wrong since this was last asked, once per failure: a
+    /// frame whose layout failed and was skipped, or a part that did not settle and was drawn
+    /// as it last stood.
+    pub fn take_layout_report(&mut self) -> Option<String> {
+        self.widgets.host_mut().take_skip_report()
+    }
+
     /// Whether anything the shell lays out for assistive technology says `text`: a node's
     /// name, description or value holds it. What a test reads a composed view's content by.
     pub fn says(&mut self, text: &str) -> bool {

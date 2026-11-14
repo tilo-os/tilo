@@ -212,21 +212,18 @@ pub struct Scrollable {
     /// The rounded corners of the window this view sits in, learned where
     /// it last drew: its bars keep out of them.
     corners: crate::widget::scrollbar::SurfaceCorners,
-    /// Whether the content overflowed on the last layout, so the bar's
-    /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
-    /// Content that fits keeps the full width.
+    /// Whether the content overflowed on the layout last applied, so the
+    /// bar's lane is reserved: vertical (trailing edge) and horizontal
+    /// (bottom). Content that fits keeps the full width. What a layout pass
+    /// decides lives in its tree (the view's padding); this is taken from the
+    /// layout applied, for drawing.
     reserve_vertical: bool,
-    /// The lanes (vertical, horizontal) this layout found the content
-    /// overflowing without: kept until the layout is applied, so content
-    /// that fits only beside its own bar does not drop the bar and overflow
-    /// again, pass after pass. A retained tree is laid out again without
-    /// being rebuilt, so applying the layout is what ends it.
-    lanes_needed: (bool, bool),
-    /// The scroll view's own size when `lanes_needed` was seen. A pass that
-    /// sizes the view differently (a parent measuring its content on the
-    /// way to its own size) says nothing about the box the view gets, so
-    /// what it needed is forgotten.
-    lanes_needed_in: Option<(f32, f32)>,
+    /// The lanes each tree this layout solves found the content overflowing
+    /// without ([`NeededLanes`]): kept until the layout is applied, so
+    /// content that fits only beside its own bar does not drop the bar and
+    /// overflow again, pass after pass. A retained tree is laid out again
+    /// without being rebuilt, so applying the layout is what ends it.
+    lanes_needed: Vec<NeededLanes>,
     /// Keep the themed trailing lane even when vertical content fits.
     stable_vertical_gutter: bool,
     reserve_horizontal: bool,
@@ -367,8 +364,7 @@ impl Scrollable {
             bar_margin: BAR_MARGIN,
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             reserve_vertical: false,
-            lanes_needed: (false, false),
-            lanes_needed_in: None,
+            lanes_needed: Vec::new(),
             stable_vertical_gutter: false,
             reserve_horizontal: false,
             edge_fade: false,
@@ -1026,6 +1022,16 @@ impl Scrollable {
     /// scale with the width can overflow at full width and fit beside the
     /// lane. A lane the content needed then stays for the rest of the layout,
     /// so this settles within two steps.
+    ///
+    /// Everything this reads and writes is the tree's being solved: the lanes
+    /// reserved now are the view's padding in `taffy`, and what the content
+    /// needed is remembered per tree. A region measuring the view at its
+    /// natural height solves a copy of the tree with this same widget, in a
+    /// box of another size; a lane decided there is not the real tree's. Held
+    /// on the widget, each solve undid the other's lane and reported a change
+    /// on every pass, and the window settled on no frame (a hugging answer on
+    /// a canvas, taller than its cap). Whether it changed is whether the
+    /// tree's style changed.
     fn follow_overflow(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1038,6 +1044,14 @@ impl Scrollable {
         let Ok(content) = taffy.layout(child).copied() else {
             return false;
         };
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        let none = taffy::LengthPercentage::length(0.0);
+        let reserved = (
+            current.padding.right != none,
+            current.padding.bottom != none,
+        );
         let viewport_w = layout.size.width - layout.padding.right;
         let viewport_h = layout.size.height - layout.padding.bottom;
         let content_w = content.size.width.max(content.content_size.width);
@@ -1055,35 +1069,46 @@ impl Scrollable {
         // only because the lane narrowed it would overflow again without it.
         // Only in a box of the same size: one the view was measured at on
         // the way to its own size needed nothing of the box it gets.
+        let tree = super::layout::TreeId::of(taffy);
         let size = (layout.size.width, layout.size.height);
-        if self.lanes_needed_in != Some(size) {
-            self.lanes_needed = (false, false);
-            self.lanes_needed_in = Some(size);
+        let fresh = NeededLanes {
+            tree,
+            size,
+            lanes: (false, false),
+        };
+        let index = if let Some(index) = self.lanes_needed.iter().position(|held| held.tree == tree)
+        {
+            index
+        } else {
+            self.lanes_needed.push(fresh);
+            self.lanes_needed.len() - 1
+        };
+        let needed = &mut self.lanes_needed[index];
+        if needed.size != size {
+            *needed = fresh;
         }
-        if vertical && !self.reserve_vertical {
-            self.lanes_needed.0 = true;
+        if vertical && !reserved.0 {
+            needed.lanes.0 = true;
         }
-        if horizontal && !self.reserve_horizontal {
-            self.lanes_needed.1 = true;
+        if horizontal && !reserved.1 {
+            needed.lanes.1 = true;
         }
-        let vertical = vertical || (self.reserve_vertical && self.lanes_needed.0);
-        let horizontal = horizontal || (self.reserve_horizontal && self.lanes_needed.1);
-        if vertical == self.reserve_vertical && horizontal == self.reserve_horizontal {
-            return false;
-        }
-        self.reserve_vertical = vertical;
-        self.reserve_horizontal = horizontal;
+        let vertical = vertical || (reserved.0 && needed.lanes.0);
+        let horizontal = horizontal || (reserved.1 && needed.lanes.1);
         if let Some(probe) = &self.gutter_probe {
             probe.set(if vertical { self.content_gutter } else { 0.0 });
         }
-        let Ok(current) = taffy.style(node) else {
+        if (vertical, horizontal) == reserved {
             return false;
-        };
+        }
         let mut style = current.clone();
         style.padding.right =
             taffy::LengthPercentage::length(if vertical { self.content_gutter } else { 0.0 });
         style.padding.bottom =
             taffy::LengthPercentage::length(if horizontal { self.content_gutter } else { 0.0 });
+        if style == *current {
+            return false;
+        }
         taffy.set_style(node, style).is_ok()
     }
 
@@ -1104,6 +1129,16 @@ impl Scrollable {
     fn axis_has_horizontal(&self) -> bool {
         matches!(self.axis, ScrollAxis::Horizontal | ScrollAxis::Both)
     }
+}
+
+/// The lanes one tree's solve found a scroll view's content overflowing
+/// without, in the box it had there ([`Scrollable::follow_overflow`]).
+#[derive(Clone, Copy, Debug)]
+struct NeededLanes {
+    tree: super::layout::TreeId,
+    size: (f32, f32),
+    /// Vertical, horizontal.
+    lanes: (bool, bool),
 }
 
 /// A presentational Grid surface at least as tall as the scroll view's
@@ -1266,7 +1301,7 @@ impl Widget for Scrollable {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.height_limit_dirty = false;
-        self.lanes_needed = (false, false);
+        self.lanes_needed.clear();
         self.child_node = self
             .child
             .as_mut()
@@ -1411,8 +1446,11 @@ impl Widget for Scrollable {
         self.cursor_initialized = false;
         // This layout is over: the next one checks the lanes afresh, so
         // content that now fits at full width gives its bar back.
-        self.lanes_needed = (false, false);
+        self.lanes_needed.clear();
         let l = taffy.layout(node).copied().unwrap_or_default();
+        // The lanes this layout settled on are the ones its tree holds.
+        self.reserve_vertical = self.axis_has_vertical() && l.padding.right > 0.0;
+        self.reserve_horizontal = self.axis_has_horizontal() && l.padding.bottom > 0.0;
         self.rect = crate::widget::placed(&l, origin);
         // An offset carried from a display of another scale lands whole here
         // before anything places or measures against it.
