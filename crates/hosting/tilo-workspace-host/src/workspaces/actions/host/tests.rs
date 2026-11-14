@@ -106,6 +106,7 @@ async fn the_relays_person_creates_and_lists_workspaces_as_actions() {
             LIST_WORKSPACES,
             tilo_relay_session::workspaces::LIST_PERSONAL,
             tilo_relay_session::workspaces::KEEP_PERSONAL,
+            tilo_relay_session::workspaces::PERSONAL_DEVICE_NAME,
             LIST_REVOCATIONS,
             ENTER_WORKSPACE,
             ATTACH_HOST,
