@@ -48,6 +48,7 @@ pub(super) fn package_of(app: &str) -> &'static str {
         "so.tilo.lang.views" => "../tl/views",
         "so.tilo.lang.interaction" => "tests/interaction",
         "so.tilo.lang.mentions" => "tests/mentions",
+        "test.letters" => "../../crates/lang/tilolang/tests/fixtures/letters",
         other => panic!("no test package is {other}"),
     }
 }

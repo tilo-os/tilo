@@ -90,6 +90,8 @@ mod replay;
 mod sync;
 #[path = "hosted/tasks_board.rs"]
 mod tasks_board;
+#[path = "hosted/window.rs"]
+mod window;
 #[path = "hosted/workspaces.rs"]
 mod workspaces;
 use replay::replayed;
