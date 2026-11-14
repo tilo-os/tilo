@@ -1147,7 +1147,11 @@ impl Hosted {
         // the window shows reaches into them, and the indexes are built over them.
         self.record.sync_instance(&mut self.instance);
         // What the person picked and saw, as their own record keeps it, before the views run.
-        if self.personal.take_moved() && !self.instance.bring_personal(self.personal.state()) {
+        if self.personal.take_moved()
+            && !self
+                .instance
+                .bring_personal(self.personal.state(), self.spec.instance)
+        {
             self.personal.moved_again();
         }
         // Who else is here and who is writing, before the views that show it run.
@@ -1186,7 +1190,9 @@ impl Hosted {
             }
         });
         // What the person changed of their own state is kept in its record, as theirs.
-        let keeps = self.instance.take_personal(self.personal.state());
+        let keeps = self
+            .instance
+            .take_personal(self.personal.state(), self.spec.instance);
         self.personal
             .keep(&self.spec.person, keeps, self.record.manager_mut());
         for event in events {

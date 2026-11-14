@@ -60,12 +60,28 @@ const VIEWS: &str = "views";
 const SEEN_MARKS: &str = "seen";
 const REVIEWED: &str = "runs";
 
+/// The id `view`'s state is kept under for the window that takes the desk's tab `tab`: each
+/// window of an app is at its own place, so two windows of Tasks stand on two places, and a window
+/// keeps its place on the person's other devices and after a restart, where the desk keeps the
+/// same tab.
+#[must_use]
+pub fn in_window(tab: u64, view: &str) -> String {
+    format!("{tab}/{view}")
+}
+
+/// The view whose state the record keeps under `kept` for the window of the tab `tab`, as
+/// [`in_window`] writes it; `None` for another window's.
+#[must_use]
+pub fn of_window(tab: u64, kept: &str) -> Option<&str> {
+    kept.strip_prefix(&format!("{tab}/"))
+}
+
 /// One slot of the person's view state, as the runtime keys it and as their record keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
     /// Whose state it is.
     pub person: String,
-    /// The id of the window that declared the state.
+    /// The id of the view that declared the state, in the window it is kept for ([`in_window`]).
     pub window: String,
     /// The declaration's id.
     pub state: String,

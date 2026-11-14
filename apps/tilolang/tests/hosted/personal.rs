@@ -93,39 +93,69 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
     );
 }
 
-#[test]
-fn the_place_a_person_picks_reaches_their_other_device() {
-    let route = RouteSpec::app(super::TASKS, uuid::Uuid::new_v4());
-    let mut laptop = tasks(&route, None);
-    let mut phone = tasks(&route, None);
-    laptop.wire().1.borrow_mut().clear();
-    pick(&mut laptop, "Inbox");
-    assert_ne!(picked(&mut phone), ["Inbox"]);
+/// The window of Tasks that takes the desk's tab `tab` in `route`'s workspace.
+fn tasks_in_tab(route: &RouteSpec, tab: u64) -> Session {
+    let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+    let spec = super::Spec::new(super::TASKS, route.cluster_id.to_string(), tab, "ada")
+        .in_language("en-US");
+    let mut session = Session::brokered_as(route, spec, chunks, None, super::Window::in_harness);
+    session.settle();
+    session
+}
 
-    // What the laptop sent on the record's route reaches the phone as the broker relays it.
-    let sent: Vec<_> = laptop.wire().1.borrow_mut().drain(..).collect();
+/// What `from` sent on the route of the record of each person's own state, delivered to `to` as
+/// the broker relays it.
+fn relay(from: &Session, to: &mut Session) {
+    let sent: Vec<_> = from.wire().1.borrow_mut().drain(..).collect();
     let mut relayed = 0;
-    for (to, request) in sent {
+    for (route, request) in sent {
         let CollabRequest::Document { mutation, .. } = request else {
             continue;
         };
-        if to.app_id != personal::OWNER {
+        if route.app_id != personal::OWNER {
             continue;
         }
         relayed += 1;
-        phone
-            .inbox()
+        to.inbox()
             .borrow_mut()
-            .push_back(delivered(&to, "ada", &mutation).expect("the change encodes"));
+            .push_back(delivered(&route, "ada", &mutation).expect("the change encodes"));
     }
     assert!(
         relayed > 0,
-        "the laptop sent the place on the record's route"
+        "the window sent the place on the record's route"
     );
-    phone.settle();
+    to.settle();
+}
+
+#[test]
+fn the_place_a_person_picks_reaches_their_other_device() {
+    let route = RouteSpec::app(super::TASKS, uuid::Uuid::new_v4());
+    // The same window, the desk's same tab, on the laptop and on the phone.
+    let mut laptop = tasks_in_tab(&route, 1);
+    let mut phone = tasks_in_tab(&route, 1);
+    laptop.wire().1.borrow_mut().clear();
+    pick(&mut laptop, "Inbox");
+    assert_ne!(picked(&mut phone), ["Inbox"]);
+    relay(&laptop, &mut phone);
     assert_eq!(
         picked(&mut phone),
         ["Inbox"],
         "the phone shows the place picked on the laptop"
+    );
+}
+
+#[test]
+fn each_window_of_an_app_keeps_its_own_place() {
+    let route = RouteSpec::app(super::TASKS, uuid::Uuid::new_v4());
+    let mut first = tasks_in_tab(&route, 1);
+    let mut second = tasks_in_tab(&route, 2);
+    let before = picked(&mut second);
+    first.wire().1.borrow_mut().clear();
+    pick(&mut first, "Inbox");
+    relay(&first, &mut second);
+    assert_eq!(
+        picked(&mut second),
+        before,
+        "the other window stays where it was"
     );
 }

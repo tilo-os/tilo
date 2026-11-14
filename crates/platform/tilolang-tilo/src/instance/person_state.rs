@@ -5,119 +5,63 @@
 //! what they change here is what the host keeps back into it ([`super::personal`]).
 
 use super::Instance;
-use crate::personal::{Keep, PersonalState};
+use crate::personal::{self, Keep, PersonalState};
 use crate::runtime::seen::SeenWrite;
+use crate::runtime::view_state::StateKey;
 
 impl Instance {
-    /// What people have seen, as the workspace's record of each person's own state keeps it:
-    /// per person and resource the newest version they saw (`None` takes a mark back), and the
-    /// runs the person looking reviewed. What `unseen(r)`, the marks the host draws and
-    /// `seen_by(c, m)` read; each view that read one runs again.
+    /// Give the views what `held`, the workspace's record of each person's own state, keeps of
+    /// the person at the window `tab` (the desk's tab it takes): how this window shows their
+    /// resources, where they are in it, and what they have seen. Another window's place is its
+    /// own. A slot already holding its value is left alone, so a host may run this every frame.
+    /// Whether the instance had views to give it to.
     ///
     /// Everyone's marks reach the runtime, not the person looking's alone: a conversation says
     /// who has read to a line, and the line is theirs, not a count the app keeps.
-    pub fn set_seen(
-        &mut self,
-        marks: impl IntoIterator<Item = (String, String, Option<crate::runtime::seen::SeenMark>)>,
-        runs: &[String],
-    ) {
-        let Some(host) = self.host() else {
-            return;
-        };
-        let person = host.viewer().0.clone();
-        let runtime = host.runtime();
-        for (who, resource, mark) in marks {
-            runtime.set_seen(&who, &resource, mark);
-        }
-        runtime.set_seen_runs(&person, runs);
-    }
-
-    /// What the person marked seen in this window since last asked (opening, reviewing,
-    /// a mark's Mark seen), for the host to keep in the record with the system's
-    /// `mark seen` action.
-    pub fn take_seen(&mut self) -> Vec<crate::runtime::seen::SeenWrite> {
-        self.host()
-            .map(|host| host.runtime().take_seen())
-            .unwrap_or_default()
-    }
-
-    /// Give the runtime the view state the person's entries of the record keep: the
-    /// place they picked in an app shows again, on this device and on theirs.
-    pub fn set_view_states(
-        &mut self,
-        slots: impl IntoIterator<
-            Item = (
-                crate::runtime::view_state::StateKey,
-                crate::runtime::value::Value,
-            ),
-        >,
-    ) -> bool {
+    pub fn bring_personal(&mut self, held: &PersonalState, tab: u64) -> bool {
         let Some(host) = self.host() else {
             return false;
         };
         let runtime = host.runtime();
-        let mut changed = false;
-        for (key, value) in slots {
-            changed |= runtime.set_view_state(key, value);
-        }
-        changed
-    }
-
-    /// What the person changed of the view state since last asked, for the host to
-    /// keep in the record.
-    pub fn take_view_writes(
-        &mut self,
-    ) -> Vec<(
-        crate::runtime::view_state::StateKey,
-        crate::runtime::value::Value,
-    )> {
-        self.host()
-            .map(|host| host.runtime().take_view_writes())
-            .unwrap_or_default()
-    }
-
-    /// Give the views what `held`, the workspace's record of each person's own state, keeps of
-    /// the person at the window: how their windows show their resources, where they are in them,
-    /// and what they have seen. A slot already holding its value is left alone, so a host may
-    /// run this every frame. Whether the instance had views to give it to.
-    pub fn bring_personal(&mut self, held: &PersonalState) -> bool {
-        let Some(host) = self.host() else {
-            return false;
-        };
         let kept = held.of(&host.viewer().0);
-        self.set_view_states(
-            kept.slots
-                .iter()
-                .map(|slot| (slot.key(), slot.value.clone())),
-        );
-        // Everyone's marks, not this person's alone: a conversation shows who read to a line.
-        self.set_seen(
-            held.seen.iter().map(|seen| {
-                (
-                    seen.person.clone(),
-                    seen.resource.clone(),
-                    Some(seen.mark.clone()),
-                )
-            }),
-            &kept
-                .runs
-                .iter()
-                .map(|reviewed| reviewed.run.clone())
-                .collect::<Vec<_>>(),
-        );
+        for slot in &kept.slots {
+            if let Some(view) = personal::of_window(tab, &slot.window) {
+                let key = StateKey::view(view, slot.person.clone(), slot.state.clone());
+                runtime.set_view_state(key, slot.value.clone());
+            }
+        }
+        for seen in &held.seen {
+            runtime.set_seen(&seen.person, &seen.resource, Some(seen.mark.clone()));
+        }
+        let runs: Vec<String> = kept.runs.into_iter().map(|reviewed| reviewed.run).collect();
+        runtime.set_seen_runs(&host.viewer().0, &runs);
         true
     }
 
-    /// What the person at the window changed of their own state since last asked, as the
+    /// What the person at the window `tab` changed of their own state since last asked, as the
     /// changes that keep it in the workspace's record of it, which holds `held` now: the view
-    /// state they set, and what they marked seen. Someone else's mark is not theirs to keep.
-    pub fn take_personal(&mut self, held: &PersonalState) -> Vec<Keep> {
-        let Some(me) = self.host().map(|host| host.viewer().0.clone()) else {
+    /// state they set in this window, and what they marked seen. Someone else's mark is not theirs
+    /// to keep.
+    pub fn take_personal(&mut self, held: &PersonalState, tab: u64) -> Vec<Keep> {
+        let Some(host) = self.host() else {
             return Vec::new();
         };
+        let runtime = host.runtime();
+        let me = host.viewer().0.clone();
         let mut keeps = Vec::new();
-        for (key, value) in self.take_view_writes() {
+        for (key, value) in runtime.take_view_writes() {
             match Keep::view(&key, &value) {
+                Ok(Keep::View {
+                    person,
+                    window,
+                    state,
+                    value,
+                }) => keeps.push(Keep::View {
+                    person,
+                    window: personal::in_window(tab, &window),
+                    state,
+                    value,
+                }),
                 Ok(keep) => keeps.push(keep),
                 Err(why) => tracing::debug!(%why, "the slot is no person's state"),
             }
@@ -128,7 +72,7 @@ impl Instance {
             .into_iter()
             .map(|reviewed| reviewed.run)
             .collect();
-        for write in self.take_seen() {
+        for write in runtime.take_seen() {
             match write {
                 SeenWrite::Resource {
                     person,
