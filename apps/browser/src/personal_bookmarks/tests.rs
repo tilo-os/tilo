@@ -361,10 +361,13 @@ fn live_personal_bookmark_folder_rasterizes_in_both_themes_and_scaled_viewports(
                 .unwrap();
             assert_eq!(pixels.len(), expected);
             let ground = pixels.get(..4).unwrap();
+            // More than 200 pixels are off the ground: the count stops at
+            // the 201st, which is as far as it decides anything.
             assert!(
                 pixels
                     .chunks_exact(4)
                     .filter(|pixel| *pixel != ground)
+                    .take(201)
                     .count()
                     > 200
             );
