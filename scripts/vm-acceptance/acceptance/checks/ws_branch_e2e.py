@@ -495,6 +495,7 @@ class Problems(list):
 def set_up(ctx, res):
     ctx.facts["wsb:why"] = "WB01 failed"
     ctx.reset()
+    watch_drawing_threads(ctx)
     run = uuid.uuid4().hex[:8]
     ws = ae.create_workspace(ctx, f"{SOURCE} {run}")
     ws["name"] = f"{SOURCE} {run}"
@@ -625,7 +626,10 @@ def branch_said(ctx, name: str, room: str) -> dict:
 
     notices = wait_until(told, 15, interval=0.5) or []
     # What did not come along, as the session logged it (the notice's body is not on screen).
-    why = ctx.vm.exec(f"{{ cat \"{core.SESSION_LOG}\"; journalctl --user --no-pager -o cat; }} 2>/dev/null "
+    why = ctx.vm.root_exec("journalctl --no-pager -o cat 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' "
+                           "| grep -ai 'not complete\\|did not reach\\|keys did not' | tail -n 20 | cut -c1-500",
+                           timeout=120, check=False) + "\n" + ctx.vm.exec(
+        f"{{ cat \"{core.SESSION_LOG}\"; journalctl --user --no-pager -o cat; }} 2>/dev/null "
                       "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'branch of a workspace is not complete' "
                       "| tail -n 20 | cut -c1-500", timeout=120, check=False) if any(
         "is not complete" in n for n in notices) else ""
@@ -866,10 +870,10 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                 f"t=$(date -d {shlex.quote(first.group(1))} +%s); journalctl --no-pager -o short-precise "
                 "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
                 "| tail -n 30 | cut -c1-300", timeout=120, check=False)
-        running = app_processes(ctx, CHAT)
+        running = app_processes(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
         # The launcher drops an app's own output: keep it from the session's next start on (WB05
         # restarts it), so Chat says itself why it shows nothing.
-        keep_app_output(ctx)
+        running += "\n== keeping its output\n" + keep_app_output(ctx)
         said = crash + "\n" + running + "\n" + said
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; it offers "
@@ -920,15 +924,45 @@ print("verity scan:", found, "file(s) match")
 """
 
 
+TASKS_LOG = "/var/tmp/e2e-drawing-threads.log"
+
+
+def watch_drawing_threads(ctx) -> None:
+    """For the run's next 40 minutes, note every process with a thread preparing to draw, by the
+    thread's id: the kernel names a crashed thread only by that id and its name."""
+    ctx.vm.root_exec(
+        "nohup sh -c 'end=$(( $(date +%s) + 2400 )); while [ $(date +%s) -lt $end ]; do "
+        "ps -eLo tid=,pid=,comm=,cgroup:90=,args:160= 2>/dev/null | grep -a native-render >> "
+        f"{TASKS_LOG}; sleep 0.2; done' >/dev/null 2>&1 &", timeout=30, check=False)
+
+
+def crashed_threads(ctx) -> str:
+    """Which processes the drawing threads that crashed were, as [`watch_drawing_threads`] saw them."""
+    return ctx.vm.root_exec(
+        "journalctl -k --no-pager | grep -ao 'native-render-p\\[[0-9]*\\]: segfault' | grep -o '[0-9]*' "
+        f"| sort -u | while read -r t; do grep -a \"^ *$t \" {TASKS_LOG} | tail -n 1; done | cut -c1-300 "
+        "| head -n 12", timeout=60, check=False)
+
+
 DEBUG_OUTPUT_DROPIN = "/etc/systemd/system/tilo-vm-session@.service.d/90-e2e-app-output.conf"
 
 
-def keep_app_output(ctx) -> None:
+def keep_app_output(ctx) -> str:
     """From the slot session's next start on, its launchers keep each app's own stdout and stderr
-    in the app's data home (`launcher-debug-output.log`) instead of dropping them."""
-    ctx.vm.root_exec(f"mkdir -p \"$(dirname {DEBUG_OUTPUT_DROPIN})\" && "
-                     f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {DEBUG_OUTPUT_DROPIN} && "
-                     "systemctl daemon-reload", timeout=60, check=False)
+    in the app's data home (`launcher-debug-output.log`) instead of dropping them: set wherever the
+    session's environment comes from (its unit, and the managers that start it). Says what the
+    session runs as, so a later read knows whether it took."""
+    return ctx.vm.root_exec(
+        "p=$(pgrep -f 'tilo-session' | head -n 1); echo \"session pid $p\"; "
+        "u=$(ps -o unit= -p \"$p\" 2>/dev/null); uu=$(ps -o uunit= -p \"$p\" 2>/dev/null); "
+        "echo \"unit $u user unit $uu\"; ls -l /proc/$p/fd/1 /proc/$p/fd/2 2>&1 | cut -c1-200; "
+        f"mkdir -p \"$(dirname {DEBUG_OUTPUT_DROPIN})\" && "
+        f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {DEBUG_OUTPUT_DROPIN}; "
+        "systemctl set-environment TILO_LAUNCHER_DEBUG_STDERR=1; systemctl daemon-reload; "
+        "for m in $(pgrep -x systemd | tail -n +2); do o=$(stat -c %U /proc/$m); "
+        "sudo -u \"$o\" XDG_RUNTIME_DIR=/run/user/$(id -u \"$o\") systemctl --user set-environment "
+        "TILO_LAUNCHER_DEBUG_STDERR=1 2>&1 | head -n 2; done; echo kept",
+        timeout=120, check=False)
 
 
 def app_output(ctx, ws: dict, app: str) -> str:
@@ -941,6 +975,8 @@ def app_output(ctx, ws: dict, app: str) -> str:
         return f"(it did not open: {exc})"
     time.sleep(60)
     return ctx.vm.root_exec(
+        "p=$(pgrep -f 'tilo-session' | head -n 1); echo \"session pid $p: $(tr '\\0' '\\n' < /proc/$p/environ "
+        "| grep -c TILO_LAUNCHER_DEBUG_STDERR) debug switch\"; "
         f"grep -c TILO_LAUNCHER_DEBUG_STDERR {DEBUG_OUTPUT_DROPIN} 2>&1; "
         "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
         f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
@@ -1206,7 +1242,8 @@ def after_restart(ctx, res):
         # The session restarted with the launcher keeping its apps' own output (WB01 asked for it):
         # Chat opened once more says, in its data home, why it shows no window.
         problems.append("Chat after the restart is unobservable: the source's chat was never set up (WB01); "
-                        f"what Chat itself said, opened again: {app_output(ctx, scene['source'], CHAT)[-4000:]}")
+                        f"what Chat itself said, opened again: {app_output(ctx, scene['source'], CHAT)[-4000:]}; "
+                        f"the drawing threads that crashed: {crashed_threads(ctx)}")
     else:
         try:
             before = chat_says(ctx, first, scene["chat"], "restarted-branch")
