@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {ASK_MS, codeWait, setupLater, showPrompt, CONNECTED_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS, manualCommands, MCP_URL, OFFER_MS,
-  openFirstRun, PASSKEY_WAIT_MS, RENEW_MS, readSetup, SETUP, setupFailure, setupPrompt, signInPrompt, stepLines, minutesLeft}
+  openFirstRun, PASSKEY_WAIT_MS, RENEW_MS, readSetup, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS, signInPrompt, stepLines, minutesLeft}
   from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -141,16 +141,56 @@ test('the click copies exactly the prompt shown, inside the click, and only then
 test('the code is followed before the clipboard holds it: the host knows it when an agent asks', async () => {
   // The host keeps a code only from its tab's first follow (tilo-relay's login
   // codes), and the prompt is on the clipboard the moment the click returns: an
-  // agent handed it at once asks for a code the host must already have.
+  // agent handed it at once asks for a code the host must already have. The
+  // shown code is followed as soon as it is on the screen; the click follows it
+  // again, for a look that had not landed yet.
   const askedAtCopy = [];
   let codes = null;
   const {run, copied} = fixture({copy: text => { askedAtCopy.push(codes.made[0].asked); copied.push(text); return Promise.resolve(); }});
   codes = maker(fakeCode());
   run.offerSetup(codes.make);
   await settle();
+  assert.ok(codes.made[0].asked >= 1, 'the host was asked where the shown code is, before any click');
+  const before = codes.made[0].asked;
   await run.copy();
-  assert.deepEqual(askedAtCopy, [1], 'the host was asked where the code is before the clipboard had the prompt');
+  assert.deepEqual(askedAtCopy.length, 1);
+  assert.ok(askedAtCopy[0] > before, 'the click asked again before the clipboard had the prompt');
   assert.deepEqual(copied, [setupPrompt(CODE)], 'the prompt went to the clipboard');
+});
+
+test('a code shown and never copied is kept at once, and the steps show once an agent uses it', async () => {
+  // A person who selects the prompt and copies it by hand, or types the code
+  // their agent asks about, hands it over without the button: the host knows
+  // the code because the screen followed it, and the screen moves on to the
+  // steps as it does for a copied prompt.
+  const {run, last, names, fire, copied} = fixture();
+  const code = fakeCode();
+  run.offerSetup(maker(code).make);
+  await settle();
+  assert.ok(code.asked >= 1, 'kept as soon as it is on the screen');
+  assert.deepEqual(copied, [], 'nothing is copied before the person asks');
+  Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
+  await fire(SHOWN_FOLLOW_MS);
+  assert.deepEqual(last('waiting'), ['waiting', 'setup', {text: setupPrompt(CODE), copied: true}],
+    'the screen waits for the agent, as it does for a copied prompt');
+  assert.equal(names().includes('problem'), false, 'nothing says a copy failed');
+  assert.deepEqual(last('steps')[1].map(({text}) => text).slice(0, 2), ['Tilo is installed', 'Claude Code logged in as you']);
+});
+
+test('the sign-in prompt is kept while it waits on the screen, so a claim signs the tab in without a click', async () => {
+  const {run, last, fire, copied} = fixture();
+  const code = fakeCode();
+  run.offerAgentSignIn(maker(code).make);
+  await settle();
+  assert.ok(code.asked >= 1, 'kept while it waits on the screen');
+  assert.deepEqual(copied, []);
+  Object.assign(code.polled, {resolved: true, steps: ['resolved'],
+    claimed: {user: 'ab'.repeat(32), invite: 'cd'.repeat(16), by: 'Claude Code'}});
+  await fire(SHOWN_FOLLOW_MS);
+  await settle();
+  assert.deepEqual(last('waiting'), ['waiting', 'sign-in', {text: signInPrompt(CODE), copied: true}]);
+  assert.equal(code.signedIn.length, 1, 'certified with that person and invite, as a copied prompt would be');
+  assert.deepEqual(last('connected')[1].heading, 'You’re signed in');
 });
 
 test('a click before the page has a code copies nothing and says what it waits for', async () => {
@@ -244,11 +284,13 @@ test('a ready code is renewed shortly before it expires, the old one shown until
   assert.equal(codes.made.length, 2);
   assert.equal(names().filter(name => name === 'offer').length, offers + 1, 'no wait shown in between');
   assert.deepEqual(last('offer'), ['offer', 'setup', {text: setupPrompt(NEXT), code: NEXT}]);
+  assert.ok(codes.made[1].asked >= 1, 'the renewed prompt is kept as soon as it shows');
 });
 
 test('a copied code that expires says so, and the retry copies the fresh one at once', async () => {
   const {run, names, last, state, tick, copied} = fixture();
-  run.offerSetup(maker(fakeCode(), fakeCode({code: NEXT, expiresAt: 1_200_000})).make);
+  const codes = maker(fakeCode(), fakeCode({code: NEXT, expiresAt: 1_200_000}));
+  run.offerSetup(codes.make);
   await settle();
   await run.copy();
   await settle();
@@ -262,6 +304,7 @@ test('a copied code that expires says so, and the retry copies the fresh one at 
   await tick();
   assert.equal(names().at(-1), 'expired');
   assert.equal(state.ticks, null, 'an expired code is no longer followed');
+  assert.ok(codes.made[1].asked >= 1, 'the fresh prompt is kept as soon as it shows');
   await run.retry('setup');
   assert.deepEqual(copied, [setupPrompt(CODE), setupPrompt(NEXT)]);
   assert.deepEqual(last('waiting')[2], {text: setupPrompt(NEXT), copied: true});
@@ -784,16 +827,35 @@ test('reloaded on the start, the kept prompt shows and copies before the page ca
   assert.equal(last('steps')[1][1].text, 'Claude Code logged in as you', 'followed once the page can');
 });
 
-test('reloaded on the start, the kept prompt stays when the page can follow codes again: no new code is made', async () => {
+test('reloaded on the start, the kept prompt is kept again, and works before anyone copies it', async () => {
   const stored = new Map();
   const code = fakeCode();
   stored.set(SETUP, JSON.stringify({step: 'start', offer: code.saved}));
-  const {run, last} = fixture({stored});
-  const made = maker(fakeCode({code: NEXT}));
-  run.offerSetup(made.make, resumer(code));
+  const {run, last, fire} = fixture({stored});
+  run.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code));
   await settle();
-  assert.equal(made.made.length, 0);
-  assert.equal(last('offer')[2].code, CODE);
+  assert.ok(code.asked >= 1, 'followed again as soon as the page can');
+  Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
+  await fire(SHOWN_FOLLOW_MS);
+  assert.equal(last('waiting')[2].copied, true, 'the screen waits as for a copied prompt');
+  assert.equal(last('steps')[1][1].text, 'Claude Code logged in as you');
+});
+
+test('reloaded on the start, the kept prompt stays when the page can follow codes again: no new code is made', async () => {
+  // The kept offer is reused rather than a code made and kept each time: a
+  // few reloads stay inside the host's create budget for one address.
+  const stored = new Map();
+  const code = fakeCode();
+  stored.set(SETUP, JSON.stringify({step: 'start', offer: code.saved}));
+  for (let reload = 1; reload <= 5; reload += 1) {
+    const {run, last} = fixture({stored});
+    const made = maker(fakeCode({code: NEXT}));
+    run.offerSetup(made.make, resumer(code));
+    await settle();
+    assert.equal(made.made.length, 0, `reload ${reload}: no new code is made`);
+    assert.equal(last('offer')[2].code, CODE);
+  }
+  assert.ok(code.asked >= 5, 'each reload follows the kept code, which the host already has');
 });
 
 test('the prompt breaks only between its words: a flag and a URL each stay whole', () => {

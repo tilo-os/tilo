@@ -4,9 +4,12 @@
 //! Making a code keeps nothing: the host draws it from the operating
 //! system's random source and answers it with a follow secret it derives
 //! from the code, its expiry and its link under a key only this host holds,
-//! so a stranger who opens the site and does nothing leaves nothing here.
-//! The tab's first follow carries the offer back; the host checks the
-//! secret is the one it derived for it, and keeps the code from then on.
+//! so an offer nobody follows leaves nothing here. The tab follows a code as
+//! soon as it shows it (the first screen's `watchShown`), because a code on a
+//! screen leaves the screen by hand as often as by its button: a person
+//! selects the prompt text and copies it, or types the code their agent asks
+//! for. The first follow carries the offer back; the host checks the secret
+//! is the one it derived for it, and keeps the code from then on.
 //! Kept codes, and the key, are kept on the host's disk with its state
 //! ([`LoginCodes::kept`]): a code a tab shows, or an agent was handed, still
 //! resolves after the host restarts, as every deploy restarts it. A kept
@@ -405,8 +408,9 @@ impl LoginCodes {
     }
 
     /// Offer a code naming `link` (setting up) or nothing (signing in). The
-    /// host keeps nothing of it until its tab first follows it
-    /// ([`Self::follow`] with the offer).
+    /// host keeps nothing of it until its tab follows it
+    /// ([`Self::follow`] with the offer), which the first screen does as soon
+    /// as the code is on it.
     pub(super) fn create(&self, link: Option<&str>, now_ms: u64) -> Result<Created, Refusal> {
         if let Some(link) = link {
             pairing_link(link, self.host_origin.as_deref()).map_err(Refusal::Malformed)?;
@@ -1128,8 +1132,8 @@ mod tests {
 
     /// Thousands of visitors who are shown a code and do nothing leave nothing on the host, and
     /// none of them stops the next visitor from getting one: offering keeps no state and has no
-    /// ceiling. Keeping one, which a tab does once its person uses the code, is budgeted per
-    /// client address, never in all.
+    /// ceiling. Keeping one, which a tab does for a code it shows, is budgeted per client
+    /// address, never in all.
     #[test]
     fn offered_codes_keep_nothing_until_their_tab_follows_them() {
         let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));

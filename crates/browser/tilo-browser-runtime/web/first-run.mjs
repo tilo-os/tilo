@@ -21,6 +21,14 @@
  * not made yet is never promised: the button says what it waits for, and a
  * wait that runs too long says why, with a way to try again.
  *
+ * A code on the screen has to work however it leaves the page, and the host
+ * keeps a code only from its tab's first follow: a person who selects the
+ * prompt and copies it by hand, or reads the code out and types it to their
+ * agent, never presses the button. So a shown code is followed at once
+ * (`watchShown`, the follow that has the host keep it) and followed quietly
+ * again every couple of seconds while it is on the screen; an agent that
+ * used it moves the screen on to its steps, as a copied prompt does.
+ *
  * - **Copy prompt** copies `setupPrompt`, shown above it. The code names a
  *   pairing link to this tab, which holds the person's new root: the
  *   agent's `tilo` command becomes a device of the person with a key of its
@@ -66,6 +74,10 @@ export function setupLater(storage = globalThis.localStorage) {
 export const CONNECTED_MS = 1600;
 /** How often the tab asks where its code is. */
 export const FOLLOW_MS = 1000;
+/** How often a prompt on the screen asks where its code is, until someone
+ * uses it: slower than the active follow, quick enough that an agent that
+ * took the code without the button shows its steps at once. */
+export const SHOWN_FOLLOW_MS = 2000;
 /** How long the host gets to make a code before the screen says it did not. */
 export const MAKE_MS = 15_000;
 /** How long the page gets to offer codes at all (its runtime loading) before the screen says so. */
@@ -334,6 +346,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const close = () => {
     if (closed) return;
     stop();
+    stopWatch();
     for (const kind of Object.keys(codes)) clear(codes[kind].renew);
     clear(offerTimer);
     clear(leaveTimer);
@@ -367,6 +380,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     leaving = true;
     clear(leaveTimer);
     stop();
+    stopWatch();
     ++attempt;
     save({step: 'opening'});
     view.opening({heading: connectedShown ? frame.heading : null});
@@ -395,6 +409,8 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     const at = codes[expiredKind];
     view.expired(modeOf(expiredKind), at.made ? {text: prompts[expiredKind](at.made.code, {site})}
       : {text: null, note: at.error ? setupFailure(at.error, {site}) : codeWait(site)});
+    // The fresh prompt is on the screen now, and works however it leaves it.
+    watchShown();
   };
   // What the screen shows of `kind`'s code now: its text, or why there is none.
   const show = kind => {
@@ -408,6 +424,61 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})} : {note: codeWait(site)});
     if (kind === 'setup' && manualShown) showManual();
     if (expiredKind === kind) drawExpired();
+    watchShown();
+  };
+  // Whether `kind`'s prompt, with its code, is on the screen for a person to
+  // take: the start shows both, and a prompt that ran out shows its fresh one.
+  const onScreen = kind => !closed && !leaving
+    && (state.step === 'start' || (state.step === 'expired' && expiredKind === kind));
+  let watchRound = 0;
+  let watchTimer = null;
+  const stopWatch = () => {
+    ++watchRound;
+    clear(watchTimer);
+    watchTimer = null;
+  };
+  // Keep what is on the screen and follow it quietly: the host keeps a code
+  // from its tab's first follow, and a code a person copies by hand or types
+  // must be one it knows. Until a computer uses it the code is followed at
+  // `SHOWN_FOLLOW_MS`; once one does, the screen steps on exactly as it does
+  // for a prompt copied with the button, and nothing is said of a copy that
+  // did not happen.
+  const watchShown = () => {
+    stopWatch();
+    if (closed) return;
+    const round = watchRound;
+    const look = async () => {
+      watchTimer = null;
+      if (round !== watchRound || closed) return;
+      let showing = false;
+      for (const kind of Object.keys(codes)) {
+        const at = codes[kind];
+        // Shown by the manual setup's panel, which follows that same code
+        // itself and opens the steps when it is used.
+        if (!at.made || !onScreen(kind) || (kind === 'setup' && manualShown)) continue;
+        showing = true;
+        const made = at.made;
+        let polled;
+        try {
+          polled = await bounded(Promise.resolve().then(() => made.follow()), ASK_MS, later, clear);
+        } catch (error) {
+          // A page that cannot follow codes yet looks again once it can; a
+          // host that did not answer, too (asking for the prompt says so).
+          if (round !== watchRound || closed) return;
+          continue;
+        }
+        if (round !== watchRound || closed) return;
+        if (at.made !== made || !onScreen(kind)) continue;
+        // A code the host forgot is replaced when it is renewed; one nobody
+        // used is simply looked at again.
+        if (polled?.expired || !polled?.resolved) continue;
+        use(kind, modeOf(kind), made, prompts[kind](made.code, {site}), true);
+      }
+      if (showing && round === watchRound && !closed) {
+        watchTimer = later(() => { void look(); }, SHOWN_FOLLOW_MS);
+      }
+    };
+    void look();
   };
   const renewIn = (kind, made) => {
     clear(codes[kind].renew);
@@ -604,6 +675,9 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const apply = next => {
     if (closed) return;
     state = next;
+    // Whatever is on the screen now is what is watched, if anything (the
+    // branches that draw a prompt start it again).
+    stopWatch();
     if (next.step === 'done') { close(); reload(); return; }
     if (next.step === 'opening') {
       if (!leaving) {
@@ -655,6 +729,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   // next one for another try.
   const use = (kind, mode, made, text, copied) => {
     const mine = ++attempt;
+    stopWatch();
     manualShown = false;
     expiredKind = null;
     view.waiting(mode, {text, copied});
@@ -682,10 +757,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     const made = at.made;
     const text = prompts[kind](made.code, {site});
     // Followed before it is handed over: the host keeps a code from its tab's
-    // first follow, and the clipboard holds this prompt the moment the click
-    // returns — an agent handed it that fast is told a code the host does not
-    // know yet. What the screen says of the code still waits for the copy's
-    // answer, which only the click can give.
+    // first follow, and while the prompt is on the screen `watchShown` may
+    // not have had its answer yet. The clipboard holds this prompt the moment
+    // the click returns — an agent handed it that fast is told a code the
+    // host does not know yet. What the screen says of the code still waits
+    // for the copy's answer, which only the click can give.
     follow(made, mode, ++attempt);
     let writing;
     try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
@@ -745,8 +821,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       if (closed) return;
       manualShown = !manualShown;
       view.manual(manualShown);
-      if (!manualShown) { ++attempt; stop(); return; }
-      showManual();
+      if (!manualShown) { ++attempt; stop(); }
+      // The panel follows the setup code itself; the offer behind it is
+      // watched again once the panel is closed.
+      watchShown();
+      if (manualShown) showManual();
     },
     /** Copy what the screen shows once more (a click of its own). After a
      * prompt ran out, what shows is a fresh one, taken into use. */

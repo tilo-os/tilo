@@ -2071,8 +2071,9 @@ function agentSetupCodes({origin, identity, runtime, link}) {
       onAgent: () => { void actions?.keepStandIn().catch(error => console.warn('first run: stand-in', error)); }});
     return actions;
   };
-  // A code taken into use (followed): the tab watches for the agent's device
-  // from then on, not while the prompt only waits on the screen.
+  // A code followed: the first screen follows one as soon as it shows it, so
+  // the tab watches for the agent's device from the moment the prompt is on
+  // the screen, not only once someone copied it.
   const watched = (made, agents) => ({...made, follow: () => { agents.watchAgents(); return made.follow(); }});
   // What the setup keeps of a code names whose it is: a code kept for
   // another person or host is not this tab's to follow.
@@ -2280,8 +2281,9 @@ function loginCodes(runtime, origin) {
      * whatever else the page kept with it), followed again: kept again
      * whole. The host only offered the code: each follow carries the offer
      * back, and the first one has the host keep it. The page follows a code
-     * once its person uses it (copies the prompt, opens the commands), so a
-     * visitor who does nothing leaves nothing on the host. */
+     * as soon as the first screen shows it, since a person may copy the
+     * prompt by hand or type the code rather than use its button; a code the
+     * page never shows is never followed, and leaves nothing on the host. */
     resume(saved) {
       const offer = JSON.stringify({code: saved.code, expires_at_ms: saved.expiresAt, link: saved.link ?? null});
       return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},

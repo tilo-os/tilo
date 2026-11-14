@@ -344,8 +344,9 @@ async fn home_host(site: &Origin) -> Result<String> {
 ///
 /// A code the host does not know is asked about again for a moment: the host
 /// keeps a code from the moment the tab showing it follows it, which the tab
-/// does as it copies the prompt (`web/first-run.mjs`), so a person who hands
-/// the prompt to their agent at once can beat the tab's own request. The host
+/// does as soon as the prompt is on its screen (`web/first-run.mjs`,
+/// `watchShown`), so a person who hands the prompt to their agent at once can
+/// beat that request when their machine draws the page slowly. The host
 /// counts resolves that miss, so the asking is a few tries, not a wait.
 async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
     let began = std::time::Instant::now();
@@ -363,7 +364,7 @@ async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
 /// How long a code the host does not know yet is asked about again, and how
 /// often: a few tries inside the host's budget of misses (ten a minute from
 /// one address), long enough for the tab of a machine that is drawing slowly
-/// to hand the code over.
+/// to keep the code it shows.
 const CODE_KEPT_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
 const CODE_KEPT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
