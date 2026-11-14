@@ -109,51 +109,43 @@ impl AuthorDirectory {
     /// "Claude Code for Ada" on a page as it does on a computer.
     #[must_use]
     pub fn from_presence(presence: &crate::presence::PresenceCtx) -> Self {
+        use crate::permissions::MemberId;
         let mut directory = Self::new();
-        for crate::presence::NamedParticipant {
-            id,
-            name,
-            agent,
-            person,
-        } in presence.named_participants()
-        {
-            if name.trim().is_empty() {
+        // Everyone presence names: a person by the root key their writes
+        // carry — what a file version's actor names — and software by the
+        // agent it is, for the person it acts for.
+        for (id, name) in &presence.names {
+            let name = name.trim();
+            if name.is_empty() {
                 continue;
             }
-            directory.register_device(&id, name.clone());
-            match person {
-                Some(person) if !agent => {
-                    // The id is one of the person's devices: name the person by
-                    // their root, and the device by its own label.
-                    if directory.by_actor.get(&principal_key(&person)).is_none() {
-                        let shown =
-                            presence.display_name(&crate::permissions::UserId(person.clone()));
-                        directory.register_person(&person, author_for_identity(shown, &person));
-                    }
+            match id {
+                MemberId::Person(key) => {
+                    directory.register_person(key, author_for_identity(name.to_owned(), key));
+                    directory.register_device(key, name.to_owned());
                 }
-                Some(person) => {
-                    if directory.by_actor.get(&principal_key(&person)).is_none() {
-                        let shown =
-                            presence.display_name(&crate::permissions::UserId(person.clone()));
-                        directory.register_person(&person, author_for_identity(shown, &person));
-                    }
-                    let (red, green, blue) = crate::presence::user_color(&id);
+                MemberId::Agent(agent) | MemberId::Bot(agent) => {
+                    let (red, green, blue) = crate::presence::user_color(agent);
+                    let person = presence
+                        .acting_for(id)
+                        .and_then(MemberId::person_id)
+                        .unwrap_or_default()
+                        .to_owned();
+                    directory.register_device(agent, name.to_owned());
                     directory.register_agent(
-                        &id,
+                        agent,
                         HistoryAgent {
-                            principal: format!("agent:{id}"),
-                            label: name,
+                            agent: id.clone(),
+                            label: name.to_owned(),
                             rgb: (red, green, blue),
                             person,
                         },
                     );
                 }
-                None => {
-                    // Presence names the participant themselves: a person on a
-                    // host that names people by their root key.
-                    directory.register_person(&id, author_for_identity(name, &id));
-                }
             }
+        }
+        if let Some(MemberId::Person(me)) = presence.self_id() {
+            directory.set_reader(me.clone());
         }
         directory
     }

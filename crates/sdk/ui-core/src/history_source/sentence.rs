@@ -156,7 +156,12 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     }
     // The device whose session vouched for the writer, then the folder the
     // change is in: where a reader goes to look at it.
-    parts.extend(attribution.device.clone());
+    // The computer, unless it is what the writer was already called.
+    if let Some(device) = attribution.device.as_deref()
+        && !parts.iter().any(|part| part == device)
+    {
+        parts.push(device.to_owned());
+    }
     parts.extend(attribution.folder.clone());
     Some(parts.join(" · "))
 }

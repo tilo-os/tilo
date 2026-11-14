@@ -290,9 +290,23 @@ impl People {
             registry: {
                 let mut registry =
                     ui_core::history_source::AuthorDirectory::from_presence(presence);
-                if let Some(id) = presence.self_id() {
-                    let reader = presence.person_of(id).unwrap_or(id).0.clone();
-                    registry.set_reader(reader);
+                // This window's own person: presence names their devices, and
+                // the device this page is knows its person's name. That is the
+                // key their writes carry, so a page never shows it raw.
+                if let Some(me) = &self.me {
+                    let name = self
+                        .local
+                        .as_deref()
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or(me);
+                    registry.register_person(
+                        me,
+                        ui_core::history_source::author_for_identity(name.to_owned(), me),
+                    );
+                    registry.set_reader(me.to_string());
+                }
+                if let Some(ui_core::permissions::MemberId::Person(me)) = presence.self_id() {
+                    registry.set_reader(me.clone());
                 }
                 registry
             },

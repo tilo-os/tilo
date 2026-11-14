@@ -298,7 +298,7 @@ impl TreeBrowser {
             // The person, and the agent when one wrote for them: what a
             // computer's Files says of the same change.
             let (person, agent) = ui::row_people(&author);
-            let meta = agent.map_or(person.clone(), |agent| format!("{person} · {agent}"));
+            let meta = agent.map_or_else(|| person.clone(), |agent| format!("{person} · {agent}"));
             row = row.meta(meta);
             if let Some(hover) = ui::attribution_hover(&author) {
                 row = row.tooltip(hover);
