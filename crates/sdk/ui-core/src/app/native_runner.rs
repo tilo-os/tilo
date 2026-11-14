@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 
 mod frame_demand;
-mod held_frame;
 mod ime;
+mod input_backlog;
 #[cfg(target_os = "linux")]
 mod linux_header;
 mod private_text_input;
@@ -16,7 +16,6 @@ mod process_windows;
 mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
-mod wheel_batch;
 
 use ime::{
     NativeImeWindowState, PrimaryPreeditUpdate, apply_native_ime, apply_native_ime_content,
@@ -123,8 +122,8 @@ struct AppHandler {
     /// composition commits, while its keyboard/IME events reach the reattached primary editor.
     floating_ime_return_continuation: Option<String>,
     private_input: private_text_input::Bridge,
-    /// Wheel deltas of this wake, routed as one event ([`wheel_batch`]).
-    wheel_batch: wheel_batch::WheelBatch,
+    /// Input waiting for the window's next frame, wheel deltas summed ([`input_backlog`]).
+    input_backlog: input_backlog::InputBacklog,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -322,36 +321,6 @@ struct AudiencePresentationWindow {
     render_init: Option<mpsc::Receiver<Result<RenderThreadHandle, String>>>,
 }
 
-/// Keep the audience bound to the same monitor object across hotplug list
-/// reordering; indices are only a one-tick selection aid.
-fn audience_monitor_still_selected<T: PartialEq>(
-    current: Option<&T>,
-    selected: Option<&T>,
-) -> bool {
-    current
-        .zip(selected)
-        .is_some_and(|(current, selected)| current == selected)
-}
-
-#[cfg(test)]
-mod audience_monitor_identity_tests {
-    use super::audience_monitor_still_selected;
-
-    #[test]
-    fn stable_identity_survives_monitor_enumeration_reordering() {
-        let audience = "connector-2";
-        let reordered = ["connector-2", "connector-1"];
-        assert!(audience_monitor_still_selected(
-            reordered.first(),
-            Some(&audience)
-        ));
-        assert!(!audience_monitor_still_selected(
-            reordered.get(1),
-            Some(&audience)
-        ));
-    }
-}
-
 struct NativeFloatingWindow {
     id: String,
     token: String,
@@ -400,19 +369,7 @@ impl NativeFloatingSurfaceLifecycle {
 /// update and a platform resize can cross for one frame, but neither may paint outside the buffer
 /// being submitted.
 fn native_floating_window_clip(window: KurboRect, presentation: KurboRect) -> Option<KurboRect> {
-    if !window.x0.is_finite()
-        || !window.y0.is_finite()
-        || !window.x1.is_finite()
-        || !window.y1.is_finite()
-        || !presentation.x0.is_finite()
-        || !presentation.y0.is_finite()
-        || !presentation.x1.is_finite()
-        || !presentation.y1.is_finite()
-        || window.width() <= 0.0
-        || window.height() <= 0.0
-        || presentation.width() <= 0.0
-        || presentation.height() <= 0.0
-    {
+    if !window.is_finite() || !presentation.is_finite() {
         return None;
     }
     let clipped = window.intersect(presentation);
@@ -1389,10 +1346,8 @@ impl AppHandler {
         });
 
         if self.audience_presentation.as_ref().is_some_and(|audience| {
-            audience_monitor_still_selected(
-                target.and_then(|index| monitors.get(index as usize)),
-                Some(&audience.monitor),
-            )
+            // The same monitor object, not the same index: hotplug reorders the list.
+            target.and_then(|index| monitors.get(index as usize)) == Some(&audience.monitor)
         }) {
             return;
         }
@@ -2336,6 +2291,7 @@ impl AppHandler {
             return;
         }
         crate::input_frame::frame_started();
+        self.input_backlog.frame_started(crate::time::now());
         if first_primary_frame {
             // The frame budget local reads get is one refresh of the display
             // the window opens on.
@@ -2644,8 +2600,10 @@ impl AppHandler {
         // complete. Like an aborted layout, the held frame keeps its render
         // admission; the frame that is drawn rebuilds and repaints in full.
         let now = crate::time::now();
-        if let Some(until) =
-            held_frame::frame_held_until(app.root_widget.holds_frame_until(now), now)
+        if let Some(until) = app
+            .root_widget
+            .holds_frame_until(now)
+            .filter(|until| *until > now)
         {
             app.layout.structure_dirty = true;
             self.held_frame = Some(until);
@@ -3346,8 +3304,22 @@ impl AppHandler {
 }
 
 impl AppHandler {
+    /// Route waiting input while the frame allows ([`input_backlog`]); with no window, all of it.
+    fn route_input_backlog(&mut self, wake_ends: bool) {
+        let budget = if self.window.is_some() {
+            self.animation_schedule.interval()
+        } else {
+            Duration::MAX
+        };
+        let mut backlog = std::mem::take(&mut self.input_backlog);
+        backlog.route(budget, wake_ends, crate::time::now, |window_id, event| {
+            self.platform_window_event(window_id, event);
+        });
+        self.input_backlog = backlog;
+    }
+
     /// Route one event the platform reported for `window_id` (wheel deltas
-    /// already summed, [`wheel_batch`]).
+    /// already summed, [`input_backlog`]).
     fn platform_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
         let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
         // Ctrl+C copies whichever source is typing: name the chord by its
@@ -3896,19 +3868,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     ) {
         // What the person did in the window's bar before this input runs first.
         self.follow_handled_input();
-        // Wheel deltas reported in one wake route as one event; anything
-        // else routes the waiting sum first.
-        for (window_id, event) in self.wheel_batch.push(window_id, event) {
+        // Input waits in line; anything else goes now, after what may still go first.
+        if input_backlog::InputBacklog::waits_in_line(&event) {
+            self.input_backlog.push(window_id, event);
+            self.route_input_backlog(false);
+        } else {
+            self.route_input_backlog(true);
             self.platform_window_event(window_id, event);
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _slow = slow_event::Span::begin("about_to_wait", "");
-        // The wake's last wheel deltas go before the loop waits.
-        if let Some((window_id, event)) = self.wheel_batch.flush() {
-            self.platform_window_event(window_id, event);
-        }
+        // The wake's input goes before the loop waits, as far as the frame allows.
+        self.route_input_backlog(true);
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
             self.closing.set(true);
@@ -4027,7 +4000,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 window.request_redraw();
             }
         };
-        if retry_due {
+        if retry_due || self.input_backlog.waiting() {
             request_primary_redraw();
         }
         if self.last_primary_frame_presented > 0
@@ -4296,11 +4269,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let _ = app.sync_model(true);
             }
             let structure = app.forget_replaced_widgets();
-            if present_after_deadline_sync(
-                updated || structure || app.layout.layout_dirty,
-                app.root_widget.needs_animation_frame(),
-                served_widget == Some(true),
-            ) {
+            // Present when the sync changed the model, the tree or an animation, or when the
+            // widget whose deadline came due served work that reaches its drawing (a call's run
+            // time). `needs_redraw` is no reason: Files stays `needs_redraw` after `mark_drawn`,
+            // so it would recommit every 750ms metadata poll that found nothing.
+            if updated
+                || structure
+                || app.layout.layout_dirty
+                || app.root_widget.needs_animation_frame()
+                || served_widget == Some(true)
+            {
                 request_primary_redraw();
                 // The frame presents the app, and the app's other surfaces
                 // draw the same state: a reading it re-read on this wake (a
@@ -4473,6 +4451,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
             .chain(self.occluded_tick_at)
+            .chain(
+                self.input_backlog
+                    .wake_at(self.animation_schedule.interval()),
+            )
             .chain(self.app.screen_reader_deadline())
             .min();
         if frame_demand::enabled() {
@@ -5222,7 +5204,7 @@ impl App {
             floating_ime_continuation: None,
             floating_ime_return_continuation: None,
             private_input: private_text_input::Bridge::default(),
-            wheel_batch: wheel_batch::WheelBatch::default(),
+            input_backlog: input_backlog::InputBacklog::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]
@@ -5388,53 +5370,6 @@ fn present_hook(
             key();
         }
     }))
-}
-
-/// A due `next_wake_deadline` runs sync. Present when that sync changed the
-/// model, the tree, or an in-flight animation, or when the widget whose
-/// deadline came due served work that reaches its drawing (a call's run
-/// time, which is the clock, not the model). `needs_redraw` is not a reason:
-/// Files stays `needs_redraw` after `mark_drawn` (closed menus and other
-/// default leaves), so treating it as dirty recommits every 750ms metadata
-/// poll. A poll that found nothing answers `serve_deadline` with `false` and
-/// presents nothing.
-fn present_after_deadline_sync(
-    model_or_layout_dirty: bool,
-    needs_animation: bool,
-    served_deadline: bool,
-) -> bool {
-    model_or_layout_dirty || needs_animation || served_deadline
-}
-
-#[cfg(test)]
-mod deadline_present_tests {
-    use super::present_after_deadline_sync;
-
-    tilo_test_env::scenario! {
-        fn a_deadline_sync_presents_only_when_something_changed;
-
-        phase idle_scheduled_sync_does_not_request_frames;
-        {
-            assert!(
-                !present_after_deadline_sync(false, false, false),
-                "an idle scheduled poll must not keep requesting frames"
-            );
-            // Sticky `needs_redraw` after mark_drawn is not an argument: the
-            // helper no longer takes that bit. Model/structure/layout OR into
-            // the first flag at the call site (keeps clippy's bool limit).
-            assert!(present_after_deadline_sync(false, true, false));
-            assert!(present_after_deadline_sync(true, false, false));
-        }
-
-        phase a_served_widget_deadline_presents_the_reading_it_draws;
-        // A call's card reads a clock, so the model, the tree and the layout all
-        // stay as they were and the frame that shows the next second exists only
-        // because the widget served its deadline: presenting nothing froze the
-        // card at the second it first drew.
-        {
-            assert!(present_after_deadline_sync(false, false, true));
-        }
-    }
 }
 
 #[cfg(test)]
