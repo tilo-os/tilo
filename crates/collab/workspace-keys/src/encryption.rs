@@ -1421,6 +1421,36 @@ impl WorkspaceKeys {
         }
     }
 
+    /// The frames of `workspace`'s group from `epoch` on that `asker`, a device that holds the group
+    /// at `epoch`, follows to this device's head ([`GroupPeer::frames_from`]): what the workspace's
+    /// host replays to a device that was away, answered by a member when the host is not there.
+    /// None unless the policy at `wall` admits both the asker and this device, as an access request
+    /// is judged ([`Self::receive_request`]).
+    pub fn frames_for(
+        &self,
+        workspace: WorkspaceId,
+        asker: &Ed25519PublicKey,
+        epoch: u64,
+        wall: u64,
+    ) -> Vec<MlsGovernanceFrame> {
+        let admitted = self
+            .directory
+            .allowed_devices(workspace, wall)
+            .is_some_and(|allowed| {
+                allowed.contains(asker)
+                    && self
+                        .device()
+                        .is_some_and(|device| allowed.contains(&device))
+            });
+        if !admitted {
+            return Vec::new();
+        }
+        self.peers
+            .get(&workspace)
+            .map(|entry| entry.peer.frames_from(epoch))
+            .unwrap_or_default()
+    }
+
     fn reconcile(&mut self, workspace: WorkspaceId, now: Instant, wall: u64) {
         if !self.peers.contains_key(&workspace) {
             return;
@@ -1887,6 +1917,18 @@ impl SharedKeys {
     pub fn record_keys(&self, workspace: WorkspaceId) -> Option<Result<ContentKeys, String>> {
         self.run(|service| service.record_keys(workspace))
             .unwrap_or_else(|| Some(Err("the key service is unavailable".into())))
+    }
+
+    /// See [`WorkspaceKeys::frames_for`], under the policy now.
+    #[must_use]
+    pub fn frames_for(
+        &self,
+        workspace: WorkspaceId,
+        asker: &Ed25519PublicKey,
+        epoch: u64,
+    ) -> Vec<MlsGovernanceFrame> {
+        self.run(|service| service.frames_for(workspace, asker, epoch, tilo_clock::unix_now()))
+            .unwrap_or_default()
     }
 
     /// See [`WorkspaceKeys::access`]; also returns the service's

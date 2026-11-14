@@ -18,7 +18,7 @@
               until their sessions end"
 )]
 
-use crate::common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site, share_the_fleet};
 use tilo_relay_protocol::workspaces::Role;
 
 /// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace
@@ -58,13 +58,8 @@ impl Studio {
         let mut bob_laptop = bob.device("Bob's laptop");
         let mut bob_phone = bob.device("Bob's phone");
         for device in [&mut bob_laptop, &mut bob_phone] {
-            let member = site.admit(bob.public);
             device.install_chat();
-            device.join(&member);
-            device.wait_holding(&site.workspace);
-            device.wait_showing(&site.workspace);
-            device.open("so.tilo.chat");
-            device.wait_for_window("so.tilo.chat");
+            enter(device, &site, Some(site.admit(bob.public).as_str()));
         }
         ada_phone.open("so.tilo.chat");
         ada_phone.wait_for_window("so.tilo.chat");
@@ -183,11 +178,7 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
     // Bob's laptop starts again: the workspace hands it all three, in order,
     // and his phone the same when it comes back.
     for device in [&mut studio.bob_laptop, &mut studio.bob_phone] {
-        device.start();
-        device.wait_holding(&studio.site.workspace);
-        device.wait_showing(&studio.site.workspace);
-        device.open("so.tilo.chat");
-        device.wait_for_window("so.tilo.chat");
+        enter(device, &studio.site, None);
         device
             .chat()
             .wait_for_texts(&ada_key, &["one", "two", "three"]);
@@ -243,11 +234,7 @@ fn both_people_writing_offline_converge_without_duplicates() {
     studio.bob_laptop.chat().send(&ada_key, "Bob one");
     studio.bob_laptop.chat().send(&ada_key, "Bob two");
     for device in [&mut studio.ada_phone, &mut studio.bob_phone] {
-        device.start();
-        device.wait_holding(&studio.site.workspace);
-        device.wait_showing(&studio.site.workspace);
-        device.open("so.tilo.chat");
-        device.wait_for_window("so.tilo.chat");
+        enter(device, &studio.site, None);
     }
     // Every message reaches every device. The two written offline at the same time have no order of
     // their own until the records give them one: each device waits for all of them, whichever order
@@ -322,13 +309,12 @@ fn another_pair_is_another_conversation() {
     // there is her own conversation with him, not his with Ada.
     let carol = Person::new("Carol");
     let mut carol_laptop = carol.device("Carol's laptop");
-    let member = studio.site.admit(carol.public);
     carol_laptop.install_chat();
-    carol_laptop.join(&member);
-    carol_laptop.wait_holding(&studio.site.workspace);
-    carol_laptop.wait_showing(&studio.site.workspace);
-    carol_laptop.open("so.tilo.chat");
-    carol_laptop.wait_for_window("so.tilo.chat");
+    enter(
+        &mut carol_laptop,
+        &studio.site,
+        Some(studio.site.admit(carol.public).as_str()),
+    );
     carol_laptop.chat().wait_for_contact(&bob_key);
     assert!(
         carol_laptop.chat().texts(&bob_key).is_empty(),
@@ -348,4 +334,93 @@ fn another_pair_is_another_conversation() {
         vec!["just us".to_owned()],
         "Bob's conversation with Ada is theirs"
     );
+}
+
+/// Bob's laptop holds a message his phone wrote under a key the laptop never took in, and the
+/// workspace's host is gone: the phone, which holds that key, hands the laptop the group's frames
+/// it lacks, and the laptop reads the message.
+#[test]
+fn a_device_takes_the_key_its_host_did_not_hand_it_from_the_persons_other_device() {
+    let ada = Person::new("Ada");
+    let bob = Person::new("Bob");
+    let mut site = Site::start(&ada, "Studio");
+    site.publish(Role::Editor);
+    let mut bob_laptop = bob.device("Bob's laptop");
+    let mut bob_phone = bob.device("Bob's phone");
+    share_the_fleet(&bob, &[&bob_laptop, &bob_phone]);
+    for device in [&mut bob_laptop, &mut bob_phone] {
+        device.install_chat();
+        enter(device, &site, Some(site.admit(bob.public).as_str()));
+    }
+    // The laptop's group state as it stands before the group moves on: what it comes back with
+    // later, as a laptop whose last save of it never reached its disk does.
+    bob_laptop.stop();
+    let saved = tempfile::tempdir().unwrap();
+    copy_dir(&group_state(&bob_laptop), saved.path());
+    enter(&mut bob_laptop, &site, None);
+    // Ada enters, which moves the workspace's group to a new key, and Bob's phone writes to her
+    // under it. The laptop reads it while the host is there to hand it the key.
+    let mut ada_laptop = ada.device("Ada's laptop");
+    ada_laptop.install_chat();
+    enter(
+        &mut ada_laptop,
+        &site,
+        Some(site.admit(ada.public).as_str()),
+    );
+    let (ada_key, bob_key) = (hex::encode(ada.public), hex::encode(bob.public));
+    bob_phone.chat().wait_for_contact(&ada_key);
+    ada_laptop.chat().wait_for_contact(&bob_key);
+    bob_phone.chat().send(&ada_key, "under the new key");
+    bob_laptop
+        .chat()
+        .wait_for_texts(&ada_key, &["under the new key"]);
+    // The host goes away, and the laptop comes back with its group as it saved it before Ada
+    // came: it holds the message, not the key it is sealed under.
+    bob_laptop.stop();
+    ada_laptop.stop();
+    site.stop();
+    let state = group_state(&bob_laptop);
+    std::fs::remove_dir_all(&state).unwrap();
+    copy_dir(saved.path(), &state);
+    bob_laptop.start();
+    bob_laptop.open("so.tilo.chat");
+    bob_laptop.wait_for_window("so.tilo.chat");
+    // Bob's phone, still on, hands it the key: the laptop reads the message with no host there.
+    bob_laptop
+        .chat()
+        .wait_for_texts(&ada_key, &["under the new key"]);
+}
+
+/// Bring `device` into `site`'s workspace with Chat open: joining it with `member`, or starting
+/// again in it when there is none.
+fn enter(device: &mut Device, site: &Site, member: Option<&str>) {
+    match member {
+        Some(member) => device.join(member),
+        None => device.start(),
+    }
+    device.wait_holding(&site.workspace);
+    device.wait_showing(&site.workspace);
+    device.open("so.tilo.chat");
+    device.wait_for_window("so.tilo.chat");
+}
+
+/// Where `device` keeps the state of its workspaces' key groups.
+fn group_state(device: &Device) -> std::path::PathBuf {
+    device
+        .directory()
+        .join("state/tilo/collaboration/mls/groups")
+}
+
+/// Copy the directory `from`, whole, to `to`.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }

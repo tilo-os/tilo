@@ -127,6 +127,7 @@ impl KeyService {
         let access = service.map(|service| {
             let access = SharedKeys::with_wake(service, Arc::new(move || poke.poke()));
             keys.set(Some(access.clone()));
+            link.answer_with(access.clone());
             access
         });
         let settled_access = access.clone();
@@ -194,6 +195,11 @@ pub struct KeyLink {
     /// The devices that reach this one as their workspace's host, when it
     /// serves any ([`Self::serve_members`]).
     members: Mutex<Option<Arc<dyn Members>>>,
+    /// The workspaces whose group's frames this device asked the person's other devices for, each
+    /// with the epoch it held then ([`Self::want_frames`]).
+    wanted: Mutex<BTreeMap<ModelWorkspaceId, u64>>,
+    /// This device's keys, which answer what the person's other devices ask of its groups.
+    keys: Mutex<Option<SharedKeys>>,
     park: Arc<GovernancePark>,
 }
 
@@ -220,6 +226,8 @@ impl KeyLink {
             answers: tokio::sync::watch::Sender::new(0),
             outgoing: Mutex::new(None),
             members: Mutex::new(None),
+            wanted: Mutex::new(BTreeMap::new()),
+            keys: Mutex::new(None),
             park: GovernancePark::new(),
         })
     }
@@ -255,6 +263,86 @@ impl KeyLink {
             return;
         }
         self.carry_to_members(message);
+    }
+
+    /// Answer what the person's other devices ask of this device's groups with `keys`.
+    pub fn answer_with(&self, keys: SharedKeys) {
+        *self.keys.lock_recover() = Some(keys);
+    }
+
+    /// This device holds a write of `workspace` sealed under a key its group at `epoch` lacks: ask
+    /// the person's other devices for the group's frames from there on, as the workspace's host
+    /// would replay them. Asked once per epoch held, and again whenever one of those devices
+    /// comes up ([`Self::sibling_arrived`]).
+    pub fn want_frames(&self, workspace: ModelWorkspaceId, epoch: u64) {
+        if self.wanted.lock_recover().insert(workspace, epoch) == Some(epoch) {
+            return;
+        }
+        self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
+            workspace: workspace.to_string(),
+            from_epoch: epoch,
+        });
+    }
+
+    /// One of the person's devices came up: it hears what this device still waits for.
+    pub fn sibling_arrived(&self) {
+        // What a group moved past since it was asked for is not asked again.
+        let keys = self.keys.lock_recover().clone();
+        let wanted = {
+            let mut wanted = self.wanted.lock_recover();
+            wanted.retain(|workspace, epoch| {
+                keys.as_ref()
+                    .and_then(|keys| keys.record_keys(*workspace))
+                    .and_then(Result::ok)
+                    .is_none_or(|held| held.epoch() <= *epoch)
+            });
+            wanted.clone()
+        };
+        for (workspace, epoch) in wanted {
+            self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
+                workspace: workspace.to_string(),
+                from_epoch: epoch,
+            });
+        }
+    }
+
+    /// Take in what `peer`, one of the person's devices, said on the session between the two: a
+    /// group's frames go to the key service as the host's do, which judges them alike; an ask for
+    /// them is answered with this device's own, when the workspace admits `peer`.
+    pub fn heard_from_sibling(&self, peer: [u8; 32], message: &NeighbourMsg) {
+        match message {
+            NeighbourMsg::MlsGovernance { .. } => self.heard(message),
+            NeighbourMsg::MlsGovernanceWanted {
+                workspace,
+                from_epoch,
+            } => {
+                let Some(workspace) = ModelWorkspaceId::parse(workspace) else {
+                    return;
+                };
+                let keys = self.keys.lock_recover().clone();
+                let Some(keys) = keys else {
+                    return;
+                };
+                let frames =
+                    keys.frames_for(workspace, &Ed25519PublicKey::from_bytes(peer), *from_epoch);
+                for frame in frames {
+                    self.tell_siblings(NeighbourMsg::MlsGovernance {
+                        workspace: workspace.to_string(),
+                        frame: Box::new(frame),
+                        delivery: 0,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Say `message` to the person's other devices whose sessions are up.
+    fn tell_siblings(&self, message: NeighbourMsg) {
+        let outgoing = self.outgoing.lock_recover().clone();
+        if let Some(outgoing) = outgoing {
+            let _ = outgoing.send(Cmd::TellSiblings(Box::new(message)));
+        }
     }
 
     /// Send `message`, group governance, to the members linked to this device.

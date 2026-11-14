@@ -413,6 +413,10 @@ impl Seat {
         if let Some(link) = &self.link {
             match event {
                 Event::Msg { msg, .. } => link.heard(msg),
+                // The person's other devices hand this one the group frames it lacks, and ask
+                // for the ones they lack.
+                Event::SiblingMsg { peer, msg } => link.heard_from_sibling(*peer.as_bytes(), msg),
+                Event::Sibling { .. } => link.sibling_arrived(),
                 Event::RecordOpened {
                     ws,
                     channel,

@@ -754,6 +754,11 @@ impl Engine {
             },
             &mut kept,
         );
+        // The person's other devices may hold the key the workspace's host has not handed this one
+        // yet, or cannot, being away: they are asked for the group's frames from the epoch held.
+        if unopened && let (Some(link), Some(Ok(history))) = (self.link(), &history) {
+            link.want_frames(workspace, history.generation().1);
+        }
         if sealed && kept.is_open() {
             let mut records = self.kept.lock_recover();
             if records.len() >= KEPT_RECORDS {

@@ -755,6 +755,14 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         hosts: Vec<PersonalHost>,
     },
+    /// One of the person's devices holds a write of `workspace` sealed under
+    /// a key it lacks: it asks the others for the frames of the workspace's
+    /// group from `from_epoch`, the epoch it holds, on. A device that is in
+    /// the group answers with [`NeighbourMsg::MlsGovernance`] frames when the
+    /// workspace admits the asker. Travels only on the session between two of
+    /// the person's devices, which proves who asks. Appended to preserve every
+    /// existing Postcard discriminant.
+    MlsGovernanceWanted { workspace: String, from_epoch: u64 },
 }
 
 /// Where one of the person's workspaces is hosted, as their other devices
@@ -850,7 +858,8 @@ impl NeighbourMsg {
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
-            | Self::PersonalHosts { .. } => false,
+            | Self::PersonalHosts { .. }
+            | Self::MlsGovernanceWanted { .. } => false,
         }
     }
 
@@ -901,6 +910,7 @@ impl NeighbourMsg {
             Self::RecordContentLacks { .. } => "RecordContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::PersonalHosts { .. } => "PersonalHosts",
+            Self::MlsGovernanceWanted { .. } => "MlsGovernanceWanted",
         }
     }
 }

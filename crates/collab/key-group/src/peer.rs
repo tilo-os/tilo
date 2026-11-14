@@ -740,6 +740,26 @@ impl GroupPeer {
         }
     }
 
+    /// The frames of this device's branch from `epoch` on, its head last, each
+    /// with its join material withheld: what a member that holds the group at
+    /// `epoch` follows to where this device is. None while this device is not
+    /// in the group.
+    pub fn frames_from(&self, epoch: u64) -> Vec<MlsGovernanceFrame> {
+        if !matches!(self.record, MemberRecord::Joined(_)) {
+            return Vec::new();
+        }
+        self.held()
+            .filter(|frame| frame.epoch >= epoch)
+            .map(|frame| {
+                frame
+                    .withheld()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| frame.clone())
+            })
+            .collect()
+    }
+
     /// Queue this device's branch again from `epoch` up to the head, when
     /// this device signed any of those frames: a device on a branch that
     /// diverged there then hears this branch's frame at that point and can

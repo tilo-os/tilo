@@ -87,12 +87,13 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
             Some((TreePath::root(), ActionKind::Read))
         }
         // Settled before the gate: identity is how a sender becomes known at all; a codec advert,
-        // the person's workspace list and a device's verdicts on its siblings' writes travel only
-        // between the person's own devices, never in a workspace.
+        // the person's workspace list, a device's verdicts on its siblings' writes and its ask for
+        // a group's frames travel only between the person's own devices, never in a workspace.
         NeighbourMsg::IdentityHello { .. }
         | NeighbourMsg::MediaCapabilities { .. }
         | NeighbourMsg::PersonalWorkspaces { .. }
         | NeighbourMsg::PersonalHosts { .. }
+        | NeighbourMsg::MlsGovernanceWanted { .. }
         | NeighbourMsg::WriteRefusals { .. }
         // Retired generations, refused where they enter
         // (`NeighbourMsg::is_retired`): presence is a frame on the live plane,

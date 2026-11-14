@@ -15,7 +15,8 @@
 //! for the device at the other end, and only when it is signed by a root
 //! this device acts for too. From then on the stream carries what is for the
 //! person's own devices alone: codec adverts, the person's workspace list,
-//! and a renewed hello when a certificate or a revocation changes. Every
+//! the frames of a workspace's key group one of them lacks and its ask for
+//! them, and a renewed hello when a certificate or a revocation changes. Every
 //! further bidirectional stream carries one personal fabric frame
 //! ([`fabric_link`]); nearby transfers stream on the same connection.
 //!
@@ -394,6 +395,10 @@ impl ActorState {
                             sibling.hosts_advert.replace(fingerprint) != Some(fingerprint)
                         })
                     }
+                    // A group's frames one of the person's devices lacked, and its ask for them:
+                    // the key service judges the frames as it judges a host's.
+                    NeighbourMsg::MlsGovernance { .. }
+                    | NeighbourMsg::MlsGovernanceWanted { .. } => true,
                     _ => {
                         tracing::warn!(peer = %peer, kind = msg.kind(), "a device of the person sent what its session does not carry");
                         false
