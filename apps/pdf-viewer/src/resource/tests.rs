@@ -4,150 +4,154 @@ use ui::framework::LiveRow;
 use ui::tilo_actions::OperationKind;
 use ui::tilo_resource::Effect;
 
-#[test]
-fn duplicating_a_rotated_page_keeps_its_orientation_and_source() {
-    use ui::tilo_resource::Replica;
+tilo_test_env::scenario! {
+    fn page_actions_turn_copy_and_refuse_on_the_record;
 
-    // The page, the turn it has, and where its copy then stands: right
-    // after it, which for the last page is the end.
-    for (page, rotation, order) in [
-        ("source-1", 0, ["source-1", "copy", "source-2"]),
-        ("source-1", 90, ["source-1", "copy", "source-2"]),
-        ("source-1", 180, ["source-1", "copy", "source-2"]),
-        ("source-1", 270, ["source-1", "copy", "source-2"]),
-        ("source-2", 90, ["source-1", "source-2", "copy"]),
-    ] {
-        let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
-        replica
-            .apply(crate::actions::rotate_page_action(page, rotation))
-            .unwrap_or_else(|error| panic!("turn {page} to {rotation}: {error:?}"));
-        replica
-            .apply(PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw(page), Some("copy".to_owned()))))
-            .unwrap_or_else(|error| panic!("duplicate {page} at {rotation}: {error:?}"));
-        let state = replica.state().expect("state");
-        let original = state.pages.get(&Id::from_raw(page)).expect("original");
-        let copy = state.pages.get(&Id::from_raw("copy")).expect("copy");
-        assert_eq!(copy.rotation, rotation, "{page} at {rotation}");
-        assert_eq!(copy, original, "{page} at {rotation}");
-        let ids: Vec<_> = state.pages.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, order, "{page} at {rotation}");
-    }
-}
+    phase duplicating_a_rotated_page_keeps_its_orientation_and_source;
+    {
+        use ui::tilo_resource::Replica;
 
-/// The published action turns a page a quarter at a time: the fourth turn
-/// is upright again, and no other page turns with it.
-#[test]
-fn quarter_turns_come_back_round_and_turn_only_their_page() {
-    use ui::tilo_resource::Replica;
-
-    let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
-    for (turn, rotation) in [(1, 90), (2, 180), (3, 270), (4, 0), (5, 90)] {
-        replica
-            .apply(PdfMarkup::ROTATE_PAGE.with(Id::from_raw("source-1")))
-            .unwrap_or_else(|error| panic!("turn {turn}: {error:?}"));
-        let state = replica.state().expect("state");
-        assert_eq!(
-            state.page_rotation("source-1"),
-            rotation,
-            "after turn {turn}"
-        );
-        assert_eq!(
-            state.page_rotation("source-2"),
-            0,
-            "the other page after turn {turn}"
-        );
-    }
-    // A copy starts as its page stands and then turns alone.
-    replica
-        .apply(PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), Some("copy".to_owned()))))
-        .expect("duplicate the turned page");
-    replica
-        .apply(PdfMarkup::ROTATE_PAGE.with(Id::from_raw("copy")))
-        .expect("turn the copy");
-    let state = replica.state().expect("state");
-    assert_eq!(
-        state.page_rotation("copy"),
-        180,
-        "the copy turned once more"
-    );
-    assert_eq!(state.page_rotation("source-1"), 90, "its page stayed");
-}
-
-#[test]
-fn a_refused_page_action_leaves_the_plan_as_it_was() {
-    use ui::tilo_resource::Replica;
-
-    let copy = |id: &str| Some(id.to_owned());
-    for (what, invoke) in [
-        (
-            "turning a page that is not there",
-            PdfMarkup::ROTATE_PAGE.with(Id::from_raw("gone")),
-        ),
-        (
-            "duplicating a page that is not there",
-            PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("gone"), copy("copy"))),
-        ),
-        (
-            "a copy under the id of another page",
-            PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), copy("source-2"))),
-        ),
-        (
-            "a copy under the id of its own page",
-            PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), copy("source-1"))),
-        ),
-        (
-            "a copy under an empty id",
-            PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), copy(""))),
-        ),
-        (
-            "moving a page that is not there",
-            PdfMarkup::MOVE_PAGE.with((Id::from_raw("gone"), None::<String>)),
-        ),
-        (
-            "moving a page after one that is not there",
-            PdfMarkup::MOVE_PAGE.with((Id::from_raw("source-1"), copy("gone"))),
-        ),
-        (
-            "deleting a page that is not there",
-            PdfMarkup::DELETE_PAGE.with(Id::from_raw("gone")),
-        ),
-    ] {
-        // Each refusal meets a record of its own.
-        let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
-        let before = replica.state().expect("state");
-        assert!(replica.apply(invoke).is_err(), "{what} is refused");
-        assert_eq!(
-            replica.state().expect("state"),
-            before,
-            "{what} changes nothing"
-        );
-    }
-}
-
-#[test]
-fn published_pages_carry_duplicate_and_delete() {
-    fn find<'a>(
-        resource: &'a tilo_actions::ResourceSpec,
-        id: &str,
-    ) -> Option<&'a tilo_actions::ResourceSpec> {
-        if resource.id.as_str() == id {
-            return Some(resource);
+        // The page, the turn it has, and where its copy then stands: right
+        // after it, which for the last page is the end.
+        for (page, rotation, order) in [
+            ("source-1", 0, ["source-1", "copy", "source-2"]),
+            ("source-1", 90, ["source-1", "copy", "source-2"]),
+            ("source-1", 180, ["source-1", "copy", "source-2"]),
+            ("source-1", 270, ["source-1", "copy", "source-2"]),
+            ("source-2", 90, ["source-1", "source-2", "copy"]),
+        ] {
+            let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
+            replica
+                .apply(crate::actions::rotate_page_action(page, rotation))
+                .unwrap_or_else(|error| panic!("turn {page} to {rotation}: {error:?}"));
+            replica
+                .apply(PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw(page), Some("copy".to_owned()))))
+                .unwrap_or_else(|error| panic!("duplicate {page} at {rotation}: {error:?}"));
+            let state = replica.state().expect("state");
+            let original = state.pages.get(&Id::from_raw(page)).expect("original");
+            let copy = state.pages.get(&Id::from_raw("copy")).expect("copy");
+            assert_eq!(copy.rotation, rotation, "{page} at {rotation}");
+            assert_eq!(copy, original, "{page} at {rotation}");
+            let ids: Vec<_> = state.pages.iter().map(|(id, _)| id.as_str()).collect();
+            assert_eq!(ids, order, "{page} at {rotation}");
         }
-        resource.children.iter().find_map(|child| find(child, id))
     }
-    let replica =
-        ui::tilo_resource::Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
-    let published = replica.published().expect("published");
-    let page_id =
-        ui::tilo_resource::items::item_resource_id::<PdfMarkup>("pages", &Id::from_raw("source-1"));
-    let page = find(&published, &page_id).expect("published page");
-    let ids: Vec<&str> = page
-        .actions
-        .iter()
-        .map(|action| action.id.as_str())
-        .collect();
-    for id in ["duplicate-page", "delete-page", "move-page", "rotate-page"] {
-        assert!(ids.contains(&id), "{ids:?}");
+
+    phase quarter_turns_come_back_round_and_turn_only_their_page;
+    // The published action turns a page a quarter at a time: the fourth turn
+    // is upright again, and no other page turns with it.
+    {
+        use ui::tilo_resource::Replica;
+
+        let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
+        for (turn, rotation) in [(1, 90), (2, 180), (3, 270), (4, 0), (5, 90)] {
+            replica
+                .apply(PdfMarkup::ROTATE_PAGE.with(Id::from_raw("source-1")))
+                .unwrap_or_else(|error| panic!("turn {turn}: {error:?}"));
+            let state = replica.state().expect("state");
+            assert_eq!(
+                state.page_rotation("source-1"),
+                rotation,
+                "after turn {turn}"
+            );
+            assert_eq!(
+                state.page_rotation("source-2"),
+                0,
+                "the other page after turn {turn}"
+            );
+        }
+        // A copy starts as its page stands and then turns alone.
+        replica
+            .apply(PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), Some("copy".to_owned()))))
+            .expect("duplicate the turned page");
+        replica
+            .apply(PdfMarkup::ROTATE_PAGE.with(Id::from_raw("copy")))
+            .expect("turn the copy");
+        let state = replica.state().expect("state");
+        assert_eq!(
+            state.page_rotation("copy"),
+            180,
+            "the copy turned once more"
+        );
+        assert_eq!(state.page_rotation("source-1"), 90, "its page stayed");
+    }
+
+    phase a_refused_page_action_leaves_the_plan_as_it_was;
+    {
+        use ui::tilo_resource::Replica;
+
+        let copy = |id: &str| Some(id.to_owned());
+        for (what, invoke) in [
+            (
+                "turning a page that is not there",
+                PdfMarkup::ROTATE_PAGE.with(Id::from_raw("gone")),
+            ),
+            (
+                "duplicating a page that is not there",
+                PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("gone"), copy("copy"))),
+            ),
+            (
+                "a copy under the id of another page",
+                PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), copy("source-2"))),
+            ),
+            (
+                "a copy under the id of its own page",
+                PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), copy("source-1"))),
+            ),
+            (
+                "a copy under an empty id",
+                PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), copy(""))),
+            ),
+            (
+                "moving a page that is not there",
+                PdfMarkup::MOVE_PAGE.with((Id::from_raw("gone"), None::<String>)),
+            ),
+            (
+                "moving a page after one that is not there",
+                PdfMarkup::MOVE_PAGE.with((Id::from_raw("source-1"), copy("gone"))),
+            ),
+            (
+                "deleting a page that is not there",
+                PdfMarkup::DELETE_PAGE.with(Id::from_raw("gone")),
+            ),
+        ] {
+            // Each refusal meets a record of its own.
+            let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
+            let before = replica.state().expect("state");
+            assert!(replica.apply(invoke).is_err(), "{what} is refused");
+            assert_eq!(
+                replica.state().expect("state"),
+                before,
+                "{what} changes nothing"
+            );
+        }
+    }
+
+    phase published_pages_carry_duplicate_and_delete;
+    {
+        fn find<'a>(
+            resource: &'a tilo_actions::ResourceSpec,
+            id: &str,
+        ) -> Option<&'a tilo_actions::ResourceSpec> {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            resource.children.iter().find_map(|child| find(child, id))
+        }
+        let replica =
+            ui::tilo_resource::Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
+        let published = replica.published().expect("published");
+        let page_id =
+            ui::tilo_resource::items::item_resource_id::<PdfMarkup>("pages", &Id::from_raw("source-1"));
+        let page = find(&published, &page_id).expect("published page");
+        let ids: Vec<&str> = page
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for id in ["duplicate-page", "delete-page", "move-page", "rotate-page"] {
+            assert!(ids.contains(&id), "{ids:?}");
+        }
     }
 }
 
@@ -265,66 +269,70 @@ fn older_markup_keeps_its_annotations_and_leaves_old_threads_behind() {
     assert_eq!(note.kind, crate::model::AnnoKind::Note { x: 1.0, y: 2.0 });
 }
 
-#[test]
-fn a_relative_path_is_refused_for_every_path_action() {
-    // Every effect that takes a path, by every way a path is relative.
-    let relative = [
-        "notes.pdf",
-        "./notes.pdf",
-        "../notes.pdf",
-        "~/notes.pdf",
-        "",
-    ];
-    let absolute = std::env::temp_dir().join("notes.pdf");
-    let absolute = absolute.to_str().expect("a UTF-8 temporary directory");
-    for id in ["open-pdf", "save-as", "insert-pages"] {
-        for path in relative {
+tilo_test_env::scenario! {
+    fn path_actions_take_an_absolute_path_or_ask_the_picker;
+
+    phase a_relative_path_is_refused_for_every_path_action;
+    {
+        // Every effect that takes a path, by every way a path is relative.
+        let relative = [
+            "notes.pdf",
+            "./notes.pdf",
+            "../notes.pdf",
+            "~/notes.pdf",
+            "",
+        ];
+        let absolute = std::env::temp_dir().join("notes.pdf");
+        let absolute = absolute.to_str().expect("a UTF-8 temporary directory");
+        for id in ["open-pdf", "save-as", "insert-pages"] {
+            for path in relative {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("path".into(), path.into());
+                let Err(error) = PdfEffect::decode(id, &arguments) else {
+                    panic!("{id} takes the relative {path:?}");
+                };
+                assert!(
+                    matches!(
+                        &error,
+                        ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                            if name == "path" && source.to_string().contains("absolute")
+                    ),
+                    "{id} with {path:?}: {error}"
+                );
+            }
             let mut arguments = serde_json::Map::new();
-            arguments.insert("path".into(), path.into());
-            let Err(error) = PdfEffect::decode(id, &arguments) else {
-                panic!("{id} takes the relative {path:?}");
-            };
-            assert!(
-                matches!(
-                    &error,
-                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                        if name == "path" && source.to_string().contains("absolute")
-                ),
-                "{id} with {path:?}: {error}"
-            );
-        }
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("path".into(), absolute.into());
-        if let Err(error) = PdfEffect::decode(id, &arguments) {
-            panic!("{id} refuses the absolute {absolute:?}: {error}");
+            arguments.insert("path".into(), absolute.into());
+            if let Err(error) = PdfEffect::decode(id, &arguments) {
+                panic!("{id} refuses the absolute {absolute:?}: {error}");
+            }
         }
     }
-}
 
-/// Without a path, opening and saving ask the system picker. Inserting
-/// pages has no picker to ask and is refused, naming the argument.
-#[test]
-fn an_omitted_path_asks_the_picker_only_where_there_is_one() {
-    let none = serde_json::Map::new();
-    assert!(
-        matches!(
-            PdfEffect::decode("open-pdf", &none),
-            Ok(PdfEffect::OpenPdf { path: None })
-        ),
-        "open-pdf without a path"
-    );
-    assert!(
-        matches!(
-            PdfEffect::decode("save-as", &none),
-            Ok(PdfEffect::SaveAs { path: None })
-        ),
-        "save-as without a path"
-    );
-    assert!(
-        matches!(
-            PdfEffect::decode("insert-pages", &none),
-            Err(ui::tilo_resource::EffectDecodeError::Argument { name, .. }) if name == "path"
-        ),
-        "insert-pages without a path"
-    );
+    phase an_omitted_path_asks_the_picker_only_where_there_is_one;
+    // Without a path, opening and saving ask the system picker. Inserting
+    // pages has no picker to ask and is refused, naming the argument.
+    {
+        let none = serde_json::Map::new();
+        assert!(
+            matches!(
+                PdfEffect::decode("open-pdf", &none),
+                Ok(PdfEffect::OpenPdf { path: None })
+            ),
+            "open-pdf without a path"
+        );
+        assert!(
+            matches!(
+                PdfEffect::decode("save-as", &none),
+                Ok(PdfEffect::SaveAs { path: None })
+            ),
+            "save-as without a path"
+        );
+        assert!(
+            matches!(
+                PdfEffect::decode("insert-pages", &none),
+                Err(ui::tilo_resource::EffectDecodeError::Argument { name, .. }) if name == "path"
+            ),
+            "insert-pages without a path"
+        );
+    }
 }
