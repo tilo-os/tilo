@@ -832,12 +832,23 @@ impl Widget for Music {
                         .with_hashed_key("home-empty")
                         .with_name(crate::i18n::t(super::HOME_EMPTY_TITLE))
                         .with_description(crate::i18n::t(super::HOME_EMPTY_MESSAGE))
-                        .with_children(vec![
-                            AccessNode::new(Role::Button)
+                        .with_children(vec![{
+                            let button = AccessNode::new(Role::Button)
                                 .with_name(crate::i18n::t(super::HOME_EMPTY_ACTION))
                                 .with_description(crate::i18n::t("music-a11y-choose-source"))
-                                .with_action_target("music.connect-source"),
-                        ]),
+                                .with_action_target("music.connect-source");
+                            // Where the empty state paints it, so a reader that meets the button
+                            // can also reach it with a pointer.
+                            match self.hits.iter().find(|hit| {
+                                matches!(
+                                    hit.action,
+                                    Action::SpotifyEffect(crate::actions::MusicEffect::Sources)
+                                )
+                            }) {
+                                Some(hit) => button.with_bounds(hit.rect),
+                                None => button,
+                            }
+                        }]),
                 );
             } else {
                 let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
