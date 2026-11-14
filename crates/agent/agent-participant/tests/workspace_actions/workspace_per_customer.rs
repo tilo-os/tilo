@@ -123,6 +123,37 @@ fn answered(reply: &Value, field: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// `path` of `agent`'s workspace listed by `tilo_ls`: asked again while the
+/// host is still settling the workspace it was just given a record in, which
+/// it answers as unavailable, as a customer's agent asks it again.
+async fn listed_by(agent: &mut Mcp<'_>, path: &str) -> Value {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let (status, answer) = call(agent, "tilo_ls", json!({"path": path})).await;
+        if status == 200
+            && let Some(rows) = answer["result"]["structuredContent"]["rows"].as_array()
+        {
+            return Value::Array(rows.clone());
+        }
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let settling = answer["result"]["isError"] == false
+            || text.contains("unavailable")
+            || text.contains("not running")
+            || text.contains("not joined")
+            // A host on a loaded node can take longer than its own answer
+            // budget; the read changes nothing, so it is asked again.
+            || text.contains("did not answer within");
+        assert!(
+            settling && Instant::now() < deadline,
+            "{path} is never listed: {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// `token`'s agent, over MCP at its workspace's URL, writes a page titled
 /// `title` there and puts a file in: the page's path and the file's reference.
 async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (String, String) {
@@ -139,12 +170,10 @@ async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (St
         json!({"title": title, "markdown": "- passport\n"}),
     )
     .await;
-    let (_, notes) = call(&mut agent, "tilo_ls", json!({"path": "notes"})).await;
-    let page = notes["result"]["structuredContent"]["rows"]
+    let notes = listed_by(&mut agent, "notes").await;
+    let page = notes
         .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row.to_string().contains(title))
+        .and_then(|rows| rows.iter().find(|row| row.to_string().contains(title)))
         .unwrap_or_else(|| panic!("its page is listed: {notes}"))["path"]
         .as_str()
         .unwrap()
