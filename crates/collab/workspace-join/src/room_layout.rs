@@ -199,6 +199,7 @@ pub(super) fn decode_invitation(bytes: &[u8], version: u32) -> Result<Decoded, S
     Ok(Decoded {
         grant: grant.into_current()?,
         inviter,
+        administrator: false,
         authority: None,
         workspace_number: Some(workspace_number),
     })

@@ -736,6 +736,7 @@ impl Workspaces {
                             expires_at_ns: grant.expires_at_ns,
                             inviter_name: None,
                         },
+                        false,
                         now,
                     )
                     .map_err(refused)?;

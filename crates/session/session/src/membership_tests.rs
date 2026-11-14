@@ -1553,7 +1553,7 @@ fn invite_from_this_device(
         inviter_name: None,
     };
     let owner = engine.owner();
-    let issued = owner.issue_invitation(workspace_id, cert, &request, &[], key, now);
+    let issued = owner.issue_invitation(workspace_id, cert, &request, false, &[], key, now);
     pollster::block_on(issued).expect("this device issues the link")
 }
 

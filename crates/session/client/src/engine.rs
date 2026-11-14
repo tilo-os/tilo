@@ -69,6 +69,34 @@ pub enum NotDeletable {
     NotOwner,
 }
 
+/// The part an invitation brings someone in at: a role, and whether it also makes them an
+/// administrator (an Editor with every governance action).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Part {
+    pub role: Role,
+    pub administrator: bool,
+}
+
+impl Part {
+    /// A part at `role` alone.
+    #[must_use]
+    pub const fn role(role: Role) -> Self {
+        Self {
+            role,
+            administrator: false,
+        }
+    }
+
+    /// An administrator: an Editor the invitation also makes an administrator.
+    #[must_use]
+    pub const fn administrator() -> Self {
+        Self {
+            role: Role::Editor,
+            administrator: true,
+        }
+    }
+}
+
 /// An invitation this device made: the link a person hands over, the part it brings whoever redeems
 /// it in at, and when it stops working.
 #[derive(Clone, Debug)]
@@ -1269,6 +1297,24 @@ impl Engine {
             .unwrap_or(false)
     }
 
+    /// Whether this device's person may make administrators in `workspace`, as its governance
+    /// answers it: whether the invite sheet offers an administrator's invitation.
+    #[must_use]
+    pub fn may_invite_administrator(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let key = self.identity().signer.as_ref();
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view
+                    .peer()
+                    .governance()
+                    .may_invite_administrator(key, tilo_clock::wall()))
+            })
+            .unwrap_or(false)
+    }
+
     /// Whether this device's person may delete `workspace` : they own it, no one else is in it, and
     /// this device is the only one holding it — so a workspace taken off this device is a workspace
     /// gone everywhere, and not one another of their devices would list again.
@@ -1346,15 +1392,18 @@ impl Engine {
     /// names, redeemable until `expires_in_seconds` from `now`: the link to hand to
     /// whoever is invited. A link is worth as much as the device that signed it being
     /// reachable; when `recipient_user_public_key` names someone, only a device
-    /// certified for that person may redeem it.
+    /// certified for that person may redeem it. With `makes_administrator`, the link
+    /// also makes whoever redeems it an administrator: an Editor's invitation, which
+    /// only someone who may make administrators can issue.
     /// # Errors
     /// The workspace is not held here, this device's person may not invite into it or
-    /// hand out that part, or the workspace cannot be published.
+    /// hand out that part, may not make administrators when asked to, or the workspace
+    /// cannot be published.
     #[cfg(target_os = "linux")]
     pub async fn issue_invitation(
         &self,
         workspace: &str,
-        role: Role,
+        part: Part,
         invitee_name: Option<String>,
         recipient_user_public_key: Option<[u8; 32]>,
         expires_in_seconds: u64,
@@ -1385,12 +1434,13 @@ impl Engine {
                 &identity.device_cert,
                 &IssueInvitationRequest {
                     request_id,
-                    role,
+                    role: part.role,
                     recipient_user_public_key,
                     invitee_name,
                     expires_at_ns,
                     inviter_name: None,
                 },
+                part.administrator,
                 &[hint],
                 identity.signer.as_ref(),
                 now,
@@ -1399,7 +1449,7 @@ impl Engine {
         Ok(Issued {
             invite: hex::encode(issued.invite_id),
             link: tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
-            role,
+            role: part.role,
             expires_at_ns,
         })
     }
@@ -2000,6 +2050,46 @@ mod tests {
         assert!(
             engine.may_invite(&workspace.to_string()),
             "its owner may invite into it"
+        );
+        assert!(
+            engine.may_invite_administrator(&workspace.to_string()),
+            "its owner may make administrators of it"
+        );
+    }
+
+    /// An owner's desk makes an administrator's invitation: an Editor's link
+    /// that also makes whoever redeems it an administrator.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_desk_issues_an_invitation_that_makes_an_administrator() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+
+        let issued = pollster::block_on(engine.issue_invitation(
+            &workspace.to_string(),
+            Part::administrator(),
+            None,
+            None,
+            600,
+            &at,
+            SystemTime::now(),
+        ))
+        .expect("the owner issues an administrator's invitation");
+        assert_eq!(issued.role, Role::Editor);
+        let verified = tilo_peer_state::join::decode_and_verify_invitation_text(
+            &issued.link,
+            None,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the link hands over the invitation");
+        assert!(
+            verified.administrator(),
+            "redeeming it makes the person an administrator"
         );
     }
 

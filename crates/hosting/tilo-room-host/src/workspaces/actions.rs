@@ -131,7 +131,16 @@ const SECOND_NS: u64 = 1_000_000_000;
 /// is the same request to the workspace's request records.
 const REQUEST_ID_CONTEXT: &str = "tilo-relay room governance action request v1";
 
-const ROLES: [&str; 4] = ["viewer", "commenter", "editor", "moderator"];
+const ROLES: [&str; 5] = [
+    "viewer",
+    "commenter",
+    "editor",
+    "moderator",
+    ADMINISTRATOR_ROLE,
+];
+/// The invitation choice that makes its holder an administrator: an Editor
+/// with the administrator grants, which no role of its own names.
+const ADMINISTRATOR_ROLE: &str = "administrator";
 const CALL_OPERATIONS: [&str; 4] = ["start", "restart", "set-directions", "set-denial"];
 /// The call operation that is destructive, and so not served yet.
 const END_CALL: &str = "end";
@@ -298,7 +307,8 @@ fn invite_params() -> Vec<ActionParam> {
         ActionParam::required(
             "role",
             ParamType::Text,
-            "The role the invited person gets; never above the inviter's own.",
+            "The role the invited person gets; `administrator` gives them an editor's part \
+             and the administrator grants; never above the inviter's own.",
         )
         .with_choices(ROLES),
         ActionParam::optional(
@@ -737,8 +747,16 @@ impl Args {
         }
     }
 
-    fn role(&self) -> Result<Role, ActionHostError> {
-        self.role_at("role")
+    /// The part an invitation the argument `name` names hands out, and
+    /// whether it also makes its holder an administrator.
+    fn invitation_role_at(&self, name: &str) -> Result<(Role, bool), ActionHostError> {
+        let text = self.required_text(name)?;
+        if text == ADMINISTRATOR_ROLE {
+            // An administrator joins as an Editor and is made one by the
+            // invitation's own grant, never by a role above the inviter's.
+            return Ok((Role::Editor, true));
+        }
+        self.role_at(name).map(|role| (role, false))
     }
 
     /// The role the argument `name` names.
@@ -794,9 +812,22 @@ fn pending_json(invitation: &super::PendingInvitation) -> Value {
     json!({
         "invite": hex::encode(invitation.invite_id),
         "role": invitation.role.key(),
+        "administrator": invitation.administrator,
         "recipient": invitation.recipient_user_public_key.map(hex::encode),
         "invitee_name": invitation.invitee_name,
         "expires_at_ns": invitation.expires_at_ns,
+    })
+}
+
+/// How long an invitation issued now stays redeemable, as its arguments
+/// say it: seconds when given, else hours, else the default.
+fn invitation_lifetime(args: &Args) -> Result<u64, ActionHostError> {
+    Ok(match args.integer("expires_in_seconds")? {
+        Some(seconds) => seconds.saturating_mul(SECOND_NS),
+        None => args
+            .integer("expires_in_hours")?
+            .unwrap_or(DEFAULT_INVITATION_HOURS)
+            .saturating_mul(HOUR_NS),
     })
 }
 
@@ -1322,32 +1353,28 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         match action {
             governance::INVITE => {
-                let lifetime_ns = match args.integer("expires_in_seconds")? {
-                    Some(seconds) => seconds.saturating_mul(SECOND_NS),
-                    None => args
-                        .integer("expires_in_hours")?
-                        .unwrap_or(DEFAULT_INVITATION_HOURS)
-                        .saturating_mul(HOUR_NS),
-                };
-                let expires_at_ns = now.saturating_add(lifetime_ns);
+                let expires_at_ns = now.saturating_add(invitation_lifetime(args)?);
+                let (role, makes_administrator) = args.invitation_role_at("role")?;
                 let issued = self
-                    .issue(
+                    .issue_as(
                         workspace,
                         device,
                         IssueInvitationRequest {
                             request_id,
-                            role: args.role()?,
+                            role,
                             recipient_user_public_key: args.key("recipient")?,
                             invitee_name: args.text("invitee_name")?.map(str::to_owned),
                             expires_at_ns,
                             inviter_name: args.text("inviter_name")?.map(str::to_owned),
                         },
+                        makes_administrator,
                     )
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(json!({
                     "invite": hex::encode(issued.invite_id),
                     "invitation": hex::encode(issued.signed_invitation),
+                    "administrator": makes_administrator,
                     "expires_at_ns": expires_at_ns,
                 }))
             }

@@ -381,6 +381,10 @@ pub(crate) struct Shared {
     /// ([`crate::replication`] asks it with the rest of their standing, as
     /// the desk asks its own host).
     pub invitable: Arc<AtomicBool>,
+    /// Whether the workspace lets this page's person make administrators,
+    /// as its host last answered: the invite sheet offers an administrator's
+    /// link only where it does.
+    pub administers: Arc<AtomicBool>,
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made is released, anyone's here to
     /// close ([`tilo_desktop_model::ownership::released`]).

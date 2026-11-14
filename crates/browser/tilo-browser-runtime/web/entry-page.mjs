@@ -122,6 +122,7 @@ function card(text, choices, name) {
  * gives, not only its name. */
 const ROLE_WORDS = {
   owner: 'Can manage people, permissions, and workspace settings.',
+  administrator: 'Can do everything here: edit shared work, invite and remove people, make other administrators, and change the workspace’s name and settings.',
   moderator: 'Can edit shared work and remove other people’s messages.',
   editor: 'Can view, comment on, and edit shared work.',
   commenter: 'Can view shared work and add comments, but cannot edit it.',

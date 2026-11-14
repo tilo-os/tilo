@@ -1444,7 +1444,10 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
     throw new AdmissionError('invitation-unusable', UNUSABLE_INVITATION);
   }
   return {
-    workspaceName: reply.name, role: reply.role.toLowerCase(), room: reply.room, workspaceId: reply.workspaceId,
+    // An administrator's invitation gives the Editor role and makes them an
+    // administrator: the card names what they become.
+    workspaceName: reply.name, role: reply.administrator ? 'administrator' : reply.role.toLowerCase(),
+    room: reply.room, workspaceId: reply.workspaceId,
     expiresAtNs: reply.expiresAtNs, members: reply.members ?? null, inviter: reply.inviter ?? undefined,
   };
 }

@@ -218,6 +218,7 @@ pub(super) fn decode_invitation(bytes: &[u8], version: u32) -> Result<Decoded, S
     Ok(Decoded {
         grant: grant.into_current()?,
         inviter,
+        administrator: false,
         // The device the workspace's host was when this was signed: the
         // issuer itself, or the authority that delegated the invitation to it.
         authority: Some(authority),

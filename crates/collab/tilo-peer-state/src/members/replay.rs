@@ -385,7 +385,7 @@ impl<'a> Ledger<'a> {
         }) else {
             return false;
         };
-        let Ok(grant) = crate::workspace::membership::invitation_admits(
+        let Ok(admitted) = crate::workspace::membership::invitation_admission(
             policy,
             self.workspace,
             &signed,
@@ -402,7 +402,26 @@ impl<'a> Ledger<'a> {
             .joined
             .entry(person.clone())
             .or_insert(at_ns / 1_000_000);
-        policy.members.entry(person).or_insert(grant.role);
+        let newcomer = !policy.members.contains_key(&person);
+        policy
+            .members
+            .entry(person.clone())
+            .or_insert(admitted.grant.role);
+        // An administrator's invitation makes its holder one as they enter,
+        // given by whom it carries the making of: every device replays the
+        // same admission to the same grants. Someone already a member keeps
+        // what they hold, as with their role.
+        if let Some(by) = admitted.administrator_by.filter(|_| newcomer) {
+            let workspace = self.workspace;
+            for grant in [
+                roles::administrator_grant(workspace, &person, Grantee::person(by.clone())),
+                roles::administrator_moderation_grant(workspace, &person, Grantee::person(by)),
+            ] {
+                if policy.grants.iter().all(|held| held.id != grant.id) {
+                    policy.grants.push(grant);
+                }
+            }
+        }
         true
     }
 }

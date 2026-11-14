@@ -5,7 +5,7 @@
 //! - `workspace/members#list` (or `tilo_read workspace/members`) answers the
 //!   members, each with their role, and the invitations still open;
 //! - `workspace/members#invite {role, email?}` answers a link that brings one
-//!   person in as `role`;
+//!   person in as `role`, an administrator included;
 //! - `workspace/members#name {name}` names the key's own person in the
 //!   workspace: what its member list and the invitations they make say for
 //!   them.
@@ -14,7 +14,8 @@
 //! `invite`, `member.list`, `invitation.list` and `member.name`), asked of its
 //! host over the key's session, and the host decides who may: a person's
 //! server key invites into the workspaces its person administers, as an
-//! Editor at most; an agent's grant and a key for one workspace do not. A
+//! Editor at most, and as an administrator only where its person may make
+//! administrators; an agent's grant and a key for one workspace do not. A
 //! person names themself, from any key of theirs, in a workspace they are a
 //! member of. The link is the one a person's desk hands over: the invitation
 //! sealed onto the site's shelf (`https://<site>/i/<handle>#<key>`), or, where
@@ -34,8 +35,9 @@ use tilo_session_client::device::HostRefusal;
 
 /// The path of a workspace's people.
 pub const ROOT: &str = "workspace/members";
-/// The roles a key invites anyone as: never above an Editor.
-const ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
+/// The roles a key invites anyone as: never above an Editor, and
+/// `administrator` only where its person may make administrators.
+const ROLES: [&str; 4] = ["viewer", "commenter", "editor", "administrator"];
 /// The workspace's governance actions this path asks.
 const INVITE: &str = "invite";
 const MEMBERS: &str = "member.list";
@@ -110,7 +112,8 @@ impl Session {
                         "not_permitted",
                         format!("the workspace refused: {}", error.message),
                         "a key you created, reaching all your workspaces, invites into the ones \
-                         you administer, as an editor at most",
+                         you administer, as an editor at most, or as an administrator where you \
+                         may make administrators",
                     )
                 }
             })
@@ -136,7 +139,7 @@ impl Session {
         let Some(role) = text("role").filter(|role| ROLES.contains(role)) else {
             return failed(
                 "invalid_arguments",
-                "`role` is viewer, commenter or editor",
+                "`role` is viewer, commenter, editor or administrator",
                 "pass args {role: \"editor\", email?: \"ops@example.com\"}",
             );
         };

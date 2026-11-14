@@ -635,9 +635,12 @@ class FakeApi:
 
     def invite(self, call: dict[str, Any]) -> httpx.Response:
         asked = json.loads(call["body"] or b"{}")
-        if asked.get("role") not in ("viewer", "commenter", "editor"):
+        if asked.get("role") not in ("viewer", "commenter", "editor", "administrator"):
             return self.refuse(
-                422, "invalid_arguments", "`role` is viewer, commenter or editor", ["send {role: viewer}"]
+                422,
+                "invalid_arguments",
+                "`role` is viewer, commenter, editor or administrator",
+                ["send {role: viewer}"],
             )
         invited: dict[str, Any] = {
             "workspace": WORKSPACE_ID,

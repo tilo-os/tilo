@@ -89,15 +89,27 @@ impl Workspace for DeskWorkspace {
         let Some(engine) = self.engine.as_deref() else {
             return Vec::new();
         };
-        engine
-            .invitable_roles(&self.in_front().unwrap_or_default())
+        let workspace = self.in_front().unwrap_or_default();
+        let mut roles: Vec<sheet::Role> = engine
+            .invitable_roles(&workspace)
             .into_iter()
             .map(|role| sheet::Role {
                 key: role.key().to_owned(),
                 label: domain::role_label(role),
                 brings: domain::role_capability_preview(role),
             })
-            .collect()
+            .collect();
+        // An administrator is an Editor with the administrator grants: a
+        // choice of its own on top of the roles, offered to whoever may make
+        // administrators.
+        if engine.may_invite_administrator(&workspace) {
+            roles.push(sheet::Role {
+                key: "administrator".to_owned(),
+                label: domain::administrator_label(),
+                brings: domain::administrator_capability_preview(),
+            });
+        }
+        roles
     }
 
     fn people(&self) -> Vec<sheet::Person> {
@@ -147,9 +159,16 @@ impl Workspace for DeskWorkspace {
             .into_iter()
             .filter(|invite| invite.recipient_user_public_key != Some(own))
             .map(|invite| {
+                // An administrator's invitation joins someone as an Editor and
+                // makes them one, so it is listed by what it makes them.
+                let label = if invite.administrator {
+                    domain::administrator_label()
+                } else {
+                    domain::role_label(invite.role)
+                };
                 sheet::pending(
                     &hex::encode(invite.invite_id),
-                    &domain::role_label(invite.role),
+                    &label,
                     invite.invitee_name.as_deref(),
                     invite.recipient_user_public_key.is_some(),
                     invite.expires_at_ns,

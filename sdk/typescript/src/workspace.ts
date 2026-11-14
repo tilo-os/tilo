@@ -101,7 +101,8 @@ export class WorkspaceKeys {
  * The people in this workspace, and bringing someone else in.
  *
  * Inviting takes a key you created reaching all your workspaces, into one you
- * administer, and invites as an editor at most.
+ * administer, and invites as an editor at most, or as an administrator where
+ * you may make administrators.
  */
 export class Members {
   readonly workspace: Workspace;
@@ -110,9 +111,16 @@ export class Members {
     this.workspace = workspace;
   }
 
-  /** The link that brings one person in as `role`. */
+  /**
+   * The link that brings one person in as `role`. `administrator` gives them
+   * an editor's part and the administrator grants, where you may make
+   * administrators.
+   */
   async invite(
-    options: { role?: "viewer" | "commenter" | "editor"; email?: string } = {},
+    options: {
+      role?: "viewer" | "commenter" | "editor" | "administrator";
+      email?: string;
+    } = {},
   ): Promise<Invitation> {
     const endpoint = await this.workspace.endpoint();
     const json: Record<string, unknown> = { role: options.role ?? "viewer" };

@@ -202,10 +202,10 @@ pub(crate) enum InviteEffect {
     /// Make an invitation into a workspace from this device: the link to hand to whoever is
     /// being invited, which their device joins with
     IssueInvitation {
-        /// The part the invitation brings them in at: `viewer`, `commenter`, `editor` or
-        /// `moderator`; editor when absent
+        /// The part the invitation brings them in at: `viewer`, `commenter`, `editor`,
+        /// `moderator` or `administrator`; editor when absent
         #[param(
-            "The part the invitation brings them in at: `viewer`, `commenter`, `editor` or `moderator`"
+            "The part the invitation brings them in at: `viewer`, `commenter`, `editor`, `moderator` or `administrator`"
         )]
         role: Option<String>,
         /// The name the invitation knows them by
@@ -779,13 +779,20 @@ impl Desk {
     ) -> Result<Started, DoorError> {
         let engine = self.engine()?;
         let room = self.workspace_id(workspace)?;
-        let role = match role {
-            None => Role::Editor,
-            Some(name) => Role::parse(name)
-                .filter(|role| role.assignable())
-                .ok_or_else(|| {
-                    DoorError::InvalidArguments(format!("`{name}` is no part of a workspace"))
-                })?,
+        let (role, makes_administrator) = match role {
+            None => (Role::Editor, false),
+            // An administrator joins as an Editor and is made one by the
+            // invitation's own grant, which only someone who may make
+            // administrators can issue.
+            Some("administrator") => (Role::Editor, true),
+            Some(name) => (
+                Role::parse(name)
+                    .filter(|role| role.assignable())
+                    .ok_or_else(|| {
+                        DoorError::InvalidArguments(format!("`{name}` is no part of a workspace"))
+                    })?,
+                false,
+            ),
         };
         let recipient = recipient
             .map(|person| {
@@ -823,7 +830,10 @@ impl Desk {
             let issued = engine
                 .issue_invitation(
                     &room,
-                    role,
+                    tilo_session_client::engine::Part {
+                        role,
+                        administrator: makes_administrator,
+                    },
                     invitee_name,
                     recipient,
                     expires_in,
@@ -837,6 +847,7 @@ impl Desk {
                     "invite": issued.invite,
                     "link": issued.link,
                     "role": issued.role.key(),
+                    "administrator": makes_administrator,
                     "expires_at_ns": issued.expires_at_ns,
                 })),
                 resources: Vec::new(),

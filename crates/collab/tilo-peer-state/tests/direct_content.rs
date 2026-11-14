@@ -48,6 +48,7 @@ async fn invitation(
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: None,
             },
+            false,
             &[testing::own_host_hint_here(workspace, host_cert, host_key)],
             host_key,
             SystemTime::now(),

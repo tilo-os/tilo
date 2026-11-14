@@ -56,4 +56,7 @@ pub struct PendingInvitation {
     /// How it names its recipient.
     pub invitee_name: Option<String>,
     pub expires_at_ns: u64,
+    /// It also makes whoever redeems it an administrator.
+    #[serde(default)]
+    pub administrator: bool,
 }

@@ -110,6 +110,18 @@ pub fn role_capability_preview(role: CapRole) -> String {
     })
 }
 
+/// What an administrator is called: an Editor who also governs the workspace.
+#[must_use]
+pub fn administrator_label() -> String {
+    t("workspace-settings-role-administrator")
+}
+
+/// What an administrator may do, in the words the role chooser uses.
+#[must_use]
+pub fn administrator_capability_preview() -> String {
+    t("workspace-settings-role-administrator-preview")
+}
+
 /// The catalogue message for a device-scoped capability, or `None` for a device the catalogue has
 /// no name for (shown by its id).
 fn device_scope_key(device: &str) -> Option<&'static str> {

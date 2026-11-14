@@ -49,6 +49,11 @@ pub use collab_types::{Member, MemberId, Person};
 const INVITATION_VERSION: u32 = 5;
 /// An invitation that also names who sent it.
 const INVITATION_WITH_INVITER_VERSION: u32 = 6;
+/// An invitation that makes its holder an administrator besides giving them
+/// its role, naming who sent it when its issuer knows: written only for an
+/// administrator's invitation, so every other invitation stays in a layout
+/// every build reads.
+const ADMINISTRATOR_INVITATION_VERSION: u32 = 7;
 /// Longest inviter name an invitation carries, in characters.
 pub const MAX_INVITER_NAME_CHARS: usize = 80;
 /// Challenges carry no authority device, and name the workspace by its
@@ -174,6 +179,24 @@ struct SignedInvitationWithInviter {
     signature: [u8; 64],
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SignedAdministratorInvitation {
+    version: u32,
+    grant: InviteGrant,
+    inviter: Option<Inviter>,
+    administrator: bool,
+    #[serde(with = "serde_bytes")]
+    signature: [u8; 64],
+}
+
+#[derive(Serialize)]
+struct AdministratorInvitationView<'a> {
+    version: u32,
+    grant: &'a InviteGrant,
+    inviter: &'a Option<Inviter>,
+    administrator: bool,
+}
+
 #[derive(Serialize)]
 struct InvitationView<'a> {
     version: u32,
@@ -192,6 +215,7 @@ pub struct VerifiedJoin {
     invite_id: [u8; 32],
     grant: InviteGrant,
     inviter: Option<Inviter>,
+    administrator: bool,
     signed_invitation: Vec<u8>,
     /// The authority an invitation issued before grants stopped naming one
     /// was delegated from, where it was not its issuer.
@@ -205,6 +229,7 @@ pub struct VerifiedJoin {
 struct Decoded {
     grant: InviteGrant,
     inviter: Option<Inviter>,
+    administrator: bool,
     authority: Option<DeviceCert>,
     workspace_number: Option<u64>,
 }
@@ -228,6 +253,27 @@ impl VerifiedJoin {
     /// Who sent the invitation, when its issuer recorded them.
     pub fn inviter(&self) -> Option<&Inviter> {
         self.inviter.as_ref()
+    }
+
+    /// Whether the invitation makes its holder an administrator besides
+    /// giving them its role. Whoever admits them checks that the people it
+    /// names ([`Self::granted_by`]) may make administrators.
+    pub const fn administrator(&self) -> bool {
+        self.administrator
+    }
+
+    /// The people whose authority the invitation carries, by user root: its
+    /// issuer's person, and the inviter it names when that is someone else
+    /// (a host signs for the person who asked it). Each must be allowed
+    /// what the invitation gives.
+    pub fn granted_by(&self) -> Vec<[u8; 32]> {
+        let mut people = vec![self.grant.issuer.user_public_key];
+        if let Some(inviter) = &self.inviter
+            && inviter.user_public_key != self.grant.issuer.user_public_key
+        {
+            people.push(inviter.user_public_key);
+        }
+        people
     }
 
     pub fn signed_invitation(&self) -> &[u8] {
@@ -527,6 +573,44 @@ pub fn issue_invitation_from(
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }
 
+/// [`issue_invitation`] of an invitation that also makes its holder an
+/// administrator, naming `inviter` when the issuer signs for someone else:
+/// the role must be [`Role::Editor`], the role an administrator holds.
+pub fn issue_administrator_invitation(
+    grant: InviteGrant,
+    inviter: Option<Inviter>,
+    key: &dyn collab_types::signer::DeviceSigner,
+) -> Result<Vec<u8>, String> {
+    validate_grant(&grant, 0, false)?;
+    if grant.role != Role::Editor {
+        return Err("an administrator joins as an Editor".into());
+    }
+    if let Some(inviter) = &inviter {
+        validate_inviter(inviter)?;
+    }
+    if key.device_public_key() != grant.issuer.device_public_key {
+        return Err("invitation signer is not the declared issuer device".into());
+    }
+    let digest = tagged_digest(
+        INVITATION_DOMAIN,
+        &AdministratorInvitationView {
+            version: ADMINISTRATOR_INVITATION_VERSION,
+            grant: &grant,
+            inviter: &inviter,
+            administrator: true,
+        },
+    )?;
+    let signed = SignedAdministratorInvitation {
+        version: ADMINISTRATOR_INVITATION_VERSION,
+        grant,
+        inviter,
+        administrator: true,
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
+    };
+    postcard::to_stdvec(&signed).map_err(|error| error.to_string())
+}
+
 fn validate_inviter(inviter: &Inviter) -> Result<(), String> {
     let name = inviter.name.trim();
     if name.is_empty()
@@ -616,6 +700,11 @@ pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
                 .map(|signed| signed.grant)
                 .ok()
         }
+        Ok((ADMINISTRATOR_INVITATION_VERSION, _)) => {
+            postcard::from_bytes::<SignedAdministratorInvitation>(signed_invitation)
+                .map(|signed| signed.grant)
+                .ok()
+        }
         Ok((version, _)) if room_layout::is_invitation_version(version) => {
             room_layout::unchecked_grant(signed_invitation, version)
         }
@@ -631,6 +720,17 @@ pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
     .into_iter()
     .filter_map(Result::ok)
     .collect()
+}
+
+/// Whether `signed_invitation` is laid out as an administrator's invitation,
+/// read without verifying it: for listing what an invitation a host keeps
+/// gives. Whoever admits its holder verifies it whole.
+#[must_use]
+pub fn makes_administrator(signed_invitation: &[u8]) -> bool {
+    matches!(
+        postcard::take_from_bytes::<u32>(signed_invitation),
+        Ok((ADMINISTRATOR_INVITATION_VERSION, _))
+    )
 }
 
 /// The text an invitation is handed over in: its signed bytes as base64.
@@ -671,6 +771,7 @@ pub fn decode_and_verify_invitation(
         INVITATION_VERSION | INVITATION_WITH_INVITER_VERSION => {
             decode_invitation(signed_invitation, version)?
         }
+        ADMINISTRATOR_INVITATION_VERSION => decode_administrator_invitation(signed_invitation)?,
         _ if room_layout::is_invitation_version(version) => {
             room_layout::decode_invitation(signed_invitation, version)?
         }
@@ -689,6 +790,7 @@ pub fn decode_and_verify_invitation(
         invite_id: *blake3::hash(signed_invitation).as_bytes(),
         grant: decoded.grant,
         inviter: decoded.inviter,
+        administrator: decoded.administrator,
         signed_invitation: signed_invitation.to_vec(),
         authority: decoded.authority,
         workspace_number: decoded.workspace_number,
@@ -730,6 +832,37 @@ fn decode_invitation(signed_invitation: &[u8], version: u32) -> Result<Decoded, 
     Ok(Decoded {
         grant,
         inviter,
+        administrator: false,
+        authority: None,
+        workspace_number: None,
+    })
+}
+
+/// Decode and check the issuer's signature of an administrator's invitation
+/// ([`ADMINISTRATOR_INVITATION_VERSION`]).
+fn decode_administrator_invitation(signed_invitation: &[u8]) -> Result<Decoded, String> {
+    let signed: SignedAdministratorInvitation = postcard::from_bytes(signed_invitation)
+        .map_err(|_| "invalid signed invitation".to_string())?;
+    if let Some(inviter) = &signed.inviter {
+        validate_inviter(inviter)?;
+    }
+    if !signed.administrator || signed.grant.role != Role::Editor {
+        return Err("invalid signed invitation".into());
+    }
+    let digest = tagged_digest(
+        INVITATION_DOMAIN,
+        &AdministratorInvitationView {
+            version: signed.version,
+            grant: &signed.grant,
+            inviter: &signed.inviter,
+            administrator: signed.administrator,
+        },
+    )?;
+    verify_issuer_signature(&signed.grant.issuer, &digest, &signed.signature)?;
+    Ok(Decoded {
+        grant: signed.grant,
+        inviter: signed.inviter,
+        administrator: true,
         authority: None,
         workspace_number: None,
     })

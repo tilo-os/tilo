@@ -579,6 +579,7 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
             inviter_name: Some(seed.declared_owner.name.clone()),
             wait_list_entry: None,
             recipient: None,
+            administrator: false,
         },
     )
     .await;

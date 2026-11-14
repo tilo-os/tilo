@@ -695,13 +695,25 @@ pub async fn redeem_invitation(site: String, secret: String) -> Result<String, J
 
 /// What `invitation` (the signed invitation's bytes) offers at the host
 /// `post` reaches: `{kind: 'invitation', room, workspaceId, name, role,
-/// expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves to JSON.
+/// administrator, expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves
+/// to JSON. `administrator` says the invitation also makes its holder an
+/// administrator, read from its own signed layout: the host it admits into
+/// checks it whole.
 #[wasm_bindgen(js_name = inspectInvitation)]
 pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
     let reply = tilo_relay_client::https::invitation(&PageHttp(post), &invitation)
         .await
         .map_err(js_error)?;
-    Ok(join_reply_json(reply).to_string())
+    let mut answer = join_reply_json(reply);
+    if let Some(fields) = answer.as_object_mut()
+        && fields.get("kind").and_then(serde_json::Value::as_str) == Some("invitation")
+    {
+        fields.insert(
+            "administrator".into(),
+            tilo_workspace_join::makes_administrator(&invitation).into(),
+        );
+    }
+    Ok(answer.to_string())
 }
 
 /// Which certificate the page's session starts with as it comes back to the host whose own

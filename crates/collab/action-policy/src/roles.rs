@@ -208,10 +208,12 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 /// [`governance_actions`].
 ///
 /// An administrator stays a member with a role, an Editor as the workspace's
-/// governance writes them, and that role still bounds them: an invite or a
-/// role they hand out is never above it ([`crate::Refusal::AboveActorRole`]),
-/// a membership action reaches only those ranked below it
-/// ([`crate::Refusal::NotBelowActor`]), and a grant they give never exceeds
+/// governance writes them, for what they do with the workspace's content.
+/// Governing it, they are the owner's equal in all but the owner's place:
+/// they hand out every role a workspace hands out, and a membership action
+/// reaches every member who is not an administrator; other administrators
+/// are the owner's and the keeper's to unmake or remove
+/// ([`crate::Refusal::Administrators`]). A grant they give never exceeds
 /// what they hold ([`crate::Refusal::AboveActorGrant`]). A ban or a live
 /// restriction on them stops their governance with the rest of their
 /// changes ([`crate::WorkspacePolicy::check_action`]).
@@ -255,6 +257,63 @@ pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by:
         lifetime: Lifetime::UntilRevoked,
         granted_by,
     }
+}
+
+/// Whether `id` is one of the two grants that make someone an administrator
+/// ([`administrator_grant`] and [`administrator_moderation_grant`]), and whose:
+/// placing either is making an administrator, taking either back unmaking one.
+#[must_use]
+pub fn administrator_named(id: &GrantId) -> Option<&str> {
+    let id = id.as_str();
+    id.strip_prefix("room-admin-v1:")
+        .or_else(|| id.strip_prefix("room-admin-moderation-v1:"))
+}
+
+/// The node of making and unmaking a workspace's administrators. It is not
+/// one of the actions a member runs on its own ([`governance::ALL`]): it is
+/// what deciding [`crate::WorkspacePolicy::may_make_administrators`] asks.
+/// The owner holds it, every administrator holds it through their grant on
+/// [`governance_actions`], and the person the workspace is kept for holds it
+/// through [`keeper_grant`].
+#[must_use]
+pub fn administrators_node(workspace: &str) -> TreePath {
+    governance_action(workspace, "administer")
+}
+
+/// The id of the grant naming `person` as whom the workspace is kept for.
+#[must_use]
+pub fn keeper_grant_id(person: &str) -> GrantId {
+    GrantId(format!("room-keeper-v1:{person}"))
+}
+
+/// The grant naming `person` as whom `workspace` is kept for: the person a
+/// host keeps the workspace for (who made it there, or whose account it
+/// belongs to), while the host itself is its structural owner. Only the
+/// owner gives it ([`crate::Refusal::KeeperByOwner`]), and it is part of the
+/// workspace's signed governance like every grant, so every member reads who
+/// holds it.
+///
+/// It gives the owner's authority over administrators and nothing else: its
+/// holder makes administrators ([`administrators_node`]) and unmakes and
+/// removes them ([`crate::WorkspacePolicy::may_unmake_administrators`]),
+/// whatever their own role.
+#[must_use]
+pub fn keeper_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
+    Grant {
+        id: keeper_grant_id(person),
+        grantee: Grantee::person(person.to_owned()),
+        node: administrators_node(workspace),
+        kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+        answer: Answer::Allow,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by,
+    }
+}
+
+/// Whose keeper grant `id` is ([`keeper_grant_id`]).
+#[must_use]
+pub fn keeper_named(id: &GrantId) -> Option<&str> {
+    id.as_str().strip_prefix("room-keeper-v1:")
 }
 
 /// Whether `grant` is an administrator's grant of `workspace` in the shape workspaces

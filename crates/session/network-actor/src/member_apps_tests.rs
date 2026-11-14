@@ -117,6 +117,7 @@ async fn invitation(
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: None,
             },
+            false,
             &[transport],
             key,
             SystemTime::now(),

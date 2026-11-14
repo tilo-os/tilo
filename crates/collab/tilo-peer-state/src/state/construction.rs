@@ -276,7 +276,15 @@ impl StatePeer {
         // An administrator moderates the workspace too: the two grants come and
         // go together.
         if administrator {
-            let giver = Grantee::person(hex::encode(self.core.owner));
+            // Whoever makes them an administrator gives the grants: the
+            // owner's device, whom the workspace is kept for, or another
+            // administrator, as the workspace's policy decides for every
+            // device that replays the change.
+            let giver = Grantee::person(hex::encode(
+                self.certificate(&key.device_public_key(), now)
+                    .map_err(|error| error.to_string())?
+                    .user_public_key,
+            ));
             for grant in [
                 tilo_action_policy::roles::administrator_grant(&workspace, &person, giver.clone()),
                 tilo_action_policy::roles::administrator_moderation_grant(

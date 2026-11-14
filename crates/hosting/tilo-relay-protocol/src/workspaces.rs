@@ -191,6 +191,9 @@ pub struct PendingInvite {
     /// How it names that person.
     #[serde(default)]
     pub invitee_name: Option<String>,
+    /// It also makes whoever redeems it an administrator.
+    #[serde(default)]
+    pub administrator: bool,
 }
 
 /// One `/rooms` request. `workspace` is a workspace UUID. Each change answers with
@@ -233,6 +236,11 @@ pub enum WorkspacesRequest {
         /// anyone holding it may redeem.
         #[serde(default)]
         recipient: Option<[u8; 32]>,
+        /// The invitation also makes whoever redeems it an administrator: an
+        /// Editor with every governance action. `role` is then Editor, and
+        /// only someone who may make administrators issues one.
+        #[serde(default)]
+        administrator: bool,
     },
     /// Cancel an invitation not yet redeemed: answered with
     /// [`WorkspacesReply::Pending`].

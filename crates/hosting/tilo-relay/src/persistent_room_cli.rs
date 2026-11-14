@@ -817,7 +817,7 @@ async fn declare_owner(
         }
         .to_line();
     };
-    match workspaces
+    let declared = match workspaces
         .set_member_administrator(
             workspace,
             host,
@@ -827,6 +827,22 @@ async fn declare_owner(
         )
         .await
     {
+        // The person an operator declares the owner is whom the workspace is
+        // kept for: they make and unmake its administrators as its owner,
+        // this host, does.
+        Ok(_) => {
+            workspaces
+                .set_member_keeper(
+                    workspace,
+                    host,
+                    request_id(b"keeper", &user, tilo_clock::unix_now_ns()),
+                    user,
+                )
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    match declared {
         Ok(_) => OperatorEvent::OwnerDeclared {
             user_public_key: key.to_owned(),
         }
@@ -2199,6 +2215,7 @@ mod tests {
                     inviter_name: Some("Member".into()),
                     wait_list_entry: None,
                     recipient: None,
+                    administrator: false,
                 },
             )
             .await

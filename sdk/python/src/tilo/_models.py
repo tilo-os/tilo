@@ -23,9 +23,9 @@ class WorkspaceInfo:
 
     `host` is the host that keeps it, when one said. `role` is the part they
     take in it: `owner` for one of their own, else the role they were invited
-    with (`viewer`, `commenter`, `editor`). It is `""` when the API did not say.
-    `labels` are what the person labelled it with when they made it
-    (`{"customer_id": "cus_8121"}`), read by their own keys alone.
+    with (`viewer`, `commenter`, `editor`, `administrator`). It is `""` when
+    the API did not say. `labels` are what the person labelled it with when
+    they made it (`{"customer_id": "cus_8121"}`), read by their own keys alone.
     """
 
     id: str

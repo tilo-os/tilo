@@ -1,9 +1,10 @@
 use crate::{
     InviteGrant, Inviter, JoinChallenge, JoinCompleteRequest, JoinTransportRequest,
-    MembershipChallenge, Role, TRANSPORT_IROH_OWNER_ENDPOINT_ADDR_V1, decode_and_verify_invitation,
-    decode_and_verify_invitation_text, encode_invitation_text, issue_invitation,
-    issue_invitation_from, sign_join_proof, sign_membership_proof, sign_transport_hint,
-    verify_join_proof, verify_membership_proof, verify_stored_complete,
+    MembershipChallenge, Role, SignedAdministratorInvitation,
+    TRANSPORT_IROH_OWNER_ENDPOINT_ADDR_V1, decode_and_verify_invitation,
+    decode_and_verify_invitation_text, encode_invitation_text, issue_administrator_invitation,
+    issue_invitation, issue_invitation_from, sign_join_proof, sign_membership_proof,
+    sign_transport_hint, verify_join_proof, verify_membership_proof, verify_stored_complete,
 };
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -645,4 +646,57 @@ fn each_signed_invitation_layout_reads_and_writes_as_it_was_kept() {
         },
         || issue_invitation_from(grant.clone(), kept_inviter(), &device).unwrap(),
     );
+    tilo_files::native::migration::assert_golden_bytes(
+        "signed invitation, version 7",
+        &golden(include_str!("../golden/signed-invitation/v7.hex")),
+        |bytes| {
+            assert_eq!(bytes.first(), Some(&7));
+            let join = decode_and_verify_invitation(bytes, None, &revocations, 2).unwrap();
+            assert_eq!(join.grant(), &grant);
+            assert_eq!(join.inviter(), Some(&kept_inviter()));
+            assert!(join.administrator());
+        },
+        || issue_administrator_invitation(grant.clone(), Some(kept_inviter()), &device).unwrap(),
+    );
+}
+
+/// An administrator's invitation says so under its issuer's signature: the
+/// flag cannot be added to, or taken from, an invitation its issuer signed
+/// without it, and it names whose authority it carries.
+#[test]
+fn an_administrator_invitation_is_signed_as_one() {
+    let revocations = RevocationList::new();
+    let (device, grant) = kept_grant();
+    let plain = issue_invitation_from(grant.clone(), kept_inviter(), &device).unwrap();
+    assert!(
+        !decode_and_verify_invitation(&plain, None, &revocations, 2)
+            .unwrap()
+            .administrator()
+    );
+    // Its issuer's own person asked: theirs alone is the authority it carries.
+    let own = issue_administrator_invitation(grant.clone(), Some(kept_inviter()), &device).unwrap();
+    let join = decode_and_verify_invitation(&own, None, &revocations, 2).unwrap();
+    assert!(join.administrator());
+    assert_eq!(join.granted_by(), [grant.issuer.user_public_key]);
+    // A host signs for someone else: both carry it.
+    let asker = Inviter {
+        user_public_key: [7; 32],
+        name: "Ada".into(),
+    };
+    let signed = issue_administrator_invitation(grant.clone(), Some(asker), &device).unwrap();
+    let join = decode_and_verify_invitation(&signed, None, &revocations, 2).unwrap();
+    assert_eq!(join.granted_by(), [grant.issuer.user_public_key, [7; 32]]);
+    let mut decoded: SignedAdministratorInvitation = postcard::from_bytes(&signed).unwrap();
+    decoded.inviter = Some(Inviter {
+        user_public_key: [9; 32],
+        name: "Mallory".into(),
+    });
+    let forged = postcard::to_stdvec(&decoded).unwrap();
+    assert!(decode_and_verify_invitation(&forged, None, &revocations, 2).is_err());
+    // An administrator joins as an Editor, and no other role.
+    let viewer = InviteGrant {
+        role: Role::Viewer,
+        ..grant
+    };
+    assert!(issue_administrator_invitation(viewer, None, &device).is_err());
 }

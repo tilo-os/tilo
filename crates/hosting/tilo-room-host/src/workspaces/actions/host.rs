@@ -306,7 +306,8 @@ fn create_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "invite_role",
             ParamType::Text,
-            "Issue the workspace's first invitation, with this role.",
+            "Issue the workspace's first invitation, with this role; `administrator` gives \
+             them an editor's part and the administrator grants.",
         )
         .with_choices(ROLES),
         ActionParam::optional(
@@ -403,12 +404,13 @@ const fn expiry(now: u64, seconds: u64) -> u64 {
     now.saturating_add(seconds.saturating_mul(SECOND_NS))
 }
 
-/// The terms of a workspace's first invitation, when its creation asks for one.
+/// The terms of a workspace's first invitation, when its creation asks for
+/// one, and whether it makes its holder an administrator.
 fn first_invitation(
     args: &Args,
     request_id: [u8; 32],
     now: u64,
-) -> Result<Option<IssueInvitationRequest>, ActionHostError> {
+) -> Result<Option<(IssueInvitationRequest, bool)>, ActionHostError> {
     if args.text("invite_role")?.is_none() {
         return Ok(None);
     }
@@ -416,14 +418,18 @@ fn first_invitation(
         Some(seconds) => expiry(now, seconds),
         None => now.saturating_add(DEFAULT_INVITATION_HOURS.saturating_mul(HOUR_NS)),
     };
-    Ok(Some(IssueInvitationRequest {
-        request_id,
-        role: args.role_at("invite_role")?,
-        recipient_user_public_key: args.key("invite_recipient")?,
-        invitee_name: args.text("invitee_name")?.map(str::to_owned),
-        expires_at_ns,
-        inviter_name: args.text("inviter_name")?.map(str::to_owned),
-    }))
+    let (role, makes_administrator) = args.invitation_role_at("invite_role")?;
+    Ok(Some((
+        IssueInvitationRequest {
+            request_id,
+            role,
+            recipient_user_public_key: args.key("invite_recipient")?,
+            invitee_name: args.text("invitee_name")?.map(str::to_owned),
+            expires_at_ns,
+            inviter_name: args.text("inviter_name")?.map(str::to_owned),
+        },
+        makes_administrator,
+    )))
 }
 
 /// How a caller asks the host's operations.
@@ -629,7 +635,7 @@ impl Workspaces {
         // person (their runtime joins with it), and the host issues
         // it, as the workspace's governor.
         let inviter = if device.capabilities.agent.is_some() {
-            if first.as_ref().is_some_and(|terms| {
+            if first.as_ref().is_some_and(|(terms, _)| {
                 terms.recipient_user_public_key != Some(device.user_public_key)
             }) {
                 return Err(refused(
@@ -645,9 +651,9 @@ impl Workspaces {
             .await
             .map_err(|error| refused(&error))?;
         let invitation = match first {
-            Some(terms) => Some(ActionInvitation::of(
+            Some((terms, makes_administrator)) => Some(ActionInvitation::of(
                 &self
-                    .issue(&summary.workspace, inviter, terms)
+                    .issue_as(&summary.workspace, inviter, terms, makes_administrator)
                     .await
                     .map_err(|error| refused(&error))?,
             )),

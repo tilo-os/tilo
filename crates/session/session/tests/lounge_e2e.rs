@@ -807,6 +807,7 @@ fn invite(room: &Room, member_page: &Link, person: [u8; 32]) -> String {
             // The invitation names the person it is for: a workspace taking people by
             // invitation answers its door with it when they ask.
             recipient: Some(person),
+            administrator: false,
         })
         .expect("the member's page asks the host to invite");
     let reply = reply

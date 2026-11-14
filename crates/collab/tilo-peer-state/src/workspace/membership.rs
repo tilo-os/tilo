@@ -272,6 +272,30 @@ pub fn invitation_admits(
     joiner: [u8; 32],
     at_ns: u64,
 ) -> Result<crate::join::InviteGrant, MembershipRefusal> {
+    invitation_admission(policy, workspace, signed, joiner, at_ns).map(|admitted| admitted.grant)
+}
+
+/// What an invitation admits its joiner as: its grant, and, for an
+/// administrator's invitation, the person whose making of an administrator
+/// it carries (the inviter it names, else its issuer's person).
+pub struct Admitted {
+    pub grant: crate::join::InviteGrant,
+    pub administrator_by: Option<String>,
+}
+
+/// [`invitation_admits`], with whether the invitation makes its joiner an
+/// administrator. An administrator's invitation admits only when everyone
+/// whose authority it carries ([`crate::join::VerifiedJoin::granted_by`]:
+/// its issuer, and the person a host signed it for) may make administrators
+/// as `policy` stands, so an invitation an Editor's device signed, or a host
+/// signed for someone who may not make administrators, makes nobody one.
+pub fn invitation_admission(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    workspace: &str,
+    signed: &[u8],
+    joiner: [u8; 32],
+    at_ns: u64,
+) -> Result<Admitted, MembershipRefusal> {
     let refused = |error: String| MembershipRefusal::Refused(format!("invitation: {error}"));
     let join = crate::join::decode_and_verify_invitation(
         signed,
@@ -288,17 +312,40 @@ pub fn invitation_admits(
     // The owner grants itself anything, from any device of theirs, so the
     // foreign-device bound does not narrow what they invite.
     let foreign = grant.issuer.capabilities.foreign && !policy.is_owner(&issuer);
+    let cx = Context::at_secs(at_ns / 1_000_000_000);
     let authority = policy.person_on_device(&issuer, foreign);
     policy
-        .check_invite(
-            &issuer,
-            &authority,
-            grant.role,
-            &Context::at_secs(at_ns / 1_000_000_000),
-            false,
-        )
+        .check_invite(&issuer, &authority, grant.role, &cx, false)
         .map_err(|refusal| refused(format!("its issuer may not invite: {refusal}")))?;
-    Ok(grant)
+    if !join.administrator() {
+        return Ok(Admitted {
+            grant,
+            administrator_by: None,
+        });
+    }
+    let mut administrator_by = issuer.clone();
+    for person in join.granted_by() {
+        let person = hex::encode(person);
+        // The issuer signs on its own device; a person it signs for asked
+        // it, and holds what they hold on their own.
+        let authority = if person == issuer {
+            policy.person_on_device(&issuer, foreign)
+        } else {
+            policy.person_on_device(&person, false)
+        };
+        policy
+            .check_administrator_invite(&person, &authority, &cx, false)
+            .map_err(|refusal| {
+                refused(format!(
+                    "it makes an administrator {person} may not make: {refusal}"
+                ))
+            })?;
+        administrator_by = person;
+    }
+    Ok(Admitted {
+        grant,
+        administrator_by: Some(administrator_by),
+    })
 }
 
 /// The people the batch admits through invitations, each with the role

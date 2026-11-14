@@ -474,14 +474,50 @@ impl JoinLedger {
         signer: Signer<'_>,
         now: u64,
     ) -> Result<IssuedInvitation, JoinError> {
+        self.issue_as(
+            workspace,
+            administrator,
+            request,
+            false,
+            transport,
+            signer,
+            now,
+        )
+    }
+
+    /// [`Self::issue`] of an invitation that, when `makes_administrator`,
+    /// also makes its holder an administrator: an Editor's invitation in the
+    /// layout that says so ([`crate::join::issue_administrator_invitation`]),
+    /// naming `administrator`'s person as whom it is from. Whoever admits the
+    /// holder checks that person may make administrators.
+    pub fn issue_as(
+        &mut self,
+        workspace: &Governed<'_>,
+        administrator: &DeviceCert,
+        request: IssueInvitationRequest,
+        makes_administrator: bool,
+        transport: Vec<TransportHint>,
+        signer: Signer<'_>,
+        now: u64,
+    ) -> Result<IssuedInvitation, JoinError> {
         let Signer { key, nonce } = signer;
-        let digest = request_digest(&(
+        if makes_administrator && request.role != Role::Editor {
+            return Err(JoinError::new("an administrator joins as an Editor"));
+        }
+        let terms = (
             &request.role,
             &request.recipient_user_public_key,
             &request.invitee_name,
             request.expires_at_ns,
             &request.inviter_name,
-        ))?;
+        );
+        // An administrator's request is another request than the same
+        // terms without it; every other request keeps the digest it had.
+        let digest = if makes_administrator {
+            request_digest(&(terms, "administrator"))?
+        } else {
+            request_digest(&terms)?
+        };
         if let Some(record) = self
             .invitations
             .iter()
@@ -506,6 +542,20 @@ impl JoinLedger {
             transport,
         };
         let signed_invitation = match request.inviter_name {
+            _ if makes_administrator => crate::join::issue_administrator_invitation(
+                grant.clone(),
+                // The person who asked, under the name they give, or their
+                // name's stand-in: whom it is from is what an admitting
+                // member checks.
+                Some(Inviter {
+                    user_public_key: administrator.user_public_key,
+                    name: request
+                        .inviter_name
+                        .clone()
+                        .unwrap_or_else(|| hex::encode(&administrator.user_public_key[..4])),
+                }),
+                key,
+            )?,
             Some(name) => issue_invitation_from(
                 grant.clone(),
                 Inviter {
@@ -591,6 +641,7 @@ impl JoinLedger {
                 recipient_user_public_key: record.grant.recipient_user_public_key,
                 invitee_name: record.grant.invitee_name.clone(),
                 expires_at_ns: record.grant.expires_at_ns,
+                administrator: crate::join::makes_administrator(&record.issued.signed_invitation),
             })
             .collect::<Vec<_>>();
         invitations.sort_by_key(|invitation| invitation.invite_id);

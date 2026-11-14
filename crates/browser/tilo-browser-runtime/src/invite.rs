@@ -278,6 +278,9 @@ fn refuse<T>(reason: &str) -> Result<T, Refused> {
 /// Why nothing was asked: a page with no workspace host makes no links.
 const NO_HOST: &str = "this page is in no workspace to invite anyone into";
 
+/// The key the sheet asks an administrator's link by.
+const ADMINISTRATOR: &str = "administrator";
+
 /// Why nothing was asked: a page that is in no workspace.
 const NO_WORKSPACE: &str = "this page is in no workspace";
 
@@ -329,7 +332,7 @@ impl Workspace for PageWorkspace {
 
     fn roles(&self) -> Vec<sheet::Role> {
         let ceiling = self.shared.standing.role().unwrap_or(Role::Editor);
-        Role::ASSIGNABLE
+        let mut roles: Vec<sheet::Role> = Role::ASSIGNABLE
             .into_iter()
             .filter(|role| ceiling.includes(*role))
             .map(|role| sheet::Role {
@@ -337,7 +340,17 @@ impl Workspace for PageWorkspace {
                 label: role_label(role),
                 brings: role_preview(role),
             })
-            .collect()
+            .collect();
+        // Making someone an administrator is offered only to whom the
+        // workspace lets make them, as its host last answered.
+        if self.shared.administers.load(Ordering::Relaxed) {
+            roles.push(sheet::Role {
+                key: ADMINISTRATOR.to_owned(),
+                label: tilo_desktop::workspace_settings::administrator_label(),
+                brings: tilo_desktop::workspace_settings::administrator_capability_preview(),
+            });
+        }
+        roles
     }
 
     fn people(&self) -> Vec<sheet::Person> {
@@ -379,7 +392,11 @@ impl Workspace for PageWorkspace {
             .map(|invite| {
                 sheet::pending(
                     &hex::encode(invite.invite_id),
-                    &role_label(invite.role),
+                    &if invite.administrator {
+                        tilo_desktop::workspace_settings::administrator_label()
+                    } else {
+                        role_label(invite.role)
+                    },
                     invite.invitee_name.as_deref(),
                     invite.recipient.is_some(),
                     invite.expires_at_ns,
@@ -389,7 +406,14 @@ impl Workspace for PageWorkspace {
     }
 
     fn issue(&self, role: &str, recipient: &str, answer: Answer<Issued>) {
-        let Some(asked) = Role::parse(role).filter(|role| role.assignable()) else {
+        // An administrator joins as an Editor who also governs the workspace.
+        let administrator = role == ADMINISTRATOR;
+        let parsed = if administrator {
+            Some(Role::Editor)
+        } else {
+            Role::parse(role)
+        };
+        let Some(asked) = parsed.filter(|role| role.assignable()) else {
             return answer(refuse("that is not a part a link can bring someone in at"));
         };
         let Some(workspace) = self.workspace() else {
@@ -425,6 +449,7 @@ impl Workspace for PageWorkspace {
                 inviter_name: name,
                 wait_list_entry: None,
                 recipient,
+                administrator,
             },
             move |reply| {
                 answer(match reply {
@@ -439,6 +464,7 @@ impl Workspace for PageWorkspace {
                             expires_at_ns,
                             recipient,
                             invitee_name: None,
+                            administrator,
                         });
                         Ok(Issued {
                             invite: hex::encode(invite_id),

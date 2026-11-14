@@ -155,6 +155,10 @@ pub(crate) struct Joined {
     /// attached desktop's flag, which its bar's invite button and its invite
     /// sheet follow, set from the workspace's answer.
     invitable: Arc<AtomicBool>,
+    /// Whether the workspace lets this page's person make administrators:
+    /// the attached desktop's flag, which its invite sheet's administrator
+    /// choice follows.
+    administers: Arc<AtomicBool>,
     /// When the page next asks the workspace that (Unix milliseconds; 0: now).
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The role the workspace last answered this page's person holds: the
@@ -236,6 +240,7 @@ pub(crate) fn open(
         authored: 0,
         moderates: Arc::default(),
         invitable: Arc::default(),
+        administers: Arc::default(),
         moderation_due_ms: Arc::default(),
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
@@ -502,6 +507,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             shared.members.replace(joined.members.clone());
             joined.moderates = Arc::clone(&shared.moderates);
             joined.invitable = Arc::clone(&shared.invitable);
+            joined.administers = Arc::clone(&shared.administers);
             joined.standing.share(&shared.standing);
         }
         joined.moderation_due_ms.store(0, Ordering::Relaxed);
@@ -603,7 +609,19 @@ impl Joined {
             Ordering::Relaxed,
         );
         self.ask_permits();
-        self.ask_invitable(now);
+        self.ask_flag(
+            &tilo_action_policy::roles::governance_action(
+                &self.uuid,
+                tilo_action_policy::roles::governance::INVITE,
+            ),
+            &self.invitable,
+            now,
+        );
+        self.ask_flag(
+            &tilo_action_policy::roles::administrators_node(&self.uuid),
+            &self.administers,
+            now,
+        );
         let wake: Vec<_> = self
             .mounts
             .values()
@@ -671,12 +689,11 @@ impl Joined {
     /// and its invite sheet offer a link only where the workspace says so,
     /// asked again with the rest of the standing, so a role granted while
     /// the page is open reaches it.
-    fn ask_invitable(&self, now: u64) {
-        let node = tilo_action_policy::roles::governance_action(
-            &self.uuid,
-            tilo_action_policy::roles::governance::INVITE,
-        );
-        let invitable = Arc::clone(&self.invitable);
+    ///
+    /// Whether they may make administrators is asked the same way, of the
+    /// node the workspace decides that by, into `flag`.
+    fn ask_flag(&self, node: &tilo_action_policy::TreePath, flag: &Arc<AtomicBool>, now: u64) {
+        let invitable = Arc::clone(flag);
         let due = Arc::clone(&self.moderation_due_ms);
         let wake: Vec<_> = self
             .mounts

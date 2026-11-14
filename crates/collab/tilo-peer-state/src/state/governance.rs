@@ -177,6 +177,12 @@ impl PeerGovernance<'_> {
             .is_ok()
     }
 
+    /// Whether `key`'s device may invite someone as an administrator at
+    /// `now`: whether the surfaces offering a part to grant offer it.
+    pub fn may_invite_administrator(self, key: &dyn DeviceSigner, now: SystemTime) -> bool {
+        self.peer.require_administrator_invitation(key, now).is_ok()
+    }
+
     /// The device that created the workspace: it founds the workspace's MLS
     /// group, and no other device does.
     pub fn founder(self) -> Option<[u8; 32]> {
@@ -836,6 +842,49 @@ impl PeerGovernanceMut<'_> {
             now,
         )
     }
+    /// Name the person `user_public_key` as whom the workspace is kept for
+    /// ([`tilo_action_policy::roles::keeper_grant`]): a host keeping the
+    /// workspace for the person who made it there, or whose account it
+    /// belongs to, while it is the structural owner itself. They make and
+    /// unmake administrators as the owner does. Only the owner's device names
+    /// them, and every member replays it from the workspace's signed
+    /// governance. Whether the workspace changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key`'s device is not the owner's, the person is
+    /// no member, or governance cannot be updated.
+    pub fn set_keeper(
+        self,
+        user_public_key: [u8; 32],
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer.require_member_writer(key, now)?;
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        let workspace = self.peer.core.workspace.clone();
+        let person = hex::encode(user_public_key);
+        let policy = doc.workspace_policy(&workspace);
+        if !policy.is_member(&person) {
+            return Err("the person is not a member of the workspace".into());
+        }
+        if policy.is_keeper(&person) {
+            return Ok(false);
+        }
+        let grant = tilo_action_policy::roles::keeper_grant(
+            &workspace,
+            &person,
+            Grantee::person(hex::encode(self.peer.core.owner)),
+        );
+        self.peer
+            .write_changes(doc, vec![Change::Grant(grant)], key, now)
+    }
+
     /// Name the person `user_public_key` `name` in the workspace: the name
     /// every reader of [`PeerGovernance::governed_members`] shows for them.
     /// The name is kept under the person's root, where the workspace holds
@@ -1161,5 +1210,24 @@ impl super::StatePeer {
                 false,
             )
             .map_err(|refusal| format!("the writer may not invite: {refusal}"))
+    }
+
+    /// Whether `key`'s device may invite someone as an administrator at
+    /// `now` ([`tilo_action_policy::WorkspacePolicy::check_administrator_invite`]).
+    pub(crate) fn require_administrator_invitation(
+        &self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let member = self.inviter(key, now)?;
+        member
+            .policy
+            .check_administrator_invite(
+                person_of(&member)?,
+                &member.authority(),
+                &tilo_action_policy::Context::at_time(now),
+                false,
+            )
+            .map_err(|refusal| format!("the writer may not invite an administrator: {refusal}"))
     }
 }

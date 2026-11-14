@@ -237,6 +237,7 @@ fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
         inviter_name: None,
         wait_list_entry: Some(entry),
         recipient: None,
+        administrator: false,
     }
 }
 
@@ -412,6 +413,7 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
         inviter_name: None,
         wait_list_entry: Some(wait_list_entry),
         recipient: None,
+        administrator: false,
     };
     // Not invited yet: nothing to mail. An invitation for an entry not on
     // the list is refused.
@@ -509,6 +511,7 @@ async fn assert_uncertain_invitation_mail(
                     inviter_name: None,
                     wait_list_entry: Some(cy),
                     recipient: None,
+                    administrator: false,
                 }
             )
             .await,
@@ -942,7 +945,8 @@ async fn roles_and_removals_follow_the_rooms_policy() {
         .unwrap();
 
     // Granted set-role, Ada hands out roles up to her own, and never
-    // changes an administrator's: only the owner makes or unmakes those.
+    // changes an administrator's: only the owner and whom the workspace is
+    // kept for unmake those.
     assert!(
         workspaces
             .set_member_role(&workspace, &ada, role_request(&cy, Role::Viewer, [22; 32]))
@@ -970,7 +974,9 @@ async fn roles_and_removals_follow_the_rooms_policy() {
         .await
         .unwrap_err();
     assert!(
-        administrator.to_string().contains("administrators"),
+        administrator
+            .to_string()
+            .contains("may not unmake or remove an administrator"),
         "{administrator}"
     );
     // The owner's devices still change anyone's role.
@@ -1011,17 +1017,18 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
         .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key, None)
         .await
         .unwrap();
-    an_administrator_invites_within_their_role(workspaces, &workspace, &ada).await;
-    an_administrator_rules_those_ranked_below(workspaces, &workspace, &ada, &bo, &cy).await;
+    an_administrator_invites_at_every_role(workspaces, &workspace, &ada).await;
+    an_administrator_rules_every_member_but_administrators(workspaces, &workspace, &ada, &bo, &cy)
+        .await;
     an_administrator_runs_the_workspaces_calls(workspaces, &workspace, &ada).await;
     unmaking_the_administrator_takes_it_all_back(workspaces, &workspace, &owner, &ada, &bo).await;
     relay.shutdown().await;
 }
 
-/// The co-owner invites, up to their own role, with no grant beyond the owner
-/// making them an administrator, and reads the requests asked of the
-/// workspace.
-async fn an_administrator_invites_within_their_role(
+/// The co-owner invites at every role a workspace hands out, with no grant
+/// beyond the owner making them an administrator, and reads the requests
+/// asked of the workspace.
+async fn an_administrator_invites_at_every_role(
     workspaces: &Workspaces,
     workspace: &str,
     ada: &DeviceCert,
@@ -1038,11 +1045,10 @@ async fn an_administrator_invites_within_their_role(
             .iter()
             .any(|pending| pending.invite_id == issued.invite_id)
     );
-    let above = workspaces
+    workspaces
         .issue(workspace, ada, invitation(52, Role::Moderator))
         .await
-        .unwrap_err();
-    assert!(above.to_string().contains("Moderator"), "{above}");
+        .unwrap();
     assert!(matches!(
         workspaces
             .page_rooms(
@@ -1056,9 +1062,9 @@ async fn an_administrator_invites_within_their_role(
     ));
 }
 
-/// They set roles up to their own and remove those ranked below them, never a
-/// fellow Editor.
-async fn an_administrator_rules_those_ranked_below(
+/// They set any role and remove any member who is not an administrator, a
+/// fellow Editor included.
+async fn an_administrator_rules_every_member_but_administrators(
     workspaces: &Workspaces,
     workspace: &str,
     ada: &DeviceCert,
@@ -1066,25 +1072,8 @@ async fn an_administrator_rules_those_ranked_below(
     cy: &DeviceCert,
 ) {
     set_role(workspaces, workspace, ada, cy, Role::Commenter).await;
-    assert!(
-        workspaces
-            .set_member_role(workspace, ada, role_request(bo, Role::Moderator, [53; 32]))
-            .await
-            .is_err()
-    );
-    assert!(
-        workspaces
-            .remove_member(
-                workspace,
-                ada,
-                RemoveMemberRequest {
-                    request_id: [54; 32],
-                    user_public_key: bo.user_public_key,
-                },
-            )
-            .await
-            .is_err()
-    );
+    set_role(workspaces, workspace, ada, bo, Role::Moderator).await;
+    set_role(workspaces, workspace, ada, bo, Role::Editor).await;
     workspaces
         .remove_member(
             workspace,
@@ -1305,4 +1294,68 @@ fn peer(cert: &DeviceCert) -> AuthenticatedPeer {
         user_public_key: cert.user_public_key,
         device_public_key: cert.device_public_key,
     }
+}
+
+#[tokio::test]
+async fn whom_a_workspace_is_kept_for_makes_and_unmakes_administrators() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let cy = admit(workspaces, &workspace, &owner, 3).await;
+    workspaces
+        .set_member_administrator(&workspace, &owner, [40; 32], ada.user_public_key, None)
+        .await
+        .unwrap();
+    // Only the host's person names whom the workspace is kept for.
+    assert!(
+        workspaces
+            .set_member_keeper(&workspace, &ada, [41; 32], ada.user_public_key)
+            .await
+            .is_err()
+    );
+    workspaces
+        .set_member_keeper(&workspace, &owner, [42; 32], ada.user_public_key)
+        .await
+        .unwrap();
+
+    // The keeper makes Bo an administrator, and Bo makes Cy one.
+    workspaces
+        .set_member_administrator(&workspace, &ada, [43; 32], bo.user_public_key, None)
+        .await
+        .unwrap();
+    workspaces
+        .set_member_administrator(&workspace, &bo, [44; 32], cy.user_public_key, None)
+        .await
+        .unwrap();
+    // Bo unmakes neither Cy nor the keeper; the keeper unmakes Cy.
+    for person in [&cy, &ada] {
+        assert!(
+            workspaces
+                .set_member_role(
+                    &workspace,
+                    &bo,
+                    role_request(person, Role::Editor, rand::random())
+                )
+                .await
+                .is_err()
+        );
+    }
+    set_role(workspaces, &workspace, &ada, &cy, Role::Editor).await;
+
+    // An administrator invites one; Cy, unmade, no longer does.
+    workspaces
+        .issue_as(&workspace, &bo, invitation(45, Role::Editor), true)
+        .await
+        .unwrap();
+    assert!(
+        workspaces
+            .issue_as(&workspace, &cy, invitation(46, Role::Editor), true)
+            .await
+            .is_err()
+    );
+    relay.shutdown().await;
 }

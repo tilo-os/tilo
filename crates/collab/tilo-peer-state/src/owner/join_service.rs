@@ -276,10 +276,14 @@ impl NativeWorkspaceOwner {
     /// outside the owner's turn, and
     /// publish it with the workspace's join ledger: the invitation's grant names
     /// this device, which answers its redemption like any other participant.
+    /// With `makes_administrator`, it also makes whoever redeems it an
+    /// administrator: an Editor's invitation, which only someone who may make
+    /// administrators can issue.
     ///
     /// # Errors
     ///
-    /// `signer` is not the device's, signing failed, it may not invite, the role it hands out is
+    /// `signer` is not the device's, signing failed, it may not invite, it may
+    /// not make administrators when asked to, the role it hands out is
     /// above its own, the request is invalid or the workspace cannot be
     /// published.
     pub async fn issue_invitation(
@@ -287,6 +291,7 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         administrator: &DeviceCert,
         request: &IssueInvitationRequest,
+        makes_administrator: bool,
         transport: &[TransportHint],
         signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
@@ -300,8 +305,12 @@ impl NativeWorkspaceOwner {
                     return Err("invitation is not signed by this device".into());
                 }
                 view.peer().require_member_writer(key, now)?;
-                view.peer()
-                    .require_invitation_authority(key, request.role, now)?;
+                if makes_administrator {
+                    view.peer().require_administrator_invitation(key, now)?;
+                } else {
+                    view.peer()
+                        .require_invitation_authority(key, request.role, now)?;
+                }
                 let issued = {
                     let governed = Governed {
                         peer: view.peer().into(),
@@ -312,10 +321,11 @@ impl NativeWorkspaceOwner {
                     };
                     record
                         .join_ledger
-                        .issue(
+                        .issue_as(
                             &governed,
                             administrator,
                             request.clone(),
+                            makes_administrator,
                             transport.to_vec(),
                             Signer { key, nonce },
                             crate::owner::enrollment::ns(now)?,

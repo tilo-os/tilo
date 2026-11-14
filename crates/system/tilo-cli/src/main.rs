@@ -242,6 +242,7 @@ enum Cmd {
     /// The people in a hosted workspace, inviting more, and how it names you.
     #[command(
         after_help = "Examples:\n  tilo members invite --role editor -w jane-doe   A link that brings a reviewer in\n  \
+                            tilo members invite --role administrator -w jane-doe   A link that makes a fellow administrator\n  \
                             tilo members ls -w jane-doe\n  \
                             tilo members name \"Quinten Wolff\" -w jane-doe   What its people and your invitations call you"
     )]

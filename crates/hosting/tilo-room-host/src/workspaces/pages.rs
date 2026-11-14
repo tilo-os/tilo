@@ -236,6 +236,7 @@ impl Workspaces {
                 inviter_name,
                 wait_list_entry,
                 recipient,
+                administrator,
             } => {
                 let request = IssueInvitationRequest {
                     request_id,
@@ -245,7 +246,7 @@ impl Workspaces {
                     expires_at_ns,
                     inviter_name,
                 };
-                self.page_invitation(&workspace, device, request, wait_list_entry)
+                self.page_invitation(&workspace, device, request, administrator, wait_list_entry)
                     .await?
             }
             WorkspacesRequest::Cancel {
@@ -594,6 +595,7 @@ impl Workspaces {
                     expires_at_ns: grant.expires_at_ns,
                     inviter_name,
                 },
+                false,
                 now,
             )?;
             workspace.admissions.record(
@@ -695,10 +697,13 @@ impl Workspaces {
         workspace: &str,
         device: &DeviceCert,
         request: IssueInvitationRequest,
+        administrator: bool,
         wait_list_entry: Option<[u8; 32]>,
     ) -> Result<WorkspacesReply, CollaborationError> {
         let Some(entry) = wait_list_entry else {
-            let issued = self.issue(workspace, device, request).await?;
+            let issued = self
+                .issue_as(workspace, device, request, administrator)
+                .await?;
             return Ok(WorkspacesReply::Invitation {
                 invite_id: issued.invite_id,
                 signed_invitation: issued.signed_invitation,
@@ -711,7 +716,7 @@ impl Workspaces {
             self.authorize(
                 device,
                 Some(&governed),
-                WorkspaceOp::Invite(request.role),
+                WorkspaceOp::invite(request.role, administrator),
                 now,
             )?;
             if !governed.wait_list.has(entry, now) {
@@ -719,7 +724,7 @@ impl Workspaces {
                     "that address is no longer on the wait list",
                 ));
             }
-            let issued = self.stage_issue(&mut governed, device, request, now)?;
+            let issued = self.stage_issue(&mut governed, device, request, administrator, now)?;
             governed
                 .wait_list
                 .invited(entry, issued.invite_id, now)
@@ -762,6 +767,7 @@ impl Workspaces {
                     expires_at_ns: invitation.expires_at_ns,
                     recipient: invitation.recipient_user_public_key,
                     invitee_name: invitation.invitee_name,
+                    administrator: invitation.administrator,
                 })
                 .collect(),
         ))

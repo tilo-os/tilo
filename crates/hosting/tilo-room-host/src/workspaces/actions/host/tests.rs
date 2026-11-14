@@ -192,6 +192,46 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
 }
 
 #[tokio::test]
+async fn the_relays_person_creates_a_workspace_with_an_administrators_invitation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let host = HostWorkspaceActions::new();
+    host.attach(relay.workspaces().clone());
+    let laptop = owners_laptop();
+
+    // The first invitation can make the person it brings in an
+    // administrator: they join as an Editor and the invitation says so.
+    let created: CreatedWorkspace = serde_json::from_value(
+        invoke(
+            &host,
+            &laptop,
+            host_request(
+                CREATE_ROOM,
+                json!({ "name": "Plans", "invite_role": "administrator" }),
+            ),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    let first = created.invitation.expect("asked for").decode().unwrap();
+    assert!(
+        tilo_peer_state::join::makes_administrator(&first.signed_invitation),
+        "the first invitation makes its holder an administrator"
+    );
+    let verified = decode_and_verify_invitation(
+        &first.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    assert_eq!(verified.grant().role, Role::Editor);
+    relay.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_relays_person_enters_a_room_and_lets_an_app_author_it_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

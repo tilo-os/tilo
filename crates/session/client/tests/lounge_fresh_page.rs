@@ -350,6 +350,7 @@ impl Lounge {
                 inviter_name: Some("The Lounge".into()),
                 wait_list_entry: None,
                 recipient: Some(to.root.verifying_key().to_bytes()),
+                administrator: false,
             })
             .unwrap();
         let reply = reply

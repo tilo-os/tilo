@@ -93,11 +93,12 @@ pub enum MembersCmd {
     #[command(
         after_help = "Example:\n  tilo members invite --role editor --email ops@example.com -w jane-doe\n\n\
                       Following the link signs them in and lands them in the workspace. A key you \
-                      created invites into workspaces you administer, as an editor at most. No mail \
-                      is sent: hand the link over yourself."
+                      created invites into workspaces you administer, as an editor at most, or as \
+                      an administrator where you may make administrators. No mail is sent: hand \
+                      the link over yourself."
     )]
     Invite {
-        /// viewer, commenter or editor.
+        /// viewer, commenter, editor or administrator.
         #[arg(long, default_value = "viewer")]
         role: String,
         /// Their address, which the invitation names.
@@ -1045,10 +1046,16 @@ fn members_text(listed: &Value) -> String {
     }
     said.push_str("\ninvitations:");
     for invitation in &invitations {
+        // An administrator's invitation joins someone as an Editor and makes
+        // them one, so it is named by what redeeming it makes them.
+        let what = if invitation.get("administrator").and_then(Value::as_bool) == Some(true) {
+            "administrator"
+        } else {
+            text(invitation, "role")
+        };
         let _ = write!(
             said,
-            "\n  {} invitation {}, {}",
-            text(invitation, "role"),
+            "\n  {what} invitation {}, {}",
             text(invitation, "status"),
             text(invitation, "id")
         );
@@ -1543,6 +1550,27 @@ mod tests {
             assert_eq!(
                 got.last().expect("the read").target,
                 format!("/v1/workspaces/{WORKSPACE}/content/tilo.content%3Aabc")
+            );
+
+            // A fellow administrator is invited by the role the API reads.
+            members(
+                reach,
+                "applicant-jane-doe",
+                MembersCmd::Invite {
+                    role: "administrator".into(),
+                    email: Some("ops@example.com".into()),
+                },
+            );
+            let invited = api_server.drain_requests();
+            let invitation = invited.last().expect("the invitation");
+            assert_eq!(invitation.method, "POST");
+            assert_eq!(
+                invitation.target,
+                format!("/v1/workspaces/{WORKSPACE}/members/invitations")
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&invitation.body).unwrap(),
+                json!({"role": "administrator", "email": "ops@example.com"})
             );
         }
 

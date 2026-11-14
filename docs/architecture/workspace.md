@@ -219,6 +219,25 @@ granted at that point is kept, so replicas stay byte-identical, but has no
 effect. No device decides for the others; every participant reaches the same
 answer from the same ops.
 
+**Administrators and whom a workspace is kept for.** An administrator is a
+member at the Editor role holding the administrator grants: every governance
+and moderation action of the workspace, still bounded by that role. A
+workspace's owner is structural, and on a host such as tilo.sh it is the host
+itself, so the person the host keeps the workspace for (who made it there, or
+whose account it belongs to) is named in the membership by a grant of its own,
+the keeper grant, which only the owner gives. The policy then decides, for
+every participant alike:
+
+- the owner, the keeper and every administrator make administrators;
+- only the owner and the keeper unmake an administrator, change their role or
+  remove, ban or restrict them; an administrator never does it to another,
+  and anyone gives up their own administration or leaves;
+- an invitation can make its holder an administrator (an Editor's invitation
+  in its own signed layout). Only someone who may make administrators issues
+  one, and every participant admitting its holder checks again that its
+  issuer, and the person a host signed it for, may make them; one that fails
+  admits nobody.
+
 **Concurrent changes merge by one rule.** Ops that do not depend on each
 other are applied in a fixed order: the author's role first (owner, then
 administrator, then the rest), then the op id. Each op is checked at its place

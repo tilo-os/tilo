@@ -453,6 +453,128 @@ async fn an_editor_invites_up_to_her_own_role_and_no_further() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one invitation, its pending listing and the administrator's own grants are one story"
+)]
+async fn an_administrator_is_an_editor_the_invitation_also_governs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+
+    // The owner may make administrators, so an invitation they make can as
+    // well: it joins them as an Editor and says it also makes them one.
+    let issued = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(
+            &workspace,
+            governance::INVITE,
+            json!({ "role": "administrator" }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(issued["administrator"], json!(true));
+    let signed = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
+    assert!(
+        tilo_peer_state::join::makes_administrator(&signed),
+        "the invitation is laid out as an administrator's"
+    );
+    let verified = tilo_peer_state::join::decode_and_verify_invitation(
+        &signed,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    assert!(verified.administrator());
+    assert_eq!(verified.grant().role, Role::Editor);
+
+    // The pending list says what redeeming it makes them, beside the role.
+    let invite_id = issued["invite"].as_str().unwrap();
+    let pending = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, INVITATIONS, json!({})),
+    )
+    .await
+    .unwrap();
+    let row = pending
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["invite"] == invite_id)
+        .expect("the administrator's invitation is pending");
+    assert_eq!(row["role"], json!("editor"));
+    assert_eq!(row["administrator"], json!(true));
+
+    // An Editor granted inviting may not make administrators: the
+    // workspace's own governance decides it, with its reason.
+    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    let refused = invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(
+            &workspace,
+            governance::INVITE,
+            json!({ "role": "administrator" }),
+        ),
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains("may not make administrators")),
+        "{refused:?}"
+    );
+
+    // Made an administrator, Ada invites as an administrator and hands out
+    // every part below her own, a Moderator's included.
+    let who = hex::encode(ada.user_public_key);
+    let administrator = roles::administrator_grant(
+        &workspace,
+        &who,
+        Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    let request_id = *blake3::hash(administrator.id.as_str().as_bytes()).as_bytes();
+    workspaces
+        .put_room_grants(&workspace, &owner, request_id, vec![administrator])
+        .await
+        .unwrap();
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(
+            &workspace,
+            governance::INVITE,
+            json!({ "role": "moderator" }),
+        ),
+    )
+    .await
+    .unwrap();
+    let made = invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(
+            &workspace,
+            governance::INVITE,
+            json!({ "role": "administrator" }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["administrator"], json!(true));
+    relay.shutdown().await;
+}
+
+#[tokio::test]
 async fn destructive_governance_waits_for_the_person() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

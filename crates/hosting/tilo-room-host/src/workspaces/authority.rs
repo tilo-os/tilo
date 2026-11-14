@@ -17,8 +17,8 @@
 //!    role change and an administration call cannot race. A Moderator
 //!    removes and bans those ranked below; a member the owner granted
 //!    `invite` invites, never above their own role; an administrator holds
-//!    every governance action and is still bounded by their Editor role; an
-//!    Editor by role alone governs nothing.
+//!    every governance action over every member who is not an administrator;
+//!    an Editor by role alone governs nothing.
 //!
 //! An agent's grant governs nothing, with one narrow exception: a person's
 //! server key invites for them, as an Editor at most, into the workspaces
@@ -42,17 +42,33 @@ pub(super) enum WorkspaceOp<'a> {
     /// Issue an invitation carrying `Role`: the invite action, and never a
     /// role above the inviter's own.
     Invite(Role),
+    /// Issue an invitation that also makes its holder an administrator: for
+    /// someone who may make administrators themselves.
+    InviteAdministrator,
+    /// Make a member an administrator: for the owner, whom the workspace is
+    /// kept for, and its administrators.
+    MakeAdministrator,
     /// A change to who is in the workspace or what they hold.
     Change(&'a Change),
 }
 
 impl WorkspaceOp<'_> {
+    /// The invitation an issue asks for: at `role`, or an administrator's.
+    pub(super) const fn invite(role: Role, administrator: bool) -> Self {
+        if administrator {
+            Self::InviteAdministrator
+        } else {
+            Self::Invite(role)
+        }
+    }
+
     /// The operation's name, for the log line of a refusal.
     fn name(self) -> &'static str {
         match self {
             Self::Host(operation) => operation.name(),
             Self::Govern(action) => action,
-            Self::Invite(_) => roles::governance::INVITE,
+            Self::Invite(_) | Self::InviteAdministrator => roles::governance::INVITE,
+            Self::MakeAdministrator => "make-administrator",
             Self::Change(change) => change.action(),
         }
     }
@@ -204,8 +220,12 @@ fn server_key_invites(device: &DeviceCert, op: WorkspaceOp<'_>) -> bool {
     device.capabilities.server_key
         && match op {
             WorkspaceOp::Invite(role) => role <= SERVER_KEY_INVITES_AT_MOST,
+            // An administrator's invitation is the person's own decision as
+            // much as one at a role is: their key makes one where they may
+            // make administrators themselves, which the workspace decides.
+            WorkspaceOp::InviteAdministrator => true,
             WorkspaceOp::Govern(action) => action == roles::governance::INVITE,
-            WorkspaceOp::Host(_) | WorkspaceOp::Change(_) => false,
+            WorkspaceOp::Host(_) | WorkspaceOp::Change(_) | WorkspaceOp::MakeAdministrator => false,
         }
 }
 
@@ -262,6 +282,19 @@ fn decide_by_governance(
         WorkspaceOp::Invite(role) => member
             .policy
             .check_invite(person, &authority, role, &cx, false),
+        WorkspaceOp::InviteAdministrator => member
+            .policy
+            .check_administrator_invite(person, &authority, &cx, false),
+        WorkspaceOp::MakeAdministrator => {
+            if member.policy.may_make_administrators(&authority, &cx) {
+                Ok(())
+            } else {
+                Err(tilo_action_policy::Refusal::Administrators {
+                    actor: person.to_owned(),
+                    unmaking: false,
+                })
+            }
+        }
         WorkspaceOp::Change(change) => member.policy.check(person, &authority, change, &cx, false),
     };
     decided.map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
@@ -270,10 +303,10 @@ fn decide_by_governance(
 
 impl Workspaces {
     /// Whether `device` may give the member `request` names its new role in
-    /// `workspace`: the workspace's set-role change. Setting a role also takes back an
-    /// administrator's standing, which only the owner gives
-    /// ([`HostOperation::SetAdministrator`]), so only the owner's devices
-    /// change an administrator's role.
+    /// `workspace`: the workspace's set-role change. Setting a role also takes
+    /// back an administrator's standing, which the workspace's policy gives
+    /// only its owner and whom it is kept for
+    /// ([`tilo_action_policy::WorkspacePolicy::may_unmake_administrators`]).
     ///
     /// # Errors
     ///
@@ -289,22 +322,7 @@ impl Workspaces {
             person: hex::encode(request.user_public_key),
             role: request.role,
         };
-        let by = self.authorize(device, Some(workspace), WorkspaceOp::Change(&change), now)?;
-        if device.user_public_key != self.inner.host.cert.user_public_key
-            && is_administrator(workspace, request.user_public_key, now)?
-        {
-            let refused = CollaborationError::new(
-                "only the owner changes the role of one of the room's administrators",
-            );
-            tracing::warn!(
-                device = %hex::encode(device.device_public_key),
-                operation = change.action(),
-                reason = %refused,
-                "room administration denied"
-            );
-            return Err(refused);
-        }
-        Ok(by)
+        self.authorize(device, Some(workspace), WorkspaceOp::Change(&change), now)
     }
 }
 

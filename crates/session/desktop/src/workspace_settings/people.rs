@@ -66,15 +66,24 @@ pub fn content(
                 .grants
                 .iter()
                 .filter(|grant| grant.grantee == subject)
+                // Being an administrator, or whom the workspace is kept for, is said by the
+                // role, not counted as extra permissions.
+                .filter(|grant| {
+                    tilo_action_policy::roles::administrator_named(&grant.id).is_none()
+                        && tilo_action_policy::roles::keeper_named(&grant.id).is_none()
+                })
                 .count();
             let (offers_role, offers_remove) = member_row_offers(owns, user, viewer);
             Person {
                 user: user.clone(),
                 name: member_row_name(names, ws, viewer, user),
                 you: user == viewer,
-                // An owner by role who does not own the workspace reads as Admin.
+                // An owner by role who does not own the workspace reads as Admin, and an Editor
+                // the workspace made an administrator as one: everyone sees who governs here.
                 role: if *role == CapRole::Owner && !owns {
                     t("workspace-settings-role-admin")
+                } else if !owns && ws.policy.is_administrator(user) {
+                    super::administrator_label()
                 } else {
                     role_label(*role)
                 },

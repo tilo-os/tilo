@@ -72,14 +72,20 @@ class Members:
     """The people in this workspace, and bringing someone else in.
 
     Inviting takes a key you created reaching all your workspaces, into one
-    you administer, and invites as an editor at most.
+    you administer, and invites as an editor at most, or as an administrator
+    where you may make administrators.
     """
 
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
 
     def invite(self, role: str = "viewer", email: str | None = None) -> Any:
-        """An `Invitation`: the link that brings one person in as `role`."""
+        """An `Invitation`: the link that brings one person in as `role`.
+
+        `role` is `viewer`, `commenter`, `editor` or `administrator`;
+        `administrator` gives them an editor's part and the administrator
+        grants, where you may make administrators.
+        """
         return self.workspace.client.handoff(self._invite(role, email))
 
     async def _invite(self, role: str, email: str | None) -> Invitation:

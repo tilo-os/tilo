@@ -60,13 +60,15 @@ impl WorkspacesArgs {
     }
 
     /// The invitation to `workspace` these arguments ask for: an editor's
-    /// unless they name a role.
+    /// unless they name a role, or `administrator`.
     fn invitation(&self, workspace: String) -> Result<WorkspacesRequest, JsError> {
         Ok(WorkspacesRequest::Invite {
             workspace,
             request_id: new_request_id()?,
+            // An administrator joins as an Editor the invitation also makes
+            // an administrator.
             role: match self.role.as_str() {
-                "" => Role::Editor,
+                "" | "administrator" => Role::Editor,
                 _ => self.role()?,
             },
             expires_at_ns: ui::time::unix_now_ns()
@@ -78,6 +80,7 @@ impl WorkspacesArgs {
                 .map(device_key)
                 .transpose()?,
             recipient: None,
+            administrator: self.role == "administrator",
         })
     }
 
