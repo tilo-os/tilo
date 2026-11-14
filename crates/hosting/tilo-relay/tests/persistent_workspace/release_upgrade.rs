@@ -189,6 +189,10 @@ fn start_release(
             "500",
             "--web-entry",
             entry,
+            // The plain listener the deployment serves behind its ingress; the
+            // check dials the address it announces.
+            "--web-plain",
+            "127.0.0.1:0",
             "--operator-socket",
             socket.to_str().unwrap(),
         ],
@@ -212,16 +216,21 @@ fn start_release(
 fn started_or_why(workspace: &mut Workspace) -> Started {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        if let Ok(OperatorEvent::Started {
-            workspace: Some(workspace),
-            plain_origin: Some(plain_origin),
-            ..
-        }) = workspace.events.recv_timeout(Duration::from_millis(200))
-        {
-            return Started {
-                plain: bound_address(&plain_origin),
-                workspace,
-            };
+        match workspace.events.recv_timeout(Duration::from_millis(200)) {
+            Ok(OperatorEvent::Started {
+                workspace: Some(workspace),
+                plain_origin: Some(plain_origin),
+                ..
+            }) => {
+                return Started {
+                    plain: bound_address(&plain_origin),
+                    workspace,
+                };
+            }
+            Ok(started @ OperatorEvent::Started { .. }) => {
+                panic!("the relay started without a plain listener: {started:?}");
+            }
+            Ok(_) | Err(_) => {}
         }
         if let Some(status) = workspace.child.try_wait().unwrap() {
             panic!("the relay refused the release's own start and stopped: {status}");

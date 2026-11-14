@@ -1719,10 +1719,32 @@ async fn accept_operator(
     }
 }
 
+/// What a command on the operator socket works with: the workspace's
+/// governance, its name and the host's own device. Copied for each connection,
+/// which is served on a task of its own: a command that asks the door to mail
+/// an invitation waits on the loop that mails them, so serving it there would
+/// wait on itself.
+#[derive(Clone)]
+struct OperatorContext {
+    workspaces: Workspaces,
+    workspace: String,
+    host_cert: DeviceCert,
+}
+
+impl OperatorContext {
+    fn of(context: &PersistentWorkspace) -> Self {
+        Self {
+            workspaces: context.workspaces.clone(),
+            workspace: context.workspace.clone(),
+            host_cert: context.host_cert.clone(),
+        }
+    }
+}
+
 /// Answer one operator line on the socket: the same command its stdin takes,
 /// for a deployment whose workspace runs in a container and so has no stdin to
 /// write to.
-async fn answer_operator_socket(context: &PersistentWorkspace, stream: tokio::net::UnixStream) {
+async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::UnixStream) {
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
     let (reading, mut writing) = stream.into_split();
     let mut line = String::new();
@@ -1820,7 +1842,8 @@ async fn serve_operator(
             }
             accepted = accept_operator(owner_socket) => {
                 if let Some(stream) = accepted {
-                    answer_operator_socket(context, stream).await;
+                    let operator = OperatorContext::of(context);
+                    tokio::spawn(async move { answer_operator_socket(operator, stream).await });
                 }
             }
             line = operator.recv(), if operator_open => match line {
