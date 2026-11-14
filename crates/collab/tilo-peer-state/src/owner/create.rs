@@ -69,7 +69,7 @@ impl NativeWorkspaceOwner {
                 RevocationList::new(),
                 now,
             )?;
-            peer.select_admission_v5().map_err(|error| {
+            peer.select_exact_admissions().map_err(|error| {
                 format!("the workspace exceeds exact admission bounds: {error}")
             })?;
             let mut seed = workspace_seed(&workspace, device, &roster, name)?;

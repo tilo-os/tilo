@@ -377,8 +377,8 @@ fn durable_state(record_path: &Path, parts: &[PeerPart]) -> Result<Vec<u8>, Stri
 /// The workspace's own document out of its durable peer state: the envelope's
 /// version, then the base version, the workspace, its owner, and the document.
 ///
-/// The envelope is the earlier release's (`DurableV4` inside `DurableV5` or
-/// `DurableV6`); the rest of the state is not read, so its documents and
+/// The envelope is the earlier release's (version 4, or 5 or 6 around a
+/// version 4 envelope); the rest of the state is not read, so its documents and
 /// records may be any shape this build no longer knows.
 fn workspace_document(durable: &[u8]) -> Result<Vec<u8>, String> {
     let reading = |error: postcard::Error| format!("the durable peer state: {error}");

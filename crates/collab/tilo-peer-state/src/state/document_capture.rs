@@ -363,7 +363,7 @@ impl StatePeer {
         if document.sealed.is_empty() {
             return Err(PeerDocumentReadError::Encrypted);
         }
-        if !self.core.admission_v5 {
+        if !self.core.exact_selected {
             return Err(PeerDocumentReadError::Incomplete);
         }
         let held: std::collections::HashSet<_> = document

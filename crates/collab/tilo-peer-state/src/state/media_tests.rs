@@ -56,7 +56,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
         now,
     )
     .unwrap();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     (peer, key, now)
 }
 fn message(doc: &mut AutoCommit) -> NeighbourMsg {
@@ -349,7 +349,7 @@ fn members() -> (
         now,
     )
     .unwrap();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     (peer, key, members, now)
 }
 #[test]
@@ -443,7 +443,7 @@ fn workspace_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTim
         now,
     )
     .unwrap();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     receiver
         .receive_from_report(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
@@ -462,7 +462,7 @@ fn assert_invalid_then_valid_chat(
     now: SystemTime,
     expected: media::WorkspaceMediaV1,
 ) {
-    assert!(receiver.admission_v5_selected());
+    assert!(receiver.exact_admissions_selected());
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     let bad_bytes = edited_chat(author, 2).0;
     let (bad, coverage) = author
@@ -534,7 +534,7 @@ fn workspace_media_workspace_first_restore_preserves_pending_exact_chat() {
     )
     .expect("accepted workspace-first state must remain recoverable before Chat arrives");
     assert_eq!(bytes, restored.durable().unwrap());
-    assert!(restored.admission_v5_selected());
+    assert!(restored.exact_admissions_selected());
     assert!(restored.validated_media_policy().is_err());
     assert_invalid_then_valid_chat(restored, &author, &key, now, value);
 }

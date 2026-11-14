@@ -42,7 +42,7 @@ struct DoublePublish {
 }
 fn double_publish() -> DoublePublish {
     let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let mut author = receiver.clone();
     let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let older = snapshot(&mut author, &key, later, "N");
@@ -97,7 +97,7 @@ fn superseded_checkpoint_skip_directly_after_governance_does_not_apply() {
     // Coverage N+1 is known before N arrives: N settles as a skip (the cursor
     // may advance), and nothing from it enters state.
     let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let mut author = receiver.clone();
     let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let older = snapshot(&mut author, &key, later, "N");
@@ -125,7 +125,7 @@ fn superseded_checkpoint_skip_directly_after_governance_does_not_apply() {
 #[test]
 fn superseded_checkpoint_lower_coverage_is_never_skipped() {
     let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let mut author = receiver.clone();
     let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let covered = snapshot(&mut author, &key, later, "N");
@@ -170,7 +170,7 @@ fn superseded_checkpoint_lower_coverage_is_never_skipped() {
 #[test]
 fn superseded_checkpoint_same_sequence_different_digest_stays_an_error() {
     let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let mut author = receiver.clone();
     let mut forger = receiver.clone();
     let later = now.checked_add(Duration::from_secs(301)).unwrap();
@@ -237,7 +237,7 @@ fn superseded_checkpoint_after_newer_admitted_is_skipped_idempotently() {
 #[test]
 fn a_checkpoint_of_another_of_the_owners_devices_is_merged_not_refused() {
     let (mut receiver, first_key, second_key, _, now) = crate::admission_tests::seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let route = Route {
         app: "test.app".into(),

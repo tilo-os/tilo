@@ -38,13 +38,12 @@ fn delivery_admission_selection_is_explicit_and_exact_retry_survives_restore() {
     let message = incremental(&mut author, &key, now, "A");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     let before = receiver.durable().unwrap();
-    assert_eq!(before[0], 4);
     assert!(matches!(
         receiver.receive_from_report(origin, message.clone(), now),
         Err(AdmissionError::WriterSelectionRequired)
     ));
     assert_eq!(receiver.durable().unwrap(), before);
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let report = receiver
         .receive_from_report(origin, message.clone(), now)
         .unwrap();
@@ -53,12 +52,10 @@ fn delivery_admission_selection_is_explicit_and_exact_retry_survives_restore() {
     };
     let first = first.clone();
     assert_eq!(report.settled(), std::slice::from_ref(&first));
-    let encoded = receiver.durable().unwrap();
-    assert_eq!(encoded[0], 5);
     let rows = receiver.rows();
     let later = now + Duration::from_secs(301);
     let mut receiver = restore(&receiver, later);
-    assert_eq!(receiver.durable().unwrap()[0], 5);
+    assert!(receiver.exact_admissions_selected());
     assert_eq!(receiver.rows(), rows);
     let duplicate = receiver
         .receive_from_report(origin, message, later)
@@ -77,7 +74,7 @@ fn delivery_admission_same_sequence_changed_body_conflicts_unknown_floor_does_no
     let mut legacy = receiver.clone();
     legacy.receive_from(origin, message.clone(), now).unwrap();
     legacy = restore(&legacy, now);
-    legacy.select_admission_v5().unwrap();
+    legacy.select_exact_admissions().unwrap();
     let unknown = legacy
         .receive_from_report(origin, message.clone(), now)
         .unwrap();
@@ -85,7 +82,7 @@ fn delivery_admission_same_sequence_changed_body_conflicts_unknown_floor_does_no
         unknown.primary(),
         &InputDisposition::RetryLater(MissingPrerequisite::ExactHistoricalEvidence)
     );
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     receiver
         .receive_from_report(origin, message.clone(), now)
         .unwrap();
@@ -144,7 +141,7 @@ fn delivery_admission_new_same_heads_envelope_is_accepted() {
         collab_types::sign_op(envelope, &key).unwrap();
     }
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let first = receiver.receive_from_report(origin, first, now).unwrap();
     let rows = receiver.rows();
     let second = receiver.receive_from_report(origin, second, now).unwrap();
@@ -162,7 +159,7 @@ fn delivery_admission_primary_is_separate_from_pending_drain() {
     let first = incremental(&mut author, &key, now, "A");
     let second = incremental(&mut author, &key, now, "B");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let deferred = receiver
         .receive_from_report(origin, second.clone(), now)
         .unwrap();
@@ -211,7 +208,7 @@ fn delivery_admission_primary_is_separate_from_pending_drain() {
 #[test]
 fn delivery_admission_metadata_and_unsupported_families_have_no_operation_receipt() {
     let (mut receiver, key, _, _, now) = seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     let message = receiver.workspace_message();
     let report = receiver.receive_from_report(origin, message, now).unwrap();
@@ -238,7 +235,7 @@ fn delivery_admission_exact_retry_rechecks_signature_route_and_current_revocatio
     let mut author = receiver.clone();
     let message = incremental(&mut author, &key, now, "A");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     receiver
         .receive_from_report(origin, message.clone(), now)
         .unwrap();
@@ -293,7 +290,7 @@ fn delivery_admission_exact_retry_rechecks_signature_route_and_current_revocatio
 #[test]
 fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evidence_loss() {
     let (mut base, key, _, _, now) = seeded();
-    base.select_admission_v5().unwrap();
+    base.select_exact_admissions().unwrap();
     let mut candidate = base.clone();
     let bytes = candidate.document("test.app", "tab:1").unwrap();
     candidate
@@ -368,7 +365,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
         now,
     )
     .unwrap();
-    assert!(!old.admission_v5_selected());
+    assert!(!old.exact_admissions_selected());
     let rewritten = old.durable().unwrap();
     if rewritten != V4.as_slice() {
         // Durable state re-saves its Automerge documents, whose compressed
@@ -385,7 +382,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
             now,
         )
         .unwrap();
-        assert!(!reread.admission_v5_selected());
+        assert!(!reread.exact_admissions_selected());
         assert_eq!(reread.rows(), old.rows(), "frozen v4 rows changed");
         assert_eq!(
             reread
@@ -413,7 +410,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     );
     collab_types::verify_op(envelope.as_ref()).unwrap();
     assert_eq!(blake3::hash(OP.as_slice()).to_hex().as_str(), ID.trim());
-    old.select_admission_v5().unwrap();
+    old.select_exact_admissions().unwrap();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     let report = old.receive_from_report(origin, item.clone(), now).unwrap();
     let InputDisposition::Accepted(admitted) = report.primary() else {
@@ -430,7 +427,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
         now,
     )
     .unwrap();
-    assert!(restored.admission_v5_selected());
+    assert!(restored.exact_admissions_selected());
     assert_eq!(
         restored
             .receive_from_report(origin, item, now)
@@ -484,7 +481,7 @@ fn delivery_admission_review_unindexed_retained_input_is_history_live_input_must
             .changed
     );
     let mut strict = receiver.clone();
-    strict.select_admission_v5().unwrap();
+    strict.select_exact_admissions().unwrap();
     let rows = strict.rows();
     let report = strict
         .receive_from_report(retained, message.clone(), later)
@@ -499,7 +496,7 @@ fn delivery_admission_review_unindexed_retained_input_is_history_live_input_must
     );
     // The same frame arriving live is too old to be a live write.
     let mut live = receiver;
-    live.select_admission_v5().unwrap();
+    live.select_exact_admissions().unwrap();
     let rows = live.rows();
     assert!(
         live.receive_from_report(TransportOrigin::RelayDelta(source), message, later)
@@ -524,7 +521,7 @@ fn delivery_admission_review_strict_drain_keeps_retained_pending_history_held() 
             .deferred
     );
     receiver = restore(&receiver, now);
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let later = now + Duration::from_secs(301);
     let workspace = receiver.workspace_message();
     let report = receiver
@@ -559,7 +556,7 @@ fn a_sealed_record_takes_its_cleartext_base_and_no_cleartext_after_the_seal() {
     let mut author = receiver.clone();
     let source = key.verifying_key().to_bytes();
     let mut here = receiver;
-    here.select_admission_v5().unwrap();
+    here.select_exact_admissions().unwrap();
     // The record's cleartext writes before it sealed are its base, however
     // they arrive: replayed from what the host kept, or relayed as written.
     for (name, origin) in [

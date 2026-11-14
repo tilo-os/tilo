@@ -182,7 +182,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         now,
     )
     .unwrap();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     let opening = peer
         .publication_mut()
         .durable_bootstrap_messages(&governor_key, now, 1)

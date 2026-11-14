@@ -16,15 +16,15 @@ impl StatePeer {
         self.surfaces = surfaces;
     }
 
-    /// Select native schema v5 only as part of an outer owner's reviewed rollout.
-    /// This selects candidate serialization; it does not commit any bytes.
-    pub fn select_admission_v5(&mut self) -> Result<(), AdmissionError> {
+    /// Keep the exact admission index from now on; the next durable state
+    /// holds it.
+    pub fn select_exact_admissions(&mut self) -> Result<(), AdmissionError> {
         self.core.exact_admissions.encode()?;
-        self.core.admission_v5 = true;
+        self.core.exact_selected = true;
         Ok(())
     }
-    pub fn admission_v5_selected(&self) -> bool {
-        self.core.admission_v5
+    pub fn exact_admissions_selected(&self) -> bool {
+        self.core.exact_selected
     }
 
     /// Exact observations from the real admission path, not a durability receipt.
@@ -34,7 +34,7 @@ impl StatePeer {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<AdmissionReport, AdmissionError> {
-        if matches!(message, NeighbourMsg::AppDocument { .. }) && !self.core.admission_v5 {
+        if matches!(message, NeighbourMsg::AppDocument { .. }) && !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);
         }
         if let TransportOrigin::RetainedNativePublication { publisher } = origin {
@@ -65,7 +65,7 @@ impl StatePeer {
         message: &NeighbourMsg,
         now: SystemTime,
     ) -> Result<Option<AdmissionReport>, AdmissionError> {
-        if !self.core.admission_v5 {
+        if !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);
         }
         if let Some(publisher) = self.core.native_cut_publisher {
@@ -198,7 +198,7 @@ impl StatePeer {
     ) -> Result<Vec<DocumentAdmission>, AdmissionError> {
         if self.core.workspace != before.core.workspace
             || self.core.owner != before.core.owner
-            || (before.core.admission_v5 && !self.core.admission_v5)
+            || (before.core.exact_selected && !self.core.exact_selected)
         {
             return Err(
                 "admission candidate replaces namespace or downgrades native writer".into(),

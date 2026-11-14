@@ -370,7 +370,7 @@ fn seeded(now: SystemTime) -> Seeded {
         now,
     )
     .unwrap();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     Seeded {
         governor_key,
         governor,

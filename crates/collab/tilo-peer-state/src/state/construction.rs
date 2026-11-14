@@ -85,7 +85,7 @@ impl StatePeer {
                 pending: VecDeque::new(),
                 pending_bytes: 0,
                 exact_admissions: ExactAdmissions::default(),
-                admission_v5: false,
+                exact_selected: false,
                 native_cut_publisher: None,
             },
             surfaces: process_default().0,

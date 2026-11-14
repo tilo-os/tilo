@@ -70,8 +70,8 @@ pub(crate) fn restore(
         tilo_user_identity::RevocationList::new(),
         now,
     )?;
-    if !peer.admission_v5_selected() {
-        return Err("native committed workspace requires durable admission v5".into());
+    if !peer.exact_admissions_selected() {
+        return Err("native committed workspace requires exact admissions".into());
     }
     let view = NativeCommittedView::new(peer, record.clone());
     publication::validate(&view)?;

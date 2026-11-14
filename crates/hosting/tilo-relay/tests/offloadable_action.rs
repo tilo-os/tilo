@@ -266,7 +266,7 @@ fn asking_plane(laptop: &TestDevice, host: &TestDevice, workspace: &str) -> Acti
         now,
     )
     .unwrap();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(workspace, &laptop.cert, &roster).unwrap(),

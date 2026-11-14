@@ -25,7 +25,7 @@ impl StatePeer {
             list.insert(entry.clone()).map_err(err)?;
         }
         let mut peer = Self::joined(workspace, authority, roster, list, now)?;
-        peer.select_admission_v5().map_err(err)?;
+        peer.select_exact_admissions().map_err(err)?;
         Ok(peer)
     }
 

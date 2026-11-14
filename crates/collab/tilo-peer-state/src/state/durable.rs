@@ -15,11 +15,14 @@ use crate::NeighbourMsg;
 #[cfg(test)]
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
-/// The one durable base layout this build writes and reads.
-pub const DURABLE_BASE_VERSION: u32 = 5;
+/// The durable layout this build writes and reads.
+pub const DURABLE_VERSION: u32 = 7;
 
+/// A replica's durable state. `exact` is the exact admission index, present
+/// once the replica selects exact admissions; `sealed` holds each encrypted
+/// record's sealed writes, empty when no record has any.
 #[derive(Serialize, Deserialize)]
-pub struct Durable {
+pub struct Durable<'a> {
     pub(super) version: u32,
     pub(super) workspace: String,
     pub(super) owner: [u8; 32],
@@ -28,55 +31,33 @@ pub struct Durable {
     pub(super) receipts: BTreeMap<String, Vec<u8>>,
     pub(super) certificates: Vec<DeviceCert>,
     pub(super) revocations: Vec<tilo_user_identity::RevocationEntry>,
-}
-#[derive(Serialize, Deserialize)]
-pub struct DurableV4 {
-    pub(super) version: u32,
-    pub(super) base: Durable,
     pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pub(super) pending_bytes: usize,
-}
-
-// The v4 shape stays frozen. Exact evidence is an explicitly selected addition.
-#[derive(Serialize, Deserialize)]
-pub struct DurableV5<'a> {
-    pub(super) version: u32,
-    pub(super) base: DurableV4,
     #[serde(borrow)]
-    pub(super) exact: &'a [u8],
-}
-
-/// V5 and the sealed history of each encrypted record. Written only while a
-/// record holds sealed writes, so every other state keeps its v5 bytes.
-#[derive(Serialize, Deserialize)]
-pub struct DurableV6<'a> {
-    pub(super) version: u32,
-    pub(super) base: DurableV4,
-    #[serde(borrow)]
-    pub(super) exact: &'a [u8],
+    pub(super) exact: Option<&'a [u8]>,
     pub(super) sealed: SealedHistory,
 }
 
-/// The version of a durable state's base, read from the versions that lead
-/// the bytes, never by decoding a layout and retrying another.
-///
-/// How many versions lead the base's depends on the envelope: version 4
-/// names its base's version second, and versions 5 and 6 wrap a version 4
-/// envelope, which names it after its own.
-pub fn durable_base_version(bytes: &[u8]) -> Result<u32, String> {
-    let (envelope, rest) = version(bytes)?;
-    let rest = match envelope {
-        4 => rest,
-        5 | 6 => version(rest)?.1,
-        _ => return Err("unsupported durable admission version".into()),
-    };
-    Ok(version(rest)?.0)
-}
-
-/// The version of a durable state's base, read from the versions that lead
-/// it.
-fn version(bytes: &[u8]) -> Result<(u32, &[u8]), String> {
-    postcard::take_from_bytes::<u32>(bytes).map_err(|error| error.to_string())
+impl<'a> Durable<'a> {
+    /// The durable state `bytes` hold, of `workspace` owned by `owner`.
+    fn read(bytes: &'a [u8], workspace: &str, owner: [u8; 32]) -> Result<Self, String> {
+        let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
+        if version != DURABLE_VERSION {
+            return Err(format!("unsupported durable version {version}"));
+        }
+        let (durable, tail): (Self, _) = postcard::take_from_bytes(bytes)
+            .map_err(|error| format!("durable state version {version}: {error}"))?;
+        if !tail.is_empty() {
+            return Err("trailing bytes after durable state".into());
+        }
+        if !durable.sealed.is_empty() && durable.exact.is_none() {
+            return Err("sealed record history requires exact admissions".into());
+        }
+        if durable.workspace != workspace || durable.owner != owner {
+            return Err("durable admission namespace mismatch".into());
+        }
+        Ok(durable)
+    }
 }
 
 /// The digests of a replica's durable parts, each kept with its part: the
@@ -314,25 +295,18 @@ impl StatePeer {
             .values()
             .filter(|entry| !entry.sealed.is_empty())
             .count();
-        if sealed > 0 && !self.core.admission_v5 {
-            return Err("sealed record history requires durable admission v5".into());
+        if sealed > 0 && !self.core.exact_selected {
+            return Err("sealed record history requires exact admissions".into());
         }
         let mut documents = Vec::with_capacity(self.core.documents.len());
         for (route, entry) in &self.core.documents {
             documents.push(entry.encoded(route, || encode_document(route, entry))?);
         }
-        // The fields of `DurableV6`/`DurableV5`/`DurableV4`, in order.
+        // The fields of `Durable`, in order.
         let mut parts: Vec<Piece> = Vec::new();
-        let mut head = Vec::new();
-        if sealed > 0 {
-            head = put(&6u32, head)?;
-        } else if self.core.admission_v5 {
-            head = put(&5u32, head)?;
-        }
-        head = put(&4u32, head)?;
-        head = put(
-            &(DURABLE_BASE_VERSION, &self.core.workspace, &self.core.owner),
-            head,
+        let mut head = put(
+            &(DURABLE_VERSION, &self.core.workspace, &self.core.owner),
+            Vec::new(),
         )?;
         head = self.put_workspace_document(head, &mut parts)?;
         head = put(&documents.len(), head)?;
@@ -360,16 +334,17 @@ impl StatePeer {
             ),
             Vec::new(),
         )?;
-        if self.core.admission_v5 {
+        if self.core.exact_selected {
             let (settled, rest) = self.core.exact_admissions.encode_parts().map_err(err)?;
+            tail = put(&1u8, tail)?;
             tail = put(&settled.len().saturating_add(rest.len()), tail)?;
             parts.push(Piece::Part(tail.into()));
             parts.push(Piece::Part(settled));
             tail = rest;
+        } else {
+            tail = put(&0u8, tail)?;
         }
-        if sealed > 0 {
-            tail = put(&sealed, tail)?;
-        }
+        tail = put(&sealed, tail)?;
         parts.push(Piece::Part(tail.into()));
         parts.extend(
             documents
@@ -410,72 +385,55 @@ impl StatePeer {
                     .map(|snapshot| snapshot.0.bytes.clone()),
             })
             .collect();
-        let value = DurableV4 {
-            version: 4,
-            base: Durable {
-                version: DURABLE_BASE_VERSION,
-                workspace: self.core.workspace.clone(),
-                owner: self.core.owner,
-                workspace_bytes: self.core.workspace_doc.as_ref().map(|doc| {
-                    let (base, since, _) = doc.stored();
-                    [&*base, &since.concat()].concat()
-                }),
-                documents,
-                receipts: (*self.core.receipts).clone(),
-                certificates: self
-                    .core
-                    .certificates
-                    .values()
-                    .map(|cert| cert.as_ref().clone())
-                    .collect(),
-                revocations: {
-                    let mut entries = self.core.revocations.iter().cloned().collect::<Vec<_>>();
-                    entries.sort_by_key(|entry| entry.revoked_device_public_key);
-                    entries
-                },
-            },
-            pending: self.core.pending.clone(),
-            pending_bytes: self.core.pending_bytes,
-        };
-        let sealed: Vec<_> = self
+        let sealed: SealedHistory = self
             .core
             .documents
             .iter()
             .filter(|(_, entry)| !entry.sealed.is_empty())
             .map(|(route, entry)| (route.clone(), entry.sealed.to_vec()))
             .collect();
-        if self.core.admission_v5 && !sealed.is_empty() {
-            let exact = self.core.exact_admissions.encode().map_err(err)?;
-            postcard::to_allocvec(&DurableV6 {
-                version: 6,
-                base: value,
-                exact: &exact,
-                sealed,
-            })
-            .map_err(err)
-        } else if !sealed.is_empty() {
-            Err("sealed record history requires durable admission v5".into())
-        } else if self.core.admission_v5 {
-            let exact = self.core.exact_admissions.encode().map_err(err)?;
-            postcard::to_allocvec(&DurableV5 {
-                version: 5,
-                base: value,
-                exact: &exact,
-            })
-            .map_err(err)
-        } else {
-            postcard::to_allocvec(&value).map_err(err)
+        if !sealed.is_empty() && !self.core.exact_selected {
+            return Err("sealed record history requires exact admissions".into());
         }
+        let exact = self
+            .core
+            .exact_selected
+            .then(|| self.core.exact_admissions.encode())
+            .transpose()
+            .map_err(err)?;
+        postcard::to_allocvec(&Durable {
+            version: DURABLE_VERSION,
+            workspace: self.core.workspace.clone(),
+            owner: self.core.owner,
+            workspace_bytes: self.core.workspace_doc.as_ref().map(|doc| {
+                let (base, since, _) = doc.stored();
+                [&*base, &since.concat()].concat()
+            }),
+            documents,
+            receipts: (*self.core.receipts).clone(),
+            certificates: self
+                .core
+                .certificates
+                .values()
+                .map(|cert| cert.as_ref().clone())
+                .collect(),
+            revocations: {
+                let mut entries = self.core.revocations.iter().cloned().collect::<Vec<_>>();
+                entries.sort_by_key(|entry| entry.revoked_device_public_key);
+                entries
+            },
+            pending: self.core.pending.clone(),
+            pending_bytes: self.core.pending_bytes,
+            exact: exact.as_deref(),
+            sealed,
+        })
+        .map_err(err)
     }
 
     /// Restore a peer from durable state produced by [`StatePeer::durable`].
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public API: callers hand over the pinned revocation list"
-    )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one durable restore across every stored schema version"
     )]
     pub fn restore(
         bytes: &[u8],
@@ -485,74 +443,12 @@ impl StatePeer {
         revocations: RevocationList,
         now: SystemTime,
     ) -> Result<Self, String> {
-        let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
-        let exact_admissions;
-        // Which base layout: the three integers both begin with, read before
-        // anything that differs. Never decode one and retry another.
-        let base = durable_base_version(bytes)?;
-        // Which layout failed to read, and in what: a durable state a release
-        // wrote that no longer reads names the part of it that changed.
-        let layout = |envelope: u32, error: postcard::Error| {
-            format!("durable state version {envelope}, base version {base}: {error}")
-        };
-        if base != DURABLE_BASE_VERSION {
-            return Err(format!("unsupported durable base version {base}"));
-        }
-        let (durable, pending, pending_bytes, exact, sealed) = match version {
-            4 => {
-                let value: DurableV4 =
-                    postcard::from_bytes(bytes).map_err(|error| layout(4, error))?;
-                (
-                    value.base,
-                    value.pending,
-                    value.pending_bytes,
-                    ExactAdmissions::default(),
-                    Vec::new(),
-                )
-            }
-            5 => {
-                let (value, tail): (DurableV5<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(|error| layout(5, error))?;
-                if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
-                    return Err("invalid native v5 durable envelope".into());
-                }
-                (
-                    value.base.base,
-                    value.base.pending,
-                    value.base.pending_bytes,
-                    ExactAdmissions::decode(value.exact)
-                        .map_err(|error| format!("exact admissions: {error}"))?,
-                    Vec::new(),
-                )
-            }
-            6 => {
-                let (value, tail): (DurableV6<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(|error| layout(6, error))?;
-                if !tail.is_empty()
-                    || value.version != 6
-                    || value.base.version != 4
-                    || value.sealed.is_empty()
-                {
-                    return Err("invalid native v6 durable envelope".into());
-                }
-                (
-                    value.base.base,
-                    value.base.pending,
-                    value.base.pending_bytes,
-                    ExactAdmissions::decode(value.exact)
-                        .map_err(|error| format!("exact admissions: {error}"))?,
-                    value.sealed,
-                )
-            }
-            _ => return Err("unsupported durable admission version".into()),
-        };
-        exact_admissions = exact;
-        if durable.version != DURABLE_BASE_VERSION
-            || durable.workspace != workspace
-            || durable.owner != owner_device.user_public_key
-        {
-            return Err("durable admission namespace mismatch".into());
-        }
+        let durable = Durable::read(bytes, workspace, owner_device.user_public_key)?;
+        let exact_admissions = durable
+            .exact
+            .map(ExactAdmissions::decode)
+            .transpose()
+            .map_err(|error| format!("exact admissions: {error}"))?;
         let canonical_workspace = uuid::Uuid::parse_str(workspace).map_err(err)?.to_string();
         let verified_certificates = backend::restore_certificate_roster(
             durable.certificates,
@@ -571,10 +467,10 @@ impl StatePeer {
                 receipts: Shared::default(),
                 workspace_doc: None,
                 documents: Shared::default(),
-                pending,
-                pending_bytes,
-                exact_admissions,
-                admission_v5: version >= 5,
+                pending: durable.pending,
+                pending_bytes: durable.pending_bytes,
+                exact_selected: exact_admissions.is_some(),
+                exact_admissions: exact_admissions.unwrap_or_default(),
                 native_cut_publisher: None,
             },
             surfaces: process_default().0,
@@ -634,7 +530,7 @@ impl StatePeer {
                 .into(),
             );
         }
-        for (route, ops) in sealed {
+        for (route, ops) in durable.sealed {
             peer.restore_sealed(&route, ops)?;
         }
         if let Some(policy) = peer.validate_present_media_policy()? {
@@ -653,16 +549,21 @@ impl StatePeer {
             // projection still requires every active prerequisite to be ready.
             peer.validate_media_bindings(&policy, false)?;
         }
-        // Every exact entry and every compaction mark lies within its
-        // route's watermark.
-        let index = &peer.core.exact_admissions;
+        peer.check_exact_within_floors()?;
+        Ok(peer)
+    }
+
+    /// Every exact entry and every compaction mark lies within its route's
+    /// watermark.
+    fn check_exact_within_floors(&self) -> Result<(), String> {
+        let index = &self.core.exact_admissions;
         let keys: Vec<_> = index
             .iter()
             .map(|(key, _)| key.clone())
             .chain(index.marks().map(|(writer, mark)| writer.at(mark)))
             .collect();
         for key in &keys {
-            let floor = peer
+            let floor = self
                 .core
                 .documents
                 .get(&Route {
@@ -676,13 +577,13 @@ impl StatePeer {
                         .get(&Ed25519PublicKey::from_bytes(key.author))
                 })
                 .copied();
-            if key.workspace != peer.core.workspace
+            if key.workspace != self.core.workspace
                 || floor.is_none_or(|floor| key.sequence > floor)
             {
                 return Err("exact admission evidence exceeds restored route/floor".into());
             }
         }
-        Ok(peer)
+        Ok(())
     }
 }
 

@@ -147,7 +147,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
         now,
     )
     .unwrap();
-    govern.select_admission_v5().unwrap();
+    govern.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
     document.commit_edit("fixture", "value");

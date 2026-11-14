@@ -31,7 +31,7 @@ impl std::fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::WriterSelectionRequired => {
-                f.write_str("exact admission requires explicit native v5 writer selection")
+                f.write_str("exact admission requires selecting exact admissions")
             }
             Self::ConflictingSequence => {
                 f.write_str("signed operation conflicts with exact admitted sequence")

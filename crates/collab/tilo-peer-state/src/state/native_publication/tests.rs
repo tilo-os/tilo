@@ -67,7 +67,7 @@ fn native_publication_retained_bootstrap_preserves_relay_live_freshness_distinct
 #[test]
 fn native_publication_preserves_original_member_author_and_exact_retry() {
     let (mut host, _, member, _, now) = crate::admission_tests::seeded();
-    host.select_admission_v5().unwrap();
+    host.select_exact_admissions().unwrap();
     let mut receiver = host.clone();
     let mut doc = AutoCommit::load(&host.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();

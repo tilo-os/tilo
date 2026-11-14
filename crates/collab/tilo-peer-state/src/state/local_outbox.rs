@@ -27,7 +27,7 @@ impl StatePeer {
         message: &NeighbourMsg,
         selected: [u8; 32],
     ) -> Result<LocalDocument, AdmissionError> {
-        if !self.core.admission_v5 {
+        if !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);
         }
         let NeighbourMsg::AppDocument {

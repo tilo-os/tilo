@@ -182,7 +182,7 @@ fn workspace_media_reconciliation_preserves_disabled_policy_before_first_call() 
 
 fn no_policy_document_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     let (mut peer, root, key, now) = fixture(0);
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     let mut chat = AutoCommit::new();
     chat.put(ROOT, "label", "unchanged signed document")
         .unwrap();

@@ -79,7 +79,7 @@ async fn join(
         SystemTime::now(),
     )
     .unwrap();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     for bytes in &bootstrap.governance_messages {
         peer.receive_from(
             TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),

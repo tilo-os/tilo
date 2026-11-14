@@ -43,7 +43,7 @@ pub(crate) fn two_records() -> (StatePeer, SigningKey, SystemTime) {
             now,
         )
         .unwrap();
-    native.select_admission_v5().unwrap();
+    native.select_exact_admissions().unwrap();
     (native, b, now)
 }
 

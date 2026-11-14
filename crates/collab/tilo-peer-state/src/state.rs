@@ -94,7 +94,7 @@ mod authority;
 mod construction;
 mod durable;
 #[cfg(test)]
-pub(crate) use durable::{DURABLE_BASE_VERSION, Durable, DurableV4, DurableV5, DurableV6};
+pub(crate) use durable::{DURABLE_VERSION, Durable};
 mod receiving;
 mod records;
 mod sealing;

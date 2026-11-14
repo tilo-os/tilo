@@ -333,7 +333,7 @@ impl StatePeer {
                 *covered = (*covered).max(envelope.seq);
                 mutation
             }
-            collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
+            collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.exact_selected => {
                 // A replica without exact admission evidence keeps no sealed
                 // history: it only records that the record is encrypted, so a
                 // later plaintext write cannot downgrade it.
@@ -597,7 +597,7 @@ impl StatePeer {
             )
             .map_err(err)?;
         }
-        let primary = if self.core.admission_v5 {
+        let primary = if self.core.exact_selected {
             let admitted = DocumentAdmission::from_op(
                 &self.core.workspace,
                 &route.app,
@@ -676,7 +676,7 @@ impl StatePeer {
         let segments = self.compaction_segments(&route, &envelope)?;
         let gathered = !segments.is_empty();
         Self::retain_sealed(&mut candidate, envelope, segments)?;
-        let primary = if self.core.admission_v5 {
+        let primary = if self.core.exact_selected {
             // The writes the compaction folded are in its snapshot now, and
             // the number it took with them: their exact evidence becomes one
             // mark per writer, the compaction's own included. This goes first,

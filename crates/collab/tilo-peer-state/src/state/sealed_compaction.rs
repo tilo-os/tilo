@@ -388,7 +388,7 @@ impl PeerPublicationMut<'_> {
             let floor = floors.entry(*author).or_default();
             *floor = (*floor).max(*seq);
         }
-        if candidate.core.admission_v5 {
+        if candidate.core.exact_selected {
             candidate
                 .core
                 .exact_admissions
@@ -417,7 +417,7 @@ impl PeerPublicationMut<'_> {
         record: &str,
         compaction: &SignedOp,
     ) -> Result<(), String> {
-        if !self.peer.core.admission_v5 {
+        if !self.peer.core.exact_selected {
             return Ok(());
         }
         let core = &mut self.peer.core;

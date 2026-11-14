@@ -65,9 +65,8 @@ pub(crate) struct GovernedIdentity {
     /// installed bot ([`super::delegates`]). Absent from every other identity's
     /// bytes.
     pub(crate) delegate: Option<GovernedDelegateRow>,
-    /// The workspace delegations a build before [`super::DURABLE_BASE_VERSION`]
-    /// wrote in this row: it let another device issue invitations for a
-    /// workspace. Workspaces no longer have them, so nothing here reads one to
+    /// The workspace delegations older builds wrote in this row: it let
+    /// another device issue invitations for a workspace. Workspaces no longer have them, so nothing here reads one to
     /// act on; they are kept because the row's bytes, and the media
     /// authorization basis computed over them, are a digest a stored policy
     /// still names. Written back as they were read, never added to.
@@ -158,9 +157,9 @@ struct StoredIdentityRef<'a> {
     workspace_delegations: &'a [WorkspaceDelegation],
 }
 
-/// A workspace delegation as a build before [`super::DURABLE_BASE_VERSION`]
-/// wrote it, read for the media authorization basis and nothing else. The
-/// fields are that layout's; nothing here interprets them.
+/// A workspace delegation as older builds wrote it, read for the media
+/// authorization basis and nothing else. The fields are that layout's;
+/// nothing here interprets them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceDelegation {
     pub(crate) version: u32,

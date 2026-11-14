@@ -793,7 +793,7 @@ use tilo_peer_state::workspace_membership::valid_workspace_name as valid_name;
 /// never writes one workspace from two documents under one actor.
 fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
     peer.write_as_workspace_host();
-    peer.select_admission_v5()
+    peer.select_exact_admissions()
         .map_err(|error| format!("workspace exceeds exact admission bounds: {error}"))
 }
 

@@ -2588,7 +2588,7 @@ mod tests {
             now,
         )
         .unwrap();
-        peer.select_admission_v5().unwrap();
+        peer.select_exact_admissions().unwrap();
         let roster = roster
             .iter()
             .map(|(_, certificate)| certificate.clone())

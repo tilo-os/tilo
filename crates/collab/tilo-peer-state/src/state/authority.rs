@@ -438,10 +438,10 @@ impl StatePeer {
         self.core.workspace_doc.is_some()
     }
     /// An encrypted record a replica without exact admission evidence could
-    /// only mark, not keep. A v5 replica keeps every sealed write, as its
+    /// only mark, not keep. A replica with exact admissions keeps every sealed write, as its
     /// ciphertext or, as the key holder, as the plaintext it verified.
     pub fn incomplete_reason(&self) -> Option<String> {
-        (!self.core.admission_v5
+        (!self.core.exact_selected
             && self
                 .core
                 .documents

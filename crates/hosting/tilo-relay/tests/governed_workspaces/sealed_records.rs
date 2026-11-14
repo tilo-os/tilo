@@ -78,7 +78,7 @@ pub(super) async fn join(
         RevocationList::new(),
         SystemTime::now(),
     )?;
-    peer.select_admission_v5()
+    peer.select_exact_admissions()
         .map_err(|error| error.to_string())?;
     for bytes in &bootstrap.governance_messages {
         peer.receive_from(

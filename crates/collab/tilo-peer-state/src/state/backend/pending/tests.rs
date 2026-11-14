@@ -1,7 +1,7 @@
 use super::*;
 use crate::StatePeer;
 use crate::TransportOrigin;
-use crate::state::DurableV4;
+use crate::state::Durable;
 use automerge::AutoCommit;
 use automerge::ROOT;
 use automerge::ReadDoc;
@@ -43,7 +43,7 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
 fn bounded_pending_counts_actual_signed_deferred_message() {
     let (peer, predecessor, now) = deferred();
     let bytes = peer.durable().unwrap();
-    let durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+    let durable: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
     validate(&durable.pending, durable.pending_bytes).unwrap();
     let mut restored = StatePeer::restore(
         &bytes,
@@ -70,7 +70,8 @@ fn bounded_pending_counts_actual_signed_deferred_message() {
 #[test]
 fn bounded_pending_preserves_exact_count_and_declared_byte_denials() {
     let (peer, _, now) = deferred();
-    let mut durable: DurableV4 = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
+    let bytes = peer.durable().unwrap();
+    let mut durable: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(
         validate(&durable.pending, durable.pending_bytes + 1),
         Err(PendingError::Bytes)

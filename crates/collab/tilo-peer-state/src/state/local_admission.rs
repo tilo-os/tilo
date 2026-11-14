@@ -240,7 +240,7 @@ impl StatePeer {
         }
         let settled = self.core.exact_admissions.get(&evidence.key) == Some(&evidence.operation_id)
             || (compaction && self.core.exact_admissions.covers(&evidence.key));
-        if held || !self.core.admission_v5 || !settled {
+        if held || !self.core.exact_selected || !settled {
             return Err("native local document has no exact admission evidence".into());
         }
         Ok(())
@@ -356,7 +356,7 @@ mod tests {
 
     fn admitted() -> (StatePeer, SignedOp, SigningKey, DeviceCert, SystemTime) {
         let (mut peer, key, other, certificate, now) = crate::admission_tests::seeded();
-        peer.select_admission_v5().unwrap();
+        peer.select_exact_admissions().unwrap();
         let current_document = peer.document("test.app", "tab:1").unwrap();
         let NeighbourMsg::AppDocument { envelope, .. } = peer
             .publication_mut()
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn a_new_local_write_is_admitted_once_with_exact_evidence() {
         let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
-        peer.select_admission_v5().unwrap();
+        peer.select_exact_admissions().unwrap();
         let bytes = peer.document("test.app", "tab:1").unwrap();
         let NeighbourMsg::AppDocument { envelope, .. } = peer
             .clone()
@@ -477,7 +477,7 @@ mod tests {
         let first_seq = first.seq;
         peer.admit_local_app_document("test.app", "tab:1", *first, now)
             .unwrap();
-        peer.select_admission_v5().unwrap();
+        peer.select_exact_admissions().unwrap();
         assert!(
             peer.lookup_exact_local_document("test.app", "tab:1", &stale, now)
                 .unwrap()

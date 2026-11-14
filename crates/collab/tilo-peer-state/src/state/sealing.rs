@@ -62,7 +62,7 @@ impl StatePeer {
     ) -> Result<NeighbourMsg, String> {
         self.validate_present_media_policy()?;
         let (message, coverage) = self.prepare_signed_mutation(app, record, mutation, key, now)?;
-        if self.core.admission_v5 {
+        if self.core.exact_selected {
             let NeighbourMsg::AppDocument { envelope, .. } = &message else {
                 return Err("prepared mutation is not an app document".into());
             };

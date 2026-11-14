@@ -160,7 +160,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
         now,
     )
     .unwrap();
-    govern.select_admission_v5().unwrap();
+    govern.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
     document.commit_edit("fixture", "value");
@@ -781,7 +781,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
         now,
     )
     .unwrap();
-    govern.select_admission_v5().unwrap();
+    govern.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
     document.commit_edit("fixture", "value");
@@ -880,7 +880,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
         now,
     )
     .unwrap();
-    govern.select_admission_v5().unwrap();
+    govern.select_exact_admissions().unwrap();
     govern
         .install_seed(
             SeedState {

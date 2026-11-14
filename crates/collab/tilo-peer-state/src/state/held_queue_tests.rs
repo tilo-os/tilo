@@ -52,7 +52,7 @@ fn value(peer: &StatePeer, name: &str) -> Option<String> {
 #[test]
 fn a_held_message_whose_prerequisite_never_comes_is_let_go_with_why_and_the_workspace_goes_on() {
     let (mut receiver, key, _, _, now) = seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let mut author = receiver.clone();
     let write = incremental(&mut author, &key, now, "kept");
     let stranger = SigningKey::from_bytes(&[77; 32]);
@@ -121,7 +121,7 @@ fn a_held_message_whose_prerequisite_never_comes_is_let_go_with_why_and_the_work
 #[test]
 fn a_held_message_whose_prerequisite_arrived_is_applied_when_its_place_is_needed() {
     let (mut receiver, owner_key, member_key, member, now) = seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let mut author = receiver.clone();
     // The member's certificate has not reached this replica yet.
     receiver.core.certificates.remove(&member.device_public_key);
@@ -178,7 +178,7 @@ fn a_held_message_whose_prerequisite_arrived_is_applied_when_its_place_is_needed
 #[test]
 fn a_message_let_go_is_asked_for_again_once_what_it_waited_for_lands_and_then_applies() {
     let (mut receiver, key, _, _, now) = seeded();
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let mut author = receiver.clone();
     let first = incremental(&mut author, &key, now, "first");
     let second = incremental(&mut author, &key, now, "second");

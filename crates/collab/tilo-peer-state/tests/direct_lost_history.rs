@@ -64,7 +64,7 @@ impl Linked {
             now,
         )
         .unwrap();
-        a.select_admission_v5().unwrap();
+        a.select_exact_admissions().unwrap();
         let mut document = AutoCommit::new();
         document.put(ROOT, "value", "first").unwrap();
         document.commit_edit("fixture", "value");

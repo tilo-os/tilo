@@ -2,7 +2,7 @@ use super::*;
 #[test]
 fn delivery_admission_local_snapshot_quota_failure_leaves_governance_unchanged() {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     // Populate the real bounded index near its byte ceiling; no mocked admission/store.
     let full = DocumentAdmission {
         key: crate::admission::AdmissionKey {
@@ -38,7 +38,7 @@ fn delivery_admission_review_quota_rejected_pending_checkpoint_does_not_refresh_
         .publish_document("test.app", "tab:1", current_document, &key, later)
         .unwrap();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.select_admission_v5().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let pending = receiver
         .receive_from_report(origin, snapshot, later)
         .unwrap();
@@ -82,31 +82,29 @@ fn delivery_admission_review_quota_rejected_pending_checkpoint_does_not_refresh_
 }
 #[test]
 fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
-    let literal = include_str!("../../tests/fixtures/delivery-admission/native-v5.postcard.hex")
-        .split_ascii_whitespace()
-        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
-        .collect::<Vec<_>>();
-    let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
-    let bomb = postcard::to_allocvec(&DurableV5 {
-        version: 5,
-        base: value.base,
-        exact: &[0x81, 0x80, 0x04],
-    })
-    .unwrap();
-    assert!(
+    let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
+    peer.select_exact_admissions().unwrap();
+    let document = peer.document("test.app", "tab:1").unwrap();
+    peer.publication_mut()
+        .publish_document("test.app", "tab:1", document, &key, now)
+        .unwrap();
+    let literal = peer.durable().unwrap();
+    let restore = |bytes: &[u8]| {
         StatePeer::restore(
-            &bomb,
+            bytes,
             peer.workspace_id(),
             peer.owner_certificates()[0].clone(),
-            vec![],
+            peer.certificates(),
             RevocationList::new(),
-            now
+            now,
         )
-        .is_err()
-    );
-    let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
-    let mut index = ExactAdmissions::decode(value.exact).unwrap();
+    };
+    assert!(restore(&literal).is_ok());
+    let mut value: Durable<'_> = postcard::from_bytes(&literal).unwrap();
+    let exact = value.exact.unwrap();
+    value.exact = Some(&[0x81, 0x80, 0x04]);
+    assert!(restore(&postcard::to_allocvec(&value).unwrap()).is_err());
+    let mut index = ExactAdmissions::decode(exact).unwrap();
     let first = index
         .iter()
         .next()
@@ -119,21 +117,6 @@ fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
     invalid.key.sequence += 1;
     index.insert(&invalid).unwrap();
     let exact = index.encode().unwrap();
-    let bytes = postcard::to_allocvec(&DurableV5 {
-        version: 5,
-        base: value.base,
-        exact: &exact,
-    })
-    .unwrap();
-    assert!(
-        StatePeer::restore(
-            &bytes,
-            peer.workspace_id(),
-            peer.owner_certificates()[0].clone(),
-            vec![],
-            RevocationList::new(),
-            now
-        )
-        .is_err()
-    );
+    value.exact = Some(&exact);
+    assert!(restore(&postcard::to_allocvec(&value).unwrap()).is_err());
 }

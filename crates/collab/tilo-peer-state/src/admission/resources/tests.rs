@@ -2,7 +2,7 @@ use super::*;
 
 fn actual_index() -> (ExactAdmissions, Vec<DocumentAdmission>) {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
-    peer.select_admission_v5().unwrap();
+    peer.select_exact_admissions().unwrap();
     let mut index = ExactAdmissions::default();
     let mut admissions = Vec::new();
     for _ in 0..2 {

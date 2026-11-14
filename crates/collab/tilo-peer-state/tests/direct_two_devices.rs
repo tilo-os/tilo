@@ -72,7 +72,7 @@ async fn two_devices_of_one_person_converge_directly() {
         now,
     )
     .unwrap();
-    a.select_admission_v5().unwrap();
+    a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
     document.commit_edit("fixture", "value");
@@ -174,7 +174,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
         now,
     )
     .unwrap();
-    a.select_admission_v5().unwrap();
+    a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
     document.commit_edit("fixture", "value");
@@ -275,7 +275,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
         now,
     )
     .unwrap();
-    made.select_admission_v5().unwrap();
+    made.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
     document.commit_edit("fixture", "value");
@@ -333,7 +333,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
         now,
     )
     .unwrap();
-    a.select_admission_v5().unwrap();
+    a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
     document.commit_edit("fixture", "value");

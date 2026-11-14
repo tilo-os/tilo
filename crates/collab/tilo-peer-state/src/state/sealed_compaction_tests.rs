@@ -103,7 +103,7 @@ fn fixture() -> Fixture {
         now,
     )
     .unwrap();
-    host.select_admission_v5().unwrap();
+    host.select_exact_admissions().unwrap();
     for message in native
         .publication_mut()
         .bootstrap_messages(&owner, now)
@@ -487,7 +487,6 @@ fn a_minted_compaction_after_a_rotation_opens_as_a_current_write_with_every_chan
         "nothing is merged where no key is held"
     );
     let durable = f.host.durable().unwrap();
-    assert_eq!(durable[0], 6);
     assert!(
         !contains(&durable, SECRET.as_bytes()),
         "no plaintext is kept"
@@ -1070,7 +1069,7 @@ fn a_compaction_founds_a_route_a_replica_holds_none_of() {
         now,
     )
     .unwrap();
-    fresh.select_admission_v5().unwrap();
+    fresh.select_exact_admissions().unwrap();
     fresh
         .receive_from(origin(&f.owner), f.host.workspace_message(), now)
         .unwrap();
@@ -1129,7 +1128,7 @@ fn a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds() {
         now,
     )
     .unwrap();
-    fresh.select_admission_v5().unwrap();
+    fresh.select_exact_admissions().unwrap();
     fresh
         .receive_from(origin(&f.owner), f.host.workspace_message(), now)
         .unwrap();
@@ -1166,7 +1165,7 @@ fn a_sealed_checkpoint_founds_the_route_its_deltas_change() {
         now,
     )
     .unwrap();
-    fresh.select_admission_v5().unwrap();
+    fresh.select_exact_admissions().unwrap();
     fresh
         .receive_from(origin(&f.owner), f.host.workspace_message(), now)
         .unwrap();
@@ -1353,11 +1352,10 @@ fn a_compacted_record_restores_and_a_tampered_stored_compaction_does_not() {
     let second = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
     admit(&mut f.host, &f.other, second, now);
     let bytes = f.host.durable().unwrap();
-    assert_eq!(bytes[0], 6);
     assert_eq!(held(&f.restore(&bytes).unwrap()), held(&f.host));
 
     let rewrite = |change: &dyn Fn(&mut Vec<SignedOp>)| {
-        let mut value: DurableV6<'_> = postcard::from_bytes(&bytes).unwrap();
+        let mut value: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
         change(&mut value.sealed[0].1);
         postcard::to_allocvec(&value).unwrap()
     };
@@ -1743,7 +1741,7 @@ fn captured_history_validates_route_signature_admission_and_watermarks() {
     admit(&mut f.host, &f.owner, op, f.now);
     let before = f.host.durable().unwrap();
     for corruption in 0..4 {
-        let mut wire: DurableV6<'_> = postcard::from_bytes(&before).unwrap();
+        let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
         match corruption {
             0 => wire.sealed[0].1[0].signature.0[0] ^= 1,
             1 => wire.sealed[0].0.app = "other.app".into(),
@@ -1753,7 +1751,7 @@ fn captured_history_validates_route_signature_admission_and_watermarks() {
             }
             _ => {
                 assert_eq!(corruption, 3);
-                wire.base.base.documents[0].watermarks.clear();
+                wire.documents[0].watermarks.clear();
             }
         }
         let corrupted = postcard::to_allocvec(&wire).unwrap();
@@ -1776,7 +1774,7 @@ fn captured_history_missing_admitted_write_is_refused_before_opening() {
         admit(&mut f.host, &f.owner, message, f.now);
     }
     let before = f.host.durable().unwrap();
-    let mut wire: DurableV6<'_> = postcard::from_bytes(&before).unwrap();
+    let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
     wire.sealed[0].1.remove(0);
     let incomplete = postcard::to_allocvec(&wire).unwrap();
     let restored_peer = f.restore(&incomplete).unwrap();
@@ -1916,7 +1914,7 @@ fn captured_history_replays_compaction_and_waits_for_epochs_not_held() {
         restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
         Some("before rotation")
     );
-    let mut wire: DurableV6<'_> = postcard::from_bytes(&before).unwrap();
+    let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
     wire.sealed[0].1.swap(0, 1);
     let misplaced = postcard::to_allocvec(&wire).unwrap();
     assert!(
@@ -2267,7 +2265,7 @@ fn a_checkpoint_founds_its_record_behind_sealed_changes_let_go() {
         now,
     )
     .unwrap();
-    fresh.select_admission_v5().unwrap();
+    fresh.select_exact_admissions().unwrap();
     fresh
         .receive_from(origin(&f.owner), f.host.workspace_message(), now)
         .unwrap();
@@ -2558,7 +2556,7 @@ fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
         now,
     )
     .unwrap();
-    fresh.select_admission_v5().unwrap();
+    fresh.select_exact_admissions().unwrap();
     fresh
         .receive_from(origin(&f.owner), f.host.workspace_message(), now)
         .unwrap();

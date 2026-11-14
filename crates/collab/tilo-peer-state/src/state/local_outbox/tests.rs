@@ -19,7 +19,7 @@ fn fixture() -> (
     SystemTime,
 ) {
     let (mut governor, governor_key, key, cert, now) = crate::admission_tests::seeded();
-    governor.select_admission_v5().unwrap();
+    governor.select_exact_admissions().unwrap();
     let mut member = StatePeer::new(
         governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
@@ -28,7 +28,7 @@ fn fixture() -> (
         now,
     )
     .unwrap();
-    member.select_admission_v5().unwrap();
+    member.select_exact_admissions().unwrap();
     for message in governor
         .publication_mut()
         .bootstrap_messages(&governor_key, now)

@@ -284,7 +284,7 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
             SystemTime::now(),
         )
         .unwrap();
-        bob_peer.select_admission_v5().unwrap();
+        bob_peer.select_exact_admissions().unwrap();
         for bytes in &bootstrap.governance_messages {
             bob_peer
                 .receive_from(

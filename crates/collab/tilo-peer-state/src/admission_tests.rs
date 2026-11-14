@@ -1921,7 +1921,7 @@ fn unsupported_durable_version_is_rejected_without_mutating_the_bytes() {
     )
     .err()
     .unwrap();
-    assert!(error.contains("unsupported durable admission version"));
+    assert!(error.contains("unsupported durable version"));
     assert_eq!(bytes, unchanged);
 }
 

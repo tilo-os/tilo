@@ -114,7 +114,7 @@ impl TestGovernor {
             now,
         )
         .unwrap();
-        peer.select_admission_v5().unwrap();
+        peer.select_exact_admissions().unwrap();
         peer.admit_certificate(host.clone(), &governor_key, now)
             .unwrap();
         let mut governor = Self {
@@ -173,7 +173,7 @@ impl TestGovernor {
             &governor_key,
             now,
         )?;
-        peer.select_admission_v5()
+        peer.select_exact_admissions()
             .map_err(|error| error.to_string())?;
         let mut fixture = Self {
             peer,
