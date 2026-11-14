@@ -2,7 +2,7 @@
 /// door and read as packages: the desktop's windows, workspaces and arrangement as
 /// `so.tilo.session` (`apps/tl/session/surface.toml`), the device's resources and the desk as
 /// `so.tilo.device`. A view presses one directly (`session.focus(window(w))`,
-/// `device.show_surface(device.desk, surface: "launcher")`), as the agent and the REPL call it,
+/// `device.show_surface(device.overlays, surface: "launcher")`), as the agent and the REPL call it,
 /// attributed, permission checked and undoable as any action is. The shell declares no action
 /// of its own around one.
 ///

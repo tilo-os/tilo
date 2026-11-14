@@ -146,12 +146,6 @@ pub const KINDS: &[OriginKind] = &[
                 "The others here in the workspace in front.",
             ),
             field(
-                "here",
-                "Text",
-                "The surface the desk shows over its windows: `none`, `desk`, `overview`, \
-                 `switcher`, `launcher`, `centre` or `composer`.",
-            ),
-            field(
                 "spotlight",
                 "Text",
                 "What the person last typed in the shell's search, so the shell opens where they \

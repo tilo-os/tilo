@@ -2322,24 +2322,59 @@
           "description": "Put the question waiting on the person's avatar off for now",
           "kind": "outside",
           "params": []
-        },
+        }
+      ],
+      "fields": [
         {
-          "id": "show-surface",
-          "label": "Show or hide a panel",
-          "description": "Show the surface `surface` over the desk's windows, or close it when it is up.",
+          "path": "person",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "overlays",
+      "label": "Overlays",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "open-surface",
+          "label": "Open a surface",
+          "description": "Open a surface Named as the reading names it; the session's own surfaces only. A surface already up moves to where it is asked to stand.",
           "kind": "outside",
           "params": [
             {
-              "name": "surface",
+              "name": "slot",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "anchor",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "close-surface",
+          "label": "Close a surface",
+          "description": "Close a surface",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "slot",
               "required": true,
               "type": "text"
             }
           ]
         },
         {
-          "id": "close-surface",
-          "label": "Close panel",
-          "description": "Close the surface `surface`, when it is the one up.",
+          "id": "show-surface",
+          "label": "Show or hide a panel",
+          "description": "Show the surface `surface` over the desk's windows, or close it when it is up.",
           "kind": "outside",
           "params": [
             {
@@ -2395,6 +2430,18 @@
       "fields": [
         {
           "path": "here",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "switcher_revealed",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "switcher_scope",
           "stored": "value",
           "type": "text",
           "readonly": true

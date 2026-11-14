@@ -203,7 +203,7 @@ impl SurfaceHost for ShellPart {
             SurfaceKey::Commit => self.ask("commit-switcher", &[]),
             SurfaceKey::Close => {
                 let up = self.origin.borrow().link.surface();
-                self.ask("close-surface", &[("surface", up.into())]);
+                self.ask("close-surface", &[("slot", up.into())]);
             }
         }
     }

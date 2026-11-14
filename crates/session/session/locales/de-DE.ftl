@@ -432,11 +432,10 @@ so-tilo-session-invite-show-invite = Personen einladen
 so-tilo-session-invite-show-connect = Agent oder Computer verbinden
 so-tilo-session-invite-show-pair-device = Gerät hinzufügen
 so-tilo-session-invite-cancel-invitation = Einladung zurückziehen
-so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden
-so-tilo-session-desk-close-surface = Bereich schließen
-so-tilo-session-desk-walk-switcher = Fenster wechseln
-so-tilo-session-desk-select-switcher = Fenster im Umschalter wählen
-so-tilo-session-desk-commit-switcher = Zum gewählten Fenster wechseln
+so-tilo-desktop-overlays-show-surface = Bereich ein- oder ausblenden
+so-tilo-desktop-overlays-walk-switcher = Fenster wechseln
+so-tilo-desktop-overlays-select-switcher = Fenster im Umschalter wählen
+so-tilo-desktop-overlays-commit-switcher = Zum gewählten Fenster wechseln
 
 ## Actions
 
@@ -470,8 +469,8 @@ so-tilo-session-quick-settings-move-control = Ein Element verschieben
 so-tilo-session-quick-settings-reset-controls = Das Panel zurücksetzen
 so-tilo-session-quick-settings-show-control = Ein Element hinzufügen
 so-tilo-session-send-to-send = Senden an
-so-tilo-desktop-overlays-close = Eine Oberfläche schließen
-so-tilo-desktop-overlays-open = Eine Oberfläche öffnen
+so-tilo-desktop-overlays-close-surface = Eine Oberfläche schließen
+so-tilo-desktop-overlays-open-surface = Eine Oberfläche öffnen
 so-tilo-desktop-window-menu-choose = Eine Zeile wählen
 so-tilo-desktop-window-menu-close = Das Fenstermenü schließen
 so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen

@@ -28,8 +28,6 @@ use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::{Options, Session};
-use tilo_session_core::shell::DeskReading;
-use tilo_surface_host::shell_part::DESK_RESOURCE;
 use ui::kurbo::Rect;
 
 /// What a key sends, evdev codes.
@@ -139,16 +137,6 @@ fn key(session: &mut Session, keycode: u32, pressed: bool) {
         .input(InputEvent::Key { keycode, pressed })
         .expect("the key reaches the session");
     session.step(REFRESH).expect("a turn of the session");
-}
-
-/// The desk as the session publishes it.
-fn desk(session: &Session) -> DeskReading {
-    serde_json::from_value(
-        session
-            .read(DESK_RESOURCE)
-            .expect("the session publishes its desk"),
-    )
-    .expect("the desk reads as the desk's reading")
 }
 
 /// The title of the window in front.
@@ -281,7 +269,11 @@ fn letting_alt_go_goes_to_the_window_the_walk_reached() {
         panel(&session).is_none(),
         "the panel is down once Alt is let go"
     );
-    assert_eq!(desk(&session).here, "none", "the desk is at rest again");
+    assert_eq!(
+        crate::common::desk_here(&session),
+        "none",
+        "the desk is at rest again"
+    );
     shot(&mut session, "switcher-after");
     eprintln!("letting Alt go went to Mail {settled:?} later");
 }
@@ -661,6 +653,6 @@ fn one_window_opens_no_walk() {
         .step(Duration::from_millis(200))
         .expect("a turn of the session");
     assert!(panel(&session).is_none(), "one window is nowhere to walk");
-    assert_eq!(desk(&session).here, "none");
+    assert_eq!(crate::common::desk_here(&session), "none");
     key(&mut session, KEY_LEFTALT, false);
 }

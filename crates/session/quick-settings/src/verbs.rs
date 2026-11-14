@@ -16,8 +16,8 @@ use ui::serde_json::{self, Map, Value};
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::session::{
-    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK,
-    NIGHT_LIGHT, NOTIFICATIONS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
+    BLUETOOTH, CHROME, CLIPBOARD, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT,
+    NOTIFICATIONS, OVERLAYS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
 };
 
 /// What an effect asks of the session: the resource, its action and the
@@ -212,7 +212,7 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
         // the desk, rather than a page of its own.
         QsEffect::ShowCentre => {
             put(&mut arguments, "surface", "centre");
-            (DESK, "show-surface")
+            (OVERLAYS, "show-surface")
         }
         QsEffect::SetDoNotDisturb { on } => {
             put(&mut arguments, "on", on);
@@ -443,7 +443,7 @@ mod tests {
         {
             assert_eq!(
                 said(&QsEffect::ShowCentre).as_deref(),
-                Some("session:desk show-surface surface=centre"),
+                Some("desktop:overlays show-surface surface=centre"),
                 "one list, on the desk every app of the session reaches"
             );
         }

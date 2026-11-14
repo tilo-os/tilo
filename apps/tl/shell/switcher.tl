@@ -25,7 +25,7 @@ view switcher(d: Desk) {
         .sort_by(w -> w.recency)
     let pick = desk.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }
-    let windows = if d.switcher_scope == "app" {
+    let windows = if device.overlays.switcher_scope == "app" {
         desk.filter(w -> w.app_key == front_app)
     } else { desk }
     let count = windows.len()
@@ -35,7 +35,7 @@ view switcher(d: Desk) {
     let shown = windows.filter(
         w -> walk_place(windows, w) >= from and walk_place(windows, w) < from + per_page,
     )
-    let this_app = if d.switcher_scope == "app" {
+    let this_app = if device.overlays.switcher_scope == "app" {
         if let p = pick { p.origin_app } else { "" }
     } else { "" }
     let paged = if count > per_page { "{at} of {count}" } else { "" }

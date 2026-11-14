@@ -962,21 +962,30 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
     })
 }
 
-/// The surface the desk shows over its windows now, as its own reading names it: `none` at rest,
-/// `centre` for the notification centre, `quick-settings`, `launcher` and the rest.
+/// The surface the shell shows over the windows now, as the surface stack's reading names it:
+/// `none` at rest, `centre` for the notification centre, `quick-settings`, `launcher` and the rest.
 #[must_use]
 pub fn desk_here(session: &Session) -> String {
-    let reading: Value = serde_json::from_value(
-        session
-            .read("session:desk")
-            .expect("the session publishes its desk"),
-    )
-    .expect("the desk reads as its JSON");
-    reading
+    surface_stack(session)
         .get("here")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// Whether the switcher's panel shows, as the surface stack's reading says.
+#[must_use]
+pub fn switcher_revealed(session: &Session) -> bool {
+    surface_stack(session)
+        .get("switcher_revealed")
+        .and_then(Value::as_bool)
+        .unwrap_or_default()
+}
+
+fn surface_stack(session: &Session) -> Value {
+    session
+        .read("desktop:overlays")
+        .expect("the session publishes its surface stack")
 }
 
 /// The name the shell shows the place `record` is on: the window's own name, resolved once by the

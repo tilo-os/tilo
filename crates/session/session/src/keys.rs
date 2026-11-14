@@ -221,23 +221,16 @@ impl SwitcherKey {
             Self::Walk { back, opened } => {
                 let scope = walking.unwrap_or(opened);
                 Some(
-                    Invocation::new(tilo_session_core::shell::DESK_RESOURCE, "walk-switcher")
+                    Invocation::new(OVERLAYS, "walk-switcher")
                         .with("steps", if back { -1 } else { 1 })
                         .with("scope", scope.name()),
                 )
             }
-            Self::Place(at) => Some(
-                Invocation::new(tilo_session_core::shell::DESK_RESOURCE, "select-switcher")
-                    .with("at", at),
-            ),
-            Self::Commit => Some(Invocation::new(
-                tilo_session_core::shell::DESK_RESOURCE,
-                "commit-switcher",
-            )),
-            Self::Cancel => Some(
-                Invocation::new(tilo_session_core::shell::DESK_RESOURCE, "close-surface")
-                    .with("surface", "switcher"),
-            ),
+            Self::Place(at) => Some(Invocation::new(OVERLAYS, "select-switcher").with("at", at)),
+            Self::Commit => Some(Invocation::new(OVERLAYS, "commit-switcher")),
+            Self::Cancel => {
+                Some(Invocation::new(OVERLAYS, "close-surface").with("slot", "switcher"))
+            }
             Self::Hold => None,
         }
     }
@@ -737,7 +730,7 @@ impl SessionKeys {
             }
             self.invocations
                 .borrow_mut()
-                .push(Invocation::new(OVERLAYS, "close").with("slot", slot.as_str()));
+                .push(Invocation::new(OVERLAYS, "close-surface").with("slot", slot.as_str()));
             return;
         }
         if self.folds_the_desk(press) {
@@ -880,8 +873,8 @@ mod tests {
         keys.keys.invocations.borrow_mut().drain(..).collect()
     }
 
-    fn desk(action: &str) -> Invocation {
-        Invocation::new(tilo_session_core::shell::DESK_RESOURCE, action)
+    fn surfaces(action: &str) -> Invocation {
+        Invocation::new(OVERLAYS, action)
     }
 
     /// A release of `keysym` with `modifiers` held.
@@ -901,7 +894,7 @@ mod tests {
         assert_eq!(
             asked(&keys),
             vec![
-                desk("walk-switcher")
+                surfaces("walk-switcher")
                     .with("steps", 1)
                     .with("scope", "workspace")
             ],
@@ -913,7 +906,7 @@ mod tests {
         assert_eq!(
             asked(&keys),
             vec![
-                desk("walk-switcher")
+                surfaces("walk-switcher")
                     .with("steps", -1)
                     .with("scope", "workspace")
             ],
@@ -932,7 +925,11 @@ mod tests {
         keys.key(&grave);
         assert_eq!(
             asked(&keys),
-            vec![desk("walk-switcher").with("steps", 1).with("scope", "app")]
+            vec![
+                surfaces("walk-switcher")
+                    .with("steps", 1)
+                    .with("scope", "app")
+            ]
         );
         // The chord a text field types is nobody's walk: Ctrl or Super with the key above Tab.
         for other in [
@@ -1008,7 +1005,7 @@ mod tests {
         let let_go = released(keysyms::Alt_L, KeyModifiers::default());
         assert_eq!(keys.claim_key(&let_go, false, false), KeyClaim::Take);
         keys.key(&let_go);
-        assert_eq!(asked(&keys), vec![desk("commit-switcher")]);
+        assert_eq!(asked(&keys), vec![surfaces("commit-switcher")]);
 
         // Any other key released with Alt still down is the walk's and does nothing.
         let tab = released(keysyms::Tab, held("a"));
@@ -1017,7 +1014,7 @@ mod tests {
         // A key released once Alt came up commits too: Alt's own release was lost.
         let stray = released(keysyms::a, KeyModifiers::default());
         keys.key(&stray);
-        assert_eq!(asked(&keys), vec![desk("commit-switcher")]);
+        assert_eq!(asked(&keys), vec![surfaces("commit-switcher")]);
     }
 
     #[test]
@@ -1029,13 +1026,17 @@ mod tests {
         keys.key(&escape);
         assert_eq!(
             asked(&keys),
-            vec![desk("close-surface").with("surface", "switcher")]
+            vec![surfaces("close-surface").with("slot", "switcher")]
         );
 
         for commit in [keysyms::Return, keysyms::KP_Enter, keysyms::space] {
             let key = key(commit, None, held("a"));
             keys.key(&key);
-            assert_eq!(asked(&keys), vec![desk("commit-switcher")], "{commit:#x}");
+            assert_eq!(
+                asked(&keys),
+                vec![surfaces("commit-switcher")],
+                "{commit:#x}"
+            );
         }
     }
 
@@ -1063,7 +1064,7 @@ mod tests {
         shell.key(&escape);
         assert_eq!(
             asked(&shell),
-            vec![Invocation::new(OVERLAYS, "close").with("slot", "quick-settings")]
+            vec![Invocation::new(OVERLAYS, "close-surface").with("slot", "quick-settings")]
         );
     }
 
@@ -1073,10 +1074,16 @@ mod tests {
         walk.walk(Some("workspace"), 1);
         let home = key(keysyms::Home, None, held("a"));
         keys.key(&home);
-        assert_eq!(asked(&keys), vec![desk("select-switcher").with("at", 0)]);
+        assert_eq!(
+            asked(&keys),
+            vec![surfaces("select-switcher").with("at", 0)]
+        );
         let end = key(keysyms::End, None, held("a"));
         keys.key(&end);
-        assert_eq!(asked(&keys), vec![desk("select-switcher").with("at", -1)]);
+        assert_eq!(
+            asked(&keys),
+            vec![surfaces("select-switcher").with("at", -1)]
+        );
         for (arrow, steps) in [
             (keysyms::Left, -1),
             (keysyms::Up, -1),
@@ -1088,7 +1095,7 @@ mod tests {
             assert_eq!(
                 asked(&keys),
                 vec![
-                    desk("walk-switcher")
+                    surfaces("walk-switcher")
                         .with("steps", steps)
                         .with("scope", "workspace")
                 ],
@@ -1107,7 +1114,11 @@ mod tests {
             keys.key(&step);
             assert_eq!(
                 asked(&keys),
-                vec![desk("walk-switcher").with("steps", 1).with("scope", "app")],
+                vec![
+                    surfaces("walk-switcher")
+                        .with("steps", 1)
+                        .with("scope", "app")
+                ],
                 "a walk going keeps the windows it crosses: {keysym:#x}"
             );
         }
@@ -1120,7 +1131,7 @@ mod tests {
         assert_eq!(
             asked(&keys),
             vec![
-                desk("walk-switcher")
+                surfaces("walk-switcher")
                     .with("steps", 1)
                     .with("scope", "workspace")
             ]
@@ -1131,7 +1142,11 @@ mod tests {
         keys.key(&grave);
         assert_eq!(
             asked(&keys),
-            vec![desk("walk-switcher").with("steps", 1).with("scope", "app")]
+            vec![
+                surfaces("walk-switcher")
+                    .with("steps", 1)
+                    .with("scope", "app")
+            ]
         );
     }
 
@@ -1144,7 +1159,7 @@ mod tests {
         keys.key(&typing);
         assert_eq!(
             asked(&keys),
-            vec![desk("commit-switcher")],
+            vec![surfaces("commit-switcher")],
             "Alt came up without the walk hearing it: the press settles the walk"
         );
 

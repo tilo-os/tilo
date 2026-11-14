@@ -185,10 +185,8 @@ fn no_app_hands_the_session_a_string() {
 #[test]
 fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_session_its_notice_action() {
     let _settled = ui::motion::testing::settled();
-    let (mut part, link) = part_with(DeskReading {
-        here: "centre".to_owned(),
-        ..reading()
-    });
+    let (mut part, link) =
+        part_with(super::tests_support::Staged::from(reading()).showing("centre"));
     publish_notices(
         &link,
         &serde_json::json!([{
@@ -584,10 +582,7 @@ fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
     for (here, fullscreen, aside) in rows {
         let (mut part, _link) = part_of(
             &packages,
-            DeskReading {
-                here: here.to_owned(),
-                ..reading()
-            },
+            super::tests_support::Staged::from(reading()).showing(here),
             (1280, 800),
         );
         assert!(
@@ -893,10 +888,7 @@ fn a_surface_of_the_desks_stands_over_the_windows() {
         part.below_windows(),
         "the desk at rest stands under the windows"
     );
-    link.publish(DeskReading {
-        here: "overview".to_owned(),
-        ..reading()
-    });
+    super::tests_support::publish_overlays(&link, "overview", false);
     for _ in 0..4 {
         part.prepare_frame();
     }
@@ -904,7 +896,7 @@ fn a_surface_of_the_desks_stands_over_the_windows() {
         !part.below_windows(),
         "the overview stands over the windows"
     );
-    link.publish(reading());
+    super::tests_support::publish_overlays(&link, "none", false);
     for _ in 0..4 {
         part.prepare_frame();
     }
@@ -917,10 +909,9 @@ fn a_surface_of_the_desks_stands_over_the_windows() {
 /// The overview over a window on each of `strips`, the first window's on the first strip.
 fn overview_with(strips: &[&str]) -> super::tests_support::Staged {
     super::tests_support::Staged {
-        desk: DeskReading {
-            here: "overview".to_owned(),
-            ..reading()
-        },
+        desk: reading(),
+        here: "overview".to_owned(),
+        revealed: false,
         windows: strips
             .iter()
             .enumerate()
@@ -1042,10 +1033,8 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
 #[test]
 fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
     let _settled = ui::motion::testing::settled();
-    let (mut part, link) = part_with(DeskReading {
-        here: "workspaces".to_owned(),
-        ..reading()
-    });
+    let (mut part, link) =
+        part_with(super::tests_support::Staged::from(reading()).showing("workspaces"));
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -1078,10 +1067,8 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
     // Once something is typed, the launcher's footer and body change; the panel keeps its
     // header's field through that, so the next letter lands in the same field.
     let _settled = ui::motion::testing::settled();
-    let (mut part, link) = part_with(DeskReading {
-        here: "launcher".to_owned(),
-        ..reading()
-    });
+    let (mut part, link) =
+        part_with(super::tests_support::Staged::from(reading()).showing("launcher"));
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -1171,10 +1158,7 @@ fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
     for (width, height) in [(390, 844), (1280, 800)] {
         let (mut part, _link) = part_of(
             &packages,
-            DeskReading {
-                here: "centre".to_owned(),
-                ..reading()
-            },
+            super::tests_support::Staged::from(reading()).showing("centre"),
             (width, height),
         );
         for _ in 0..4 {
@@ -1238,8 +1222,6 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
     );
     // Holding Alt+Tab opens the switcher: every window the desk holds, in the walk's order.
     let mut reading = super::tests_support::reading_with_windows();
-    reading.desk.here = "switcher".to_owned();
-    reading.desk.switcher_revealed = true;
     for (at, window) in reading
         .windows
         .as_array_mut()
@@ -1251,6 +1233,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
         window["preview"] = serde_json::json!("live");
     }
     super::tests_support::publish_windows(&link, &reading.windows);
+    super::tests_support::publish_overlays(&link, "switcher", true);
     link.publish(reading.desk);
     for _ in 0..6 {
         part.prepare_frame();
@@ -1384,10 +1367,7 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
         std::rc::Rc::new(|key: &str| key.parse::<u64>().ok()),
     );
     super::tests_support::publish_windows(&link, &windows);
-    link.publish(DeskReading {
-        here: "overview".to_owned(),
-        ..reading()
-    });
+    super::tests_support::publish_overlays(&link, "overview", false);
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -1492,6 +1472,8 @@ fn the_desks_preset_reaches_the_screen() {
             "focused": true,
             "local": true,
         }]),
+        here: "none".to_owned(),
+        revealed: false,
     };
     let (mut part, link) = super::tests_support::part_as(desk, None);
     link.publish_arrangement(one_window_arrangement());

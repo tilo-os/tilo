@@ -597,6 +597,7 @@ impl Session {
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
+        let shell_surfaces = surfaces.clone();
         // What the keys ask the panel's own app, which the surface loop hands
         // the running app each pass. A device whose desk draws the panel has
         // one; the shell's own view of the quick settings answers its own keys.
@@ -1362,7 +1363,7 @@ impl Session {
         crate::shell::state::ShellService::mount(
             &services,
             &handle,
-            overlays.clone(),
+            shell_surfaces,
             Rc::clone(&shortcuts),
         );
         services

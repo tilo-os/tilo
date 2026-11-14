@@ -45,7 +45,7 @@ pub use tilo_session_core::shell::{
     ARRANGEMENT_RESOURCE, ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading,
     ArrangementRefReading, ArrangementRowReading, ArrangementStripReading,
     ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE, DESK_RESOURCE, DeskReading,
-    ORIGIN, PersonReading, SHELL_APP, SHELL_RECORD, WorkspaceReading,
+    ORIGIN, OVERLAYS, PersonReading, SHELL_APP, SHELL_RECORD, WorkspaceReading,
 };
 
 mod host;
@@ -416,10 +416,10 @@ impl SessionLink {
     /// The surface the desk shows now (`none` at rest): what the part covers the outputs for.
     #[must_use]
     pub fn surface(&self) -> String {
-        self.reading
+        self.readings
             .borrow()
-            .as_ref()
-            .map(|reading| reading.here.clone())
+            .get(OVERLAYS)
+            .and_then(|(_, reading)| reading.get("here")?.as_str().map(str::to_owned))
             .unwrap_or_default()
     }
 }
@@ -536,11 +536,6 @@ impl SessionOrigin {
             ("person", text(&reading.person)),
             ("workspace", text(&reading.workspace)),
             ("strip", text(&reading.strip)),
-            ("here", text(&reading.here)),
-            // The switcher's panel: whether it shows yet (a flick draws nothing), and which
-            // windows its walk crosses.
-            ("switcher_revealed", Value::Bool(reading.switcher_revealed)),
-            ("switcher_scope", text(&reading.switcher_scope)),
             ("spotlight", text(&reading.spotlight)),
             // The ask on the person's avatar: its words, and whether it stands open.
             ("ask", text(&ask.question)),
@@ -1989,7 +1984,7 @@ impl ShellPart {
             .map(|(name, value)| ((*name).to_owned(), value.clone()))
             .collect();
         self.origin.borrow().link.ask(Ask {
-            resource: DESK_RESOURCE.to_owned(),
+            resource: OVERLAYS.to_owned(),
             action: action.to_owned(),
             arguments,
             from: None,

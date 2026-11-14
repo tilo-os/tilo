@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::tests_support::{
     alt, compiled, grave, key, part_of, part_with, reading_with_windows, tab,
 };
-use super::{Ask, DESK_RESOURCE};
+use super::{Ask, OVERLAYS};
 use tilo_session_core::surface::{HostKey, KeyClaim, SurfaceHost as _};
 
 /// What the part makes of a key the compositor offers it.
@@ -158,11 +158,7 @@ fn with_a_surface_up() -> Vec<Case> {
                 asks(alt(false), "commit-switcher", Vec::new()),
                 asks(right_alt_let_go(), "commit-switcher", Vec::new()),
                 asks(enter(), "commit-switcher", Vec::new()),
-                asks(
-                    escape(),
-                    "close-surface",
-                    vec![("surface", "switcher".into())],
-                ),
+                asks(escape(), "close-surface", vec![("slot", "switcher".into())]),
                 // Alt going down again, and a letter, are no answer to the switcher.
                 passes(alt(true)),
                 passes(letter()),
@@ -176,11 +172,7 @@ fn with_a_surface_up() -> Vec<Case> {
             name: "the overview up",
             here: "overview",
             keys: vec![
-                asks(
-                    escape(),
-                    "close-surface",
-                    vec![("surface", "overview".into())],
-                ),
+                asks(escape(), "close-surface", vec![("slot", "overview".into())]),
                 // Enter and letting Alt go answer the switcher alone.
                 passes(enter()),
                 passes(alt(false)),
@@ -201,11 +193,7 @@ fn with_a_surface_up() -> Vec<Case> {
                 passes(letter()),
                 passes(enter()),
                 passes(alt(false)),
-                asks(
-                    escape(),
-                    "close-surface",
-                    vec![("surface", "launcher".into())],
-                ),
+                asks(escape(), "close-surface", vec![("slot", "launcher".into())]),
                 locked(escape()),
             ],
         },
@@ -224,8 +212,8 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
     for case in cases() {
         let name = case.name;
         let mut reading = reading_with_windows();
-        reading.desk.here = case.here.to_owned();
-        reading.desk.switcher_revealed = case.here == "switcher";
+        case.here.clone_into(&mut reading.here);
+        reading.revealed = case.here == "switcher";
         let (mut part, link) = part_of(&packages, reading, (1280, 800));
         // What the desk was asked while its switcher or its launcher came up is no key's.
         if matches!(case.here, "switcher" | "launcher") {
@@ -239,7 +227,7 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
                     part.key(&offered.key);
                     let asked: Vec<Ask> = link.asked.borrow_mut().drain(..).collect();
                     let expected = Ask {
-                        resource: DESK_RESOURCE.to_owned(),
+                        resource: OVERLAYS.to_owned(),
                         action: (*action).to_owned(),
                         arguments: arguments
                             .iter()
@@ -270,7 +258,7 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
 #[test]
 fn a_surface_up_makes_the_part_cover_the_outputs() {
     let mut reading = super::tests_support::reading_with_windows();
-    reading.desk.here = "launcher".to_owned();
+    "launcher".clone_into(&mut reading.here);
     let (part, _link) = part_with(reading);
     assert_eq!(
         part.widgets.placement().size,

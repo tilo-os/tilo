@@ -11,15 +11,6 @@ d-4jk2lkpt = Schreibtisch
 
 d-kx4rprro = Person
 
-d-6unuw4qc = Hier
-    .doc = Die Oberfläche, in der die Person ist, etwa die Übersicht oder die Benachrichtigungen; leer in Ruhe.
-
-d-wey3uqyo = Wechsler gezeigt
-    .doc = Ob das Panel des Wechslers zeigt: ein kurzes Alt+Tab wechselt Fenster und zeichnet nichts.
-
-d-5mipdtxu = Bereich des Wechslers
-    .doc = Welche Fenster der Weg des Wechslers kreuzt: `workspace` für jedes Fenster, `app` für die Fenster der App vorn (Alt+`).
-
 d-foayl4ai = Suche
     .doc = Was die Person in die Suche der Shell getippt hat, die den Launcher dort öffnet, wo sie aufgehört hat.
 
@@ -42,8 +33,6 @@ d-xpcwi5mg = Leiste
 d-vbyis266 = Arbeitsbereiche
 
 d-xu2jijql = Personen
-
-d-4jk2lkpt-filter-switcher_revealed = Wechsler gezeigt
 
 d-4jk2lkpt-filter-ask_open = Frage offen
 

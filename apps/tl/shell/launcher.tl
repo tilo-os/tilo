@@ -161,13 +161,13 @@ view window_row(w: device.Window) {
 view desk_doors(d: Desk) {
     ui.Section("The desk") {
         ui.ListRow("Overview", icon: .layout_grid) {
-            on activate: device.show_surface(device.desk, surface: "overview")
+            on activate: device.show_surface(device.overlays, surface: "overview")
         }
         ui.ListRow("Workspaces", icon: .layers) {
-            on activate: device.show_surface(device.desk, surface: "workspaces")
+            on activate: device.show_surface(device.overlays, surface: "workspaces")
         }
         ui.ListRow("Notifications", icon: .bell) {
-            on activate: device.show_surface(device.desk, surface: "centre")
+            on activate: device.show_surface(device.overlays, surface: "centre")
         }
     }
 }

@@ -1,7 +1,7 @@
 /// The desk: what this device shows. The person's bar across the top edge its settings name,
 /// the dock on its own edge, and one surface over the desk at a time: the overview, the
 /// switcher, search and launching, the notifications and the workspaces. Which
-/// one is up is the session's (`d.here`), so the shell re-runs when it changes and nothing else
+/// one is up is the session's (`device.overlays.here`), so the shell re-runs when it changes and nothing else
 /// moves while the desk is at rest.
 ///
 /// The bar and the dock are `ui.Chrome` bodies made of the theme's material for the style the
@@ -38,10 +38,10 @@ template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool
         and dock_shows(s, d)
         and s.dock_edge == .bottom
         and space.compact
-    let resting = d.here == ""
-        or d.here == "none"
-        or d.here == "desk"
-        or d.here == "switcher" and not d.switcher_revealed
+    let resting = device.overlays.here == ""
+        or device.overlays.here == "none"
+        or device.overlays.here == "desk"
+        or device.overlays.here == "switcher" and not device.overlays.switcher_revealed
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {
@@ -52,7 +52,7 @@ template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool
                     at_rest()
                     content
                 }
-            } else if d.here == "switcher" {
+            } else if device.overlays.here == "switcher" {
                 surface(d, fill)
             } else {
                 scroll(fill) {
@@ -283,17 +283,17 @@ view at_rest() {
 /// surface is a panel over the desk, not a band of the window.
 view surface(d: Desk) {
     stack(fill, padding: if space.compact { .section } else { .none }) {
-        if d.here == "overview" {
+        if device.overlays.here == "overview" {
             overview(d, fill)
-        } else if d.here == "switcher" {
+        } else if device.overlays.here == "switcher" {
             switcher(d, fill)
-        } else if d.here == "launcher" {
+        } else if device.overlays.here == "launcher" {
             launcher(d, fill)
-        } else if d.here == "centre" {
+        } else if device.overlays.here == "centre" {
             notices(fill)
-        } else if d.here == "quick-settings" {
+        } else if device.overlays.here == "quick-settings" {
             quick_settings(d, fill)
-        } else if d.here == "workspaces" {
+        } else if device.overlays.here == "workspaces" {
             workspaces(d, fill)
         }
     }

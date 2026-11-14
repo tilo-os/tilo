@@ -12,7 +12,7 @@ scenario "the default shell on a desk" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -42,7 +42,7 @@ scenario "a full dock" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -90,7 +90,7 @@ scenario "the dock on the left" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -113,7 +113,7 @@ scenario "the dock on the right" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -135,7 +135,7 @@ scenario "moving an item on the dock" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -156,7 +156,7 @@ scenario "a rearranged bar" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -177,7 +177,7 @@ scenario "the Tilo preset" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -197,7 +197,7 @@ scenario "the macos preset" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -217,7 +217,7 @@ scenario "the windows preset" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -237,7 +237,7 @@ scenario "the gnome preset" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
@@ -252,7 +252,7 @@ scenario "the minimal preset" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))

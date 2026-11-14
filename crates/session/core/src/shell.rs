@@ -59,19 +59,6 @@ pub struct DeskReading {
     pub workspace: String,
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
-    /// The surface the desk shows over its windows: `none`, `desk`, `overview`, `switcher`,
-    /// `launcher`, `centre`, `workspaces` or `composer`.
-    #[serde(default)]
-    pub here: String,
-    /// Whether the switcher's panel shows: Alt has been held on the walk past the flick that
-    /// only switches windows, so a quick Alt+Tab draws nothing.
-    #[serde(default)]
-    pub switcher_revealed: bool,
-    /// Which windows the switcher's walk crosses: `workspace` for every window of the
-    /// workspace (Alt+Tab), or `app` for the ones the window in front's app shows (Alt and the
-    /// grave key).
-    #[serde(default)]
-    pub switcher_scope: String,
     /// What the person last typed in the shell's search.
     #[serde(default)]
     pub spotlight: String,

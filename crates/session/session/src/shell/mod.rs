@@ -71,6 +71,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::desk_resource::agents_surface(),
         crate::desk_resource::styles_surface(),
         crate::desk_resource::surface(),
+        crate::shell::state::overlays_surface(),
     ]
 }
 

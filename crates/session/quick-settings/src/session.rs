@@ -52,10 +52,10 @@ pub(crate) const DEVICES: &str = "session:devices";
 pub(crate) const SCREEN: &str = "session:screen";
 /// The session's night light.
 pub(crate) const NIGHT_LIGHT: &str = "session:night-light";
-/// The session's desk: the surface over the windows, which the panel opens
-/// the notification centre on. Nothing of it is shown here, so none of its
-/// reading is followed.
-pub(crate) const DESK: &str = "session:desk";
+/// The surfaces over the windows, which the panel opens the notification
+/// centre on. Nothing of them is shown here, so none of their reading is
+/// followed.
+pub(crate) const OVERLAYS: &str = "desktop:overlays";
 /// The desktop's chrome: Settings at a page, and the app what plays comes
 /// from. The panel only presses it.
 pub(crate) const CHROME: &str = "desktop:chrome";

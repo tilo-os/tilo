@@ -443,19 +443,9 @@ fn preset_switch(session: &Session, showing: &str) -> (f64, f64, f64, f64) {
 const CHROME: &str = "desktop:chrome";
 /// The desk's published resource, which its actions are called on.
 const DESK_RESOURCE: &str = "desktop:desk";
-/// The desk's reading: the surface the shell shows now.
-const DESK: &str = "session:desk";
-
-/// The surface up now, as the desk's reading names it.
+/// The surface up now, as the surface stack's reading names it.
 fn here(session: &Session) -> String {
-    let reading: Value =
-        serde_json::from_value(session.read(DESK).expect("the session publishes its desk"))
-            .expect("the desk reads as its JSON");
-    reading
-        .get("here")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
+    crate::common::desk_here(session)
 }
 
 /// The overview's heading: the overview's own, which no other view of the desk shows.

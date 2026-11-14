@@ -428,11 +428,10 @@ so-tilo-session-invite-show-invite = Invite people
 so-tilo-session-invite-show-connect = Connect an agent or computer
 so-tilo-session-invite-show-pair-device = Add a device
 so-tilo-session-invite-cancel-invitation = Cancel invitation
-so-tilo-session-desk-show-surface = Show or hide a panel
-so-tilo-session-desk-close-surface = Close panel
-so-tilo-session-desk-walk-switcher = Switch windows
-so-tilo-session-desk-select-switcher = Choose window in switcher
-so-tilo-session-desk-commit-switcher = Go to chosen window
+so-tilo-desktop-overlays-show-surface = Show or hide a panel
+so-tilo-desktop-overlays-walk-switcher = Switch windows
+so-tilo-desktop-overlays-select-switcher = Choose window in switcher
+so-tilo-desktop-overlays-commit-switcher = Go to chosen window
 
 ## Actions
 
@@ -466,8 +465,8 @@ so-tilo-session-quick-settings-move-control = Move a control
 so-tilo-session-quick-settings-reset-controls = Reset the panel
 so-tilo-session-quick-settings-show-control = Add a control
 so-tilo-session-send-to-send = Send to
-so-tilo-desktop-overlays-close = Close a surface
-so-tilo-desktop-overlays-open = Open a surface
+so-tilo-desktop-overlays-close-surface = Close a surface
+so-tilo-desktop-overlays-open-surface = Open a surface
 so-tilo-desktop-window-menu-choose = Choose a row
 so-tilo-desktop-window-menu-close = Close the window menu
 so-tilo-desktop-window-menu-open = Open the window menu

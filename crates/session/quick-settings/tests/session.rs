@@ -207,11 +207,11 @@ fn went_back(ended: ui::tilo_actions::InvocationUpdate) -> bool {
         .and_then(Value::as_bool)
         .unwrap_or_else(|| panic!("the panel says whether it went back: {:?}", output.value))
 }
-
+/// The surface the shell shows over the windows now, as the surface stack names it.
 /// The surface the desk shows over its windows now, as its own reading names it.
 fn here(session: &Session) -> String {
     session
-        .read("session:desk")
+        .read("desktop:overlays")
         .and_then(|desk| desk.get("here").and_then(Value::as_str).map(str::to_owned))
         .unwrap_or_default()
 }
@@ -754,7 +754,7 @@ fn open_the_panel_over(session: &mut Session, desk: &Screenshot) {
     session
         .invoke(
             OVERLAYS,
-            "open",
+            "open-surface",
             &arguments(&json!({ "slot": "quick-settings" })),
         )
         .expect("the panel opens");

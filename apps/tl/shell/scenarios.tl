@@ -18,7 +18,7 @@ scenario "an afternoon at the desk" {
     stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.workspaces.insert(Workspace(key: "release", name: "Release 4.2"))
@@ -260,7 +260,7 @@ scenario "the overview" {
     stage(device.time, device.Time(clock: "4:31 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "overview"
+    stage(device.overlays, device.Overlays(here: "overview"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.people.insert(Person(key: "mia", name: "Mia Clayton"))
@@ -405,7 +405,7 @@ scenario "the overview, searching" {
     stage(device.time, device.Time(clock: "4:31 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "overview"
+    stage(device.overlays, device.Overlays(here: "overview"))
     d.spotlight = "quotes"
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
@@ -565,9 +565,10 @@ scenario "the switcher, two windows" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "switcher"
-    d.switcher_revealed = true
-    d.switcher_scope = "workspace"
+    stage(
+        device.overlays,
+        device.Overlays(here: "switcher", switcher_revealed: true, switcher_scope: "workspace"),
+    )
     stage(
         device.windows,
         device.Windows(
@@ -606,9 +607,10 @@ scenario "the switcher, twenty windows" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "switcher"
-    d.switcher_revealed = true
-    d.switcher_scope = "workspace"
+    stage(
+        device.overlays,
+        device.Overlays(here: "switcher", switcher_revealed: true, switcher_scope: "workspace"),
+    )
     stage(
         device.windows,
         device.Windows(
@@ -865,9 +867,10 @@ scenario "the switcher, this app's windows" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "switcher"
-    d.switcher_revealed = true
-    d.switcher_scope = "app"
+    stage(
+        device.overlays,
+        device.Overlays(here: "switcher", switcher_revealed: true, switcher_scope: "app"),
+    )
     stage(
         device.windows,
         device.Windows(
@@ -955,7 +958,7 @@ scenario "the launcher, before typing" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "launcher"
+    stage(device.overlays, device.Overlays(here: "launcher"))
     stage(device.apps, device.Apps(installed: installed_apps()))
     stage(
         device.windows,
@@ -1007,7 +1010,7 @@ scenario "the launcher, mail typed" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "launcher"
+    stage(device.overlays, device.Overlays(here: "launcher"))
     d.spotlight = "mai"
     stage(device.apps, device.Apps(installed: installed_apps()))
     stage(
@@ -1072,7 +1075,7 @@ scenario "the launcher, an action typed" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "launcher"
+    stage(device.overlays, device.Overlays(here: "launcher"))
     d.spotlight = "focus"
     stage(
         device.windows,
@@ -1100,7 +1103,7 @@ scenario "the notification centre" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "centre"
+    stage(device.overlays, device.Overlays(here: "centre"))
     stage(
         device.notifications,
         device.Notifications(
@@ -1195,7 +1198,7 @@ scenario "the notification centre, all read" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "centre"
+    stage(device.overlays, device.Overlays(here: "centre"))
     stage(
         device.notifications,
         device.Notifications(
@@ -1237,7 +1240,7 @@ scenario "the notification centre, all read" {
 /// battery: the tiles stand, and the sliders and the battery line wait for what is there.
 scenario "the quick settings" {
     let d = root Desk
-    d.here = "quick-settings"
+    stage(device.overlays, device.Overlays(here: "quick-settings"))
 }
 
 /// The centre with nothing in it: what a person sees after Clear all.
@@ -1245,7 +1248,7 @@ scenario "an empty notification centre" {
     let d = root Desk
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
-    d.here = "centre"
+    stage(device.overlays, device.Overlays(here: "centre"))
 }
 
 /// The workspaces: every one the person is in, and who is here in the one in front.
@@ -1254,7 +1257,7 @@ scenario "the workspaces" {
     d.person = "Ada Lovelace"
     stage(device.time, device.Time(clock: "9:12 AM"))
     d.workspace = "Studio"
-    d.here = "workspaces"
+    stage(device.overlays, device.Overlays(here: "workspaces"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "release", name: "Release 4.2"))
@@ -1270,7 +1273,7 @@ scenario "a banner" {
     stage(device.time, device.Time(clock: "2:04 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     stage(
         device.windows,
@@ -1322,7 +1325,7 @@ scenario "the bar's status" {
     stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     stage(device.notifications, waiting())
     d.people.insert(Person(key: "mia", name: "Mia Clayton"))
     d.people.insert(Person(key: "sam", name: "Sam Okafor"))
@@ -1768,7 +1771,7 @@ scenario "the traditional desktop" {
     stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia Clayton"))
@@ -1909,7 +1912,7 @@ scenario "the traditional desktop, a terminal in front" {
     stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Desk"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     stage(
         device.windows,
@@ -1960,7 +1963,7 @@ scenario "the agents on the bar" {
     stage(device.time, device.Time(clock: "4:28 PM"))
     d.workspace = "Studio"
     d.strip = "Drafts"
-    d.here = "none"
+    stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     stage(
         device.agents,

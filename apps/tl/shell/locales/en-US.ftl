@@ -12,15 +12,6 @@ d-4jk2lkpt = Desk
 
 d-kx4rprro = Person
 
-d-6unuw4qc = Here
-    .doc = The surface the person is in, such as the overview or the notifications; empty at rest.
-
-d-wey3uqyo = Switcher revealed
-    .doc = Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
-
-d-5mipdtxu = Switcher scope
-    .doc = Which windows the switcher's walk crosses: `workspace` for every window, `app` for the windows of the app in front (Alt+`).
-
 d-foayl4ai = Spotlight
     .doc = What the person typed in the shell's search, which opens the launcher where they left off.
 
@@ -43,8 +34,6 @@ d-xpcwi5mg = Strip
 d-vbyis266 = Workspaces
 
 d-xu2jijql = People
-
-d-4jk2lkpt-filter-switcher_revealed = Switcher revealed
 
 d-4jk2lkpt-filter-ask_open = Ask open
 

@@ -599,7 +599,7 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
 
 /// The shell's surface up now, as the desk's reading names it.
 fn here(session: &Session) -> String {
-    desk(session).here
+    crate::common::desk_here(session)
 }
 
 #[test]
@@ -616,7 +616,7 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
     // The bar's Overview opens the desktop's overview, as its menu item does.
     session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "desktop:overlays",
             "show-surface",
             &serde_json::Map::from_iter([(
                 "surface".to_owned(),
@@ -733,7 +733,9 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     for _ in 0..3 {
         walk(&mut session, 1, "workspace");
         session.step(Duration::from_millis(300)).unwrap();
-        until(&mut session, |session| desk(session).switcher_revealed);
+        until(&mut session, |session| {
+            crate::common::switcher_revealed(session)
+        });
         assert!(
             in_front.contains(&reached(&session).key),
             "the walk keeps to the workspace in front: {:?}",
@@ -826,7 +828,7 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
     // The shell's actions reach the desk's surface through its door.
     session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "desktop:overlays",
             "show-surface",
             &serde_json::Map::from_iter([(
                 "surface".to_owned(),
@@ -844,10 +846,10 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
     // Closing it from the desk's reading puts the desk back at rest.
     session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "desktop:overlays",
             "close-surface",
             &serde_json::Map::from_iter([(
-                "surface".to_owned(),
+                "slot".to_owned(),
                 serde_json::Value::String("launcher".to_owned()),
             )]),
         )
@@ -869,7 +871,7 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
     assert_eq!(centre(&session).notices[0].title, "Backup finished");
     session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "desktop:overlays",
             "show-surface",
             &serde_json::Map::from_iter([(
                 "surface".to_owned(),
@@ -914,7 +916,7 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_away() {
     );
     session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "desktop:overlays",
             "show-surface",
             &serde_json::Map::from_iter([(
                 "surface".to_owned(),
@@ -1040,7 +1042,7 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
 fn walk(session: &mut Session, steps: i64, scope: &str) {
     session
         .invoke(
-            DESK_RESOURCE,
+            "desktop:overlays",
             "walk-switcher",
             &serde_json::Map::from_iter([
                 ("steps".to_owned(), serde_json::Value::from(steps)),
@@ -1090,10 +1092,9 @@ fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
     let plain = keep(&mut session, "shell-flick");
 
     walk(&mut session, 1, "workspace");
-    let flicked = desk(&session);
-    assert_eq!(flicked.here, "switcher");
+    assert_eq!(crate::common::desk_here(&session), "switcher");
     assert!(
-        !flicked.switcher_revealed,
+        !crate::common::switcher_revealed(&session),
         "a flick shorter than the reveal delay shows no panel"
     );
     assert_eq!(
@@ -1110,7 +1111,9 @@ fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
 
     // Held past the delay, the panel comes up with the window the walk reached lifted.
     session.step(Duration::from_millis(300)).unwrap();
-    until(&mut session, |session| desk(session).switcher_revealed);
+    until(&mut session, |session| {
+        crate::common::switcher_revealed(session)
+    });
     assert_eq!(
         lifted(&session),
         next.clone(),
@@ -1124,11 +1127,14 @@ fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
 
     // Letting go goes there, and the panel is down again.
     session
-        .invoke(DESK_RESOURCE, "commit-switcher", &serde_json::Map::new())
+        .invoke(
+            "desktop:overlays",
+            "commit-switcher",
+            &serde_json::Map::new(),
+        )
         .unwrap();
-    let rested = desk(&session);
-    assert_eq!(rested.here, "none");
-    assert!(!rested.switcher_revealed);
+    assert_eq!(crate::common::desk_here(&session), "none");
+    assert!(!crate::common::switcher_revealed(&session));
     // The window comes to the front on the frames after letting go.
     until(&mut session, |session| lifted(session) == next);
     assert_eq!(
@@ -1162,8 +1168,13 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
     // The walk over this app's windows never leaves it, however far it walks.
     walk(&mut session, 1, "app");
     session.step(Duration::from_millis(300)).unwrap();
-    until(&mut session, |session| desk(session).switcher_revealed);
-    assert_eq!(desk(&session).switcher_scope, "app");
+    until(&mut session, |session| {
+        crate::common::switcher_revealed(session)
+    });
+    assert_eq!(
+        session.read("desktop:overlays").unwrap()["switcher_scope"],
+        "app"
+    );
     let first = reached(&session);
     assert_eq!(
         first.app_key, front.app_key,
@@ -1188,10 +1199,15 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
     let mut crossed = None;
     for press in 1..=3 {
         walk(&mut session, 1, "workspace");
-        assert_eq!(desk(&session).switcher_scope, "workspace");
+        assert_eq!(
+            session.read("desktop:overlays").unwrap()["switcher_scope"],
+            "workspace"
+        );
         // The walk in the other scope starts again, so the panel comes up on holding it.
         session.step(Duration::from_millis(300)).unwrap();
-        until(&mut session, |session| desk(session).switcher_revealed);
+        until(&mut session, |session| {
+            crate::common::switcher_revealed(session)
+        });
         let window = reached(&session);
         if window.app_key != front.app_key {
             crossed = Some(window);
@@ -1206,7 +1222,11 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
 
     // Letting go goes to the window the workspace's walk reached.
     session
-        .invoke(DESK_RESOURCE, "commit-switcher", &serde_json::Map::new())
+        .invoke(
+            "desktop:overlays",
+            "commit-switcher",
+            &serde_json::Map::new(),
+        )
         .unwrap();
     assert_eq!(here(&session), "none");
     until(&mut session, |session| lifted(session) == crossed.key);
@@ -1526,7 +1546,9 @@ fn a_press_on_the_docks_launcher_shows_the_launcher() {
         session.shell_control("Launcher").is_some()
     });
     press(&mut session, "Launcher");
-    until(&mut session, |session| desk(session).here == "launcher");
+    until(&mut session, |session| {
+        crate::common::desk_here(session) == "launcher"
+    });
 }
 
 /// Press the control named `name` once the bar stands still: what the services report while the
@@ -1877,7 +1899,7 @@ fn drawn(session: &mut Session) -> tilo_compositor::Screenshot {
 fn show(session: &mut Session, surface: &str) {
     session
         .invoke(
-            DESK_RESOURCE,
+            "desktop:overlays",
             "show-surface",
             &serde_json::Map::from_iter([(
                 "surface".to_owned(),

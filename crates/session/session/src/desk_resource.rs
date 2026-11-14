@@ -26,13 +26,7 @@ use crate::desk_windows::{reaching, windows};
 /// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not run
 /// again.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct DeskKey {
-    /// The revisions and the names the reading is made of.
-    reading: (u64, u64, u64, u64, String),
-    /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
-    /// revision of its own to say so.
-    revealed: bool,
-}
+pub(crate) struct DeskKey((u64, u64, u64, u64));
 
 /// What the device's lists are made from ([`Desk::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
@@ -171,9 +165,9 @@ pub fn surface() -> tilo_resource::surface::Surface {
 /// The desk's reading as [`surface`] publishes it: a slice of [`DeskReading`], by its keys.
 #[derive(tilo_resource::JsonSchema)]
 struct DeskSurface {
-    /// The surface up over the desk's windows (`none`, `centre`, `quick-settings`, …).
+    /// The person at this device, by their name.
     #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
-    here: String,
+    person: String,
 }
 
 /// What the desk offers.
@@ -191,39 +185,6 @@ pub(crate) enum DeskEffect {
     /// Put the question waiting on the person's avatar off for now
     #[effect(row, label = "session-desk-ask-later")]
     PutOffAsk,
-    /// Show the surface `surface` over the desk's windows, or close it when it is up.
-    ShowSurface {
-        #[param(
-            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
-        )]
-        surface: String,
-    },
-    /// Close the surface `surface`, when it is the one up.
-    CloseSurface {
-        #[param("The surface")]
-        surface: String,
-    },
-    /// Open the window switcher, or walk it `steps` windows on.
-    /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front
-    /// shows.
-    WalkSwitcher {
-        #[param("How far to walk; 1 the next window, -1 the one before")]
-        steps: Option<i64>,
-        #[param(
-            "Which windows the walk crosses: `workspace` for every window of the workspace, `app` for the ones the app in front shows",
-            choices = SWITCHER_SCOPES
-        )]
-        scope: Option<String>,
-    },
-    /// Choose the window the walk reached, without crossing the ones between: `at` is its place
-    /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a
-    /// card under the pointer choose by place.
-    SelectSwitcher {
-        #[param("The window's place among the ones the walk crosses; -1 for the last")]
-        at: i64,
-    },
-    /// Go to the window the switcher's walk reached, and close the switcher.
-    CommitSwitcher,
 }
 
 /// What inviting offers: the links into a workspace, the invite sheet, and adding another device or
@@ -560,18 +521,14 @@ impl Desk {
     /// What the reading is made from, without making it: the tree's revision, the minute,
     /// what the notifications say and who is here. The reading changes only when this does.
     pub(crate) fn key(&self) -> DeskKey {
-        DeskKey {
-            reading: (
-                self.handle.revision(),
-                self.sync
-                    .as_ref()
-                    .map_or(0, |sync| sync.here().borrow().revision()),
-                self.handle.personal_ask_revision(),
-                self.surfaces.overlays.revision(),
-                self.surfaces.overlays.here(),
-            ),
-            revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
-        }
+        DeskKey((
+            self.handle.revision(),
+            self.sync
+                .as_ref()
+                .map_or(0, |sync| sync.here().borrow().revision()),
+            self.handle.personal_ask_revision(),
+            self.surfaces.overlays.revision(),
+        ))
     }
 
     /// What the lists are made from, without making them.
@@ -682,9 +639,6 @@ impl Desk {
                     current: workspace.id() == tree.active,
                 })
                 .collect(),
-            here: self.surfaces.overlays.here(),
-            switcher_revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
-            switcher_scope: self.surfaces.overlays.scope().name().to_owned(),
             spotlight: self.surfaces.overlays.spotlight(),
             people,
         })
@@ -1114,8 +1068,7 @@ impl Service for Desk {
             DESK_RESOURCE => {}
             _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
-        let effect = decode(&self.resources(), resource, action, arguments)?;
-        match &effect {
+        let workspace = match decode(&self.resources(), resource, action, arguments)? {
             DeskEffect::AnswerAsk => {
                 self.handle.answer_personal_ask();
                 return Ok(Started::Done(tilo_actions::ActionOutput::default()));
@@ -1124,37 +1077,7 @@ impl Service for Desk {
                 self.handle.put_off_personal_ask();
                 return Ok(Started::Done(tilo_actions::ActionOutput::default()));
             }
-            _ => {}
-        }
-        if let DeskEffect::ShowSurface { surface } = &effect {
-            self.surfaces.toggle(surface);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::CloseSurface { surface } = &effect {
-            self.surfaces.close(surface);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
-            crate::desk_windows::walk_switcher(
-                &self.handle,
-                &self.surfaces.overlays,
-                scope.as_deref(),
-                steps.unwrap_or(1),
-            );
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::SelectSwitcher { at } = &effect {
-            crate::desk_windows::select_switcher(&self.handle, &self.surfaces.overlays, *at);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if matches!(effect, DeskEffect::CommitSwitcher) {
-            crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        let DeskEffect::SwitchWorkspace { workspace } = effect else {
-            return Err(DoorError::InvalidArguments(
-                "the desk takes switch-workspace, show-surface or close-surface".to_owned(),
-            ));
+            DeskEffect::SwitchWorkspace { workspace } => workspace,
         };
         // The workspace's key names it; the handle brings it to the front.
         let known = self.handle.read(|tree| {

@@ -151,7 +151,7 @@ action open_item(s: Shell, key: Text (label: "App")) {
     if let w = device.windows.all.find(w -> w.app_key == key) {
         session.focus(window: window(w))
     } else if key == "launcher" {
-        device.show_surface(device.desk, surface: "launcher")
+        device.show_surface(device.overlays, surface: "launcher")
     } else { session.open_app(app: key) }
 }
 

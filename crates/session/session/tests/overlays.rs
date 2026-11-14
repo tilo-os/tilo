@@ -163,7 +163,7 @@ fn open(session: &mut Session, slot: &str, anchor: Option<&str>) {
         None => json!({ "slot": slot }),
     };
     session
-        .invoke(OVERLAYS, "open", &args(&arguments))
+        .invoke(OVERLAYS, "open-surface", &args(&arguments))
         .expect("the surface opens");
     session.step(REFRESH).expect("a turn of the session");
 }
@@ -302,7 +302,7 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     session
         .invoke(
             OVERLAYS,
-            "open",
+            "open-surface",
             &args(&json!({ "slot": "quick-settings" })),
         )
         .expect("the panel opens");
@@ -321,7 +321,7 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     session
         .invoke(
             OVERLAYS,
-            "close",
+            "close-surface",
             &args(&json!({ "slot": "quick-settings" })),
         )
         .expect("the panel closes");
@@ -352,7 +352,7 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
     session
         .invoke(
             OVERLAYS,
-            "close",
+            "close-surface",
             &args(&json!({ "slot": "quick-settings" })),
         )
         .expect("the panel closes");
@@ -376,19 +376,23 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
 
 #[test]
 fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
-    // The menus, the picker, the overview and the strip ribbon open and close with the widgets that
-    // draw them, which say so to the same stack: the session's verb refuses them rather than
-    // putting up a second one.
+    // The menus, the picker and the strip ribbon open and close with the widgets that draw them,
+    // which say so to the same stack: the session's verb refuses them rather than putting up a
+    // second one.
     let mut session = session();
-    for slot in ["emoji", "workspace-menu", "overview", "strips"] {
-        let opened = session.invoke(OVERLAYS, "open", &args(&json!({ "slot": slot })));
+    for slot in ["emoji", "workspace-menu", "strips"] {
+        let opened = session.invoke(OVERLAYS, "open-surface", &args(&json!({ "slot": slot })));
         assert!(opened.is_err(), "{slot} is the chrome's");
-        let closed = session.invoke(OVERLAYS, "close", &args(&json!({ "slot": slot })));
+        let closed = session.invoke(OVERLAYS, "close-surface", &args(&json!({ "slot": slot })));
         assert!(closed.is_err(), "{slot} is the chrome's");
     }
     assert!(
         session
-            .invoke(OVERLAYS, "open", &args(&json!({ "slot": "nowhere" })))
+            .invoke(
+                OVERLAYS,
+                "open-surface",
+                &args(&json!({ "slot": "nowhere" }))
+            )
             .is_err(),
         "and no verb opens what no surface names"
     );
@@ -480,7 +484,7 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
         session
             .invoke(
                 OVERLAYS,
-                "open",
+                "open-surface",
                 &args(&json!({ "slot": "quick-settings", "anchor": "nowhere" })),
             )
             .is_err(),

@@ -28,6 +28,8 @@ use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_desktop::overlays::{Anchor as Place, Overlays, Slot};
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
+
+use crate::desk_resource::Surfaces;
 use tilo_desktop_surface::navigation::active_route;
 use tilo_desktop_surface::surface::WindowMenuRow;
 use tilo_desktop_surface::surface::window_menu;
@@ -188,7 +190,7 @@ pub enum OverlayEffect {
     /// Named as the reading names it; the session's own surfaces only. A surface already up moves
     /// to where it is asked to stand.
     #[effect(own_device, icon = "layers")]
-    Open {
+    OpenSurface {
         /// The surface, as the reading names it.
         #[param("The surface to open, as the reading names it")]
         slot: String,
@@ -199,11 +201,62 @@ pub enum OverlayEffect {
     },
     /// Close a surface
     #[effect(own_device, idempotent)]
-    Close {
+    CloseSurface {
         /// The surface, as the reading names it.
         #[param("The surface to close, as the reading names it")]
         slot: String,
     },
+    /// Show the surface `surface` over the desk's windows, or close it when it is up.
+    ShowSurface {
+        #[param(
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
+        )]
+        surface: String,
+    },
+    /// Open the window switcher, or walk it `steps` windows on.
+    /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front
+    /// shows.
+    WalkSwitcher {
+        #[param("How far to walk; 1 the next window, -1 the one before")]
+        steps: Option<i64>,
+        #[param(
+            "Which windows the walk crosses: `workspace` for every window of the workspace, `app` for the ones the app in front shows",
+            choices = crate::desk_resource::SWITCHER_SCOPES
+        )]
+        scope: Option<String>,
+    },
+    /// Choose the window the walk reached, without crossing the ones between: `at` is its place
+    /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a
+    /// card under the pointer choose by place.
+    SelectSwitcher {
+        #[param("The window's place among the ones the walk crosses; -1 for the last")]
+        at: i64,
+    },
+    /// Go to the window the switcher's walk reached, and close the switcher.
+    CommitSwitcher,
+}
+
+/// The surface stack as a view of another language reads it: the surface the shell shows over
+/// the windows and the switcher's walk.
+#[must_use]
+pub fn overlays_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<OverlaysSurface, OverlayEffect>(
+        "overlays", "Overlays",
+    )
+}
+
+/// What [`overlays_surface`] describes of the stack's reading.
+#[derive(tilo_resource::JsonSchema)]
+#[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
+struct OverlaysSurface {
+    /// The surface the shell shows over the windows: `none` at rest, or `overview`, `switcher`,
+    /// `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`.
+    here: String,
+    /// Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
+    switcher_revealed: bool,
+    /// Which windows the switcher's walk crosses: `workspace` for every window, `app` for the
+    /// windows of the app in front.
+    switcher_scope: String,
 }
 
 /// The window menu as it reads: the window it is for, where it stands, and what that window offers
@@ -260,8 +313,11 @@ struct Row {
 
 /// The surface stack as it reads: what stands over the windows, topmost first.
 #[derive(Debug, Serialize)]
-struct Stack {
+struct StackReading {
     stack: Vec<Surface>,
+    here: String,
+    switcher_revealed: bool,
+    switcher_scope: &'static str,
 }
 
 /// One open surface.
@@ -319,6 +375,11 @@ pub struct ShellService {
     /// The surfaces over the desk: what stands where, which holds the keyboard, and what a press
     /// outside one closes.
     overlays: Overlays,
+    /// The shell's own surfaces and the switcher's walk, and where each surface stands.
+    surfaces: Surfaces,
+    /// What the stack's reading was last published from: the shell's surface, whether the
+    /// switcher's panel shows, and the stack's own revision.
+    seen: Option<(u64, String, bool)>,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
     shortcuts: crate::panels::mount::Shortcuts,
@@ -329,27 +390,39 @@ impl ShellService {
     #[must_use]
     pub(crate) fn new(
         handle: DesktopHandle,
-        overlays: Overlays,
+        surfaces: Surfaces,
         shortcuts: crate::panels::mount::Shortcuts,
     ) -> Self {
         Self {
             handle,
             state: ShellState::default(),
-            overlays,
+            overlays: surfaces.panel.clone(),
+            surfaces,
+            seen: None,
             shortcuts,
         }
     }
 
-    /// Mount it as one of the session's services, publishing the surfaces in `overlays` .
+    /// Mount it as one of the session's services, publishing the surfaces in `surfaces` .
     pub(crate) fn mount(
         services: &Rc<std::cell::RefCell<tilo_service::Services>>,
         handle: &DesktopHandle,
-        overlays: Overlays,
+        surfaces: Surfaces,
         shortcuts: crate::panels::mount::Shortcuts,
     ) {
         services
             .borrow_mut()
-            .add(Box::new(Self::new(handle.clone(), overlays, shortcuts)));
+            .add(Box::new(Self::new(handle.clone(), surfaces, shortcuts)));
+    }
+
+    /// What the stack's reading is made from beside the stack itself.
+    fn key(&self) -> (u64, String, bool) {
+        let shell = &self.surfaces.overlays;
+        (
+            shell.revision(),
+            shell.here(),
+            shell.revealed(std::time::Instant::now()),
+        )
     }
 
     /// The tab of the window in front: the active group's, in the strip on the display the person
@@ -527,7 +600,7 @@ impl Service for ShellService {
     fn read(&self, resource: &str) -> Option<Value> {
         match resource {
             WINDOW_MENU => Some(reading(&self.window_menu())),
-            OVERLAYS => Some(reading(&Stack {
+            OVERLAYS => Some(reading(&StackReading {
                 stack: self
                     .overlays
                     .entries()
@@ -548,6 +621,9 @@ impl Service for ShellService {
                         }),
                     })
                     .collect(),
+                here: self.surfaces.overlays.here(),
+                switcher_revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
+                switcher_scope: self.surfaces.overlays.scope().name(),
             })),
             FOCUS => {
                 let target = crate::chrome::keyboard_target(&self.handle, &self.overlays);
@@ -558,6 +634,23 @@ impl Service for ShellService {
             }
             _ => None,
         }
+    }
+
+    fn poll(&mut self) -> bool {
+        let now = self.key();
+        if self.seen.as_ref() == Some(&now) {
+            return false;
+        }
+        self.seen = Some(now);
+        true
+    }
+
+    /// The instant the switcher's panel comes up while Alt is held on it.
+    fn wakes_in(&self) -> Option<std::time::Duration> {
+        self.surfaces
+            .overlays
+            .deadline(std::time::Instant::now())
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
     }
 
     fn invoke(
@@ -578,10 +671,45 @@ impl Service for ShellService {
             }
             OVERLAYS => {
                 match decode::<OverlayEffect>(&self.resources(), resource, action, arguments)? {
-                    OverlayEffect::Open { slot, anchor } => {
+                    // A surface the shell draws opens through the shell's surfaces; the ones the
+                    // session puts up in the stack itself (quick settings) keep their place there.
+                    OverlayEffect::OpenSurface { slot, anchor: None }
+                        if crate::overlays::Overlay::named(&slot).is_some()
+                            && !Slot::named(&slot).is_some_and(Slot::session_closes) =>
+                    {
+                        self.surfaces.open(&slot);
+                    }
+                    OverlayEffect::OpenSurface { slot, anchor } => {
                         self.open_surface(&slot, anchor.as_deref())?;
                     }
-                    OverlayEffect::Close { slot } => self.close_surface(&slot)?,
+                    OverlayEffect::CloseSurface { slot }
+                        if crate::overlays::Overlay::named(&slot).is_some() =>
+                    {
+                        self.surfaces.close(&slot);
+                        if Slot::named(&slot).is_some_and(Slot::session_closes) {
+                            self.close_surface(&slot)?;
+                        }
+                    }
+                    OverlayEffect::CloseSurface { slot } => self.close_surface(&slot)?,
+                    OverlayEffect::ShowSurface { surface } => self.surfaces.toggle(&surface),
+                    OverlayEffect::WalkSwitcher { steps, scope } => {
+                        crate::desk_windows::walk_switcher(
+                            &self.handle,
+                            &self.surfaces.overlays,
+                            scope.as_deref(),
+                            steps.unwrap_or(1),
+                        );
+                    }
+                    OverlayEffect::SelectSwitcher { at } => {
+                        crate::desk_windows::select_switcher(
+                            &self.handle,
+                            &self.surfaces.overlays,
+                            at,
+                        );
+                    }
+                    OverlayEffect::CommitSwitcher => {
+                        crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
+                    }
                 }
             }
             _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),

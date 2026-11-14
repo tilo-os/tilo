@@ -9,13 +9,6 @@ use so.tilo.session as session
 /// not text to merge.
 type Desk (origin: session.desk) {
     person: Text merge register
-    /// The surface the person is in, such as the overview or the notifications; empty at rest.
-    here: Text merge register
-    /// Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
-    switcher_revealed: Bool
-    /// Which windows the switcher's walk crosses: `workspace` for every window, `app` for the
-    /// windows of the app in front (Alt+`).
-    switcher_scope: Text merge register
     /// What the person typed in the shell's search, which opens the launcher where they left off.
     spotlight: Text merge register
     /// The question the person is asked about themselves; empty when none waits.
@@ -305,7 +298,7 @@ view volume_status() {
             icon_only: true,
             role: .bar,
         ) {
-            on press: device.show_surface(device.desk, surface: "quick-settings")
+            on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
     }
 }
@@ -328,7 +321,7 @@ view network_status() {
             icon_only: true,
             role: .bar,
         ) {
-            on press: device.show_surface(device.desk, surface: "quick-settings")
+            on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
     }
 }
@@ -350,7 +343,7 @@ view battery_status() {
             icon_only: space.compact,
             role: .bar,
         ) {
-            on press: device.show_surface(device.desk, surface: "quick-settings")
+            on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
     }
 }
@@ -377,6 +370,6 @@ view bell() {
         role: .bar,
         count: waiting,
     ) {
-        on press: device.show_surface(device.desk, surface: "centre")
+        on press: device.show_surface(device.overlays, surface: "centre")
     }
 }

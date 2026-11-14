@@ -27,8 +27,6 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
-use tilo_session_core::shell::DeskReading;
-use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -72,15 +70,6 @@ fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre 
     .expect("the notifications read as the centre")
 }
 
-fn desk(session: &Session) -> DeskReading {
-    serde_json::from_value(
-        session
-            .read(DESK_RESOURCE)
-            .expect("the session publishes its desk"),
-    )
-    .expect("the desk reads as the shell's desk")
-}
-
 #[track_caller]
 fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
     crate::common::until(session, "the shell's answer", done);
@@ -104,24 +93,28 @@ fn appearance_mode(session: &Session) -> Value {
 fn show(session: &mut Session, surface: &str) {
     session
         .invoke(
-            DESK_RESOURCE,
+            "desktop:overlays",
             "show-surface",
             &Map::from_iter([("surface".to_owned(), Value::String(surface.to_owned()))]),
         )
         .unwrap();
-    until(session, |session| desk(session).here == surface);
+    until(session, |session| {
+        crate::common::desk_here(session) == surface
+    });
 }
 
 /// Close the surface `surface` through the desk's own `close-surface`.
 fn close(session: &mut Session, surface: &str) {
     session
         .invoke(
-            DESK_RESOURCE,
+            "desktop:overlays",
             "close-surface",
-            &Map::from_iter([("surface".to_owned(), Value::String(surface.to_owned()))]),
+            &Map::from_iter([("slot".to_owned(), Value::String(surface.to_owned()))]),
         )
         .unwrap();
-    until(session, |session| desk(session).here == "none");
+    until(session, |session| {
+        crate::common::desk_here(session) == "none"
+    });
 }
 
 /// Press `keycode` and let it up again, a frame apart, as the compositor sends it.
@@ -209,7 +202,7 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
         // The status opens the quick settings: the network's button, named by the link it is on.
         session
             .invoke(
-                DESK_RESOURCE,
+                "desktop:overlays",
                 "show-surface",
                 &Map::from_iter([(
                     "surface".to_owned(),
@@ -218,7 +211,7 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
             )
             .unwrap();
         until(&mut session, |session| {
-            desk(session).here == "quick-settings"
+            crate::common::desk_here(session) == "quick-settings"
         });
         until(&mut session, |session| {
             session.shell_control("Dark mode").is_some()
@@ -237,7 +230,9 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
         );
         // Escape closes it, as a surface over the desk does.
         tap(&mut session, KEY_ESCAPE);
-        until(&mut session, |session| desk(session).here == "none");
+        until(&mut session, |session| {
+            crate::common::desk_here(session) == "none"
+        });
     }
 }
 
@@ -284,12 +279,14 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
         // The bell opens the centre, and the notice is listed there.
         session
             .invoke(
-                DESK_RESOURCE,
+                "desktop:overlays",
                 "show-surface",
                 &Map::from_iter([("surface".to_owned(), Value::String("centre".to_owned()))]),
             )
             .unwrap();
-        until(&mut session, |session| desk(session).here == "centre");
+        until(&mut session, |session| {
+            crate::common::desk_here(session) == "centre"
+        });
         until(&mut session, |session| {
             session.shell_control("Tea is ready").is_some()
         });
@@ -378,7 +375,7 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         );
         // The app opened as a tab of the workspace in front, so the launcher is done: a later
         // style starts from the desk at rest with Notes closed again.
-        if desk(&session).here != "none" {
+        if crate::common::desk_here(&session) != "none" {
             close(&mut session, "launcher");
         }
     }

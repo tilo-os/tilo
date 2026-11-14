@@ -95,6 +95,9 @@ pub(super) fn publish_windows(link: &SessionLink, windows: &serde_json::Value) {
 pub(super) struct Staged {
     pub(super) desk: DeskReading,
     pub(super) windows: serde_json::Value,
+    /// The surface up over the windows (`none` at rest), and whether the switcher's panel shows.
+    pub(super) here: String,
+    pub(super) revealed: bool,
 }
 
 impl From<DeskReading> for Staged {
@@ -102,8 +105,32 @@ impl From<DeskReading> for Staged {
         Self {
             desk,
             windows: serde_json::json!([]),
+            here: "none".to_owned(),
+            revealed: false,
         }
     }
+}
+
+impl Staged {
+    /// The same desk with the surface `here` up.
+    pub(super) fn showing(mut self, here: &str) -> Self {
+        here.clone_into(&mut self.here);
+        self
+    }
+}
+
+/// The surface stack the session publishes, the shell's surface `here` up over the windows.
+pub(super) fn publish_overlays(link: &SessionLink, here: &str, revealed: bool) {
+    link.publish_reading(
+        OVERLAYS,
+        "so.tilo.device#Overlays",
+        serde_json::json!({
+            "stack": [],
+            "here": here,
+            "switcher_revealed": revealed,
+            "switcher_scope": "workspace",
+        }),
+    );
 }
 
 /// A window of the desk, as the session publishes it, standing in the workspace `1`.
@@ -135,6 +162,8 @@ pub(super) fn reading_with_windows() -> Staged {
             ..DeskReading::default()
         },
         windows: serde_json::json!([release, window("12", "Inbox", "Mail", "Main")]),
+        here: "none".to_owned(),
+        revealed: false,
     }
 }
 
@@ -195,6 +224,7 @@ fn part_at(
     publish_platform_roots(&link);
     let staged: Staged = reading.into();
     publish_windows(&link, &staged.windows);
+    publish_overlays(&link, &staged.here, staged.revealed);
     link.publish(staged.desk);
     let mut part = ShellPart::new(
         ShellIdentity {

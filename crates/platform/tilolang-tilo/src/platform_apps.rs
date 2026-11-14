@@ -71,6 +71,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("agents", "Agents", "session:agents"),
     ("styles", "Styles", "session:styles"),
     ("desk", "Desk", "session:desk"),
+    ("overlays", "Overlays", "desktop:overlays"),
 ];
 const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
     ("appearance", "Appearance", "settings:settings.appearance"),
