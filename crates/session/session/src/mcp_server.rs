@@ -2558,7 +2558,7 @@ fn serve_admitted(
     let from = facts.origin.as_ref().map(|origin| {
         tilo_actions::InvokerDevice::certified(origin.key(), &origin.device.device_label)
     });
-    let agent_session = sessions.joining(facts.entrance.door(), from);
+    let agent_session = sessions.joining(facts.entrance.entered(), from);
     let session_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {

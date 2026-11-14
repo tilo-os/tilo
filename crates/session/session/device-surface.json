@@ -2240,6 +2240,14 @@
             {
               "name": "device_name",
               "type": "text"
+            },
+            {
+              "name": "environment",
+              "type": "text"
+            },
+            {
+              "name": "environment_id",
+              "type": "text"
             }
           ]
         }

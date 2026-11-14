@@ -32,9 +32,9 @@ struct Connection {
     workspace_name: String,
     workspace: String,
     doing: Option<Doing>,
-    /// The environment's server it came in by, by number: none for the session's own. It ends
-    /// with that environment.
-    environment: Option<u64>,
+    /// The environment's server it came in by: none for the session's own. It ends with that
+    /// environment.
+    environment: Option<Entered>,
     /// The other device of the person's it came from, as the remote door verified it: none for a
     /// program of this login.
     origin: Option<tilo_actions::InvokerDevice>,
@@ -62,7 +62,7 @@ impl AgentSessions {
     /// person answers for it: nothing of it shows until it is admitted.
     pub(crate) fn joining(
         &self,
-        environment: Option<u64>,
+        environment: Option<Entered>,
         origin: Option<tilo_actions::InvokerDevice>,
     ) -> AgentSessionId {
         let session = AgentSessionId::new(format!(
@@ -151,6 +151,7 @@ impl AgentSessions {
                 workspace_name: connection.workspace_name.clone(),
                 doing: connection.doing.clone(),
                 origin: connection.origin.clone(),
+                environment: connection.environment.clone(),
             })
             .collect()
     }
@@ -263,7 +264,12 @@ impl AgentSessions {
     /// End every session that came in by the environment's server `environment`, as that
     /// environment ends.
     pub(crate) fn stop_environment(&self, environment: u64) -> bool {
-        self.end(|_, connection| connection.environment == Some(environment))
+        self.end(|_, connection| {
+            connection
+                .environment
+                .as_ref()
+                .is_some_and(|entered| entered.door == environment)
+        })
     }
 
     /// End every session `ending` picks. Whether there was one.
@@ -305,6 +311,10 @@ impl AgentSessions {
                     .origin
                     .map(|origin| (origin.id, origin.name))
                     .unwrap_or_default();
+                let (environment, environment_id) = present
+                    .environment
+                    .map(|entered| (entered.name, entered.id))
+                    .unwrap_or_default();
                 Agent {
                     key: present.session.0,
                     name: present.name,
@@ -315,6 +325,8 @@ impl AgentSessions {
                     seat: true,
                     device,
                     device_name,
+                    environment,
+                    environment_id,
                 }
             })
             .collect()
@@ -357,6 +369,17 @@ impl tilo_broker_core::services::AgentSessions for AgentSessions {
     }
 }
 
+/// The environment's server a connection came in by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Entered {
+    /// The server's number among those this session opened: what its sessions are stopped by.
+    pub(crate) door: u64,
+    /// The environment's id on this device, `<workspace>/<record>`.
+    pub(crate) id: String,
+    /// What the person calls the environment.
+    pub(crate) name: String,
+}
+
 /// An admitted agent session, as presence speaks for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Present {
@@ -371,6 +394,8 @@ pub(crate) struct Present {
     pub(crate) doing: Option<Doing>,
     /// The other device of the person's it works from: none for a program of this login.
     pub(crate) origin: Option<tilo_actions::InvokerDevice>,
+    /// The environment whose server it came in by: none for the session's own.
+    pub(crate) environment: Option<Entered>,
 }
 
 /// A step of an agent session, as its workspace says it beside its face.
@@ -443,6 +468,12 @@ pub(crate) struct Agent {
     pub device: String,
     /// What that device is called, as its certificate labels it.
     pub device_name: String,
+    /// The environment it works in, when it came in by an environment's own server: what the
+    /// person calls that environment. Empty for a session that came in by the session's own.
+    pub environment: String,
+    /// That environment's id on this device, `<workspace>/<record>`, as the environment's own
+    /// programs read it.
+    pub environment_id: String,
 }
 
 #[cfg(test)]
@@ -570,6 +601,51 @@ mod tests {
             listed(&local),
             Some(("Claude Code #1".to_owned(), String::new(), String::new())),
             "a program of this login came from no other device"
+        );
+    }
+
+    /// A session that came in by an environment's own server is listed with that environment
+    /// beside its name, by what the person calls it and by its id, and one that came in by the
+    /// session's own server with none. It ends with its environment, and only it does.
+    #[test]
+    fn a_session_from_an_environment_is_listed_with_that_environment_beside_its_name() {
+        let sessions = AgentSessions::new();
+        let entered = Entered {
+            door: 7,
+            id: "w1/Dev.Box".to_owned(),
+            name: "Dev box".to_owned(),
+        };
+        let inside = sessions.joining(Some(entered), None);
+        admit(&sessions, &inside, "Claude Code #1");
+        let outside = sessions.joining(None, None);
+        admit(&sessions, &outside, "Claude Code #1");
+        let listed = sessions.readings();
+        let listed = |session: &AgentSessionId| {
+            listed
+                .iter()
+                .find(|agent| agent.key == session.as_str())
+                .map(|agent| (agent.environment.clone(), agent.environment_id.clone()))
+        };
+        assert_eq!(
+            listed(&inside),
+            Some(("Dev box".to_owned(), "w1/Dev.Box".to_owned()))
+        );
+        assert_eq!(
+            listed(&outside),
+            Some((String::new(), String::new())),
+            "a program outside every environment came in by none"
+        );
+
+        assert!(sessions.stop_environment(7), "its environment ended");
+        let left: Vec<String> = sessions
+            .readings()
+            .into_iter()
+            .map(|agent| agent.key)
+            .collect();
+        assert_eq!(
+            left,
+            [outside.as_str().to_owned()],
+            "only the session that came in by it ended"
         );
     }
 
