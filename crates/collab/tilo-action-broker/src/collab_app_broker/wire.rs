@@ -18,10 +18,12 @@ use std::rc::Weak;
 
 use runtime_collab::wire::{
     Answer as Answered, Ask, Call, Changes, CheckProgress, ContextUpdate, Event, FRAMING, Handle,
-    HostFrame, InvocationCall, Join, LiveActivityCall, Operation, Participant, Publication, Read,
-    Reply, Report, Service, SettingsCall, TaskCall, TaskStep, Topic,
+    HostFrame, InvocationCall, Join, LiveActivityCall, Operation, Publication, Read, Reply, Report,
+    Service, SettingsCall, TaskCall, TaskStep, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
+
+use collab_types::MemberId;
 
 use super::*;
 

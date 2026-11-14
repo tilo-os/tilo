@@ -18,7 +18,7 @@
 use collab_types::history::RosterAgent;
 use collab_types::inbound::OpAdmission;
 use collab_types::presence::Member;
-use collab_types::{ArtifactId, PeerPresence, SignedOp};
+use collab_types::{ArtifactId, MemberId, PeerPresence, SignedOp};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -167,18 +167,13 @@ pub struct Join {
     /// ([`crate::TaskAgentJoinIdentity`]), which the host admits as it reads
     /// them.
     pub identity: Vec<u8>,
-    pub participant: Participant,
+    /// The workspace agent the person delegated to this device; `None` for the
+    /// person's own device.
+    pub member: Option<MemberId>,
+    /// The handle the endpoint announces for the person, when it announces one.
+    pub handle: String,
     /// The resource kind of the record the channel names, if the app has one.
     pub record_kind: Option<String>,
-}
-
-/// Whom the joining endpoint acts as.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Participant {
-    /// The device's person, shown under `handle` when it is not empty.
-    Person { handle: String },
-    /// The workspace agent `id` the person delegated to this device.
-    Agent { id: String },
 }
 
 /// What an app says, or asks, of an invocation it was handed.

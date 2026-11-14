@@ -465,9 +465,8 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                     )
                     .encode()
                     .unwrap(),
-                    participant: Participant::Person {
-                        handle: String::new(),
-                    },
+                    member: None,
+                    handle: String::new(),
                     record_kind: None,
                 }))
                 .await;
@@ -485,9 +484,8 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                     )
                     .encode()
                     .unwrap(),
-                    participant: Participant::Person {
-                        handle: "Ada".into(),
-                    },
+                    member: None,
+                    handle: "Ada".into(),
                     record_kind: None,
                 }))
                 .await

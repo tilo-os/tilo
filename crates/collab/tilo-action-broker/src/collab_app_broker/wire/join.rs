@@ -19,7 +19,8 @@ impl AppConnection {
         let Join {
             channel: channel_id,
             identity,
-            participant,
+            member,
+            handle: announced,
             record_kind,
         } = join;
         let route = CrdtRoute::from_channel_key(&channel_id);
@@ -97,7 +98,7 @@ impl AppConnection {
             }
             None => RouteAccess::Own,
         };
-        let person = matches!(participant, Participant::Person { .. });
+        let person = member.is_none();
         // The app a person's launcher started is the worker of that app's
         // routes on this device: the launcher verified which app it released
         // and who it released it for, which is the same durable admission a
@@ -174,40 +175,25 @@ impl AppConnection {
         }
         // A task agent joins only as itself: its verified task delegation is
         // its certification, and a person's handle would name it otherwise.
-        super::task_agents::joins_as(
-            &verified_identity,
-            match &participant {
-                Participant::Person { .. } => "person",
-                Participant::Agent { .. } => "agent",
-            },
-        )
-        .map_err(BrokerError::failed)?;
-        match participant {
-            Participant::Person {
-                handle: participant_handle,
-            } => {
-                // A Person handle is presentation, not its certified identity.
-                let participant_handle = participant_handle
-                    .trim()
-                    .chars()
-                    .take(64)
-                    .collect::<String>();
-                if !participant_handle.is_empty() {
-                    verified_identity.display_handle = Some(participant_handle);
+        super::task_agents::joins_as(&verified_identity, if person { "person" } else { "agent" })
+            .map_err(BrokerError::failed)?;
+        match member {
+            None => {
+                // A person's handle is presentation, not their certified
+                // identity.
+                let announced = announced.trim().chars().take(64).collect::<String>();
+                if !announced.is_empty() {
+                    verified_identity.display_handle = Some(announced);
                 }
             }
-            Participant::Agent {
-                id: participant_handle,
-            } if verified_identity.task.is_some() => {
+            Some(MemberId::Agent(participant_handle)) if verified_identity.task.is_some() => {
                 // A task agent's run keeps it: it acts on its delegated task
                 // alone, and the tracker says the task still goes.
                 state
                     .admit_task_join(&route.cluster_id, &participant_handle, &verified_identity)
                     .map_err(BrokerError::failed)?;
             }
-            Participant::Agent {
-                id: participant_handle,
-            } => {
+            Some(MemberId::Agent(participant_handle)) => {
                 // Unlike a display handle, this names the exact workspace
                 // principal. Normalize as enrollment does, then validate
                 // its byte bound; truncation can silently select another
@@ -235,6 +221,11 @@ impl AppConnection {
                 .map_err(|error| {
                     BrokerError::failed(format!("agent collaboration join rejected: {error}"))
                 })?;
+            }
+            Some(MemberId::Person(_) | MemberId::Bot(_)) => {
+                return Err(BrokerError::failed(
+                    "only a person's own device or their agent joins a channel".into(),
+                ));
             }
         }
         tracing::info!(
