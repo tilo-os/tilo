@@ -1116,12 +1116,21 @@ impl HostedBrowsers {
     /// serves one: what a page action and an session's device name it by.
     #[must_use]
     pub fn workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
-        let authority = self.authority.lock_recover();
-        let authority = authority.as_ref()?;
-        let workspaces = authority.workspaces.as_ref()?;
-        authority
-            .runtime
-            .block_on(workspaces.workspace_identity(workspace_id))
+        let (runtime, workspaces) = {
+            let authority = self.authority.lock_recover();
+            let authority = authority.as_ref()?;
+            (authority.runtime.clone(), authority.workspaces.clone()?)
+        };
+        // An open answered at once is placed on the thread that answered it,
+        // which may be one of the runtime's own: the runtime is waited on
+        // from a thread of its own.
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| runtime.block_on(workspaces.workspace_identity(workspace_id)))
+                .join()
+                .ok()
+                .flatten()
+        })
     }
 
     /// Place `workspace_id`'s Browser — the workspace whose UUID is
