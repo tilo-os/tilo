@@ -189,8 +189,8 @@ fn corrupt_prepared(
 ) {
     match corruption {
         "version" => *version = 4.into(),
-        "room" => {
-            row["prepared_effect"]["room"] = uuid::Uuid::new_v4().to_string().into();
+        "workspace" => {
+            row["prepared_effect"]["workspace"] = uuid::Uuid::new_v4().to_string().into();
         }
         "actor" => row["intent"]["actor"] = "other".into(),
         "invocation" => {
@@ -207,7 +207,7 @@ fn corrupt_prepared(
 
 const CORRUPTIONS: [&str; 7] = [
     "version",
-    "room",
+    "workspace",
     "actor",
     "invocation",
     "null",

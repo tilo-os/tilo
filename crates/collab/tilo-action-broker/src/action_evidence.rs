@@ -77,9 +77,6 @@ const OMITTED_AGENT: &str = "\u{0}omitted-agent";
 #[serde(deny_unknown_fields)]
 pub struct AdmissionFacts {
     pub host: Uuid,
-    /// Signed and stored as `room`: these facts' field names are part of the
-    /// admission receipt's signing bytes, so the wire spelling stays.
-    #[serde(rename = "room")]
     pub workspace: String,
     pub invocation: InvocationId,
     pub actor: VerifiedActor,

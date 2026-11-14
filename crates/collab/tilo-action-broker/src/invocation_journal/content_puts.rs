@@ -36,8 +36,6 @@ pub(crate) struct ContentPutRecord {
     pub(crate) at: u64,
     /// The broker actor that put it (`agent:<id>`, a person's id).
     pub(crate) actor: String,
-    /// Written as `room`: existing attribution files keep their exact lines.
-    #[serde(rename = "room")]
     pub(crate) workspace: String,
     pub(crate) hash: String,
     pub(crate) len: u64,

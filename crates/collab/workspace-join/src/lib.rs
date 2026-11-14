@@ -14,17 +14,17 @@
 //! A workspace is named by its [`WorkspaceId`] everywhere here. Signed bytes
 //! the 0.1 releases wrote, which named it by a number and by its UUID as text,
 //! are read in the layout their version names ([`previous`] and
-//! `room_layout`), never written.
+//! `numbered_layout`), never written.
 
 pub mod agent_cert;
 pub mod delegation;
 pub mod invitations;
+mod numbered_layout;
 /// The invitation and join layouts a build wrote before the grants stopped
 /// naming the workspace's authority: read, never written. A stored record
 /// keeps the bytes its device signed, so a build that reads a record written
 /// then needs the layout that record is in.
 pub mod previous;
-mod room_layout;
 /// A link that carries an invitation's place and key, not its kilobytes.
 pub mod sealed;
 mod workspace_text;
@@ -45,7 +45,7 @@ pub use collab_types::{Member, MemberId, Person};
 /// alone and no authority: an invitation is issued by a device of a member,
 /// and nothing above it. Versions 1 to 4 are the layouts before it, still
 /// read: 1 and 2 named an authority ([`previous`]), 3 and 4 named the
-/// workspace by a number and its UUID as text (`room_layout`).
+/// workspace by a number and its UUID as text (`numbered_layout`).
 const INVITATION_VERSION: u32 = 5;
 /// An invitation that also names who sent it.
 const INVITATION_WITH_INVITER_VERSION: u32 = 6;
@@ -58,7 +58,7 @@ const ADMINISTRATOR_INVITATION_VERSION: u32 = 7;
 pub const MAX_INVITER_NAME_CHARS: usize = 80;
 /// Challenges carry no authority device, and name the workspace by its
 /// [`WorkspaceId`] alone. Version 1 named an authority ([`previous`]) and
-/// version 2 the workspace by text and number (`room_layout`): a stored
+/// version 2 the workspace by text and number (`numbered_layout`): a stored
 /// Complete in either still verifies.
 const JOIN_VERSION: u32 = 3;
 /// The variant index of [`JoinTransportRequest::Complete`] in every join
@@ -705,8 +705,8 @@ pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
                 .map(|signed| signed.grant)
                 .ok()
         }
-        Ok((version, _)) if room_layout::is_invitation_version(version) => {
-            room_layout::unchecked_grant(signed_invitation, version)
+        Ok((version, _)) if numbered_layout::is_invitation_version(version) => {
+            numbered_layout::unchecked_grant(signed_invitation, version)
         }
         _ => None,
     };
@@ -772,8 +772,8 @@ pub fn decode_and_verify_invitation(
             decode_invitation(signed_invitation, version)?
         }
         ADMINISTRATOR_INVITATION_VERSION => decode_administrator_invitation(signed_invitation)?,
-        _ if room_layout::is_invitation_version(version) => {
-            room_layout::decode_invitation(signed_invitation, version)?
+        _ if numbered_layout::is_invitation_version(version) => {
+            numbered_layout::decode_invitation(signed_invitation, version)?
         }
         _ if previous::is_invitation_version(version) => {
             previous::decode_invitation(signed_invitation, version)?
@@ -1047,8 +1047,8 @@ pub fn verify_stored_complete(
     let (version, _) = postcard::take_from_bytes::<u32>(challenge).map_err(|_| not_complete())?;
     match version {
         JOIN_VERSION => {}
-        room_layout::JOIN_VERSION => {
-            return room_layout::verify_complete(bytes, device_cert, revocations, now_ns);
+        numbered_layout::JOIN_VERSION => {
+            return numbered_layout::verify_complete(bytes, device_cert, revocations, now_ns);
         }
         previous::JOIN_VERSION => {
             return previous::verify_complete(bytes, device_cert, revocations, now_ns);
@@ -1219,12 +1219,12 @@ pub fn complete_previous_layout(
 /// # Errors
 /// Returns an error if the grant cannot be encoded for signing.
 #[cfg(any(test, feature = "test-support"))]
-pub fn issue_room_layout_invitation(
+pub fn issue_numbered_invitation(
     grant: &InviteGrant,
     inviter: Option<&Inviter>,
     key: &ed25519_dalek::SigningKey,
 ) -> Result<Vec<u8>, String> {
-    room_layout::encode_invitation(grant, inviter, key)
+    numbered_layout::encode_invitation(grant, inviter, key)
 }
 
 /// A `JoinTransportRequest::Complete` whose challenge is in the layout of
@@ -1233,9 +1233,9 @@ pub fn issue_room_layout_invitation(
 /// # Errors
 /// Returns an error if the proof cannot be encoded.
 #[cfg(any(test, feature = "test-support"))]
-pub fn complete_room_layout(
+pub fn complete_numbered(
     challenge: &JoinChallenge,
     key: &ed25519_dalek::SigningKey,
 ) -> Result<Vec<u8>, String> {
-    room_layout::encode_complete(challenge, key)
+    numbered_layout::encode_complete(challenge, key)
 }

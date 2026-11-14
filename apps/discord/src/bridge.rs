@@ -32,10 +32,6 @@ pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
 /// The workspace's own governance record kind, whose role changes the
 /// bridge mirrors.
 pub const WORKSPACE_KIND: &str = "tilo.workspace";
-/// The kind that record was published under before the workspace was
-/// called by its name: a host that still publishes it is followed all the
-/// same, and so is a program installed against it.
-pub const LEGACY_WORKSPACE_KIND: &str = "tilo.room";
 /// Chat's verb filing a feedback report in a channel.
 pub const SUBMIT_FEEDBACK: &str = "submit-feedback";
 
@@ -208,7 +204,7 @@ fn fired(event: &Value) -> Fired<'_> {
             item: event.pointer("/item/id").and_then(Value::as_str),
             event,
         },
-        Some(WORKSPACE_KIND | LEGACY_WORKSPACE_KIND) => Fired::Workspace { verbs, event },
+        Some(WORKSPACE_KIND) => Fired::Workspace { verbs, event },
         Some(EMOJI_KIND) => Fired::Emoji,
         Some(crate::KIND) => Fired::Guild { verbs, event },
         _ => Fired::Other,

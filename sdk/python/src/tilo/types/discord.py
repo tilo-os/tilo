@@ -282,12 +282,12 @@ class Context(TypedDict):
 class Links(TypedDict):
     web_entry: str
     origin: str
-    room: str
+    workspace: str
     host_device: str
 
 class Guild(Resource):
     """Discord server — `discord.guild`."""
-    __surface__ = "so.tilo.discord@cb5ce9db9acc3ab4"
+    __surface__ = "so.tilo.discord@529a5753a01e3592"
     @property
     def guild_id(self) -> str:
         """Read only."""

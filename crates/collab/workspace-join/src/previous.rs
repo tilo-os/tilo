@@ -1,9 +1,7 @@
 //! The invitation and join layouts issued before the grants stopped naming
 //! the workspace's authority, kept so bytes a build wrote then still decode.
-//! They name the workspace the way [`super::room_layout`] does: by a number
+//! They name the workspace the way [`super::numbered_layout`] does: by a number
 //! and by its UUID as text.
-//! Their fields keep the names that layout had: the structs exist to mirror
-//! the old bytes, not to name today's.
 //!
 //! Only the layout of the signed bytes changed: the signing domains are the
 //! same, so an old signature verifies over the old layout. A stored record
@@ -11,7 +9,7 @@
 //! sign for it again), and [`super::verify_stored_complete`] reaches this
 //! module because the challenge version names it, never by guessing.
 
-use super::room_layout::workspace_of;
+use super::numbered_layout::workspace_of;
 use super::{
     Decoded, DeviceCert, InviteGrant, Inviter, Role, TransportHint, VerifiedRedemption,
     tagged_digest, validate_certificate, validate_inviter, verify_issuer_signature,
@@ -39,7 +37,7 @@ pub(super) const fn is_invitation_version(version: u32) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Grant {
     workspace_id: u64,
-    room: String,
+    workspace: String,
     authority: Cert,
     issuer: Cert,
     delegation: Option<Delegation>,
@@ -60,7 +58,7 @@ struct DelegationPermissions {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Delegation {
     version: u32,
-    room: String,
+    workspace: String,
     workspace_id: u64,
     authority_device_public_key: [u8; 32],
     delegate: Cert,
@@ -74,7 +72,7 @@ struct Delegation {
 #[derive(Serialize)]
 struct DelegationView<'a> {
     version: u32,
-    room: &'a str,
+    workspace: &'a str,
     workspace_id: u64,
     authority_device_public_key: &'a [u8; 32],
     delegate: &'a Cert,
@@ -117,7 +115,7 @@ struct InvitationWithInviterView<'a> {
 struct JoinChallenge {
     version: u32,
     signed_invitation: Vec<u8>,
-    room: String,
+    workspace: String,
     workspace_id: u64,
     authority_device_public_key: [u8; 32],
     user_public_key: [u8; 32],
@@ -142,7 +140,7 @@ struct JoinCompleteRequest {
 impl Grant {
     fn into_current(self) -> Result<InviteGrant, String> {
         Ok(InviteGrant {
-            workspace_id: workspace_of(&self.room)?,
+            workspace_id: workspace_of(&self.workspace)?,
             issuer: self.issuer,
             role: self.role,
             nonce: self.nonce,
@@ -193,7 +191,7 @@ pub(super) fn decode_invitation(bytes: &[u8], version: u32) -> Result<Decoded, S
         }
         _ => return Err("unsupported invitation version".into()),
     };
-    workspace_of(&grant.room)?;
+    workspace_of(&grant.workspace)?;
     check_delegation(&grant)?;
     let digest = match &inviter {
         None => tagged_digest(
@@ -243,9 +241,10 @@ fn check_delegation(grant: &Grant) -> Result<(), String> {
     let delegate = &delegation.delegate;
     if delegation.version != JOIN_VERSION
         || delegation.authority_device_public_key != grant.authority.device_public_key
-        || uuid::Uuid::parse_str(&delegation.room)
-            .map_or(true, |workspace| workspace.to_string() != delegation.room)
-        || delegation.room != grant.room
+        || uuid::Uuid::parse_str(&delegation.workspace).map_or(true, |workspace| {
+            workspace.to_string() != delegation.workspace
+        })
+        || delegation.workspace != grant.workspace
         || delegation.workspace_id != grant.workspace_id
         || delegate != &grant.issuer
         || !delegation.permissions.issue_invitations
@@ -262,7 +261,7 @@ fn check_delegation(grant: &Grant) -> Result<(), String> {
         DELEGATION_DOMAIN,
         &DelegationView {
             version: delegation.version,
-            room: &delegation.room,
+            workspace: &delegation.workspace,
             workspace_id: delegation.workspace_id,
             authority_device_public_key: &delegation.authority_device_public_key,
             delegate: &delegation.delegate,
@@ -310,7 +309,7 @@ pub(super) fn verify_complete(
         revocations,
         now_ns,
     )?;
-    if workspace_of(&challenge.room)? != join.grant.workspace_id
+    if workspace_of(&challenge.workspace)? != join.grant.workspace_id
         || join
             .workspace_number
             .is_some_and(|number| number != challenge.workspace_id)
@@ -367,8 +366,8 @@ pub(super) fn encode_invitation(
         INVITATION_VERSION
     };
     let prior = Grant {
-        workspace_id: super::room_layout::workspace_number(grant.workspace_id),
-        room: grant.workspace_id.to_string(),
+        workspace_id: super::numbered_layout::workspace_number(grant.workspace_id),
+        workspace: grant.workspace_id.to_string(),
         authority: authority.clone(),
         issuer: grant.issuer.clone(),
         delegation: None,
@@ -425,8 +424,8 @@ pub(super) fn encode_complete(
     let prior = JoinChallenge {
         version: JOIN_VERSION,
         signed_invitation: challenge.signed_invitation.clone(),
-        room: challenge.workspace_id.to_string(),
-        workspace_id: super::room_layout::workspace_number(challenge.workspace_id),
+        workspace: challenge.workspace_id.to_string(),
+        workspace_id: super::numbered_layout::workspace_number(challenge.workspace_id),
         authority_device_public_key: authority.device_public_key,
         user_public_key: challenge.user_public_key,
         device_public_key: challenge.device_public_key,

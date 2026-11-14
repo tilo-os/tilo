@@ -792,7 +792,7 @@ name = "Links"
 fields = [
   { name = "web_entry", type = "text" },
   { name = "origin", type = "text" },
-  { name = "room", type = "text" },
+  { name = "workspace", type = "text" },
   { name = "host_device", type = "text" },
 ]
 

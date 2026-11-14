@@ -281,29 +281,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_workspace_published_under_its_old_kind_is_still_followed;
-    {
-        let mut g = guild();
-        g.links.push(Link {
-            discord_user: "42".into(),
-            person: "u_ada".into(),
-            ..Link::default()
-        });
-        // A host that still publishes the workspace's own record under the
-        // kind it had before the rename plans the same as one that does not.
-        let event = |kind: &str| {
-            json!({
-                "kind": kind,
-                "did": {"did": "verb", "action": {"app": "tilo", "kind": kind, "action": "ban"}},
-                "arguments": {"person": "u_ada", "reason": "spam"},
-            })
-        };
-        let named = planned(&g, &event(WORKSPACE_KIND));
-        let old = planned(&g, &event(LEGACY_WORKSPACE_KIND));
-        assert_eq!(named.bans, vec![json!({"user": "42", "reason": "spam"})]);
-        assert_eq!(old.bans, named.bans);
-    }
-
     phase removing_banning_and_unbanning_a_linked_person_reaches_discord;
     {
         let mut g = guild();

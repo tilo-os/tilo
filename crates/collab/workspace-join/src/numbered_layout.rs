@@ -1,7 +1,6 @@
 //! The invitation and join layouts that named a workspace twice: by a 64-bit
-//! number derived from its UUID and by the UUID as text (`room`), kept so the
-//! bytes the 0.1 releases wrote still decode. Their fields keep the names that
-//! layout had: the structs mirror the old bytes, not today's.
+//! number derived from its UUID and by the UUID as text, kept so the bytes the
+//! 0.1 releases wrote still decode.
 //!
 //! Only the layout of the signed bytes changed, not the signing domains, so a
 //! signature made then verifies over this layout. A stored record keeps those
@@ -30,18 +29,18 @@ pub(super) const fn is_invitation_version(version: u32) -> bool {
     )
 }
 
-/// The workspace a grant or challenge of this layout names by `room`: its
-/// UUID in the canonical lowercase text the releases required.
-pub(super) fn workspace_of(room: &str) -> Result<WorkspaceId, String> {
-    WorkspaceId::parse(room)
-        .filter(|workspace| workspace.to_string() == room)
+/// The workspace a grant or challenge of this layout names: its UUID in the
+/// canonical lowercase text the releases required.
+pub(super) fn workspace_of(workspace: &str) -> Result<WorkspaceId, String> {
+    WorkspaceId::parse(workspace)
+        .filter(|parsed| parsed.to_string() == workspace)
         .ok_or_else(|| "invitation workspace is not a canonical UUID".to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Grant {
     workspace_id: u64,
-    room: String,
+    workspace: String,
     issuer: DeviceCert,
     role: Role,
     nonce: [u8; 16],
@@ -54,7 +53,7 @@ struct Grant {
 impl Grant {
     fn into_current(self) -> Result<InviteGrant, String> {
         Ok(InviteGrant {
-            workspace_id: workspace_of(&self.room)?,
+            workspace_id: workspace_of(&self.workspace)?,
             issuer: self.issuer,
             role: self.role,
             nonce: self.nonce,
@@ -100,7 +99,7 @@ struct InvitationWithInviterView<'a> {
 struct JoinChallenge {
     version: u32,
     signed_invitation: Vec<u8>,
-    room: String,
+    workspace: String,
     workspace_id: u64,
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
@@ -173,7 +172,7 @@ pub(super) fn unchecked_grant(bytes: &[u8], version: u32) -> Option<InviteGrant>
 /// layout its `version` names.
 pub(super) fn decode_invitation(bytes: &[u8], version: u32) -> Result<Decoded, String> {
     let (grant, inviter, signature) = read_grant(bytes, version)?;
-    workspace_of(&grant.room)?;
+    workspace_of(&grant.workspace)?;
     if let Some(inviter) = &inviter {
         validate_inviter(inviter)?;
     }
@@ -248,7 +247,7 @@ pub(super) fn verify_complete(
         challenge.expires_at_ns,
         now_ns,
     )?;
-    if workspace_of(&challenge.room)? != expected.workspace_id
+    if workspace_of(&challenge.workspace)? != expected.workspace_id
         || join
             .workspace_number
             .is_some_and(|number| number != challenge.workspace_id)
@@ -300,7 +299,7 @@ pub(super) fn encode_invitation(
     };
     let prior = Grant {
         workspace_id: workspace_number(grant.workspace_id),
-        room: grant.workspace_id.to_string(),
+        workspace: grant.workspace_id.to_string(),
         issuer: grant.issuer.clone(),
         role: grant.role,
         nonce: grant.nonce,
@@ -354,7 +353,7 @@ pub(super) fn encode_complete(
     let prior = JoinChallenge {
         version: JOIN_VERSION,
         signed_invitation: challenge.signed_invitation.clone(),
-        room: challenge.workspace_id.to_string(),
+        workspace: challenge.workspace_id.to_string(),
         workspace_id: workspace_number(challenge.workspace_id),
         user_public_key: challenge.user_public_key,
         device_public_key: challenge.device_public_key,

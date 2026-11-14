@@ -10,7 +10,7 @@ fn local_owner(agent: Option<&str>) -> Value {
 }
 fn terminal_fixture(owner: Value, version: u32) -> Value {
     json!({"version":version,"host":"00000000-0000-0000-0000-000000000063","records":[{
-      "key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":owner,"invocation":"00000000-0000-0000-0000-000000000004"},
+      "key":{"workspace":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":owner,"invocation":"00000000-0000-0000-0000-000000000004"},
       "intent":{"request":{"action":"retained"}},"wire_id":1,
       "update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"retained result"}},
       "uncertain":false,"cancellation_requested":false}]})

@@ -85,9 +85,7 @@ fn shared(id: &str, text: &str, share: &Value) -> (String, Value) {
 tilo_test_env::scenario! {
     fn a_context_names_its_workspace;
 
-    phase a_context_naming_the_workspace_as_workspace_is_read;
-    // The host sends the workspace under the key it has always sent it under, so
-    // a context from a host that names it for the workspace is read the same.
+    phase the_workspace_is_read_and_written_under_its_name;
     {
         let context: Context = serde_json::from_value(json!({
             "avatars": "https://workspaces.example/avatars/",
@@ -100,21 +98,11 @@ tilo_test_env::scenario! {
             },
         }))
         .unwrap();
-        assert_eq!(
-            context.links.map(|links| links.workspace).as_deref(),
-            Some(WORKSPACE)
-        );
-    }
-
-    phase a_context_names_the_workspace_under_the_stored_key;
-    // The workspace goes out under the key a host publishes its links with.
-    {
-        let links = linked().links.unwrap();
+        let links = context.links.unwrap();
+        assert_eq!(links.workspace, WORKSPACE);
         let written = serde_json::to_string(&links).unwrap();
-        assert!(written.contains("\"room\""), "{written}");
-        assert!(!written.contains("\"workspace\""), "{written}");
-        let stored = written.replace("\"room\"", "\"workspace\"");
-        assert_eq!(serde_json::from_str::<Links>(&stored).unwrap(), *links);
+        assert!(written.contains("\"workspace\""), "{written}");
+        assert_eq!(serde_json::from_str::<Links>(&written).unwrap(), *links);
     }
 }
 

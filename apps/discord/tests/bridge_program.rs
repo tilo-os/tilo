@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use chat::resource::ChatShell;
-use discord::bridge::{LEGACY_WORKSPACE_KIND, WORKSPACE_KIND};
+use discord::bridge::WORKSPACE_KIND;
 use discord::resource::Discord;
 use discord::{APP_ID, Guild, KIND};
 use serde_json::{Value, json};
@@ -758,17 +758,9 @@ fn triggers() -> Vec<TriggerSpec> {
             by: ActorFilter::Anyone,
         },
         // The workspace's own governance: who joined, whose role changed,
-        // who was removed or banned. Followed under the kind it is
-        // published as now and under the one it had before, so a host
-        // that still writes the old kind is bridged all the same.
+        // who was removed or banned.
         TriggerSpec::RecordChanged {
             kind: WORKSPACE_KIND.into(),
-            actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
-            fields: Vec::new(),
-            by: ActorFilter::Anyone,
-        },
-        TriggerSpec::RecordChanged {
-            kind: LEGACY_WORKSPACE_KIND.into(),
             actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,

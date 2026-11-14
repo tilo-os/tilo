@@ -254,7 +254,7 @@ fn the_number_the_releases_carried_is_the_one_they_derived() {
     // Pinned in the releases' own tests.
     let workspace = crate::WorkspaceId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
     assert_eq!(
-        crate::room_layout::workspace_number(workspace),
+        crate::numbered_layout::workspace_number(workspace),
         3_029_697_355_180_468_570
     );
 }
@@ -289,18 +289,13 @@ fn every_invitation_layout<'a>(
             Some(inviter),
         ),
         (
-            crate::issue_room_layout_invitation(&layouts.grant, None, &layouts.issuer_device)
-                .unwrap(),
+            crate::issue_numbered_invitation(&layouts.grant, None, &layouts.issuer_device).unwrap(),
             3,
             None,
         ),
         (
-            crate::issue_room_layout_invitation(
-                &layouts.grant,
-                Some(inviter),
-                &layouts.issuer_device,
-            )
-            .unwrap(),
+            crate::issue_numbered_invitation(&layouts.grant, Some(inviter), &layouts.issuer_device)
+                .unwrap(),
             4,
             Some(inviter),
         ),
@@ -378,7 +373,7 @@ fn every_released_invitation_layout_reads_and_verifies_by_its_version() {
 fn a_released_grant_that_names_no_canonical_workspace_is_refused() {
     let layouts = layouts();
     let signed =
-        crate::issue_room_layout_invitation(&layouts.grant, None, &layouts.issuer_device).unwrap();
+        crate::issue_numbered_invitation(&layouts.grant, None, &layouts.issuer_device).unwrap();
     let canonical = layouts.grant.workspace_id.to_string();
     let at = signed
         .windows(canonical.len())
@@ -400,8 +395,8 @@ fn a_released_grant_that_names_no_canonical_workspace_is_refused() {
 fn a_stored_complete_verifies_in_the_join_layout_its_version_names() {
     let layouts = layouts();
     let revocations = RevocationList::new();
-    let room_layout_invitation =
-        crate::issue_room_layout_invitation(&layouts.grant, None, &layouts.issuer_device).unwrap();
+    let numbered_layout_invitation =
+        crate::issue_numbered_invitation(&layouts.grant, None, &layouts.issuer_device).unwrap();
     let previous_invitation = crate::issue_previous_invitation(
         &layouts.grant,
         None,
@@ -415,7 +410,7 @@ fn a_stored_complete_verifies_in_the_join_layout_its_version_names() {
     // This build's layout, over an invitation of every layout it reads.
     for signed in [
         &current_invitation,
-        &room_layout_invitation,
+        &numbered_layout_invitation,
         &previous_invitation,
     ] {
         let (_, complete) = current_complete(&layouts, signed);
@@ -431,9 +426,9 @@ fn a_stored_complete_verifies_in_the_join_layout_its_version_names() {
     }
 
     // The releases' layout, over the invitations they issued.
-    for signed in [&room_layout_invitation, &previous_invitation] {
+    for signed in [&numbered_layout_invitation, &previous_invitation] {
         let (challenge, _) = current_complete(&layouts, signed);
-        let complete = crate::complete_room_layout(&challenge, &layouts.guest_device).unwrap();
+        let complete = crate::complete_numbered(&challenge, &layouts.guest_device).unwrap();
         assert_eq!(complete.get(1), Some(&2));
         let redemption =
             verify_stored_complete(&complete, &layouts.guest, &revocations, 3).unwrap();
@@ -617,7 +612,7 @@ fn each_signed_invitation_layout_reads_and_writes_as_it_was_kept() {
             assert_eq!(join.signed_invitation(), bytes);
         },
         || {
-            crate::room_layout::rewritten_invitation(&golden(include_str!(
+            crate::numbered_layout::rewritten_invitation(&golden(include_str!(
                 "../golden/signed-invitation/v3.hex"
             )))
             .unwrap()

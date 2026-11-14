@@ -12,8 +12,6 @@ pub(crate) struct PreparedEffect {
     version: u8,
     #[serde(deserialize_with = "terminal_update")]
     pub(crate) update: InvocationUpdate,
-    /// Written as `room`: existing journals keep their exact bytes on save.
-    #[serde(rename = "room")]
     workspace: String,
     invocation: uuid::Uuid,
     redacted: Vec<u8>,

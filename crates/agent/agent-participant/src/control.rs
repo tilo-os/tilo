@@ -36,7 +36,7 @@ use tilo_relay_protocol::agents::{
 };
 use tilo_relay_protocol::delegation::{
     Delegate, DelegateProposal, DelegateScope, Delegation, MAX_DELEGATE_TEXT_BYTES,
-    MAX_DELEGATED_APPS, MAX_DELEGATED_ROOMS,
+    MAX_DELEGATED_APPS, MAX_DELEGATED_WORKSPACES,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -921,9 +921,9 @@ impl AgentSupervisor {
                 "a grant's label is 1 to {MAX_DELEGATE_TEXT_BYTES} bytes"
             ));
         }
-        if request.workspaces.is_empty() || request.workspaces.len() > MAX_DELEGATED_ROOMS {
+        if request.workspaces.is_empty() || request.workspaces.len() > MAX_DELEGATED_WORKSPACES {
             return Err(format!(
-                "a grant names 1 to {MAX_DELEGATED_ROOMS} workspaces"
+                "a grant names 1 to {MAX_DELEGATED_WORKSPACES} workspaces"
             ));
         }
         if request.apps.len() > MAX_DELEGATED_APPS {
