@@ -312,141 +312,145 @@ mod tests {
         );
     }
 
-    #[test]
-    fn progress_advances_only_as_writes_complete() {
-        let (writer, release) = blocked_writer();
-        let before = writer.progress();
-        writer.submit(PathBuf::from("queued"), || {});
-        assert_eq!(writer.progress(), before, "nothing completes while blocked");
-        release.send(()).unwrap();
-        writer.flush();
-        assert!(writer.progress() > before);
-    }
+    tilo_test_env::scenario! {
+        fn a_durable_writer_runs_the_newest_write_of_a_file_in_order_and_within_bounds;
 
-    /// A write replaced before it ran is dropped, and what it owned may queue a
-    /// write of its own as it goes (a policy export does).
-    #[test]
-    fn a_replaced_write_may_queue_another_as_it_is_dropped() {
-        struct QueuesOnDrop(Arc<DurableWriter>, Arc<Mutex<Vec<&'static str>>>);
-        impl Drop for QueuesOnDrop {
-            fn drop(&mut self) {
-                let written = self.1.clone();
-                self.0.submit(PathBuf::from("follow-up"), move || {
-                    written.lock().push("follow-up");
-                });
-            }
-        }
-        let (writer, release) = blocked_writer();
-        let writer = Arc::new(writer);
-        let written = Arc::new(Mutex::new(Vec::new()));
-        let owned = QueuesOnDrop(writer.clone(), written.clone());
-        writer.submit(PathBuf::from("state.json"), move || drop(owned));
-        let newest = written.clone();
-        writer.submit(PathBuf::from("state.json"), move || {
-            newest.lock().push("newest");
-        });
-        release.send(()).expect("release");
-        writer.flush();
-        assert_eq!(*written.lock(), vec!["newest", "follow-up"]);
-    }
-
-    #[test]
-    fn durable_writer_ordered_commands_are_bounded_and_never_coalesced() {
-        let (writer, release) = blocked_writer();
-        let written = Arc::new(Mutex::new(Vec::new()));
-        for index in 0..32 {
-            let written = Arc::clone(&written);
-            writer
-                .submit_ordered(move || written.lock().push(index))
-                .unwrap();
-        }
-        let overflow = writer.submit_ordered(|| panic!("refused job must not run"));
-        release.send(()).unwrap();
-        writer.flush();
-        assert_eq!(overflow.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
-        assert_eq!(*written.lock(), (0..32).collect::<Vec<_>>());
-        let unavailable = DurableWriter {
-            shared: Arc::clone(&writer.shared),
-            thread: None,
-        };
-        assert!(
-            unavailable
-                .submit_ordered(|| panic!("must not block caller"))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn durable_writer_coalesces_orders_and_flushes() {
+        phase progress_advances_only_as_writes_complete;
         {
             let (writer, release) = blocked_writer();
-            let written = Arc::new(Mutex::new(Vec::new()));
-            for snapshot in 1..=20 {
-                let written = written.clone();
-                writer.submit(PathBuf::from("state.json"), move || {
-                    written.lock().push(snapshot);
-                });
-            }
-            release.send(()).expect("release");
+            let before = writer.progress();
+            writer.submit(PathBuf::from("queued"), || {});
+            assert_eq!(writer.progress(), before, "nothing completes while blocked");
+            release.send(()).unwrap();
             writer.flush();
-            assert_eq!(
-                *written.lock(),
-                vec![20],
-                "twenty saves queued behind one write are one write of the newest"
-            );
+            assert!(writer.progress() > before);
         }
+
+        phase a_replaced_write_may_queue_another_as_it_is_dropped;
+        // A write replaced before it ran is dropped, and what it owned may queue a
+        // write of its own as it goes (a policy export does).
         {
-            let (writer, release) = blocked_writer();
-            let written = Arc::new(Mutex::new(Vec::new()));
-            for (key, label) in [("a", "a1"), ("b", "b1"), ("a", "a2"), ("c", "c1")] {
-                let written = written.clone();
-                writer.submit(PathBuf::from(key), move || written.lock().push(label));
+            struct QueuesOnDrop(Arc<DurableWriter>, Arc<Mutex<Vec<&'static str>>>);
+            impl Drop for QueuesOnDrop {
+                fn drop(&mut self) {
+                    let written = self.1.clone();
+                    self.0.submit(PathBuf::from("follow-up"), move || {
+                        written.lock().push("follow-up");
+                    });
+                }
             }
-            release.send(()).expect("release");
-            writer.flush();
-            assert_eq!(
-                *written.lock(),
-                vec!["a2", "b1", "c1"],
-                "a replacement keeps its file's place in line and carries the newest content"
-            );
-        }
-        {
             let (writer, release) = blocked_writer();
-            let written = Arc::new(Mutex::new(0));
-            let first = written.clone();
-            writer.submit(PathBuf::from("state.json"), move || *first.lock() = 1);
             let writer = Arc::new(writer);
-            let barrier = {
-                let writer = writer.clone();
-                let written = written.clone();
-                std::thread::spawn(move || {
-                    writer.flush();
-                    *written.lock()
-                })
-            };
-            writer.submit(PathBuf::from("state.json"), move || *written.lock() = 2);
+            let written = Arc::new(Mutex::new(Vec::new()));
+            let owned = QueuesOnDrop(writer.clone(), written.clone());
+            writer.submit(PathBuf::from("state.json"), move || drop(owned));
+            let newest = written.clone();
+            writer.submit(PathBuf::from("state.json"), move || {
+                newest.lock().push("newest");
+            });
             release.send(()).expect("release");
-            assert_eq!(
-                barrier.join().expect("barrier"),
-                2,
-                "a barrier is not satisfied by dropping the write it waited for"
-            );
+            writer.flush();
+            assert_eq!(*written.lock(), vec!["newest", "follow-up"]);
         }
+
+        phase durable_writer_ordered_commands_are_bounded_and_never_coalesced;
         {
             let (writer, release) = blocked_writer();
-            writer.submit(PathBuf::from("state.json"), || {});
-            assert!(!writer.flush_timeout(Duration::from_millis(20)));
-            release.send(()).expect("release");
-            assert!(writer.flush_timeout(tilo_test_env::hang_bound()));
-        }
-        {
-            let writer = DurableWriter::spawn("durable-writer-test");
-            writer.submit(PathBuf::from("bad"), || panic!("disk on fire"));
-            let written = Arc::new(Mutex::new(false));
-            let flag = written.clone();
-            writer.submit(PathBuf::from("good"), move || *flag.lock() = true);
+            let written = Arc::new(Mutex::new(Vec::new()));
+            for index in 0..32 {
+                let written = Arc::clone(&written);
+                writer
+                    .submit_ordered(move || written.lock().push(index))
+                    .unwrap();
+            }
+            let overflow = writer.submit_ordered(|| panic!("refused job must not run"));
+            release.send(()).unwrap();
             writer.flush();
-            assert!(*written.lock());
+            assert_eq!(overflow.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+            assert_eq!(*written.lock(), (0..32).collect::<Vec<_>>());
+            let unavailable = DurableWriter {
+                shared: Arc::clone(&writer.shared),
+                thread: None,
+            };
+            assert!(
+                unavailable
+                    .submit_ordered(|| panic!("must not block caller"))
+                    .is_err()
+            );
+        }
+
+        phase durable_writer_coalesces_orders_and_flushes;
+        {
+            {
+                let (writer, release) = blocked_writer();
+                let written = Arc::new(Mutex::new(Vec::new()));
+                for snapshot in 1..=20 {
+                    let written = written.clone();
+                    writer.submit(PathBuf::from("state.json"), move || {
+                        written.lock().push(snapshot);
+                    });
+                }
+                release.send(()).expect("release");
+                writer.flush();
+                assert_eq!(
+                    *written.lock(),
+                    vec![20],
+                    "twenty saves queued behind one write are one write of the newest"
+                );
+            }
+            {
+                let (writer, release) = blocked_writer();
+                let written = Arc::new(Mutex::new(Vec::new()));
+                for (key, label) in [("a", "a1"), ("b", "b1"), ("a", "a2"), ("c", "c1")] {
+                    let written = written.clone();
+                    writer.submit(PathBuf::from(key), move || written.lock().push(label));
+                }
+                release.send(()).expect("release");
+                writer.flush();
+                assert_eq!(
+                    *written.lock(),
+                    vec!["a2", "b1", "c1"],
+                    "a replacement keeps its file's place in line and carries the newest content"
+                );
+            }
+            {
+                let (writer, release) = blocked_writer();
+                let written = Arc::new(Mutex::new(0));
+                let first = written.clone();
+                writer.submit(PathBuf::from("state.json"), move || *first.lock() = 1);
+                let writer = Arc::new(writer);
+                let barrier = {
+                    let writer = writer.clone();
+                    let written = written.clone();
+                    std::thread::spawn(move || {
+                        writer.flush();
+                        *written.lock()
+                    })
+                };
+                writer.submit(PathBuf::from("state.json"), move || *written.lock() = 2);
+                release.send(()).expect("release");
+                assert_eq!(
+                    barrier.join().expect("barrier"),
+                    2,
+                    "a barrier is not satisfied by dropping the write it waited for"
+                );
+            }
+            {
+                let (writer, release) = blocked_writer();
+                writer.submit(PathBuf::from("state.json"), || {});
+                assert!(!writer.flush_timeout(Duration::from_millis(20)));
+                release.send(()).expect("release");
+                assert!(writer.flush_timeout(tilo_test_env::hang_bound()));
+            }
+            {
+                let writer = DurableWriter::spawn("durable-writer-test");
+                writer.submit(PathBuf::from("bad"), || panic!("disk on fire"));
+                let written = Arc::new(Mutex::new(false));
+                let flag = written.clone();
+                writer.submit(PathBuf::from("good"), move || *flag.lock() = true);
+                writer.flush();
+                assert!(*written.lock());
+            }
         }
     }
 }
