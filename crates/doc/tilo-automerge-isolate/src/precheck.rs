@@ -129,22 +129,6 @@ mod tests {
         saved_with_end().0
     }
 
-    #[test]
-    fn real_storage_passes_and_every_truncation_is_refused_or_still_framed() {
-        let limits = Limits::default();
-        let (bytes, first_chunk_end) = saved_with_end();
-        check(&bytes, &limits).unwrap();
-        check(&[], &limits).unwrap();
-        for cut in 1..bytes.len() {
-            let outcome = check(bytes.get(..cut).unwrap(), &limits);
-            if cut == first_chunk_end {
-                assert!(outcome.is_ok(), "a whole chunk is well framed");
-            } else {
-                assert!(outcome.is_err(), "cut at {cut} passed");
-            }
-        }
-    }
-
     /// Framing faults, and the framing nearest to each that is sound: what
     /// the input is, its bytes, and what the check says of it.
     fn framing_cases() -> Vec<(&'static str, Vec<u8>, Result<(), Rejected>)> {
@@ -214,59 +198,79 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn refuses_malformed_framing_and_input_past_a_ceiling_but_not_at_it() {
-        let limits = Limits::default();
-        for (case, bytes, expected) in framing_cases() {
-            assert_eq!(check(&bytes, &limits), expected, "{case}");
+    tilo_test_env::scenario! {
+        fn check_passes_sound_framing_and_refuses_what_is_malformed_or_past_a_ceiling;
+
+        phase real_storage_passes_and_every_truncation_is_refused_or_still_framed;
+        {
+            let limits = Limits::default();
+            let (bytes, first_chunk_end) = saved_with_end();
+            check(&bytes, &limits).unwrap();
+            check(&[], &limits).unwrap();
+            for cut in 1..bytes.len() {
+                let outcome = check(bytes.get(..cut).unwrap(), &limits);
+                if cut == first_chunk_end {
+                    assert!(outcome.is_ok(), "a whole chunk is well framed");
+                } else {
+                    assert!(outcome.is_err(), "cut at {cut} passed");
+                }
+            }
         }
 
-        // Two chunks: the ceilings refuse one byte or one chunk past them and
-        // admit input that is exactly at them.
-        let bytes = saved();
-        for (case, max_input_bytes, max_chunks, expected) in [
-            ("a 4 byte ceiling", 4, usize::MAX, Err(Rejected::TooLarge)),
-            (
-                "one byte past the byte ceiling",
-                bytes.len().saturating_sub(1),
-                usize::MAX,
-                Err(Rejected::TooLarge),
-            ),
-            ("exactly the byte ceiling", bytes.len(), usize::MAX, Ok(())),
-            (
-                "one chunk past the chunk ceiling",
-                usize::MAX,
-                1,
-                Err(Rejected::TooLarge),
-            ),
-            ("exactly the chunk ceiling", usize::MAX, 2, Ok(())),
-            (
-                "a chunk ceiling of none",
-                usize::MAX,
-                0,
-                Err(Rejected::TooLarge),
-            ),
-        ] {
-            let limits = Limits {
-                max_input_bytes,
-                max_chunks,
+        phase refuses_malformed_framing_and_input_past_a_ceiling_but_not_at_it;
+        {
+            let limits = Limits::default();
+            for (case, bytes, expected) in framing_cases() {
+                assert_eq!(check(&bytes, &limits), expected, "{case}");
+            }
+
+            // Two chunks: the ceilings refuse one byte or one chunk past them and
+            // admit input that is exactly at them.
+            let bytes = saved();
+            for (case, max_input_bytes, max_chunks, expected) in [
+                ("a 4 byte ceiling", 4, usize::MAX, Err(Rejected::TooLarge)),
+                (
+                    "one byte past the byte ceiling",
+                    bytes.len().saturating_sub(1),
+                    usize::MAX,
+                    Err(Rejected::TooLarge),
+                ),
+                ("exactly the byte ceiling", bytes.len(), usize::MAX, Ok(())),
+                (
+                    "one chunk past the chunk ceiling",
+                    usize::MAX,
+                    1,
+                    Err(Rejected::TooLarge),
+                ),
+                ("exactly the chunk ceiling", usize::MAX, 2, Ok(())),
+                (
+                    "a chunk ceiling of none",
+                    usize::MAX,
+                    0,
+                    Err(Rejected::TooLarge),
+                ),
+            ] {
+                let limits = Limits {
+                    max_input_bytes,
+                    max_chunks,
+                    ..Limits::default()
+                };
+                assert_eq!(check(&bytes, &limits), expected, "{case}");
+            }
+
+            // Ceilings of nothing admit the empty input, which holds no byte and
+            // no chunk, and refuse one byte.
+            let nothing = Limits {
+                max_input_bytes: 0,
+                max_chunks: 0,
                 ..Limits::default()
             };
-            assert_eq!(check(&bytes, &limits), expected, "{case}");
+            assert_eq!(check(&[], &nothing), Ok(()), "nothing, under no ceiling");
+            assert_eq!(
+                check(&[0], &nothing),
+                Err(Rejected::TooLarge),
+                "one byte, under no ceiling"
+            );
         }
-
-        // Ceilings of nothing admit the empty input, which holds no byte and
-        // no chunk, and refuse one byte.
-        let nothing = Limits {
-            max_input_bytes: 0,
-            max_chunks: 0,
-            ..Limits::default()
-        };
-        assert_eq!(check(&[], &nothing), Ok(()), "nothing, under no ceiling");
-        assert_eq!(
-            check(&[0], &nothing),
-            Err(Rejected::TooLarge),
-            "one byte, under no ceiling"
-        );
     }
 }

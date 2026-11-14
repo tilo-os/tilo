@@ -548,250 +548,127 @@ mod tests {
             .to_owned()
     }
 
-    #[test]
-    fn a_ready_worker_is_already_confined_and_still_admits() {
-        let worker = Worker::spawn(&limits()).unwrap();
-        let pid = worker.child.id();
-        // 2 = a seccomp filter is installed.
-        assert_eq!(status_line(pid, "Seccomp:"), "2");
-        assert_eq!(status_line(pid, "NoNewPrivs:"), "1");
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "k", "v").unwrap();
-        let saved = doc.save();
-        let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
-        assert!(matches!(reply, Ok(Reply::Loaded(ref hashes)) if *hashes == doc.get_heads()));
-    }
+    tilo_test_env::scenario! {
+        fn a_pool_times_routes_and_replaces_its_workers;
 
-    #[test]
-    fn incomplete_keys_never_authorize_a_cached_worker_queue() {
-        let worker = Worker::spawn(&limits()).unwrap();
-        let mut base = AutoCommit::new();
-        base.put(automerge::ROOT, "seed", "committed").unwrap();
-        base.commit();
-        let dependency = base.get_heads();
-        let committed = full_save(&mut base);
-        let mut queued = Vec::new();
-        for value in ["first original queue", "different original queue"] {
-            let mut branch = base.fork();
-            branch.put(automerge::ROOT, "queued", value).unwrap();
-            branch.commit();
-            let orphan = branch.save_after(&dependency);
-            let mut doc = AutoCommit::new();
-            // Locally generated valid bytes: this prepares the caller's state,
-            // not a substitute for the actual confined-worker request below.
+        phase the_deadline_grows_with_the_input;
+        {
+            let limits = Limits::default();
+            let mib = 1024 * 1024;
+            assert_eq!(deadline(&limits, 0, 0), limits.timeout);
             assert_eq!(
-                engine::apply_trusted(&mut doc, &orphan, Dependencies::RetainOrphans),
-                Ok(Applied::Changed(false))
+                deadline(&limits, 0, 3 * mib),
+                limits.timeout + limits.timeout_per_mib * 3
             );
-            assert_eq!(doc.get_missing_deps(&[]), dependency);
-            let saved = full_save(&mut doc);
-            assert!(matches!(
-                worker.call(Request::Load { incoming: &saved }.encode(), STARTUP),
-                Ok(Reply::Loaded(_))
-            ));
-            queued.push((doc, saved));
+            assert_eq!(
+                deadline(&limits, 4 * mib, 0),
+                limits.timeout + REBUILD_PER_MIB * 4
+            );
         }
-        assert_ne!(queued[0].1, queued[1].1, "different queued changes");
-        let key = Key::of(&mut queued[0].0);
-        assert_eq!(key, Key::of(&mut queued[1].0));
-        assert!(key.complete_heads().is_none());
-        let reply = worker.call(
-            Request::Apply {
-                key: key.clone(),
-                dependencies: Dependencies::RequireComplete,
-                prepare: Prepare::Cached,
-                incoming: &committed,
+
+        phase routes_forget_the_least_recently_used_states_not_all;
+        {
+            let mut routes = Routes::default();
+            let key = |n: usize| Key::from_bytes(n.to_le_bytes().to_vec());
+            routes.insert(key(0), 1);
+            for n in 1..ROUTES {
+                routes.insert(key(n), 0);
             }
-            .encode(),
-            STARTUP,
-        );
-        assert!(
-            matches!(reply, Ok(Reply::Uncached(ref keys)) if keys.iter().all(|key| key.complete_heads().is_some())),
-            "an incomplete state cannot authorize cached worker acceptance"
-        );
-        assert!(matches!(
-            worker.call(
-                Request::Apply {
-                    key,
-                    dependencies: Dependencies::RequireComplete,
-                    prepare: Prepare::Full(&queued[0].1),
-                    incoming: &committed,
-                }
-                .encode(),
-                STARTUP,
-            ),
-            Ok(Reply::Applied(Applied::Changed(true)))
-        ));
-        assert_eq!(
-            engine::apply_trusted(&mut queued[0].0, &committed, Dependencies::RequireComplete),
-            Ok(Applied::Changed(true))
-        );
-        assert!(matches!(
-            worker.call(
-                Request::Apply {
-                    key: Key::of(&mut queued[0].0),
-                    dependencies: Dependencies::RequireComplete,
-                    prepare: Prepare::Cached,
-                    incoming: &[],
-                }
-                .encode(),
-                STARTUP,
-            ),
-            Ok(Reply::Applied(Applied::Changed(false)))
-        ));
-    }
-
-    #[test]
-    fn a_path_or_socket_syscall_is_refused_or_kills_the_worker() {
-        // The caller itself may do both, so only the sandbox can refuse them.
-        assert!(std::fs::File::open("/proc/self/status").is_ok());
-        assert!(std::os::unix::net::UnixStream::pair().is_ok());
-
-        let worker = Worker::spawn(&limits()).unwrap();
-        let reply = worker.call(Request::Escape(Escape::Open).encode(), STARTUP);
-        let message = match reply {
-            Ok(Reply::Invalid(message)) => message,
-            _ => String::new(),
-        };
-        assert!(
-            message.contains("os error 1"),
-            "open not refused: {message:?}"
-        );
-        let reply = worker.call(Request::Load { incoming: &[] }.encode(), STARTUP);
-        assert!(matches!(reply, Ok(Reply::Loaded(_))));
-
-        let mut worker = Worker::spawn(&limits()).unwrap();
-        let reply = worker.call(Request::Escape(Escape::Socket).encode(), STARTUP);
-        assert!(
-            matches!(reply, Err(Rejected::Crashed)),
-            "socket was allowed"
-        );
-        let status = worker.child.wait().unwrap();
-        assert_eq!(status.signal(), Some(libc::SIGSYS), "{status}");
-
-        let pool = Pool::new(limits());
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "after", 1).unwrap();
-        assert!(pool.load(&doc.save()).is_ok());
-    }
-
-    #[test]
-    fn the_deadline_grows_with_the_input() {
-        let limits = Limits::default();
-        let mib = 1024 * 1024;
-        assert_eq!(deadline(&limits, 0, 0), limits.timeout);
-        assert_eq!(
-            deadline(&limits, 0, 3 * mib),
-            limits.timeout + limits.timeout_per_mib * 3
-        );
-        assert_eq!(
-            deadline(&limits, 4 * mib, 0),
-            limits.timeout + REBUILD_PER_MIB * 4
-        );
-    }
-
-    #[test]
-    fn routes_forget_the_least_recently_used_states_not_all() {
-        let mut routes = Routes::default();
-        let key = |n: usize| Key::from_bytes(n.to_le_bytes().to_vec());
-        routes.insert(key(0), 1);
-        for n in 1..ROUTES {
-            routes.insert(key(n), 0);
+            // Touch the first state so it is the most recently used.
+            assert_eq!(routes.get(&key(0)), Some(1));
+            routes.insert(key(ROUTES), 0);
+            assert_eq!(routes.get(&key(0)), Some(1), "a live route was dropped");
+            assert_eq!(routes.get(&key(ROUTES)), Some(0));
+            assert!(routes.get(&key(1)).is_none(), "the oldest route was kept");
+            assert!(routes.slots.len() > ROUTES / 2);
         }
-        // Touch the first state so it is the most recently used.
-        assert_eq!(routes.get(&key(0)), Some(1));
-        routes.insert(key(ROUTES), 0);
-        assert_eq!(routes.get(&key(0)), Some(1), "a live route was dropped");
-        assert_eq!(routes.get(&key(ROUTES)), Some(0));
-        assert!(routes.get(&key(1)).is_none(), "the oldest route was kept");
-        assert!(routes.slots.len() > ROUTES / 2);
-    }
 
-    #[test]
-    fn an_idle_worker_exits_and_the_next_request_starts_another() {
-        let pool = Pool::new(Limits {
-            idle: Duration::from_secs(1),
-            ..limits()
-        });
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "k", 1).unwrap();
-        doc.commit();
-        let mut first = pool.load(&doc.save()).unwrap();
-        let pid = (pool.slots[0]).lock_recover().as_ref().unwrap().child.id();
-        tilo_test_env::wait_until(format!("idle worker {pid} to exit"), || {
-            (pool.slots[0]).lock_recover().as_mut().unwrap().exited()
-        });
-        let mut remote = first.fork();
-        remote.put(automerge::ROOT, "k", 2).unwrap();
-        remote.commit();
-        let change = remote.save_after(&doc.get_heads());
-        assert_eq!(
-            pool.apply(&mut doc, &change, Dependencies::RequireComplete),
-            Ok(Applied::Changed(true))
-        );
-    }
-
-    #[test]
-    fn a_worker_that_died_idle_while_the_request_was_sent_is_replaced() {
-        let pool = Pool::new(limits());
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "k", 1).unwrap();
-        doc.commit();
-        pool.load(&doc.save()).unwrap();
-        let mut worker = (pool.slots[0]).lock_recover().take().unwrap();
-        let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
-        // SAFETY: signalling our own child.
-        unsafe { libc::kill(pid, libc::SIGALRM) };
-        tilo_test_env::wait_until("the signalled worker to exit", || worker.exited());
-        *(pool.slots[0]).lock_recover() = Some(worker);
-        assert!(pool.load(&doc.save()).is_ok());
-    }
-
-    #[test]
-    fn isolate_load_avoids_a_full_rebuild_on_the_next_change() {
-        let pool = Pool::new(Limits {
-            workers: 2,
-            ..limits()
-        });
-        let mut seeded = AutoCommit::new();
-        for i in 0..32 {
-            seeded
-                .put(automerge::ROOT, format!("seed{i}"), i64::from(i))
-                .unwrap();
-            seeded.commit();
+        phase an_idle_worker_exits_and_the_next_request_starts_another;
+        {
+            let pool = Pool::new(Limits {
+                idle: Duration::from_secs(1),
+                ..limits()
+            });
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "k", 1).unwrap();
+            doc.commit();
+            let mut first = pool.load(&doc.save()).unwrap();
+            let pid = (pool.slots[0]).lock_recover().as_ref().unwrap().child.id();
+            tilo_test_env::wait_until(format!("idle worker {pid} to exit"), || {
+                (pool.slots[0]).lock_recover().as_mut().unwrap().exited()
+            });
+            let mut remote = first.fork();
+            remote.put(automerge::ROOT, "k", 2).unwrap();
+            remote.commit();
+            let change = remote.save_after(&doc.get_heads());
+            assert_eq!(
+                pool.apply(&mut doc, &change, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true))
+            );
         }
-        let saved = seeded.save();
 
-        let mut warm = pool.load(&saved).unwrap();
-        let before_warm = pool.full_rebuilds();
-        let mut remote = warm.fork();
-        remote.put(automerge::ROOT, "warm", 1).unwrap();
-        remote.commit();
-        let change = remote.save_after(&warm.get_heads());
-        assert_eq!(
-            pool.apply(&mut warm, &change, Dependencies::RequireComplete),
-            Ok(Applied::Changed(true))
-        );
-        assert_eq!(
-            pool.full_rebuilds(),
-            before_warm,
-            "Pool::load must leave the document warm for the next change"
-        );
+        phase a_worker_that_died_idle_while_the_request_was_sent_is_replaced;
+        {
+            let pool = Pool::new(limits());
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "k", 1).unwrap();
+            doc.commit();
+            pool.load(&doc.save()).unwrap();
+            let mut worker = (pool.slots[0]).lock_recover().take().unwrap();
+            let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
+            // SAFETY: signalling our own child.
+            unsafe { libc::kill(pid, libc::SIGALRM) };
+            tilo_test_env::wait_until("the signalled worker to exit", || worker.exited());
+            *(pool.slots[0]).lock_recover() = Some(worker);
+            assert!(pool.load(&doc.save()).is_ok());
+        }
 
-        let mut cold = AutoCommit::load(&saved).unwrap();
-        let before_cold = pool.full_rebuilds();
-        let mut remote = cold.fork();
-        remote.put(automerge::ROOT, "cold", 1).unwrap();
-        remote.commit();
-        let change = remote.save_after(&cold.get_heads());
-        assert_eq!(
-            pool.apply(&mut cold, &change, Dependencies::RequireComplete),
-            Ok(Applied::Changed(true))
-        );
-        assert!(
-            pool.full_rebuilds() > before_cold,
-            "a document never seen by a worker must still rebuild once from a full save"
-        );
+        phase isolate_load_avoids_a_full_rebuild_on_the_next_change;
+        {
+            let pool = Pool::new(Limits {
+                workers: 2,
+                ..limits()
+            });
+            let mut seeded = AutoCommit::new();
+            for i in 0..32 {
+                seeded
+                    .put(automerge::ROOT, format!("seed{i}"), i64::from(i))
+                    .unwrap();
+                seeded.commit();
+            }
+            let saved = seeded.save();
+
+            let mut warm = pool.load(&saved).unwrap();
+            let before_warm = pool.full_rebuilds();
+            let mut remote = warm.fork();
+            remote.put(automerge::ROOT, "warm", 1).unwrap();
+            remote.commit();
+            let change = remote.save_after(&warm.get_heads());
+            assert_eq!(
+                pool.apply(&mut warm, &change, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true))
+            );
+            assert_eq!(
+                pool.full_rebuilds(),
+                before_warm,
+                "Pool::load must leave the document warm for the next change"
+            );
+
+            let mut cold = AutoCommit::load(&saved).unwrap();
+            let before_cold = pool.full_rebuilds();
+            let mut remote = cold.fork();
+            remote.put(automerge::ROOT, "cold", 1).unwrap();
+            remote.commit();
+            let change = remote.save_after(&cold.get_heads());
+            assert_eq!(
+                pool.apply(&mut cold, &change, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true))
+            );
+            assert!(
+                pool.full_rebuilds() > before_cold,
+                "a document never seen by a worker must still rebuild once from a full save"
+            );
+        }
     }
 
     fn collaborated() -> AutoCommit {
@@ -826,59 +703,190 @@ mod tests {
         ada
     }
 
-    #[test]
-    fn a_load_hands_the_caller_the_hashes_its_own_load_takes() {
-        let mut doc = collaborated();
-        assert_eq!(doc.get_heads().len(), 2, "concurrent heads");
-        let saved = doc.save();
-        let worker = Worker::spawn(&limits()).unwrap();
-        let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
-        let Ok(Reply::Loaded(hashes)) = reply else {
-            panic!("a load is answered with its hashes");
-        };
-        let mut reference = engine::load(&saved).unwrap();
-        assert_eq!(hashes, reference.document().change_hashes());
-        assert_eq!(hashes.len(), doc.get_changes(&[]).len());
+    tilo_test_env::scenario! {
+        fn a_confined_worker_answers_loads_and_applies;
 
-        let mut validated = engine::load_validated(&saved, &hashes).unwrap();
-        assert_eq!(validated.get_heads(), reference.get_heads());
-        assert_eq!(
-            validated.document().change_hashes(),
-            reference.document().change_hashes()
-        );
-        let changes = |doc: &mut AutoCommit| {
-            doc.get_changes(&[])
-                .iter()
-                .map(|change| (change.hash(), change.max_op(), change.raw_bytes().to_vec()))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(changes(&mut validated), changes(&mut reference));
-        assert_eq!(validated.save(), reference.save());
+        phase a_ready_worker_is_already_confined_and_still_admits;
+        {
+            let worker = Worker::spawn(&limits()).unwrap();
+            let pid = worker.child.id();
+            // 2 = a seccomp filter is installed.
+            assert_eq!(status_line(pid, "Seccomp:"), "2");
+            assert_eq!(status_line(pid, "NoNewPrivs:"), "1");
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "k", "v").unwrap();
+            let saved = doc.save();
+            let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
+            assert!(matches!(reply, Ok(Reply::Loaded(ref hashes)) if *hashes == doc.get_heads()));
+        }
 
-        let pool = Pool::new(limits());
-        let mut admitted = pool.load(&saved).unwrap();
-        assert_eq!(changes(&mut admitted), changes(&mut reference));
-        assert_eq!(admitted.save(), reference.save());
-    }
+        phase incomplete_keys_never_authorize_a_cached_worker_queue;
+        {
+            let worker = Worker::spawn(&limits()).unwrap();
+            let mut base = AutoCommit::new();
+            base.put(automerge::ROOT, "seed", "committed").unwrap();
+            base.commit();
+            let dependency = base.get_heads();
+            let committed = full_save(&mut base);
+            let mut queued = Vec::new();
+            for value in ["first original queue", "different original queue"] {
+                let mut branch = base.fork();
+                branch.put(automerge::ROOT, "queued", value).unwrap();
+                branch.commit();
+                let orphan = branch.save_after(&dependency);
+                let mut doc = AutoCommit::new();
+                // Locally generated valid bytes: this prepares the caller's state,
+                // not a substitute for the actual confined-worker request below.
+                assert_eq!(
+                    engine::apply_trusted(&mut doc, &orphan, Dependencies::RetainOrphans),
+                    Ok(Applied::Changed(false))
+                );
+                assert_eq!(doc.get_missing_deps(&[]), dependency);
+                let saved = full_save(&mut doc);
+                assert!(matches!(
+                    worker.call(Request::Load { incoming: &saved }.encode(), STARTUP),
+                    Ok(Reply::Loaded(_))
+                ));
+                queued.push((doc, saved));
+            }
+            assert_ne!(queued[0].1, queued[1].1, "different queued changes");
+            let key = Key::of(&mut queued[0].0);
+            assert_eq!(key, Key::of(&mut queued[1].0));
+            assert!(key.complete_heads().is_none());
+            let reply = worker.call(
+                Request::Apply {
+                    key: key.clone(),
+                    dependencies: Dependencies::RequireComplete,
+                    prepare: Prepare::Cached,
+                    incoming: &committed,
+                }
+                .encode(),
+                STARTUP,
+            );
+            assert!(
+                matches!(reply, Ok(Reply::Uncached(ref keys)) if keys.iter().all(|key| key.complete_heads().is_some())),
+                "an incomplete state cannot authorize cached worker acceptance"
+            );
+            assert!(matches!(
+                worker.call(
+                    Request::Apply {
+                        key,
+                        dependencies: Dependencies::RequireComplete,
+                        prepare: Prepare::Full(&queued[0].1),
+                        incoming: &committed,
+                    }
+                    .encode(),
+                    STARTUP,
+                ),
+                Ok(Reply::Applied(Applied::Changed(true)))
+            ));
+            assert_eq!(
+                engine::apply_trusted(&mut queued[0].0, &committed, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true))
+            );
+            assert!(matches!(
+                worker.call(
+                    Request::Apply {
+                        key: Key::of(&mut queued[0].0),
+                        dependencies: Dependencies::RequireComplete,
+                        prepare: Prepare::Cached,
+                        incoming: &[],
+                    }
+                    .encode(),
+                    STARTUP,
+                ),
+                Ok(Reply::Applied(Applied::Changed(false)))
+            ));
+        }
 
-    #[test]
-    fn input_that_is_not_one_document_chunk_loads_without_hashes() {
-        let mut doc = collaborated();
-        let heads = doc.get_heads();
-        let mut saved = doc.save();
-        let mut remote = doc.fork();
-        remote.put(automerge::ROOT, "after", 1).unwrap();
-        remote.commit();
-        saved.extend(remote.save_after(&heads));
-        let worker = Worker::spawn(&limits()).unwrap();
-        let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
-        assert!(
-            matches!(reply, Ok(Reply::Loaded(ref hashes)) if hashes.is_empty()),
-            "no hashes for a document chunk with more after it"
-        );
-        let pool = Pool::new(limits());
-        let mut admitted = pool.load(&saved).unwrap();
-        assert_eq!(admitted.get_heads(), remote.get_heads());
-        assert_eq!(admitted.save(), engine::load(&saved).unwrap().save());
+        phase a_path_or_socket_syscall_is_refused_or_kills_the_worker;
+        {
+            // The caller itself may do both, so only the sandbox can refuse them.
+            assert!(std::fs::File::open("/proc/self/status").is_ok());
+            assert!(std::os::unix::net::UnixStream::pair().is_ok());
+
+            let worker = Worker::spawn(&limits()).unwrap();
+            let reply = worker.call(Request::Escape(Escape::Open).encode(), STARTUP);
+            let message = match reply {
+                Ok(Reply::Invalid(message)) => message,
+                _ => String::new(),
+            };
+            assert!(
+                message.contains("os error 1"),
+                "open not refused: {message:?}"
+            );
+            let reply = worker.call(Request::Load { incoming: &[] }.encode(), STARTUP);
+            assert!(matches!(reply, Ok(Reply::Loaded(_))));
+
+            let mut worker = Worker::spawn(&limits()).unwrap();
+            let reply = worker.call(Request::Escape(Escape::Socket).encode(), STARTUP);
+            assert!(
+                matches!(reply, Err(Rejected::Crashed)),
+                "socket was allowed"
+            );
+            let status = worker.child.wait().unwrap();
+            assert_eq!(status.signal(), Some(libc::SIGSYS), "{status}");
+
+            let pool = Pool::new(limits());
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "after", 1).unwrap();
+            assert!(pool.load(&doc.save()).is_ok());
+        }
+
+        phase a_load_hands_the_caller_the_hashes_its_own_load_takes;
+        {
+            let mut doc = collaborated();
+            assert_eq!(doc.get_heads().len(), 2, "concurrent heads");
+            let saved = doc.save();
+            let worker = Worker::spawn(&limits()).unwrap();
+            let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
+            let Ok(Reply::Loaded(hashes)) = reply else {
+                panic!("a load is answered with its hashes");
+            };
+            let mut reference = engine::load(&saved).unwrap();
+            assert_eq!(hashes, reference.document().change_hashes());
+            assert_eq!(hashes.len(), doc.get_changes(&[]).len());
+
+            let mut validated = engine::load_validated(&saved, &hashes).unwrap();
+            assert_eq!(validated.get_heads(), reference.get_heads());
+            assert_eq!(
+                validated.document().change_hashes(),
+                reference.document().change_hashes()
+            );
+            let changes = |doc: &mut AutoCommit| {
+                doc.get_changes(&[])
+                    .iter()
+                    .map(|change| (change.hash(), change.max_op(), change.raw_bytes().to_vec()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(changes(&mut validated), changes(&mut reference));
+            assert_eq!(validated.save(), reference.save());
+
+            let pool = Pool::new(limits());
+            let mut admitted = pool.load(&saved).unwrap();
+            assert_eq!(changes(&mut admitted), changes(&mut reference));
+            assert_eq!(admitted.save(), reference.save());
+        }
+
+        phase input_that_is_not_one_document_chunk_loads_without_hashes;
+        {
+            let mut doc = collaborated();
+            let heads = doc.get_heads();
+            let mut saved = doc.save();
+            let mut remote = doc.fork();
+            remote.put(automerge::ROOT, "after", 1).unwrap();
+            remote.commit();
+            saved.extend(remote.save_after(&heads));
+            let worker = Worker::spawn(&limits()).unwrap();
+            let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
+            assert!(
+                matches!(reply, Ok(Reply::Loaded(ref hashes)) if hashes.is_empty()),
+                "no hashes for a document chunk with more after it"
+            );
+            let pool = Pool::new(limits());
+            let mut admitted = pool.load(&saved).unwrap();
+            assert_eq!(admitted.get_heads(), remote.get_heads());
+            assert_eq!(admitted.save(), engine::load(&saved).unwrap().save());
+        }
     }
 }
