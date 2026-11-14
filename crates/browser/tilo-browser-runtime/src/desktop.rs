@@ -28,7 +28,7 @@ use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
-use ui::automerge::{AutoCommit, transaction::Transactable as _};
+use ui::automerge::AutoCommit;
 use ui::permissions::{MemberId, SharedPermissions};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
@@ -1679,73 +1679,15 @@ fn adopted_records(
     })
 }
 
-/// The layout as its own document: `document` when it already is one,
-/// else the record older builds wrote it as — every window an entry of its
-/// own — read into the document with the author and time of every change it
-/// made ([`tilo_desktop_surface::history_log::layout_document`]).
-pub(crate) fn as_layout_document(document: &AutoCommit, author: &str) -> AutoCommit {
-    if tilo_desktop_model::desktop_doc::holds(document) {
-        return document.clone();
-    }
-    let mut log = document.clone();
-    tilo_desktop_surface::history_log::layout_document(
-        &mut log,
-        None,
-        ui::automerge::ActorId::from(author.as_bytes()),
-        ui::time::unix_now_i64(),
-    )
-}
-
-/// The layout document this profile keeps, opening whatever an older build kept
-/// for it: the layout's own document, the record a workspace's desktop was written
-/// to before it was one document, or the desktop an older build stored as
-/// JSON beside a log of its changes.
-fn open_layout(
-    store: &dyn DurableStore,
-    key: &StorageKey,
-    history_key: &StorageKey,
-    author: &str,
-) -> AutoCommit {
-    let stored = store
+/// The layout document this profile keeps, or an empty one when it holds none.
+fn open_layout(store: &dyn DurableStore, key: &StorageKey) -> AutoCommit {
+    store
         .read(key)
-        .ok()
-        .flatten()
-        .filter(|stored| !stored.bytes.is_empty());
-    let Some(stored) = stored else {
-        return AutoCommit::new();
-    };
-    if let Ok(loaded) = AutoCommit::load(&stored.bytes) {
-        let mut document = as_layout_document(&loaded, author);
-        if !document.base_heads().is_empty() {
-            let _ = store.write(key, WriteOp::Replace(document.save()), None);
-        }
-        return document;
-    }
-    let old: Option<tilo_desktop_model::ownership::SharedDesktop> =
-        serde_json::from_slice(&stored.bytes).ok();
-    let old = old.filter(|desktop| !desktop.tree.workspaces.is_empty());
-    let mut log = store
-        .read(history_key)
         .ok()
         .flatten()
         .filter(|stored| !stored.bytes.is_empty())
         .and_then(|stored| AutoCommit::load(&stored.bytes).ok())
-        .unwrap_or_default();
-    let mut document = tilo_desktop_surface::history_log::layout_document(
-        &mut log,
-        old.as_ref(),
-        ui::automerge::ActorId::from(author.as_bytes()),
-        ui::time::unix_now_i64(),
-    );
-    if document.base_heads().is_empty() {
-        return document;
-    }
-    // The shell is in its one document now, and the JSON tree and the log it
-    // came from give way to it: a store that keeps no removal keeps them
-    // empty.
-    let _ = store.write(key, WriteOp::Replace(document.save()), None);
-    let _ = store.write(history_key, WriteOp::Replace(Vec::new()), None);
-    document
+        .unwrap_or_default()
 }
 
 /// Mount the workspace's desktop from the profile, or seed one: one workspace
@@ -1825,8 +1767,7 @@ pub(crate) fn mount(
     let salt = peer_salt(&inputs.salt);
     let shared = shared_with_its_host(&inputs, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
-    let history_key = StorageKey::document(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
-    let document = open_layout(store.as_ref(), &key, &history_key, &inputs.author);
+    let document = open_layout(store.as_ref(), &key);
     // In a workspace the profile keeps the workspace's shell, which holds nobody's own windows
     // (`tilo_desktop_model::personal`); a shell no workspace shares is this person's alone, all of
     // it.
