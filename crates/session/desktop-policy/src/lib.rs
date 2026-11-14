@@ -947,6 +947,18 @@ impl DesktopPolicy {
         self.hold_launch(app, command, background)
     }
 
+    /// Hold a tab for the next window of `app` where a launch lands, taking focus unless
+    /// `background`: [`Self::hold`] for a window that opens beside no tab of its app.
+    pub fn hold_open(&mut self, app: &str, background: bool) -> bool {
+        let command = ChromeEffect::OpenApp {
+            app: held_name(app),
+            beside: None,
+            background: Some(background),
+            float: None,
+        };
+        self.hold_launch(app, command, background)
+    }
+
     /// Ask the desk for `command`'s window and keep the place it makes for
     /// `app`. The desktop makes the tab on its next pass: the place is asked
     /// for here, so one that never comes can be given up before then.

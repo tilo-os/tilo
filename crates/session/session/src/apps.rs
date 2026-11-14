@@ -27,7 +27,6 @@ use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 
 use crate::agents::Kept;
@@ -121,11 +120,16 @@ struct State {
     documents: Option<tilo_documents::Documents>,
 }
 
-/// A window an app asked its session for: the launch that starts it, and the item it shows when it
-/// named one.
+/// A window whose tab the session asked the desk for: the launch that starts it once the desk asks
+/// back, and how — the item it shows when one was named, whether it is a window of its own beside
+/// the app's, the workspace it was launched into when that is not where the desk made its tab, and
+/// what the service that asked for it told the tool to show.
 struct WindowAsk {
     launch: Launch,
     reveal: Option<String>,
+    new_window: bool,
+    workspace: Option<String>,
+    tool_context: Option<String>,
 }
 
 /// An agent this device started, as the record of it the launch pass keeps.
@@ -142,9 +146,6 @@ struct AgentProcess {
 enum Beginning {
     /// The window the app has, or the place one is on its way to, came forward: nothing starts.
     Raised,
-    /// The desk holds a tab for another window of the app, beside the one it has, and asks this
-    /// session back for the window in it: nothing starts yet.
-    Asked,
     /// The app starts, with a window of its own when `new_window` .
     Start { new_window: bool },
     /// The app starts into the tab `tab` , a saved window's that nothing was asking for: the window
@@ -768,17 +769,49 @@ impl Apps {
                 .opened
                 .insert((app.to_owned(), reveal.clone()), tab);
         }
-        let workspace = self.workspace_of(Some(tab));
-        if let Err(error) = self.start_window(
-            &planned.launch,
-            &workspace,
-            true,
-            Some(tab),
-            planned.reveal.as_deref(),
-        ) {
+        // A launch into a workspace the desk is not showing: its tab goes there, and the window
+        // starts in that workspace's records whether the desk holds it or not.
+        let workspace = match &planned.workspace {
+            Some(workspace) => {
+                self.carry_to(tab, workspace);
+                self.workspace_named(workspace)
+            }
+            None => self.workspace_of(Some(tab)),
+        };
+        let started = self.starting_tool(planned.tool_context.as_deref(), || {
+            self.start_window(
+                &planned.launch,
+                &workspace,
+                planned.new_window,
+                Some(tab),
+                planned.reveal.as_deref(),
+            )
+            .map(|_| ())
+        });
+        if let Err(error) = started {
             tracing::warn!(%error, %app, "a window an app asked for did not start");
             self.release_tab(Some(tab));
         }
+    }
+
+    /// Carry the held `tab` into `workspace`, when the desk holds that workspace.
+    fn carry_to(&self, tab: u64, workspace: &str) {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        desktop.with_policy(|policy| {
+            let to = policy.handle().read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.id().to_string() == workspace)
+                    .map(tilo_desktop_model::Workspace::id)
+            });
+            if let Some(to) = to
+                && let Err(error) = policy.carry(tab, to)
+            {
+                tracing::warn!(%error, tab, %workspace, "a launched window stays in front");
+            }
+        });
     }
 
     /// The tab the desk held for a window that never came goes, with everything it held.
@@ -809,16 +842,67 @@ impl Apps {
         if !desktop.with_policy(|policy| policy.hold(app, anchor, background, floated)) {
             return false;
         }
+        self.plan_window(WindowAsk {
+            launch: launch.clone(),
+            reveal: reveal.map(str::to_owned),
+            new_window: true,
+            workspace: None,
+            tool_context: None,
+        });
+        true
+    }
+
+    /// Keep `ask` for the tab the desk holds for it: [`Self::start_planned`] starts it there.
+    fn plan_window(&self, ask: WindowAsk) {
         self.state
             .borrow_mut()
             .planned
-            .entry(app.to_owned())
+            .entry(ask.launch.app().to_owned())
             .or_default()
-            .push_back(WindowAsk {
-                launch: launch.clone(),
-                reveal: reveal.map(str::to_owned),
-            });
-        true
+            .push_back(ask);
+    }
+
+    /// Ask the desk for the tab `launch`'s window lands in, which is the window's instance: the
+    /// window starts once the desk asks back ([`Self::start_planned`]), so every window knows its
+    /// tab from its first frame and what it shows is kept for that tab. A window of its own
+    /// (`new_window`) lands beside the tab the app has; a launch into a workspace not in front
+    /// goes there without taking focus. False when no desk is behind this session.
+    /// # Errors
+    /// The desk took no open.
+    fn ask_desk(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        new_window: bool,
+        reveal: Option<&str>,
+    ) -> Result<bool, DoorError> {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return Ok(false);
+        };
+        let app = launch.app();
+        let elsewhere = workspace.is_workspace() && self.active_workspace().id != workspace.id;
+        let held = desktop.with_policy(|policy| {
+            match new_window
+                .then(|| policy.anchor_for(app))
+                .flatten()
+                .filter(|_| !elsewhere)
+            {
+                Some((anchor, ..)) => policy.hold(app, Some(anchor), false, false),
+                None => policy.hold_open(app, elsewhere),
+            }
+        });
+        if !held {
+            return Err(DoorError::Failed(format!("the desk took no open of {app}")));
+        }
+        let tool_context = self.state.borrow().tool_context.clone();
+        self.plan_window(WindowAsk {
+            launch: launch.clone(),
+            reveal: reveal.map(str::to_owned),
+            new_window,
+            workspace: elsewhere.then(|| workspace.id.clone()),
+            tool_context,
+        });
+        Ok(true)
     }
 
     /// The tab the window `app` opened on `item` stands in, while it is on the desk.
@@ -891,7 +975,7 @@ impl Apps {
         place: Option<&LaunchPlace>,
     ) -> Result<bool, DoorError> {
         match self.starting(launch, workspace, instance, place) {
-            Beginning::Raised | Beginning::Asked => Ok(false),
+            Beginning::Raised => Ok(false),
             Beginning::Start { new_window } => {
                 self.start_window(launch, workspace, new_window, instance, None)
             }
@@ -1030,15 +1114,6 @@ impl Apps {
                 .filter(|(tab, _)| Some(*tab) != instance),
         );
         let answer = app.answer(launch, &shown);
-        // A file or a link opened with an app that runs opens in another window of its process, in
-        // a tab the desk holds beside the app's own: that tab is the window's instance.
-        if instance.is_none()
-            && matches!(launch, Launch::Package { open: Some(_), .. })
-            && answer == (Answer::Start { new_window: true })
-            && self.ask_window(launch, shown.of(&app), false, false, None)
-        {
-            return Beginning::Asked;
-        }
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
@@ -1342,8 +1417,11 @@ impl Apps {
         // names the instance the window draws.
         let doors = self.state.borrow().doors.clone();
         let hosted = launch.package().is_some() && self.runs_in_host(app);
-        if self.open_at_desk(hosted, launch, new_window, instance) {
-            return Ok(true);
+        if instance.is_none() {
+            window_opens(launch, reveal, hosted).map_err(DoorError::Failed)?;
+            if self.ask_desk(launch, workspace, new_window, reveal)? {
+                return Ok(true);
+            }
         }
         let timed = tilo_startup_metrics::launch_requested(app);
         let failed = |error: String| {
@@ -1498,65 +1576,6 @@ impl Apps {
                 tilo_startup_metrics::launch_failed(timed);
                 DoorError::Failed(error.to_string())
             })
-    }
-
-    /// Ask the desk for `launch`'s window: it makes the tab the window takes, beside the app's
-    /// own when the window is one of its own (`new_window`), and asks this session again, naming
-    /// that tab as the window's instance ([`Self::start_asked`]). Whether the desk took the ask: a
-    /// session with no desk behind it starts the launch itself.
-    ///
-    /// Every window of an app whose windows are hosted (`hosted`) asks, that names no tab of its
-    /// own: a hosted window is shown in a tab of the desk's, and that tab is the window's
-    /// instance, so what it asks about its own window — the controls of its content for assistive
-    /// technology, its bar, its search — is answered for the tab it stands in, never for another
-    /// window of its app ([`Self::start_asked`]). A record the window opens asks too: it
-    /// is the app's window on that record, in a tab of the desk's as every window of the app.
-    ///
-    /// A hosted window that opens a file or a link names no tab: it cannot show what such a launch
-    /// names, and it is refused where it starts rather than shown in a tab nothing fills.
-    fn open_at_desk(
-        &self,
-        hosted: bool,
-        launch: &Launch,
-        new_window: bool,
-        instance: Option<u64>,
-    ) -> bool {
-        if !hosted || instance.is_some() {
-            return false;
-        }
-        let asked = match launch {
-            Launch::Package { open: None, .. } | Launch::Record { visitor: false, .. } => {
-                launch.id()
-            }
-            // A file or a link, and a notice that starts nothing: neither is a window of the app's
-            // this session asks a tab for. Nor is a window opened for whoever works a record rather
-            // than for the person: the launch the desk asks back names no such window.
-            _ => return false,
-        };
-        let Some(desktop) = self.desktop.borrow().clone() else {
-            return false;
-        };
-        // A window of its own lands beside the one the app has, as the app's own ask for another
-        // of its windows does.
-        let beside = if new_window {
-            desktop
-                .with_policy(|policy| policy.anchor_for(launch.app()))
-                .map(|(tab, ..)| tab.to_string())
-        } else {
-            None
-        };
-        let handle = desktop.with_policy(|policy| policy.handle().clone());
-        handle
-            .dispatch(ChromeEffect::OpenApp {
-                app: asked,
-                beside,
-                background: None,
-                float: None,
-            })
-            .inspect_err(|error| {
-                tracing::warn!(%error, app = %launch.app(), "the desk took no open");
-            })
-            .is_ok()
     }
 
     /// Start package `app` in `workspace` with no window, for an action that shows nothing: its

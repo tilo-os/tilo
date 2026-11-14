@@ -551,6 +551,70 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
     );
 }
 
+/// A window another app opens on what it shows — Files opening a file in an app, here a link — is
+/// told the tab it lands in from its start, as a window the desk opens is: what it shows is kept for
+/// that tab, so the restart that brings the tab back finds it.
+#[test]
+fn a_window_opened_on_content_is_told_the_tab_it_lands_in() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let instances = home.home().join("instances");
+    installed_probe_package(&mut home);
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             printf '%s\\n' \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{instances}'\n\
+             hold\n",
+            started = started.display(),
+            instances = instances.display(),
+        ),
+    )
+    .unwrap();
+    let state = Seat::in_home(&mut home).state;
+
+    let apps = apps_at(&home, Some(launcher.path().to_owned()));
+    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        .expect("a workspace is in front");
+    apps.start(
+        &tilo_app_launch::Launch::Package {
+            app: PROBE.into(),
+            open: Some(tilo_app_launch::Open::Uri(
+                "https://example.org/budget-for-friday".into(),
+            )),
+        },
+        &apps.workspace_named(&workspace),
+    )
+    .expect("the launch is taken");
+    until(&mut session, "the app is started", |_| {
+        starts(&started) == 1
+    });
+    let instance: u64 = fs::read_to_string(&instances)
+        .expect("the launcher recorded its start")
+        .trim()
+        .parse()
+        .expect("the app is told the tab its window takes");
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(11, PROBE)))
+        .expect("the window maps");
+    until(
+        &mut session,
+        "the window takes the tab it was told",
+        |session| {
+            matches!(
+                tile_of(session, instance),
+                Some(TileContent::Foreign { surface_id: 11, .. })
+            )
+        },
+    );
+    assert_eq!(tabs(&session).len(), 1, "one tab, the window's");
+}
+
 /// How many times the launcher wrote a start down: one line per app the session started.
 fn starts(started: &Path) -> usize {
     fs::read_to_string(started).map_or(0, |written| {
