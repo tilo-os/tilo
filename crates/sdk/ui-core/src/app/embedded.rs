@@ -1567,98 +1567,98 @@ mod theme_repaint_tests {
                 "the painted generation follows the one before"
             );
         }
+    }
 
-        phase embedded_host_theme_change_repaints_an_idle_scene;
-        {
-            let app = App::new_with_controlled_inputs(
-                crate::state::State::new(),
-                Box::new(crate::widget::Text::new("Theme probe")),
-            );
-            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-            let light = Theme::light();
-            layout(&mut tile, &light);
-            let mut previous = Vec::new();
-            for _ in 0..4 {
-                previous = paint(&mut tile, &light);
-                if !(tile.needs_redraw() || tile.needs_animation_frame()) {
-                    break;
-                }
-            }
-            assert!(
-                !(tile.needs_redraw() || tile.needs_animation_frame()),
-                "the actual tile must settle before a theme change"
-            );
-            assert!(!previous.is_empty(), "the actual label must be painted");
-            layout(&mut tile, &light);
-            assert!(
-                !(tile.needs_redraw() || tile.needs_animation_frame()),
-                "an unchanged theme keeps the idle tile cached"
-            );
-            assert_eq!(paint(&mut tile, &light), previous);
-            for theme in [Theme::dark(), Theme::high_contrast()] {
-                layout(&mut tile, &theme);
-                assert!(
-                    tile.needs_redraw() || tile.needs_animation_frame(),
-                    "a host theme change must repaint the retained scene"
-                );
-                let current = paint(&mut tile, &theme);
-                assert_ne!(
-                    current, previous,
-                    "the actual scene must contain the new theme's ink"
-                );
-                previous = current;
+    #[test]
+    fn embedded_host_theme_change_repaints_an_idle_scene() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::new("Theme probe")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let light = Theme::light();
+        layout(&mut tile, &light);
+        let mut previous = Vec::new();
+        for _ in 0..4 {
+            previous = paint(&mut tile, &light);
+            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
+                break;
             }
         }
-
-        phase focus_restored_before_a_hidden_app_is_drawn_reuses_its_painted_scene;
-        {
-            let app = App::new_with_controlled_inputs(
-                crate::state::State::new(),
-                Box::new(crate::widget::Text::new("Focus probe")),
-            );
-            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-            let theme = Theme::light();
+        assert!(
+            !(tile.needs_redraw() || tile.needs_animation_frame()),
+            "the actual tile must settle before a theme change"
+        );
+        assert!(!previous.is_empty(), "the actual label must be painted");
+        layout(&mut tile, &light);
+        assert!(
+            !(tile.needs_redraw() || tile.needs_animation_frame()),
+            "an unchanged theme keeps the idle tile cached"
+        );
+        assert_eq!(paint(&mut tile, &light), previous);
+        for theme in [Theme::dark(), Theme::high_contrast()] {
             layout(&mut tile, &theme);
-            for _ in 0..8 {
-                paint(&mut tile, &theme);
-                if !(tile.needs_redraw() || tile.needs_animation_frame()) {
-                    break;
-                }
-            }
             assert!(
-                !(tile.needs_redraw() || tile.needs_animation_frame()),
-                "the app must settle before focus moves"
+                tile.needs_redraw() || tile.needs_animation_frame(),
+                "a host theme change must repaint the retained scene"
             );
-
-            tile.set_focus(true);
-            assert!(tile.needs_redraw(), "visible focus entering needs a frame");
-            paint(&mut tile, &theme);
-            assert!(!tile.needs_redraw());
-            let shown = tile.painted_damage.to;
-
-            tile.set_focus(false);
-            assert!(tile.needs_redraw(), "visible focus leaving needs a frame");
-            // A workspace switch parks this app without drawing it, then gives it
-            // focus back before its next scene is composed.
-            tile.set_focus(true);
-            assert!(!tile.needs_redraw());
-            paint(&mut tile, &theme);
-            assert_eq!(tile.painted_damage.to, shown, "the app did not repaint");
-
-            tile.set_focus(false);
-            paint(&mut tile, &theme);
-            assert!(
-                tile.painted_damage.to > shown,
-                "a lasting focus change repaints"
+            let current = paint(&mut tile, &theme);
+            assert_ne!(
+                current, previous,
+                "the actual scene must contain the new theme's ink"
             );
-            let unfocused = tile.painted_damage.to;
-            tile.wants_frame.set(true);
-            paint(&mut tile, &theme);
-            assert!(
-                tile.painted_damage.to > unfocused,
-                "other app work still repaints"
-            );
+            previous = current;
         }
+    }
+
+    #[test]
+    fn focus_restored_before_a_hidden_app_is_drawn_reuses_its_painted_scene() {
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(crate::widget::Text::new("Focus probe")),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        for _ in 0..8 {
+            paint(&mut tile, &theme);
+            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
+                break;
+            }
+        }
+        assert!(
+            !(tile.needs_redraw() || tile.needs_animation_frame()),
+            "the app must settle before focus moves"
+        );
+
+        tile.set_focus(true);
+        assert!(tile.needs_redraw(), "visible focus entering needs a frame");
+        paint(&mut tile, &theme);
+        assert!(!tile.needs_redraw());
+        let shown = tile.painted_damage.to;
+
+        tile.set_focus(false);
+        assert!(tile.needs_redraw(), "visible focus leaving needs a frame");
+        // A workspace switch parks this app without drawing it, then gives it
+        // focus back before its next scene is composed.
+        tile.set_focus(true);
+        assert!(!tile.needs_redraw());
+        paint(&mut tile, &theme);
+        assert_eq!(tile.painted_damage.to, shown, "the app did not repaint");
+
+        tile.set_focus(false);
+        paint(&mut tile, &theme);
+        assert!(
+            tile.painted_damage.to > shown,
+            "a lasting focus change repaints"
+        );
+        let unfocused = tile.painted_damage.to;
+        tile.wants_frame.set(true);
+        paint(&mut tile, &theme);
+        assert!(
+            tile.painted_damage.to > unfocused,
+            "other app work still repaints"
+        );
     }
 }
 
