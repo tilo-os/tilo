@@ -52,14 +52,15 @@ die() { printf 'build-provenance: %s\n' "$*" >&2; exit 1; }
 record_of() { printf '%s/%s\n' "$1" "$record_name"; }
 
 # Paths that are not inputs to what a build produces: documentation, and the developer scripts
-# that orchestrate a build without compiling into it. A build does not change when one of these
+# that orchestrate a build or drive a session without compiling into it. A build does not change when one of these
 # does, and a run that reused a build across such an edit is still this tree's build — so they
 # are out of the digest, and `--no-build` stays usable while a developer works on them. What
 # *does* change the artifacts (Cargo files, sources, `vendor/`, build scripts, app manifests and
 # app surfaces, `os/scripts/build-thin-apps.sh`, `tools/apps/`) is what is left in.
 not_an_input() {
     case $1 in
-        ./docs/* | ./.claude/* | ./dist/dev/* | *.md | ./target/* | ./os/output/*) return 0 ;;
+        ./docs/* | ./.claude/* | ./dist/dev/* | ./scripts/headless-examples/* | *.md | ./target/* \
+            | ./os/output/*) return 0 ;;
         *) return 1 ;;
     esac
 }

@@ -26,10 +26,11 @@ from typing import Callable, Iterator
 
 from real_apps import BUILD, Failed, Session, build, prepare, until
 
-# The session's own provider, and the resource it publishes the workspace's commands as: the
-# desk's own invitation among them.
+# The session's own provider, the resource it publishes the workspace's commands as, and the one
+# its invitations are made through.
 DESK = "so.tilo.session"
 WORKSPACE_COMMANDS = "session:desk"
+INVITATIONS = "session:invite"
 # The variable a session joins the workspace of an invitation with, at startup.
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 # How long a workspace a person joined may take to reach them: two devices on one machine, so this
@@ -77,7 +78,7 @@ def members_of(workspace: dict) -> list[str]:
 
 def invitation(host: Session) -> str:
     """The link the host makes into the workspace in front, through its own desk action."""
-    answer = host.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fissue-invitation",
+    answer = host.invoke(DESK, f"{INVITATIONS}\u001fissue-invitation",
                          {"role": "editor", "expires_in_seconds": 3600})
     issued = (answer.get("receipt") or {}).get("update", {}).get("output", {}).get("value") or {}
     link = issued.get("link")
