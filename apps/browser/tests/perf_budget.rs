@@ -6,7 +6,7 @@
 //! wait on the engine. Budgets apply to optimised builds only; a debug build
 //! prints the numbers.
 //!
-//! `cargo test --profile thin-app -p browser --test perf_budget -- --nocapture`
+//! `cargo test --profile thin-app -p browser --test it perf_budget:: -- --nocapture`
 #![allow(
     clippy::cast_possible_truncation,
     reason = "microsecond timings of a window opening fit in u64"

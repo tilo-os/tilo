@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "browser"
 version = "0.1.0"
 description = "Web browser: one page per instance, tabs are desktop tabs"
@@ -13,6 +15,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "browser"
 path = "src/main.rs"
+
+# The integration tests: one binary, its files included as modules by
+# `tests/it.rs` (a file per binary linked the whole app once each).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [features]
 # Live browsing runs the Chromium engine runtime (ui::webview::chromium).
