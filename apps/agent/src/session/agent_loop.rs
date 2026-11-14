@@ -116,6 +116,16 @@ pub(super) const DEPRECATED_TAG: &str = "tilo.deprecated:";
 /// model that corrects itself takes one of them; one that keeps calling the
 /// same way ends the task rather than looping.
 const MOST_MALFORMED_TURNS: usize = 2;
+/// How many times one task asks the model again after a turn whose answer
+/// could not be used — one that arrived unreadable, or that the provider failed
+/// while writing — before the run ends with the reason. None of such a turn's
+/// calls ran, so asking again repeats nothing.
+const MOST_UNUSABLE_TURNS: usize = 2;
+/// What the model reads before the reason its last answer was not used.
+const UNUSABLE_ANSWER: &str = "Your last answer did not arrive in a form that could be used";
+/// What the model reads after that reason: nothing of that answer ran.
+const ANSWER_AGAIN: &str = "None of its calls ran. Answer again from here, keeping \
+     the answer short: call the tools you need, or `plan` with your reply.";
 /// How many finishes in a row a run answers with "nothing was done and nothing
 /// was said" before it ends with the clean failure row. A finish that carries
 /// neither a completed step nor words for the person is not an answer, whatever
@@ -457,6 +467,10 @@ pub(super) struct LoopState {
     /// bounded, so a model that keeps calling the same way ends the task
     /// rather than looping.
     malformed_turns: usize,
+    /// Turns asked again after an answer that could not be used (one that
+    /// arrived unreadable, or that the provider failed while writing):
+    /// bounded, so a provider that keeps failing ends the task.
+    unusable_turns: usize,
     /// Continuations asked so far of answers the model cut off at its output
     /// limit, in a row: a turn cut off is continued from where it stopped,
     /// a bounded number of times, before the run fails with the clean
@@ -667,6 +681,7 @@ impl LoopState {
             pictures: Vec::new(),
             programs: program_steps::ProgramWorld::default(),
             malformed_turns: 0,
+            unusable_turns: 0,
             continuations: 0,
             counted: None,
             reply: None,
@@ -1487,6 +1502,12 @@ impl Session {
             if !validated && let Some(active) = &mut self.turn {
                 active.ready.clear();
                 active.refused = None;
+                // A call id the provider reused from an earlier turn is the
+                // new call's own from here on: the answer is read, not
+                // thrown away for its provider's numbering.
+                if let Some(Ok(body)) = &mut active.finished {
+                    *body = conversation.with_own_call_ids(body);
+                }
                 if let Some(Ok(body)) = &active.finished {
                     if is_output_limit(body) {
                         // A cut-off turn runs no call of its own: the loop
@@ -1519,11 +1540,10 @@ impl Session {
                         // missing operation"): those are the record kept beside
                         // it, for whoever debugs the run.
                         Err(error) => {
-                            let failure = Failure::spoken(
-                                &crate::i18n::t("agent-failure-invalid-response"),
-                                &error,
-                            )
-                            .retained(&active.presentation.text, &active.presentation.reasoning);
+                            let failure = Failure::unusable(&error).retained(
+                                &active.presentation.text,
+                                &active.presentation.reasoning,
+                            );
                             active.refused = Some((body.clone(), failure.clone()));
                             active.finished = Some(Err(failure));
                         }
@@ -1608,8 +1628,10 @@ impl Session {
                 // Answer its calls with what was wrong as tool error results
                 // and take another turn, bounded, so one that keeps calling
                 // the same way ends the task instead of looping.
-                if let Some((raw, _)) = &refused_turn
-                    && let Some(refused) = malformed_turn(conversation, raw)
+                let malformed = refused_turn
+                    .as_ref()
+                    .and_then(|(raw, _)| Some((raw, malformed_turn(conversation, raw)?)));
+                if let Some((raw, refused)) = &malformed
                     && state.malformed_turns < MOST_MALFORMED_TURNS
                 {
                     state.malformed_turns += 1;
@@ -1620,12 +1642,40 @@ impl Session {
                         "the model's calls were refused; answering them with what was wrong"
                     );
                     conversation
-                        .refuse(raw, &refused)
+                        .refuse(raw, refused)
                         .map_err(anyhow::Error::msg)?;
                     // Nothing of this turn ran; the run takes another turn,
                     // as after any turn that dispatched no finish.
                     return Ok(None);
                 }
+                // An answer that arrived and could not be read, or one the
+                // provider failed while writing (a stream that ended in an
+                // error, a model that spent its whole output on nothing), ran
+                // none of its calls: a batch runs only once the whole answer
+                // is in and read. The model is asked again from the history
+                // the run committed, told why its last answer was not used,
+                // a bounded number of times, before the run ends on it. Calls
+                // refused for their shape were answered with what was wrong
+                // already (above): a model that keeps making them has had its
+                // turns, and is not asked once more.
+                if malformed.is_none()
+                    && error.asks_again()
+                    && state.unusable_turns < MOST_UNUSABLE_TURNS
+                {
+                    state.unusable_turns += 1;
+                    tracing::info!(
+                        turn,
+                        %error,
+                        again = state.unusable_turns,
+                        "the model's answer could not be used; asking again"
+                    );
+                    conversation.push_user(&format!(
+                        "{UNUSABLE_ANSWER} ({}). {ANSWER_AGAIN}",
+                        head(error.detail().lines().next().unwrap_or_default(), 300)
+                    ));
+                    return Ok(None);
+                }
+                tracing::info!(turn, %error, "the model's turn failed; ending the run");
                 // `error` is the failure's record: its sentence is what a
                 // person reads, and what the turn kept goes beside it.
                 return Ok(Some(LoopEnd::Failed(error)));

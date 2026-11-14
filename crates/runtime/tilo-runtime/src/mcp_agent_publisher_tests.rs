@@ -37,6 +37,7 @@ fn row(provider: &str, app: &str, resource: &str, action: &str) -> CatalogueRow 
             presentation: None,
         },
         action: Some(tilo_actions::ActionDescriptor {
+            did: None,
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(resource, action),
             resource_kind: resource.into(),

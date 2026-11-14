@@ -420,6 +420,7 @@ fn row(
             presentation: None,
         },
         action: (!action.is_empty()).then(|| tilo_actions::ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(resource, action),

@@ -436,7 +436,7 @@ async fn press_replied(
 #[tokio::test(flavor = "current_thread")]
 async fn a_runs_step_edited_on_the_sheet_runs_exactly_as_the_person_changed_it() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let f = Fixture::new();
             f.approve();
             let agent = f.channel(100, true);
@@ -517,7 +517,7 @@ async fn a_runs_step_edited_on_the_sheet_runs_exactly_as_the_person_changed_it()
                 "exactly what the person made"
             );
             drop(f);
-        })
+        }))
         .await;
 }
 

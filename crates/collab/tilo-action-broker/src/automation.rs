@@ -168,6 +168,7 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         _ => return None,
     };
     Some(ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(LIBRARY_RESOURCE, action),
@@ -200,6 +201,7 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
 #[must_use]
 pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
     ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: shortcut.action_address(),

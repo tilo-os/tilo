@@ -395,6 +395,7 @@ fn descriptor(
     tags: Vec<String>,
 ) -> ExportedAction {
     ExportedAction {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: DOC.into(),
@@ -1701,6 +1702,8 @@ mod spending;
 mod text_answers;
 #[path = "agent_loop/tests/turn_records.rs"]
 mod turn_records;
+#[path = "agent_loop/tests/unusable_answers.rs"]
+mod unusable_answers;
 #[path = "agent_loop/tests/web.rs"]
 mod web;
 #[path = "agent_loop/tests/web_pages.rs"]

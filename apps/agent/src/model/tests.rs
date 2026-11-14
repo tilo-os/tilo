@@ -177,6 +177,7 @@ fn live_tool_transcript_selects_an_arbitrary_typed_app_action() {
         broker_peer_id: None,
         broker_provider: None,
         descriptor: ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new("calculator.range:main", "sample"),

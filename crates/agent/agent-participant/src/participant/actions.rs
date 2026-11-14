@@ -58,6 +58,7 @@ pub(crate) fn open_row(workspace: &str, app: &str, label: &str) -> CatalogueRow 
         target.provider,
         app,
         tilo_actions::door::ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: target.address,

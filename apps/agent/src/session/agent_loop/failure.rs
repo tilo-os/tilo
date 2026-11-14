@@ -42,6 +42,12 @@ pub(crate) struct Failure {
     /// reasoning, as the turn left them: kept in the run's working record for
     /// debugging, never shown to people in the conversation.
     detail: String,
+    /// Whether the model, asked again, may answer: the turn ran none of its
+    /// calls (a batch runs only once the whole answer arrived and was read),
+    /// and what stopped it was its answer — one that could not be read, or a
+    /// provider that failed while writing it — not the person's setup (a
+    /// credential, credit, the context) or their Stop.
+    again: bool,
 }
 
 impl Failure {
@@ -52,6 +58,7 @@ impl Failure {
         Self {
             detail: message.clone(),
             message,
+            again: false,
         }
     }
 
@@ -62,6 +69,8 @@ impl Failure {
         Self {
             message: crate::i18n::t(person_key(error.kind)),
             detail: format!("{error} {}", error.recovery().guidance()),
+            again: error.kind == ErrorKind::InvalidResponse
+                || error.recovery() == agent_provider_config::protocol::Recovery::RetryInference,
         }
     }
 
@@ -72,6 +81,18 @@ impl Failure {
         Self {
             message: said.to_owned(),
             detail: reason.to_owned(),
+            again: false,
+        }
+    }
+
+    /// A model answer that arrived and could not be used, with the reason it
+    /// could not: the person's sentence is the catalogue's, and the model may
+    /// be asked again with the reason before the run ends on it.
+    pub(crate) fn unusable(reason: &str) -> Self {
+        Self {
+            message: crate::i18n::t(FAILURE_INVALID_RESPONSE),
+            detail: reason.to_owned(),
+            again: true,
         }
     }
 
@@ -81,6 +102,7 @@ impl Failure {
         Self {
             message: crate::i18n::t(FAILURE_TRANSPORT),
             detail: error.into(),
+            again: false,
         }
     }
 
@@ -94,6 +116,13 @@ impl Failure {
     #[must_use]
     pub(crate) fn detail(&self) -> &str {
         &self.detail
+    }
+
+    /// Whether the model may be asked again after this failure: its turn ran nothing
+    /// and what stopped it was the answer, not the person's setup or their Stop.
+    #[must_use]
+    pub(crate) const fn asks_again(&self) -> bool {
+        self.again
     }
 
     /// The record, with what the turn streamed before it ended, kept under
@@ -113,6 +142,7 @@ impl Failure {
         Self {
             message: self.message.clone(),
             detail,
+            again: self.again,
         }
     }
 }

@@ -388,6 +388,7 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
     ACTIONS
         .iter()
         .map(|(action, label, description)| ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(RESOURCE_ID, *action),

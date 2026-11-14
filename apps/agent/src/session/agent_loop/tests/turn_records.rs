@@ -97,7 +97,7 @@ fn a_run_records_its_turn_in_the_conversation() {
         );
         assert!(
             work.get("did")
-                .is_none_or(|did| did == "Appended paragraph"),
+                .is_none_or(|did| did == "Append paragraph: Brief"),
             "{work}"
         );
     }
@@ -107,8 +107,8 @@ fn a_run_records_its_turn_in_the_conversation() {
     let steps = last["work"]["trace"].as_array().unwrap();
     assert_eq!(steps.len(), 1, "one step: {steps:?}");
     assert_eq!(
-        steps[0]["label"], "Appended paragraph",
-        "what it did, said as done"
+        steps[0]["label"], "Append paragraph: Brief",
+        "what it did, in its app's words: the action declares no past tense, so its label"
     );
     assert_eq!(steps[0]["resource"], "word-processor.document");
     assert_eq!(steps[0]["outcome"], "applied");

@@ -453,6 +453,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             // Its edits are admitted as the agent: what the grants allow,
             // and not what one denies.
             let action = |action: &str| PublishedAction {
+                did: None,
                 semantic_identity: None,
                 resource: "document-1:body".into(),
                 action: action.into(),

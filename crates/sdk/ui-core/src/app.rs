@@ -1637,6 +1637,7 @@ impl App {
         action: &tilo_actions::ActionSpec,
     ) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
+            did: action.did.clone(),
             state: action.state.clone(),
             semantic_identity: resource.semantic_identity.clone(),
             address: tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id),

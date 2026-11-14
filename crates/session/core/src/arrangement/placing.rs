@@ -42,6 +42,7 @@ fn show_action() -> ActionSpec {
             view: args.text("view").unwrap_or_default().to_owned(),
         },
     )
+    .with_did("showed in its place")
 }
 
 /// `retry-query`: ask the app the query a place shows again for what the person typed.
@@ -149,6 +150,7 @@ fn place_action() -> ActionSpec {
             }
         },
     )
+        .with_did("showed on the canvas")
 }
 
 /// `place-found`: what a text finds, put on the canvas at the caret, or into a strip as a tab.
@@ -218,6 +220,7 @@ fn place_found_action() -> ActionSpec {
             seen_height: args.integer("seen_height").unwrap_or_default(),
         },
     )
+    .with_did("put on the canvas")
 }
 
 /// Open a resource with its own view, beside what the ask is in.
@@ -240,4 +243,5 @@ fn open_action() -> ActionSpec {
             beside: text(args, "beside"),
         },
     )
+        .with_did("opened")
 }

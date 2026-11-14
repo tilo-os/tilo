@@ -49,6 +49,7 @@ agent-step-exploring = Sieht nach, was { $what } kann…
 agent-step-program = Nachgeschlagen
 agent-step-looked-up = { $what } nachgeschlagen
 agent-step-on = { $action }: { $subject }
+agent-step-edited = { $what } bearbeitet
 agent-step-searched = Im Web nach „{ $what }“ gesucht
 agent-step-read = { $what } gelesen
 

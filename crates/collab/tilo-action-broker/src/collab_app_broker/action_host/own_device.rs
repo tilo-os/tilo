@@ -134,6 +134,7 @@ impl AppBrokerState {
 /// receiving device resolves and authorizes independently.
 fn forwarding_descriptor() -> tilo_actions::ActionDescriptor {
     tilo_actions::ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: own_device::target().address,

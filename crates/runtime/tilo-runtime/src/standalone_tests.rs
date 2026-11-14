@@ -77,6 +77,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         app_id: "so.tilo.files".into(),
         route: CrdtRoute::app("so.tilo.files", workspace_id.clone()),
         actions: vec![PublishedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "files.entry:/tmp/synthetic-report".into(),

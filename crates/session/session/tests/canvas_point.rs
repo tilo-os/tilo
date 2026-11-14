@@ -1844,3 +1844,81 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
         );
     }
 }
+
+/// The canvas's camera, driven the way `tilo-control` drives it over the test-control socket:
+/// a middle drag pans it, the arrow keys then pan it from the keyboard that press gave it, and a
+/// wheel with Ctrl held zooms it about the pointer. A place on it moves and grows with the lens.
+#[test]
+fn the_test_control_socket_pans_and_zooms_the_canvas() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let (inbox, before) = inbox_in(
+        &mut session,
+        (x + w * 0.3, y + h * 0.3),
+        (x + w * 0.55, y + h * 0.6),
+    );
+    let at = |session: &mut Session, why: &str, moved: &dyn Fn((f64, f64, f64, f64)) -> bool| {
+        wait_for(session, why, |session| {
+            place_on_screen(session, &inbox).filter(|now| moved(*now))
+        })
+    };
+    let ask = |session: &mut Session, request: serde_json::Value| {
+        crate::common::control(session, &socket, &request)
+    };
+    let free = (x + w * 0.85, y + h * 0.2);
+
+    // A middle drag across free ground pans the canvas by the drag.
+    let dragged = ask(
+        &mut session,
+        serde_json::json!({
+            "op": "drag", "button": "middle",
+            "x_from": free.0, "y_from": free.1,
+            "x_to": free.0 - 100.0, "y_to": free.1 - 60.0, "steps": 6,
+        }),
+    );
+    assert_eq!(dragged, serde_json::json!({"ok": {}}), "the drag is taken");
+    let panned = at(&mut session, "the inbox panned with the drag", &|now| {
+        near(now.0, before.0 - 100.0) && near(now.1, before.1 - 60.0)
+    });
+
+    // The middle press gave the canvas the keyboard: an arrow key pans it a line.
+    let pressed = ask(
+        &mut session,
+        serde_json::json!({"op": "key", "key": "ArrowRight"}),
+    );
+    assert_eq!(pressed, serde_json::json!({"ok": {}}), "the key is taken");
+    let keyed = at(&mut session, "the inbox panned by the arrow key", &|now| {
+        (now.0 - panned.0).abs() > 1.0 && near(now.1, panned.1)
+    });
+
+    // A wheel turned up with Ctrl held, over free ground, zooms in about the pointer: the place
+    // grows on screen.
+    let zoomed = ask(
+        &mut session,
+        serde_json::json!({
+            "op": "scroll", "unit": "notch", "x": free.0, "y": free.1, "dy": 2.0, "ctrl": true,
+        }),
+    );
+    assert_eq!(zoomed, serde_json::json!({"ok": {}}), "the wheel is taken");
+    at(&mut session, "the inbox grown by the zoom", &|now| {
+        now.2 > keyed.2 + 4.0 && now.3 > keyed.3 + 4.0
+    });
+
+    // The wheel's Ctrl was let go with it: a wheel without it pans rather than zooms.
+    let grown = place_on_screen(&session, &inbox).expect("the inbox on screen");
+    let scrolled = ask(
+        &mut session,
+        serde_json::json!({
+            "op": "scroll", "unit": "notch", "x": free.0, "y": free.1, "dy": -1.0,
+        }),
+    );
+    assert_eq!(scrolled, serde_json::json!({"ok": {}}));
+    at(
+        &mut session,
+        "the inbox panned by the plain wheel",
+        &|now| near(now.2, grown.2) && (now.1 - grown.1).abs() > 1.0,
+    );
+}

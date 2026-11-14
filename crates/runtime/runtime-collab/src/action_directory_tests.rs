@@ -24,6 +24,7 @@ fn contract() -> ActionContract {
 fn action_row() -> ActionDirectoryRow {
     let contract = contract();
     let descriptor = ExportedAction {
+        did: None,
         state: tilo_actions::ActionState::default(),
         resource: "files.folder:inbox".into(),
         semantic_identity: Some(ResourceSemanticIdentity {

@@ -396,6 +396,7 @@ mod tests {
     /// `messages` messages, the first `edited` of them relabelled.
     fn window(peer: u64, messages: usize, edited: usize) -> BrokerActionSurface {
         let action = |index: usize, verb: &str| ExportedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             resource: format!("chat.message:{index:08}"),
             semantic_identity: None,

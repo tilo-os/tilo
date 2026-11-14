@@ -191,7 +191,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
             .find(|place| place.record == notes_id)
     });
     // The place answers what it showed by the title it stands by, so the agent's step line names
-    // it in the person's words ("Showed Notes on the canvas").
+    // it beside what the place declares it did ("Showed on the canvas: Notes").
     let ui::host_operation::ResourceOperationStart::Completed(output) = answered else {
         panic!("a place completes at once: {answered:?}");
     };

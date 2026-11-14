@@ -1141,6 +1141,7 @@ mod identity_admin_tests {
             identity_admin::STEPS
                 .into_iter()
                 .map(|step| tilo_actions::ActionDescriptor {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     address: tilo_actions::ActionAddress::new(identity_admin::RESOURCE, step),
@@ -1868,6 +1869,7 @@ mod settings_records_tests {
         fn descriptor(&self, privileged: bool) -> tilo_actions::ActionDescriptor {
             let now = self.minutes.lock().unwrap().to_string();
             tilo_actions::ActionDescriptor {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: tilo_actions::ActionAddress::new(RESOURCE, "field-edit"),

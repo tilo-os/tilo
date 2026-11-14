@@ -20,6 +20,7 @@ fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
 
 fn descriptor() -> ActionDescriptor {
     ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new("host-test", "read"),

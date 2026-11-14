@@ -227,6 +227,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             rig.worker
                 .handle
                 .publish_actions(&[runtime_collab::ExportedAction {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     resource: "settings.display".into(),
                     semantic_identity: None,
@@ -388,6 +389,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
             rig.worker
                 .handle
                 .publish_actions(&[runtime_collab::ExportedAction {
+                    did: None,
                     resource: "settings.display".into(),
                     semantic_identity: None,
                     action: "identify-displays".into(),

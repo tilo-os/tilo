@@ -45,8 +45,9 @@ agent-step-reading = Reading { $what }…
 agent-step-editing = Editing { $what }…
 agent-step-exploring = Looking at what { $what } can do…
 agent-step-program = Looked things up
-agent-step-looked-up = Looked up your { $what }
+agent-step-looked-up = Looked up { $what }
 agent-step-on = { $action }: { $subject }
+agent-step-edited = Edited { $what }
 agent-step-searched = Searched the web for “{ $what }”
 agent-step-read = Read { $what }
 

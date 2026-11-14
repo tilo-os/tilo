@@ -188,8 +188,9 @@ impl Session {
     }
 
     /// Add one dispatched operation to the reply's step list: where it acted,
-    /// what it did in the person's words (its label said as done, with the
-    /// title of what it acted on: "Showed All inboxes"), and what came of it.
+    /// what it did in its app's words (what the action declares it did, or
+    /// its label, with the title of what it acted on: "Showed on the canvas: All inboxes"),
+    /// and what came of it.
     pub(super) fn record_action(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -202,7 +203,7 @@ impl Session {
             Err(TaskActionStop::Cancelled(why)) => ("refused", why.as_deref()),
         };
         let subject = self.subject_of(action, settled.ok());
-        let said = crate::i18n::did(&action.label, &subject);
+        let said = crate::i18n::did(&action.label, action.did.as_deref(), &subject);
         self.push_step(run, &action.resource_kind, &said, outcome, why)
     }
 
@@ -238,6 +239,20 @@ impl Session {
             .unwrap_or_else(|| action.resource_label.trim().to_owned())
     }
 
+    /// The title `app` publishes itself under, as its application offer names it: `None` when
+    /// the catalogue offers no such application, never a title made of its id.
+    fn app_title(&mut self, app: &str) -> Option<String> {
+        self.task_catalogue()
+            .offers
+            .iter()
+            .find(|offer| {
+                offer.app == app
+                    && offer.descriptor.resource_kind == crate::surface::APPLICATION_KIND
+            })
+            .map(|offer| offer.descriptor.resource_label.trim().to_owned())
+            .filter(|title| !title.is_empty())
+    }
+
     /// Add one `tilo` program the run ran to the reply's step list.
     pub(super) fn record_program(
         &mut self,
@@ -245,16 +260,18 @@ impl Session {
         step: &ui::tilo_reference::ProgramStep,
     ) -> Result<()> {
         use ui::tilo_reference::StepOutcome;
-        // What it did, in the person's words: the first change it made, said as done with the
-        // title of what it changed; else what it proposes; else that it looked up what its answer
-        // names ("Looked up your tasks").
+        // What it did, in its app's words: the first change it made, by the action's label with
+        // the title of what it changed; else what it proposes; else that it looked up the app its
+        // answer names, by that app's own title ("Looked up Tasks").
         let label = step
             .changes
             .first()
-            .map(|row| crate::i18n::did(&row.action, &row.resource.reference.label))
+            .map(|row| crate::i18n::did(&row.action, None, &row.resource.reference.label))
             .or_else(|| step.previews.first().map(|row| row.action.clone()))
             .unwrap_or_else(|| {
-                crate::i18n::looked_up(step.refs.first().map(|at| at.reference.kind.as_str()))
+                let app = step.refs.first().map(|at| at.app.clone());
+                let title = app.and_then(|app| self.app_title(&app));
+                crate::i18n::looked_up(title.as_deref())
             });
         let resource = step
             .changes

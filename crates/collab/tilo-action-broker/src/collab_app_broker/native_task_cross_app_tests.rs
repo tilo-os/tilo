@@ -33,6 +33,7 @@ impl<R: Resource> Worker<R> {
         let handle = Rc::new(f.app_handle(peer, app, false));
         let channel = wire_channel_rc(Rc::clone(&handle));
         let published = runtime_collab::ExportedAction {
+            did: None,
             semantic_identity: None,
             resource: tree.id.0.clone(),
             action: spec.id.clone(),

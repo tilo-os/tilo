@@ -203,7 +203,7 @@ pub(super) fn prose(key: &str, markdown: &str) -> Node {
 }
 
 /// What the agent is doing now, in one line beside its spinner: the step it took last, as the
-/// agent said it ("Looked up your tasks"); what the run said is under way when it took no step
+/// agent said it ("Looked up Tasks"); what the run said is under way when it took no step
 /// yet; else that it is thinking.
 pub(super) fn live_line(work: &super::Work) -> String {
     if let Some(step) = work

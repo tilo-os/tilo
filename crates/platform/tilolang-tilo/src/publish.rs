@@ -317,6 +317,11 @@ fn decorated(action: &ActionMeta, words: &dyn Words, spec: ActionSpec) -> Arc<Ac
     if let Some(icon) = &action.icon {
         spec = spec.with_icon(icon.clone());
     }
+    // `did: "added a subtask"`: what it did, said after who did it, in the reader's language, as
+    // history says it; a record of an agent's steps reads the same words.
+    if let Some(did) = &action.did {
+        spec = spec.with_did(said_of(words, &action.id, "did", None, did));
+    }
     if is_destructive(action) {
         spec = spec.destructive();
     }

@@ -717,6 +717,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
                     presentation: None,
                 },
                 action: Some(tilo_actions::ActionDescriptor {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     address: tilo_actions::ActionAddress::new("page:1", "open"),

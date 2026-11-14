@@ -176,6 +176,7 @@ fn write_surface(workspace: &str) -> PublishedSurface {
         app_id: "so.tilo.test".into(),
         route: CrdtRoute::record("so.tilo.test", workspace, "record-a"),
         actions: vec![PublishedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "test:block-a".into(),
@@ -324,6 +325,7 @@ impl WideDirectory {
         let contract = tilo_actions::ActionContract::view();
         let resource = format!("workspace:atlas-{index}");
         let descriptor = runtime_collab::ExportedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: resource.clone(),

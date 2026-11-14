@@ -462,6 +462,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
         app_id: "so.tilo.files".into(),
         route: CrdtRoute::app("so.tilo.files", workspace_id.clone()),
         actions: vec![PublishedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "files.entry:/tmp/synthetic-report".into(),

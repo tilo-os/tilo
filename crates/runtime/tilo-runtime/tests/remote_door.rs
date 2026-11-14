@@ -139,6 +139,7 @@ fn notebook(action: Option<&str>) -> CatalogueRow {
             presentation: None,
         },
         action: action.map(|action| tilo_actions::ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new("notes.notebook", action),

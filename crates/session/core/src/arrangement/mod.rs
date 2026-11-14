@@ -2304,7 +2304,8 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
                 place: count_of(&pinned),
                 pinned: args.boolean("pinned").unwrap_or(true),
             },
-        ),
+        )
+        .with_did("pinned"),
         action(
             "position",
             "Stand a place at a point on the canvas, as a drag that let it go there",
@@ -2324,7 +2325,8 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
                 x: args.integer("x").unwrap_or_default(),
                 y: args.integer("y").unwrap_or_default(),
             },
-        ),
+        )
+        .with_did("moved on the canvas"),
         action(
             "size",
             "Give a place a size on the canvas, as dragging its edge does",
@@ -2337,12 +2339,14 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
                 width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
                 height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
             },
-        ),
+        )
+        .with_did("sized"),
         action("close", "Close a place", Vec::new(), move |_| {
             ArrangementAction::Close {
                 place: count_of(&closed),
             }
-        }),
+        })
+        .with_did("closed"),
         action(
             "activate",
             "Bring a place in front of its strip",
@@ -2350,7 +2354,8 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
             move |_| ArrangementAction::Activate {
                 place: count_of(&in_front),
             },
-        ),
+        )
+        .with_did("brought to the front"),
         action(
             "move",
             "Move a place into a row, or into a strip as a tab of it",
@@ -2376,7 +2381,8 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
                 before: named(args, "before", Item::Place),
                 strip: named(args, "strip", Item::Strip),
             },
-        ),
+        )
+        .with_did("moved"),
     ]
     .into_iter()
     .chain(float_actions(key))

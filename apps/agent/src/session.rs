@@ -40,6 +40,9 @@ struct TaskAction {
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
     label: String,
+    /// What the action did, as its app declares it ("showed on the canvas"):
+    /// how the reply's step line says it, beside its label.
+    did: Option<String>,
     /// The parameter whose content comes from the immediately preceding
     /// action result, never from model-authored JSON.
     carries: Option<String>,
@@ -151,6 +154,7 @@ fn task_action_from_offer(
         action: offer.descriptor.address.action.clone(),
         arguments,
         label: offer.descriptor.action_label.clone(),
+        did: offer.descriptor.did.clone(),
         carries: offer.content_param(),
     })
 }

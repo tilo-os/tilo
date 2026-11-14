@@ -4767,6 +4767,7 @@ impl AppBrokerState {
                 record_id: String::new(),
                 live: true,
                 actions: vec![PublishedAction {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     resource: format!("app.{package_id}"),
                     semantic_identity: None,
@@ -11585,6 +11586,7 @@ pub mod tests {
         fn row(&self) -> runtime_collab::ActionDirectoryRow {
             let contract = self.contract();
             let descriptor = runtime_collab::ExportedAction {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: "workspace:atlas".into(),
@@ -14074,6 +14076,7 @@ pub mod tests {
             app_id: "so.tilo.files".into(),
             route: CrdtRoute::record("so.tilo.files", cluster, format!("record-{peer_id}")),
             actions: vec![PublishedAction {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: resource.into(),
@@ -14501,6 +14504,7 @@ pub mod tests {
                 route,
                 actions: vec![
                     PublishedAction {
+                        did: None,
                         state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
@@ -14518,6 +14522,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        did: None,
                         state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
@@ -14539,6 +14544,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        did: None,
                         state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
@@ -14758,6 +14764,7 @@ pub mod tests {
                     .clone(),
             ),
             actions: vec![PublishedAction {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: "files.app".into(),

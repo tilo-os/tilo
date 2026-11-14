@@ -159,7 +159,7 @@ fn a_working_turn_says_what_it_is_doing_now() {
         author: "agent:assistant".to_owned(),
         work: Some(Work {
             state: "doing".to_owned(),
-            steps: vec!["Opened Tasks".to_owned(), "Looked up your tasks".to_owned()],
+            steps: vec!["Opened Tasks".to_owned(), "Looked up Tasks".to_owned()],
             ..Work::default()
         }),
         ..Message::default()
@@ -169,7 +169,7 @@ fn a_working_turn_says_what_it_is_doing_now() {
     passes(&tree);
     let said = texts(&tree);
     assert!(
-        said.iter().any(|text| text == "Looked up your tasks"),
+        said.iter().any(|text| text == "Looked up Tasks"),
         "the live line is the step it took last, as the agent said it: {said:?}"
     );
     assert!(

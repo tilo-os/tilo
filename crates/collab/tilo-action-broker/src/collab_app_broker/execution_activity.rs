@@ -607,6 +607,7 @@ mod anchor_tests {
         params: Vec<ActionParam>,
     ) -> (PublishedAction, tilo_actions::ActionResource) {
         let published = PublishedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: resource.into(),

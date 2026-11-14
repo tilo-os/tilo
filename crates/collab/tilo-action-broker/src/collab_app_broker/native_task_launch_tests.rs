@@ -425,6 +425,7 @@ fn retain_writer(f: &Fixture) -> String {
         route: CrdtRoute::record(WRITER, workspace_id().to_string(), "main"),
         live: true,
         actions: vec![PublishedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: descriptor.semantic_identity,
             resource: descriptor.address.resource,

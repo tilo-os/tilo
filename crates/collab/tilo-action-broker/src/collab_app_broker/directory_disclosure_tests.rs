@@ -229,6 +229,7 @@ fn rows() -> Vec<runtime_collab::ActionDirectoryRow> {
                 .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
         }
         let descriptor = runtime_collab::ExportedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: id.into(),

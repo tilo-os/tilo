@@ -36,6 +36,7 @@ fn row(
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(resource, action),

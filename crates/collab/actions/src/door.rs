@@ -201,6 +201,10 @@ pub struct ActionDescriptor {
     /// label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// What the action did, said after who did it ([`ActionSpec::did`]):
+    /// the past-tense form its app declares, when it declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
     /// The action's own picture ([`ActionSpec::icon`]), by its Lucide name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
@@ -477,6 +481,7 @@ fn describe(resource: &ResourceSpec, action: &ActionSpec) -> ActionDescriptor {
         resource_label: resource.label.clone(),
         action_label: action.label.clone(),
         keywords: action.keywords.clone(),
+        did: action.did.clone(),
         icon: action.icon.clone(),
         description: action.description.clone(),
         state: action.state.clone(),

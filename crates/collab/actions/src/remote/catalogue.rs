@@ -487,6 +487,7 @@ mod tests {
                 presentation: None,
             },
             action: action.map(|action| ActionDescriptor {
+                did: None,
                 state: crate::ActionState::default(),
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),
