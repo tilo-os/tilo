@@ -174,8 +174,9 @@ mod tests {
     }
 
     /// The person's other devices are dialled as this session's siblings from the devices their
-    /// store holds, and this device is not dialled at all: that session is where the two desks tell
-    /// each other the workspaces they hold, so one adopts what the other keeps.
+    /// store holds, at the relay the person's settings name, and this device is not dialled at all:
+    /// that session is where the two desks tell each other the workspaces they hold, so one adopts
+    /// what the other keeps.
     #[test]
     fn the_persons_other_devices_are_dialled_as_siblings() {
         let root = SigningKey::from_bytes(&[7; 32]);
@@ -194,6 +195,7 @@ mod tests {
         let dials = SiblingDials::new(
             here.device_public_key,
             crate::sync::HostOutbox::of(outgoing),
+            Some(relay_url()),
         );
         for device in held_devices(&sync) {
             dials.dial(device);
@@ -204,10 +206,16 @@ mod tests {
             match command {
                 crate::sync::HostCmd::Plane(Cmd::ConnectDevice(addr)) => {
                     dialled.push(*addr.id.as_bytes());
+                    assert_eq!(addr.relay_urls().collect::<Vec<_>>(), vec![&relay_url()]);
                 }
                 other => panic!("a sibling dial sent something else: {other:?}"),
             }
         }
         assert_eq!(dialled, vec![elsewhere.device_public_key]);
+    }
+
+    /// The person's own relay, as their setting names it.
+    fn relay_url() -> iroh::RelayUrl {
+        "https://relay.example".parse().expect("a relay URL")
     }
 }

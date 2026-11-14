@@ -290,13 +290,22 @@ pub(crate) struct SiblingDials {
     /// This device's endpoint id: its own session is never dialled.
     ours: [u8; 32],
     outgoing: HostOutbox,
+    /// The relay this device's settings name, when they name one: the
+    /// person's devices are configured with the same relay, so a sibling is
+    /// reached through it while its key resolves nowhere else.
+    relay: Option<iroh::RelayUrl>,
 }
 
 #[cfg(target_os = "linux")]
 impl SiblingDials {
-    /// Dial from `ours`, the endpoint this device's sessions run on.
-    pub(crate) fn new(ours: [u8; 32], outgoing: HostOutbox) -> Self {
-        Self { ours, outgoing }
+    /// Dial from `ours`, the endpoint this device's sessions run on, through
+    /// `relay` when the person's settings name one.
+    pub(crate) fn new(ours: [u8; 32], outgoing: HostOutbox, relay: Option<iroh::RelayUrl>) -> Self {
+        Self {
+            ours,
+            outgoing,
+            relay,
+        }
     }
 
     /// Dial `device` as a sibling, unless it is this device. The plane dials again whatever has no
@@ -309,9 +318,11 @@ impl SiblingDials {
             tracing::warn!(device = %hex::encode(device), "a device of the person has no endpoint id");
             return;
         };
-        let _ = self
-            .outgoing
-            .send(Cmd::ConnectDevice(EndpointAddr::new(id)));
+        let mut addr = EndpointAddr::new(id);
+        if let Some(relay) = &self.relay {
+            addr = addr.with_relay_url(relay.clone());
+        }
+        let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
     }
 }
 
@@ -1756,11 +1767,26 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn sibling_dials(&self) -> Option<SiblingDials> {
+        // One relay is the person's own, and their devices name the same one: a sibling is
+        // reached through it. Number 0's relays are many, and the directory names which one a
+        // device is at, so nothing is guessed there.
+        let urls = self
+            .hosting
+            .seat
+            .reachability
+            .try_borrow()
+            .map(|reachability| reachability.relay_urls())
+            .unwrap_or_default();
+        let relay = match urls.as_slice() {
+            [relay] => Some(relay.clone()),
+            _ => None,
+        };
         Some(SiblingDials::new(
             *self.inner.endpoint()?.id().as_bytes(),
             HostOutbox {
                 commands: self.hosting.seat.commands.clone(),
             },
+            relay,
         ))
     }
 
