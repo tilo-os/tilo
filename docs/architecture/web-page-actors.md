@@ -532,8 +532,23 @@ down.
   tab's tile the page's objects in the plane's framing, which the tile cannot
   read; that is closed, and two sessions on one relay now carry a page from
   the window to the watching tab in a test. The step reads the page's text
-  off the watching desk rather than take the sessions' word for it, and has
-  not been run on machines since. Each session says how far its live plane
+  off the watching desk rather than take the sessions' word for it. When it
+  ran with that, the page still did not come: the watching desk asked for
+  it, the sharing session read that it was asked for, and the Browser was
+  never asked. The session wrote its ask for a whole frame to the connection
+  that names the window's tab, and the connection of an app's first window,
+  which its launcher makes before the app starts, names none; the tests
+  handed the session a page with no app on a connection. The ask now goes to
+  the connection the app offered its page on, and a test has an app on such
+  a connection be asked there and answer there. That a real page then hands
+  its whole frame over is held on the engine's side: a suite runs the page
+  as the Browser runs it, plays the session's ask and reads the frame out of
+  the share's outbox (`apps/browser/chromium/tests/page_share.py`). An app
+  that is asked and hands nothing over within ten seconds is asked again,
+  and both devices say which side waits: the sharing one that the window's
+  app has not handed its page over, the watching one that the device running
+  the window was asked for it and sent none. The step has not been run on
+  machines since. Each session says how far its live plane
   came, what a share waits for, whether a shared window went out and whether
   the watching tile holds it, and, for the device relaying a plane, which
   devices it turned away and why, which is what the step reads when a page
