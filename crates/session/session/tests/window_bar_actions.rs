@@ -350,10 +350,20 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         let label = if before { "Unpin" } else { "Pin" };
 
         show(&mut session, root.path(), preset);
+        // The canvas captions a place by the thing it shows (`canvas.md` §7): the note's title,
+        // where the other desks name its window.
+        let shown = if preset == "Frames" {
+            crate::common::places(&session)
+                .into_iter()
+                .find(|place| place.record == note)
+                .map_or_else(|| name.clone(), |place| place.title)
+        } else {
+            name.clone()
+        };
         until(
             &mut session,
             &format!("the note's window on the {preset} desk"),
-            |session| on_screen(session, &name).is_some(),
+            |session| on_screen(session, &shown).is_some(),
         );
 
         // The window's own actions, in the bar's one list: the menu named for the window in the

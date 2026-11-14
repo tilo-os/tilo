@@ -40,6 +40,9 @@ smithay = { version = "0.7", default-features = false, features = [
 # desktop is Wayland and an X11 one otherwise (X11 comes with smithay's own
 # winit dependency).
 winit.workspace = true
+# The nested window's EGL surface on its Wayland surface, made by the
+# compositor itself so a lost one can be made again on the same window.
+wayland-egl = "0.32"
 # Turns an output's ICC profile into the lookup table its colour pass reads.
 qcms.workspace = true
 tracing.workspace = true
