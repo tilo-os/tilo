@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """An agent on one of the person's Tilo boxes steers another of their boxes over MCP.
 
-    scripts/e2e-remote/run.py --work DIR --out DIR --taps TAP_A,TAP_B,TAP_C [--hold SECONDS]
+    scripts/e2e-remote/run.py --work DIR --out DIR [--hold SECONDS]
 
 What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host):
 
 1. Box A is created from this tree's dev disk and its person made the way a device's first
    login makes one (`tilo-vm slot create --identity device`). A is then branched into box B
-   (`tilo-vm vm branch`), which comes up as a new device of the same person. Box C is
-   another person's. The three share one local network with no DHCP and no route out.
+   (`tilo-vm vm branch`, which boots B once beside A to have it taken in), which comes up as
+   a new device of the same person. Box C is another person's. The three meet only on the
+   network tilo-vm gives the VMs of one host (`tilolan0`, 198.18.0.0/16).
 2. On A, `tilo agent connect claude --device B` registers B's door with Claude Code; the
    scripted client (guest/agent.py, clientInfo `claude-code`) runs exactly the command it
    registered.
@@ -29,6 +30,7 @@ import argparse
 import os
 import base64
 import json
+import re
 import shlex
 import sys
 import threading
@@ -62,8 +64,6 @@ def _host() -> tuple[int, int]:
 
 _TOTAL_MB, _NPROC = _host() if Path("/proc/meminfo").exists() else (0, 0)
 OUTPUT = "1280x800"
-# The boxes' own network, addressed by hand: nothing on it hands out addresses.
-LAN = "10.77.0.{}/24"
 # How long a step that waits on the boxes finding each other may take.
 FIND_S = 180
 # The agent door sheet's choice and button, as the person reads them (en-US).
@@ -91,9 +91,7 @@ class Result:
 class Box:
     letter: str
     vm: TiloVm
-    tap: str
-    mac: str
-    ip: str
+    ip: str = ""
     identity: dict = field(default_factory=dict)
 
     @property
@@ -108,12 +106,10 @@ class Run:
         self.out.mkdir(parents=True, exist_ok=True)
         self.results: list[Result] = []
         self.log = self.out / "tilo-vm.log"
-        taps = args.taps.split(",")
         self.running: set[str] = set()
         self.boxes = {
-            letter: Box(letter, TiloVm(args.tilo_vm, f"e2e-{letter}", SLOT, self.log), tap,
-                        f"52:54:00:e2:e0:0{n}", LAN.format(n))
-            for n, (letter, tap) in enumerate(zip("abc", taps), start=1)
+            letter: Box(letter, TiloVm(args.tilo_vm, f"e2e-{letter}", SLOT, self.log))
+            for letter in "abc"
         }
 
     # -- bookkeeping ---------------------------------------------------------
@@ -179,32 +175,22 @@ class Run:
             raise Failed(f"virsh {' '.join(args)}: {proc.stderr.strip() or proc.stdout.strip()}")
         return proc.stdout
 
-    def plug_lan(self, box: Box) -> None:
-        """Put `box` on the boxes' network: its tap, as a second NIC of the stopped domain."""
-        nic = self.args.work / f"lan-{box.letter}.xml"
-        nic.write_text(f"<interface type='ethernet'><mac address='{box.mac}'/>"
-                       f"<target dev='{box.tap}' managed='no'/><model type='virtio'/></interface>\n")
-        self.virsh("attach-device", box.name, str(nic), "--config")
+    def lan(self, box: Box) -> str:
+        """`box` 's address on the network tilo-vm gives the VMs of one host: its `tilolan0`,
+        198.18.<MAC>/16, set at every boot. The boxes reach each other there and nowhere else."""
+        def read() -> str:
+            return box.vm.root_exec("ip -o -4 addr show dev tilolan0", timeout=60, check=False)
 
-    def address_lan(self, box: Box) -> str:
-        """Give `box` its address on the boxes' network, as a person sets one by hand."""
-        script = f"""
-set -e
-dev=$(ip -o link | awk -v mac={box.mac} 'index($0, mac) {{ sub(":$", "", $2); print $2; exit }}')
-[ -n "$dev" ] || {{ echo "no interface with {box.mac}"; ip -o link; exit 1; }}
-if command -v nmcli >/dev/null 2>&1 && nmcli -t general status >/dev/null 2>&1; then
-  nmcli con delete tilo-e2e >/dev/null 2>&1 || true
-  nmcli con add type ethernet ifname "$dev" con-name tilo-e2e ipv4.method manual \
-    ipv4.addresses {box.ip} ipv6.method link-local >/dev/null
-  nmcli con up tilo-e2e >/dev/null
-else
-  ip link set "$dev" up
-  ip addr replace {box.ip} dev "$dev"
-fi
-echo "$dev"
-ip -o addr show dev "$dev"
-"""
-        return box.vm.root_exec(script, timeout=120)
+        def addressed() -> str | None:
+            said = read()
+            return said if " 198.18." in said else None
+
+        said = wait_until(addressed, 90, interval=3.0) or read()
+        found = re.search(r"inet (198\.18\.\d+\.\d+)/", said)
+        if not found:
+            raise Failed(f"{box.name} has no address on tilolan0: {said.strip()[-400:]!r}")
+        box.ip = found.group(1)
+        return said.strip()[-300:]
 
     def identity(self, box: Box) -> dict:
         out = box.vm.exec("tilo-identity --json status", timeout=60)
@@ -393,7 +379,7 @@ ip -o addr show dev "$dev"
         try:
             self.step("E01", "Box A boots this tree's dev disk and its person is made by onboarding",
                       lambda res: self.make_a(a, res))
-            self.step("E02", "Box A is branched into box B; both come up on one local network",
+            self.step("E02", "Box A is branched into box B, which A takes in; both on tilo-vm's network",
                       lambda res: self.branch(a, b, res), "E01")
             self.step("E03", "B is a new device of A's person: its own key, certified by the same root",
                       lambda res: self.same_person(a, b, res), "E02")
@@ -482,23 +468,21 @@ ip -o addr show dev "$dev"
             print(f"  log: {exc.reason()}", flush=True)
 
     def branch(self, a: Box, b: Box, res: Result) -> None:
-        out = a.vm.vm_cmd("branch", a.name, b.name, "--stop", timeout=900)
+        # The person's flow: `vm branch` boots B once beside A to have it re-keyed and taken into
+        # the workspaces A hosts, then stops both again.
+        started = time.monotonic()
+        out = a.vm.vm_cmd("branch", a.name, b.name, "--stop", timeout=2400)
+        res.facts["branch_seconds"] = round(time.monotonic() - started, 1)
         res.facts["branch"] = out[-2000:]
-        for box in (a, b):
-            self.plug_lan(box)
         for box in (a, b):
             box.vm.vm_cmd("start", box.name, timeout=900)
             self.running.add(box.letter)
         for box in (a, b):
             self.wait_session(box)
-        for box in (a, b):
-            res.facts[f"lan_{box.letter}"] = self.address_lan(box)
-        # The sessions start again on the network the boxes now share, as they would on a box
-        # that came up on it.
-        for box in (a, b):
-            box.vm.run("slot", "restart", SLOT, timeout=300, slot=False)
             self.ready(box, 300)
-        ping = a.vm.root_exec(f"ping -c 3 -W 2 {b.ip.split('/')[0]}", timeout=60, check=False)
+        for box in (a, b):
+            res.facts[f"lan_{box.letter}"] = self.lan(box)
+        ping = a.vm.root_exec(f"ping -c 3 -W 2 {b.ip}", timeout=60, check=False)
         res.facts["ping"] = ping[-600:]
         if "not found" in ping:
             res.facts["ping"] = "the image has no ping; the boxes' agents prove the network"
@@ -617,6 +601,10 @@ ip -o addr show dev "$dev"
             raise Failed(f"B still seats the agent after its Stop: {self.seated(b)}")
 
     def work(self, a: Box, b: Box, res: Result, facts: dict) -> None:
+        # What E07's agent asked after B's Stop is withdrawn once it is gone: no sheet stands on B
+        # before this agent comes, so a sheet afterwards is this agent's.
+        if wait_until(lambda: not self.sheet_targets(b), 60, 1.0) is None:
+            raise Failed("a question about an agent that left still stands on B's desk")
         res.facts["setting"] = self.set_accept(b, True)
         ready, go = f"$HOME/{GUEST_DIR}/work-ready", f"$HOME/{GUEST_DIR}/work-go"
         a.vm.exec(f'rm -f "{ready}" "{go}"')
@@ -654,12 +642,10 @@ ip -o addr show dev "$dev"
         c.vm.vm_cmd("create", c.name, "--image", str(self.args.work / "box-c.qcow2"), "--heads", "1",
                     "--resolution", OUTPUT, "--memory-mb", str(MEMORY_MB), "--cpus", str(CPUS),
                     timeout=900)
-        self.plug_lan(c)
         c.vm.vm_cmd("start", c.name, timeout=900)
         self.running.add("c")
         self.make_person(c, res)
-        res.facts["lan"] = self.address_lan(c)
-        c.vm.run("slot", "restart", SLOT, timeout=300, slot=False)
+        res.facts["lan"] = self.lan(c)
         self.ready(c, 300)
         sc = self.identity(c)
         if (sc.get("identity") or {}).get("id") == (b.identity.get("identity") or {}).get("id"):
@@ -692,7 +678,6 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--commit", default="unknown")
     ap.add_argument("--tilo-vm", default="tilo-vm")
-    ap.add_argument("--taps", required=True, help="the tap devices of boxes a, b and c")
     ap.add_argument("--hold", type=int, default=0, help="keep the boxes up this long after the run")
     return Run(ap.parse_args()).main()
 

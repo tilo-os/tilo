@@ -5,9 +5,9 @@
 #
 # Box A is set up once (its person made by onboarding) and branched into box B with
 # `tilo-vm vm branch`, so the two are two certified devices of one person; box C is another
-# person's. The three share one local network and nothing else: a bridge here, each guest on
-# it through a tap device of its own, with no DHCP, no DNS and no route out, so the boxes find
-# each other the way two devices on a home network without the internet do.
+# person's. The three meet on the network tilo-vm gives the VMs of one host (a second NIC on
+# loopback multicast, `tilolan0`, 198.18.0.0/16), with no DHCP and no DNS on it, so the boxes
+# find each other the way two devices on a home network do.
 #
 #   e2e-remote.sh           what the e2e-remote check runs
 #
@@ -25,8 +25,6 @@ out=$work/out
 gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 run_user=acceptance
-bridge=tiloe2e0
-taps=(tilo-e2e-a tilo-e2e-b tilo-e2e-c)
 phase() { echo "e2e-remote: $1 at ${SECONDS}s"; }
 
 bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt tools/ci/packages/e2e-remote.txt
@@ -67,24 +65,6 @@ install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_u
 printf 'max_core = 0\n' > "/home/$run_user/.config/libvirt/qemu.conf"
 chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"
 
-# The boxes' own network: a bridge with a tap per box that the session user may open, which
-# libvirt hands its guest as an unmanaged ethernet interface. Multicast floods the bridge, so
-# what one box announces on the local network the others hear.
-if [[ ! -c /dev/net/tun ]]; then
-  modprobe tun 2>/dev/null || true
-  [[ -c /dev/net/tun ]] || { mkdir -p /dev/net; mknod -m 0666 /dev/net/tun c 10 200; }
-fi
-chmod 0666 /dev/net/tun
-ip link del "$bridge" 2>/dev/null || true
-ip link add "$bridge" type bridge
-echo 0 > "/sys/class/net/$bridge/bridge/multicast_snooping"
-ip link set "$bridge" up
-for tap in "${taps[@]}"; do
-  ip link del "$tap" 2>/dev/null || true
-  ip tuntap add dev "$tap" mode tap user "$run_user"
-  ip link set "$tap" master "$bridge" up
-done
-
 # tilo-vm keeps its run receipts under the tree's target/dev-runs, which the session user writes.
 mkdir -p target/dev-runs
 chown -R "$run_user:" "$work" "$out" target/dev-runs
@@ -94,8 +74,7 @@ caps=$(as_user virsh --connect qemu:///session capabilities)
 grep -q "<domain type='kvm'" <<<"$caps" || { echo "libvirt's session daemon offers no KVM domain" >&2; exit 1; }
 phase 'host ready'
 
-args=(--work "$work" --out "$out" --commit "$commit" --tilo-vm /usr/local/bin/tilo-vm
-      --taps "$(IFS=,; echo "${taps[*]}")")
+args=(--work "$work" --out "$out" --commit "$commit" --tilo-vm /usr/local/bin/tilo-vm)
 echo "e2e-remote: test filter: ${T_TEST_FILTER:-none}"
 # A working tree holding scripts/e2e-remote/HOLD (never committed) holds the boxes too.
 [[ ${T_TEST_FILTER:-} != *hold* && ! -e scripts/e2e-remote/HOLD ]] || args+=(--hold 3600)
