@@ -479,6 +479,29 @@ fn fleet_store(
     }
 }
 
+/// This device and the person's other personal devices, leaving out a device
+/// the home-peer registry names: a home peer is reached through that registry,
+/// not as one of the person's personal devices.
+fn personal_devices_of(
+    marker: &PersonalEnrollmentMarker,
+    fleet: &DeviceFleet,
+    home_peers: &[HomePeerRegistration],
+    now_ns: u64,
+) -> Vec<[u8; 32]> {
+    let home_peers: Vec<[u8; 32]> = home_peers
+        .iter()
+        .filter_map(|peer| hex::decode(&peer.device_node_id).ok()?.try_into().ok())
+        .collect();
+    let mut devices = vec![marker.device_public_key];
+    devices.extend(
+        fleet
+            .personal_devices(&marker.user_public_key, now_ns)
+            .into_iter()
+            .filter(|device| !home_peers.contains(device)),
+    );
+    devices
+}
+
 /// Record `devices` in this device's personal device list, the authorization
 /// input that decides which devices remote actions may address. Repeatable:
 /// a device already listed is kept once.
@@ -907,10 +930,11 @@ fn commit_staged_personal_enrollment(
     // This device and the approver become each other's personal devices. The
     // approver's certificate comes from the root-signed fleet staged with this
     // enrollment, which the fleet just adopted, and must verify under the
-    // identity this device joins.
+    // identity this device joins. A device the home-peer registry names is a
+    // home peer, reached through that registry, not one of the person's
+    // personal devices.
     checkpoint(PersonalCommitCheckpoint::PersonalPeers)?;
-    let mut personal_devices = vec![marker.device_public_key];
-    personal_devices.extend(fleet.personal_devices(&marker.user_public_key, now_ns()?));
+    let personal_devices = personal_devices_of(marker, &fleet, &staged_peers, now_ns()?);
     let personal_peers = remember_personal_devices(identity_root, &personal_devices)?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
@@ -1149,6 +1173,28 @@ fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
         && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
         && solicitation.relay_service_node_id != [0; 32]
         && tilo_relay::valid_home_peer_label(&solicitation.label)
+}
+
+/// Send `bytes` to `destination`, which this machine's own broadcast address
+/// takes when the kernel refuses the LAN broadcast: a sandboxed network
+/// namespace has no LAN, and the person's own surfaces on this machine listen
+/// on the same port.
+fn send_solicitation(
+    socket: &UdpSocket,
+    bytes: &[u8],
+    destination: &mut SocketAddrV4,
+    port: u16,
+) -> std::io::Result<()> {
+    match socket.send_to(bytes, *destination) {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                && *destination.ip() == Ipv4Addr::BROADCAST =>
+        {
+            *destination = SocketAddrV4::new(Ipv4Addr::new(127, 255, 255, 255), port);
+            socket.send_to(bytes, *destination).map(|_| ())
+        }
+        result => result.map(|_| ()),
+    }
 }
 
 /// Bind a LAN-discovery listener on `port` without making an already-running
@@ -1572,11 +1618,11 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     let deadline = deadline_after(socket_timeout(timeout))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
+    let mut destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
-        socket.send_to(&bytes, destination)?;
+        send_solicitation(&socket, &bytes, &mut destination, port)?;
         match socket.recv_from(&mut reply) {
             Ok((len, sender)) => {
                 let response_bytes = received_packet(&reply, len)?.to_vec();
@@ -1806,12 +1852,12 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let deadline = deadline_after(socket_timeout(timeout))?;
+    let mut destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
-        socket.send_to(&solicitation, destination)?;
+        send_solicitation(&socket, &solicitation, &mut destination, port)?;
         match socket.recv_from(&mut reply) {
             Ok((len, _sender)) => {
                 let Ok(token_text) = decrypt_pair_offer(received_packet(&reply, len)?, &device)
