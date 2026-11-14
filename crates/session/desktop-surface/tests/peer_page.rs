@@ -106,15 +106,19 @@ fn shell(minter: &mut IdMinter) -> (Layout, TabId) {
     (seed_tree(minter, "Office", vec![tab]), id)
 }
 
-/// The frame drawn for `stream` at `(width, height)`, and the frame its publisher holds drawn the
-/// same way: the pixels a viewer sees beside the pixels the publisher would show.
-fn drawn(stream: &Rc<RefCell<PageStream>>) -> (Vec<u8>, Vec<u8>) {
+/// The frame the tile draws for `stream` at `(WIDTH, HEIGHT)`: the pixels a viewer sees.
+fn viewed(stream: &Rc<RefCell<PageStream>>) -> Vec<u8> {
     let harness = FrameHarness::new(
         ui::state::State::new(),
         PageStream::view(stream, "Browser".into()),
         (WIDTH, HEIGHT),
     );
-    let viewed = harness.render_rgba();
+    harness.render_rgba()
+}
+
+/// The frame `stream`'s publisher holds, drawn the way the tile draws it: the pixels the
+/// publisher would show.
+fn published(stream: &Rc<RefCell<PageStream>>) -> Vec<u8> {
     let page = stream.borrow();
     let frame = page.frame().expect("the viewer holds the frame").clone();
     drop(page);
@@ -131,12 +135,19 @@ fn drawn(stream: &Rc<RefCell<PageStream>>) -> (Vec<u8>, Vec<u8>) {
         };
         ui::webview::paint::PageRenderer::new().draw(&mut canvas, &frame);
     }
-    let published = renderer.render(&scene, ui::Theme::dark().tokens.colors.surfaces.content);
-    (viewed, published)
+    renderer.render(&scene, ui::Theme::dark().tokens.colors.surfaces.content)
 }
 
+/// One page, published once and drawn three ways. The objects its publisher sent rebuild the
+/// frame the publisher holds, and the tile draws that frame. And what the reading side asks for
+/// instead of a stream of its own, the page view's code, hands over a tile that draws what a
+/// viewer's stream of the same objects does. The three pictures are drawn in one process: the
+/// first frame a process renders pays for its renderer, and each of these was a test of its own
+/// that paid it again over the same page.
 #[test]
-fn a_viewer_draws_the_frame_its_publisher_holds() {
+fn a_viewer_and_the_page_view_code_draw_the_frame_the_publisher_holds() {
+    use tilo_desktop_surface::page_code::PAGE;
+
     let engine = engine();
     let objects = payloads(&engine);
     let mut stream = PageStream::new();
@@ -149,11 +160,29 @@ fn a_viewer_draws_the_frame_its_publisher_holds() {
         "the objects rebuild the publisher's frame"
     );
     let stream = Rc::new(RefCell::new(stream));
-    let (viewed, published) = drawn(&stream);
+    let direct = viewed(&stream);
     assert_eq!(
-        OffscreenRenderer::pixels_differing_beyond_aa(&viewed, &published),
+        OffscreenRenderer::pixels_differing_beyond_aa(&direct, &published(&stream)),
         0,
         "the tile draws the page the publisher holds"
+    );
+
+    // What the reading side asks for, instead of a stream of its own: the code
+    // this build links, or with `lazy-page-view` the module a shell fetches the
+    // first time a page travels to it.
+    let page = PAGE.get().expect("the page view this build links").open();
+    for object in &objects {
+        page.apply(object);
+    }
+    let harness = FrameHarness::new(
+        ui::state::State::new(),
+        page.tile("Browser".into()),
+        (WIDTH, HEIGHT),
+    );
+    assert_eq!(
+        OffscreenRenderer::pixels_differing_beyond_aa(&harness.render_rgba(), &direct),
+        0,
+        "the code's tile draws the page a viewer holds"
     );
 }
 
@@ -288,39 +317,6 @@ fn a_form_is_drawn_with_what_the_engines_theme_paints_of_it_in_any_theme() {
         inked.iter().max().is_some_and(|right| *right >= 60),
         "the date is drawn: ink reaches {:?}",
         inked.iter().max()
-    );
-}
-
-#[test]
-fn the_page_view_code_hands_over_the_tile_a_viewer_draws() {
-    use tilo_desktop_surface::page_code::PAGE;
-
-    let engine = engine();
-    let objects = payloads(&engine);
-    // What the reading side asks for, instead of a stream of its own: the code
-    // this build links, or with `lazy-page-view` the module a shell fetches the
-    // first time a page travels to it.
-    let page = PAGE.get().expect("the page view this build links").open();
-    for object in &objects {
-        page.apply(object);
-    }
-    let harness = FrameHarness::new(
-        ui::state::State::new(),
-        page.tile("Browser".into()),
-        (WIDTH, HEIGHT),
-    );
-    let viewed = harness.render_rgba();
-
-    let mut stream = PageStream::new();
-    for object in &objects {
-        stream.apply(object);
-    }
-    let stream = Rc::new(RefCell::new(stream));
-    let (direct, _) = drawn(&stream);
-    assert_eq!(
-        OffscreenRenderer::pixels_differing_beyond_aa(&viewed, &direct),
-        0,
-        "the code's tile draws the page a viewer holds"
     );
 }
 
