@@ -50,6 +50,10 @@ A place on the canvas is a resource's view, drawn as itself:
 - What the agent shows is content too: the views it answers with fill the rectangle the person
   dragged, or stand beside the reply when they only clicked. A view the agent generates
   (tilolang it writes) is placed the same way and stays live.
+- Beside means adjacent: what an answer shows takes the free spot touching its turn (trailing
+  side, then below, then leading side, then above), the one most inside what the person sees,
+  made smaller when only a smaller room is free there, and goes elsewhere only when no spot
+  adjacent to the turn is free.
 - Following up is pointing again: click under a reply to continue that turn, right-click an
   answer to refine it in place.
 - Nothing modal: an answer in progress shows where it will land and never blocks the rest of
@@ -83,8 +87,60 @@ sharp at the screen's real size.
   fills the rectangle with the found view; a question posts to the person's agent conversation
   and places the turn's view at the point, recording the rectangle as the turn's anchor so the
   agent's `place` steps fill it (`beside`/`within` from the turn, as `open` takes `beside`
-  today).
+  today). The map reports what the person sees as they point (`seen`), and the caret passes it
+  on (`seen_x`, `seen_y`, `seen_width`, `seen_height`): the turn's steps that stand beside it
+  take the free spot adjacent to it, judged against what the person sees (`free_place_within`).
 - **Places** are `ui.MapPin`s holding the resource's view with no `ui.WindowFrame`; the handle
   is a shell view shown on hover and selection.
 - **The arrangement** records each place's resource, view, point and size (`ArrangementPlace`);
-  placing never moves what is there (`free_place_near`, `free_place_next_to`).
+  placing never moves what is there (`free_place_near`, `free_place_next_to`). What is found at
+  a click stands with its top-left at the click, narrowed (to a window's least width) to the free
+  room to its right before the next place or the view's edge (`free_width_at`); only when not
+  even that fits does it take the nearest free spot. A place put with no size of its own, at a
+  click or by the agent beside its turn, hugs what it shows (`CanvasPlace::hugs`); a rectangle's
+  room keeps its size.
+
+## 7. The bar it is held to
+
+What a person sees is judged against these, in shots at the device's real scale, before anything
+is shown to anyone.
+
+- **The thing, never the app.** Words resolve to the most specific resource they name, and the
+  canvas places that resource's own view: "my mails" is the inbox's message list (Mail's
+  `inbox` of the person's mailboxes, unified), never `mail(m: Mail)` with its account sidebar;
+  "my notes" is the list of notes; "tasks due this week" is those tasks. An app's root view (the
+  whole app) is placed only when the words name the app ("open Mail"). A view placed on the
+  canvas carries no app chrome of its own: no sidebar, no app toolbar, no "File" menu. Those are
+  the resource's actions, reached through the handle and right-click. An app whose resources have
+  only app-shaped views gets content views for them (a notes list, a task list for a set of
+  tasks).
+- **The canvas is the whole screen.** In this style there is no dock and no desktop chrome: the
+  bar keeps only what a person needs on any screen (the time, notices, the person). The desk
+  style is chosen in the style menu and Settings, not in a control that is always visible.
+- **Free space invites writing.** The pointer over free space is a text cursor. An empty canvas
+  says once, quietly, at its centre: "Click anywhere and say what you want". Gone after the first
+  ask. The ground is the theme's canvas role, with a grain or grid so faint it only says "surface".
+- **An answer reads like an answer.** The person's words are a quiet line; the reply is prose at
+  body size, set like text, not like a panel; the steps are one quiet line ("Read 3 mails") that
+  unfolds; the conversation is reached from the handle. While working, the line says what is
+  happening ("Reading your inbox…"), not a step count. The card hugs what it holds.
+- **Things arrive from where they were asked.** A place grows out of the caret or rectangle it
+  answers (the theme's motion), never pops. Pan and zoom follow the hand at the display's refresh
+  rate.
+- **Everything stays in view.** A new place, turn or answer never stands partly off-screen: the
+  canvas pans (never zooms) so the newest turn and its answer are in view together, and keeps the
+  turn in view as its words grow. The person's turn wins over the agent's later placement: the
+  camera never chases a place the agent puts off-screen at the cost of the turn. The agent's views
+  stand adjacent to their turn (§3), sized so the turn and they fit on the screen together where
+  they can, and the camera pans (never zooms) to show both; when both cannot fit, the turn wins.
+  Panned to them, the camera frames the turn and its views together: centred top to bottom when
+  they fit, else from their top, never hanging at an edge with the screen empty opposite.
+  A card hugs what it holds up to the visible area and no further:
+  its text wraps and the card scrolls.
+- **Captions name the thing.** A place's caption is what it shows, by the name of the view it
+  stands through ("All inboxes", "Notes"), never the first record or account of its app's root.
+  A place under another keeps its caption clear of it: they stand the caption's band and the
+  canvas's gap apart.
+- **Places hug what they show.** A list found at a click is as tall as its rows up to its room:
+  a scroll region says what its content comes to when it is asked, so no card stands with an
+  empty foot.

@@ -6,21 +6,24 @@
 //! the GPU that draws the window and presented to the host with its damage. Pointer and keyboard
 //! input of the window becomes [`InputEvent`]s; the pointer is drawn as on a real screen, in place
 //! of the host's.
+//! A window whose graphics are lost (a failed present, a refused surface) gets them made again on
+//! the same window while the session runs on ([`recovery`]), for as long as it takes.
+
+mod graphics;
+mod recovery;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::egl::EGLDevice;
+use smithay::backend::egl::{EGLDevice, EGLDisplay};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{
     Bind as _, ExportMem as _, ImportDma as _, ImportMemWl as _, Offscreen as _,
 };
-use smithay::backend::winit::{
-    WinitEvent, WinitEventLoop, WinitGraphicsBackend, init_from_attributes,
-};
+use smithay::backend::winit::{WinitEvent, init_from_attributes};
 use smithay::output::{Mode, Output, Scale};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Size, Transform};
@@ -34,6 +37,8 @@ use crate::present::Shown;
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
+use graphics::{HostRef, SharedEvents, WindowGraphics};
+use recovery::{Frame, Painter, Recovery};
 use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 /// The name of the window's output.
@@ -106,8 +111,11 @@ fn host_scale(reported: f64, configured: f64) -> f64 {
 /// and the window then opens on no desktop at all. So the window is opened first, while the
 /// handover is still there, and handed over ([`NestedBackend::start`]).
 pub struct HostWindow {
-    window: WinitGraphicsBackend<GlesRenderer>,
-    events: WinitEventLoop,
+    // Dropped before the window they draw into.
+    graphics: WindowGraphics,
+    display: EGLDisplay,
+    host: HostRef,
+    events: SharedEvents,
 }
 
 /// A scale clients can render at: finite and positive.
@@ -132,7 +140,16 @@ fn one_mode(output: &Output, mode: Mode) {
 }
 
 struct Inner {
-    window: WinitGraphicsBackend<GlesRenderer>,
+    /// What draws into the window; none while it is being made again, or once the window is given
+    /// up. Dropped before the window.
+    graphics: Option<WindowGraphics>,
+    /// The display the window's graphics are made on, kept across their losses: its formats are the
+    /// ones clients were offered.
+    display: EGLDisplay,
+    host: HostRef,
+    recovery: Recovery,
+    /// When the lost graphics are next made again; none while the window shows.
+    rebuild_due: Option<Instant>,
     output: Output,
     damage: OutputDamageTracker,
     /// When a frame may be drawn though the last one changed nothing.
@@ -156,9 +173,23 @@ impl NestedBackend {
     /// # Errors
     /// The desktop refused the session, or has no connection for it.
     pub fn open_window(config: &NestedConfig) -> Result<HostWindow, Error> {
-        let (window, events) = init_from_attributes::<GlesRenderer>(config.attributes())
+        let (mut window, events) = init_from_attributes::<GlesRenderer>(config.attributes())
             .map_err(|error| failed("window", error))?;
-        Ok(HostWindow { window, events })
+        let display = window.renderer().egl_context().display().clone();
+        let events = Rc::new(RefCell::new(events));
+        // SAFETY: smithay's window backend and its event loop hold the same window.
+        let host = unsafe { HostRef::new(&events, window.window()) };
+        // smithay's surface on the window goes before the session's own is made: EGL makes one
+        // surface per window at a time.
+        drop(window);
+        let graphics = WindowGraphics::new(&host, &display)
+            .map_err(|error| failed("window graphics", error))?;
+        Ok(HostWindow {
+            graphics,
+            display,
+            host,
+            events: SharedEvents(events),
+        })
     }
 
     /// Make a window the desktop opened ([`NestedBackend::open_window`]) an output.
@@ -168,29 +199,16 @@ impl NestedBackend {
         config: &NestedConfig,
         host: HostWindow,
     ) -> Result<Self, Error> {
-        let HostWindow { mut window, events } = host;
-        // Clients render on the GPU that draws this window, and hand their frames over as dma-bufs
-        // it can import.
-        let node = EGLDevice::device_for_display(window.renderer().egl_context().display())
-            .ok()
-            .and_then(|device| device.try_get_render_node().ok().flatten());
-        let formats: Vec<_> = window.renderer().dmabuf_formats().iter().copied().collect();
-        let render_formats: Vec<_> = window
-            .renderer()
-            .egl_context()
-            .dmabuf_render_formats()
-            .iter()
-            .copied()
-            .collect();
-        state.enable_dmabuf(formats, node);
-        state.offer_shm_formats(window.renderer().shm_formats());
-        if let Some(node) = node {
-            state.enable_dmabuf_capture(node.dev_id(), render_formats);
-        }
+        let HostWindow {
+            mut graphics,
+            display,
+            host,
+            events,
+        } = host;
+        offer_renderer(state, graphics.renderer());
 
-        present_without_waiting(&mut window)?;
-
-        let size = window.window_size();
+        let window = host.window();
+        let size = graphics::window_size(window);
         // The host's own scale is the output's: a desktop at 200% tells this window 2.0, and the
         // session draws the pixels that desktop shows, so the shell is as crisp there as it is on
         // the device itself. Configured only for a host that reports nothing usable.
@@ -202,10 +220,14 @@ impl NestedBackend {
         state.add_output(&output, Point::from((0, 0)));
         let damage = window_damage(&output);
         // The compositor draws the pointer: clients' cursor shapes show.
-        window.window().set_cursor_visible(false);
+        window.set_cursor_visible(false);
 
         let inner = Rc::new(RefCell::new(Inner {
-            window,
+            graphics: Some(graphics),
+            display,
+            host,
+            recovery: Recovery::default(),
+            rebuild_due: None,
             output,
             damage,
             next_frame: Instant::now(),
@@ -249,47 +271,77 @@ const fn flip(transform: Transform) -> Transform {
     }
 }
 
-/// Present the window's frames without waiting for the desktop to ask for the next one.
-///
-/// EGL's default swap interval is 1, and on Wayland that makes a swap wait for the desktop's frame
-/// callback for the frame before. A desktop sends none to a window it does not show (hidden,
-/// another workspace, not mapped yet), so the swap blocks the session's whole loop: its clients,
-/// its input, its agent door and its control socket all stop after the first frame. The session
-/// paces its own frames (`next_frame`, one refresh apart, and none while idle), so the swap only
-/// hands the frame over.
-fn present_without_waiting(window: &mut WinitGraphicsBackend<GlesRenderer>) -> Result<(), Error> {
-    let display = window
-        .renderer()
+/// Offer clients what the window's renderer takes: the dma-buf formats it imports (on the GPU that
+/// draws the window, where clients then allocate), the shm formats it draws, and the dma-buf
+/// targets capture clients may hand it. Done again for each renderer the window gets: the display
+/// stays, so the formats do too, and what was offered stays offered.
+fn offer_renderer(state: &mut State, renderer: &GlesRenderer) {
+    let node = EGLDevice::device_for_display(renderer.egl_context().display())
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten());
+    let formats: Vec<_> = renderer.dmabuf_formats().iter().copied().collect();
+    let render_formats: Vec<_> = renderer
         .egl_context()
-        .display()
-        .get_display_handle();
-    // The interval belongs to the surface current on the context: make the window's current
-    // (the renderer's own bind only makes it current as a frame is drawn).
-    // The surface and the renderer are separate fields of the window; `renderer` borrows the
-    // whole window mutably, so the surface is reached through a pointer taken first.
-    let surface: *const smithay::backend::egl::EGLSurface = window.egl_surface();
-    // SAFETY: the context and surface are the window's own, on the thread that draws it, and the
-    // surface outlives this call (the window holds it and is not moved or dropped here).
-    unsafe {
-        window
-            .renderer()
-            .egl_context()
-            .make_current_with_surface(&*surface)
+        .dmabuf_render_formats()
+        .iter()
+        .copied()
+        .collect();
+    state.enable_dmabuf(formats, node);
+    state.offer_shm_formats(renderer.shm_formats());
+    if let Some(node) = node {
+        state.enable_dmabuf_capture(node.dev_id(), render_formats);
     }
-    .map_err(|error| failed("make the window current", error))?;
-    // SAFETY: the display is the window's own, alive for this call, with its context and surface
-    // current just above.
-    let set = unsafe { smithay::backend::egl::ffi::egl::SwapInterval(**display, 0) };
-    if set == smithay::backend::egl::ffi::egl::FALSE {
-        // SAFETY: asked right after the refused call, on the same thread.
-        let error = unsafe { smithay::backend::egl::ffi::egl::GetError() };
-        return Err(failed(
-            "present without waiting",
-            format!("eglSwapInterval(0): {error:#x}"),
-        )
-        .into());
+}
+
+/// One frame of the window, as [`recovery::frame`] drives it.
+struct WindowFrame<'a> {
+    graphics: &'a mut Option<WindowGraphics>,
+    display: &'a EGLDisplay,
+    host: &'a HostRef,
+    output: &'a Output,
+    damage: &'a mut OutputDamageTracker,
+    state: &'a mut State,
+}
+
+impl Painter for WindowFrame<'_> {
+    fn present(&mut self) -> Result<(), String> {
+        let graphics = self
+            .graphics
+            .as_mut()
+            .ok_or_else(|| "the window has no graphics".to_owned())?;
+        let window = self.host.window();
+        let age = graphics.buffer_age();
+        let (damage, states) = {
+            let (renderer, mut framebuffer) = graphics.bind(window)?;
+            let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
+                self.state.cursor_elements(renderer, self.output);
+            elements.extend(output_elements(renderer, self.state, self.output));
+            let drawn = self
+                .damage
+                .render_output(renderer, &mut framebuffer, age, &elements, BACKGROUND)
+                .map_err(|error| format!("render window: {error}"))?;
+            (drawn.damage.cloned(), drawn.states)
+        };
+        // Clients draw their next frame now. A frame the host does not take is dropped unshown,
+        // which tells its clients it was discarded.
+        let presentation = self.state.frame_drawn(self.output, Some(&states));
+        graphics.submit(window, damage.as_deref())?;
+        presentation.shown(self.state, Shown::Host);
+        Ok(())
     }
-    Ok(())
+
+    fn rebuild(&mut self) -> Result<(), String> {
+        // The lost surface goes first: the window takes one at a time.
+        *self.graphics = None;
+        let mut graphics = WindowGraphics::new(self.host, self.display)?;
+        offer_renderer(self.state, graphics.renderer());
+        // The new back buffers hold nothing, and what the tracker knew was drawn into the old
+        // ones: the first frame draws everything. Client buffers are imported into the new
+        // renderer as they are drawn, from the buffers the surfaces still hold.
+        *self.damage = window_damage(self.output);
+        *self.graphics = Some(graphics);
+        Ok(())
+    }
 }
 
 fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent) {
@@ -345,38 +397,20 @@ impl Backend for NestedBackend {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
         let now = Instant::now();
-        if inner.closed || inner.dark || now < inner.next_frame {
+        if inner.closed || inner.dark {
+            return Ok(());
+        }
+        // Lost graphics are made again when due, whether or not anything changed.
+        let rebuild = inner.rebuild_due.is_some_and(|due| now >= due);
+        if now < inner.next_frame && !rebuild {
             return Ok(());
         }
         // Nothing new to show: an idle session draws nothing.
-        if !state.take_redraw(&inner.output) {
+        if !state.take_redraw(&inner.output) && !rebuild {
             return Ok(());
         }
-        let age = inner.window.buffer_age().unwrap_or(0);
-        let (damage, states) = {
-            let (renderer, mut framebuffer) = inner
-                .window
-                .bind()
-                .map_err(|error| failed("bind window", error))?;
-            let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
-                state.cursor_elements(renderer, &inner.output);
-            elements.extend(output_elements(renderer, state, &inner.output));
-            let drawn = inner
-                .damage
-                .render_output(renderer, &mut framebuffer, age, &elements, BACKGROUND)
-                .map_err(|error| failed("render window", error))?;
-            (drawn.damage, drawn.states)
-        };
-        // Clients draw their next frame now; with nothing new on screen the window is asked again
-        // one refresh later.
-        let presentation = state.frame_drawn(&inner.output, Some(&states));
-        let damaged = damage.map(Vec::as_slice);
-        inner
-            .window
-            .submit(damaged)
-            .map_err(|error| failed("present window", error))?;
-        presentation.shown(state, Shown::Host);
-        inner.next_frame = now
+        // With nothing new on screen the window is asked again one refresh later.
+        let next = now
             .checked_add(refresh_interval(
                 inner
                     .output
@@ -384,6 +418,30 @@ impl Backend for NestedBackend {
                     .map_or(REFRESH_MHZ, |mode| mode.refresh),
             ))
             .unwrap_or(now);
+        inner.next_frame = next;
+        let shown = recovery::frame(
+            &mut inner.recovery,
+            &mut WindowFrame {
+                graphics: &mut inner.graphics,
+                display: &inner.display,
+                host: &inner.host,
+                output: &inner.output,
+                damage: &mut inner.damage,
+                state: &mut *state,
+            },
+            now,
+        );
+        match shown {
+            Frame::Presented => inner.rebuild_due = None,
+            Frame::Lost(due) => {
+                // The window shows nothing while its graphics are made again. Its clients are
+                // answered as they draw, as on a headless output, and hear that those frames were
+                // not shown. The loop wakes for the rebuild at `due`, whose first frame draws the
+                // whole scene; nothing else wakes it while the session is idle.
+                drop(state.frame_drawn(&inner.output, None));
+                inner.rebuild_due = Some(due);
+            }
+        }
         Ok(())
     }
 
@@ -393,12 +451,9 @@ impl Backend for NestedBackend {
         region: (usize, usize),
         request: &BackdropRequest,
     ) -> Result<Option<BackdropImage>, BackendError> {
-        crate::backdrop::draw(
-            self.inner.borrow_mut().window.renderer(),
-            state,
-            region,
-            request,
-        )
+        let mut inner = self.inner.borrow_mut();
+        let renderer = inner.graphics.as_mut().ok_or_else(no_graphics)?.renderer();
+        crate::backdrop::draw(renderer, state, region, request)
     }
 
     fn capture(
@@ -406,10 +461,14 @@ impl Backend for NestedBackend {
         state: &mut State,
         frame: &crate::capture::Frame,
     ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
+        let mut inner = self.inner.borrow_mut();
+        let renderer = inner
+            .graphics
+            .as_mut()
+            .ok_or_else(|| crate::capture::CaptureError::Backend(no_graphics()))?
+            .renderer();
         crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
-            self.inner.borrow_mut().window.renderer(),
-            state,
-            frame,
+            renderer, state, frame,
         )
     }
 
@@ -424,7 +483,7 @@ impl Backend for NestedBackend {
             .current_mode()
             .ok_or_else(|| BackendError(format!("{name}: it has no mode")))?;
         let size = Size::<i32, Buffer>::from((mode.size.w, mode.size.h));
-        let renderer = inner.window.renderer();
+        let renderer = inner.graphics.as_mut().ok_or_else(no_graphics)?.renderer();
         // The scene is drawn again, off screen, and read back.
         let mapping = {
             let mut target: smithay::backend::renderer::gles::GlesTexture = renderer
@@ -487,8 +546,14 @@ impl Backend for NestedBackend {
 
     fn next_deadline(&self, state: &State) -> Option<Instant> {
         let inner = self.inner.borrow();
-        let ready = !inner.closed && !inner.dark && state.redraw_owed(&inner.output);
-        ready.then_some(inner.next_frame)
+        if inner.closed || inner.dark {
+            return None;
+        }
+        let frame = state.redraw_owed(&inner.output).then_some(inner.next_frame);
+        match (frame, inner.rebuild_due) {
+            (Some(frame), Some(rebuild)) => Some(frame.min(rebuild)),
+            (frame, rebuild) => frame.or(rebuild),
+        }
     }
 
     fn set_power(&mut self, state: &mut State, _name: &str, on: bool) -> Result<(), BackendError> {
@@ -505,6 +570,11 @@ impl Backend for NestedBackend {
     fn closed(&self) -> bool {
         self.inner.borrow().closed
     }
+}
+
+/// What a request that needs the window's renderer is told while the window has none.
+fn no_graphics() -> BackendError {
+    BackendError("the window has no graphics: they are lost".into())
 }
 
 #[cfg(test)]

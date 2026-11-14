@@ -161,14 +161,9 @@ fn value_into_runtime(value: ViewValue) -> Value {
         // A view names the person it draws (`who.name`), and that name is what a byline, an
         // avatar's initials and a quote's "In reply to" show: the id is what a record keeps.
         ViewValue::Principal(who) => Value::Principal(Principal::new(who.id).named(who.name)),
-        ViewValue::Rich(rich) => Value::Rich(tilolang_runtime::rich::RichValue::from_text(
-            &rich
-                .blocks
-                .iter()
-                .map(|b| b.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )),
+        // Its paragraphs as the view set them: each block's kind (a list's items, a heading),
+        // marks and attributes, never only its words — a reply's bulleted list stays a list.
+        ViewValue::Rich(rich) => Value::Rich(crate::instance::wire::runtime_rich(&rich)),
         ViewValue::Error(text) => Value::Error(text),
         ViewValue::Map(entries) => Value::Map(
             entries
@@ -227,5 +222,55 @@ fn arg_into_runtime(arg: &tilo_view::cx::Arg, window: &str, person: &str) -> Val
             key: tilolang_runtime::view_state::StateKey::view(window, person, name.as_str()),
             scalar: false,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_view::patch::rich::{Attr, Block, RichText};
+
+    use super::*;
+
+    /// A Rust view's rich text reaches the runtime as the view set it: a reply's bulleted list
+    /// keeps its items' kind and level, and a bold run its mark, never only the words of each line.
+    #[test]
+    fn a_rust_views_rich_text_keeps_its_lists_and_marks() {
+        let block = |kind: &str, text: &str| Block {
+            kind: kind.to_owned(),
+            text: text.to_owned(),
+            marks: Vec::new(),
+            attrs: BTreeMap::new(),
+        };
+        let mut item = block("list_item", "Book a haircut");
+        item.attrs.insert("level".to_owned(), Attr::Int(0));
+        item.attrs.insert("ordered".to_owned(), Attr::Bool(false));
+        let mut lead = block("paragraph", "Overdue:");
+        lead.marks.push(tilo_view::patch::rich::Mark {
+            start: 0,
+            end: 7,
+            name: "strong".to_owned(),
+            value: Attr::Bool(true),
+        });
+        let rich = RichText {
+            blocks: vec![lead, item],
+            ..RichText::default()
+        };
+        let Value::Rich(read) = value_into_runtime(ViewValue::Rich(rich)) else {
+            panic!("rich text stays rich");
+        };
+        let kinds: Vec<(&str, &str)> = read
+            .blocks
+            .iter()
+            .map(|b| (b.kind.as_str(), b.text.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [("paragraph", "Overdue:"), ("list_item", "Book a haircut")]
+        );
+        assert_eq!(
+            read.blocks[1].attrs.get("ordered"),
+            Some(&tilo_doc::AttrVal::Bool(false))
+        );
+        assert_eq!(read.blocks[0].marks.len(), 1, "the bold run keeps its mark");
     }
 }

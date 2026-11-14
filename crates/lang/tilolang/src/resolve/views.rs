@@ -1,5 +1,6 @@
-//! The declarations that attach views to a type: the row a list shows for each item of it, and the views a
-//! window of it switches between. A view neither names is the app's own helper, which no window offers.
+//! The declarations that attach views to a type: the row a list shows for each item of it, what a
+//! place of it shows standing on its own, and the views a window of it switches between. A view none
+//! names is the app's own helper, which no window offers.
 
 use crate::ast;
 use crate::types::Ty;
@@ -37,6 +38,43 @@ impl Resolver<'_> {
             ),
             None => self.err(
                 "E093",
+                d.view.span,
+                format!("`{}` is not a view of this package", d.view.name),
+            ),
+        }
+    }
+
+    /// `place view v for T`: what a place of a `T` shows when it stands as content on its own
+    /// rather than as the app's window, a view of one `T` and nothing else besides its default.
+    pub(super) fn place_view_decl(&mut self, d: &ast::DefaultViewDecl) {
+        let Some(key) = self.own_record(&d.ty, "place view") else {
+            return;
+        };
+        if self.env.place_views.iter().any(|(k, _)| *k == key) {
+            self.err(
+                "E011",
+                d.span,
+                format!("`{}` has two place views; a type has one", key.name),
+            );
+            return;
+        }
+        let fits = self
+            .env
+            .own_callable(&d.view.name)
+            .filter(|c| c.kind == CKind::View)
+            .map(|c| matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone())));
+        match fits {
+            Some(true) => self.env.place_views.push((key, d.view.name.clone())),
+            Some(false) => self.err(
+                "E018",
+                d.view.span,
+                format!(
+                    "the place view of `{}` takes the resource and nothing else: `view {}(x: {})`",
+                    key.name, d.view.name, key.name
+                ),
+            ),
+            None => self.err(
+                "E018",
                 d.view.span,
                 format!("`{}` is not a view of this package", d.view.name),
             ),

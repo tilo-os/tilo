@@ -123,6 +123,7 @@ build_host() {
         -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control \
         -p tilo-quick-settings --bin tilo-quick-settings \
+        -p tilo-fs --bin fs \
         -p nested-session-bus --bin nested-session-bus || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no
     # longer comes from building beside the session, and the session's gateway

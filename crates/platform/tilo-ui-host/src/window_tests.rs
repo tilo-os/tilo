@@ -244,6 +244,68 @@ fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_
     );
 }
 
+/// Typing that went out as splices, then a press, then more typing held for it: the app answers
+/// the press with what the field held before it took the splices (sent before it saw them), and
+/// the held typing still lands after what was typed before it. "summari" sent, then "se" held,
+/// is "summarise" in the app, never "summaries" from the held letters placed against the text the
+/// app no longer holds.
+#[test]
+fn typing_held_for_a_press_lands_after_what_was_typed_before_it_whatever_the_app_sent_before_it_took_that()
+ {
+    let (mut app, mut window) = window();
+    send(&mut app, &titled_page());
+    window.receive();
+    window.act(UiEvent::Edit("title".to_owned(), "Q3 summari".to_owned()));
+    window.flush();
+    assert!(
+        matches!(&sent(&mut app)[..], [ToApp::Splice { seq: 1, at: 2, delete: 0, insert, .. }] if insert == " summari"),
+        "the typing goes as it is typed"
+    );
+    // A press, and typing at once: the typing waits for the press.
+    window.act(UiEvent::Press("new".to_owned()));
+    window.act(UiEvent::Edit("title".to_owned(), "Q3 summaris".to_owned()));
+    window.act(UiEvent::Edit("title".to_owned(), "Q3 summarise".to_owned()));
+    window.flush();
+    assert!(
+        matches!(&sent(&mut app)[..], [ToApp::Fire { key, .. }] if key == "new"),
+        "the press goes at once, the typing waits"
+    );
+    // The app sent the field as it held it before it took the first splice, then ran the press.
+    send(
+        &mut app,
+        &[
+            ToUi::Bound {
+                lane: Lane::Root,
+                key: "title".to_owned(),
+                value: Value::text("Q3"),
+                acked: 0,
+            },
+            ToUi::Took { fired: 1 },
+        ],
+    );
+    window.receive();
+    window.flush();
+    // The app holds "Q3 summari": what was held goes after it.
+    let mut app_text = "Q3 summari".to_owned();
+    for message in sent(&mut app) {
+        if let ToApp::Splice {
+            at, delete, insert, ..
+        } = message
+        {
+            let at = at as usize;
+            app_text.replace_range(at..at + delete as usize, &insert);
+        }
+    }
+    assert_eq!(
+        app_text, "Q3 summarise",
+        "the letters land in the order typed"
+    );
+    assert_eq!(
+        window.bound_value("title"),
+        Some(Value::text("Q3 summarise"))
+    );
+}
+
 fn note(id: &str) -> ResourceRef {
     ResourceRef {
         id: id.to_owned(),
@@ -2161,4 +2223,76 @@ fn the_first_item_moves_the_windows_action_and_not_what_it_does() {
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(ids.len(), unique.len(), "every node keeps an id of its own");
+}
+
+/// A list's entry clears once what was typed in it is made: the app answers the submit by setting
+/// the bound text back to nothing, while the field still holds its caret at the end of what was
+/// typed. The window shows the empty entry, the keyboard still in it, and takes the next item.
+#[test]
+fn an_entry_the_app_clears_after_its_submit_takes_the_next_item() {
+    use wire::Event;
+    let mut page = bound_page(
+        "ui.TextInput",
+        &[
+            ("entry", Value::Bool(true)),
+            ("placeholder", Value::text("New task for today")),
+        ],
+        Value::text(""),
+    );
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        tree.children[0]
+            .events
+            .insert("submit".to_owned(), Event::default());
+    }
+    let (mut app, mut harness) = drawn(&page);
+    harness.click_named("field").expect("the entry is drawn");
+    harness.type_text("Repot");
+    press(&mut harness, &[], "Enter");
+    let first = told(&mut app);
+    let acked = first
+        .iter()
+        .filter_map(|message| match message {
+            ToApp::Splice { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .max()
+        .unwrap_or_default();
+    assert!(
+        first.iter().any(|message| matches!(
+            message,
+            ToApp::Fire { event, value: Some(value), .. }
+                if event == "submit" && value == &Value::text("Repot")
+        )),
+        "the entry submits what was typed: {first:?}"
+    );
+    // The app made the item and empties the entry, as `add_entry`'s `set(typed, "")` does.
+    send(
+        &mut app,
+        &[
+            ToUi::Bound {
+                lane: Lane::Root,
+                key: "field".to_owned(),
+                value: Value::text(""),
+                acked,
+            },
+            ToUi::Took { fired: 1 },
+        ],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    assert_eq!(
+        shown_value(&harness, "Field").unwrap_or_default(),
+        "",
+        "the entry is empty again"
+    );
+    harness.type_text("Sow");
+    press(&mut harness, &[], "Enter");
+    assert!(
+        told(&mut app).iter().any(|message| matches!(
+            message,
+            ToApp::Fire { event, value: Some(value), .. }
+                if event == "submit" && value == &Value::text("Sow")
+        )),
+        "the cleared entry takes the next item"
+    );
 }

@@ -23,8 +23,8 @@ use tilolang_tilo::records_service::RecordService;
 
 use crate::common::window::KEY_A;
 use crate::common::{
-    CANVAS_ENTRY, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_display,
-    on_screen, press, press_where, show_preset, until,
+    CANVAS, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_display, on_screen,
+    press, press_where, show_preset, until,
 };
 
 /// What the strips show of a desk holding no window: their own empty state, which no other surface
@@ -122,17 +122,17 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     // the arrangement runs. The canvas's entry (typed text finds something and places it on the
     // canvas) stands on it; the strips have none.
     assert!(
-        on_screen(&session, CANVAS_ENTRY).is_none(),
+        on_screen(&session, CANVAS).is_none(),
         "the strips stand first, not the canvas"
     );
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
-    let entry = on_screen(&session, CANVAS_ENTRY).unwrap();
+    let canvas = on_screen(&session, CANVAS).unwrap();
 
     // A note placed through the arrangement stands on the canvas, drawn by its app: its title on
-    // screen, under the canvas's entry.
+    // screen, inside the canvas.
     place(&mut session, &note);
     let shown = shown_as(&session, NOTE_TITLE);
     until(&mut session, "the note's title on the canvas", |session| {
@@ -140,8 +140,11 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     });
     let title = on_screen(&session, &shown).unwrap();
     assert!(
-        title.1 >= entry.1 + entry.3,
-        "the note stands on the canvas, under its entry: {title:?} under {entry:?}"
+        title.0 >= canvas.0
+            && title.1 >= canvas.1
+            && title.0 + title.2 <= canvas.0 + canvas.2
+            && title.1 + title.3 <= canvas.1 + canvas.3,
+        "the note stands on the canvas: {title:?} in {canvas:?}"
     );
 }
 
@@ -339,16 +342,16 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
                 "at {width}x{height} the preset switch {switch:?} and the first strip {first:?} stand apart"
             );
         }
-        // The framed canvas: the switch and the canvas's entry stand apart too.
+        // The framed canvas: the switch and the canvas stand apart too.
         show_preset(&mut session, "so.tilo.shell:frames");
-        until(&mut session, "the canvas's entry", |session| {
-            within(session, CANVAS_ENTRY, width, height).is_some()
+        until(&mut session, "the canvas", |session| {
+            within(session, CANVAS, width, height).is_some()
         });
-        let entry = within(&session, CANVAS_ENTRY, width, height).unwrap();
+        let canvas = within(&session, CANVAS, width, height).unwrap();
         let switch = preset_switch(&session, "Frames");
         assert!(
-            !intersects(switch, entry),
-            "at {width}x{height} the preset switch {switch:?} and the canvas's entry {entry:?} stand apart"
+            !intersects(switch, canvas),
+            "at {width}x{height} the preset switch {switch:?} and the canvas {canvas:?} stand apart"
         );
     }
 }
@@ -921,8 +924,8 @@ fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
         on_screen(session, "Notifications").is_some()
     });
     show_preset(&mut session, "so.tilo.shell:frames");
-    until(&mut session, "the canvas's entry", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, CANVAS).is_some()
     });
 
     // Nothing stands on the canvas yet: a fresh desk holds no window.
@@ -1119,7 +1122,7 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
 
     // A tilolang place stands on the canvas first, as the person's work beside the window does.

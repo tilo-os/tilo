@@ -69,6 +69,7 @@ use serde_json::{Value, json};
 use crate::plan;
 use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 
+pub mod canvas;
 mod schema;
 mod summary;
 mod wait;
@@ -474,6 +475,31 @@ pub const MAX_PLAN_REPLY_CHARS: usize = 4000;
 /// never refused for its length.
 pub const MAX_REPLY_BYTES: usize = 6 * 1024;
 
+/// Words a model writes where its answer should go when it has none: a stand-in, not an answer.
+const STAND_IN_REPLIES: &[&str] = &["placeholder", "todo", "tbd", "null", "undefined"];
+
+/// Whether `reply` says nothing to the person: empty, only punctuation and symbols ("…", "..."),
+/// a stand-in word ("placeholder"), or a template's slot echoed back ("<at most eight words>").
+/// Such a reply never passes as an answer.
+#[must_use]
+pub fn says_nothing(reply: &str) -> bool {
+    let reply = reply.trim();
+    let slot = reply
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+        .is_some_and(|inner| !inner.contains(['<', '>']));
+    slot || !reply.chars().any(char::is_alphanumeric)
+        || STAND_IN_REPLIES
+            .iter()
+            .any(|stand_in| reply.eq_ignore_ascii_case(stand_in))
+}
+
+/// `reply` as it is kept ([`bound_reply`]), or `None` when it says nothing ([`says_nothing`]).
+#[must_use]
+pub fn spoken_reply(reply: &str) -> Option<String> {
+    (!says_nothing(reply)).then(|| bound_reply(reply))
+}
+
 /// `reply` as it is kept: trimmed, at most [`MAX_PLAN_REPLY_CHARS`]
 /// characters and [`MAX_REPLY_BYTES`] bytes, cut at a character boundary.
 pub fn bound_reply(reply: &str) -> String {
@@ -684,7 +710,10 @@ fn invoke_definition() -> ToolDefinition {
              available. Several invokes in one turn run in order as soon as each is \
              written; after a failure the rest of the turn is skipped, except invokes \
              marked `standalone`, which may also run alongside the ones before them. \
-             Put your reply on the last invoke of the task to finish in the same turn.")
+             Put your reply on the last invoke of the task to finish in the same turn. \
+             Every call names its operation: `{\"operation\": \"broker:…#place\", \
+             \"parameters\": {\"resource\": \"…\"}}`; the id goes in `operation`, never in \
+             `parameters` or under another name.")
             .into(),
         input_schema: json!({
             "type": "object",
@@ -693,7 +722,8 @@ fn invoke_definition() -> ToolDefinition {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "description": "An operation id exactly as listed."
+                    "description": "Required: the operation id exactly as listed (`broker:…#action`), at \
+                         the top level beside `parameters`."
                 },
                 INVOKE_PARAMETERS: {
                     "type": "object",
@@ -944,15 +974,13 @@ fn read_view(input: &Value) -> Option<ViewAnswer> {
 }
 
 /// Read the loop's terminal [`PLAN`] call. Lenient by design: a missing
-/// `done` is read as done, a blank reply as none.
+/// `done` is read as done, a reply that says nothing ([`says_nothing`]) as none.
 pub fn read_finish(input: &Value) -> Finish {
     Finish {
         reply: input
             .get("reply")
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|reply| !reply.is_empty())
-            .map(bound_reply),
+            .and_then(spoken_reply),
         done: input.get("done").and_then(Value::as_bool).unwrap_or(true),
         view: read_view(input),
     }
@@ -991,9 +1019,7 @@ pub fn read_invoke(input: &Value, revealed: &Revealed) -> Result<Invocation, Str
         reply: input
             .get(INVOKE_REPLY)
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|reply| !reply.is_empty())
-            .map(bound_reply),
+            .and_then(spoken_reply),
     })
 }
 
@@ -1335,18 +1361,100 @@ fn call_refused(call: &ToolCall, problem: &str) -> String {
         "The call to `{}` was refused and nothing was run: {problem}.",
         call.name
     );
-    let required = typed_loop_definitions()
+    let schema = typed_loop_definitions()
         .into_iter()
         .find(|definition| definition.name == call.name)
-        .and_then(|definition| definition.input_schema.get("required").cloned());
-    if let Some(names) = required.as_ref().and_then(Value::as_array) {
-        let names = names.iter().filter_map(Value::as_str).collect::<Vec<_>>();
-        if !names.is_empty() {
-            let _ = write!(answer, " Its required arguments are: {}.", names.join(", "));
+        .map(|definition| definition.input_schema);
+    let names_of = |value: Option<&Value>| -> Vec<String> {
+        match value {
+            Some(Value::Array(names)) => names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            Some(Value::Object(fields)) => {
+                let mut names: Vec<String> = fields.keys().cloned().collect();
+                names.sort();
+                names
+            }
+            _ => Vec::new(),
         }
+    };
+    let required = names_of(schema.as_ref().and_then(|s| s.get("required")));
+    if !required.is_empty() {
+        let _ = write!(
+            answer,
+            " Its required arguments are: {}.",
+            required.join(", ")
+        );
+    }
+    // What the call sent beside what the tool takes: a model that named an argument its own
+    // way reads which name the tool knows it by.
+    if schema.is_some() {
+        let sent = names_of(Some(&call.input));
+        let _ = write!(
+            answer,
+            " You sent {}.",
+            if sent.is_empty() {
+                "no arguments".to_owned()
+            } else {
+                sent.join(", ")
+            }
+        );
+        let takes = names_of(schema.as_ref().and_then(|s| s.get("properties")));
+        if !takes.is_empty() {
+            let _ = write!(answer, " It takes: {}.", takes.join(", "));
+        }
+    }
+    if call.name == INVOKE
+        && call
+            .input
+            .get("operation")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        // The shape a model keeps getting wrong is named back to it: where the id it wrote
+        // went, and the call as it is written.
+        if let Some(path) = misplaced_operation(&call.input) {
+            let _ = write!(
+                answer,
+                " The operation id you wrote is under `{path}`: it goes in `operation`, at the \
+                 top level beside `parameters`."
+            );
+        }
+        answer.push_str(
+            " Write it as {\"operation\": \"<the id exactly as listed>\", \"parameters\": {…}}.",
+        );
     }
     answer.push_str(" Call it again with every required argument present and correctly typed.");
     answer
+}
+
+/// Where an `invoke` that names no `operation` put the operation id it wrote: a key of its own
+/// beside `parameters` (`operation_id`, `id`), or `operation` inside `parameters`. An id is a
+/// listed operation's form, `<resource>#<action>`.
+fn misplaced_operation(input: &Value) -> Option<String> {
+    let looks_like_id = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|text| text.contains('#') && !text.contains(char::is_whitespace))
+    };
+    let object = input.as_object()?;
+    for (key, value) in object {
+        if looks_like_id(value) {
+            return Some(key.clone());
+        }
+    }
+    for outer in [INVOKE_PARAMETERS, "arguments"] {
+        if let Some(inner) = object.get(outer).and_then(Value::as_object) {
+            for (key, value) in inner {
+                if looks_like_id(value) {
+                    return Some(format!("{outer}.{key}"));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// What is running, and what could be opened.

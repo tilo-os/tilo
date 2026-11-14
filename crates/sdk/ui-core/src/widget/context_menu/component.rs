@@ -9,7 +9,7 @@ use crate::widget::{ButtonRole, MenuEntry, Press};
 use super::{MenuButton, MenuItem};
 
 /// One command of a menu: what it shows, and what choosing it does.
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone)]
 #[component(name = "MenuItem", role = "MenuItem", label = "label")]
 pub struct MenuItemProps {
     /// What choosing it does, in a word or two.
@@ -165,6 +165,10 @@ pub struct MenuButtonProps {
     pub icon: Option<Icon>,
     /// Show only the icon, the label naming the button to assistive technology.
     pub icon_only: bool,
+    /// Whose menu it is, as their faces in place of the label and icon: the person's own menu
+    /// on a bar is their face, one person's at an avatar's full size. The label names it to
+    /// assistive technology.
+    pub faces: Vec<String>,
     /// What kind of button it is: `secondary` unless said, `plain` for an icon-only one.
     pub role: Option<ButtonRole>,
     /// Actions offered on something (`actions(r)`), each a command after `items`.
@@ -183,8 +187,29 @@ fn face(
     label: String,
     icon: Option<Icon>,
     icon_only: bool,
+    faces: Vec<String>,
     role: Option<ButtonRole>,
 ) -> crate::widget::Button {
+    // One person's own menu is their avatar, whole: the menu stands behind their face as it
+    // stands behind any button.
+    if let [only] = faces.as_slice() {
+        return crate::widget::Button::new(key, "")
+            .with_accessible_name(&label)
+            .tooltip(label)
+            .with_avatar(
+                only.clone(),
+                only.clone(),
+                crate::tokens::PresenceHue::of_identity(only),
+            )
+            .role(role.unwrap_or(ButtonRole::Plain));
+    }
+    if !faces.is_empty() {
+        return crate::widget::Button::new(key, "")
+            .with_accessible_name(&label)
+            .tooltip(label)
+            .with_faces(faces)
+            .role(role.unwrap_or(ButtonRole::Plain));
+    }
     match icon {
         Some(icon) if icon_only => crate::widget::Button::icon_only(key, icon, &label),
         Some(icon) => crate::widget::Button::new(key, &label)
@@ -211,12 +236,13 @@ impl Described for MenuButton {
             label,
             icon,
             icon_only,
+            faces,
             role,
             actions,
             subject: _,
             items,
         } = props;
-        face(key, label, icon, icon_only, role).with_menu(rows(items, actions))
+        face(key, label, icon, icon_only, faces, role).with_menu(rows(items, actions))
     }
 
     /// Take changed props in place: the button says the shell's new words and its menu lists the
@@ -227,12 +253,13 @@ impl Described for MenuButton {
             label,
             icon,
             icon_only,
+            faces,
             role,
             actions,
             subject: _,
             items,
         } = props;
-        let fresh = face("", label, icon, icon_only, role);
+        let fresh = face("", label, icon, icon_only, faces, role);
         if !self.button.take_words(&fresh) {
             return false;
         }

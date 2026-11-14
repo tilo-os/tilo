@@ -40,7 +40,8 @@ use tilolang_runtime::value::split_id;
 use crate::bundle::Bundle;
 use crate::reads::{default_value, element_key, field_of_json, scalar_of_json};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
-use crate::task::{Answered, field_json};
+use crate::task::Answered;
+use tilolang_runtime::store::field_json;
 
 /// The native apps a task reaches: each app whose code the task does not run
 /// ([`crate::catalogue::described`] reads what such an app publishes, not how it runs), with the
@@ -247,6 +248,10 @@ impl<'a> NativeReads<'a> {
                 "{app} keeps the text of its record in itself: a program searches the resources \
                  {app} lists by their fields"
             )),
+            ReadRequest::Versions { .. } | ReadRequest::Written { .. } => Err(format!(
+                "{app} keeps the history of its record in itself: a program reads what it lists \
+                 of its resources by their fields"
+            )),
         }
     }
 
@@ -376,7 +381,7 @@ impl<'a> NativeReads<'a> {
             ));
         }
         Ok(Json::String(tilolang_runtime::reads::describe_type(
-            meta, ty, short,
+            meta, ty, short, false,
         )))
     }
 

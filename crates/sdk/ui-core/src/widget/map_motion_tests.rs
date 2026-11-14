@@ -19,6 +19,9 @@ fn pins_of(pins: &[(&str, f64)]) -> Map {
                 y: 0.0,
                 width: 200.0,
                 height: Some(120.0),
+                band: 0.0,
+                hug: false,
+                grows: false,
             },
             Box::new(crate::widget::Spacer::new()),
         );
@@ -280,6 +283,9 @@ fn pins_at(pins: &[(&str, f64, f64)]) -> Map {
                 y: *y,
                 width: 200.0,
                 height: Some(120.0),
+                band: 0.0,
+                hug: false,
+                grows: false,
             },
             Box::new(crate::widget::Spacer::new()),
         );

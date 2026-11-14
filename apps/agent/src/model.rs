@@ -224,6 +224,14 @@ impl Chooser {
             .map(|selection| selection.model.output_tokens())
     }
 
+    /// The most tokens one answer of the model this chooser asks may take,
+    /// only when its descriptor declares it: what compaction leaves room for,
+    /// which an undeclared limit must not size by the default request ceiling.
+    pub fn declared_output_tokens(&self) -> Option<u32> {
+        self.selection()
+            .and_then(|selection| selection.model.max_output_tokens)
+    }
+
     /// Whether the model this chooser asks sees pictures.
     pub fn sees(&self) -> bool {
         self.selection()
@@ -1483,6 +1491,72 @@ impl Conversation {
     /// Where the fold ends: history messages before it are folded.
     pub fn folded_through(&self) -> usize {
         self.folded.as_ref().map_or(2, |(through, _)| *through)
+    }
+
+    /// `body`, a new turn the model just answered, with every call id this
+    /// conversation already holds — or one the turn names twice — made its
+    /// own, so the turn can be read and answered.
+    ///
+    /// A call id is the provider's, and not every provider keeps them unique
+    /// across a conversation: one names its calls `call_<n>_<i>` from a few
+    /// hundred numbers, so a long run meets an id an earlier turn used. Such
+    /// a turn is new inference, not a replay of the earlier one (each answer
+    /// is read once, as it arrives), so its call keeps everything it said and
+    /// takes an id of its own; the history records it, and its result,
+    /// under that id. The provider reads its calls back as this conversation
+    /// records them, so the new id is the one it answers to. A body this
+    /// conversation cannot read is returned as it came, for [`Self::turn`] to
+    /// refuse with the reason.
+    #[must_use]
+    pub fn with_own_call_ids(&self, body: &str) -> String {
+        #[cfg(test)]
+        if self.legacy.is_some() {
+            return body.to_owned();
+        }
+        let Ok(mut response) =
+            serde_json::from_str::<agent_provider_config::protocol::ModelResponse>(body)
+        else {
+            return body.to_owned();
+        };
+        let mut taken: std::collections::BTreeSet<String> = self
+            .history
+            .messages()
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|content| match content {
+                agent_provider_config::protocol::Content::ToolCall(call) => Some(call.id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut renamed = false;
+        for content in &mut response.message.content {
+            let agent_provider_config::protocol::Content::ToolCall(call) = content else {
+                continue;
+            };
+            if call.id.is_empty() || taken.insert(call.id.clone()) {
+                continue;
+            }
+            // Each id taken rules out at most one candidate, so one more candidate than there
+            // are ids taken always holds a free one.
+            let Some(own) = (2..=taken.len() + 2)
+                .map(|n| format!("{}~{n}", call.id))
+                .find(|id| !taken.contains(id))
+            else {
+                continue;
+            };
+            tracing::info!(
+                provider_id = %call.id,
+                id = %own,
+                "the provider reused a call id this conversation holds; the call takes its own"
+            );
+            taken.insert(own.clone());
+            call.id = own;
+            renamed = true;
+        }
+        if !renamed {
+            return body.to_owned();
+        }
+        serde_json::to_string(&response).unwrap_or_else(|_| body.to_owned())
     }
 
     /// The calls a turn asked for, parsed and structurally valid, before they

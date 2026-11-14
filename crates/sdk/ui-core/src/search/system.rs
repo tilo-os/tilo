@@ -333,6 +333,12 @@ pub fn without_filler(needle: &str) -> std::borrow::Cow<'_, str> {
     )
 }
 
+/// The words that ask for an app's window rather than name anything in it: "open Mail" names Mail
+/// as "Mail" does. A query naming a type does not match them against the resource's text, and the
+/// canvas reads a text of an app's name and these alone as naming the app (canvas.md §7).
+/// Possessives are not among them: "my notes" names the notes, not Notes.
+pub const APP_WORDS: &[&str] = &["open", "launch", "start", "app", "application", "the"];
+
 /// What a query naming a resource's type rather than its title scores on the provider
 /// scale, by how it named it and whether the resource is its app's root.
 const TYPE_MATCH_SCORE: i32 = 20;
@@ -514,11 +520,14 @@ pub fn type_match_score_with<'k>(
     if covered.is_empty() {
         return None;
     }
+    // Words asking for the app ("open") are no text the resource must match: "open Mail" names
+    // what "Mail" names, its root first.
     let rest: Vec<&str> = words
         .iter()
         .enumerate()
         .filter(|(at, _)| !covered.contains(at))
         .map(|(_, word)| word.as_str())
+        .filter(|word| !APP_WORDS.contains(word))
         .collect();
     if rest.is_empty() {
         if own.is_empty() || (kin_named && !by_noun) {

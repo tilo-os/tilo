@@ -433,6 +433,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
 pollster.workspace = true
+# The manager an app's window joins its workspace's record with: a test speaks as the window.
+collaboration = { path = "../../collab/collaboration" }
 # A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
