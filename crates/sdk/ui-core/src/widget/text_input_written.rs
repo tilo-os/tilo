@@ -63,6 +63,7 @@ impl TextInput {
         if self.holds_secret() {
             return;
         }
+        let viewport = transform.transform_rect_bbox(self.rect);
         for (range, author) in &self.authored {
             let Some(author) = MemberId::parse(author) else {
                 continue;
@@ -70,12 +71,15 @@ impl TextInput {
             if presence.is_own_identity(&author) {
                 continue;
             }
-            let bands: Vec<Rect> = self
-                .selection_rects(theme, range.start, range.end)
-                .into_iter()
-                .map(|band| transform.transform_rect_bbox(band))
-                .collect();
-            presence.draw_peer_authorship(scene, theme, &author, &bands);
+            self.draw_authorship_bands(
+                scene,
+                transform,
+                theme,
+                presence,
+                &author,
+                (range.start, range.end),
+                viewport,
+            );
         }
         self.draw_invocations_written(scene, transform, text_renderer, theme, presence);
         let (Some((identity, _)), Some((start, end))) = (&self.change, self.written_span()) else {
@@ -85,12 +89,15 @@ impl TextInput {
             return;
         };
         if start < end {
-            let bands: Vec<Rect> = self
-                .selection_rects(theme, start, end)
-                .into_iter()
-                .map(|band| transform.transform_rect_bbox(band))
-                .collect();
-            presence.draw_peer_authorship(scene, theme, &user, &bands);
+            self.draw_authorship_bands(
+                scene,
+                transform,
+                theme,
+                presence,
+                &user,
+                (start, end),
+                viewport,
+            );
         }
         let now = crate::time::now();
         let Some(acting) = presence
@@ -129,6 +136,39 @@ impl TextInput {
 }
 
 impl TextInput {
+    /// Paint a person's spans of a field in their colour, inside what the
+    /// field shows: a scrolled document's spans reach past the field, over
+    /// the chrome below it.
+    fn draw_authorship_bands(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        author: &MemberId,
+        (start, end): (usize, usize),
+        viewport: Rect,
+    ) {
+        let bands: Vec<Rect> = self
+            .selection_rects(theme, start, end)
+            .into_iter()
+            .map(|band| transform.transform_rect_bbox(band))
+            .filter(|band| band.overlaps(viewport))
+            .collect();
+        if bands.is_empty() {
+            return;
+        }
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &viewport,
+        );
+        presence.draw_peer_authorship(scene, theme, author, &bands);
+        scene.pop_layer();
+    }
+
     fn draw_invocations_written(
         &self,
         scene: &mut Scene,
