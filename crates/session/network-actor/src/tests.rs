@@ -1004,6 +1004,74 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
             }
         }
     }
+    // Phase `a_windows_announcement_said_again_reaches_the_watching_device_each_time`.
+    {
+        let [a, mut b] = two(linked(WorkspaceId::from_u128(48), 2).await);
+        let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
+        let owner = crate::behaviour::peer_liveness_handle(&a_id);
+        // A window whose app draws its page is announced to the device showing it, and the end
+        // of its share is said to that device. The announcement says the window, its size and
+        // its codec and nothing of when, so the same window shared again is announced in the
+        // bytes of the first time, as its end is. The order is the one two machines took: shared,
+        // stopped, shared again. The second announcement, dropped as a copy of the first, left
+        // the watching device asking the plane for the window's pictures, which a page has none
+        // of, so the window shared a second time was never drawn there.
+        let announced = || NeighbourMsg::SurfaceStreamStart {
+            surface: 7,
+            source_peer: owner,
+            width: 811,
+            height: 708,
+            codec: "tilo-paint".into(),
+            ts: 0,
+            sender_monotonic_ns_at_send: 0,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 8,
+            app_id: "so.tilo.browser".into(),
+            tab: 7,
+        };
+        let ended = || NeighbourMsg::SurfaceStreamEnd {
+            surface: 7,
+            source_peer: owner,
+            ts: 0,
+        };
+        let said = [
+            ("the announcement of the first share on rx_b", announced()),
+            ("the end of the first share on rx_b", ended()),
+            ("the announcement of the second share on rx_b", announced()),
+            ("the end of the second share on rx_b", ended()),
+        ];
+        for (what, msg) in said {
+            let starts = matches!(msg, NeighbourMsg::SurfaceStreamStart { .. });
+            cmd_a
+                .send(NetCmd::PublishWorkspaceControl {
+                    ws: WorkspaceId::from_u128(48),
+                    msg,
+                    target: b_id,
+                })
+                .await
+                .unwrap();
+            // Each is waited for before the next is said, so what arrives is the one just said.
+            loop {
+                let event = tilo_test_env::within(what, b.rx.recv()).await.unwrap();
+                let heard = match event {
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SurfaceStreamStart { surface: 7, .. },
+                        ..
+                    } => Some(true),
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SurfaceStreamEnd { surface: 7, .. },
+                        ..
+                    } => Some(false),
+                    _ => None,
+                };
+                if let Some(started) = heard {
+                    assert_eq!(started, starts, "{what}: the other message arrived");
+                    break;
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
