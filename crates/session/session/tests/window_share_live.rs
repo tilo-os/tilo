@@ -54,6 +54,11 @@ const IN_ORDER: usize = 60;
 const NOT_OPEN: Duration = Duration::from_secs(12);
 /// How often a shared window is painted anew while a step watches its share.
 const REPAINT: Duration = Duration::from_secs(2);
+/// How often the keys of a workspace three devices of one person came into may have moved by the
+/// end of a test: once for each device, with room for a commit that lost a race and was made
+/// again. A device that asks for the workspace's keys under two member keys has the workspace's
+/// participants commit one in and the other out for as long as it runs, hundreds of times a test.
+const KEYS_MOVED_AT_MOST: u64 = 8;
 
 /// What `device`'s session says of its window shares: `sharing`, `starting`, `watching`,
 /// `received` and `live`, as its `session:window-share` resource reads.
@@ -435,15 +440,20 @@ fn made_on(maker: &Device, other: &Device) -> String {
         maker.label,
         maker.diagnostic()
     );
+    // The desk takes in the person's other workspaces too, as their list brings them from their
+    // other devices, and one of those may land beside the one just made: the one made here is the
+    // new one this device hosts.
+    let made_here = || {
+        maker.on_desk().into_iter().find(|workspace| {
+            !before.contains(workspace)
+                && hosting_of(maker, workspace)["hosted_here"] == json!(true)
+        })
+    };
     tilo_test_env::wait_until(
         format!("{}'s desk holds the workspace it made", maker.label),
-        || maker.on_desk().len() > before.len(),
+        || made_here().is_some(),
     );
-    let made = maker
-        .on_desk()
-        .into_iter()
-        .find(|workspace| !before.contains(workspace))
-        .expect("the workspace the device made");
+    let made = made_here().expect("the workspace the device made");
     eventually(
         &format!("{} holds {made}, made on {}", other.label, maker.label),
         Duration::from_secs(90),
@@ -1091,6 +1101,19 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
         &mut window,
         &[],
     );
+    // Each device is one member of the key group of the workspace their site hosts: its keys
+    // moved as the three came into it, and not on and on while they ran.
+    for device in [&laptop, &phone] {
+        let epoch = sealing_epoch(device, &site.workspace);
+        assert!(
+            epoch.is_some_and(|epoch| epoch <= KEYS_MOVED_AT_MOST),
+            "{} seals the live plane of {}, which three devices came into, under the keys of \
+             epoch {epoch:?}: they moved more than {KEYS_MOVED_AT_MOST} times\n{}",
+            device.label,
+            site.workspace,
+            report(&site.workspace, &[&laptop, &phone])
+        );
+    }
 }
 
 /// The machines the failure was found on, all three: one makes and hosts the workspace, a copy of
