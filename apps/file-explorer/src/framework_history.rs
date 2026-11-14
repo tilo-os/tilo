@@ -220,6 +220,7 @@ fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
 }
 pub fn target(
     path: &Path,
+    roots: &[std::path::PathBuf],
     record: fs_protocol::FileRecordId,
     label: String,
     authors: ui::history_source::AuthorDirectory,
@@ -228,23 +229,49 @@ pub fn target(
         binding: uuid::Uuid::new_v4(),
         record,
         label,
-        folder: workspace_folder(path),
+        folder: workspace_folder(path, roots),
         transport: Arc::new(MountedFileHistory::open(path)?),
         authors,
     })
 }
 
 /// The file's parent folder inside the workspace, `/`-rooted: what a history
-/// hover says after the device that vouched for the writer. `None` for a file
-/// outside the Tilo workspace mount.
-fn workspace_folder(path: &Path) -> Option<String> {
-    let relative = path.strip_prefix("/var/workspace").ok()?;
+/// hover says after the device that vouched for the writer. The workspace's
+/// folder is wherever it is mounted (`/var/workspace` on Tilo OS, the folder a
+/// logged-in computer keeps), so the folder is read against the `roots` this
+/// app shows. `None` for a file outside them.
+fn workspace_folder(path: &Path, roots: &[std::path::PathBuf]) -> Option<String> {
+    let root = crate::model::workspace_root_for(path, roots)?;
+    let relative = path.strip_prefix(root).ok()?;
     let parent = relative.parent()?.to_str()?;
     Some(if parent.is_empty() {
         "/".to_owned()
     } else {
         format!("/{parent}")
     })
+}
+
+#[cfg(test)]
+#[test]
+fn a_files_folder_is_read_against_where_its_workspace_is_mounted() {
+    let roots = [
+        std::path::PathBuf::from("/var/workspace"),
+        std::path::PathBuf::from("/home/ada/My workspace"),
+    ];
+    let folder = |path: &str| workspace_folder(Path::new(path), &roots);
+    assert_eq!(
+        folder("/var/workspace/legal/contract.txt").as_deref(),
+        Some("/legal")
+    );
+    assert_eq!(
+        folder("/home/ada/My workspace/legal/notice.pdf").as_deref(),
+        Some("/legal")
+    );
+    assert_eq!(
+        folder("/home/ada/My workspace/handbook.md").as_deref(),
+        Some("/")
+    );
+    assert_eq!(folder("/home/ada/notes.txt"), None);
 }
 
 struct FilePreview {

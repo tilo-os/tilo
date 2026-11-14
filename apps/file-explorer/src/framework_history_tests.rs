@@ -498,6 +498,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         let target = |path: &std::path::Path, record, label: &str| {
             let target = crate::framework_history::target(
                 path,
+                &[],
                 record,
                 label.into(),
                 ui::history_source::AuthorDirectory::new(),

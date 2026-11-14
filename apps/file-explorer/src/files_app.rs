@@ -5095,6 +5095,7 @@ impl FilesState {
         let target = selected.and_then(|(path, record, label)| {
             crate::framework_history::target(
                 &path,
+                &self.workspace_roots,
                 record,
                 label,
                 self.trusted_humans.history_authors(),
