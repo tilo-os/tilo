@@ -64,7 +64,6 @@ mod workspace_activity {
                 &tilo_desktop_model::shared_record::device::Writer {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 7,
-                    retained: &|_| true,
                     records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
                 },
             )

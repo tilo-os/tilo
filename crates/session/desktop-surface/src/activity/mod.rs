@@ -422,7 +422,6 @@ mod admitted_history_tests {
                 &tilo_desktop_model::shared_record::device::Writer {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 5,
-                    retained: &|_| false,
                     records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
                 },
             )
