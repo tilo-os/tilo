@@ -1250,11 +1250,9 @@ impl Served {
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let mut resource = offer::<CentreAction>(ResourceSpec::new(
-            RESOURCE,
-            KIND,
-            t("session-notifications"),
-        ));
+        let mut resource = offer::<CentreAction>(
+            ResourceSpec::new(RESOURCE, KIND, t("session-notifications")).with_personal_reading(),
+        );
         // The panel keeps the words the rest of the desktop names them by.
         for spec in &mut resource.actions {
             let label = match spec.id.as_str() {

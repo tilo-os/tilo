@@ -721,6 +721,10 @@ pub struct ResourceSpec {
     /// Explicit presentations of this resource. Actions remain invocation
     /// mechanisms; only entries in this collection are resource views.
     pub views: Vec<ResourceViewSpec>,
+    /// Whether the reading is the person's own rather than everyone's: their clipboard, their
+    /// notifications. Only a program the session runs itself reads it; an installed app reads
+    /// what its own records hold.
+    pub personal: bool,
     /// What it is, as people name it, when its type says ([`ResourceType`]).
     pub resource_type: Option<ResourceType>,
 }
@@ -738,6 +742,7 @@ impl ResourceSpec {
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
+            personal: false,
         }
     }
 
@@ -770,6 +775,14 @@ impl ResourceSpec {
     #[must_use]
     pub fn with_view(mut self, view: ResourceViewSpec) -> Self {
         self.views.push(view);
+        self
+    }
+
+    /// Publish this resource's reading to the session's own programs alone: what the person's state
+    /// needs, when it is theirs and not an app's.
+    #[must_use]
+    pub fn with_personal_reading(mut self) -> Self {
+        self.personal = true;
         self
     }
 

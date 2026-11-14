@@ -330,6 +330,7 @@ fn shallow(spec: &ResourceSpec) -> ResourceSpec {
         children: Vec::new(),
         actions: spec.actions.clone(),
         views: spec.views.clone(),
+        personal: spec.personal,
         resource_type: spec.resource_type.clone(),
     }
 }

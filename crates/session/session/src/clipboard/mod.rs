@@ -812,11 +812,14 @@ pub(crate) enum ClipboardAction {
 
 /// What the person copied, and pasting it into a folder.
 fn clipboard_resource() -> ResourceSpec {
-    offer::<ClipboardAction>(ResourceSpec::new(
-        CLIPBOARD_RESOURCE,
-        tilo_action_policy::roles::SESSION_KIND,
-        t("session-clipboard"),
-    ))
+    offer::<ClipboardAction>(
+        ResourceSpec::new(
+            CLIPBOARD_RESOURCE,
+            tilo_action_policy::roles::SESSION_KIND,
+            t("session-clipboard"),
+        )
+        .with_personal_reading(),
+    )
 }
 
 /// How often the fabric is read when nothing was copied here.

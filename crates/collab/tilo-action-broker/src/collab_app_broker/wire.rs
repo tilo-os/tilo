@@ -2400,7 +2400,7 @@ impl WireConnection {
                 let (readings, deliveries) = mpsc::unbounded_channel();
                 let watch = publishing
                     .published
-                    .watch(&publishing.caller, &resource, readings);
+                    .watch(&publishing.caller, &resource, readings)?;
                 let task = super::published::serving(
                     publishing.published,
                     watch,

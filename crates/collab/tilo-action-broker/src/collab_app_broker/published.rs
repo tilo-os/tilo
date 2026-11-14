@@ -8,13 +8,14 @@ use runtime_collab::wire::{Event, HostFrame, Receipt, Reply};
 use tokio::sync::{mpsc, oneshot};
 
 /// What a read of the session's resources answers: the reading and the
-/// services' revision it was read at, once the session's loop made the read.
+/// services' revision it was read at, once the session's loop made the read,
+/// or why the caller is not granted it.
 pub(super) async fn read(
-    asking: Result<oneshot::Receiver<Reading>, String>,
+    asking: Result<oneshot::Receiver<Result<Reading, String>>, String>,
 ) -> Result<Reply, String> {
     let (revision, reading) = asking?
         .await
-        .map_err(|_| "the session ended before it read the resource".to_owned())?;
+        .map_err(|_| "the session ended before it read the resource".to_owned())??;
     Ok(Reply::Snapshot { revision, reading })
 }
 

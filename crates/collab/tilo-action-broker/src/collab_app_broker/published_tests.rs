@@ -38,9 +38,13 @@ fn reading_of(resource: &str) -> Option<Vec<u8>> {
 }
 
 impl PublishedResources for Provider {
-    fn snapshot(&self, _caller: &Caller, resource: &str) -> oneshot::Receiver<Reading> {
+    fn snapshot(
+        &self,
+        _caller: &Caller,
+        resource: &str,
+    ) -> oneshot::Receiver<Result<Reading, String>> {
         let (reply, answered) = oneshot::channel();
-        let _ = reply.send((7, reading_of(resource)));
+        let _ = reply.send(Ok((7, reading_of(resource))));
         answered
     }
 
@@ -49,7 +53,7 @@ impl PublishedResources for Provider {
         _caller: &Caller,
         resource: &str,
         sink: mpsc::UnboundedSender<Event>,
-    ) -> ResourceWatch {
+    ) -> Result<ResourceWatch, String> {
         let watch = ResourceWatch::new(self.next.fetch_add(1, Ordering::Relaxed));
         let _ = sink.send(Event::Reading {
             resource: resource.into(),
@@ -58,7 +62,7 @@ impl PublishedResources for Provider {
         });
         self.watched.lock().unwrap().push(watch);
         self.sinks.lock().unwrap().push((watch, sink));
-        watch
+        Ok(watch)
     }
 
     fn unwatch(&self, watch: ResourceWatch) {

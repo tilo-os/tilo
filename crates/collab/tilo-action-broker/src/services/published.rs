@@ -61,17 +61,25 @@ impl fmt::Display for ResourceWatch {
 /// changed reading to `sink` as [`Event::Reading`], `None` once no service
 /// publishes the resource any more.
 pub trait PublishedResources: Send + Sync {
-    /// `resource` as it reads now, answered on the session's next pass.
-    fn snapshot(&self, caller: &Caller, resource: &str) -> oneshot::Receiver<Reading>;
+    /// `resource` as it reads now, answered on the session's next pass: the reading, or why the
+    /// caller is not granted it.
+    fn snapshot(
+        &self,
+        caller: &Caller,
+        resource: &str,
+    ) -> oneshot::Receiver<Result<Reading, String>>;
 
     /// `resource`'s reading now and each time it changes, delivered to
     /// `sink` until [`Self::unwatch`] or until `sink` closes.
+    ///
+    /// # Errors
+    /// Why the caller is not granted the reading.
     fn watch(
         &self,
         caller: &Caller,
         resource: &str,
         sink: mpsc::UnboundedSender<Event>,
-    ) -> ResourceWatch;
+    ) -> Result<ResourceWatch, String>;
 
     /// Stop serving `watch`.
     fn unwatch(&self, watch: ResourceWatch);

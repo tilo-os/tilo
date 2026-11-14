@@ -361,6 +361,17 @@ impl Launches {
         self.ancestor(pid, |_| true).map(|(_, launch)| launch.app)
     }
 
+    /// Whether `app` is a program this session runs itself, as its surfaces are, rather than a
+    /// package the launcher sandboxes: the session's own code reads the person's own state, and a
+    /// package's reads what it declares.
+    #[must_use]
+    pub fn own_program(&self, app: &str) -> bool {
+        self.started
+            .lock_recover()
+            .values()
+            .any(|launch| launch.app == app && !launch.sandboxed)
+    }
+
     /// The first launch `pid` is or descends from that `wanted` takes, while it still runs.
     fn ancestor(&self, pid: u32, wanted: impl Fn(&Launch) -> bool) -> Option<(u32, Launch)> {
         let lineage = ancestry(pid);

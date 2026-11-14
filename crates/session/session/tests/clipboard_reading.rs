@@ -31,7 +31,7 @@ const APP: &str = "so.tilo.settings";
 fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
     let wake = LoopWake::default();
     let launches = Arc::new(Launches::default());
-    let session = crate::common::headless_on(
+    let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
             collab: false,
@@ -49,8 +49,12 @@ fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
             .expect("a workspace")
     });
     // The app speaks from this test's own process, so the launch the session would have recorded
-    // for it names that process: what the broker admits the connection by.
-    launches.started(std::process::id(), app, &workspace, true);
+    // for it names that process: what the broker admits the connection by. The panel is the
+    // session's own program, as Quick Settings is a session's surface; the app of its own is a
+    // package's, which reads what it declares and not the person's state.
+    launches.started(std::process::id(), app, &workspace, app != PANEL);
+    // One pass of the session's own, so what its services publish is read before an app asks.
+    session.step(Duration::from_millis(1)).expect("step");
     (session, workspace)
 }
 
@@ -130,7 +134,7 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     // Both apps speak from this process, and a session admits one app of it,
     // so each has a session of its own.
     let (mut panel_session, panel_room) = session(&panel_socket, PANEL);
-    let (_app_session, app_room) = session(&app_socket, APP);
+    let (mut app_session, app_room) = session(&app_socket, APP);
     copy(&mut panel_session, "the copied line");
 
     let (panel_sent, panel_received) = std::sync::mpsc::channel();
@@ -138,14 +142,11 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     let panel_seen = until_the_app_is_done(&mut panel_session, &panel_received);
     panel.join().expect("the panel's thread");
 
-    // The app that was granted nothing is refused as it asks: its connection arrives as the session
-    // starts, and the workspace's grants decide it before the session's loop turns to serve
-    // anything of its own.
+    // The app that was granted nothing is refused as it asks: the session answers a read on its own
+    // pass, and the workspace's grants decide it there.
     let (sent, received) = std::sync::mpsc::channel();
     let ordinary = std::thread::spawn(move || app(&app_socket, APP, &app_room, &sent));
-    let app_seen = received
-        .recv_timeout(tilo_test_env::hang_bound())
-        .expect("the app's calls are answered before the session's loop runs a pass");
+    let app_seen = until_the_app_is_done(&mut app_session, &received);
     ordinary.join().expect("the app's thread");
 
     let reading = panel_seen

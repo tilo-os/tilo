@@ -393,7 +393,12 @@ impl SessionControls {
 
 impl Service for SessionControls {
     fn resources(&self) -> Vec<ResourceSpec> {
+        // What the controls change is this device's own state, not anyone's content: only a caller
+        // whose declared kinds reach the session's reads it.
         resources()
+            .into_iter()
+            .map(ResourceSpec::with_personal_reading)
+            .collect()
     }
 
     fn read(&self, resource: &str) -> Option<Value> {

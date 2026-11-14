@@ -468,6 +468,7 @@ pub fn publishes_same(a: &[ResourceSpec], b: &[ResourceSpec]) -> bool {
                 && a.semantic_identity == b.semantic_identity
                 && a.app_id == b.app_id
                 && a.views == b.views
+                && a.personal == b.personal
                 && a.resource_type == b.resource_type
                 && a.actions.len() == b.actions.len()
                 && a.actions

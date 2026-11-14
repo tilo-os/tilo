@@ -65,8 +65,9 @@ struct Watch {
 /// What a connection asked, waiting for the loop's pass.
 enum Ask {
     Snapshot {
+        caller: Caller,
         resource: String,
-        reply: oneshot::Sender<Reading>,
+        reply: oneshot::Sender<Result<Reading, String>>,
     },
     Invoke {
         caller: Caller,
@@ -84,7 +85,47 @@ pub struct Link {
     asks: Mutex<Vec<Ask>>,
     watches: Mutex<Vec<Watch>>,
     next_watch: AtomicU64,
+    /// The readings that are the person's own, by resource id, as the services published them:
+    /// only the session's own programs read those.
+    personal: Mutex<Personal>,
+    /// The apps this session started, as the broker's connections are admitted by them: an app
+    /// the session runs itself, without a package's sandbox, is its own code. Set once the broker
+    /// serves the link.
+    launches: std::sync::OnceLock<std::sync::Arc<Launches>>,
     wake: Wake,
+}
+
+/// [`Link::personal`], with the services' catalogue it was read at: what a service publishes moves
+/// only when a service is added.
+#[derive(Default)]
+struct Personal {
+    catalogue: Option<u64>,
+    readings: std::collections::BTreeSet<String>,
+}
+
+impl Personal {
+    /// Read the personal readings out of `resources`, every resource under them included.
+    fn read(catalogue: u64, resources: &[tilo_actions::ResourceSpec]) -> Self {
+        fn collect(
+            into: &mut std::collections::BTreeSet<String>,
+            resource: &tilo_actions::ResourceSpec,
+        ) {
+            if resource.personal {
+                into.insert(resource.id.as_str().to_owned());
+            }
+            for child in &resource.children {
+                collect(into, child);
+            }
+        }
+        let mut readings = std::collections::BTreeSet::new();
+        for resource in resources {
+            collect(&mut readings, resource);
+        }
+        Self {
+            catalogue: Some(catalogue),
+            readings,
+        }
+    }
 }
 
 impl Link {
@@ -95,8 +136,31 @@ impl Link {
             asks: Mutex::new(Vec::new()),
             watches: Mutex::new(Vec::new()),
             next_watch: AtomicU64::new(1),
+            personal: Mutex::new(Personal::default()),
+            launches: std::sync::OnceLock::new(),
             wake,
         })
+    }
+
+    /// A link that serves a test's services: nothing wakes its session.
+    #[cfg(test)]
+    fn for_test() -> std::sync::Arc<Self> {
+        Self::new(std::sync::Arc::new(|| ()))
+    }
+
+    /// Refuse `resource`'s reading to `caller` when it is the person's own and the caller is not
+    /// a program this session runs itself: a package's app reads what it declares, not the
+    /// person's clipboard or their notifications.
+    fn reading_granted(&self, caller: &Caller, resource: &str) -> Result<(), String> {
+        let personal = self.personal.lock_recover().readings.contains(resource);
+        let own_program = self
+            .launches
+            .get()
+            .is_none_or(|launches| launches.own_program(&caller.app_id));
+        if personal && !own_program {
+            return Err("caller is not granted this reading".to_owned());
+        }
+        Ok(())
     }
 
     fn ask(&self, ask: Ask) {
@@ -108,12 +172,22 @@ impl Link {
     /// watched resource's reading that moved: what the session's loop calls
     /// once per pass, after the services took in what their devices did.
     pub fn serve(&self, services: &mut Services) {
+        self.read_personal(services);
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
-                Ask::Snapshot { resource, reply } => {
-                    let reading = services.read(&resource).map(|value| encoded(&value));
-                    let _ = reply.send((services.revision(), reading));
+                Ask::Snapshot {
+                    caller,
+                    resource,
+                    reply,
+                } => {
+                    let reading = self.reading_granted(&caller, &resource).map(|()| {
+                        (
+                            services.revision(),
+                            services.read(&resource).map(|value| encoded(&value)),
+                        )
+                    });
+                    let _ = reply.send(reading);
                 }
                 Ask::Invoke {
                     caller,
@@ -134,6 +208,16 @@ impl Link {
             }
         }
         self.publish(services);
+    }
+
+    /// Read the personal readings out of `services` again when a service was added.
+    fn read_personal(&self, services: &Services) {
+        let catalogue = services.catalogue_revision();
+        let mut personal = self.personal.lock_recover();
+        if personal.catalogue == Some(catalogue) {
+            return;
+        }
+        *personal = Personal::read(catalogue, &services.resources());
     }
 
     /// Send the readings of the watched resources that moved.
@@ -177,9 +261,14 @@ impl Link {
 /// The session's services, as the broker's connections read them: a resource
 /// is named by its id, and what an app reaches is what the services publish.
 impl PublishedResources for Link {
-    fn snapshot(&self, _caller: &Caller, resource: &str) -> oneshot::Receiver<Reading> {
+    fn snapshot(
+        &self,
+        caller: &Caller,
+        resource: &str,
+    ) -> oneshot::Receiver<Result<Reading, String>> {
         let (reply, answered) = oneshot::channel();
         self.ask(Ask::Snapshot {
+            caller: caller.clone(),
             resource: resource.to_owned(),
             reply,
         });
@@ -188,10 +277,11 @@ impl PublishedResources for Link {
 
     fn watch(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         resource: &str,
         sink: mpsc::UnboundedSender<Event>,
-    ) -> ResourceWatch {
+    ) -> Result<ResourceWatch, String> {
+        self.reading_granted(caller, resource)?;
         let id = ResourceWatch::new(self.next_watch.fetch_add(1, Ordering::Relaxed));
         self.watches.lock_recover().push(Watch {
             id,
@@ -202,7 +292,7 @@ impl PublishedResources for Link {
             sink,
         });
         (self.wake)();
-        id
+        Ok(id)
     }
 
     fn unwatch(&self, id: ResourceWatch) {
@@ -384,6 +474,7 @@ pub fn serve(
     fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
 ) -> std::io::Result<BrokerHandle> {
+    let _ = link.launches.set(std::sync::Arc::clone(&launches));
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
     let fanout = std::sync::Arc::clone(&hosted.fanout);
@@ -1640,7 +1731,7 @@ mod tests {
 
         let content = std::sync::Arc::new(AppContentIndex::in_memory());
         let services = host_services(
-            Link::new(std::sync::Arc::new(|| ())),
+            Link::for_test(),
             std::sync::Arc::new(Launches::default()),
             None,
             hosted(Some(std::sync::Arc::clone(&content))),
@@ -1902,7 +1993,7 @@ mod tests {
     #[test]
     fn every_seam_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
         let decided = seams(
-            Link::new(std::sync::Arc::new(|| ())),
+            Link::for_test(),
             std::sync::Arc::new(Launches::default()),
             None,
             hosted(None),
@@ -2101,7 +2192,7 @@ mod tests {
             },
         );
         let services = host_services(
-            Link::new(std::sync::Arc::new(|| ())),
+            Link::for_test(),
             std::sync::Arc::new(Launches::default()),
             None,
             hosted_with(None, Lists::fixed(lists)),
