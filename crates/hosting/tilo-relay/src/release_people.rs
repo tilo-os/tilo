@@ -301,17 +301,17 @@ struct FoundRecord {
 
 impl FoundRecord {
     fn name(&self) -> String {
-        self.path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.served_as.clone())
+        self.path.file_name().map_or_else(
+            || self.served_as.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        )
     }
 }
 
 /// Every workspace record under `state`, and the workspace the release was
 /// told to serve, from its `room-id` file.
 fn walk(state: &Path) -> (Vec<FoundRecord>, Option<String>) {
-    let mut pending = vec![(state.to_path_buf(), 0)];
+    let mut pending = vec![(state.to_path_buf(), 0_u32)];
     let mut records = Vec::new();
     let mut served = None;
     while let Some((directory, depth)) = pending.pop() {
@@ -321,7 +321,7 @@ fn walk(state: &Path) -> (Vec<FoundRecord>, Option<String>) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() && depth < 4 {
-                pending.push((path, depth + 1));
+                pending.push((path, depth.saturating_add(1)));
             } else if path
                 .extension()
                 .is_some_and(|extension| extension == "room")
