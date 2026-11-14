@@ -106,20 +106,30 @@ fn a_click_outside_the_sheet_never_reaches_the_window() {
     let _settled = ui::motion::testing::settled();
     let (mut session, mut client) = sheet_over_a_window();
     let buttons_before = client.seen.buttons.clone();
-    // The sheet covers the whole display; a press at its corner is beside the card and closes the
-    // sheet.
+    // The card is drawn before a press is decided against it: its layout is what the press lands
+    // on, and the sheet's frames are what draw it.
+    for _ in 0..8 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    // The sheet is modal over the whole display: a press beside its card is the sheet's and closes
+    // it.
     click(&mut session, 1.0, 1.0);
-    crate::common::until(
-        &mut session,
-        "the press beside the card to close the sheet",
-        |session| {
-            client.exchange();
-            session.step(Duration::from_millis(2)).expect("step");
-            client.exchange();
-            session
-                .workspace_directory()
-                .is_some_and(|seat| !seat.presentation().is_open())
-        },
+    let closed = crate::common::wait_maybe(&mut session, |session| {
+        client.exchange();
+        session.step(Duration::from_millis(2)).expect("step");
+        client.exchange();
+        session
+            .workspace_directory()
+            .is_some_and(|seat| !seat.presentation().is_open())
+            .then_some(())
+    });
+    assert!(
+        closed.is_some(),
+        "the press beside the card closed the sheet; it stays {} and the window saw {:?}",
+        session
+            .workspace_directory()
+            .is_some_and(|seat| seat.presentation().is_open()),
+        client.seen.buttons
     );
     assert_eq!(
         client.seen.buttons, buttons_before,
