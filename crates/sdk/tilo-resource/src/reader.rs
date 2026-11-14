@@ -285,6 +285,12 @@ impl<R: Resource> Reader<R> {
         self.core.follows(doc)
     }
 
+    /// Whether `doc` holds every change of the last sync, so syncing to it
+    /// applies what moved since ([`Tracker::leads_to`]).
+    pub fn leads_to(&self, doc: &Doc) -> bool {
+        self.core.tracker.leads_to(doc)
+    }
+
     /// Take `state` as the resource's state now, read elsewhere than from
     /// a document this reader follows (a settings section, as the settings
     /// document holds it): a new revision, in which everything changed.

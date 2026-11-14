@@ -359,7 +359,7 @@ impl ResourceRoot {
             return None;
         }
         let surface = self.has_surface();
-        let current = if self.typed.follows(doc) {
+        let current = if self.follow_document(doc) {
             None
         } else {
             Some(self.typed.read(doc).ok()?)

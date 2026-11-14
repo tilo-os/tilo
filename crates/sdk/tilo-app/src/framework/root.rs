@@ -937,7 +937,7 @@ impl ResourceRoot {
     /// this view last synced.
     #[inline(never)]
     fn current_publication(&self, doc: &AutoCommit) -> ResourceSpec {
-        if !self.typed.follows(doc)
+        if !self.follow_document(doc)
             && let Ok(current) = self.typed.read(doc)
         {
             // Publication can run after an edit and before the view syncs.
@@ -953,6 +953,28 @@ impl ResourceRoot {
             return tree;
         }
         self.publication()
+    }
+
+    /// Whether the live state is `doc`'s, after bringing it up to `doc` when
+    /// the document moved on since the view last synced: this window's own
+    /// edit before its frame, or another window's or participant's change.
+    /// The state applies the change, reading only what it touched, and the
+    /// view follows it at its next sync ([`Self::refresh`]). Publication runs
+    /// on every keystroke between the edit and the frame, and reading the
+    /// resource whole there cost each key a read of the whole document. A
+    /// document the state's does not lead to (a past version) leaves it as
+    /// it is.
+    pub(super) fn follow_document(&self, doc: &AutoCommit) -> bool {
+        if self.typed.follows(doc) {
+            return true;
+        }
+        if !self.typed.leads_to(doc) {
+            return false;
+        }
+        if let Err(error) = self.typed.sync(doc) {
+            tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
+        }
+        self.typed.follows(doc)
     }
 
     #[inline(never)]
@@ -2212,7 +2234,7 @@ impl RootPublishes for ResourceRoot {
         if let Some(published) = find(&[self.current_publication(doc)], id) {
             return Some(published);
         }
-        let current = if self.typed.follows(doc) {
+        let current = if self.follow_document(doc) {
             None
         } else {
             self.typed.read(doc).ok()

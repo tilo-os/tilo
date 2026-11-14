@@ -104,6 +104,9 @@ pub(crate) trait TypedRoot {
     /// Whether the live state is `doc`'s.
     fn follows(&self, doc: &AutoCommit) -> bool;
 
+    /// Whether `doc` moved on from the live state's document.
+    fn leads_to(&self, doc: &AutoCommit) -> bool;
+
     /// Why the record does not read as the resource, while it does not.
     fn unreadable(&self) -> Option<String>;
 
@@ -373,6 +376,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
         self.live.follows(doc)
     }
 
+    fn leads_to(&self, doc: &AutoCommit) -> bool {
+        self.live.leads_to(doc)
+    }
+
     fn unreadable(&self) -> Option<String> {
         self.live.unreadable().map(|unreadable| unreadable.reason)
     }
@@ -382,6 +389,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
     }
 
     fn read(&self, doc: &AutoCommit) -> Result<Rc<dyn Any>, ModelError> {
+        let _profile = tilo_resource::profiling::Phase::start("framework.read_whole");
         R::read(doc).map(|state| Rc::new(state) as Rc<dyn Any>)
     }
 

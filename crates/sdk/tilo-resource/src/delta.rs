@@ -323,6 +323,17 @@ impl Tracker {
         self.heads.as_deref()
     }
 
+    /// Whether `doc` holds every change this tracker last saw: what moved
+    /// since is a delta of it, not another document.
+    pub fn leads_to(&self, doc: &Doc) -> bool {
+        let committed = doc.committed_document();
+        self.heads.as_ref().is_some_and(|heads| {
+            heads
+                .iter()
+                .all(|hash| committed.get_change_meta_by_hash(hash).is_some())
+        })
+    }
+
     /// What changed since the previous call (or [`Self::start`]). The first
     /// call of a tracker that was not started is [`Delta::everything`].
     pub fn delta(&mut self, doc: &mut Doc) -> Delta {
@@ -351,17 +362,15 @@ impl Tracker {
     ) -> Delta {
         let heads = doc.committed_heads();
         let committed = doc.committed_document();
+        // A version this document does not have: it was replaced wholesale.
+        let moved_on = self.leads_to(doc);
         let Some(previous) = self.heads.replace(heads.clone()) else {
             return Delta::everything();
         };
         if previous == heads {
             return Delta::nothing();
         }
-        // A version this document does not have: it was replaced wholesale.
-        if previous
-            .iter()
-            .any(|hash| committed.get_change_meta_by_hash(hash).is_none())
-        {
+        if !moved_on {
             return Delta::everything();
         }
         let metas = committed.get_changes_meta(&previous);

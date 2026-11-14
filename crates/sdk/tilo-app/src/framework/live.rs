@@ -293,6 +293,13 @@ impl<R: Resource> Live<R> {
         self.inner.borrow().follows(doc)
     }
 
+    /// Whether `doc` moved on from the document the state was last synced
+    /// with, rather than being another one (a past version, an empty host
+    /// document).
+    pub fn leads_to(&self, doc: &Doc) -> bool {
+        self.inner.borrow().leads_to(doc)
+    }
+
     /// Show the parts of a large resource `demand` names, reading those not
     /// read yet from `doc` — the document the view was synced with, which in
     /// History mode is the past version on screen. Returns whether the state

@@ -537,3 +537,36 @@ impl ResourceApp for KeptShelfApp {
         })
     }
 }
+
+/// The document moved before the view synced to it, as an edit this window
+/// writes before its frame moves it: what publishes in between shows the
+/// moved document, brought into the live state by the change instead of
+/// read again whole beside it (each keystroke in a long note read every
+/// note again).
+#[test]
+fn a_publication_ahead_of_the_view_follows_the_change() {
+    let mut app = shelf(3).expect("the shelf opens");
+    let mut doc = document(&app);
+    doc.put(ROOT, "count", 5_i64).expect("the shelf grows");
+    doc.commit();
+    let root = app
+        .harness()
+        .widget_mut::<ResourceRoot>()
+        .expect("the root is the shelf's");
+    let (forest, phases) = tilo_resource::profiling::observe(|| root.shared_resources(None, &doc));
+    let shelf = forest.expect("a shared forest");
+    let items = shelf
+        .first()
+        .expect("the shelf")
+        .children()
+        .iter()
+        .filter(|child| child.id().starts_with("shelf/item:"))
+        .count();
+    assert_eq!(items, 5, "the publication shows the moved document");
+    assert!(
+        phases
+            .iter()
+            .all(|phase| phase.phase != "framework.read_whole"),
+        "the publication read the resource whole: {phases:?}"
+    );
+}
