@@ -13,6 +13,11 @@ use std::time::Duration;
 /// again.
 pub const WORKSPACE_DELETED: &str = "workspace deleted";
 
+/// Why a host refuses a device whose person it keeps nothing of
+/// ([`crate::transport::Envelope::NotAuthorised`]): its state was reset, or it
+/// pruned them. The person joins again through the host's door.
+pub const NOT_ADMITTED: &str = "not a member here";
+
 /// The member change budget's refusal ([`crate::config::MemberLimitsConfig`]).
 pub const TOO_MANY_CHANGES: &str = "too many changes; slow down";
 /// The token that leads the reason of an action a relay is too busy to take

@@ -303,9 +303,20 @@ async fn admit_subscription(
         .filter(|_| peer.user_public_key == *session.own_user_public_key);
     let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
     let Some(ws) = ws else {
+        // A host that keeps nothing of this person forgot them: their session
+        // stops as not admitted, and they join again through its door. One
+        // that knows them keeps no such workspace, which their workspace's
+        // permissions answer.
+        let known = session
+            .admin
+            .is_some_and(|workspaces| workspaces.knows(&peer.user_public_key));
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
-            reason: "workspace not bound on this relay".into(),
+            reason: if known {
+                "workspace not bound on this relay".into()
+            } else {
+                tilo_relay_protocol::refusal::NOT_ADMITTED.into()
+            },
         }));
     };
     let mut wr = crate::workspace_io::fresh_membership(&ws).await?;

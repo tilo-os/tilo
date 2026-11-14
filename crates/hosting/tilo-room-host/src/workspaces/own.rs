@@ -533,6 +533,17 @@ impl Workspaces {
         self.own().map(|own| own.of(person)).unwrap_or_default()
     }
 
+    /// Whether this host keeps anything of `person`: their own workspaces, a
+    /// membership of theirs, or the host's own person. A host that keeps
+    /// nothing of them forgot them (its state was reset, or it pruned them),
+    /// and a session of theirs is turned away as not admitted.
+    #[must_use]
+    pub fn knows(&self, person: &[u8; 32]) -> bool {
+        *person == self.inner.host.cert.user_public_key
+            || self.inner.memberships.holds_any(person)
+            || self.own().is_some_and(|own| !own.of(person).is_empty())
+    }
+
     /// Why a write to `workspace` is not kept: it is someone's own and their
     /// workspaces of their own keep as much as they may between them. `None`
     /// for any other workspace, and ones with room.

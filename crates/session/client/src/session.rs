@@ -1249,6 +1249,13 @@ impl Task {
         if let Envelope::Entered(entered) = envelope {
             return self.entered(entered).map_or(Ok(()), Err);
         }
+        // A host that keeps nothing of this person forgot them: the session
+        // stops as not admitted, and the page joins again through its door.
+        if let Envelope::NotAuthorised { reason, .. } = &envelope
+            && reason == tilo_relay_protocol::refusal::NOT_ADMITTED
+        {
+            return Err(Exit::Refused(NOT_ADMITTED.0, NOT_ADMITTED.1.to_owned()));
+        }
         if let Some((event, reply)) = self.voice.inbound(&envelope) {
             if let Some(reply) = reply
                 && client.send(reply).is_err()
