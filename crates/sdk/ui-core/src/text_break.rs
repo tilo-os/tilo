@@ -170,12 +170,12 @@ impl LineEdit {
             .zip(new_bytes)
             .take_while(|(a, b)| a == b)
             .count();
-        let room = old.len().min(new.len()).saturating_sub(prefix);
+        let spare = old.len().min(new.len()).saturating_sub(prefix);
         let suffix = old_bytes
             .iter()
             .rev()
             .zip(new_bytes.iter().rev())
-            .take(room)
+            .take(spare)
             .take_while(|(a, b)| a == b)
             .count();
         let start = old_bytes[..prefix]

@@ -8,7 +8,7 @@
 //! arriving, leaving and changing places | | [`Snap`] | carousels and paged strips settling on a detent
 //! | | [`ScrollTo`] | a scroll view going to what it was asked to show (find next, a revealed row) | |
 //! [`Zoom`] | one thing becoming another (window and overview card) | | [`WindowMotion`] | windows
-//! opening, closing and moving on the strip | | [`Ambient`] | chrome that comes back on its own (desk
+//! opening, closing and moving on the strip | | [`Ambient`] | chrome that comes back on its own (shell
 //! widgets) | | [`Transient`] | a readout or acknowledgement that goes on its own | | [`Follow`] | a
 //! peer's pointer gliding between the samples it is heard at | | [`Float`] | a reaction rising from the
 //! pointer it was sent from | | [`Trace`] | a collaborator's just-typed run fading on its own | |

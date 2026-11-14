@@ -9,7 +9,9 @@ const APP: &str = "so.tilo.test";
 #[test]
 fn publication_retains_original_typed_identity_not_a_supplied_alias() {
     let cache = PortableStorage::new("profile", "device").unwrap();
-    let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
+    let records = RecordOwners::portable(cache)
+        .open(APP, "workspace")
+        .unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     records.create_record(&checkout).unwrap();
     let (binding, _scope, _owner) = mount(&records, &checkout, "You", 1, true);
@@ -99,7 +101,9 @@ fn trusted_host_person_scope_rejects_reattribution_and_restores_after_nested_cal
     use tilo_actions::ActionInvoker;
 
     let cache = PortableStorage::new("profile", "device").unwrap();
-    let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
+    let records = RecordOwners::portable(cache)
+        .open(APP, "workspace")
+        .unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     records.create_record(&checkout).unwrap();
     let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
@@ -152,7 +156,9 @@ fn checked_record_preview_attribution_uses_admitted_actor_and_restores_on_unwind
     use tilo_resource::ActionCx;
 
     let cache = PortableStorage::new("profile", "device").unwrap();
-    let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
+    let records = RecordOwners::portable(cache)
+        .open(APP, "workspace")
+        .unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     records.create_record(&checkout).unwrap();
     let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
@@ -219,7 +225,7 @@ fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_pages_write
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     let writer = {
         let records = RecordOwners::portable(cache.clone())
-            .open(APP, "room")
+            .open(APP, "workspace")
             .unwrap();
         records.create_record(&checkout).unwrap();
         let writer = records
@@ -280,7 +286,9 @@ fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_pages_write
         writer
     };
 
-    let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
+    let records = RecordOwners::portable(cache)
+        .open(APP, "workspace")
+        .unwrap();
     records.open_existing_record_checked(&checkout).unwrap();
     let reopened_writer = records
         .read(&checkout.id, |doc| doc.get_actor().clone())

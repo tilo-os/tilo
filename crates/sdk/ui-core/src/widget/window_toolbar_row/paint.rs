@@ -673,9 +673,9 @@ pub(crate) fn paint_picker(
 ) -> Rect {
     let pad = f64::from(theme.tokens.spacing.s2);
     let gap = f64::from(theme.tokens.spacing.s1);
-    let room = (rect.width() - pad * 2.0 - gap - LOCATION_ICON_PX).max(0.0);
-    let label = LocationLabel::measure(tr, theme, text.shown, text.word, room);
-    let label_w = label.width.min(room);
+    let spare = (rect.width() - pad * 2.0 - gap - LOCATION_ICON_PX).max(0.0);
+    let label = LocationLabel::measure(tr, theme, text.shown, text.word, spare);
+    let label_w = label.width.min(spare);
     let face_rect = Rect::new(
         rect.x0,
         rect.y0,

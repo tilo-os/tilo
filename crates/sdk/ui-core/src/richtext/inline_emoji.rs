@@ -11,7 +11,7 @@ use vello::kurbo::{Affine, Rect};
 use super::{FontFamily, RichSpan, RichTextLayout};
 use crate::workspace_emoji::WorkspaceEmoji;
 
-/// How far an inline emoji advances, in ems of the text it stands in: its picture and a hair of room
+/// How far an inline emoji advances, in ems of the text it stands in: its picture and a hair of area
 /// either side.
 pub const ADVANCE_EM: f32 = 1.5;
 /// The side of an inline emoji's picture, in ems of its text, at most the height of its row.

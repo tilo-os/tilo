@@ -1,5 +1,5 @@
 //! A surface whose code loads on first use. A program built to fetch some of its code later (the
-//! browser desktop, whose start module is what every visitor waits for) keeps surfaces such as History,
+//! browser shell, whose start module is what every visitor waits for) keeps surfaces such as History,
 //! the palettes or Feedback out of the code it starts with. **The wait**, drawn with [`draw_loading`]:
 //! a quiet panel where the surface will stand, so a person who asked for it never sees nothing.
 
@@ -86,13 +86,13 @@ pub fn draw_loading(
         clippy::cast_possible_truncation,
         reason = "a panel's width is far inside f32"
     )]
-    let room = (rect.width() - 2.0 * inset).max(0.0) as f32;
+    let spare = (rect.width() - 2.0 * inset).max(0.0) as f32;
     text.draw_style(
         scene,
         &crate::i18n::widget_format(label, &[]),
         theme.text_dim,
         transform * vello::kurbo::Affine::translate((rect.x0 + inset, rect.y0 + inset)),
-        Some(room),
+        Some(spare),
         &theme.text(crate::tokens::TextRole::Body),
     );
 }

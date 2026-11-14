@@ -268,7 +268,7 @@ tilo_test_env::scenario! {
     {
         // Case `three_line_text_block_stays_inside_the_card`.
         // Caption, title and body stack on their measured line boxes with an
-        // `s1` gap, so in the 64 px card a desktop notification uses every
+        // `s1` gap, so in the 64 px card a shell notification uses every
         // painted glyph line lands inside the card.
         {
             let theme = Theme::dark();

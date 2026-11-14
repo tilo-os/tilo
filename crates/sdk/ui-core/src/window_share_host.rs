@@ -1,5 +1,5 @@
-//! What a desktop does for windows shared live ([`super`]), the same in the browser
-//! desktop and the session's shell.
+//! What a shell does for windows shared live ([`super`]), the same in the browser
+//! shell and the session's shell.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,9 +17,9 @@ pub const VIEW: (f64, f64) = (1000.0, 625.0);
 pub const RETRY: Duration = Duration::from_secs(2);
 
 /// The window menu's item that asks the sharing app to share the window.
-pub const SHARE_ITEM: &str = "tilo.desktop.share-to-channel";
+pub const SHARE_ITEM: &str = "tilo.shell.share-to-channel";
 /// The window menu's item that asks the sharing app to stop sharing it.
-pub const STOP_ITEM: &str = "tilo.desktop.stop-sharing";
+pub const STOP_ITEM: &str = "tilo.shell.stop-sharing";
 
 fn share_of<'a>(window: &OpenWindow, shared: &'a [SharedWindow]) -> Option<&'a SharedWindow> {
     shared
@@ -66,7 +66,7 @@ pub fn offer<S: std::hash::BuildHasher + Default>(
     *offered = now;
 }
 
-/// What the person's `chosen` items of the desktop's own (by tab, as
+/// What the person's `chosen` items of the shell's own (by tab, as
 /// [`WindowSlots::take_host_actions`] hands them) ask of the sharing app, oldest first.
 #[must_use]
 pub fn asks(
@@ -95,7 +95,7 @@ pub fn asks(
     asks
 }
 
-/// Where `embed`, declared in its window's layout coordinates, is drawn on a desktop that
+/// Where `embed`, declared in its window's layout coordinates, is drawn on a shell that
 /// shows the window's content at `origin` within `content`: its place, and what of it may
 /// show.
 #[must_use]
@@ -165,7 +165,7 @@ impl<H: LiveView> View<H> {
     }
 }
 
-/// The views a desktop runs for the windows that embed them, by the view.
+/// The views a shell runs for the windows that embed them, by the view.
 pub struct Views<H> {
     views: HashMap<ResourceView, View<H>>,
 }

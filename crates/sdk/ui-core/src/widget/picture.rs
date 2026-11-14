@@ -742,7 +742,7 @@ fn paint_banner(scene: &mut Scene, transform: Affine, area: Rect, message: bool,
         &RoundedRect::from_rect(icon, unit * 0.4),
     );
     let left = icon.x1 + unit;
-    let room = banner.x1 - unit - left;
+    let spare = banner.x1 - unit - left;
     let bar = |scene: &mut Scene, y: f64, width: f64, color: Color| {
         scene.fill(
             Fill::NonZero,
@@ -752,10 +752,15 @@ fn paint_banner(scene: &mut Scene, transform: Affine, area: Rect, message: bool,
             &RoundedRect::new(left, y, left + width, y + unit * 0.6, unit * 0.3),
         );
     };
-    bar(scene, icon.y0 + unit * 0.2, room * 0.45, theme.text_primary);
+    bar(
+        scene,
+        icon.y0 + unit * 0.2,
+        spare * 0.45,
+        theme.text_primary,
+    );
     if message {
-        bar(scene, icon.y0 + unit * 1.6, room, theme.text_dim);
-        bar(scene, icon.y0 + unit * 2.8, room * 0.7, theme.text_dim);
+        bar(scene, icon.y0 + unit * 1.6, spare, theme.text_dim);
+        bar(scene, icon.y0 + unit * 2.8, spare * 0.7, theme.text_dim);
     }
 }
 

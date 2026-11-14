@@ -152,8 +152,8 @@
           "type": "bool"
         },
         {
-          "name": "room",
-          "doc": "The avatar's room with none in it: a message that continues its author's run lines up under the first one's avatar without repeating it.",
+          "name": "placeholder",
+          "doc": "An empty avatar placeholder: a message that continues its author's run lines up under the first one's avatar without repeating it.",
           "type": "bool"
         }
       ],
@@ -1486,7 +1486,7 @@
           "type": "bool"
         },
         {
-          "name": "roomy",
+          "name": "reserved",
           "doc": "Rows a finger's target tall, rather than a pointer target and a step.",
           "type": "bool"
         },
@@ -2216,7 +2216,7 @@
         },
         {
           "name": "neutral",
-          "doc": "A share with no status (storage by kind, a quota with room): the plain fill, never a status colour.",
+          "doc": "A share with no status (storage by kind, a quota with area): the plain fill, never a status colour.",
           "type": "bool"
         },
         {
@@ -2817,7 +2817,7 @@
         },
         {
           "name": "ground",
-          "doc": "Whether it is a desktop: the windows it holds stand on the desktop's ground ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content colour of the window the map is in.",
+          "doc": "Whether it is a shell: the windows it holds stand on the shell's ground ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content colour of the window the map is in.",
           "type": "bool"
         }
       ],
@@ -4355,7 +4355,7 @@
     },
     {
       "name": "Scroll",
-      "doc": "A body that scrolls under its column's fixed header, showing the part of the content the column has room for.",
+      "doc": "A body that scrolls under its column's fixed header, showing the part of the content the column fits.",
       "props": [
         {
           "name": "follow_end",
@@ -5026,7 +5026,7 @@
         },
         {
           "name": "truncate",
-          "doc": "It elides at the room it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
+          "doc": "It elides at the area it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
           "type": "bool"
         }
       ],
@@ -5060,7 +5060,7 @@
         },
         {
           "name": "lines",
-          "doc": "Room for this many lines: the field wraps and grows with what is typed.",
+          "doc": "Area for this many lines: the field wraps and grows with what is typed.",
           "type": {
             "option": "int"
           }
@@ -5849,7 +5849,7 @@
     },
     {
       "name": "WindowFrame",
-      "doc": "A window standing on a desktop: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
+      "doc": "A window standing on a shell: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
       "props": [
         {
           "name": "name",
@@ -5866,7 +5866,7 @@
         },
         {
           "name": "lists_actions",
-          "doc": "The shell lists this window's actions where the person reaches them (the desktop bar's window menu): its header's actions that do not fit give way with no door of their own. Without it what does not fit goes behind the header's door.",
+          "doc": "The shell lists this window's actions where the person reaches them (the shell bar's window menu): its header's actions that do not fit give way with no door of their own. Without it what does not fit goes behind the header's door.",
           "type": "bool"
         },
         {
@@ -5906,7 +5906,7 @@
       "props": [
         {
           "name": "window",
-          "doc": "The window whose picture shows here: its key in the desk's reading (`Win.key`).",
+          "doc": "The window whose picture shows here: its key in the shell's reading (`Win.key`).",
           "type": "text",
           "required": true,
           "positional": true,
@@ -5925,7 +5925,7 @@
       "props": [
         {
           "name": "place",
-          "doc": "The place whose window shows here: the tab id the desktop model gives the window when it maps (shell.md §8).",
+          "doc": "The place whose window shows here: the tab id the shell model gives the window when it maps (shell.md §8).",
           "type": "text",
           "required": true,
           "positional": true,
@@ -6523,7 +6523,7 @@
         },
         {
           "name": "width",
-          "doc": "How wide it is: as wide as its content, one share of the spare room, or `pixels` wide.",
+          "doc": "How wide it is: as wide as its content, one share of the spare area, or `pixels` wide.",
           "type": {
             "option": {
               "choice": {
@@ -6664,7 +6664,7 @@
         },
         {
           "name": "group",
-          "doc": "The part of the run it belongs to: a bar's leading group, its centre, its trailing group, or the room between two groups.",
+          "doc": "The part of the run it belongs to: a bar's leading group, its centre, its trailing group, or the area between two groups.",
           "type": {
             "option": {
               "choice": {
@@ -7243,7 +7243,7 @@
         },
         {
           "name": "name",
-          "doc": "What the room calls them, when it differs from their name here.",
+          "doc": "What the workspace calls them, when it differs from their name here.",
           "type": {
             "option": "text"
           }
@@ -7385,7 +7385,7 @@
     },
     {
       "name": "ToolbarSpacer",
-      "doc": "The room left in a toolbar, between the commands before it and those after it, which it pushes to the far end.",
+      "doc": "The area left in a toolbar, between the commands before it and those after it, which it pushes to the far end.",
       "semantics": {
         "role": "Generic"
       }

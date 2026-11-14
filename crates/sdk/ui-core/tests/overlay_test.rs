@@ -47,7 +47,7 @@ fn focus_trap_cycles_only_within_members() {
 // `modal_dialog_{dark,light}.png` and `popover_{dark,light}.png`.
 // ---------------------------------------------------------------------------
 
-// Both axes must fit a desktop panel. Short landscape windows intentionally
+// Both axes must fit a shell panel. Short landscape windows intentionally
 // present full-window sheets, which have no floating panel edge.
 const CANVAS_W: u32 = 960;
 const CANVAS_H: u32 = 720;

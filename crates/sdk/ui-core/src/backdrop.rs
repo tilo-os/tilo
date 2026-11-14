@@ -501,7 +501,7 @@ pub(crate) fn fill(
 }
 
 /// [`fill`] with a ground of the caller's choosing: a surface that lifts
-/// itself off the desktop by its tone (a notification card) tints the
+/// itself off the shell by its tone (a notification card) tints the
 /// same blurred backdrop with that tone instead of the panel ground.
 pub(crate) fn fill_with_ground(
     scene: &mut Scene,
@@ -1969,4 +1969,4 @@ fn ensure_level(
 #[cfg(test)]
 mod tests;
 
-pub mod desktop;
+pub mod wallpaper;

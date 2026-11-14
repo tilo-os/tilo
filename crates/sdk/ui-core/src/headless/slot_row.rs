@@ -1,5 +1,5 @@
 //! The app's window-bar slots in a row of the frame's own, as a window of its own shows them outside a
-//! Tilo session. A browser page that mounts one app is such a window: no desktop draws a bar over it,
+//! Tilo session. A browser page that mounts one app is such a window: no shell draws a bar over it,
 //! so nothing would show the slots the app declares ([`crate::window_toolbar`]), and an app whose
 //! controls are its slots would have none.
 
@@ -94,7 +94,7 @@ impl FrameHarness {
         if self.window_bar || self.slot_row.is_some() {
             return;
         }
-        // The row's slots are this window's, as the desktop bar's are
+        // The row's slots are this window's, as the shell bar's are
         // ([`Self::present_in_window_bar`]): a process laying out several windows keeps each
         // row to its own window.
         self.host_bar_window();
@@ -120,7 +120,7 @@ impl FrameHarness {
         self.slot_row.is_some()
     }
 
-    /// The frame is a window of its own on a desktop that leaves the frame to the app
+    /// The frame is a window of its own on a shell that leaves the frame to the app
     /// ([`Self::host_window_slots`]): its row carries the window's minimize, maximize and close in
     /// their pill at its trailing end, as the native runner's row does, and a press on the row's empty
     /// ground moves the window.

@@ -388,8 +388,8 @@ impl App {
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
     ) -> Result<(), tilo_actions::DoorError> {
-        // A surface's components are published to the desktop that placed
-        // it, and what that desktop asks comes back over the same socket:
+        // A surface's components are published to the shell that placed
+        // it, and what that shell asks comes back over the same socket:
         // there is no document route for the binding to name.
         if self.collaboration.manager.hosts_surface() {
             return Ok(());
@@ -673,7 +673,7 @@ impl App {
                 });
             return;
         }
-        // A surface's actions belong to the desktop that placed it, not to a
+        // A surface's actions belong to the shell that placed it, not to a
         // document: there is no history to custody them, and no route to
         // witness.
         if !self.collaboration.manager.hosts_surface() && !self.published_action_history_ready() {
@@ -2452,7 +2452,7 @@ impl App {
     /// focused that takes text: the person is talking about the selection.
     /// A send-to box opens on it with the key in its message, where their
     /// typing goes on. Shortcuts, a text field, a terminal and an input
-    /// method all take their keys first, and without a desktop that sends
+    /// method all take their keys first, and without a shell that sends
     /// nothing happens.
     #[cfg(feature = "native")]
     pub(crate) fn handle_unconsumed_typed_key(&self, event: &winit::event::WindowEvent) -> bool {
@@ -3135,7 +3135,7 @@ impl App {
     }
 }
 
-/// Room for a directory page's own fields (revision, cursor, flags and the
+/// Area for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
 const DIRECTORY_PAGE_WIRE_BYTES: usize = ::collaboration::action_directory::PAGE_WIRE_BYTES;
 

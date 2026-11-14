@@ -79,7 +79,7 @@ fn render(
     renderer.render(&scene, backdrop(theme))
 }
 
-/// Room around the picker for the edge probes.
+/// Area around the picker for the edge probes.
 const PICKER_INSET: f64 = 20.0;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {

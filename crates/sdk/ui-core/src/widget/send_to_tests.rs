@@ -85,19 +85,19 @@ tilo_test_env::scenario! {
     phase the_box_stands_beside_its_menu_and_never_leaves_the_window;
     {
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        // Room on its trailing side: it keeps the menu's top.
-        let room = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+        // Area on its trailing side: it keeps the menu's top.
+        let spare = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
         assert_eq!(
-            room.rect().x0,
+            spare.rect().x0,
             212.0 + f64::from(Theme::dark().tokens.spacing.s2)
         );
-        assert_eq!(room.rect().y0, 120.0, "level with what opened it");
+        assert_eq!(spare.rect().y0, 120.0, "level with what opened it");
 
         // Near the window's right edge: it takes the leading side instead.
         let trailing = box_beside(Rect::new(560.0, 120.0, 792.0, 320.0), viewport);
         assert!(
             trailing.rect().x1 <= 560.0,
-            "no room on the trailing side: the box stands on the leading one, {}",
+            "no area on the trailing side: the box stands on the leading one, {}",
             trailing.rect()
         );
         assert_eq!(trailing.rect().y0, 120.0);
@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
             narrow.rect()
         );
 
-        // No room anywhere: it still stays inside the window, over what it is about.
+        // No area anywhere: it still stays inside the window, over what it is about.
         let tight = box_beside(
             Rect::new(150.0, 20.0, 250.0, 160.0),
             Rect::new(0.0, 0.0, 400.0, 200.0),
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
             "inside the window: {}",
             tight.rect()
         );
-        // A menu at the window's trailing edge with a little room before it: the
+        // A menu at the window's trailing edge with a little area before it: the
         // box covers as little of it as the window allows.
         let edge = box_beside(
             Rect::new(300.0, 100.0, 460.0, 560.0),
@@ -357,8 +357,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_message_wraps_and_the_box_makes_room_for_it;
-    // The message wraps at the box's width and the box makes room for it: a
+    phase the_message_wraps_and_the_box_makes_way_for_it;
+    // The message wraps at the box's width and the box makes way for it: a
     // sentence longer than the field is read whole, in lines, never run past the
     // card sideways.
     {
@@ -384,7 +384,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             send_to.rect().height() > empty,
-            "and the box made room for them"
+            "and the box made way for them"
         );
 
         // The field is as wide as the box leaves it, and the sentence is wider
@@ -442,7 +442,7 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         let (hint_width, _) = text.measure_style(&hint, None, &Theme::dark().text(TextRole::Body));
         // The hint is set in from the field's edge as a chip's mark is, so the
-        // room it needs is its own width plus that inset.
+        // area it needs is its own width plus that inset.
         let inset = send_to.mark_inset();
         assert!(
             drawn.width() + 0.5 >= f64::from(hint_width) + inset,

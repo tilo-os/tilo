@@ -423,7 +423,7 @@ mod tests {
                 &mut state.doc,
                 &RecordId::parse(file_record).unwrap(),
                 &RecordKind::new("document"),
-                "home-room",
+                "home-workspace",
             );
 
             let mut app1 = App::new_with_controlled_inputs(state, Box::new(root));

@@ -195,14 +195,14 @@ impl Column {
         let readable = f64::from(theme.tokens.metrics.readable_width);
         let floor = f64::from(theme.tokens.spacing.s16);
         let pad_x = f64::from(theme.tokens.spacing.s3);
-        // The conversation column: the room the list leaves, but never wider
+        // The conversation column: the area the list leaves, but never wider
         // than the readable measure, and centred in what is left over. Two
         // bubbles that hug the edges of a wide window are two bubbles nobody
         // reads as a conversation.
-        let room_left = x0 + gutter;
-        let room_right = x0 + width - gutter;
-        let column = (room_right - room_left).min(readable).max(floor);
-        let left = room_left + ((room_right - room_left) - column).max(0.0) / 2.0;
+        let column_left = x0 + gutter;
+        let column_right = x0 + width - gutter;
+        let column = (column_right - column_left).min(readable).max(floor);
+        let left = column_left + ((column_right - column_left) - column).max(0.0) / 2.0;
         let right = left + column;
         let bubble_max = (column * BUBBLE_COLUMN_SHARE).min(readable).max(floor);
         let inner_max = (bubble_max - 2.0 * pad_x).max(floor);
@@ -506,7 +506,7 @@ impl<'a> ListFace<'a> {
         let run_gap = f64::from(spacing.s4);
         let pad_x = f64::from(spacing.s3);
         let pad_y = f64::from(spacing.s2);
-        // The kept rows are placed again into their own room: a scrolling list
+        // The kept rows are placed again into their own area: a scrolling list
         // re-places on every frame it moves, and that must not allocate.
         let mut rows: Vec<Row> = std::mem::take(&mut cache.layout.rows);
         rows.clear();

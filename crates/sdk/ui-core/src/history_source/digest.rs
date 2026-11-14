@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn a_german_desktop_reads_its_catch_up_in_german() {
+    fn a_german_shell_reads_its_catch_up_in_german() {
         crate::i18n::I18nManager::install(
             "en-US",
             "de-DE",

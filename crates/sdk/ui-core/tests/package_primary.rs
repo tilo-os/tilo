@@ -60,7 +60,7 @@ tilo_test_env::scenario! {
     {
         let root = tempfile::tempdir().unwrap();
         let package = "so.tilo.chat";
-        let workspace_id = "room-a";
+        let workspace_id = "workspace-a";
         let path =
             app_state::DocStore::workspace_primary_dir_at(root.path(), package, workspace_id).unwrap();
         assert_eq!(
@@ -109,22 +109,22 @@ tilo_test_env::scenario! {
             &mut doc,
             &RecordId::for_tab(7),
             &checkout.kind,
-            "room",
-            Some("room"),
+            "workspace",
+            Some("workspace"),
         );
         doc.commit();
         cache
             .hydrate(
                 StorageKey::Primary {
                     package: "so.tilo.chat".into(),
-                    workspace: "room".into(),
+                    workspace: "workspace".into(),
                 },
                 doc.save(),
                 Some(doc.get_actor().to_bytes().to_vec()),
             )
             .unwrap();
         let store = RecordOwners::portable(cache)
-            .open("so.tilo.chat", "room")
+            .open("so.tilo.chat", "workspace")
             .unwrap();
         assert!(matches!(
             store.try_open_record(&checkout),
@@ -137,21 +137,21 @@ tilo_test_env::scenario! {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
         let mut owners = RecordOwners::portable(cache);
-        let a = owners.open("so.tilo.chat", "room-a").unwrap();
+        let a = owners.open("so.tilo.chat", "workspace-a").unwrap();
         a.reserve_record(&checkout)
             .unwrap()
             .initialize(|_| Ok(()))
             .unwrap();
         assert!(
             owners
-                .open("so.tilo.chat", "room-b")
+                .open("so.tilo.chat", "workspace-b")
                 .unwrap()
                 .try_open_record(&checkout)
                 .is_err()
         );
         assert!(
             owners
-                .open("so.tilo.other", "room-a")
+                .open("so.tilo.other", "workspace-a")
                 .unwrap()
                 .try_open_record(&checkout)
                 .is_err()

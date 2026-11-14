@@ -1012,7 +1012,7 @@ impl OffscreenRenderer {
         )
     }
 
-    /// [`try_new`](Self::try_new) for frames that are shown and replaced, as a headless desktop's or a
+    /// [`try_new`](Self::try_new) for frames that are shown and replaced, as a headless shell's or a
     /// window preview's: segments sum in the order tiles finish, which may move an antialiased edge by
     /// one unit.
     pub fn try_new_live(width: u32, height: u32) -> Result<Self, OffscreenError> {

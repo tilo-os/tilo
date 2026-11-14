@@ -1827,8 +1827,8 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
         } else {
             theme.text_primary
         };
-        let room = f32_of_f64(content.width().max(0.0) + 0.5);
-        let shown = ctx.text.elide_to_width_style(label, room, &style);
+        let spare = f32_of_f64(content.width().max(0.0) + 0.5);
+        let shown = ctx.text.elide_to_width_style(label, spare, &style);
         let (_, th) = ctx.text.measure_style(&shown, None, &style);
         let ty = face.field.y0 + (face.field.height() - f64::from(th)) / 2.0;
         ctx.scene.push_layer(

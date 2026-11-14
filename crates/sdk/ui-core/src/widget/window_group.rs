@@ -43,7 +43,7 @@ pub struct WindowGroupBounds {
     pub close: Option<Rect>,
 }
 
-/// Group widths are the desktop model's: a fraction of the strip, never
+/// Group widths are the shell model's: a fraction of the strip, never
 /// pixels, with one set of tiers and clamps for every host.
 pub use tilo_desktop_model::width::{
     WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE, WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE,
@@ -137,7 +137,7 @@ impl WindowGroup {
     }
 }
 
-const SEARCH_CONTROL_ROOM: f64 =
+const SEARCH_CONTROL_WIDTH: f64 =
     super::window_controls::CONTROL_PX + super::window_controls::CONTROL_GAP;
 
 #[allow(
@@ -186,13 +186,13 @@ pub struct WindowGroup {
     pub focused: bool,
     chrome_motion: crate::tokens::EffectiveMotion,
     top_overlay_inset: f64,
-    /// A maximized window moves down while the desktop's bar shows over its
-    /// top edge, so its own bar is never under the desktop's: where the
+    /// A maximized window moves down while the shell's bar shows over its
+    /// top edge, so its own bar is never under the shell's: where the
     /// slide started, and when. It moves, it is not resized, so the app is
     /// not laid out again for a bar that comes and goes.
     top_slide_from: f64,
     top_slide_since: Option<Instant>,
-    /// Nothing of the desktop's stands beside a maximized window on its
+    /// Nothing of the shell's stands beside a maximized window on its
     /// display (the top bar is not docked above it): maximized, it fills the
     /// display and draws edge to edge ([`Widget::set_full_bleed`]).
     fills_display: bool,
@@ -336,7 +336,7 @@ impl WindowGroup {
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         bar.set_window_controls(true);
-        bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
+        bar.set_search_control(Some(SEARCH_CONTROL_WIDTH));
         Self {
             id,
             close_reports: vec![],
@@ -1273,7 +1273,7 @@ impl WindowGroup {
     /// The window's own node style. `flex_grow: 0` keeps a group at its
     /// declared `WindowWidth` regardless of sibling count or slack: placing
     /// a new app never resizes siblings, the strip extends past the viewport
-    /// instead. A maximized window takes the room instead.
+    /// instead. A maximized window takes the area instead.
     pub(crate) fn own_style(&self) -> Style {
         let mut style = Style {
             display: taffy::Display::Flex,
@@ -1291,13 +1291,13 @@ impl WindowGroup {
         };
         if self.maximized {
             style.size.width = Dimension::auto();
-            // A maximized window takes the strip's room and no more: it is not
+            // A maximized window takes the strip's area and no more: it is not
             // measured at its content's least width (`filling`).
             style = crate::widget::layout::filling(style, 1.0e6);
         }
-        // Moved down, not shrunk, while the desktop's bar shows over the
+        // Moved down, not shrunk, while the shell's bar shows over the
         // windows' top edge (a maximized window, or a bar hidden by choice):
-        // the window's own bar is never under the desktop's.
+        // the window's own bar is never under the shell's.
         let slide = self.top_slide_now();
         if slide > 0.0 {
             style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
@@ -2655,7 +2655,7 @@ impl Widget for WindowGroup {
 
     /// The focused window is where Tab travels: its bar (the tab list, the agent that opened it, the
     /// app's slots, its controls) and the app's own controls, and never the other windows or the
-    /// desktop's chrome around it. Without that the bar's controls had no keyboard route at all.
+    /// shell's chrome around it. Without that the bar's controls had no keyboard route at all.
     fn scopes_keyboard_focus(&self) -> bool {
         self.focused || self.search_active
     }
@@ -4148,7 +4148,7 @@ mod tests {
                 assert!(g.stands(), "past the budget its place is reserved");
                 assert!(
                     painted_anything(&mut g),
-                    "the desktop stayed empty for an app the person asked for and \
+                    "the shell stayed empty for an app the person asked for and \
                  is still waiting on",
                 );
                 assert!(g.any_tile_arriving());

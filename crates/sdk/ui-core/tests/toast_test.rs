@@ -67,7 +67,7 @@ fn a_notification_card_registers_its_edge() {
 
 const CANVAS_W: u32 = 420;
 const CANVAS_H: u32 = 120;
-/// Room around the card so its outermost edge pixel is sampleable.
+/// Area around the card so its outermost edge pixel is sampleable.
 const CARD_INSET: f64 = 20.0;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {

@@ -166,7 +166,7 @@ impl<M: ListModel> VirtualList<M> {
         )
     }
 
-    /// The way back the list offers over its rows, and whether the pill has room for its words:
+    /// The way back the list offers over its rows, and whether the pill fits its words:
     /// what a layout check reads to see a floating pill shows what it says.
     pub(super) fn pill_layout(&self) -> Option<crate::widget::ListPillLayout> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;

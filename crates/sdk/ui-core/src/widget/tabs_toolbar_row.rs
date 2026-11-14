@@ -1,7 +1,7 @@
 //! Where the active tab's slots stand in the bar: in the window's title's row for one tab, past the
 //! strip's own controls, across a row of their own under several, and between the two on the tabs'
 //! motion — and how much of that row the strip's own "+" takes, which yields where the slots need
-//! the room.
+//! the area.
 use super::{ICON_W, PILL_PAD_X, Rect, TOOLBAR_LEAD_GAP, TOOLBAR_ROW_HEIGHT, TabBar};
 use crate::widget::window_controls;
 
@@ -48,9 +48,9 @@ impl TabBar {
         self.show_toolbar_row();
         self.toolbar_row.lay_out(self.toolbar_row_rect());
         // The strip's own "+" stands between the window's icon and the app's slots, which start
-        // past it so neither paints over the other. A narrow window has no room for both: the "+"
+        // past it so neither paints over the other. A narrow window cannot fit both: the "+"
         // gives up its place, so the app's Back, its name and its actions keep their own, and the
-        // window's search keeps the room it reaches back over.
+        // window's search keeps the area it reaches back over.
         if self.strip_squeezes_slots() {
             self.new_tab_rect = Rect::ZERO;
             self.toolbar_row.lay_out(self.toolbar_row_rect());
@@ -69,9 +69,9 @@ impl TabBar {
         });
     }
 
-    /// Whether the strip's "+" is what leaves the active tab's slots short of the room they need,
+    /// Whether the strip's "+" is what leaves the active tab's slots short of the area they need,
     /// while the slots stand in the title's row beside it: their buttons' places and the app's
-    /// location, or the room the window's search reaches back over to keep its query typeable.
+    /// location, or the area the window's search reaches back over to keep its query typeable.
     pub(super) fn strip_squeezes_slots(&self) -> bool {
         if self.new_tab_rect.area() <= 0.0
             || self.active_slots().is_none()

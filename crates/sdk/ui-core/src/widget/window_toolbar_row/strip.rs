@@ -1,6 +1,6 @@
 //! A notice's own strip, where the window is compact: the notice's whole text, on up to two lines,
 //! and its actions as buttons that name themselves, on the bar's own surface. The row stands as it
-//! does without a notice, and the strip comes and goes on the standard motion. The desktop's bar
+//! does without a notice, and the strip comes and goes on the standard motion. The shell's bar
 //! grows by the strip, so the window's content moves down once as the notice comes and back once it
 //! has gone; a window's own row ([`crate::slot_row`]) floats it over the app at the window's foot
 //! instead.
@@ -100,19 +100,19 @@ impl NoticeStrip {
                 .collect();
             let style = theme.text(TextRole::Body);
             let line_height = f64::from(style.line_height_px());
-            let mut clamp = |room: f64| {
+            let mut clamp = |spare: f64| {
                 text.clamp_to_lines(
                     &notice.text,
                     &style,
-                    crate::num::f32_of_f64(room.max(0.0)),
+                    crate::num::f32_of_f64(spare.max(0.0)),
                     MAX_LINES,
                 )
             };
             let lead = LOCATION_ICON_PX + gap;
             let span = widths.iter().sum::<f64>()
                 + gap * f64::from(u32::try_from(widths.len().saturating_sub(1)).unwrap_or(0));
-            let beside_room = width - lead - if widths.is_empty() { 0.0 } else { gap + span };
-            let beside = clamp(beside_room);
+            let beside_width = width - lead - if widths.is_empty() { 0.0 } else { gap + span };
+            let beside = clamp(beside_width);
             let rows_of = |lines: &[String]| {
                 f64::from(u32::try_from(lines.len()).unwrap_or(1).max(1)) * line_height
             };
@@ -132,7 +132,7 @@ impl NoticeStrip {
                 let text_h = rows_of(&beside);
                 return (
                     beside,
-                    Rect::new(0.0, y - text_h / 2.0, beside_room + lead, y + text_h / 2.0),
+                    Rect::new(0.0, y - text_h / 2.0, beside_width + lead, y + text_h / 2.0),
                     buttons,
                     height,
                     line_height,

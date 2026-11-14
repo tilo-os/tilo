@@ -325,7 +325,7 @@ fn key(
         .handled
 }
 
-/// The room the painted heading of the first group leaves between its lowest ink and the row
+/// The area the painted heading of the first group leaves between its lowest ink and the row
 /// it heads: the gap a person sees, which a finger's taller band must not widen.
 fn heading_gap(list: &mut VirtualList<Grouped>, theme: &Theme) -> f64 {
     let top = list.groups.bands.first().map_or(0.0, |band| band.top);
@@ -377,7 +377,7 @@ fn a_heading_keeps_one_gap_to_the_row_it_heads_at_every_width() {
     );
     assert!(
         (pointer - touch).abs() < 1.0,
-        "the room a finger needs stands over the heading's line, never between it and its \
+        "the area a finger needs stands over the heading's line, never between it and its \
          first row: {pointer} on a pointer, {touch} under a finger"
     );
 }
@@ -718,7 +718,7 @@ fn the_heading_holding_the_keyboard_wears_a_focus_ring() {
 }
 
 tilo_test_env::scenario! {
-    fn headings_and_rows_share_their_columns_and_room;
+    fn headings_and_rows_share_their_columns_and_area;
 
     phase a_lists_headings_and_rows_share_one_column_and_one_trailing_edge;
     {
@@ -752,7 +752,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_list_with_nothing_to_disclose_keeps_no_chevron_room;
+    phase a_list_with_nothing_to_disclose_keeps_no_chevron_area;
     {
         let mut list = grouped(vec![None, None]);
         let _ = settle(&mut list);
@@ -802,13 +802,13 @@ tilo_test_env::scenario! {
         let mut list = grouped(vec![None, None]);
         let _ = settle(&mut list);
         assert!(
-            (list.band_room(0) - 0.0).abs() < 0.5,
+            (list.band_gap(0) - 0.0).abs() < 0.5,
             "nothing heads the list: {} over its first row",
-            list.band_room(0)
+            list.band_gap(0)
         );
     }
 
-    phase a_list_states_the_room_it_keeps_over_its_first_band;
+    phase a_list_states_the_area_it_keeps_over_its_first_band;
     {
         let inset = crate::chrome::column_gutter(&Theme::dark());
         let stated = |list: &VirtualList<Grouped>| {
@@ -847,7 +847,7 @@ tilo_test_env::scenario! {
         assert!(stated(&alone).lead.abs() < 0.5);
     }
 
-    phase the_room_over_a_lists_first_band_is_no_part_of_it;
+    phase the_area_over_a_lists_first_band_is_no_part_of_it;
     {
         let mut list = grouped(vec![heading("Today"), heading("Today")])
             .in_view("Today", Some(2))
@@ -859,7 +859,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             list.key_at_point(vello::kurbo::Point::new(20.0, inset / 2.0)),
             None,
-            "the room over the first row is the list's, not the row's"
+            "the area over the first row is the list's, not the row's"
         );
         assert_eq!(
             list.key_at_point(vello::kurbo::Point::new(20.0, inset + 5.0)),
@@ -887,14 +887,14 @@ tilo_test_env::scenario! {
         assert_eq!(mounted_indexes(&list), vec![0, 1], "both rows are built");
         let inset = crate::chrome::column_gutter(&Theme::dark());
         assert!(
-            (list.band_room(0) - 0.0).abs() < 0.5,
-            "the list keeps no heading's room over its first row: {}",
-            list.band_room(0)
+            (list.band_gap(0) - 0.0).abs() < 0.5,
+            "the list keeps no heading's area over its first row: {}",
+            list.band_gap(0)
         );
         assert!(
-            (list.band_room(1) - 0.0).abs() < 0.5,
+            (list.band_gap(1) - 0.0).abs() < 0.5,
             "the rows after it follow it: {}",
-            list.band_room(1)
+            list.band_gap(1)
         );
         let first = list.row_box(0).expect("a mounted first row");
         assert!(

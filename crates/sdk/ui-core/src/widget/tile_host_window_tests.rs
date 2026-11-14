@@ -1,5 +1,5 @@
 //! A hosted app's top layer stands over its own window: the tile, not the
-//! screen the desktop's shared layout tree is rooted at.
+//! screen the shell's shared layout tree is rooted at.
 
 use super::*;
 use crate::widget::TaffyTreeExt;
@@ -70,7 +70,7 @@ impl crate::widget::app_widget::AppWidget for DialogApp {
     }
 }
 
-/// The desktop lays every window out in one tree rooted at the screen.
+/// The shell lays every window out in one tree rooted at the screen.
 /// An app's dialog must centre on, and stay inside, its own window, not
 /// the screen: in a window narrower than the screen a screen-centred
 /// sheet spilled past the window's edge.

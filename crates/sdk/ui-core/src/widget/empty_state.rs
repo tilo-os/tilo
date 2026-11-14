@@ -731,8 +731,8 @@ pub fn take_painted_actions() -> Vec<PaintedAction> {
         let mut painted = painted.borrow_mut();
         let taken = painted.pop().unwrap_or_default();
         if let Some(outer) = painted.last_mut() {
-            let room = MAX_PAINTED.saturating_sub(outer.len());
-            outer.extend(taken.iter().take(room).cloned());
+            let spare = MAX_PAINTED.saturating_sub(outer.len());
+            outer.extend(taken.iter().take(spare).cloned());
         }
         taken
     })
@@ -1341,7 +1341,7 @@ impl EmptyState {
 
     /// Wrap this retained empty state in the toolkit's vertical viewport.
     /// The child keeps at least the viewport height for ordinary centering and
-    /// grows to its measured content height when wrapped text needs more room,
+    /// grows to its measured content height when wrapped text needs more area,
     /// making a below-fold action reachable by wheel, keyboard, or scrollbar.
     #[must_use]
     pub fn into_scrollable(mut self) -> Scrollable {
@@ -1398,7 +1398,7 @@ impl EmptyState {
     }
 
     /// Where [`Self::paint`] draws `content`'s action inside `rect`, for hit-testing it
-    /// between paints; `None` with no action or no room.
+    /// between paints; `None` with no action or no area.
     #[must_use]
     pub fn action_rect_in(
         text: &mut TextRenderer,

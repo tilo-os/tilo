@@ -104,7 +104,7 @@ impl TabBar {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        room: Rect,
+        spare: Rect,
     ) {
         let keyboard = self.opened.focused && crate::focus_visible::shown();
         let Some(rect) = self
@@ -125,7 +125,7 @@ impl TabBar {
             theme,
             (rect, crate::widget::tooltip::TooltipSide::Below),
             (&opened_by_tip(run), colour),
-            room,
+            spare,
         );
     }
 
@@ -139,8 +139,8 @@ impl TabBar {
             return None;
         }
         let label = run.label.clone();
-        let (x0, limit, cy) = match self.mark_room() {
-            Some(room) => room,
+        let (x0, limit, cy) = match self.mark_span() {
+            Some(spare) => spare,
             None if self.active_slots().is_some() => return None,
             None => {
                 let tab_row = self.tab_row();
@@ -162,7 +162,7 @@ impl TabBar {
         })
     }
 
-    fn mark_room(&self) -> Option<(f64, f64, f64)> {
+    fn mark_span(&self) -> Option<(f64, f64, f64)> {
         self.active_slots()?;
         if self.toolbar_row.is_editing() {
             return None;

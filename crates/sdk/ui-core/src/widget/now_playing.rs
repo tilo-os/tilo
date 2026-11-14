@@ -1,5 +1,5 @@
 //! What plays, painted the one way every player surface paints it: Music's transport and its
-//! Now Playing page, the shell's Quick Settings card, the lock screen and the desk.
+//! Now Playing page, the shell's Quick Settings card, the lock screen and the shell.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -52,7 +52,7 @@ impl SongFace {
     }
 
     /// Showing `song` at rest: for a surface that paints from scratch each
-    /// time and keeps no motion of its own (the lock screen, the desk).
+    /// time and keeps no motion of its own (the lock screen, the shell).
     #[must_use]
     pub fn showing(song: &Song) -> Self {
         Self {

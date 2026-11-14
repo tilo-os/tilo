@@ -1,5 +1,5 @@
-//! The native desktop side of the toolkit, behind the default-on `native` feature. The host-service
-//! backends — the desktop implementation of [`crate::host::HostServices`] ([`services`]), the location
+//! The native shell side of the toolkit, behind the default-on `native` feature. The host-service
+//! backends — the shell implementation of [`crate::host::HostServices`] ([`services`]), the location
 //! and screen-capture portals and MPRIS on the session bus — live in `tilo-host` and the platform
 //! crates, and are re-exported here under their usual paths.
 

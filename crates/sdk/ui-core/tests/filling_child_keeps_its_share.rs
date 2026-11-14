@@ -1,6 +1,6 @@
-//! A child that fills its parent takes exactly its share of the room along the parent's main
+//! A child that fills its parent takes exactly its share of the area along the parent's main
 //! axis: a fixed strip above it keeps its own height, and the filling child holds the rest,
-//! scrolling or clipping its content inside that share. It never pushes the parent past the room
+//! scrolling or clipping its content inside that share. It never pushes the parent past the area
 //! the parent was given.
 
 #![cfg(test)]
@@ -107,7 +107,7 @@ fn a_stack_of_a_strip_above_a_filling_scroll_view_in_a_place_keeps_the_view_in_t
 }
 
 #[test]
-fn a_filling_child_of_a_column_takes_the_room_under_its_strip() {
+fn a_filling_child_of_a_column_takes_the_area_under_its_strip() {
     let root = Column::new()
         .with_no_padding()
         .with_gap(0.0)
@@ -142,7 +142,7 @@ fn a_filling_child_of_a_column_takes_the_room_under_its_strip() {
     );
     assert!(
         (filler.height() - 480.0).abs() <= 1.0,
-        "the filling child holds the room under the strip: {filler:?}"
+        "the filling child holds the area under the strip: {filler:?}"
     );
     assert!(
         (filler.y0 - 40.0).abs() <= 1.0,
@@ -163,7 +163,7 @@ fn a_filling_child_of_a_column_takes_the_room_under_its_strip() {
 }
 
 #[test]
-fn a_filling_child_of_a_row_takes_the_room_beside_its_strip() {
+fn a_filling_child_of_a_row_takes_the_area_beside_its_strip() {
     let root = Row::new()
         .no_wrap()
         .with_padding(0.0, 0.0)
@@ -201,7 +201,7 @@ fn a_filling_child_of_a_row_takes_the_room_beside_its_strip() {
     );
     assert!(
         (filler.width() - 480.0).abs() <= 1.0,
-        "the filling child holds the room beside the strip: {filler:?}"
+        "the filling child holds the area beside the strip: {filler:?}"
     );
     assert!(
         (filler.x0 - 40.0).abs() <= 1.0,

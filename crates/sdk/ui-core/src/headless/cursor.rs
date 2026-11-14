@@ -1,4 +1,4 @@
-//! The pointer shape a surface this harness hosts asks for (the browser page's desktop and windows
+//! The pointer shape a surface this harness hosts asks for (the browser page's shell and windows
 //! among them), by the rule every host shares ([`crate::widget::cursor`]); the page shows it as the
 //! canvas's cursor.
 
@@ -10,7 +10,7 @@ use super::FrameHarness;
 impl FrameHarness {
     /// The pointer shape the laid-out surface asks for at logical `point`, by the rule every host
     /// shares ([`crate::widget::cursor`]): its laid-out nodes, and the shown tree walked as well, since
-    /// a container that places its own children (a desktop's strip of windows) keeps them out of the
+    /// a container that places its own children (a shell's strip of windows) keeps them out of the
     /// node map.
     #[must_use]
     pub fn cursor_at(&self, point: Point) -> Option<winit::window::CursorIcon> {

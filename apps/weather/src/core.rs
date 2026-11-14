@@ -1112,8 +1112,8 @@ impl Core {
         let field_h = ButtonFace::height(ControlSize::Regular, theme);
         // It stays over the column it adds to, which routes its input.
         let window = presence.viewport.get().unwrap_or(over);
-        let room = floating_surface::panel_room(window, theme)
-            .intersect(floating_surface::panel_room(over, theme).inflate(0.0, over.height()));
+        let room = floating_surface::panel_area(window, theme)
+            .intersect(floating_surface::panel_area(over, theme).inflate(0.0, over.height()));
         let w = f64::from(theme.tokens.metrics.panel_width_list).min(room.width());
         let h = pad + caption_h + f64::from(spacing.s2) + field_h + pad;
         let anchor = Rect::new(room.x1 - field_h, over.y0 - field_h, room.x1, over.y0);

@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
 
     phase without_a_chosen_format_dates_and_clocks_follow_the_language;
     // With no date format or clock chosen, full timestamps, dates and times
-    // follow the desktop's language and region; ISO, 12-hour and 24-hour are
+    // follow the shell's language and region; ISO, 12-hour and 24-hour are
     // only what someone picks.
     {
         assert_eq!(RegionFormats::default().date, DateStyle::Language);

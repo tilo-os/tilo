@@ -28,7 +28,7 @@ pub struct BarChipFace<'a> {
     hovered: bool,
     pressed: bool,
     focused: bool,
-    /// The label may grow to this width before it elides; `None`: as wide as the room the chip is given.
+    /// The label may grow to this width before it elides; `None`: as wide as the area the chip is given.
     label_width: Option<f64>,
     /// The chip's height; `None` uses the theme's bar control height.
     height: Option<f64>,
@@ -197,7 +197,9 @@ impl<'a> BarChipFace<'a> {
         if !self.label.is_empty() {
             let style = Self::label_style(theme);
             let measured = f64::from(text.measure_style(self.label, None, &style).0);
-            w += self.label_width.map_or(measured, |room| measured.min(room));
+            w += self
+                .label_width
+                .map_or(measured, |spare| measured.min(spare));
         }
         if self.trailing.is_some() {
             w += gap + icon;
@@ -369,11 +371,11 @@ impl<'a> BarChipFace<'a> {
         let trailing = self.trailing.map_or(0.0, |_| gap + icon);
         if !self.label.is_empty() {
             let style = Self::label_style(theme);
-            let room = (rect.x1 - Self::pad(theme) - trailing - x).max(0.0);
-            let room = self.label_width.map_or(room, |most| room.min(most));
+            let spare = (rect.x1 - Self::pad(theme) - trailing - x).max(0.0);
+            let spare = self.label_width.map_or(spare, |most| spare.min(most));
             let shown =
                 ctx.text
-                    .elide_to_width_style(self.label, crate::num::f32_of_f64(room), &style);
+                    .elide_to_width_style(self.label, crate::num::f32_of_f64(spare), &style);
             let (w, h) = ctx.text.measure_style(&shown, None, &style);
             if !shown.is_empty() {
                 ctx.text.draw_style(

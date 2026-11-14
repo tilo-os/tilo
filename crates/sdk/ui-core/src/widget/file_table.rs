@@ -1,5 +1,5 @@
 //! The file list: a folder's entries as the toolkit's [`DataTable`], with a Name, a Size
-//! and a Modified column. It is the one list of files on the desktop: the file manager's
+//! and a Modified column. It is the one list of files on the shell: the file manager's
 //! folder view and the system file chooser both show it, so a folder reads, sorts, selects
 //! and scrolls the same wherever a person meets it.
 
@@ -178,7 +178,7 @@ pub struct Shape {
 }
 
 impl Shape {
-    /// The columns a list `width` wide shows: the name always has room, so the detail
+    /// The columns a list `width` wide shows: the name always fits, so the detail
     /// columns shrink and then drop out on a narrow list (and sooner with larger type or
     /// zoom).
     #[must_use]
@@ -579,7 +579,7 @@ impl<R: FileRow> FileTable<R> {
             .cloned()
             .unwrap_or_else(|_| Style::default());
         style.size.height = Dimension::percent(1.0);
-        // The table takes the room its parent leaves and no more, its rows
+        // The table takes the area its parent leaves and no more, its rows
         // scrolling inside it (`layout::filling`).
         let style = crate::widget::layout::filling(style, 1.0);
         let _ = taffy.set_style(node, style);

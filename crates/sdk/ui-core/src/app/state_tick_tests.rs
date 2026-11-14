@@ -2,7 +2,7 @@
 // managed root live there).
 //
 // An app window nobody draws still runs the passes a frame would run before
-// it paints. On the desktop this is what an occluded window relies on: macOS
+// it paints. On a computer this is what an occluded window relies on: macOS
 // delivers no `RedrawRequested` to a window on another Space, behind a
 // full-screen app or otherwise not on screen, so work a wake queued would
 // otherwise wait for a frame that never comes.

@@ -341,7 +341,7 @@ impl SearchField {
         &self.placeholder
     }
 
-    /// Give the input the placeholder elided to the room it has, so a long one ends in an
+    /// Give the input the placeholder elided to the area it has, so a long one ends in an
     /// ellipsis instead of running under the trailing slot.
     fn fit_placeholder(&mut self, fitted: &str) {
         if fitted != self.input.placeholder() {
@@ -576,7 +576,7 @@ impl SearchField {
             && self.count.is_some_and(|count| count.shown == 0)
     }
 
-    /// Where the field's controls stand, from its box: the scope token, the prompt, the room
+    /// Where the field's controls stand, from its box: the scope token, the prompt, the area
     /// the text has, the count, "Search everywhere" and the clear button.
     fn place_controls(&mut self) {
         let theme = self.layout_theme.clone();
@@ -775,7 +775,7 @@ fn clear_hit_rect(rect: Rect) -> Rect {
     clear_icon_rect(rect).inflate(4.0, 4.0)
 }
 
-/// Where the scope token chip stands in `rect`, and the room it takes before
+/// Where the scope token chip stands in `rect`, and the area it takes before
 /// the text; empty without a token.
 fn place_scope_token(
     text: &mut TextRenderer,
@@ -800,7 +800,7 @@ fn place_scope_token(
 }
 
 /// The prompt after `lead` px of the text's start, elided to half the field:
-/// the words it shows, where it stands, and the room it takes.
+/// the words it shows, where it stands, and the area it takes.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a field's width in logical pixels is far inside f32's range"
@@ -826,7 +826,7 @@ fn place_prompt(
     )
 }
 
-/// The count's text where the trailing slot holds it, and the room left of it
+/// The count's text where the trailing slot holds it, and the area left of it
 /// for "Search everywhere": empty when it does not fit, so the caret never
 /// runs under a count too wide for the slot.
 fn place_count(
@@ -858,7 +858,7 @@ fn place_count(
 }
 
 /// "Search everywhere", its right edge at `right`: its face and its hit
-/// target, or nothing when it leaves the field no room for the text.
+/// target, or nothing when it leaves the field no area for the text.
 fn place_escalation(
     text: &mut TextRenderer,
     theme: &Theme,
@@ -885,7 +885,7 @@ fn place_escalation(
     Some((face, hit))
 }
 
-/// `placeholder` elided to the room `text_rect` gives it, so a long one ends in
+/// `placeholder` elided to the area `text_rect` gives it, so a long one ends in
 /// an ellipsis instead of running under the trailing slot.
 #[allow(
     clippy::cast_possible_truncation,
@@ -897,10 +897,10 @@ fn fitted_placeholder(
     text_rect: Rect,
     placeholder: &str,
 ) -> String {
-    let room = (text_rect.width() - SLOT_PAD).max(0.0);
+    let spare = (text_rect.width() - SLOT_PAD).max(0.0);
     text.elide_to_width_style(
         &widget_text(placeholder),
-        room as f32,
+        spare as f32,
         &theme.text(TextRole::Body),
     )
 }

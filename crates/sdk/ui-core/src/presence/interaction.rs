@@ -741,8 +741,8 @@ impl PresenceCtx {
         if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
             return Vec::new();
         }
-        let vertical_room = (viewport.height() - CARD_MARGIN * 2.0).max(0.0);
-        let fit = ((vertical_room + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).floor() as usize;
+        let usable_height = (viewport.height() - CARD_MARGIN * 2.0).max(0.0);
+        let fit = ((usable_height + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).floor() as usize;
         let visible = entries.len().min(MAX_VISIBLE_CARDS).min(fit);
         if visible == 0 {
             return Vec::new();

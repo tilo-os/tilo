@@ -331,8 +331,8 @@ impl SwipeRow {
         let style = theme.text(TextRole::Label);
         let (w, h) = text.measure_style(&side.label, None, &style);
         let gap = f64::from(theme.tokens.spacing.s2);
-        let room = uncovered.width() - icon - 2.0 * inset - gap;
-        if room < f64::from(w) {
+        let spare = uncovered.width() - icon - 2.0 * inset - gap;
+        if spare < f64::from(w) {
             return;
         }
         let label_x = if offset > 0.0 {

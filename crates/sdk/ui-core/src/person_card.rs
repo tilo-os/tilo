@@ -1,7 +1,7 @@
 //! Asking for someone's card: a click on a person anywhere (an author in Chat, a member in its list)
-//! opens the one card the desktop shows for them, with who they are, what they are doing, their id,
+//! opens the one card the shell shows for them, with who they are, what they are doing, their id,
 //! Message and Follow. An app knows people by their root key (hex), the id that stays theirs on every
-//! device; it asks here ([`show`]) and the desktop hosting it takes the ask on its next frame
+//! device; it asks here ([`show`]) and the shell hosting it takes the ask on its next frame
 //! ([`take`]), anchoring the card where the pointer is. Only the latest ask counts.
 
 use std::sync::Mutex;

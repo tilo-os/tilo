@@ -119,7 +119,7 @@ pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
     }
 }
 
-/// Whether a `link` target names a resource of this desktop
+/// Whether a `link` target names a resource of this shell
 /// ([`RESOURCE_LINK_SCHEME`]) rather than a web address.
 pub fn is_resource_link(target: &str) -> bool {
     target
@@ -919,7 +919,7 @@ mod tests {
         );
         let mut renamed = untouched.clone();
         renamed[6].id = "split-3".into();
-        renamed.insert(6, BlockContent::paragraph("made room for it", ""));
+        renamed.insert(6, BlockContent::paragraph("made way for it", ""));
         let back = rich_of_blocks(&renamed, &timed);
         assert_eq!(
             back.blocks[7], timed.blocks[6],

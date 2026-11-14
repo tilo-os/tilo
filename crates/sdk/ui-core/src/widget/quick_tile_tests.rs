@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
             wifi().detail(corridor).share(0.5),
         );
         lay_out_row(&mut left, &mut right, &theme, 600.0);
-        assert_eq!(left.get_rect().width(), 300.0, "it draws in half the room");
+        assert_eq!(left.get_rect().width(), 300.0, "it draws in half the area");
         assert_eq!(
             left.get_rect().height(),
             metrics.height,
@@ -183,18 +183,18 @@ tilo_test_env::scenario! {
         let style = theme.text(TextRole::Caption);
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
-        let room = text.measure_style("The network at", None, &style).0 + 1.0;
+        let spare = text.measure_style("The network at", None, &style).0 + 1.0;
         let (first, second) = detail_lines(
             &mut text,
             "The network at the far end of the corridor",
-            room,
+            spare,
             &style,
         );
         assert_eq!(first, "The network at");
         let second = second.expect("the rest goes on a second line");
         assert!(!second.is_empty(), "the second line says something");
 
-        let (one, none) = detail_lines(&mut text, "The network", room, &style);
+        let (one, none) = detail_lines(&mut text, "The network", spare, &style);
         assert_eq!(one, "The network", "a state line that fits keeps one line");
         assert!(none.is_none());
     }

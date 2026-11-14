@@ -465,7 +465,7 @@ crate::component::choice!(ChromeMaterial, "ChromeMaterial", {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoleFinishes {
     /// The window ground. Windows never overlap, so a translucent window shows the
-    /// desktop behind it.
+    /// shell behind it.
     pub window: Finish,
     pub control: Finish,
     pub floating: Finish,

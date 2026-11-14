@@ -662,7 +662,7 @@ mod tests {
         phase a_card_whose_body_is_a_row_is_that_row_shown_as_a_card;
         {
             let mut props = props(&Intents::default());
-            let row = crate::widget::ListRow::new("row", "Measure the new bedroom").meta("Thursday");
+            let row = crate::widget::ListRow::new("row", "Measure the new study").meta("Thursday");
             props.lanes[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
                 Box::new(
                     crate::widget::Container::new()
@@ -691,7 +691,7 @@ mod tests {
             let theme = Theme::dark();
             let lane = f64::from(Board::lane_width(&theme, 1280.0));
             assert!((300.0..=340.0).contains(&lane), "a lane reads {lane} wide");
-            // Wider panes leave the extra room open beside the lanes instead of stretching them.
+            // Wider panes leave the extra area open beside the lanes instead of stretching them.
             assert_eq!(
                 Board::lane_width(&theme, 2000.0),
                 Board::lane_width(&theme, 1280.0)
@@ -710,7 +710,7 @@ mod tests {
             let pane = crate::widget::Scrollable::new_horizontal()
                 .with_content_min_viewport_width()
                 .with_child(Box::new(board));
-            // The room the pane shows through: 656 wide, a column of the window.
+            // The area the pane shows through: 656 wide, a column of the window.
             let column = crate::widget::Container::new()
                 .with_no_padding()
                 .with_width(656.0)

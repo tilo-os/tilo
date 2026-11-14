@@ -1,4 +1,4 @@
-//! The palette over rows a host searched itself: the desktop's apps, windows and documents, a
+//! The palette over rows a host searched itself: the shell's apps, windows and documents, a
 //! launcher's service, a window's published actions. The card, the query field, the list, the argument
 //! steps and the geometry are the palette, shared with an app's Ctrl+K search; what differs is where
 //! the rows come from and where a choice goes.
@@ -204,7 +204,7 @@ impl ActionPalette {
         self.sync_list();
     }
 
-    /// The width the card takes, in logical pixels: the host sets it from the room it shows the palette
+    /// The width the card takes, in logical pixels: the host sets it from the area it shows the palette
     /// in, so the card follows the window or the display rather than its size.
     pub fn set_max_width(&mut self, width: Option<f64>) {
         self.max_width = width.map(|width| width.max(0.0));
@@ -418,7 +418,7 @@ impl ActionPalette {
         self.entry_row_capacity_with(0)
     }
 
-    /// How many result rows a full list has under the headers of `groups` groups: a header takes room a
+    /// How many result rows a full list has under the headers of `groups` groups: a header takes area a
     /// row would have held, so a list with four groups has fewer rows than one with two.
     #[must_use]
     pub fn entry_row_capacity_with(&self, groups: usize) -> usize {

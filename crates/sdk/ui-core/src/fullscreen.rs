@@ -268,8 +268,8 @@ mod tests {
         }
     }
 
-    /// A 27" desk monitor at 4K — more pixels than the television.
-    fn desk_monitor(index: u32) -> MonitorInfo {
+    /// A 27" external monitor at 4K — more pixels than the television.
+    fn external_monitor(index: u32) -> MonitorInfo {
         MonitorInfo {
             physical_mm: Some((597, 336)),
             ..mon(index, 3840, 2160, false)
@@ -364,7 +364,7 @@ mod tests {
                 ),
                 (
                     "primary external is the primary-flagged television",
-                    vec![laptop(0), desk_monitor(1), flagged_tv],
+                    vec![laptop(0), external_monitor(1), flagged_tv],
                     PrimaryExternal,
                     Some(2),
                 ),
@@ -452,14 +452,14 @@ mod tests {
                 ),
                 (
                     "a 65-inch 1080p television beats a 27-inch 4K monitor for an audience",
-                    vec![desk_monitor(0), television(1)],
+                    vec![external_monitor(0), television(1)],
                     Largest,
                     Some(1),
                     Some(1),
                 ),
                 (
                     "a projector reports no size, so pixel area decides",
-                    vec![desk_monitor(0), mon(1, 1920, 1080, false)],
+                    vec![external_monitor(0), mon(1, 1920, 1080, false)],
                     Largest,
                     None,
                     Some(0),
@@ -486,8 +486,8 @@ mod tests {
                     Some(0),
                 ),
                 (
-                    "laptop, desk monitor and television: the television",
-                    vec![laptop(0), desk_monitor(1), television(2)],
+                    "laptop, external monitor and television: the television",
+                    vec![laptop(0), external_monitor(1), television(2)],
                     Largest,
                     Some(1),
                     Some(2),
@@ -522,14 +522,14 @@ mod tests {
                 ),
                 (
                     "the first external display, not the primary-flagged laptop panel",
-                    vec![flagged_laptop, desk_monitor(1), television(2)],
+                    vec![flagged_laptop, external_monitor(1), television(2)],
                     PrimaryExternal,
                     None,
                     Some(1),
                 ),
                 (
                     "primary external is the primary-flagged television",
-                    vec![laptop(0), desk_monitor(1), flagged_tv],
+                    vec![laptop(0), external_monitor(1), flagged_tv],
                     PrimaryExternal,
                     None,
                     Some(2),
@@ -592,14 +592,14 @@ mod tests {
                     Some(0),
                 ),
                 (
-                    "desk monitor and television: the desk monitor",
-                    vec![desk_monitor(0), television(1)],
+                    "external monitor and television: the external monitor",
+                    vec![external_monitor(0), television(1)],
                     1,
                     Some(0),
                 ),
                 (
-                    "laptop, desk monitor and television: the presenter stays on the laptop",
-                    vec![laptop(0), desk_monitor(1), television(2)],
+                    "laptop, external monitor and television: the presenter stays on the laptop",
+                    vec![laptop(0), external_monitor(1), television(2)],
                     2,
                     Some(0),
                 ),
@@ -630,7 +630,7 @@ mod tests {
                 ),
                 (
                     "with no built-in panel and a size unknown, the fewer pixels",
-                    vec![desk_monitor(0), television(1), mon(2, 1920, 1080, false)],
+                    vec![external_monitor(0), television(1), mon(2, 1920, 1080, false)],
                     1,
                     Some(2),
                 ),

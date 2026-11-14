@@ -114,7 +114,7 @@ fn chip_rect_beside(m: &ChipMetrics, anchor: Rect, size: (f64, f64), viewport: R
 }
 
 /// Preferred placement is centred just below the anchor; flips above when
-/// it would spill past the bottom edge and there is more room above.
+/// it would spill past the bottom edge and there is more area above.
 /// Clamped horizontally too, so a control at the far edge gets a chip that
 /// hugs it instead of painting off-screen.
 pub fn chip_rect(theme: &Theme, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
@@ -135,17 +135,17 @@ fn place_chip(
     side: PopoverSide,
 ) -> Rect {
     let (w, h) = fit_size(m, size, viewport);
-    let room = viewport.inset(-m.margin);
+    let spare = viewport.inset(-m.margin);
     let (rect, _) = super::floating_surface::place_aligned(
         anchor,
         (w, h),
         side,
         super::floating_surface::PanelAlign::Centre,
         m.gap,
-        room,
+        spare,
     );
-    let x0 = rect.x0.min(room.x1 - w).max(room.x0);
-    let y0 = rect.y0.min(room.y1 - h).max(room.y0);
+    let x0 = rect.x0.min(spare.x1 - w).max(spare.x0);
+    let y0 = rect.y0.min(spare.y1 - h).max(spare.y0);
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
@@ -164,7 +164,7 @@ pub fn draw_chip(
     draw_chip_marked(scene, transform, text_renderer, theme, rect, (label, None));
 }
 
-fn mark_room(theme: &Theme) -> (f64, f64) {
+fn mark_span(theme: &Theme) -> (f64, f64) {
     let rhythm = theme.tokens.spacing.rhythm;
     (f64::from(rhythm.related), f64::from(rhythm.tight))
 }
@@ -205,7 +205,7 @@ fn draw_chip_marked(
     // sized from the font size, so the label otherwise sits low by half the
     // face's ascent/descent difference.
     let m = ChipMetrics::of(theme);
-    let (mark_px, mark_gap) = mark_room(theme);
+    let (mark_px, mark_gap) = mark_span(theme);
     let lead = mark.map_or(0.0, |color| {
         let centre = vello::kurbo::Point::new(rect.x0 + m.pad_x + mark_px / 2.0, rect.center().y);
         scene.fill(
@@ -251,7 +251,7 @@ pub fn on_screen(presence: &crate::presence::PresenceCtx, within: Rect) -> Rect 
     presence
         .viewport()
         .map(|screen| within.intersect(screen))
-        .filter(|room| room.width() > 0.0 && room.height() > 0.0)
+        .filter(|spare| spare.width() > 0.0 && spare.height() > 0.0)
         .unwrap_or(within)
 }
 
@@ -298,7 +298,7 @@ pub fn draw_person_tooltip_on(
     viewport: Rect,
 ) {
     let (width, height) = chip_size_in_viewport(label, text_renderer, theme, viewport);
-    let (mark_px, mark_gap) = mark_room(theme);
+    let (mark_px, mark_gap) = mark_span(theme);
     let size = (width + mark_px + mark_gap, height);
     let rect = chip_rect_on(theme, anchor.1, anchor.0, size, viewport);
     draw_chip_marked(
@@ -1047,7 +1047,7 @@ mod host_tests {
 
             let center = Rect::new(390.0, 100.0, 410.0, 120.0);
             let r = chip_rect(&theme, center, size, vp);
-            assert!(r.y0 >= center.y1, "placed below when there is room");
+            assert!(r.y0 >= center.y1, "placed below when it fits");
             assert!(
                 (r.center().x - center.center().x).abs() < 0.5,
                 "centred under the anchor"
@@ -1193,13 +1193,13 @@ mod tests {
             let screen = Rect::new(0.0, 0.0, 390.0, 844.0);
             let presence = PresenceCtx::default();
             presence.viewport.set(Some(screen));
-            let room = on_screen(&presence, window);
-            assert_eq!(room, screen, "the window's part of the screen");
+            let spare = on_screen(&presence, window);
+            assert_eq!(spare, screen, "the window's part of the screen");
             let anchor = Rect::new(228.0, 12.0, 382.0, 40.0);
             let mut text = TextRenderer::new();
             let label = "Fill Jane Doe's visa application";
-            let size = chip_size_in_viewport(label, &mut text, &theme, room);
-            let rect = chip_rect_on(&theme, TooltipSide::Below, anchor, size, room);
+            let size = chip_size_in_viewport(label, &mut text, &theme, spare);
+            let rect = chip_rect_on(&theme, TooltipSide::Below, anchor, size, spare);
             let margin = ChipMetrics::of(&theme).margin;
             assert!(
                 rect.x1 <= screen.x1 - margin + 0.5 && rect.x0 >= screen.x0,

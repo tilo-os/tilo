@@ -48,7 +48,7 @@ pub struct DragItemProps {
     #[component(required)]
     pub title: String,
     /// The part of the run it belongs to: a bar's leading group, its centre, its trailing
-    /// group, or the room between two groups.
+    /// group, or the area between two groups.
     pub group: Option<super::drag_run::RunGroup>,
     /// What it shows.
     #[component(slot(default))]
@@ -122,7 +122,7 @@ impl Described for DragRun {
             let view = body
                 .into_iter()
                 .next()
-                // An item with no view of its own takes no room.
+                // An item with no view of its own takes up nothing.
                 .unwrap_or_else(|| {
                     Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
                 });
@@ -164,7 +164,7 @@ impl Described for DragRun {
     /// Take changed props in place: the items keep their keys and their order, so each item
     /// changes what it says and what it shows where it stands, and the run keeps what those
     /// views hold — a menu a person opened under a part of the bar stays open while the
-    /// clock ticks or the desk switches the workspace the bar names.
+    /// clock ticks or the shell switches the workspace the bar names.
     fn set_props(&mut self, props: DragRunProps) -> bool {
         let DragRunProps {
             name,
@@ -197,7 +197,7 @@ impl Described for DragRun {
             let view = body
                 .into_iter()
                 .next()
-                // An item with no view of its own takes no room.
+                // An item with no view of its own takes up nothing.
                 .unwrap_or_else(|| {
                     Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
                 });

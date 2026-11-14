@@ -802,7 +802,7 @@ impl SliderFace {
     }
 
     /// How far the knob reaches past the track's ends (its pressed radius):
-    /// a host keeps this much room either side of a slider's rect.
+    /// a host keeps this much area either side of a slider's rect.
     #[must_use]
     pub fn overhang() -> f64 {
         KNOB_RADIUS * KNOB_RADIUS_PRESS_SCALE
@@ -990,14 +990,14 @@ pub fn paint_held_readout(
     let knob = Rect::from_center_size(face.knob_centre(), (2.0 * reach, 2.0 * reach));
     let span = Rect::new(
         face.rect.x0 - reach,
-        knob.y0 - readout_room(theme),
+        knob.y0 - readout_height(theme),
         face.rect.x1 + reach,
         knob.y1,
     );
     crate::widget::tooltip::draw_hover_tooltip(scene, transform, text, theme, knob, label, span);
 }
 
-/// The room a shown value takes from the track: the widest value, a gap, and the knob's reach
+/// The area a shown value takes from the track: the widest value, a gap, and the knob's reach
 /// past the track's end, so a knob at the top of the range never stands on the value.
 fn value_lane(widest: f64, theme: &Theme) -> f64 {
     widest + f64::from(theme.gap_standard) + SliderFace::overhang() + KNOB_BORDER
@@ -1005,15 +1005,15 @@ fn value_lane(widest: f64, theme: &Theme) -> f64 {
 
 /// How far above its knob a held slider's readout reaches: the tooltip
 /// chip standing above it in `theme`.
-fn readout_room(theme: &Theme) -> f64 {
+fn readout_height(theme: &Theme) -> f64 {
     crate::widget::tooltip::chip_reach_above(theme)
 }
 
 /// Where a held readout may stand over a slider laid out in `rect`,
-/// `room` being [`readout_room`] in the slider's theme.
-fn readout_span(rect: Rect, room: f64) -> Rect {
+/// `spare` being [`readout_height`] in the slider's theme.
+fn readout_span(rect: Rect, spare: f64) -> Rect {
     let reach = SliderFace::overhang();
-    Rect::new(rect.x0 - reach, rect.y0 - room, rect.x1 + reach, rect.y1)
+    Rect::new(rect.x0 - reach, rect.y0 - spare, rect.x1 + reach, rect.y1)
 }
 
 /// How far past its rect a readout chip paints in `theme`: its edge and
@@ -1108,7 +1108,7 @@ impl Widget for Slider {
     ) -> NodeId {
         self.layout_target = Some(self.interaction.minimum_target());
         self.slop = f64::from(theme.tokens.metrics.click_slop);
-        self.readout_reach = (readout_room(theme), readout_bleed(theme));
+        self.readout_reach = (readout_height(theme), readout_bleed(theme));
         // A slider fills its row but never collapses to a knob: the track
         // keeps six knob widths of travel.
         #[allow(
@@ -1245,8 +1245,8 @@ impl Widget for Slider {
             regions.push(self.rect);
         }
         if self.readout_drawn || (self.reads_out && self.is_held()) {
-            let (room, bleed) = self.readout_reach;
-            regions.push(readout_span(self.rect, room) + bleed);
+            let (spare, bleed) = self.readout_reach;
+            regions.push(readout_span(self.rect, spare) + bleed);
         }
     }
 

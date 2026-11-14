@@ -824,7 +824,7 @@ impl StripLayers {
 
     /// Run the composite once, over one pixel of a throwaway target: a driver that
     /// compiles a pipeline on its first dispatch (lavapipe) then does so while the
-    /// desktop rests, not in a pan's first frame.
+    /// shell rests, not in a pan's first frame.
     pub fn prime_composite(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if std::mem::replace(&mut self.primed, true) {
             return;

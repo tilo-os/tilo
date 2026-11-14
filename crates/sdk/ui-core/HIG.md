@@ -77,7 +77,7 @@ shows none.
 Chrome that lists destinations. Examples: a calendar's list of *calendars*; an
 email client's accounts + folders.
 
-- **Desktop / wide:** solid, **docked** beside the content on the
+- **Wide:** solid, **docked** beside the content on the
   `Region::Sidebar` tier, at `metrics.sidebar_width` (280). Shown and hidden
   by the **sidebar toggle** — a Plain icon button with the `Icon::PanelLeft`
   glyph that the shell draws at the sidebar's top-leading corner, and at the
@@ -105,7 +105,7 @@ email client's accounts + folders.
     the way down it shrinks only toward its own minimum
     (`panel_min_width` 200), and the layout changes below that minimum plus
     the content's minimum (a Files window docks down to 520, Settings to
-    560, Mail to 720). A panel never widens to fill a roomy window, and it
+    560, Mail to 720). A panel never widens to fill a wide window, and it
     never narrows past the width it needs to read so the content can stay
     wider. Hiding it is the person's choice, remembered per size class;
     showing it again docks it and the content reflows.
@@ -136,7 +136,7 @@ email client's accounts + folders.
     window resized near it never flickers.
   - **A switch moves, it does not jump.** Narrowing into one column at a
     time, the page slides from where it stood beside the sidebar to fill the
-    window; widening, the sidebar slides back in and the content makes room
+    window; widening, the sidebar slides back in and the content makes way
     (`motion.durations.base`). A column that appears where nothing slides
     fades in. Under reduced motion nothing slides: the columns stand in
     their new place at once and fade in there.
@@ -145,7 +145,7 @@ email client's accounts + folders.
     that is wider. The shell states it to the window system
     (`Widget::minimum_window_width`, `xdg_toplevel.set_min_size`), and an
     app in the Tilo shell's own process states it through
-    `AppWidget::min_window_width`, so the desktop stops a resize there.
+    `AppWidget::min_window_width`, so the shell stops a resize there.
   - `NavMode::Docked` is for a compact icon rail, `NavList::rail`, which fits
     beside content at every width.
 - A docked sidebar is never kept beside columns that no longer fit.
@@ -156,7 +156,7 @@ Panels that are themselves content the user reads and acts on. Examples: a
 calendar's month/week grid (overview) + the event (detail); an email message
 list (overview) + the message (detail).
 
-- **Desktop / wide:** shown **side by side** (alongside the genuine sidebar, if
+- **Wide:** shown **side by side** (alongside the genuine sidebar, if
   any). Only the sidebar collapses; the content panels stay abreast.
 - **Mobile / narrow:** when the overview and the detail no longer fit side by
   side (`overview_width` + the content kind's minimum), show **only one of
@@ -194,11 +194,11 @@ list (overview) + the message (detail).
   quick per-city info) as the **overview**, and the forecast as the **detail**.
   There is **no** genuine sidebar here — the city list is content, so it follows
   §1b. Mobile: full-screen city list → tap a city → full-screen forecast + back.
-  Desktop: the two side by side. (Units belong in **Settings**, not in the app.)
+  Wide: the two side by side. (Units belong in **Settings**, not in the app.)
 - **Calendar / Email** — a **genuine sidebar** (calendars / accounts+folders,
   §1a) **plus two content panels** (overview grid/list + detail event/message,
   §1b).
-  - Desktop: `[ sidebar | overview | detail ]` three abreast; **only the sidebar
+  - Wide: `[ sidebar | overview | detail ]` three abreast; **only the sidebar
     collapses**.
   - Mobile: one column at a time — the calendars or mailboxes, then the
     overview full-screen, then the detail sliding over from the right with a
@@ -210,7 +210,7 @@ Some apps are **not** content-and-navigation apps — their primary surface *is*
 the window. A **camera** viewfinder, a **video/media player**, **maps**, a
 **game**: the live surface must fill the window edge-to-edge, uninterrupted.
 These apps are a distinct class and **do not get the content-app sidebar** (§1a)
-or the desktop overview/detail split (§1b).
+or the wide overview/detail split (§1b).
 
 - **Full-bleed surface.** The viewfinder / video / map fills the window to every
   edge. Do **not** dock a rail, sidebar, or app-title header beside it, and do
@@ -267,7 +267,7 @@ selection core:
 - **Emoji by default**: typing `:name:` offers the catalogue's matching emoji and
   accepting replaces the token with the character.
 - **Mentions by default**: typing `@name` offers the people and agents in the
-  room, and accepting replaces the token with the name it will resolve to.
+  area, and accepting replaces the token with the name it will resolve to.
 
 Both come from the field. The catalogue is the toolkit's, so every app has the
 emoji picker and custom emoji without linking a catalogue crate; an app with
@@ -439,7 +439,7 @@ takes back asks nothing: it runs at once and offers Undo.
 
 - **File open/save goes through the XDG Desktop Portal**
   (`org.freedesktop.portal.FileChooser`, via `ashpd`) — an app **never draws its
-  own file picker**. The *host desktop* provides the picker: on GNOME the user
+  own file picker**. The *host OS* provides the picker: on GNOME the user
   sees GNOME's file chooser; on Tilo the **compositor implements the portal
   backend** and renders Tilo's picker (which is also where the per-cluster
   sandbox / file-access prompt lives — the portal is the security boundary). A
@@ -448,7 +448,7 @@ takes back asks nothing: it runs at once and offers Undo.
   portal-backend rendering, or non-filesystem in-cluster pickers.)
 - Prefer host/portal services generally (screenshot, sharing, notifications)
   over reinventing them in-app, so a Tilo app behaves like a native app on
-  whatever desktop it runs.
+  whatever OS it runs.
 
 ## 6. Performance (felt responsiveness)
 
@@ -526,10 +526,10 @@ completeness does not exempt a screen from these requirements.
   heads for one of its controls (menu aim) and hides at once otherwise; the
   keyboard and a touch swipe down from the edge reach it too
   (`widget::top_edge_reveal`). A Tilo app's header row takes the bar in as
-  **one bar**: the window's controls stand at the row's trailing end in room
+  **one bar**: the window's controls stand at the row's trailing end in area
   the row keeps for them (`WindowHeader::set_window_bar`), never stacked
   above or painted over the app's controls. The row stands at rest too:
-  maximized, the window's controls come into the room it keeps for them when
+  maximized, the window's controls come into the area it keeps for them when
   the person reaches for the bar, and no column's title or buttons wait on
   that reach.
 - **The window's controls are a group of their own.** History, Full screen
@@ -789,7 +789,7 @@ that are not about saving.
 **Chrome over media uses the material on the media.** Video controls are a
 floating Panel over the picture; text drawn straight onto media sits on
 `overlay::scrim::vertical_fade` in `colors.media.ink` where it runs along an
-edge, or on `overlay::scrim::text_plate` where a line needs the same room on
+edge, or on `overlay::scrim::text_plate` where a line needs the same area on
 every side of it (a caption above the transport); a letterbox is
 `colors.media.letterbox` in every theme. No stepped bands, no theme surface
 behind a frame, no app painting its own rectangle in the media scrim.
@@ -904,7 +904,7 @@ how many are left (§9.13).
 ## 8a. Conversations: one substrate, two apps
 
 Chat and Messages both talk to people and they stay two apps, because their
-primary object differs: Chat's is a **channel** — a room with a history, a
+primary object differs: Chat's is a **channel** — a conversation with a history, a
 membership and a mood, many-to-many and public-ish — and Messages' is a
 **person** — a private thread that may arrive by SMS, Signal or WhatsApp.
 Neither is a subset of the other. Merging them by surface similarity (both have
@@ -969,7 +969,7 @@ surfaces of the same role are automatically consistent. The values come from
 
 | Role | What it is | Radius | Surface | Border | Elevation |
 |---|---|---|---|---|---|
-| **Ground** | the desktop behind everything | — | `surfaces.base` | — | none |
+| **Ground** | the shell behind everything | — | `surfaces.base` | — | none |
 | **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | none |
 | **Panel** | a floating surface that opens over content (quick settings, palette, menus, popovers, sheets) | `radii.panel` (18) | the floating material, `Material::Floating` (§9.2) | full hairline, plus `elevation.floating_edge` inside it on a dark material | `elevation.floating` |
 | **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.control` (8) | selection tiers (§9.3) | per tier | none |
@@ -1014,7 +1014,7 @@ default hue.
 
 | Surface | Dark L | Light L | Use |
 |---|---|---|---|
-| `surfaces.base` | 0.16 | 0.90 | Ground: the desktop behind tiles |
+| `surfaces.base` | 0.16 | 0.90 | Ground: the shell behind tiles |
 | `surfaces.content` | 0.215 | 0.995 | Object: every app's window ground, owned by the framework |
 | `surfaces.sidebar` | 0.195 | 0.965 | the navigation region of a window |
 | `surfaces.inspector` | 0.235 | 0.975 | the detail / inspector region of a window |
@@ -1060,7 +1060,7 @@ one ground:
 - An app's header or toolbar band sits on its region with an `edge_on`
   hairline of that region's ground under it; it is never a raised band.
 - `surfaces.raised` is for fields, wells, cards and controls *on* a region;
-  `surfaces.base` is the desktop only; `neutral[n]` is never a ground.
+  `surfaces.base` is the shell only; `neutral[n]` is never a ground.
 - A control's hover and pressed fills are lifts of what it stands on: of its
   own rest face for a filled control (`colors.lift_on(face, 0.5)` /
   `lift_on(face, 1.0)`), of the region ground for a transparent one
@@ -1108,7 +1108,7 @@ a loss of contrast that changes with what the user happens to have open.
 must not show through.
 
 **A Panel separates itself by value and by edge.** `panel_ground` walks the
-overlay tier away from *both* the desktop and the window ground until it
+overlay tier away from *both* the shell and the window ground until it
 clears each of them, because a Panel floats over app content and a Bar does
 not, and the two are one material. `panel_border` supplies the edge.
 
@@ -1131,7 +1131,7 @@ chosen scope chip, current power profile — uses the **same four tiers**:
 This is `ui::chrome::selection_tier`; call it, do not restate it. On any other
 ground use `chrome::selection_tier_on(theme, state, ground)`: the active fill
 is one surface step of that ground (`colors.lift_on(ground, 1.0)`, hover
-`0.5`), stepping the other way where the ground has no room (a white well on
+`0.5`), stepping the other way where the ground is too small (a white well on
 a dark palette), so it stays at least `SELECTION_MIN_STEP` (OKLCH ΔL 0.06)
 from the ground on content, sidebar, inspector, raised and panel grounds in
 every material.
@@ -1146,7 +1146,7 @@ stands on and paints with `chrome::paint_selector`:
 |---|---|---|---|
 | idle | none | none | none |
 | hover | the active lift as a film, at the theme's hover opacity | none | none |
-| **active** | one surface step of the ground, opaque (toward the light on a light palette, where the ground has room) | `hairline_on(ground, 26)` | light across the top, fading over the theme's rim span |
+| **active** | one surface step of the ground, opaque (toward the light on a light palette, where the ground fits) | `hairline_on(ground, 26)` | light across the top, fading over the theme's rim span |
 | pressed | as active, scaled 0.97 | as active | as active |
 
 The active fill is a surface step of the ground, as `selection_tier_on`'s is, so a chosen tab and a selected
@@ -1155,9 +1155,9 @@ on an opaque ground, also clears `SELECTION_MIN_STEP` and stays short of the
 active step. The window group's tab strip stands on a body of its own,
 `SelectorRole::Strip`, one body behind the whole strip rather than one per
 tab: the floating material (blur and 72 % panel-ground tint, as menus and
-the palette) over the desktop behind it. Windows never overlap, so that is
-all that is behind a strip: the desktop's painter publishes itself blurred
-once per wallpaper, size and radius (`backdrop::desktop`), and the strip is
+the palette) over the shell behind it. Windows never overlap, so that is
+all that is behind a strip: the shell's painter publishes itself blurred
+once per wallpaper, size and radius (`backdrop::wallpaper`), and the strip is
 an ordinary image fill of it, so it costs no blur pass per frame, a tab's
 hover damages only the tab, and a strip panned as a retained layer carries
 its frosting along until it rests. On a light palette the active tab rises
@@ -1170,7 +1170,7 @@ rim span, rim and hover opacity and what the strip is made of are the
 theme's (`material.selector`, Theme Studio); high contrast, forced colours
 and reduced transparency make the strip and the hover solid and drop the
 rim. `tests/design_token_audit.rs` checks the tiers on every preset against
-the strip, window, track and desktop grounds.
+the strip, window, track and shell grounds.
 
 **One content edge.** Inside a column, everything that is text starts on the
 column's content edge: a `ListRow`'s title, a `Section` or `SectionHeader`
@@ -1182,7 +1182,7 @@ and selection lift, a zebra stripe, a header action's hover) **bleeds
 never moves when a row is selected and a list lines up with the headings
 around it. A retained row grows its own layout box by the bleed when it
 paints; a face (`ListRowFace`, `PropertyListFace`) takes the row's outer
-rect, the content edge grown by the bleed. The column keeps the room for the
+rect, the content edge grown by the bleed. The column keeps the area for the
 bleed in its gutter; an app never insets a list, a header or a sentence by
 hand to make them line up. A list that clips its rows (`VirtualList`) stands
 them one bleed in from its own edges, so their lift fills it.
@@ -1221,7 +1221,7 @@ context menu acts on is ringed in your colour while it is open
 (context menu, popover, dropdown list) is placed by
 `floating_surface::place_anchored`: under its trigger with the leading edges
 aligned (at the pointer for a right-click), flipped above when there is more
-room there, aligned to the trigger's trailing edge when it would run off the
+area there, aligned to the trigger's trailing edge when it would run off the
 window, then shifted along the trigger into the window. A menu paints only
 in `Widget::draw_overlay`, like a popover or a modal, so no later sibling,
 pane or the window's chrome covers it; a painted host draws its menu from
@@ -1369,7 +1369,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | App chrome Toolbar band (`toolbar::paint_band`) | none: the region's ground | `chrome_hairline` along the bottom |
 | StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none; chosen and hovered through `paint_selector` (§9.3) |
-| Window group tab strip | the floating material over the desktop (`SelectorRole::Strip`), opaque panel ground without blur | `edge_on(panel_ground)` |
+| Window group tab strip | the floating material over the shell (`SelectorRole::Strip`), opaque panel ground without blur | `edge_on(panel_ground)` |
 
 Forced-colour accessibility is the field-edge exception: when
 `Theme::colors_are_forced()` collapses surface levels, the shared field painter
@@ -1419,7 +1419,7 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   `Large` 40, each grown with the label's line at large text. A `Small`
   control keeps its 28 px face and reaches the 32 px target through its hit
   rect. A button is as wide as its label (at least twice its height; an
-  icon-only button is a square) and never elides while its parent has room.
+  icon-only button is a square) and never elides while its parent fits.
 - Menu row 32 (`menu_row_height`); scroll bar gutter 16 (`scrollbar_gutter`),
   thumb 8 (`scroll_thumb`), one wheel line 60 (`wheel_line`), a committing
   swipe 88 (`swipe_commit`).
@@ -1613,7 +1613,7 @@ of which (`nmcli device wifi list`) forces a Wi-Fi scan — 4.5 s of frozen
 compositor to populate a list the user had not yet asked to see.
 
 Every shell-out gets a timeout. An OS tool that hangs must degrade to a stale
-value, never to a hung desktop.
+value, never to a hung shell.
 
 ### 9.9 The shell obeys §8
 
@@ -1756,7 +1756,7 @@ and must not match):
   removed theme aliases (they no longer compile; the key names them for
   migration).
 - `desktop_ground`: `surfaces.base` / `surfaces.window_card` outside the
-  desktop. The framework paints the window ground; apps declare regions.
+  shell. The framework paints the window ground; apps declare regions.
 - `literal_radius`: a numeric literal as a corner radius
   (`to_rounded_rect(8.0)`, `RoundedRect::from_rect(r, 6.0)`,
   `fill_round(s, r, 4.0, …)`, `.radius(12.0)`).

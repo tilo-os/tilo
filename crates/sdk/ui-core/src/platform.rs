@@ -187,7 +187,7 @@ impl Shortcut {
         }
     }
 
-    /// A chord as the desktop's shortcut table stores it: modifier names (`Super`, `Ctrl`, `Alt`,
+    /// A chord as the shell's shortcut table stores it: modifier names (`Super`, `Ctrl`, `Alt`,
     /// `Shift`) and a key, spelled for display in the active keyboard layout's legends.
     pub fn chord<'a>(modifiers: impl IntoIterator<Item = &'a str>, key: &str) -> Self {
         let mut shortcut = Self::key(crate::keycaps::active().key(key));
@@ -203,7 +203,7 @@ impl Shortcut {
         shortcut
     }
 
-    /// Held with the desktop's own modifier (Super).
+    /// Held with the shell's own modifier (Super).
     #[must_use]
     pub fn system(mut self) -> Self {
         self.system = true;
@@ -394,8 +394,8 @@ mod tests {
     tilo_test_env::scenario! {
         fn shortcuts_are_labelled_and_listed_by_each_platforms_conventions;
 
-        phase a_desktop_chord_shows_its_super_key_first;
-        // A desktop chord from the shortcut table (Super+F) reads with its Super key, ahead of the others,
+        phase a_shell_chord_shows_its_super_key_first;
+        // A shell chord from the shortcut table (Super+F) reads with its Super key, ahead of the others,
         // in the standard menu spelling.
         {
             let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);

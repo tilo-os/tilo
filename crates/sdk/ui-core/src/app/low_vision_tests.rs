@@ -399,7 +399,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A window the desk floats as a card draws on the card's ground, the one its header and every
+/// A window the shell floats as a card draws on the card's ground, the one its header and every
 /// other card in the column stand on, through a theme rebuild; back in its strip it draws on the
 /// window ground again.
 #[cfg(feature = "native")]

@@ -483,7 +483,7 @@ fn clear_of(frame: &HintFrame, over: &[Rect]) -> Vec<Rect> {
         .chain(
             frame
                 .row
-                .windows_on_desk
+                .windows_on_strip
                 .iter()
                 .map(|(_, content)| *content),
         )
@@ -510,7 +510,7 @@ mod tests {
                 asking: false,
                 over: Vec::new(),
                 app_cards: Vec::new(),
-                windows_on_desk: Vec::new(),
+                windows_on_strip: Vec::new(),
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
             hint_room: Some(Rect::new(768.0, 0.0, 1040.0, 40.0)),
@@ -734,7 +734,7 @@ mod tests {
                 Rect::new(720.0, 40.0, 1408.0, 888.0),
                 Rect::new(720.0, 80.0, 1408.0, 888.0),
             );
-            frame.row.windows_on_desk = vec![left, right];
+            frame.row.windows_on_strip = vec![left, right];
             let spec = |gesture| HINTS.iter().find(|s| s.gesture == gesture).unwrap();
             for gesture in [Gesture::ResizeEdge, Gesture::MoveWindow] {
                 let hint = place(spec(gesture), &frame).expect("its spot is on screen");

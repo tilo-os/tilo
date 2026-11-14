@@ -249,7 +249,7 @@ struct NamingEntry {
 }
 
 impl NamingEntry {
-    /// Whether the view stands in a region: its placeholder or its failure shows, in a box with room.
+    /// Whether the view stands in a region: its placeholder or its failure shows, in a box with area.
     fn stands(&self) -> bool {
         (self.pending.borrow().is_some() || self.failed.get()) && self.rect.get().height() > 0.0
     }

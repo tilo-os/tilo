@@ -10,7 +10,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 /// The catalogue key naming the strip's new-tab door: a "+" needs no words in the row, so the name
-/// is what assistive technology reads and the tip of its glyph, in the desktop's language.
+/// is what assistive technology reads and the tip of its glyph, in the shell's language.
 const NEW_TAB_KEY: &str = "window-toolbar-new-tab";
 
 pub(crate) fn new_tab_name() -> String {
@@ -18,7 +18,7 @@ pub(crate) fn new_tab_name() -> String {
 }
 
 /// The window's own door to another application, as a bar reads it at `rect`: the "+" every
-/// tabbed app wears, in no words a bar would hold room for, named as [`new_tab_name`] says.
+/// tabbed app wears, in no words a bar would hold area for, named as [`new_tab_name`] says.
 pub(crate) fn new_tab_control(rect: Rect) -> crate::window_toolbar::BarControl {
     crate::window_toolbar::BarControl::new("new-tab", NEW_TAB_TARGET, rect)
         .named(new_tab_name())

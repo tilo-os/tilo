@@ -87,7 +87,7 @@ impl AuthoredExtent {
 /// logical px.
 ///
 /// It grows with `ui_scale` like every metric, and once the theme's body line
-/// (`typography.size(TextRole::Body)` at the current text scale) outgrows the room the
+/// (`typography.size(TextRole::Body)` at the current text scale) outgrows the area the
 /// authored height left for it, by exactly that difference: the authored
 /// padding around the line is kept and the label never overflows the control.
 /// Unchanged on a stock theme, so 1× geometry is exactly what was authored.
@@ -136,20 +136,20 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
     }
 }
 
-/// `style` as a flex item that fills its share of the room its parent's main axis leaves:
+/// `style` as a flex item that fills its share of the area its parent's main axis leaves:
 /// grown by `weight` from a zero basis, and measured at that share rather than at its content's
 /// min-content size.
 ///
 /// In a flex container an `auto` minimum is the content's min-content size, so an item that only
 /// grows never shrinks below its content: a scrolling page under a fixed strip grows to its whole
-/// content instead of taking the room left and scrolling inside it. A filling item takes exactly
-/// its share; what it holds scrolls or clips inside it, and never pushes the parent past the room
+/// content instead of taking the area left and scrolling inside it. A filling item takes exactly
+/// its share; what it holds scrolls or clips inside it, and never pushes the parent past the area
 /// the parent was given. An item that genuinely may not shrink below its content says so with an
 /// explicit `min_size` on that axis, before or after this call.
 ///
 /// The parent's main axis is not known where a widget builds its own style, so a filling item
 /// keeps a zero minimum on both axes: growing is the main axis of whichever parent it fills,
-/// and on the cross axis the rule is the same — it takes the room it is stretched to.
+/// and on the cross axis the rule is the same — it takes the area it is stretched to.
 #[must_use]
 pub fn filling(mut style: taffy::Style, weight: f32) -> taffy::Style {
     style.flex_grow = weight;
@@ -1566,7 +1566,7 @@ mod tests {
                 assert!(!label.layout_needs_measure(), "placed once, it rests");
             });
 
-            // Its text takes more lines than the room it has: it asks to be
+            // Its text takes more lines than the area it has: it asks to be
             // measured again, and the frame that answers is one that lays it out
             // and never draws it.
             with_label(&mut root, &mut |label| {

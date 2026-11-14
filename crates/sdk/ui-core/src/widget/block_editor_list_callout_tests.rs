@@ -444,7 +444,7 @@ tilo_test_env::scenario! {
         assert_eq!(above(&editor, 2, &theme), spacing.s6, "below the card");
     }
 
-    phase a_heading_opens_its_section_with_room_and_its_first_block_sits_close_under_it;
+    phase a_heading_opens_its_section_with_area_and_its_first_block_sits_close_under_it;
     {
         let theme = Theme::dark();
         let spacing = theme.tokens.spacing;

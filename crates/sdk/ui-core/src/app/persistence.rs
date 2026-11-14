@@ -26,7 +26,7 @@ impl App {
     pub fn with_records(
         mut self,
         mut records: crate::record::RecordSet,
-        room_index: automerge::AutoCommit,
+        workspace_index: automerge::AutoCommit,
     ) -> Self {
         let _entry = self.enter_wake_scope();
         self.advance_autosave_generation();
@@ -40,9 +40,10 @@ impl App {
         // Learn the current workspace grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
-        records.discover_workspace(&room_index);
+        records.discover_workspace(&workspace_index);
         self.persistence.records = Some(records);
-        self.persistence.room_index = Some(crate::state::DocumentReplica::new(room_index));
+        self.persistence.workspace_index =
+            Some(crate::state::DocumentReplica::new(workspace_index));
         self
     }
 
@@ -57,9 +58,9 @@ impl App {
         self.persistence.records.as_ref()
     }
 
-    pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
+    pub fn workspace_index(&self) -> Option<&automerge::AutoCommit> {
         self.persistence
-            .room_index
+            .workspace_index
             .as_ref()
             .map(crate::state::DocumentReplica::document)
     }
@@ -185,7 +186,7 @@ impl App {
                     set.checkout_with_initial(
                         &mut self.state,
                         self.persistence
-                            .room_index
+                            .workspace_index
                             .as_mut()
                             .map(crate::state::DocumentReplica::document_mut),
                         want,
@@ -204,7 +205,7 @@ impl App {
                 set,
                 &mut self.state,
                 self.persistence
-                    .room_index
+                    .workspace_index
                     .as_mut()
                     .map(crate::state::DocumentReplica::document_mut),
                 &*self.root_widget,
@@ -280,7 +281,7 @@ impl App {
                 set.tick(&mut self.state.doc);
                 if let (Some(saver), Some(workspace)) = (
                     self.persistence.autosave.as_mut(),
-                    self.persistence.room_index.as_mut(),
+                    self.persistence.workspace_index.as_mut(),
                 ) {
                     let index = workspace.document_mut();
                     index.commit();
@@ -335,7 +336,7 @@ impl App {
             }
             if let (Some(saver), Some(workspace)) = (
                 self.persistence.autosave.as_mut(),
-                self.persistence.room_index.as_mut(),
+                self.persistence.workspace_index.as_mut(),
             ) {
                 let index = workspace.document_mut();
                 index.commit();

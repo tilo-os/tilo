@@ -3066,7 +3066,7 @@ mod tests {
             let after = chart.marks.toggles.entry("series-0").expect("placed again");
             assert!(
                 after.width() >= before.width(),
-                "the longer name takes at least the room the short one did: {before:?} then {after:?}"
+                "the longer name takes at least the area the short one did: {before:?} then {after:?}"
             );
         }
     }

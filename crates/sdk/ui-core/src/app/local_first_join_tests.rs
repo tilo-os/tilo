@@ -15,7 +15,7 @@ struct Joining {
 
 /// The runner probe on its own record, which this device holds, joining its
 /// workspace in the background. The workspace's
-/// committed history is the record with `from_room` added by another
+/// committed history is the record with `from_peer` added by another
 /// device. The workspace starts as `workspace_id`.
 fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
     let definition = crate::application_test_support::runner_probe_definition();
@@ -59,7 +59,7 @@ fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
     let mut committed = automerge::AutoCommit::load(&local)
         .unwrap()
         .with_actor(automerge::ActorId::random());
-    committed.put(ROOT, "from_room", "another device").unwrap();
+    committed.put(ROOT, "from_peer", "another device").unwrap();
     // The worker wakes the app it was made for, as a launch makes it.
     let (manager, broker) = {
         let _entry = app.enter_wake_scope();
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
         probe.pump_until("the route's committed history merged", |app| {
             app.collaboration_state().is_ready() && app.published_action_history_ready()
         });
-        assert_eq!(probe.body("from_room").as_deref(), Some("another device"));
+        assert_eq!(probe.body("from_peer").as_deref(), Some("another device"));
         assert_eq!(probe.body("body").as_deref(), Some("edited"));
         let deadline = tilo_test_env::hang_deadline();
         while probe.broker.changes_sent() == 0 {
@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
         let status = probe.app.document_sync_status().expect("the line says why");
         assert!(status.contains(JoiningProbe::REFUSAL), "{status}");
         // The app keeps working on what this device holds.
-        assert_eq!(probe.body("from_room"), None);
+        assert_eq!(probe.body("from_peer"), None);
         probe
             .app
             .invoke_local_resource_action(

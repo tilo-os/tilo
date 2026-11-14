@@ -1247,7 +1247,7 @@ mod locus_tests {
                 scope: "document",
                 resource: HistoryResource::new(
                     "synthetic",
-                    "room",
+                    "workspace",
                     "test.locus",
                     crate::RecordId::for_tab(71),
                 ),

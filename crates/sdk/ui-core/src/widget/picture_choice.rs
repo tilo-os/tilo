@@ -300,8 +300,8 @@ impl PictureChoice {
         }
         let caption = theme.text(TextRole::Caption);
         let style = if chosen { caption.strong() } else { caption };
-        let room = f32_of_f64(area.width());
-        let name = text.elide_to_width_style(&option.label, room, &style);
+        let spare = f32_of_f64(area.width());
+        let name = text.elide_to_width_style(&option.label, spare, &style);
         let (width, _) = text.measure_style(&name, None, &style);
         text.draw_style(
             scene,

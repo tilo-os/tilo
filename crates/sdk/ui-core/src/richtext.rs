@@ -1865,7 +1865,7 @@ impl RichTextLayout {
     /// row's start.
     fn wrap_indent_insertions(&self, source: &str) -> Vec<crate::text_break::VirtualInsertion> {
         let tab = usize::from(self.buffer.tab_width()).max(1);
-        let room = self.buffer.size().0.unwrap_or(f32::INFINITY);
+        let spare = self.buffer.size().0.unwrap_or(f32::INFINITY);
         let mut extra = Vec::new();
         let mut previous_line = None;
         for run in self.buffer.layout_runs() {
@@ -1903,7 +1903,7 @@ impl RichTextLayout {
                 clippy::cast_precision_loss,
                 reason = "a column count of one line's indentation"
             )]
-            let too_deep = columns as f32 * indent_w > room / 2.0;
+            let too_deep = columns as f32 * indent_w > spare / 2.0;
             if at <= indent_end || columns == 0 || too_deep {
                 continue;
             }

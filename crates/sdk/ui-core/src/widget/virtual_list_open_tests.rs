@@ -266,10 +266,10 @@ tilo_test_env::scenario! {
             "the press opens the item in front, where the host shows it"
         );
         let opened = Rc::new(RefCell::new(Vec::new()));
-        let mut roomy = list(Rc::clone(&opened));
-        let _ = lay_out(&mut roomy, 300.0);
-        roomy.activate_key(0);
-        assert_eq!(roomy.open_row(), Some(&0));
+        let mut reserved = list(Rc::clone(&opened));
+        let _ = lay_out(&mut reserved, 300.0);
+        reserved.activate_key(0);
+        assert_eq!(reserved.open_row(), Some(&0));
         assert!(opened.borrow().is_empty());
     }
 

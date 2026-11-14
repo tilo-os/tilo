@@ -1,10 +1,10 @@
-//! The bar's own door to another application, and a tab's chips, in the desktop's language: a
+//! The bar's own door to another application, and a tab's chips, in the shell's language: a
 //! German window names them in German, as it names every other window control.
 
 use super::tests::lay_out_at_width_with;
 use super::*;
 
-/// A German desktop names the bar's door, its tab's close chip and what a tab is doing in German,
+/// A German shell names the bar's door, its tab's close chip and what a tab is doing in German,
 /// and speaks them so: the bar's own words come from the catalogue like every other window
 /// control's.
 #[test]
@@ -26,7 +26,7 @@ fn a_german_bar_names_its_door_and_its_tabs_controls_in_german() {
         .controls
         .into_iter()
         .find(|control| control.slot == "new-tab")
-        .expect("a bar with room shows its door");
+        .expect("a bar with area shows its door");
     assert_eq!(door.name, "Neuer Tab");
     let at = Point::new(door.rect[0] + 16.0, door.rect[1] + 16.0);
     assert_eq!(

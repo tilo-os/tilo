@@ -86,7 +86,7 @@ impl Widget for Shiftable {
 }
 
 /// A box its style alone sizes, which asks no measure of its own: a view
-/// whose size is its place in the window, as a menu over a desk is.
+/// whose size is its place in the window, as a menu over a shell is.
 struct Styled {
     rect: KurboRect,
 }

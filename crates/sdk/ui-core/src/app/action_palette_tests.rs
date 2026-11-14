@@ -246,7 +246,7 @@ pub(super) fn synth_enter() -> WindowEvent {
 }
 
 #[test]
-fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
+fn unconsumed_tab_chords_are_the_shells_tab_requests() {
     use crate::shell_tabs::TabRequest;
     use winit::keyboard::ModifiersState;
     let chord = |text: &str| {
@@ -283,7 +283,7 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
         app.input.modifiers = winit::event::Modifiers::from(modifiers);
         let mut handled = false;
         app.handle_unconsumed_tab_chord(&chord(text), &mut handled);
-        assert!(handled, "{text} is the desktop's tab chord");
+        assert!(handled, "{text} is the shell's tab chord");
     }
     // A widget that consumed the press keeps it: no request.
     for text in ["w", "Tab"] {
@@ -293,14 +293,14 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
     // Ctrl+Tab is not focus traversal: it reaches the tab chord above.
     app.input.modifiers = winit::event::Modifiers::from(command);
     assert!(!app.handle_tab_navigation(&chord("Tab"), app.keyboard_nav_allowed(None)));
-    // The desktop's own spelling never comes from an app.
+    // The shell's own spelling never comes from an app.
     app.input.modifiers =
         winit::event::Modifiers::from(ModifiersState::SUPER | ModifiersState::CONTROL);
     let mut handled = false;
     app.handle_unconsumed_tab_chord(&chord("Tab"), &mut handled);
     assert!(
         !handled,
-        "Super+Ctrl+Tab is the desktop's, not an app request"
+        "Super+Ctrl+Tab is the shell's, not an app request"
     );
     // Plain letters type.
     app.input.modifiers = winit::event::Modifiers::from(ModifiersState::empty());

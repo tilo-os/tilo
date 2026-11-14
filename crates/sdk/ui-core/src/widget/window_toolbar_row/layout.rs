@@ -74,16 +74,16 @@ pub(crate) struct LocationForms {
 }
 
 impl LocationForms {
-    pub(super) fn fitting(&self, room: f64) -> usize {
+    pub(super) fn fitting(&self, leftover: f64) -> usize {
         self.text
             .iter()
-            .position(|width| width + self.chrome <= room)
+            .position(|width| width + self.chrome <= leftover)
             .unwrap_or_else(|| self.text.len().saturating_sub(1))
     }
 
-    pub(super) fn least(&self, form: usize, room: f64) -> f64 {
+    pub(super) fn least(&self, form: usize, leftover: f64) -> f64 {
         match self.text.get(form) {
-            Some(width) if self.text.len() > 1 && width + self.chrome <= room => {
+            Some(width) if self.text.len() > 1 && width + self.chrome <= leftover => {
                 width + self.chrome
             }
             _ => 0.0,
@@ -94,7 +94,7 @@ impl LocationForms {
         self.text.get(form).copied().unwrap_or(0.0)
     }
 
-    pub(super) fn notice(&self, toolbar: &WindowToolbar, room: f64) -> Option<NoticeFit> {
+    pub(super) fn notice(&self, toolbar: &WindowToolbar, leftover: f64) -> Option<NoticeFit> {
         let notice = toolbar.notice.as_ref()?;
         let whole = self.width(0) + self.chrome;
         let count = notice.actions.len();
@@ -115,13 +115,13 @@ impl LocationForms {
             .rev()
             .map(fit)
             .find(|(_, labelled, beside)| {
-                labelled.iter().all(|named| !named) || whole + beside <= room
+                labelled.iter().all(|named| !named) || whole + beside <= leftover
             })
             .unwrap_or_else(|| fit(0));
         Some(NoticeFit {
             buttons,
             labelled,
-            least: (whole + beside).min(room),
+            least: (whole + beside).min(leftover),
         })
     }
 }
@@ -330,14 +330,15 @@ impl Slots {
             inline: 0,
             ..Kept::all(toolbar, 0)
         };
-        let room = Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow, (&[], &[]))
-            .location
-            .width();
-        let form = forms.fitting(room);
-        let notice = forms.notice(toolbar, room);
+        let leftover =
+            Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow, (&[], &[]))
+                .location
+                .width();
+        let form = forms.fitting(leftover);
+        let notice = forms.notice(toolbar, leftover);
         let least = notice
             .as_ref()
-            .map_or_else(|| forms.least(form, room), |notice| notice.least);
+            .map_or_else(|| forms.least(form, leftover), |notice| notice.least);
         let shown = (forms.width(form), least, form > 0);
         let icons = Self::arranged(toolbar, row, views, shown, (&[], &[]));
         let names = labels
@@ -404,8 +405,8 @@ impl Slots {
                 slots = labelled;
             }
         }
-        // A row short of room for the words keeps the window's main action and puts the rest
-        // behind its door, rather than standing glyphs nobody can name with room beside them.
+        // A row short of area for the words keeps the window's main action and puts the rest
+        // behind its door, rather than standing glyphs nobody can name with area beside them.
         let floor = main_action_floor(
             toolbar,
             toolbar
@@ -413,8 +414,8 @@ impl Slots {
                 .min(crate::window_toolbar::MAX_ACTIONS),
         );
         if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
-            // The main action keeps its words where the row leaves room for them once the rest
-            // are behind the door: a glyph with room to say what it does is a glyph nobody can
+            // The main action keeps its words where the row leaves area for them once the rest
+            // are behind the door: a glyph with area to say what it does is a glyph nobody can
             // name. Every other action goes behind the door unnamed, as before.
             let main = floor.saturating_sub(1);
             let mut below =
@@ -456,7 +457,7 @@ impl Slots {
             }
             slots.location.x1 -= extra;
             slots.actions_labelled = true;
-            let notice = forms.notice(toolbar, room);
+            let notice = forms.notice(toolbar, leftover);
             slots.settle(form, labels, action_labels, notice, forms);
         }
         slots
@@ -544,7 +545,7 @@ impl Slots {
         Self::arranged_below(toolbar, row, views, shown, labels, usize::MAX, true)
     }
 
-    /// [`Self::arranged`] keeping at most `most` actions in the row: a bar short of room for
+    /// [`Self::arranged`] keeping at most `most` actions in the row: a bar short of area for
     /// the words keeps the window's main action and puts the rest behind its door. A row that
     /// folds down to one action keeps it (`keep_alone`) unless its words are what it cannot
     /// show: then the menu's row says what its glyph cannot.
@@ -599,14 +600,14 @@ impl Slots {
                     place,
                     (labels, action_labels),
                 );
-                let room = if toolbar.location.is_some() {
+                let leftover = if toolbar.location.is_some() {
                     slots.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
                 } else {
                     slots.fits(row)
                 };
                 let placed =
                     !matches!(place, ViewsPlace::InLocation(_)) || slots.views_menu.area() > 0.0;
-                if room && placed && !lone(inline, place) {
+                if leftover && placed && !lone(inline, place) {
                     return slots;
                 }
                 if inline <= floor {
@@ -817,9 +818,9 @@ impl Slots {
             .all(|rect| rect.x0 >= lead)
     }
 
-    /// Whether the slots could not keep the room they need across `row`: a button standing on
+    /// Whether the slots could not keep the area they need across `row`: a button standing on
     /// another's place, a location `toolbar` declared with nowhere to stand, or a location with
-    /// shorter forms cut short in the one it shows. Where the bar itself took that room (its
+    /// shorter forms cut short in the one it shows. Where the bar itself took that area (its
     /// strip's "+" ahead of the row), it asks before it keeps it.
     pub(super) fn crowded(
         &self,

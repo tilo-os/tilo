@@ -1,7 +1,7 @@
 //! Rasterizing frames into one retained target: only a frame's damage (or all of it), its scroll copies
 //! made first and its backdrops blurred. Every host that keeps the pixels it presented draws through
 //! [`RetainedRaster`]: the native app's render worker, the workspace's render service and the browser
-//! desktop, so they produce the same pixels from the same frame.
+//! shell, so they produce the same pixels from the same frame.
 
 use crate::cpu_raster;
 use crate::damage::{FineDamageRect, area, coalesce_regions, pixel_rect};

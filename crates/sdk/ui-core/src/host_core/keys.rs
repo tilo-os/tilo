@@ -1,5 +1,5 @@
 //! What a key no widget took does: the host's fallbacks for Tab, arrows, Enter and Space, range steps
-//! and the desktop's tab chords, written once for the native and headless app hosts. Each host lends
+//! and the shell's tab chords, written once for the native and headless app hosts. Each host lends
 //! its keyboard state and focus through [`KeyHost`].
 
 use taffy::{NodeId, TaffyTree};
@@ -98,7 +98,7 @@ pub(crate) trait KeyHost: HostCore {
     /// a tree shows one ([`Self::hand_owed_keyboard`]).
     fn keyboard_entry_owed(&mut self) -> &mut bool;
 
-    /// Keys the host answers itself, after Enter and Space and before the desktop's tab chords.
+    /// Keys the host answers itself, after Enter and Space and before the shell's tab chords.
     fn handle_unconsumed_host_key(&mut self, _event: &WindowEvent) -> bool {
         false
     }
@@ -205,7 +205,7 @@ pub(crate) trait KeyHost: HostCore {
         }
     }
 
-    /// The desktop's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS) when no widget consumed
+    /// The shell's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS) when no widget consumed
     /// the press: tabs are the shell's, so every app answers them the same way through
     /// [`crate::shell_tabs`].
     fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {

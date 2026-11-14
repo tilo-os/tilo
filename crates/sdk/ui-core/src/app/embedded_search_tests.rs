@@ -1,4 +1,4 @@
-//! The window's search on an app embedded in the desktop's window.
+//! The window's search on an app embedded in the shell's window.
 
 use super::theme_repaint_tests::{layout, paint};
 use super::*;

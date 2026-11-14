@@ -1,6 +1,6 @@
 //! What a surface's input says about the motion a change it caused follows:
 //! a press moves, a key lands at once. An app shown on a host's surface (the
-//! session's desk, its panels and its sheets) reaches the toolkit through
+//! session's shell, its panels and its sheets) reaches the toolkit through
 //! the same entry as one in a window of its own.
 
 use super::*;

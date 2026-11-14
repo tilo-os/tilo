@@ -107,7 +107,7 @@ impl SlotBar {
     #[must_use]
     pub(super) fn refresh(&mut self, app: &mut App, window: &Window) -> bool {
         // Outside a session the row is the window's bar: it hosts the app's
-        // slots and presents its search and History, as the desktop's bar
+        // slots and presents its search and History, as the shell's bar
         // does in one. A window the shell hears is hosted by the shell from
         // its first frame: the row never shows there, not even until the
         // shell says so.
@@ -116,7 +116,7 @@ impl SlotBar {
         // over another window, such as a sheet or the keyboard: it wears no
         // bar of its own, since everything it paints shows what is under it.
         let shown = standalone && window.fullscreen().is_none() && app.root_widget.paints_ground();
-        // Where the desktop leaves the frame to the app, the row is the whole
+        // Where the shell leaves the frame to the app, the row is the whole
         // bar: the window's minimize, maximize and close stand in their pill
         // at its trailing end, under the hand that also drags by it.
         self.row
@@ -161,7 +161,7 @@ impl SlotBar {
     }
 
     /// Whether the app draws the window's frame itself: the one case the row
-    /// carries the window's controls, since the desktop draws none.
+    /// carries the window's controls, since the shell draws none.
     fn decorates_itself(&self, app: &App, window: &Window) -> bool {
         crate::host_chrome::frame::app_draws_frame(
             crate::host_chrome::HostChrome::current(app.input.platform),
@@ -211,7 +211,7 @@ impl SlotBar {
     /// Hand `event` to the row when it is the row's: a pointer over a slot,
     /// over one of its menus, or anything while its location is edited.
     /// Returns whether the row took it; what the person did reaches the app
-    /// as the desktop's bar delivers it.
+    /// as the shell's bar delivers it.
     pub(super) fn route(&mut self, app: &mut App, window: &Window, event: &WindowEvent) -> bool {
         if !self.row.is_shown() {
             return false;
@@ -257,7 +257,7 @@ impl SlotBar {
 
     /// Run `action` on the row's node `target`, as assistive technology
     /// asks: the slot runs as a press on it does, and what it runs reaches
-    /// the app as the desktop's bar delivers it. Returns whether `target`
+    /// the app as the shell's bar delivers it. Returns whether `target`
     /// is the row's and it took the action; any other node is the app's.
     pub(super) fn perform_accessibility(
         &mut self,
@@ -475,7 +475,7 @@ mod tests {
             [ToolbarEvent::Action {
                 id: "call-mute".into()
             }],
-            "the app hears the press as the desktop's bar delivers it"
+            "the app hears the press as the shell's bar delivers it"
         );
 
         let (app_node, _) = labelled(&update, "Appearance").expect("the app's node");
@@ -508,7 +508,7 @@ mod tests {
         assert!(bar.row.search_mut().is_open(), "the search opens");
     }
 
-    // A hidden row (a window the desktop hosts, or a full screen) adds
+    // A hidden row (a window the shell hosts, or a full screen) adds
     // nothing to the window's tree and takes no action.
     #[test]
     fn a_hidden_row_publishes_nothing() {

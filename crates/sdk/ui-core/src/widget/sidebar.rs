@@ -213,7 +213,7 @@ impl SidebarDrawer {
     pub fn content_is_column(self, min_width: f64) -> Self {
         self.content_min_width(min_width)
     }
-    /// The content is a surface drawn at whatever room it gets — pages
+    /// The content is a surface drawn at whatever area it gets — pages
     /// scaled to fit, a picture, a map — not a column of text, so it works
     /// narrower than a column: the panel docks beside it while it keeps
     /// `min_width`, and floats over it below that
@@ -1337,7 +1337,7 @@ mod tests {
         }
 
         phase a_panel_docks_beside_a_surface_narrower_than_a_column;
-        // A surface drawn to the room it gets (pages, a picture) is no column of text: the panel
+        // A surface drawn to the area it gets (pages, a picture) is no column of text: the panel
         // docks beside it narrower than a column, down to the surface's own minimum, and floats over
         // it only below that.
         {
@@ -1497,10 +1497,10 @@ mod tests {
             let mut drawer = SidebarDrawer::new().content_is_column(column);
             drawer.scale_for(&theme);
 
-            // Roomy: the panel is its own width, never the leftover room, and
+            // Wide: the panel is its own width, never the leftover area, and
             // the column beside it takes the rest.
-            let roomy = Rect::new(0.0, 0.0, 1400.0, 800.0);
-            let content = drawer.resolve(roomy);
+            let reserved = Rect::new(0.0, 0.0, 1400.0, 800.0);
+            let content = drawer.resolve(reserved);
             assert!(drawer.is_docked());
             assert!((drawer.sidebar_rect().width() - docked).abs() < 0.5);
             assert!((content.width() - (1400.0 - docked)).abs() < 0.5);

@@ -1,7 +1,7 @@
 //! The window around an app its host shows in its own process. An app in a process of its own reaches
 //! its window's bar and its tab over its shell connection ([`crate::window_toolbar`],
 //! [`crate::shell_tabs`]), which knows the asking app by its process. Apps a host mounts in its own
-//! process (the desktop's Terminal tabs) share that process and its thread, so they cannot use those:
+//! process (the shell's Terminal tabs) share that process and its thread, so they cannot use those:
 //! the host lends each of them the window it shows it in, a [`HostedWindow`] (through
 //! [`HostContext::lend`](crate::application::HostContext::lend)).
 
@@ -214,7 +214,7 @@ impl HostedWindow {
         self.state().events.drain(..).collect()
     }
 
-    /// Close this window's tab, and the window with it when it is the only tab, the way the desktop
+    /// Close this window's tab, and the window with it when it is the only tab, the way the shell
     /// closes any tab.
     pub fn close(&self) {
         let wake = {
@@ -365,7 +365,7 @@ impl HostedWindow {
         (seen != Some(revision)).then(|| (revision, self.shown()))
     }
 
-    /// Whether the window floats over the desk as a card ([`ToolbarEvent::Floating`]).
+    /// Whether the window floats over the shell as a card ([`ToolbarEvent::Floating`]).
     #[must_use]
     pub fn floats(&self) -> bool {
         self.state().floats

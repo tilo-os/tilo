@@ -231,7 +231,7 @@ impl crate::widget::Widget for KeyHints {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        // A little room past the measured width so rounding never drops
+        // A little area past the measured width so rounding never drops
         // the last hint.
         let rect = self.rect.inflate(1.0, 0.0);
         KeyHintsFace::new(&self.hints).paint(

@@ -138,7 +138,7 @@ pub struct StatusClusterLayout {
 const BADGE_PAST_CORNER: f64 = 3.0;
 
 /// The most slots a cluster takes: the bell, the volume, the link, the battery, and one glyph of
-/// room.
+/// area.
 pub const MAX_SLOTS: usize = 5;
 
 impl<'a> StatusClusterFace<'a> {
@@ -159,7 +159,7 @@ impl<'a> StatusClusterFace<'a> {
 
     /// Paint and measure at `height` rather than the theme's bar control
     /// height: a bar whose own controls are a little shorter than the
-    /// toolkit's default (the desktop's is 24) keeps one top and bottom
+    /// toolkit's default (the shell's is 24) keeps one top and bottom
     /// edge across every control.
     #[must_use]
     pub fn at_height(mut self, height: f64) -> Self {
@@ -222,7 +222,7 @@ impl<'a> StatusClusterFace<'a> {
         self.slots.len().min(MAX_SLOTS)
     }
 
-    /// The room after the bell, when a slot follows it: as much as its widest count reaches past
+    /// The area after the bell, when a slot follows it: as much as its widest count reaches past
     /// it, and a hairline more, so a count never stands on the glyph beside the bell. The same
     /// whether anything is unread, so news arriving moves nothing.
     fn bell_shoulder(&self, index: usize, text: &mut TextRenderer, theme: &Theme) -> f64 {
@@ -717,7 +717,7 @@ mod tests {
             );
             assert!(
                 bell_and_battery.width(&mut text, &theme) > bell.width(&mut text, &theme),
-                "the percentage takes room past the gauge"
+                "the percentage takes area past the gauge"
             );
         }
 
@@ -778,9 +778,9 @@ mod tests {
             assert_eq!(status(LinkKind::Offline, 0).bars(), 0);
         }
 
-        // A count takes no width: nothing unread leaves no empty room beside the
+        // A count takes no width: nothing unread leaves no empty area beside the
         // bell, and news arriving never moves what stands beside the cluster.
-        phase a_count_takes_no_room;
+        phase a_count_takes_up_nothing;
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
@@ -812,7 +812,7 @@ mod tests {
             );
         }
 
-        // The widest count stands clear of the glyph after the bell, and the room it keeps there is
+        // The widest count stands clear of the glyph after the bell, and the area it keeps there is
         // the same with nothing unread: the bar's volume is never covered.
         phase the_count_never_reaches_the_next_glyph;
         {
@@ -858,7 +858,7 @@ mod tests {
         }
 
         // The count covers the bell's corner, not the bell: most of the glyph stays in view, and the
-        // count stays within the room the bar leaves around its controls.
+        // count stays within the area the bar leaves around its controls.
         phase the_count_leaves_the_bell_in_view;
         {
             let theme = Theme::dark();

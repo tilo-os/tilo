@@ -99,7 +99,7 @@ pub struct LaunchArgs {
     pub window: crate::theme::WindowAppearance,
     /// `--history`: a capture shows History open, where the app has History.
     pub history: bool,
-    /// `--window-bar`: a capture is drawn as a desktop window shows the app, under the window's bar
+    /// `--window-bar`: a capture is drawn as a shell window shows the app, under the window's bar
     /// with the app's slots in it.
     pub window_bar: bool,
     /// `--search QUERY`: a capture shows this window's search open with `QUERY` typed, as the app's
@@ -1168,7 +1168,7 @@ fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<crate::collaboration::CollaborationManager, LaunchError> {
-    // A surface app is handed the actions of the desktop that places its
+    // A surface app is handed the actions of the shell that places its
     // window, in place of a workspace it never joins: it needs no workspace of
     // its own, selected or not.
     if let Some(peer) = surface_peer() {

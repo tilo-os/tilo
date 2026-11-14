@@ -328,7 +328,7 @@ impl SendToBox {
 
     /// Stand the box beside `beside` — what it is about — on its trailing
     /// side with the same top, or its leading side where the window leaves no
-    /// room, or under it where neither side holds it, inside the window.
+    /// area, or under it where neither side holds it, inside the window.
     pub fn place(&mut self, beside: Rect, viewport: Option<Rect>) {
         self.anchor = beside.center();
         if !self.open && !self.appear.is_drawn() {
@@ -418,15 +418,15 @@ impl SendToBox {
     /// one line does not hold both at the widths they ask for, and a chip with
     /// its name cut reads worse than a field of its own.
     fn recipients_wrap(&self) -> bool {
-        let room = self.width() - self.padding() * 2.0;
+        let spare = self.width() - self.padding() * 2.0;
         let gap = self.gap() / 2.0;
         let (_, asks) = self.recipient_asks();
         let chips: f64 = asks.iter().sum::<f64>() + gap * asks.len() as f64;
-        chips + gap + self.search_ask() > room
+        chips + gap + self.search_ask() > spare
     }
 
     /// How tall the message stands: two rows while its words fit on one line,
-    /// and as much of them as wrap, up to four, so the box makes room for what
+    /// and as much of them as wrap, up to four, so the box makes way for what
     /// is written in it rather than scrolling sideways.
     fn message_height(&self) -> f64 {
         let theme = &self.theme;
@@ -575,10 +575,10 @@ impl SendToBox {
     }
 
     /// Place chips asking for `asks` from the box's leading edge on line `y`,
-    /// sharing `room` between them when together they ask for more, and how far
+    /// sharing `spare` between them when together they ask for more, and how far
     /// the line reaches. So neither a chip nor the control after it — the
     /// search, the button that adds a subject — stands past the box.
-    fn lay_chips(&self, asks: &[f64], y: f64, room: f64) -> (Vec<Rect>, f64) {
+    fn lay_chips(&self, asks: &[f64], y: f64, spare: f64) -> (Vec<Rect>, f64) {
         let rect = self.rect;
         let row = self.row_height();
         let gap = self.gap() / 2.0;
@@ -587,14 +587,14 @@ impl SendToBox {
         let narrowest = row * 0.5 + gap;
         // As many chips as the line holds at its narrowest, so a count that
         // would leave nothing to read does not crowd out the control after it.
-        let count = (room / narrowest).floor().max(0.0);
+        let count = (spare / narrowest).floor().max(0.0);
         let shown = asks
             .len()
             .min(usize::try_from(count as u64).unwrap_or(usize::MAX));
         if shown == 0 {
             return (chips, start);
         }
-        let share = ((room - gap * shown as f64) / shown as f64).max(0.0);
+        let share = ((spare - gap * shown as f64) / shown as f64).max(0.0);
         let mut x = start;
         for ask in &asks[..shown] {
             let width = ask.min(share);
@@ -613,12 +613,12 @@ impl SendToBox {
         let mut y = rect.y0 + pad;
         let header = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + self.header_height());
         y += self.header_height();
-        let room = (rect.width() - pad * 2.0).max(0.0);
-        // The recipients' chips, from the leading edge, each with room for the
+        let spare = (rect.width() - pad * 2.0).max(0.0);
+        // The recipients' chips, from the leading edge, each wide enough for the
         // mark it leads with and the × that takes it off; the search keeps the
         // rest of the line, enough for what it says when nothing is typed.
         let (removable, asks) = self.recipient_asks();
-        let search_room = self.search_ask().min(room);
+        let search_area = self.search_ask().min(spare);
         // The chips and the field that finds one share a line while it holds
         // both at the widths they ask for; when it does not, the chips keep
         // theirs and the field takes the line under them, the width of the
@@ -627,7 +627,7 @@ impl SendToBox {
         let (chips, x) = self.lay_chips(
             &asks,
             y,
-            (room - if wrapped { 0.0 } else { search_room }).max(0.0),
+            (spare - if wrapped { 0.0 } else { search_area }).max(0.0),
         );
         let removes: Vec<Option<Rect>> = chips
             .iter()
@@ -641,7 +641,7 @@ impl SendToBox {
             Rect::new(rect.x0 + pad, y + row, rect.x1 - pad, y + 2.0 * row)
         } else {
             Rect::new(
-                start.min(rect.x1 - pad - search_room).max(rect.x0 + pad),
+                start.min(rect.x1 - pad - search_area).max(rect.x0 + pad),
                 y,
                 rect.x1 - pad,
                 y + row,
@@ -681,7 +681,7 @@ impl SendToBox {
             } else {
                 0.0
             };
-            let (subjects, x) = self.lay_chips(&asks, y, (room - add_ask).max(0.0));
+            let (subjects, x) = self.lay_chips(&asks, y, (spare - add_ask).max(0.0));
             let plus = if adds {
                 let x0 = x.min((rect.x1 - pad - add_ask).max(rect.x0 + pad));
                 Rect::new(x0, y, x0 + add_ask, y + row)
@@ -1249,10 +1249,10 @@ impl SendToBox {
             );
             let remove = self.layout.removes.get(index).copied().flatten();
             let text_x = chip.x0 + self.text_lead();
-            let room = remove.map_or(chip.x1 - row * 0.2, |remove| remove.x0);
+            let spare = remove.map_or(chip.x1 - row * 0.2, |remove| remove.x0);
             let shown = text_renderer.elide_to_width_style(
                 &chip_name(recipient),
-                (room - text_x - row * 0.1).max(1.0) as f32,
+                (spare - text_x - row * 0.1).max(1.0) as f32,
                 &style,
             );
             let (_, height) = text_renderer.measure_style(&shown, None, &style);
@@ -1497,7 +1497,7 @@ impl SendToBox {
         }
 
         // The message: air enough to write in, its words wrapped inside it and
-        // room made for them as they wrap.
+        // area made for them as they wrap.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,

@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
                 let mut host = ApplicationHost::new(
                     directory.path().into(),
                     "device".into(),
-                    "room",
+                    "workspace",
                     crate::permissions::UserId(crate::permissions::LOCAL_USER.into()),
                     crate::permissions::SharedPermissions::new(
                         crate::permissions::PermissionContext::permissive(),

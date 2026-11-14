@@ -691,7 +691,7 @@ pub fn find_resource(
 
 /// Every resource `widget`'s subtree publishes, as the host's action
 /// catalogue collects them. A host that embeds components under its own
-/// root (a desktop surface) reads what its search offers through this.
+/// root (a shell surface) reads what its search offers through this.
 pub fn published_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -2260,7 +2260,7 @@ pub(crate) use overflow_door::give_way;
 pub use overflow_door::{OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_ROOM,
+    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_MARGIN,
     FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT,
     OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripLane,
     TabDropTarget, WheelJumpAccum, keep_float_inside, pan_within_canvas, wheel_jump_detents,
@@ -2433,7 +2433,7 @@ pub use tree_component::{
     TreeViewRowProps,
 };
 /// A box a widget paints text into, whose own box cannot hold that text: the height the text
-/// takes at the width of its box, the room the box gives it, and what it says. Rows a box lays
+/// takes at the width of its box, the area the box gives it, and what it says. Rows a box lays
 /// out and never paints read as a line that had nothing to say above space standing empty, so
 /// an audit looks for them rather than trusting the geometry around them.
 #[derive(Clone, Debug, PartialEq)]

@@ -91,7 +91,7 @@ impl TileArrival {
             return self.fade.is_moving(now);
         }
         // A tile nothing has painted has nothing on screen to correct: the
-        // frame that first draws it paints the step of that moment. A desk
+        // frame that first draws it paints the step of that moment. A shell
         // keeps such tiles for every tab and strip it is not showing, and
         // asking for their sakes kept it repainting every frame for as long
         // as the session ran.

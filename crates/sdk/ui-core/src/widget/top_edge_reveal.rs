@@ -13,18 +13,18 @@
 //! 3. **Pushing to the edge is intent**: braking in the band after a fast climb (from
 //!    [`PUSH_TRAVEL_PX`] below within [`PUSH_WINDOW`], steeper than 45°) shows the bar at once.
 //! 4. **Otherwise it takes a short rest** in the band, [`DWELL`]; a pointer coming down from
-//!    the desktop's top bar gets no push credit.
+//!    the shell's top bar gets no push credit.
 //! 5. **A click in the band while the bar is hidden belongs to the app**, cancelling a
 //!    pending reveal until the pointer leaves the band.
 //! 6. **While shown, the bar stays** while the pointer settles on it or in the band, or heads
 //!    for one of its controls (menu aim, lapsing [`AIM_HOLD`] after the last confirming
-//!    sample); an overshoot into the desktop's top bar gets [`OVERSHOOT_GRACE`] to come back.
+//!    sample); an overshoot into the shell's top bar gets [`OVERSHOOT_GRACE`] to come back.
 //! 7. **Aimed-at controls don't move**: showing and hiding only fade the bar in place.
 //! 8. **Keyboard and touch reach it too**: [`TopEdgeReveal::pin`] until
 //!    [`TopEdgeReveal::unpin`], or a touch that drags down [`TOUCH_SWIPE_PX`].
 //!
-//! The desktop's own top bar shares this model so the two never fight over the edge: both
-//! hidden, approaching the top reveals the top stack together, and while the desktop's bar
+//! The shell's own top bar shares this model so the two never fight over the edge: both
+//! hidden, approaching the top reveals the top stack together, and while the shell's bar
 //! shows over the window's top edge the window's bar stands below it. Transit, braking and
 //! heading come from [`super::aim::Trajectory`]. The state is pure: every method takes the
 //! instant it reasons about, so pointer paths are tested against a synthetic timeline.
@@ -230,7 +230,7 @@ impl TopEdgeReveal {
         }
         let floor = geo.band().y1;
         // The path since the push started must stay inside the window: one
-        // that came down from the desktop's bar is entering the app.
+        // that came down from the shell's bar is entering the app.
         for (q, at) in self.path.samples().iter().rev().skip(1) {
             if now.saturating_duration_since(*at) > PUSH_WINDOW {
                 break;
@@ -330,7 +330,7 @@ mod tests {
         base + Duration::from_millis(n)
     }
 
-    /// A maximized window under a 36 px desktop bar; its bar's controls at the
+    /// A maximized window under a 36 px shell bar; its bar's controls at the
     /// trailing end, below the band.
     const WINDOW: Rect = Rect::new(0.0, 36.0, 1200.0, 800.0);
     const TITLE: Rect = Rect::new(6.0, 42.0, 86.0, 64.0);
@@ -415,7 +415,7 @@ mod tests {
             );
             assert!(
                 !r.shown(),
-                "still flying: it may be bound for the desktop's bar"
+                "still flying: it may be bound for the shell's bar"
             );
             r.on_motion(Point::new(992.0, 38.0), &geo(), ms(t, 12));
             assert!(r.shown(), "a fast climb that brakes in the band is a push");
@@ -455,7 +455,7 @@ mod tests {
                 t0,
             );
             assert!(!r.shown(), "no push credit while still flying");
-            // It flies on into the desktop's bar: the dwell never matures.
+            // It flies on into the shell's bar: the dwell never matures.
             r.on_motion(Point::new(600.0, 0.0), &geo(), ms(t, 13));
             assert_eq!(r.deadline(), None);
             r.settle(ms(t, 1000));
@@ -523,7 +523,7 @@ mod tests {
             assert!(!r.shown());
         }
 
-        phase coming_down_from_the_desktop_bar_is_not_a_push;
+        phase coming_down_from_the_shell_bar_is_not_a_push;
         {
             let t0 = crate::motion::frame_now();
             let mut r = TopEdgeReveal::default();
@@ -593,7 +593,7 @@ mod tests {
             assert!(r.shown(), "on the title chip");
         }
 
-        phase an_overshoot_into_the_desktop_bar_gets_a_grace_to_return;
+        phase an_overshoot_into_the_shell_bar_gets_a_grace_to_return;
         {
             let t0 = crate::motion::frame_now();
             let mut r = TopEdgeReveal::default();

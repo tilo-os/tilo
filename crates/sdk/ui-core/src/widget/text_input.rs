@@ -264,7 +264,7 @@ pub(super) struct SingleLineAttributes {
 pub struct PromptFit {
     pub shown: String,
     pub width: f32,
-    pub room: f32,
+    pub limit: f32,
 }
 
 /// A field that prompts while it holds nothing, reporting what it painted and whether that fit
@@ -3304,7 +3304,7 @@ impl TextInput {
         self.has_reveal_control().then(|| self.reveal.get_rect())
     }
 
-    /// Room the trailing edge keeps free of text: the show/hide control when
+    /// Area the trailing edge keeps free of text: the show/hide control when
     /// present, otherwise the same padding as the leading edge.
     fn trailing_text_inset(&self, padding_x: f64) -> f64 {
         if self.has_reveal_control() {
@@ -3317,7 +3317,7 @@ impl TextInput {
     fn refresh_reveal_control(&mut self) {
         self.reveal.set_enabled(!self.effectively_disabled());
         if self.has_reveal_control() {
-            self.reveal.place(self.rect, self.accessory_room());
+            self.reveal.place(self.rect, self.accessory_width());
         } else {
             self.reveal.set_focus(false);
         }
@@ -3360,22 +3360,22 @@ impl TextInput {
     /// button beside it. A single-line field centres its text in that band ([`Self::text_band`]);
     /// a wrapping field that holds one line centres it the same way, so the words and the caret
     /// stand in the middle of the control a person touches rather than at its top edge. Anything
-    /// more is not a band's room: text that wraps, a field given lines of its own (`min_lines`, a
+    /// more is not a band's area: text that wraps, a field given lines of its own (`min_lines`, a
     /// note's box), a document's page and a field stretched to fill a pane all start at the inset
     /// and grow down.
     fn multiline_top(&self) -> f64 {
         let inset = self.rect.y0 + self.multiline_padding_y();
         let line = self.line_height();
-        let room = self.rect.height() - line;
+        let limit = self.rect.height() - line;
         if self.plain
             || self.min_lines > 0
             || !self.fits_one_line()
-            || room <= 2.0 * self.multiline_padding_y() + 0.5
+            || limit <= 2.0 * self.multiline_padding_y() + 0.5
             || self.rect.height() > self.band() + 0.5
         {
             return inset;
         }
-        self.rect.y0 + room / 2.0
+        self.rect.y0 + limit / 2.0
     }
 
     fn fits_one_line(&self) -> bool {
@@ -4010,7 +4010,7 @@ impl TextInput {
         })
     }
 
-    fn accessory_room(&self) -> f64 {
+    fn accessory_width(&self) -> f64 {
         self.accessory_rect().map_or(0.0, |rect| rect.width())
     }
 
@@ -4856,20 +4856,20 @@ impl<'a> FieldFace<'a> {
             return;
         }
         let style = theme.text(self.role);
-        let room = self.text_rect(theme);
+        let limit = self.text_rect(theme);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a field width is a bounded on-screen size, far inside f32"
         )]
-        let width = room.width().max(1.0) as f32;
+        let width = limit.width().max(1.0) as f32;
         let line = text.elide_to_width_style(shown, width, &style);
         let (_, h) = text.measure_style(&line, None, &style);
-        let y = room.y0 + (room.height() - f64::from(h)) / 2.0;
+        let y = limit.y0 + (limit.height() - f64::from(h)) / 2.0;
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "Affine transform composition over f64 screen coordinates"
         )]
-        let origin = transform * Affine::translate((room.x0, y));
+        let origin = transform * Affine::translate((limit.x0, y));
         text.draw_style(scene, &line, ink, origin, None, &style);
     }
 }
@@ -5139,8 +5139,8 @@ impl Widget for TextInput {
                 );
             }
             self.layout_dirty = false;
-            // Its height is the band `build_layout` set. Its width is the room
-            // it is given; where nothing gives it room (a row that wraps, a run
+            // Its height is the band `build_layout` set. Its width is the area
+            // it is given; where nothing gives it area (a row that wraps, a run
             // that hugs its items) it stands at its own width, never at 0.
             return taffy::Size {
                 width: known.width.unwrap_or(self.own_width),
@@ -5356,7 +5356,7 @@ impl Widget for TextInput {
             text_y,
         );
 
-        // The text shows only in the room its scroll keeps the caret in: inside the field's inset
+        // The text shows only in the area its scroll keeps the caret in: inside the field's inset
         // on both edges, never under the show/hide control or the trailing accessory.
         #[allow(
             clippy::arithmetic_side_effects,
@@ -5365,7 +5365,7 @@ impl Widget for TextInput {
         let text_clip = Rect::new(
             self.rect.x0 + padding_x,
             self.rect.y0,
-            (self.rect.x0 + padding_x + self.text_room(theme) + theme.caret_width)
+            (self.rect.x0 + padding_x + self.text_width(theme) + theme.caret_width)
                 .min(self.rect.x1),
             self.rect.y1,
         );

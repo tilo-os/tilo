@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
         };
         assert!(
             (above_foot(natural) - above_foot(taller)).abs() < 0.5,
-            "the header's line stands at the foot of its box, so room above it never comes between \
+            "the header's line stands at the foot of its box, so area above it never comes between \
          it and what it heads: {:.1} and {:.1} above the foot",
             above_foot(natural),
             above_foot(taller)
@@ -499,7 +499,7 @@ fn a_lists_switches_stand_in_one_column_beside_its_chevrons() {
                 .trailing(switch("home"))
                 .disclosure(),
         ),
-        Box::new(ListRow::new("desk", "Through Desk PC").trailing(switch("desk"))),
+        Box::new(ListRow::new("office", "Through Office PC").trailing(switch("office"))),
         Box::new(
             ListRow::new("work", "Work")
                 .trailing(switch("work"))

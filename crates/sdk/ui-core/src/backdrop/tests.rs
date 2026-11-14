@@ -481,7 +481,7 @@ fn cost_at_1080p() {
 }
 
 #[test]
-fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
+fn a_surface_over_the_published_shell_is_an_image_fill_under_the_tint() {
     let theme = Theme::dark();
     let ground = crate::chrome::panel_ground(&theme);
     let mut wallpaper = Vec::new();
@@ -495,7 +495,7 @@ fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
     let display = Rect::new(0.0, 0.0, 256.0, 192.0);
     let draw = |theme: &Theme| {
         let mut scene = Scene::new();
-        desktop::fill(
+        wallpaper::fill(
             &mut scene,
             (Affine::IDENTITY, Affine::IDENTITY),
             &panel(),
@@ -505,13 +505,13 @@ fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
         );
         scene
     };
-    desktop::publish(Vec::new());
+    wallpaper::publish(Vec::new());
     assert!(
         draw(&theme).encoding().resources.patches.is_empty(),
         "nothing published: opaque"
     );
-    let blurred = desktop::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
-    let again = desktop::blurred_cover(&wallpaper, display, 24.0).expect("cached");
+    let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
+    let again = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("cached");
     assert_eq!(
         blurred.0.data.id(),
         again.0.data.id(),
@@ -524,7 +524,7 @@ fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
         * 4;
     let grey = pixels[mid];
     assert!((100..=155).contains(&grey), "the checks still show: {grey}");
-    desktop::publish(vec![desktop::image_piece(
+    wallpaper::publish(vec![wallpaper::image_piece(
         Affine::IDENTITY,
         display,
         blurred,
@@ -537,7 +537,7 @@ fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
     );
     assert!(
         frosted.encoding_eq(&draw(&theme)),
-        "the same desktop encodes the same"
+        "the same shell encodes the same"
     );
     assert!(
         draw(&theme.clone().with_reduce_transparency(true))
@@ -547,7 +547,7 @@ fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
             .is_empty(),
         "reduced transparency is opaque"
     );
-    desktop::publish(Vec::new());
+    wallpaper::publish(Vec::new());
 }
 
 /// What frosting the window strips costs at 1080p on this machine's
@@ -580,7 +580,7 @@ fn frost_cost_at_1080p() {
     let wallpaper = crate::raster::rgba8(wallpaper, 3840, 2160);
     let display = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
     let started = crate::time::now();
-    let blurred = desktop::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
+    let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
     let blur_us = started.elapsed().as_micros();
     let ground = crate::chrome::panel_ground(&theme);
     let frame = |material: Material| {
@@ -601,7 +601,7 @@ fn frost_cost_at_1080p() {
                 84.0,
                 16.0,
             );
-            desktop::fill(
+            wallpaper::fill(
                 &mut scene,
                 (Affine::IDENTITY, Affine::IDENTITY),
                 &strip,
@@ -612,7 +612,7 @@ fn frost_cost_at_1080p() {
         }
         scene
     };
-    desktop::publish(vec![desktop::image_piece(
+    wallpaper::publish(vec![wallpaper::image_piece(
         Affine::IDENTITY,
         display,
         blurred,
@@ -652,7 +652,7 @@ fn frost_cost_at_1080p() {
     };
     let frosted = time(&frame(Material::Floating));
     let opaque = time(&frame(Material::Opaque));
-    desktop::publish(Vec::new());
+    wallpaper::publish(Vec::new());
     let info = gpu.device.adapter_info();
     println!(
         "frosted strips at {width}x{height} on {} ({:?}): blurring a 3840x2160 wallpaper once \
@@ -1293,7 +1293,7 @@ fn a_pixelated_panel_shows_what_lies_below_as_cells() {
     );
 }
 
-fn liquid_desk(window_x: f64, mark: Option<Rect>) -> (Scene, BackdropFrame) {
+fn liquid_backdrop(window_x: f64, mark: Option<Rect>) -> (Scene, BackdropFrame) {
     let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
     let ground = theme.tokens.colors.surfaces.base;
     let mut scene = stripes(256, 192);
@@ -1342,14 +1342,14 @@ fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
         let pixels = renderer.render(&scene, Color::BLACK);
         (pixels, renderer.backdrop_stats())
     };
-    let fresh = |desk: (Scene, BackdropFrame)| {
+    let fresh = |backdrop: (Scene, BackdropFrame)| {
         let mut renderer = OffscreenRenderer::new(width, height);
-        renderer.set_backdrop(Some(std::sync::Arc::new(desk.1)));
-        renderer.render(&desk.0, Color::BLACK)
+        renderer.set_backdrop(Some(std::sync::Arc::new(backdrop.1)));
+        renderer.render(&backdrop.0, Color::BLACK)
     };
-    let (first, stats) = show(&mut renderer, liquid_desk(8.0, None));
+    let (first, stats) = show(&mut renderer, liquid_backdrop(8.0, None));
     assert_eq!((stats.substituted, stats.reused), (3, 0));
-    let (again, stats) = show(&mut renderer, liquid_desk(8.0, None));
+    let (again, stats) = show(&mut renderer, liquid_backdrop(8.0, None));
     assert_eq!(
         (stats.substituted, stats.reused),
         (3, 3),
@@ -1358,13 +1358,13 @@ fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
     assert_eq!(first, again);
 
     let mark = Some(Rect::new(120.0, 60.0, 180.0, 120.0));
-    let (marked, stats) = show(&mut renderer, liquid_desk(8.0, mark));
+    let (marked, stats) = show(&mut renderer, liquid_backdrop(8.0, mark));
     assert_eq!((stats.substituted, stats.reused), (3, 2));
-    assert_eq!(marked, fresh(liquid_desk(8.0, mark)));
+    assert_eq!(marked, fresh(liquid_backdrop(8.0, mark)));
 
-    let (moved, stats) = show(&mut renderer, liquid_desk(20.0, mark));
+    let (moved, stats) = show(&mut renderer, liquid_backdrop(20.0, mark));
     assert_eq!((stats.substituted, stats.reused), (3, 1));
-    assert_eq!(moved, fresh(liquid_desk(20.0, mark)));
+    assert_eq!(moved, fresh(liquid_backdrop(20.0, mark)));
 }
 
 #[test]

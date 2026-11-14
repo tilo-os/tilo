@@ -19,7 +19,7 @@ pub enum KeyboardModifier {
     Control,
     Alt,
     Shift,
-    /// Desktop/system modifier: Command on Mac keyboards, Windows/Super elsewhere.
+    /// Shell/system modifier: Command on Mac keyboards, Windows/Super elsewhere.
     System,
     Fn,
     /// The right Alt key of layouts that type a third symbol with it.

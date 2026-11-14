@@ -1419,7 +1419,7 @@ pub struct AppearancePrefs {
     #[model(readonly)]
     pub custom_themes: Vec<CustomTheme>,
     /// Spacing density over whichever theme is shown: one of
-    /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `ROOMY`.
+    /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `LARGE`.
     #[serde(default = "default_density")]
     #[model(range = 0.5..=2.0)]
     pub density: f64,

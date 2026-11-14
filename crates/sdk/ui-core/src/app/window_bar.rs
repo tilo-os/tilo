@@ -1,7 +1,7 @@
 //! The window bar's own controls for an app: its search in place and its
 //! History control.
 //!
-//! The desktop draws one bar per window, and its search and History control
+//! The shell draws one bar per window, and its search and History control
 //! act on the window's app. For an app shown in a region of the shell's
 //! scene the window reaches the app's widgets itself
 //! ([`crate::widget::SearchableWindow`]); an app in a process of its own is

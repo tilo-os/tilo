@@ -185,7 +185,7 @@ impl PieChart {
         self.marks.hovered()
     }
     /// Name every slice in a legend (a swatch, its label and its share) beside the chart when
-    /// there is room, under it otherwise.
+    /// it fits, under it otherwise.
     #[must_use]
     pub fn with_legend(mut self) -> Self {
         self.marks.legend = true;
@@ -259,8 +259,8 @@ impl PieMarks {
         let gap = f64::from(theme.tokens.spacing.rhythm.section);
         let widest = entries.iter().map(|e| e.width).fold(0.0, f64::max);
         let row = entries.first().map_or(0.0, |e| e.height);
-        let side_room = rect.width() - rect.height().min(rect.width() * 0.6);
-        if widest + gap <= side_room {
+        let side_width = rect.width() - rect.height().min(rect.width() * 0.6);
+        if widest + gap <= side_width {
             let diameter = (rect.width() - widest - gap).min(rect.height()).max(0.0);
             let unit = diameter + gap + widest;
             let x0 = (rect.center().x - unit / 2.0).max(rect.x0);
@@ -1054,11 +1054,11 @@ mod tests {
             let after = chart.marks.legend_entries[0].1;
             assert!(
                 after.width() > before.width(),
-                "the wider entry takes more room: {before:?} then {after:?}"
+                "the wider entry takes more area: {before:?} then {after:?}"
             );
             assert!(
                 chart.marks.hit(after.center()).is_none(),
-                "the room the wider legend takes holds no wedge"
+                "the area the wider legend takes holds no wedge"
             );
         }
     }

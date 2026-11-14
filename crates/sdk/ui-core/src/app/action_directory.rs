@@ -602,12 +602,12 @@ impl App {
             // stopping at the byte ceiling would silently skip the unfit tail.
             // This preserves every canonical result while still bounding this
             // request to `max_results` provider steps.
-            let room = 1;
+            let spare = 1;
             let page = providers[provider_index].search_page(
                 &crate::search::SearchQuery::new(query.needle.as_str()),
                 provider_cursor.as_ref(),
                 work_left,
-                room,
+                spare,
             );
             work_left = work_left.saturating_sub(page.inspected);
             for hit in page.results {

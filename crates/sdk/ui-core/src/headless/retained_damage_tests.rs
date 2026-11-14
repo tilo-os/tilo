@@ -96,7 +96,7 @@ crate::testing::test_app_widget!(Chat, "Chat");
 
 const SIZE: (u32, u32) = (1200, 800);
 
-fn desk_row(places: Rc<RefCell<Places>>) -> GroupRow {
+fn strip_row(places: Rc<RefCell<Places>>) -> GroupRow {
     let chat = WindowGroup::new(
         100,
         vec![(
@@ -121,7 +121,7 @@ fn desk_row(places: Rc<RefCell<Places>>) -> GroupRow {
     GroupRow::new(vec![chat, notes])
 }
 
-fn desktop_of(root: impl Widget + 'static) -> FrameHarness {
+fn shell_of(root: impl Widget + 'static) -> FrameHarness {
     let mut harness = FrameHarness::for_root(crate::State::new(), root, SIZE, Theme::dark());
     harness.track_scene_parts(true);
     harness.set_coalesce_input_frames(true);
@@ -129,9 +129,9 @@ fn desktop_of(root: impl Widget + 'static) -> FrameHarness {
     harness
 }
 
-fn desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
+fn shell() -> (FrameHarness, Rc<RefCell<Places>>) {
     let places = Rc::new(RefCell::new(Places::default()));
-    let harness = desktop_of(desk_row(Rc::clone(&places)));
+    let harness = shell_of(strip_row(Rc::clone(&places)));
     (harness, places)
 }
 
@@ -160,7 +160,7 @@ fn centre(rect: Rect) -> (f64, f64) {
 
 #[test]
 fn a_typed_character_repaints_only_the_composer() {
-    let (mut harness, places) = desktop();
+    let (mut harness, places) = shell();
     let mut frames = RetainedFrames::default();
     let key = key(&harness, SIZE, 0);
     assert_eq!(
@@ -197,7 +197,7 @@ fn a_typed_character_repaints_only_the_composer() {
 
 #[test]
 fn a_resize_repaints_the_whole_frame() {
-    let (mut harness, _) = desktop();
+    let (mut harness, _) = shell();
     let mut frames = RetainedFrames::default();
     let first = key(&harness, SIZE, 0);
     present(&mut harness, &mut frames, first);
@@ -399,7 +399,7 @@ fn a_session_repainted_in_part_matches_full_renders() {
 
 fn session_matches_full_renders(sparse: bool) {
     let mut target = Retained::new(sparse);
-    let (mut harness, places) = desktop();
+    let (mut harness, places) = shell();
     let key = key(&harness, SIZE, 0);
     let mut step = |harness: &mut FrameHarness, what: &str| target.step(harness, key, what);
     step(&mut harness, "the first frame");
@@ -675,26 +675,26 @@ impl Widget for Scrimmed {
         self.row.collect_damage(regions);
     }
     fn name(&self) -> &str {
-        "Scrimmed desk"
+        "Scrimmed shell"
     }
 }
 
-crate::testing::test_app_widget!(Scrimmed, "Scrimmed desk");
+crate::testing::test_app_widget!(Scrimmed, "Scrimmed shell");
 
-fn scrimmed_desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
+fn scrimmed_shell() -> (FrameHarness, Rc<RefCell<Places>>) {
     let places = Rc::new(RefCell::new(Places::default()));
-    let desk = Scrimmed {
-        row: desk_row(Rc::clone(&places)),
+    let shell = Scrimmed {
+        row: strip_row(Rc::clone(&places)),
         open: false,
     };
-    (desktop_of(desk), places)
+    (shell_of(shell), places)
 }
 
 /// A scrim dims every pixel of the frame. Closing it must repaint every pixel it dimmed: no frame may
 /// keep the dim, not the one that closes it and not the unchanged frames after it.
 #[test]
 fn closing_a_scrim_repaints_the_frame_it_dimmed() {
-    let (mut harness, places) = scrimmed_desktop();
+    let (mut harness, places) = scrimmed_shell();
     let key = key(&harness, SIZE, 0);
     let mut target = Retained::new(false);
     target.step(&mut harness, key, "the first frame");

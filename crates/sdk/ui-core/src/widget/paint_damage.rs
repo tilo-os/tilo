@@ -15,7 +15,7 @@ use std::mem;
 const SPARE_SCENES: usize = 1024;
 
 /// How much encoded drawing all the kept scenes hold together, in entries
-/// of their streams: a few megabytes, however many parts a desk paints.
+/// of their streams: a few megabytes, however many parts a shell paints.
 const SPARE_ENTRIES: usize = 64 * 1024;
 
 const SPARE_PART_TAGS: usize = 4096;

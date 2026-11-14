@@ -963,12 +963,12 @@ impl ScrollRegion {
         self.glide.set_device_scale(scale_factor);
         let shown = self.content_rect();
         let max = self.max_offset();
-        let (extent, room) = if vertical {
+        let (extent, spare) = if vertical {
             (shown.height(), max.y)
         } else {
             (shown.width(), max.x)
         };
-        self.glide.set_view(extent, room > 0.0, theme.motion());
+        self.glide.set_view(extent, spare > 0.0, theme.motion());
         let step = match self.glide.wheel(&delta, phase, theme.reduce_motion) {
             crate::virtual_viewport::WheelStep::Scroll(step) => step,
             crate::virtual_viewport::WheelStep::Fling => {

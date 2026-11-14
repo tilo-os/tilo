@@ -248,11 +248,11 @@ impl ListRowFace<'_> {
         } else {
             left
         };
-        let room = (width - m.bleed - text_x).max(0.0);
+        let spare = (width - m.bleed - text_x).max(0.0);
         let lines = text.clamp_to_lines(
             self.title,
             &self.title_style(&m),
-            crate::num::f32_of_f64(room),
+            crate::num::f32_of_f64(spare),
             usize::from(super::CARD_TITLE_LINES),
         );
         let lines = u8::try_from(lines.len()).unwrap_or(1);
@@ -298,7 +298,7 @@ impl ListRowFace<'_> {
     }
 
     /// How far inside the row's edge its trailing slot ends: its own marks
-    /// after it, or the room its list keeps there if that is wider.
+    /// after it, or the area its list keeps there if that is wider.
     pub(super) fn after_trailing(&self, m: &RowMetrics) -> f64 {
         self.marks_after_trailing(m).max(self.trailing_after)
     }
@@ -433,10 +433,10 @@ impl ListRowFace<'_> {
         let title_line = RowMetrics::line(text, &title_style);
         let secondary_line = RowMetrics::line(text, &m.secondary);
         let reserved = usize::from(self.title_lines);
-        let room = self.title_room(geo, text, theme, m);
+        let spare = self.title_width(geo, text, theme, m);
         let shown = self.shown_title();
         let drawn = text
-            .clamp_to_lines(&shown, &title_style, room, reserved)
+            .clamp_to_lines(&shown, &title_style, spare, reserved)
             .len()
             .clamp(1, reserved);
         let unused = reserved - drawn;
@@ -535,7 +535,7 @@ impl ListRowFace<'_> {
             .max(rect.y0 + m.pad_y + facts / 2.0);
         geo.facts_cy = cy;
         // The facts that stand: only those the card has, in the row's order, a single spacing
-        // token apart. An absent fact takes no room, so the run never leaves a hole.
+        // token apart. An absent fact takes up nothing, so the run never leaves a hole.
         let avatar = self.fact_avatar(theme);
         let count = self
             .count_label()

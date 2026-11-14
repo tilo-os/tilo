@@ -1,5 +1,5 @@
 //! The applications a multi-app host can mount, registered once per process. A host that links
-//! applications in-process (the browser's desktop bundle, a shell hosting apps in-process) reads this
+//! applications in-process (the browser's shell bundle, a shell hosting apps in-process) reads this
 //! list instead of naming apps in its code.
 
 use std::future::Future;

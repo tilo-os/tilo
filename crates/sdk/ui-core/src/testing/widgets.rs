@@ -146,7 +146,7 @@ macro_rules! test_app_widget {
 
 pub(crate) use {delegate_widget_methods, inert_widget_methods, test_app_widget};
 
-/// Two editor windows side by side, as the desktop's strip lays them out: 400x300 each in
+/// Two editor windows side by side, as the shell's strip lays them out: 400x300 each in
 /// a surface that fills its parent.
 pub(crate) struct TwoWindows {
     tiles: [crate::widget::TileHost; 2],

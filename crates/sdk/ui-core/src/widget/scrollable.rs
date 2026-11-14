@@ -410,7 +410,7 @@ impl Scrollable {
     /// Keep content that only scrolls sideways at least as wide as the
     /// viewport: a row whose children share its width by weight fills the
     /// view when they fit, and still grows past it, to scroll, when their
-    /// own least widths need more room.
+    /// own least widths need more area.
     #[must_use]
     pub fn with_content_min_viewport_width(mut self) -> Self {
         self.content_fills_viewport_width = true;
@@ -479,7 +479,7 @@ impl Scrollable {
     }
 
     /// Keep the viewport as tall as its content and let it shrink only when its parent runs out
-    /// of room, so the content scrolls just in a window too short to show it.
+    /// of area, so the content scrolls just in a window too short to show it.
     #[must_use]
     pub fn fit_content_height(mut self) -> Self {
         self.max_height = Some(f32::INFINITY);
@@ -836,7 +836,7 @@ impl Scrollable {
 
     /// Show the descendant whose id is `id` (`Widget::test_id`) once a layout has placed it,
     /// moving as little as it takes: what just arrived on a surface the person pans (a place
-    /// put on the desk) is where they can see it.
+    /// put on the shell) is where they can see it.
     pub fn reveal_on_layout(&mut self, id: impl Into<String>) {
         self.reveal_id = Some(id.into());
     }
@@ -1225,7 +1225,7 @@ impl Widget for Scrollable {
                 width: Dimension::percent(1.0),
                 height,
             },
-            // Growing into the parent's room never takes a content-sized
+            // Growing into the parent's area never takes a content-sized
             // minimum, or a long page would push its parent taller.
             min_size: Size {
                 width: Dimension::auto(),

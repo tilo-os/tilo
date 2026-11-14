@@ -1,4 +1,4 @@
-//! What the person just did with the desktop controls, as the widgets that carried it out report it.
+//! What the person just did with the shell controls, as the widgets that carried it out report it.
 //! The control that performs a gesture says so once, where it commits (a window's bar let go at its new
 //! place, an edge let go at its new width, the canvas let go after a drag): every host then reads the
 //! same account, whichever of them drew the control.

@@ -202,7 +202,7 @@ impl HoverIntent {
     }
 }
 
-/// Reaching for something that waits at a display's edge (a desk widget's
+/// Reaching for something that waits at a display's edge (a shell widget's
 /// quiet form): the same transit-versus-aim reading as `HoverIntent`,
 /// for targets that are not under the pointer yet.
 ///

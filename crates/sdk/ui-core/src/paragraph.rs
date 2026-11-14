@@ -558,7 +558,7 @@ mod tests {
     use super::*;
 
     /// Ragged text fills each line before its last as far as the measure allows: a short last line is
-    /// no flaw there, so two lines are not balanced by ending the first with room for the next word.
+    /// no flaw there, so two lines are not balanced by ending the first wide enough for the next word.
     #[test]
     fn ragged_text_does_not_balance_away_a_short_last_line() {
         let boxes: Vec<_> = (0..8)

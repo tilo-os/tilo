@@ -126,9 +126,9 @@ pub struct Placed {
 /// Why a card is not on the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FoldReason {
-    /// There is no room for it beside the bar, a banner, the readout or the
+    /// Nothing fits for it beside the bar, a banner, the readout or the
     /// other cards: it lives in the pill until there is.
-    NoRoom,
+    TooSmall,
     /// The display is phone-width and the person has not expanded it.
     Phone,
 }
@@ -436,7 +436,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
             layer.folded.extend(rest.iter().map(|card| Folded {
                 app: card.app.clone(),
                 activity: card.summary.id.clone(),
-                reason: FoldReason::NoRoom,
+                reason: FoldReason::TooSmall,
             }));
         } else {
             layer.folded.extend(docked.iter().map(|card| Folded {
@@ -481,7 +481,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
             layer.folded.push(Folded {
                 app: card.app.clone(),
                 activity: card.summary.id.clone(),
-                reason: FoldReason::NoRoom,
+                reason: FoldReason::TooSmall,
             });
         }
     }

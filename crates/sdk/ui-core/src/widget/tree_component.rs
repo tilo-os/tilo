@@ -2226,7 +2226,7 @@ mod tests {
         );
         assert!(
             (folded - (gutter + step)).abs() < 0.5,
-            "and their content keeps room for the chevron column: {folded} px in, one {step} px \
+            "and their content keeps area for the chevron column: {folded} px in, one {step} px \
              step past the {gutter} px edge"
         );
         let chevron = chevron.expect("the branch shows its disclosure");

@@ -33,7 +33,7 @@ pub fn geometry(canvas: Rect, max_width: f64, top_gap: f64, content_margin: f64)
 
 const PAGE_RADIUS: f64 = 3.0;
 
-/// Draw a rounded paper sheet lifted off the desk by `elevation`.
+/// Draw a rounded paper sheet lifted off the shell by `elevation`.
 pub fn draw(
     scene: &mut Scene,
     transform: Affine,

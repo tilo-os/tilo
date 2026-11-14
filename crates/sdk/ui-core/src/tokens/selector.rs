@@ -67,7 +67,7 @@ impl SelectorFinish {
     }
 
     /// What a frosted strip of `ground` tinted at `opacity` can look like at its darkest
-    /// and its lightest: the tint over each end of the band the desktop picture is held
+    /// and its lightest: the tint over each end of the band the shell picture is held
     /// in first ([`crate::tokens::finish::material_band`]), as every blurred material is.
     #[must_use]
     pub fn frosted_extremes(

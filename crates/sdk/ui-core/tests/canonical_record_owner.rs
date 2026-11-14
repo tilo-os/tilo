@@ -61,10 +61,10 @@ tilo_test_env::scenario! {
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(tmp.path().join("state"));
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             let want = target();
             let path =
-                directory(&tmp.path().join("state"), "room-a", &want).join(app_state::DOCUMENT_FILE);
+                directory(&tmp.path().join("state"), "workspace-a", &want).join(app_state::DOCUMENT_FILE);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             for original in [b"not an automerge document".to_vec(), vec![]] {
                 std::fs::write(&path, &original).unwrap();
@@ -82,8 +82,8 @@ tilo_test_env::scenario! {
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(tmp.path().join("state"));
-            let a = owners.open("so.tilo.test", "room-a").unwrap();
-            let b = owners.open("so.tilo.test", "room-a").unwrap();
+            let a = owners.open("so.tilo.test", "workspace-a").unwrap();
+            let b = owners.open("so.tilo.test", "workspace-a").unwrap();
             let other = owners.open("so.tilo.test", "workspace-b").unwrap();
             let want = target();
             assert!(matches!(
@@ -116,7 +116,7 @@ tilo_test_env::scenario! {
             a.try_flush().unwrap();
             assert_eq!(settled(&b, &want.id), RecordSaveStatus::Saved);
             drop((token, second, a, b, other));
-            let reopened = owners.open("so.tilo.test", "room-a").unwrap();
+            let reopened = owners.open("so.tilo.test", "workspace-a").unwrap();
             assert!(matches!(
                 reopened.try_open_record(&want),
                 Ok(RecordOpenOutcome::Loaded)
@@ -128,7 +128,7 @@ tilo_test_env::scenario! {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("state");
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             let want = target();
             let mut reservation = store.reserve_record(&want).unwrap();
             assert_eq!(reservation.checkout().id, want.id);
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
                 store.save_status(&want.id),
                 Err(RecordOpenError::Busy)
             ));
-            let path = directory(&root, "room-a", &want).join(app_state::DOCUMENT_FILE);
+            let path = directory(&root, "workspace-a", &want).join(app_state::DOCUMENT_FILE);
             assert!(!path.exists());
             assert!(matches!(
                 reservation.initialize(|doc| {
@@ -191,8 +191,8 @@ tilo_test_env::scenario! {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("state");
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
-            for case in ["record", "room", "kind", "home"] {
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+            for case in ["record", "workspace", "kind", "home"] {
                 for torn in [false, true] {
                     let want = target();
                     let mut doc = AutoCommit::new();
@@ -210,11 +210,11 @@ tilo_test_env::scenario! {
                         &mut doc,
                         &id,
                         &kind,
-                        if case == "home" { "" } else { "minting-room" },
-                        Some(if case == "room" {
-                            "other-room"
+                        if case == "home" { "" } else { "minting-workspace" },
+                        Some(if case == "workspace" {
+                            "other-workspace"
                         } else {
-                            "room-a"
+                            "workspace-a"
                         }),
                     );
                     let heads = doc.get_heads();
@@ -224,7 +224,7 @@ tilo_test_env::scenario! {
                         let tail = doc.save_after(&heads);
                         original.extend_from_slice(&tail[..tail.len() / 2]);
                     }
-                    let path = directory(&root, "room-a", &want).join(app_state::DOCUMENT_FILE);
+                    let path = directory(&root, "workspace-a", &want).join(app_state::DOCUMENT_FILE);
                     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                     std::fs::write(&path, &original).unwrap();
                     assert!(
@@ -242,15 +242,15 @@ tilo_test_env::scenario! {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("state");
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             let want = target();
             let mut doc = AutoCommit::new();
             record::init_scoped(
                 &mut doc,
                 &want.id,
                 &want.kind,
-                "original-minting-room",
-                Some("room-a"),
+                "original-minting-workspace",
+                Some("workspace-a"),
             );
             doc.put(ROOT, "body", "prefix").unwrap();
             let heads = doc.get_heads();
@@ -258,14 +258,14 @@ tilo_test_env::scenario! {
             doc.put(ROOT, "body", "torn-tail").unwrap();
             let tail = doc.save_after(&heads);
             bytes.extend_from_slice(&tail[..tail.len() / 2]);
-            let path = directory(&root, "room-a", &want).join(app_state::DOCUMENT_FILE);
+            let path = directory(&root, "workspace-a", &want).join(app_state::DOCUMENT_FILE);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, bytes).unwrap();
             store.try_open_record(&want).unwrap();
             assert_eq!(body(&store, &want), "prefix");
             assert_eq!(
                 store.read(&want.id, record::home).flatten().as_deref(),
-                Some("original-minting-room")
+                Some("original-minting-workspace")
             );
             assert_eq!(settled(&store, &want.id), RecordSaveStatus::Saved);
             store.with(&want.id, |doc| {
@@ -273,7 +273,7 @@ tilo_test_env::scenario! {
             });
             store.try_flush().unwrap();
             drop(store);
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             store.try_open_record(&want).unwrap();
             assert_eq!(body(&store, &want), "after-recovery");
         }
@@ -282,7 +282,7 @@ tilo_test_env::scenario! {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("state");
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             let want = target();
             let mut token = store.reserve_record(&want).unwrap();
             assert!(matches!(
@@ -291,13 +291,13 @@ tilo_test_env::scenario! {
             ));
             assert!(!store.is_ready(&want.id));
             assert!(
-                !directory(&root, "room-a", &want)
+                !directory(&root, "workspace-a", &want)
                     .join(app_state::DOCUMENT_FILE)
                     .exists()
             );
             token.initialize(|_| Ok(())).unwrap();
             store.try_flush().unwrap();
-            let path = directory(&root, "room-a", &want).join(app_state::DOCUMENT_FILE);
+            let path = directory(&root, "workspace-a", &want).join(app_state::DOCUMENT_FILE);
             std::fs::remove_file(&path).unwrap();
             store.with(&want.id, |doc| {
                 doc.put(ROOT, "body", "missing-append-target").unwrap();
@@ -325,7 +325,7 @@ tilo_test_env::scenario! {
             );
             let tmp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(tmp.path().join("state"));
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             store
                 .reserve_record(&want)
                 .unwrap()
@@ -361,7 +361,7 @@ tilo_test_env::scenario! {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("state");
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             let want = target();
             store
                 .reserve_record(&want)
@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
                 .initialize(|_| Ok(()))
                 .unwrap();
             store.try_flush().unwrap();
-            let path = directory(&root, "room-a", &want).join(app_state::DOCUMENT_FILE);
+            let path = directory(&root, "workspace-a", &want).join(app_state::DOCUMENT_FILE);
             std::fs::remove_file(&path).unwrap();
             std::fs::create_dir(&path).unwrap();
             store.with(&want.id, |doc| doc.put(ROOT, "body", "first").unwrap());
@@ -389,7 +389,7 @@ tilo_test_env::scenario! {
             assert_eq!(settled(&store, &want.id), RecordSaveStatus::Saved);
             assert_eq!(store.durability_error(&want.id), None);
             drop(store);
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             store.try_open_record(&want).unwrap();
             assert_eq!(body(&store, &want), "latest");
             assert_eq!(

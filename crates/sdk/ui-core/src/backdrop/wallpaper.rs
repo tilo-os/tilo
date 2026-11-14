@@ -1,5 +1,5 @@
-//! The desktop, blurred, for surfaces that stand on it alone. A window group's docked tab strip is
-//! frosted over the desktop, and only the desktop is ever behind it: windows never overlap.
+//! The shell, blurred, for surfaces that stand on it alone. A window group's docked tab strip is
+//! frosted over the shell, and only the shell is ever behind it: windows never overlap.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -19,10 +19,10 @@ use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, ImageBrush, ImageData
 use crate::floating_surface::Material;
 use crate::theme::Theme;
 
-/// One display's desktop, blurred: `brush` placed by `brush_transform` over `rect`, all in the
-/// coordinates `transform` maps into the desktop's.
+/// One display's shell, blurred: `brush` placed by `brush_transform` over `rect`, all in the
+/// coordinates `transform` maps into the shell's.
 #[derive(Clone, Debug)]
-pub struct DesktopPiece {
+pub struct WallpaperPiece {
     pub transform: Affine,
     pub rect: Rect,
     pub brush: Brush,
@@ -36,39 +36,39 @@ const REACH: f64 = 3.0;
 type CoverKey = (u64, u64, u64, u32);
 
 thread_local! {
-    static DESKTOP: RefCell<Vec<DesktopPiece>> = const { RefCell::new(Vec::new()) };
+    static PIECES: RefCell<Vec<WallpaperPiece>> = const { RefCell::new(Vec::new()) };
     static COVERS: RefCell<Vec<(CoverKey, ImageData)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The desktop a frame draws, blurred, in the coordinates of the scene the desktop is drawn into.
-pub fn publish(pieces: Vec<DesktopPiece>) {
-    DESKTOP.with(|slot| *slot.borrow_mut() = pieces);
+/// The shell a frame draws, blurred, in the coordinates of the scene the shell is drawn into.
+pub fn publish(pieces: Vec<WallpaperPiece>) {
+    PIECES.with(|slot| *slot.borrow_mut() = pieces);
 }
 
-/// Whether a desktop is published on this thread.
+/// Whether a shell is published on this thread.
 #[must_use]
 pub fn published() -> bool {
-    DESKTOP.with(|slot| !slot.borrow().is_empty())
+    PIECES.with(|slot| !slot.borrow().is_empty())
 }
 
-/// Fill `shape` with `material` over the published desktop: the blurred desktop behind it, under the
+/// Fill `shape` with `material` over the published shell: the blurred shell behind it, under the
 /// material's tint of `ground`.
 pub(crate) fn fill(
     scene: &mut Scene,
-    (transform, desktop_to_scene): (Affine, Affine),
+    (transform, wallpaper_to_scene): (Affine, Affine),
     shape: &impl Shape,
     material: Material,
     theme: &Theme,
     ground: Color,
 ) {
-    let pieces = DESKTOP.with(|slot| slot.borrow().clone());
+    let pieces = PIECES.with(|slot| slot.borrow().clone());
     if !super::blurs(material, theme) || pieces.is_empty() {
         scene.fill(Fill::NonZero, transform, ground, None, shape);
         return;
     }
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
     for (index, piece) in pieces.iter().enumerate() {
-        let to_scene = desktop_to_scene * piece.transform;
+        let to_scene = wallpaper_to_scene * piece.transform;
         if index == 0 {
             scene.fill(
                 Fill::NonZero,
@@ -98,7 +98,7 @@ pub(crate) fn fill(
     );
 }
 
-/// `image` covering `rect` as a desktop paints a wallpaper (scaled to cover it, centred), blurred by
+/// `image` covering `rect` as a shell paints a wallpaper (scaled to cover it, centred), blurred by
 /// `blur_px` logical pixels: the blurred picture and the transform that places it over `rect`.
 #[must_use]
 pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(ImageData, Affine)> {
@@ -148,11 +148,11 @@ pub fn blurred_cover(image: &ImageData, rect: Rect, blur_px: f32) -> Option<(Ima
     Some((blurred, placed))
 }
 
-/// The desktop's pieces with no wallpaper: `brush` (a gradient, already as smooth as its blur) over
+/// The shell's pieces with no wallpaper: `brush` (a gradient, already as smooth as its blur) over
 /// `rect`.
 #[must_use]
-pub fn smooth_piece(transform: Affine, rect: Rect, brush: Brush) -> DesktopPiece {
-    DesktopPiece {
+pub fn smooth_piece(transform: Affine, rect: Rect, brush: Brush) -> WallpaperPiece {
+    WallpaperPiece {
         transform,
         rect,
         brush,
@@ -166,8 +166,8 @@ pub fn image_piece(
     transform: Affine,
     rect: Rect,
     (image, placed): (ImageData, Affine),
-) -> DesktopPiece {
-    DesktopPiece {
+) -> WallpaperPiece {
+    WallpaperPiece {
         transform,
         rect,
         brush: Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad)),

@@ -249,7 +249,7 @@ fn a_press_on_a_scrolls_own_bar_still_drags_the_bar() {
     drag_bus::end(None);
 }
 
-/// A press that is not over the source is not the source's. The desk lays the windows, with
+/// A press that is not over the source is not the source's. The shell lays the windows, with
 /// their handles, under a bar of its own, and a press on the bar reaches the window's handle
 /// first: the handle took every such press, lifted a row the pointer was nowhere near, and held
 /// the pointer, so the release that would have clicked the bar's button went to it instead and
@@ -263,7 +263,7 @@ fn a_press_outside_a_source_is_not_the_sources_and_leaves_the_release_to_what_wa
     });
     // The button stands in the column's top slot, the source under it: the stack asks its
     // children from the last, so the source hears the press first and the button hears it
-    // after, as the desk's window handles and its bar do.
+    // after, as the shell's window handles and its bar do.
     let mut laid = Laid::of(
         crate::widget::arrange::Stack::stack()
             .gap(crate::tokens::Rhythm::None)

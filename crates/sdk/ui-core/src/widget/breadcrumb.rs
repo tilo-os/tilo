@@ -145,7 +145,7 @@ impl Breadcrumb {
     /// and the last two; then the first, `...` and the last; then `...`
     /// and the last (for a trail of two as well), the last cut short where
     /// it does not stand whole; and at the narrowest, where the `...`
-    /// leaves the last no room for a letter, the last alone, cut short.
+    /// leaves the last no area for a letter, the last alone, cut short.
     /// The current folder always shows.
     /// Pure function — does not mutate `self`. Exposed for tests that want
     /// to pin the truncation behaviour without running a full layout pass.
@@ -282,12 +282,12 @@ impl Breadcrumb {
                 clippy::cast_possible_truncation,
                 reason = "a segment's width is a bounded on-screen size, far inside f32"
             )]
-            let room = rect.width() as f32;
+            let spare = rect.width() as f32;
             let style = theme.text(self.role);
-            *label = tr.elide_to_width_style(label, room, &style);
-            // Too little room for even the ellipsis: nothing is painted
+            *label = tr.elide_to_width_style(label, spare, &style);
+            // Too little area for even the ellipsis: nothing is painted
             // rather than something past the trail's end.
-            if tr.measure_style(label, None, &style).0 > room {
+            if tr.measure_style(label, None, &style).0 > spare {
                 label.clear();
             }
         }
@@ -810,7 +810,7 @@ mod tests {
                 assert_eq!(
                     bc.visible_segments(both - 1.0, &theme, &mut tr),
                     vec![ELLIPSIS.to_string(), "system partition".to_string()],
-                    "a trail of two too wide for its room keeps the current segment"
+                    "a trail of two too wide for its area keeps the current segment"
                 );
                 let rect = Rect::new(10.0, 0.0, 70.0, 24.0);
                 bc.set_rect(rect);
@@ -823,7 +823,7 @@ mod tests {
                 let last = bc.segment_rects.last().copied().unwrap_or(Rect::ZERO);
                 assert!(
                     shown != "system partition" && f64::from(shown_w) <= last.width() + 0.5,
-                    "the current segment's label is cut to its room: {shown}"
+                    "the current segment's label is cut to its area: {shown}"
                 );
             }
 

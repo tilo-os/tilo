@@ -353,7 +353,7 @@ impl FloatingSurfaceProvider for MapsApp {
         if self.model.route.is_some()
             && matches!(
                 self.navigation_placement.attachment(),
-                ui::floating_surface::Attachment::Desktop { .. }
+                ui::floating_surface::Attachment::Shell { .. }
             )
         {
             self.draw_navigation_surface(scene, transform, text_renderer, theme);
@@ -370,7 +370,7 @@ impl FloatingSurfaceProvider for MapsApp {
         if !returning_to_app
             && !matches!(
                 self.navigation_placement.attachment(),
-                ui::floating_surface::Attachment::Desktop { .. }
+                ui::floating_surface::Attachment::Shell { .. }
             )
         {
             return Vec::new();
@@ -412,12 +412,12 @@ impl FloatingSurfaceProvider for MapsApp {
             && request_id == &id
             && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
         {
-            self.navigation_placement.prepare_desktop_rect_with_offset(
+            self.navigation_placement.prepare_shell_rect_with_offset(
                 rect,
                 vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
             );
             self.navigation_placement
-                .set_desktop_transfer_covered(*transfer_covered);
+                .set_shell_transfer_covered(*transfer_covered);
             return;
         }
         if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
@@ -427,7 +427,7 @@ impl FloatingSurfaceProvider for MapsApp {
             && request_id == &id
             && ui::floating_surface::protocol_rect(*rect).is_ok()
         {
-            self.navigation_placement.confirm_desktop_adoption();
+            self.navigation_placement.confirm_shell_adoption();
             return;
         }
         if matches!(

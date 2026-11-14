@@ -687,7 +687,7 @@ impl Widget for Checkbox {
             let (natural, _) =
                 text_renderer.measure_style(&widget_text(label), None, &self.label_style);
             let natural = target + gap + natural.ceil();
-            available_width.map_or(natural, |room| natural.min(room))
+            available_width.map_or(natural, |spare| natural.min(spare))
         });
         Size {
             width: known_dimensions

@@ -474,7 +474,7 @@ impl Button {
     /// Take the words and glyph of `fresh`, keeping this button's place and press; a shape apart
     /// (icon-only for a label, another role or size) can only change by building it again. A
     /// button a row has compacted takes `fresh`'s words as what it shows when the row gives it
-    /// room again, and keeps showing its face.
+    /// area again, and keeps showing its face.
     pub(crate) fn take_words(&mut self, fresh: &Button) -> bool {
         let compact = self.compact_presentation.is_some();
         if fresh.icon.is_some() != self.icon.is_some()
@@ -819,7 +819,7 @@ impl Button {
             && (!self.label.is_empty() || self.compact_presentation.is_some())
     }
 
-    /// Whether the button is shown icon-only by a row short of room
+    /// Whether the button is shown icon-only by a row short of area
     /// ([`Self::set_compact_toolbar_presentation`]).
     pub fn is_shown_compact(&self) -> bool {
         self.compact_presentation.is_some()
@@ -854,7 +854,7 @@ impl Button {
 /// | `Destructive` | deletes, removes or revokes something | the secondary face lettered in danger ink; filled only inside the confirmation step |
 /// | `Plain` | inline text actions, toolbar glyphs, close buttons | nothing at rest, a lift of its ground under the pointer; a labelled one's ink sits on its layout edge and its lift and hit area reach outward |
 /// | `Key` | a keypad or keyboard key (a calculator digit, an on-screen key, a one-letter toggle) | a faint lift of its ground at rest, its label in `Title` |
-/// | `Bar` | a control of the desktop's top bar or a window's bar | the bar control ([`crate::widget::BarControlFace`]): nothing at rest, half a lift under the pointer, a whole lift while pressed or on, its icon in secondary ink until then |
+/// | `Bar` | a control of the shell's top bar or a window's bar | the bar control ([`crate::widget::BarControlFace`]): nothing at rest, half a lift under the pointer, a whole lift while pressed or on, its icon in secondary ink until then |
 ///
 /// Every role has the control radius (`radii.control`): buttons are not pills.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
@@ -1393,12 +1393,12 @@ impl FaceContent<'_> {
         if let Some(detail) = self.detail.filter(|detail| !detail.is_empty()) {
             let detail_w = f64::from(ctx.text.measure_style(detail, None, style).0);
             let detail_x = rect.x1 - pad - detail_w;
-            let label_room = (detail_x - metrics.hint_gap - rect.x0 - pad - lead).max(1.0);
+            let label_width = (detail_x - metrics.hint_gap - rect.x0 - pad - lead).max(1.0);
             // Half a pixel of slack, as below: a face sized to its measured label never elides
             // it over shaping round-off.
             let label =
                 ctx.text
-                    .elide_to_width_style(self.label, f32_of_f64(label_room + 0.5), style);
+                    .elide_to_width_style(self.label, f32_of_f64(label_width + 0.5), style);
             let (_, label_h) = ctx.text.measure_style(&label, None, style);
             let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
             let leading = rect.x0 + pad;
@@ -1432,18 +1432,20 @@ impl FaceContent<'_> {
         } else {
             0.0
         };
-        let room = (rect.width() - 2.0 * pad - lead - trail).max(1.0);
+        let spare = (rect.width() - 2.0 * pad - lead - trail).max(1.0);
         let hint = self.hint.as_ref().and_then(|hint| {
             let label_w = f64::from(ctx.text.measure_style(self.label, None, style).0);
             let hint_w = f64::from(ctx.text.measure_style(hint, None, style).0);
-            (label_w + metrics.hint_gap + hint_w <= room).then_some((hint.as_str(), hint_w))
+            (label_w + metrics.hint_gap + hint_w <= spare).then_some((hint.as_str(), hint_w))
         });
-        let label_room = hint.map_or(room, |(_, hint_w)| room - metrics.hint_gap - hint_w);
+        let label_width = hint.map_or(spare, |(_, hint_w)| spare - metrics.hint_gap - hint_w);
         // Half a pixel of slack: a face sized to its measured label never
         // elides it over shaping round-off.
-        let label =
-            ctx.text
-                .elide_to_width_style(self.label, f32_of_f64(label_room.max(1.0) + 0.5), style);
+        let label = ctx.text.elide_to_width_style(
+            self.label,
+            f32_of_f64(label_width.max(1.0) + 0.5),
+            style,
+        );
         let (label_w, label_h) = ctx.text.measure_style(&label, None, style);
         let hint_w = hint.map_or(0.0, |(_, w)| metrics.hint_gap + w);
         let cluster = lead + f64::from(label_w) + hint_w + trail;
@@ -1857,9 +1859,9 @@ impl<'a> ButtonFace<'a> {
             return Some(Rect::new(ix, iy, ix + icon_px, iy + icon_px));
         }
         let lead = icon_px + metrics.icon_gap;
-        let room = (rect.width() - 2.0 * metrics.pad_x - lead).max(1.0);
+        let spare = (rect.width() - 2.0 * metrics.pad_x - lead).max(1.0);
         let style = &metrics.label_style;
-        let shown = text.elide_to_width_style(&label, f32_of_f64(room + 0.5), style);
+        let shown = text.elide_to_width_style(&label, f32_of_f64(spare + 0.5), style);
         let label_w = f64::from(text.measure_style(&shown, None, style).0);
         let start_x = if self.detail.is_some_and(|detail| !detail.is_empty()) {
             rect.x0 + metrics.pad_x
@@ -2010,12 +2012,12 @@ impl Button {
 
     /// Whether the face stands flush on the button's own edges: a plain control's words have no
     /// padding of their own, and a control a row compacted stands as its one face's square — the
-    /// room the row planned for it — rather than a padded pill wider than the square it planned.
+    /// area the row planned for it — rather than a padded pill wider than the square it planned.
     fn flush_face(&self, label: &str) -> bool {
         self.role.flush() && (!label.is_empty() || self.compact_presentation.is_some())
     }
 
-    /// The faces the button shows: one while a row short of room has it compact — the one who
+    /// The faces the button shows: one while a row short of area has it compact — the one who
     /// changed it newest, which the group names last — and the group itself otherwise.
     fn shown_faces(&self) -> &[(String, String)] {
         if self.compact_presentation.is_some() {
@@ -2104,7 +2106,7 @@ impl Button {
     }
 
     /// Measure the count so [`Self::count_rect`] can place it. The count stands inside the
-    /// face, so the face's own size is the room it needs: the node's margins are its parent's
+    /// face, so the face's own size is the area it needs: the node's margins are its parent's
     /// and stay as the parent gave them.
     fn measure_count(&mut self, text: &mut TextRenderer) {
         self.count_size = self
@@ -2234,7 +2236,7 @@ impl Widget for Button {
         let height = f32_of_f64(self.face_height());
         let style = Style {
             // An intrinsic button never shrinks below its label: a parent
-            // with room shows it whole, and only a parent without room
+            // with area shows it whole, and only a parent without area
             // (capped by `max_size`) makes the painter elide it.
             flex_shrink: 0.0,
             min_size: Size::from_lengths(height, height),
@@ -2433,7 +2435,7 @@ impl Widget for Button {
     /// `apply_layout` can populate it; after that it stays clean (pure
     /// translation handled via the cache's append transform, no taffy
     /// involvement). Only a button the solver has *never* placed counts as
-    /// missing: a slot its parent gives no room is placed at zero size, and
+    /// missing: a slot its parent gives no area is placed at zero size, and
     /// asking for that measure again every frame kept a still window
     /// recomposing. The rect is the laid-out one, not the paint cache's: a
     /// button that is not drawn (scrolled or panned out of view) has

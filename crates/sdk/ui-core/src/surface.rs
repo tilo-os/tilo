@@ -13,7 +13,7 @@ use crate::theme::Theme;
 use crate::tokens::{Colors, Shadow};
 use tilo_lock::MutexRecover as _;
 
-/// Shared silhouette for lightweight desktop floats. The asymmetry is only one or two
+/// Shared silhouette for lightweight shell floats. The asymmetry is only one or two
 /// logical pixels along each edge: enough to feel soft and held, never enough to look
 /// like a novelty blob.
 pub fn soft_outline(rect: Rect) -> BezPath {

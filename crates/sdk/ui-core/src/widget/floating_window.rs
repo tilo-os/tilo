@@ -2034,7 +2034,7 @@ mod tests {
     use crate::testing::dispatch;
 
     #[test]
-    fn a_german_desktop_names_the_close_and_the_move_hint_in_german() {
+    fn a_german_shell_names_the_close_and_the_move_hint_in_german() {
         use crate::i18n::I18nManager;
         const EN: &str = include_str!("../../locales/en-US.ftl");
         const DE: &str = include_str!("../../locales/de-DE.ftl");
@@ -2048,7 +2048,7 @@ mod tests {
         assert_eq!(
             node.children[0].name.as_deref(),
             Some("Compose schließen"),
-            "the close says what it closes, in the desktop's language"
+            "the close says what it closes, in the shell's language"
         );
         assert_eq!(
             node.description.as_deref(),

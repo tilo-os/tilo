@@ -6,7 +6,7 @@ use crate::floating_surface::{
 use crate::vello::kurbo::Vec2;
 
 /// The sideways travel of a wheel `event` in logical pixels, positive toward
-/// later content, when it is one: the desk's window strip and the app under
+/// later content, when it is one: the shell's window strip and the app under
 /// the pointer read a wheel by this one rule
 /// ([`ui::widget::sideways_travel`]).
 #[cfg(feature = "native")]
@@ -118,7 +118,7 @@ pub(super) struct FloatingRuntime {
     /// ([`window_bar`]).
     pub window_bar: window_bar::WindowBarRuntime,
     /// The record this window shows, as its route names it, and the kind of
-    /// resource it keeps: what the desktop lists it under for sharing.
+    /// resource it keeps: what the shell lists it under for sharing.
     pub window_record: Option<(String, String)>,
     /// What of [`crate::window_share`] the shell was told on this
     /// connection.
@@ -501,10 +501,10 @@ impl App {
             self.apply_unhosted_tab_request(request);
             changed = true;
         }
-        // No desktop bar: the runner's own row is the window's bar, hosting
+        // No shell bar: the runner's own row is the window's bar, hosting
         // the app's slots and serving its search and location requests
         // (`native_runner::slot_bar`).
-        // No desktop agent to ask: offer no entry, and drop what was asked
+        // No shell agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
         if crate::shared_selection::send_host_available() {
             tracing::debug!("this window has no shell: its menus carry no send-to box");
@@ -726,7 +726,7 @@ impl App {
             crate::shared_selection::set_send_host_available(true);
             tracing::debug!("this window opens a send-to box when the shell asks");
         }
-        // What this window shows, so the desktop's own menus for it (its
+        // What this window shows, so the shell's own menus for it (its
         // window menu) attach it as the apps' menus do.
         let window = self.window_resource();
         if !self.floating.window_resource_sent.was(&window) {
@@ -859,7 +859,7 @@ impl App {
         Ok(())
     }
 
-    /// What the desktop said of windows shared live changed what the app
+    /// What the shell said of windows shared live changed what the app
     /// shows: it syncs and lays out again. Only a window that talks to a
     /// shell hears it.
     #[cfg(feature = "native")]
@@ -1212,7 +1212,7 @@ impl App {
                 FloatingSurfaceHostMessage::Recipients { request, rows } => {
                     crate::shared_selection::answer_recipients(*request, rows.clone());
                 }
-                // What the desktop says of windows shared live reaches the
+                // What the shell says of windows shared live reaches the
                 // app's next sync, where it reads them
                 // (`crate::window_share`).
                 FloatingSurfaceHostMessage::DrawsEmbeds => {
@@ -1243,7 +1243,7 @@ impl App {
                 FloatingSurfaceHostMessage::Unanswered { message, reason } => {
                     tracing::debug!(%message, %reason, "the shell does not answer that message");
                 }
-                FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
+                FloatingSurfaceHostMessage::DisplayBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
                         Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),
                         Err(error) => {
@@ -1336,7 +1336,7 @@ impl App {
     }
 
     /// Re-express a held pointer delivered through the primary app window in
-    /// desktop space while a prepared floating presentation is still active.
+    /// shell space while a prepared floating presentation is still active.
     /// This is the transfer-proxy interval: pixels already live in the shell,
     /// but the native secondary may not have committed and taken pointer focus
     /// yet. Once the root reattaches, its presentation disappears immediately,
@@ -1450,7 +1450,7 @@ impl App {
         (request.to, attached, request.text)
     }
 
-    /// Without a desktop tab model, another instance is another window of
+    /// Without a shell tab model, another instance is another window of
     /// this app, and closing this tab closes this window.
     #[cfg(feature = "native")]
     fn apply_unhosted_tab_request(&mut self, request: crate::shell_tabs::TabRequest) {
@@ -1462,7 +1462,7 @@ impl App {
                     // another instance is the shell's to launch: a process
                     // started from here would have none of its services.
                     tracing::warn!(
-                        "the desktop's tab service is unavailable; not opening another instance"
+                        "the shell's tab service is unavailable; not opening another instance"
                     );
                 } else if let Err(error) =
                     crate::native::standalone_instance::open(target.as_deref())
@@ -1473,8 +1473,8 @@ impl App {
             TabRequest::CloseThis => self.floating.close_window_requested = true,
             // A window this app starts itself is placed by the host's own
             // window manager, and there is no closed-tab history to reopen
-            // nor a group of tabs to step through; and no desk watches this
-            // window, so there is no desk to float another one over.
+            // nor a group of tabs to step through; and no shell watches this
+            // window, so there is no shell to float another one over.
             TabRequest::ReopenClosed
             | TabRequest::CycleTab { .. }
             | TabRequest::PlaceNextWindowBeside { .. }
@@ -1830,7 +1830,7 @@ mod host_shell_allow_tests {
     }
 
     #[test]
-    fn desktop_reply_resolves_native_permission_and_service_loss_refuses_it() {
+    fn shell_reply_resolves_native_permission_and_service_loss_refuses_it() {
         let mut app = App::new_with_controlled_inputs(
             crate::State::new(),
             Box::new(crate::widget::Container::new()),

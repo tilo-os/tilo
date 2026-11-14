@@ -44,7 +44,7 @@ tilo_test_env::scenario! {
         settle(&mut h, W, H);
         assert!(
             child_rect(&h, "content").is_none(),
-            "the room goes back to the list"
+            "the area goes back to the list"
         );
     }
 

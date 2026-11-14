@@ -58,7 +58,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         );
 
         // One pixel out from the boundary is the frame's edge: it must be
-        // neither the app (flood escaped its clip) nor bare desktop (no
+        // neither the app (flood escaped its clip) nor bare shell (no
         // edge there at all).
         let edge_x = crate::num::u32_of_f64(rect.x0) - 1;
         let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
@@ -70,7 +70,7 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         assert!(
             (er, eg, eb) != (0x00, 0x00, 0xFF),
             "the window has no edge at ({edge_x},100) — the pixel is bare \
-         desktop, so nothing separates the window from it",
+         shell, so nothing separates the window from it",
         );
 
         // ...and the first pixel *inside* the boundary is the app's, whole.
@@ -146,8 +146,8 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
 
         let (width, height) = (200u32, 200u32);
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
-        // Desktop stand-in. Deliberately a colour no palette contains, so
-        // "still desktop" cannot be confused with "some theme token".
+        // Shell stand-in. Deliberately a colour no palette contains, so
+        // "still shell" cannot be confused with "some theme token".
         let ground = vello::peniko::Color::from_rgb8(0x00, 0xFF, 0x00);
 
         for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
@@ -218,11 +218,11 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
                 assert_ne!(
                     (sr, sg, sb),
                     (fr, fg, fb),
-                    "{name}: the {label} window painted the focus colour at ({corner_x},{corner_y}), outside its own rounded corner on bare desktop. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
+                    "{name}: the {label} window painted the focus colour at ({corner_x},{corner_y}), outside its own rounded corner on bare shell. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
                 );
                 assert!(
                     sg > sr && sg > sb,
-                    "{name}: the {label} window covered the desktop at ({corner_x},{corner_y}) with ({sr},{sg},{sb}). Outside its rounded corner the desktop must still read as the desktop, shadowed at most, never stroked over",
+                    "{name}: the {label} window covered the shell at ({corner_x},{corner_y}) with ({sr},{sg},{sb}). Outside its rounded corner the shell must still read as the shell, shadowed at most, never stroked over",
                 );
             }
         }
@@ -958,7 +958,7 @@ fn an_arrived_app_after_a_visible_placeholder_still_asks_for_a_frame() {
 
 #[test]
 fn a_tile_nothing_has_painted_asks_for_no_frame_of_its_own() {
-    // Every tab of every strip a desk is not showing is such a tile: its
+    // Every tab of every strip a shell is not showing is such a tile: its
     // placeholder steps with time, but no one saw the step before it.
     // Asking for a frame there repainted the whole session, every frame, for
     // as long as it ran.
@@ -1118,7 +1118,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
 
     // Case `a_static_tile_holding_a_place_does_not_pump_frames_forever`.
     // Holding a place is not itself an animation: the placeholder's steps
-    // are deadlines, so a slow app's first frame never keeps the desktop
+    // are deadlines, so a slow app's first frame never keeps the shell
     // awake.
     {
         let (mut host, _) = starting_host(false);
@@ -1167,7 +1167,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
         let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 200, 100, 100);
         assert!(
             !(cr < 40 && cg < 40 && cb > 200),
-            "the desktop showed through the middle of a window's own place \
+            "the shell showed through the middle of a window's own place \
          at (100,100) — got ({cr},{cg},{cb}), the backdrop colour. The \
          ground has to hold the space, or the window is a hole until it \
          arrives",
@@ -1280,7 +1280,7 @@ fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
 /// Focus is the window's own edge, a pixel heavier on every side: the
 /// focused window's outline reaches exactly that much further out than its
 /// unfocused neighbour's, at 1x and 2x. The extra ring is drawn outside the
-/// card, so it is desktop and never the app's own pixels, and the window the
+/// card, so it is shell and never the app's own pixels, and the window the
 /// pointer is on never looks lifted — its card stands where it did.
 #[test]
 fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
@@ -1332,7 +1332,7 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
              one's: the weight is what tells the window taking the keyboard"
         );
         // The card the app draws starts where it always did: the extra ring
-        // is desktop outside it, and the app's own pixel is the same focused
+        // is shell outside it, and the app's own pixel is the same focused
         // or not.
         let card = crate::num::u32_of_f64(rect.y0 * scale);
         let card_pixel = |rgba: &[u8]| {
@@ -1378,7 +1378,7 @@ fn window_history_control(driver: &crate::headless::FrameHarness) -> Option<bool
 }
 
 #[test]
-fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
+fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     use crate::widget::{TabDescriptor, WindowGroup, WindowWidth};
     let history_tile = || {
         let (host, component) = crate::history_mode::integration_tests::component_with_history();

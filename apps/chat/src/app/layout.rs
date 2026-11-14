@@ -114,7 +114,7 @@ impl ChatApp {
                     self.call.placement.attachment(),
                     ui::floating_surface::Attachment::App { .. }
                 ))
-                || !self.call.placement.is_desktop_covered())
+                || !self.call.placement.is_shell_covered())
     }
 
     /// The timeline: from the top of the conversation to the composer; the

@@ -1,4 +1,4 @@
-//! The session's services as a surface app reaches them. The bar, the desk, the panels
+//! The session's services as a surface app reaches them. The bar, the shell, the panels
 //! and the sheets are ordinary apps of the session that places their windows, and they
 //! read what the session publishes the way every app does:
 //! [`crate::collaboration::SessionResource`] over a connection the session's broker

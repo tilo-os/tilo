@@ -262,7 +262,7 @@ impl PermissionContext {
     /// The same context, run by a host that puts an ask to the person on
     /// their own devices when someone acts for them: such an invocation asks
     /// first ([`tilo_actions::DoorError::ConfirmationRequired`]) where it
-    /// would otherwise be refused, as the desktop's broker asks.
+    /// would otherwise be refused, as the shell's broker asks.
     #[must_use]
     pub fn reaching_person(mut self) -> Self {
         self.reaches_person = true;

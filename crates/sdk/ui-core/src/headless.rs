@@ -414,7 +414,7 @@ pub struct FrameHarness {
     /// on screen.
     window_refusal: Option<String>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
-    /// The window the open palette sits over, when the root lays several out (the desktop's strip of
+    /// The window the open palette sits over, when the root lays several out (the shell's strip of
     /// app tiles).
     palette_window: Option<Rect>,
     /// Pointer position, buttons held and where the last press landed until a key is pressed: a
@@ -440,7 +440,7 @@ pub struct FrameHarness {
     /// widgets that nothing in the tree marks, so the next frame clears its cache.
     drawn_permissions: u64,
     child_node: NodeId,
-    /// The harness takes the place of the desktop's window bar, hosting the app's slots, search and
+    /// The harness takes the place of the shell's window bar, hosting the app's slots, search and
     /// History and painting it over every capture.
     window_bar: bool,
     /// The window's bar shows at rest, over the app's frame, as a window whose bar does not hide
@@ -456,7 +456,7 @@ pub struct FrameHarness {
     /// The app's window-bar slots in a row of the frame, as a window of it hosts them
     /// ([`Self::host_window_slots`]).
     slot_row: Option<Box<slot_row::HostedSlots>>,
-    /// The window this harness shows the app in, once it takes the place of the desktop's bar
+    /// The window this harness shows the app in, once it takes the place of the shell's bar
     /// ([`Self::present_in_window_bar`]): the app declares its bar's slots on this window, so windows a
     /// process lays out beside each other keep their bars apart.
     window: Option<crate::hosted_window::HostedWindow>,
@@ -464,7 +464,7 @@ pub struct FrameHarness {
     /// it between frames ([`Self::press_window_slot`]) is this window's.
     window_scope: Option<crate::window_toolbar::WindowScope>,
     /// The app a concrete root is ([`Self::for_app`]): its kind and title, which its window's bar wears
-    /// as a desktop window's tab does.
+    /// as a shell window's tab does.
     window_app: Option<(crate::widget::AppKind, String)>,
     /// What each frame's control refresh discovered: a component's shared forest is filtered and
     /// surveyed only where it changed.
@@ -570,7 +570,7 @@ pub struct FrameHarness {
     /// The records this driver has open, for apps that use them; without them a record-aware app would
     /// be driven against its workspace index instead.
     records: Option<crate::record::RecordSet>,
-    room_index: Option<Box<automerge::AutoCommit>>,
+    workspace_index: Option<Box<automerge::AutoCommit>>,
     /// The taffy node holding keyboard focus, or `None`; remapped on every relayout by scanning for
     /// `is_focused()`, since widget instances survive a relayout but their taffy ids do not.
     focused: Option<NodeId>,
@@ -1538,7 +1538,7 @@ impl FrameHarness {
             scene_capture_protected: true,
             backdrop: std::sync::Arc::default(),
             records: None,
-            room_index: None,
+            workspace_index: None,
             presence: Box::new(PresenceCtx::empty()),
             presence_redraw: false,
             drawn_action_markers: Vec::new(),
@@ -2882,20 +2882,20 @@ impl FrameHarness {
     pub fn with_records(
         mut self,
         records: crate::record::RecordSet,
-        room_index: automerge::AutoCommit,
+        workspace_index: automerge::AutoCommit,
     ) -> Self {
-        self.attach_records(records, room_index);
+        self.attach_records(records, workspace_index);
         self
     }
 
     fn attach_records(
         &mut self,
         mut records: crate::record::RecordSet,
-        room_index: automerge::AutoCommit,
+        workspace_index: automerge::AutoCommit,
     ) {
-        records.discover_workspace(&room_index);
+        records.discover_workspace(&workspace_index);
         self.records = Some(records);
-        self.room_index = Some(Box::new(room_index));
+        self.workspace_index = Some(Box::new(workspace_index));
         self.relayout();
     }
 
@@ -2904,7 +2904,7 @@ impl FrameHarness {
             crate::record::tick(
                 set,
                 &mut self.state,
-                self.room_index.as_deref_mut(),
+                self.workspace_index.as_deref_mut(),
                 &*self.root,
             );
         }
@@ -3155,7 +3155,7 @@ impl FrameHarness {
         }
     }
 
-    /// A window the person brought forward on the desktop this frame laid
+    /// A window the person brought forward on the shell this frame laid
     /// out ([`Widget::take_app_activation`]) takes the keyboard, as a raised
     /// native window does: a control of that app the press itself focused
     /// keeps focus; otherwise the app's remembered control, else its default
@@ -6923,7 +6923,7 @@ impl FrameHarness {
     }
 
     /// [`Self::bound_resources`] of one hosted component instance, such as
-    /// one window of a desktop; `None` for every hosted component.
+    /// one window of a shell; `None` for every hosted component.
     ///
     /// # Errors
     /// Refuses a closed or unavailable component.
@@ -8132,7 +8132,7 @@ impl FrameHarness {
         );
     }
 
-    /// What a whole-window capture draws of the root, as the desktop's "full app" capture does: the
+    /// What a whole-window capture draws of the root, as the shell's "full app" capture does: the
     /// size the root shows beyond its window and its scene at that size.
     pub fn complete_content(&mut self) -> Option<(vello::kurbo::Size, Scene)> {
         self.invalidate_local();
@@ -8617,7 +8617,7 @@ impl crate::host_core::KeyHost for FrameHarness {
     }
 
     /// Where Tab and directional focus travel: [`Self::focus_order`], kept
-    /// inside the keyboard scope (the focused desktop window,
+    /// inside the keyboard scope (the focused shell window,
     /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
     /// action palette owns the keyboard.
     fn keyboard_travel_order(&self) -> Vec<NodeId> {

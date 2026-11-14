@@ -414,13 +414,13 @@ pub fn take_send_to() -> Vec<SendToRequest> {
     PENDING.with(|pending| pending.borrow_mut().drain(..).collect())
 }
 
-/// Whether a desktop is connected that can send what a box holds, so a menu offers it.
+/// Whether a shell is connected that can send what a box holds, so a menu offers it.
 #[must_use]
 pub fn send_host_available() -> bool {
     HOSTED.with(Cell::get)
 }
 
-/// Record whether a desktop that can send what a box holds is connected.
+/// Record whether a shell that can send what a box holds is connected.
 pub fn set_send_host_available(available: bool) {
     HOSTED.with(|hosted| hosted.set(available));
 }
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(
             area.menu().items().len(),
             1,
-            "no desktop to send from: no row to send with"
+            "no shell to send from: no row to send with"
         );
         assert!(
             !area.menu().takes_typing(),

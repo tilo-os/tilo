@@ -26,9 +26,9 @@ pub struct Layout {
     pub display_brightness_step: f32,
     pub wheel_step: f32,
     pub bar_reach: f32,
-    pub desk_grip: f32,
-    pub desk_art: f32,
-    pub desk_badge: f32,
+    pub widget_grip: f32,
+    pub widget_art: f32,
+    pub widget_badge: f32,
     pub identify_name_width: f32,
     pub search_card_width: f32,
     pub sheet_title_band: f32,
@@ -59,9 +59,9 @@ impl Layout {
         display_brightness_step: 10.0,
         wheel_step: 15.0,
         bar_reach: 28.0,
-        desk_grip: 18.0,
-        desk_art: 48.0,
-        desk_badge: 20.0,
+        widget_grip: 18.0,
+        widget_art: 48.0,
+        widget_badge: 20.0,
         identify_name_width: 200.0,
         search_card_width: 640.0,
         sheet_title_band: 74.0,
@@ -121,7 +121,7 @@ impl Breakpoint {
         self == Self::Compact
     }
 
-    /// Whether the surface has room for a column beside its primary one.
+    /// Whether the surface fits a column beside its primary one.
     #[must_use]
     pub fn is_wide(self) -> bool {
         self == Self::Wide

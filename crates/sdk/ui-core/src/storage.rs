@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | Documents (collaborative, synced) | resources and records | Automerge records |
 //! | App files (caches, imports, databases) | [`AppFiles`], [`HostContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
-//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the desktop settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
+//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the shell settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
 //! | Secrets | [`secrets`], [`HostContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
 //!
 //! [`AppStorage`] bundles the three for one app; framework views and surfaces get it from
@@ -706,7 +706,7 @@ impl AppStorage {
     }
 }
 
-/// One untyped section of the desktop settings document, for the owner of a shared
+/// One untyped section of the shell settings document, for the owner of a shared
 /// section (Settings, the theme store) and readers of one that has no [`SettingsSchema`]
 /// type yet. Reads never fail; a missing, unreadable or malformed document reads as
 /// empty.
@@ -746,7 +746,7 @@ impl SettingsSection {
         &self.section
     }
 
-    /// The whole desktop settings document.
+    /// The whole shell settings document.
     #[must_use]
     pub fn document(&self) -> Map<String, Value> {
         self.document.load()
@@ -805,7 +805,7 @@ mod tests {
     /// A page that opens another workspace installs that workspace's settings document over
     /// the one before it. The two number their revisions from one, so a reader that cached
     /// what it read by revision alone went on reading the document it replaced: an app showed
-    /// a theme the person had already chosen away from while the desk drew the chosen one.
+    /// a theme the person had already chosen away from while the shell drew the chosen one.
     #[test]
     fn a_document_installed_in_place_of_another_is_a_new_version() {
         #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]

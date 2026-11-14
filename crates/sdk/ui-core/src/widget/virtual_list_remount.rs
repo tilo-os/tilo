@@ -142,7 +142,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
             let Some(child) = node else {
                 continue;
             };
-            let top = top + self.band_room(index);
+            let top = top + self.band_gap(index);
             let Ok(current) = taffy.style(child) else {
                 continue;
             };

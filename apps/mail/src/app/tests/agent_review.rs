@@ -210,7 +210,7 @@ fn cvs_open_through_the_desktop(
     messages: &[serde_json::Value],
     handed_over: &[(&str, Vec<u8>)],
 ) -> usize {
-    use ui::desktop::{OPEN, PROVIDER, RESOURCE};
+    use ui::shell::{OPEN, PROVIDER, RESOURCE};
     let desktop = Arc::new(tilo_actions::remote::TestHost::new().completing(|_| {
         tilo_actions::ActionOutput {
             value: Some(serde_json::json!({

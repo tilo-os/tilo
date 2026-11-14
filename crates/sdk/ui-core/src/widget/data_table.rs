@@ -333,7 +333,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Keep a readable cell width while flexible columns share extra room.
+    /// Keep a readable cell width while flexible columns share extra area.
     #[must_use]
     pub fn min_width(mut self, width: f32) -> Self {
         self.min_width = if width.is_finite() {
@@ -344,7 +344,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Keep a flexible column from growing past `width` (a key beside its value); the room it leaves
+    /// Keep a flexible column from growing past `width` (a key beside its value); the area it leaves
     /// goes to the other flexible columns.
     #[must_use]
     pub fn max_width(mut self, width: f32) -> Self {
@@ -770,7 +770,7 @@ pub struct DataTableCore {
     hbar: Scrollbar,
     /// The table takes the height its parent gives it and scrolls inside.
     fill_height: bool,
-    /// Columns hidden for room, by priority.
+    /// Columns hidden for area, by priority.
     hidden: Vec<bool>,
     tree: Option<TreeRows<AnyRow>>,
     /// A sort shown on a header without the table reordering its rows.
@@ -3471,7 +3471,7 @@ impl DataTableCore {
                 // The columns are this table's to scroll sideways, so a wheel
                 // over them is the table's whether or not this event moved
                 // them: one at the last column stops there rather than going
-                // on to whatever encloses the table — on a desktop, the strip
+                // on to whatever encloses the table — on a shell, the strip
                 // of windows, which a person scrolling the grid never asked
                 // to pan.
                 *handled = true;
@@ -3611,9 +3611,9 @@ fn paint_cell_text<Row: ?Sized>(
         Some(value) => (value, theme.text_primary),
         None => (column.absent.as_str(), theme.text_tertiary),
     };
-    let room = f32_of_f64((cell.width() - 2.0 * pad).max(0.0));
+    let spare = f32_of_f64((cell.width() - 2.0 * pad).max(0.0));
     if column.max_lines > 1 {
-        let lines = text.clamp_to_lines(label, &style, room, column.max_lines);
+        let lines = text.clamp_to_lines(label, &style, spare, column.max_lines);
         let line_h = f64::from(style.line_height_px());
         let block = line_h * lines.len() as f64;
         let mut y = centered_text_top(cell.y0, cell.height(), f32_of_f64(block));
@@ -3632,7 +3632,7 @@ fn paint_cell_text<Row: ?Sized>(
         }
         return;
     }
-    let label = text.elide_to_width_style(label, room, &style);
+    let label = text.elide_to_width_style(label, spare, &style);
     let (w, h) = text.measure_style(&label, None, &style);
     let x = align.place(cell, f64::from(w), pad);
     text.draw_style(
@@ -4020,7 +4020,7 @@ impl Widget for DataTableCore {
         };
         let tokens = &theme.tokens;
         let pad = 2.0 * f64::from(tokens.spacing.s2);
-        let sort_room = f64::from(tokens.metrics.icon_sm) + f64::from(tokens.spacing.s1);
+        let sort_width = f64::from(tokens.metrics.icon_sm) + f64::from(tokens.spacing.s1);
         let header = header_style(&theme);
         let floor = 4.0 * type_line_height(&tokens.typography, TextRole::Caption);
         let (start, end) = self.visible_row_range();
@@ -4032,7 +4032,7 @@ impl Widget for DataTableCore {
             }
             let label = crate::i18n::I18nManager::lookup_plain(&col.header);
             let mut width = f64::from(text.measure_style(&label, None, &header).0)
-                + if col.sortable { sort_room } else { 0.0 };
+                + if col.sortable { sort_width } else { 0.0 };
             if col.checked.is_some() {
                 width = width.max(f64::from(tokens.metrics.icon_md));
             }
@@ -4101,9 +4101,9 @@ impl Widget for DataTableCore {
                         continue;
                     }
                     let cell = value(row).unwrap_or_default();
-                    let room = f32_of_f64((cr.width() - pad).max(1.0));
+                    let spare = f32_of_f64((cr.width() - pad).max(1.0));
                     let n = text
-                        .clamp_to_lines(&cell, &cell_style(&theme, col.kind), room, col.max_lines)
+                        .clamp_to_lines(&cell, &cell_style(&theme, col.kind), spare, col.max_lines)
                         .len();
                     lines = lines.max(n);
                 }
@@ -4134,7 +4134,7 @@ impl Widget for DataTableCore {
             }
         }
         let band = self.columns_band();
-        self.hidden = hidden_for_room(
+        self.hidden = hidden_for_width(
             &self.columns,
             band.width(),
             &self.col_widths_px,
@@ -4149,7 +4149,7 @@ impl Widget for DataTableCore {
         );
         self.content_w = content_w;
         // Keep a gutter under the rows for the sideways bar while the columns
-        // overflow; the next layout makes the room.
+        // overflow; the next layout makes the area.
         let reserve = if content_w > band.width() + 0.5 {
             self.gutter
         } else {
@@ -5035,7 +5035,7 @@ fn column_floor<Row: ?Sized>(
 
 /// Which columns to hide so the rest fit `width`: those with the highest [`ColumnDef::priority`]
 /// first, never one at priority `0`.
-fn hidden_for_room<Row: ?Sized>(
+fn hidden_for_width<Row: ?Sized>(
     columns: &[ColumnDef<Row>],
     width: f64,
     overrides: &HashMap<String, f32>,
@@ -5211,7 +5211,7 @@ fn paint_header_label(
     let pad_x = f64::from(tokens.spacing.s2);
     let icon = f64::from(tokens.metrics.icon_sm);
     let icon_gap = f64::from(tokens.spacing.s1);
-    let room = (cell.width()
+    let spare = (cell.width()
         - 2.0 * pad_x
         - if sorted.is_some() {
             icon + icon_gap
@@ -5221,7 +5221,7 @@ fn paint_header_label(
     .max(0.0);
     let label = ctx
         .text
-        .elide_to_width_style(label, f32_of_f64(room), &text_style);
+        .elide_to_width_style(label, f32_of_f64(spare), &text_style);
     let (label_w, label_h) = ctx.text.measure_style(&label, None, &text_style);
     let label_y = centered_text_top(cell.y0, cell.height(), label_h);
     let trailing = align == CellAlign::Trailing;

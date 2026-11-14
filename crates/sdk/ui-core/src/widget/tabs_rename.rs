@@ -196,8 +196,8 @@ impl TabBar {
     }
 
     /// Size the pill by the field the name is typed into, so the field shows all of it: the text at
-    /// the bar's role, measured, plus the room the field's own chrome keeps beside it, is the tab's
-    /// own width until the person commits. A name longer than the row has room for is a pill the
+    /// the bar's role, measured, plus the area the field's own chrome keeps beside it, is the tab's
+    /// own width until the person commits. A name longer than the row fits is a pill the
     /// row's own fit squeezes, and the field scrolls to its caret inside it.
     pub(super) fn measure_rename(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
         self.touch();
@@ -209,7 +209,7 @@ impl TabBar {
         let (width, _) = text_renderer.measure_style(&text, None, &style);
         // The field's insets and the carets at its ends: a name that fits shows whole, from its
         // first letter, rather than scrolled to its caret.
-        let measured = f64::from(width) + rename.label.field_room(theme);
+        let measured = f64::from(width) + rename.label.field_padding(theme);
         let previous = self
             .title_advance
             .insert(rename.tab, (text, style, measured));
@@ -289,7 +289,7 @@ mod tests {
         phase the_pill_is_as_wide_as_the_name_being_typed;
         // The pill is as wide as the name being typed, not as wide as the title it started from: the
         // field's own measure sizes it, so the whole name shows while the person types it. Only a name
-        // the bar has no room for makes the field scroll.
+        // the bar cannot fit makes the field scroll.
         {
             let mut bar = bar();
             let theme = Theme::dark();
@@ -312,9 +312,9 @@ mod tests {
             );
         }
 
-        phase the_pill_is_the_field_and_leaves_it_its_own_room;
+        phase the_pill_is_the_field_and_leaves_it_its_own_area;
         // The pill is the field: it takes no inset of its own, so the title's glyphs do not move when
-        // it turns into a field, and the room it needs past the text is the carets at its ends. Sizing
+        // it turns into a field, and the area it needs past the text is the carets at its ends. Sizing
         // the pill by the text alone scrolled the field and cut the name's first letter off.
         {
             let mut bar = bar();
@@ -325,19 +325,19 @@ mod tests {
             bar.measure_rename(&mut text, &theme);
             let (name, _, advance) = bar.title_advance[&1].clone();
             let (glyphs, _) = text.measure_style(&name, None, &theme.text(TextRole::Body));
-            let room = bar
+            let spare = bar
                 .rename
                 .as_ref()
                 .expect("still naming")
                 .label
-                .field_room(&theme);
+                .field_padding(&theme);
             assert!(
-                (room - theme.caret_width * 2.0).abs() < 0.5,
-                "the pill is the field's chrome, so it keeps only the carets at its ends: {room}"
+                (spare - theme.caret_width * 2.0).abs() < 0.5,
+                "the pill is the field's chrome, so it keeps only the carets at its ends: {spare}"
             );
             assert!(
-                (advance - f64::from(glyphs) - room).abs() < 0.5,
-                "{advance} is the name's {glyphs} and the field's own {room}"
+                (advance - f64::from(glyphs) - spare).abs() < 0.5,
+                "{advance} is the name's {glyphs} and the field's own {spare}"
             );
         }
 

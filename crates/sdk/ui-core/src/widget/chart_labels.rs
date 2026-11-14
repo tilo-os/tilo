@@ -54,24 +54,24 @@ impl LabelPlacer {
     }
 }
 
-/// The smallest room a label is shortened into: three characters' worth.
+/// The smallest area a label is shortened into: three characters' worth.
 /// Below it the label is dropped rather than shown as a stub.
-pub(crate) fn min_room(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+pub(crate) fn min_label_width(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     3.0 * f64::from(tr.measure_style("M", None, style).0)
 }
 
-/// `label` shortened with an ellipsis to `room`, or `None` where not even
-/// [`min_room`] is left or nothing but the ellipsis would show.
+/// `label` shortened with an ellipsis to `spare`, or `None` where not even
+/// [`min_label_width`] is left or nothing but the ellipsis would show.
 pub(crate) fn fit_label(
     tr: &mut TextRenderer,
     label: &str,
-    room: f64,
+    spare: f64,
     style: &TextStyle,
 ) -> Option<(String, f64, f64)> {
-    if label.is_empty() || room < min_room(tr, style) {
+    if label.is_empty() || spare < min_label_width(tr, style) {
         return None;
     }
-    let shown = tr.elide_to_width_style(label, room as f32, style);
+    let shown = tr.elide_to_width_style(label, spare as f32, style);
     if shown.is_empty() || shown == "…" {
         return None;
     }
@@ -106,7 +106,7 @@ pub(crate) fn radial_label_rect(center: Point, radius: f64, angle: f64, size: (f
 
 const AXIS: f64 = 0.15;
 
-pub(crate) fn radial_room(center: Point, radius: f64, angle: f64, bounds: Rect) -> f64 {
+pub(crate) fn radial_extent(center: Point, radius: f64, angle: f64, bounds: Rect) -> f64 {
     let cos = angle.cos();
     let x = center.x + radius * cos;
     if cos > AXIS {
@@ -287,7 +287,7 @@ mod tests {
                         }
                     }
                 } else {
-                    assert!(radius < 36.0, "{radius}: a roomy hole shows its copy");
+                    assert!(radius < 36.0, "{radius}: a wide hole shows its copy");
                 }
             }
         }

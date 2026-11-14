@@ -355,7 +355,7 @@ mod audience_monitor_identity_tests {
 struct NativeFloatingWindow {
     id: String,
     token: String,
-    desktop_rect: KurboRect,
+    shell_rect: KurboRect,
     coordinate_offset: Vec2,
     window: Arc<Window>,
     render: Option<RenderThreadHandle>,
@@ -445,7 +445,7 @@ mod native_floating_paint_tests {
             );
         }
 
-        phase malformed_content_never_becomes_an_opaque_desktop_spill;
+        phase malformed_content_never_becomes_an_opaque_shell_spill;
         {
             let window = Rect::new(0.0, 0.0, 560.0, 360.0);
             assert_eq!(
@@ -644,7 +644,7 @@ fn primary_window_attributes(
         Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
         None => window_attributes,
     };
-    // Benchmarks can keep their own windows above unrelated desktop apps.
+    // Benchmarks can keep their own windows above unrelated shell apps.
     // This does not change normal application window ordering.
     let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
         window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
@@ -655,7 +655,7 @@ fn primary_window_attributes(
     let window_attributes = {
         use winit::platform::wayland::WindowAttributesExtWayland;
         /// Where a session puts a surface app's window: on a layer of an output, placed by the
-        /// app's anchors instead of the desktop. The session owns placement, so it says so in the
+        /// app's anchors instead of the shell. The session owns placement, so it says so in the
         /// environment beside the socket it hands the app; without it the app is an ordinary
         /// window.
         fn layer_surface_from_env() -> Option<winit::platform::wayland::LayerSurfaceAttributes> {
@@ -754,7 +754,7 @@ fn primary_window_attributes(
         }
 
         /// Whether the session starts this process as its lock screen: the window then asks the
-        /// compositor for the session's lock instead of being placed by the desktop.
+        /// compositor for the session's lock instead of being placed by the shell.
         fn session_lock_from_env() -> bool {
             std::env::var("TILO_SURFACE_LOCK").is_ok_and(|value| {
                 let value = value.trim();
@@ -1659,7 +1659,7 @@ impl AppHandler {
             let next = primary_ime_state_for_held_child(
                 self.app.ime_window_state(),
                 surface.coordinate_offset,
-                surface.desktop_rect.origin().to_vec2(),
+                surface.shell_rect.origin().to_vec2(),
             );
             let next = retained_return_ime_state(next, surface.ime_state, true);
             apply_native_ime(&surface.window, next, &mut surface.ime_state);
@@ -1757,10 +1757,10 @@ impl AppHandler {
             if existing.token != token {
                 return Err("shell changed the token of a live floating surface".into());
             }
-            if existing.desktop_rect.size() != rect.size() {
+            if existing.shell_rect.size() != rect.size() {
                 resize_native_floating_window(&existing.window, rect);
             }
-            existing.desktop_rect = rect;
+            existing.shell_rect = rect;
             existing.coordinate_offset = coordinate_offset;
             existing.prepared_at = crate::time::now();
             existing.lifecycle.resume(
@@ -1804,7 +1804,7 @@ impl AppHandler {
         self.floating_windows.push(NativeFloatingWindow {
             id,
             token,
-            desktop_rect: rect,
+            shell_rect: rect,
             coordinate_offset,
             window,
             render: None,
@@ -1964,7 +1964,7 @@ impl AppHandler {
                 crate::floating_surface::FloatingSurfaceHostMessage::DeviceShellOperation {
                     ..
                 }
-                | crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::DisplayBounds { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
@@ -2039,15 +2039,15 @@ impl AppHandler {
             if let Some(presentation) = presentations
                 .iter()
                 .find(|presentation| presentation.id == surface.id)
-                && presentation.window_rect != surface.desktop_rect
+                && presentation.window_rect != surface.shell_rect
             {
-                if presentation.window_rect.size() != surface.desktop_rect.size() {
+                if presentation.window_rect.size() != surface.shell_rect.size() {
                     // App-owned activities can change silhouette while detached (a call gains
                     // participant rows, navigation reveals another instruction, accessibility text
                     // grows), so resize the buffer with the shared presentation rect.
                     resize_native_floating_window(&surface.window, presentation.window_rect);
                 }
-                surface.desktop_rect = presentation.window_rect;
+                surface.shell_rect = presentation.window_rect;
                 surface.window.request_redraw();
                 changed = true;
             }
@@ -2135,14 +2135,14 @@ impl AppHandler {
         let scale = surface.window.scale_factor();
         let extent = render.frame_extent(surface.window.inner_size(), scale);
         let transform = crate::scale::composite_transform(extent.scale)
-            .pre_translate((-surface.desktop_rect.x0, -surface.desktop_rect.y0).into());
+            .pre_translate((-surface.shell_rect.x0, -surface.shell_rect.y0).into());
         let presentation = app
             .root_widget
             .floating_surface_presentations()
             .into_iter()
             .find(|presentation| presentation.id == surface.id);
         let Some(window_clip) = presentation.and_then(|presentation| {
-            native_floating_window_clip(surface.desktop_rect, presentation.window_rect)
+            native_floating_window_clip(surface.shell_rect, presentation.window_rect)
         }) else {
             tracing::warn!(id = %surface.id, "floating surface has no valid content region");
             return false;
@@ -2175,7 +2175,7 @@ impl AppHandler {
                 crate::accesskit_bridge::native_tree_update(
                     crate::accesskit_bridge::surface_tree_update(
                         access.as_ref(),
-                        surface.desktop_rect.origin(),
+                        surface.shell_rect.origin(),
                         scale,
                     ),
                 )
@@ -2184,7 +2184,7 @@ impl AppHandler {
         let next = secondary_ime_state(
             app.root_widget.as_ref(),
             &surface.id,
-            surface.desktop_rect,
+            surface.shell_rect,
             surface.lifecycle.focused,
         );
         apply_native_ime(&surface.window, next, &mut surface.ime_state);
@@ -2208,7 +2208,7 @@ impl AppHandler {
                 scroll_copies: Vec::new(),
                 full_redraw: true,
                 partial: false,
-                // The compositor puts this window over the desktop; nothing
+                // The compositor puts this window over the shell; nothing
                 // under its surfaces is in this scene to blur.
                 backdrop: crate::backdrop::BackdropFrame::default(),
                 layers: None,
@@ -2224,7 +2224,7 @@ impl AppHandler {
     fn dispatch_floating_event(
         &mut self,
         window: &Arc<Window>,
-        desktop_rect: KurboRect,
+        shell_rect: KurboRect,
         event: WindowEvent,
     ) {
         let _entry = self.app.enter_wake_scope();
@@ -2236,14 +2236,14 @@ impl AppHandler {
             } => WindowEvent::CursorMoved {
                 device_id,
                 position: winit::dpi::PhysicalPosition::new(
-                    position.x + desktop_rect.x0 * scale,
-                    position.y + desktop_rect.y0 * scale,
+                    position.x + shell_rect.x0 * scale,
+                    position.y + shell_rect.y0 * scale,
                 ),
             },
             WindowEvent::Touch(mut touch) => {
                 touch.location = winit::dpi::PhysicalPosition::new(
-                    touch.location.x + desktop_rect.x0 * scale,
-                    touch.location.y + desktop_rect.y0 * scale,
+                    touch.location.x + shell_rect.x0 * scale,
+                    touch.location.y + shell_rect.y0 * scale,
                 );
                 WindowEvent::Touch(touch)
             }
@@ -2473,7 +2473,7 @@ impl AppHandler {
         // is the window's bar, the header draws no second one. Only the Linux
         // header asks: elsewhere the host draws the frame.
         let _shown = self.slot_bar.refresh(&mut self.app, window);
-        // What the window shows names it: the desktop reads the title, so its tab, the switcher
+        // What the window shows names it: the shell reads the title, so its tab, the switcher
         // and assistive technology say the page or record the window is at.
         self.app.refresh_window_title(window);
         #[cfg(target_os = "linux")]
@@ -2636,7 +2636,7 @@ impl AppHandler {
         mark_first_frame("first-frame-layout-done");
         // A window that fits its content asks for the size its layout just measured before this
         // frame is committed: the frame a client sees is at the size its page needs, not one
-        // drawn at the room it was given and resized after.
+        // drawn at the area it was given and resized after.
         app.reconcile_minimum_size(window, true);
         // A local read this frame would show has not answered and is still
         // inside its frame budget ([`crate::arriving`]): the frame on screen
@@ -3204,7 +3204,7 @@ impl AppHandler {
         } else {
             // The callback that woke this redraw changed no pixels. Presenting
             // would commit a new buffer and a new frame callback, and the
-            // shell would paint that echo while the desktop sat still.
+            // shell would paint that echo while the shell sat still.
             scene.reset();
             render.buffers.unprepare((scene, damage_regions));
         }
@@ -4594,7 +4594,7 @@ impl AppHandler {
             return;
         }
         let id = surface.id.clone();
-        let origin = surface.desktop_rect.origin();
+        let origin = surface.shell_rect.origin();
         let scale = surface.window.scale_factor();
         let access = self.app.root_widget.floating_surface_accessibility(&id);
         match event {
@@ -4706,7 +4706,7 @@ impl AppHandler {
                     primary_ime_state_for_held_child(
                         self.app.ime_window_state(),
                         surface.coordinate_offset,
-                        surface.desktop_rect.origin().to_vec2(),
+                        surface.shell_rect.origin().to_vec2(),
                     )
                 })
             } else {
@@ -4720,7 +4720,7 @@ impl AppHandler {
             return;
         }
         let window = surface.window.clone();
-        let desktop_rect = surface.desktop_rect;
+        let shell_rect = surface.shell_rect;
         self.app
             .root_widget
             .on_floating_surface_event_source(Some(&surface_id));
@@ -4759,7 +4759,7 @@ impl AppHandler {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
-            other => self.dispatch_floating_event(&window, desktop_rect, other),
+            other => self.dispatch_floating_event(&window, shell_rect, other),
         }
         if let Some(update) = preedit {
             self.update_floating_preedit(index, update);
@@ -4773,7 +4773,7 @@ impl AppHandler {
             let next = secondary_ime_state(
                 self.app.root_widget.as_ref(),
                 &surface.id,
-                surface.desktop_rect,
+                surface.shell_rect,
                 surface.lifecycle.focused,
             );
             apply_native_ime(&surface.window, next, &mut surface.ime_state);
@@ -5095,7 +5095,7 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
-        // The door is taken before the launch's own window is made: the desk
+        // The door is taken before the launch's own window is made: the shell
         // takes a window as it maps as one this process serves, and only a
         // process that answered its door before that is served more.
         let door = open.and_then(|open| process_windows::serve_door(&proxy).map(|()| open));

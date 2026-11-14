@@ -946,7 +946,7 @@ impl App {
         }
     }
 
-    /// This app is shown in a desktop window, whose bar presents its
+    /// This app is shown in a shell window, whose bar presents its
     /// History and search while `tab_presents`: the app draws no History
     /// band of its own, offers its header row the control only while the
     /// bar is hidden, and its header drops its own search button.

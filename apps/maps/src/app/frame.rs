@@ -202,9 +202,9 @@ impl MapsApp {
             let uncovered_desktop_copy = self.model.route.is_some()
                 && matches!(
                     self.navigation_placement.attachment(),
-                    ui::floating_surface::Attachment::Desktop { .. }
+                    ui::floating_surface::Attachment::Shell { .. }
                 )
-                && !self.navigation_placement.is_desktop_covered();
+                && !self.navigation_placement.is_shell_covered();
             if self.navigation_surface_visible_in_app() || uncovered_desktop_copy {
                 self.draw_navigation_surface(scene, t, tr, theme);
             }

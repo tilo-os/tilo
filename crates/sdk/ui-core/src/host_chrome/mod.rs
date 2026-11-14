@@ -1,4 +1,4 @@
-//! Where History, Search and Undo appear when an app runs outside the Tilo desktop: in the host
+//! Where History, Search and Undo appear when an app runs outside the Tilo shell: in the host
 //! operating system's own chrome. Apps never describe menus or draw chrome.
 
 pub(crate) mod edit;

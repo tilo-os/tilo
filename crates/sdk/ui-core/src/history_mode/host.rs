@@ -140,7 +140,7 @@ pub struct HistoryHost {
     app_presents_button: bool,
     /// The app's header row shows the sync status, so this bar does not.
     app_presents_status: bool,
-    /// The desktop window's tab row presents the History control, open and closed: this History draws
+    /// The shell window's tab row presents the History control, open and closed: this History draws
     /// no toggle of its own, and closes from the tab, or with Escape.
     window_presents: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
@@ -293,7 +293,7 @@ impl HistoryHost {
         }
     }
 
-    /// The desktop window's tab row presents this History's control (see `window_presents`).
+    /// The shell window's tab row presents this History's control (see `window_presents`).
     pub(crate) fn set_window_presents(&mut self, presents: bool) {
         if self.window_presents != presents {
             self.window_presents = presents;

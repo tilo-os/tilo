@@ -129,7 +129,7 @@ pub trait WindowHeader {
     /// Merge the window's bar into this header row, or stop (`None`). The row reserves
     /// `bar.controls_width` at its trailing end for the window's controls, which the host paints
     /// there, so the app's header and the window's controls read as one bar instead of two
-    /// stacked ones. The row stands at every time: the window's controls come into the room it
+    /// stacked ones. The row stands at every time: the window's controls come into the area it
     /// keeps for them, never over the app's title or actions. Returns whether the row took the
     /// bar; a row that does not leaves the host to float its controls over the window.
     fn set_window_bar(&mut self, bar: Option<WindowBar>) -> bool {
@@ -162,11 +162,11 @@ pub struct ColumnFrame {
 pub struct WindowBar {
     pub controls_width: f64,
     /// The system already lists the window's actions where the person reaches
-    /// them (the desktop bar's window menu, for the window in front): the row's
+    /// them (the shell bar's window menu, for the window in front): the row's
     /// actions that do not fit give way with no door of their own, since every
     /// one stays reachable there. `false`: nothing lists them, so what does not
     /// fit goes behind the row's door ([`crate::widget::OverflowDoor`]). Each
-    /// host states it; no row guesses it from what desktop it is on.
+    /// host states it; no row guesses it from what shell it is on.
     pub lists_actions: bool,
 }
 
@@ -191,7 +191,7 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
 /// content that draws no row at all, leaves the window its bar.
 ///
 /// Every window asks this of its content, whatever draws it: a frame of the shell's preset
-/// ([`crate::widget::WindowFrame`]), a window of the desktop's strips
+/// ([`crate::widget::WindowFrame`]), a window of the shell's strips
 /// ([`crate::widget::WindowGroup`]) and the frame the layout check stages
 /// ([`crate::headless::FrameHarness`]), so a window shows one bar, never two stacked, and no two
 /// of them can disagree about which.
@@ -214,7 +214,7 @@ pub(crate) struct RowFurniture {
 }
 
 impl RowFurniture {
-    /// The furniture of the row holding the bar in `slot`. Nothing a row has no room for is
+    /// The furniture of the row holding the bar in `slot`. Nothing a row cannot fit is
     /// placed, so a narrow window's furniture never runs into what the app draws.
     pub(crate) fn of(slot: WindowBarSlot) -> Self {
         use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX, LEAD_GAP, WindowControls};
@@ -361,7 +361,7 @@ impl RowControl {
     }
 }
 
-/// The room a header row keeps at its trailing end for the window's furniture
+/// The area a header row keeps at its trailing end for the window's furniture
 /// ([`RowFurniture`]): the window's own controls, the window's search and its new-tab door, each
 /// with the gap the bar keeps between its sections. Every window that lets its row hold the bar
 /// reserves this, so its app's own controls end where the window's begin.
@@ -375,7 +375,7 @@ pub fn merged_row_width() -> f64 {
 
 /// What a row `width` wide keeps at its trailing end for the window's furniture: everything
 /// [`merged_row_width`] names while the bar is wider than a phone's, and the window's own controls
-/// alone where it is not. A bar that narrow is the app's row, and the room its own controls need
+/// alone where it is not. A bar that narrow is the app's row, and the area its own controls need
 /// there is worth more than the window's search and new-tab door, which such a row draws for
 /// itself (its own search control, its own tabs `+`).
 #[must_use]
@@ -394,7 +394,7 @@ pub fn merged_row_width_in(width: f64) -> f64 {
     (wide.x1 - leading).max(0.0)
 }
 
-/// Whether a bar `width` wide keeps room for the window's search beside the window's own controls
+/// Whether a bar `width` wide keeps area for the window's search beside the window's own controls
 /// ([`RowFurniture::place_search`]): not where the bar is no wider than a phone's, so a row there
 /// keeps its own search control instead ([`WindowHeader::set_window_presents_search`]).
 #[must_use]
@@ -493,12 +493,12 @@ impl HeaderStatus {
             return;
         };
         let style = theme.text(crate::tokens::TextRole::Caption);
-        let room = x1 - x0;
+        let spare = x1 - x0;
         let (_, line) = text.measure_style("Ag", None, &style);
-        if room < f64::from(line) * 4.0 {
+        if spare < f64::from(line) * 4.0 {
             return;
         }
-        let shown = text.elide_to_width_style(status, crate::num::f32_of_f64(room), &style);
+        let shown = text.elide_to_width_style(status, crate::num::f32_of_f64(spare), &style);
         let (w, h) = text.measure_style(&shown, None, &style);
         let (w, h) = (f64::from(w), f64::from(h));
         let origin = Point::new(x1 - w, row.center().y - h / 2.0);

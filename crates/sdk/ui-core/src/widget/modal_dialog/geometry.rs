@@ -17,7 +17,7 @@ use crate::widget::control_size::ControlSize;
 use crate::widget::floating_surface;
 use tilo_sort::CompactSort as _;
 
-fn sheet_room(window: Rect, wanted_h: f64, theme: &Theme) -> Rect {
+fn sheet_area(window: Rect, wanted_h: f64, theme: &Theme) -> Rect {
     if uses_full_window(window, theme) {
         return window;
     }
@@ -112,8 +112,8 @@ pub fn layout_for(
     };
     let chrome_h = pad * 2.0 + title_h + title_gap + header_h + header_gap + footer_h;
     let wanted_h = chrome_h + spec.body_height.max(0.0);
-    let room = sheet_room(window, wanted_h, theme);
-    let avail_h = room.height();
+    let spare = sheet_area(window, wanted_h, theme);
+    let avail_h = spare.height();
     let h = if uses_full_window(window, theme) {
         avail_h
     } else {
@@ -124,12 +124,12 @@ pub fn layout_for(
     let body_overflows = wanted_h > avail_h + 0.5;
 
     let c = window.center();
-    let top = (c.y - h / 2.0).max(room.y0);
+    let top = (c.y - h / 2.0).max(spare.y0);
     let anchor = spec.anchor.filter(|_| !uses_full_window(window, theme));
     let card = if uses_full_window(window, theme) {
         window
     } else if let Some(anchor) = anchor {
-        floating_surface::place_sheet_beside(anchor, (w, h), window, room, f64::from(spacing.s2))
+        floating_surface::place_sheet_beside(anchor, (w, h), window, spare, f64::from(spacing.s2))
     } else {
         Rect::new(c.x - w / 2.0, top, c.x + w / 2.0, top + h)
     };

@@ -1272,7 +1272,7 @@ where
         true
     }
 
-    /// Cache a row folded away as taking no room at all: a closed group's rows stand on
+    /// Cache a row folded away as taking up nothing at all: a closed group's rows stand on
     /// the same offset, under their heading's band.
     pub fn collapse(&mut self, index: usize, key: K) -> bool {
         if index >= self.count {
@@ -1289,7 +1289,7 @@ where
         true
     }
 
-    /// Forget a row's folded-away measurement: it takes the room it measures again, as a
+    /// Forget a row's folded-away measurement: it takes the area it measures again, as a
     /// row that was never folded does.
     pub fn expand(&mut self, index: usize, key: &K) -> bool {
         if index >= self.count
@@ -1452,7 +1452,7 @@ where
         self.prefix_deltas.push(0.0);
         self.height_by_index.clear();
         for (index, authored_height) in rows {
-            // A row folded away takes no room: the minimum keeps the rows a person can
+            // A row folded away takes up nothing: the minimum keeps the rows a person can
             // see and press reachable, and a folded row is neither.
             let height = if authored_height <= 0.0 {
                 0.0

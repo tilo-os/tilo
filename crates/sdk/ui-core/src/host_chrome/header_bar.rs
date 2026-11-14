@@ -1,4 +1,4 @@
-//! The header bar an SDK app draws where the desktop leaves decorations to the client (GNOME, and any
+//! The header bar an SDK app draws where the window system leaves decorations to the client (GNOME, and any
 //! Wayland compositor without server-side `xdg-decoration`): History as an icon menu button, a search
 //! toggle, the title and the window controls, in one bar that replaces the fallback frame. It presents
 //! the host command model and nothing else.

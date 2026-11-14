@@ -916,7 +916,7 @@ impl Colors {
     /// What [`Surfaces::raised`] is on `ground`: the raised tier itself while it stands
     /// off `ground` the same way it stands off the content surface, by at least half that
     /// step (so on every region of the window); otherwise that step taken from `ground`
-    /// (the other way where the ground has no room).
+    /// (the other way where the ground is too small).
     #[must_use]
     pub fn raised_on(&self, ground: Color) -> Color {
         let step =
@@ -1083,7 +1083,7 @@ impl Colors {
         }
     }
 
-    /// The body a chrome control takes when **lifted** off the desktop ground (hovered
+    /// The body a chrome control takes when **lifted** off the shell ground (hovered
     /// tab pill, active workspace chip). This is a straight sRGB blend toward the next
     /// surface, not the OKLCH surface ramp: its steps do not keep their size across the
     /// palette, so a state that must stay ordered against another state's lift (a
@@ -1113,7 +1113,7 @@ impl Colors {
         relative_luminance(self.lift_target()) >= relative_luminance(base)
     }
 
-    /// The hairline separating a window tile from the desktop. Painted outside the tile's
+    /// The hairline separating a window tile from the shell. Painted outside the tile's
     /// silhouette since the shell never samples the app's pixels inside it.
     pub fn window_edge(&self) -> Color {
         use crate::a11y::relative_luminance;

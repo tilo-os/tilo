@@ -1,6 +1,6 @@
 //! A store whose records come from its workspace's hosts never takes a record
 //! that is not here for a new one before they answered: a public workspace
-//! sends a newcomer only its governance and shared desktop, so every other
+//! sends a newcomer only its governance and shared shell, so every other
 //! record is "not here" until it is opened, and a window that founded a fresh
 //! one then overwrote or forked the workspace's own.
 

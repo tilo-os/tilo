@@ -265,8 +265,8 @@ fn a_labelled_text_input_is_named_by_its_label() {
 }
 #[test]
 fn a_one_question_forms_field_stands_without_a_label() {
-    fn control(field: &mut Field, room: f32) -> Rect {
-        solve(field, room, &Theme::dark());
+    fn control(field: &mut Field, spare: f32) -> Rect {
+        solve(field, spare, &Theme::dark());
         field.children()[1].children()[0].get_rect()
     }
     let mut alone = Field::unlabeled(Box::new(TextInput::local().with_id("when")));
@@ -284,7 +284,7 @@ fn a_one_question_forms_field_stands_without_a_label() {
     );
     assert!(
         lonely.width() > beside.width(),
-        "and takes the room its label would leave: {lonely:?} {beside:?}"
+        "and takes the area its label would leave: {lonely:?} {beside:?}"
     );
 }
 #[test]

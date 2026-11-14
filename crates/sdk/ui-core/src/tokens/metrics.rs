@@ -13,7 +13,7 @@ pub struct Metrics {
     pub panel_row_height: f32,
     pub menu_row_height: f32,
     pub menu_min_width: f32,
-    /// Room a scroll view keeps on its trailing edge for its scroll bar while its content
+    /// Area a scroll view keeps on its trailing edge for its scroll bar while its content
     /// overflows, so the bar never covers content: the thumb ([`Metrics::scroll_thumb`])
     /// plus `s1` on each side.
     pub scrollbar_gutter: f32,

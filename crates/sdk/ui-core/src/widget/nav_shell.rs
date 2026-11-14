@@ -441,7 +441,7 @@ struct ColumnFit {
     header: Option<HeaderRowFacts>,
 }
 
-/// What one header row laid itself out as: the room it gave its title against what the title
+/// What one header row laid itself out as: the area it gave its title against what the title
 /// says, what it left beside it, and what its actions kept. The shell names the column and says
 /// whether the title reads, which only the title's own words can answer.
 #[derive(Clone, Copy, Debug)]
@@ -469,7 +469,7 @@ struct Inputs {
     page_lines: Option<f64>,
     metrics: Metrics,
     has_sidebar: bool,
-    /// The window floats over the desk as a card ([`crate::window_toolbar::floats`]): too narrow
+    /// The window floats over the shell as a card ([`crate::window_toolbar::floats`]): too narrow
     /// to dock its sidebar, it shows its content alone.
     floats: bool,
     has_overview: bool,
@@ -482,7 +482,7 @@ struct Inputs {
     has_controls: bool,
     history: Option<HistoryControl>,
     status_action: bool,
-    /// Room for the window's controls at the trailing end of the row, while
+    /// Area for the window's controls at the trailing end of the row, while
     /// the host merged the window's bar into it (a maximized window).
     window_controls: Option<f64>,
     /// The window's bar shows the sidebar toggle among the app's slots
@@ -540,15 +540,15 @@ impl Held {
     }
 }
 
-/// Whether `room` reaches `threshold`, given the side the layout stood on
-/// last: a layout that does not hold needs `band` more room to come back.
-fn reaches(room: f64, threshold: f64, held: Option<bool>, band: f64) -> bool {
+/// Whether `spare` reaches `threshold`, given the side the layout stood on
+/// last: a layout that does not hold needs `band` more area to come back.
+fn reaches(spare: f64, threshold: f64, held: Option<bool>, band: f64) -> bool {
     let threshold = if held == Some(false) {
         threshold + band
     } else {
         threshold
     };
-    room >= threshold - 1e-6
+    spare >= threshold - 1e-6
 }
 
 impl Default for Inputs {
@@ -711,7 +711,7 @@ pub struct NavShell {
     overview: Option<Element>,
     content: Element,
     /// Whether the window shows a content column: a window whose content only stands in for what
-    /// the overview has not opened yet gives its room to the overview
+    /// the overview has not opened yet gives its area to the overview
     /// ([`Self::content_shown`]).
     content_shown: bool,
     inspector: Option<Element>,
@@ -1022,7 +1022,7 @@ impl NavShell {
     }
 
     /// The fill of the content's header between the shell's leading buttons and the actions: a path
-    /// bar, or a mode or tab switcher with no title; it stands at its own width and takes more room
+    /// bar, or a mode or tab switcher with no title; it stands at its own width and takes more area
     /// when it needs it.
     #[must_use]
     pub fn content_header_leading(mut self, leading: Element) -> Self {
@@ -1566,7 +1566,7 @@ impl NavShell {
     }
 
     /// Whether the window has a sidebar but shows its content alone: a card floating over the
-    /// desk, too narrow to dock it. It offers no toggle for it.
+    /// shell, too narrow to dock it. It offers no toggle for it.
     fn sidebar_folded(&self) -> bool {
         self.built && self.has_sidebar() && self.geometry.sidebar == SidebarPlacement::None
     }
@@ -2584,7 +2584,7 @@ impl NavShell {
     }
 
     /// The sync status in the header of the column History stands in (the one reaching the window's
-    /// trailing edge), after its title and before its trailing controls, where the row has room.
+    /// trailing edge), after its title and before its trailing controls, where the row fits.
     fn paint_sync_status(&mut self, f: &mut Frame<'_>) {
         self.status_span = Rect::ZERO;
         let g = &self.geometry;

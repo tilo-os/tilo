@@ -240,7 +240,7 @@ pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
 }
 
 /// The most a cover's encoded bytes may cost: a live activity carries the picture beside the song under
-/// a wire bound, and a base64 `data:` picture takes four thirds of that room.
+/// a wire bound, and a base64 `data:` picture takes four thirds of that area.
 pub const PICTURE_BUDGET: usize = 6 * 1024;
 
 /// The most a hero picture's encoded bytes may cost: the card shows it at nine sixteenths of its width,

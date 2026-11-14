@@ -256,7 +256,7 @@ mod tests {
             assert_eq!(
                 TransportControl::PlayPause { playing: true }.name(),
                 "Pause",
-                "the control names itself in the desktop's language"
+                "the control names itself in the shell's language"
             );
             assert_eq!(
                 TransportControl::PlayPause { playing: false }.icon(),

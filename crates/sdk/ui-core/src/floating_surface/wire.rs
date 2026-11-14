@@ -193,7 +193,7 @@ pub struct FloatingSurfaceProtocolRequest {
     pub source: FloatingSurfaceProtocolSource,
     pub preferred_size: [f64; 2],
     pub aspect_ratio: Option<f64>,
-    /// Desktop-space transfer rectangle for an app-owned native surface.
+    /// Shell-space transfer rectangle for an app-owned native surface.
     #[serde(default)]
     pub initial_rect: Option<[f64; 4]>,
     /// Full transparent native-window bounds, including app-drawn shadows.
@@ -233,7 +233,7 @@ pub enum FloatingSurfaceClientMessage {
         id: String,
         region: [f64; 4],
     },
-    /// Live desktop placement of an app-owned secondary surface. The shell
+    /// Live shell placement of an app-owned secondary surface. The shell
     /// clamps it to the combined output before presentation.
     SurfaceGeometry {
         id: String,
@@ -251,7 +251,7 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// The primary app window has presented the first frame containing the
     /// reattached surface. Until this arrives, the compositor keeps a frozen
-    /// copy of the last desktop-owned pixels in exactly the same place, so
+    /// copy of the last shell-owned pixels in exactly the same place, so
     /// hiding the native secondary can never expose a blank transfer frame.
     DestinationPresented {
         id: String,
@@ -287,14 +287,14 @@ pub enum FloatingSurfaceClientMessage {
     /// This app can stream its window's page (sent once): the shell may ask it to with
     /// [`FloatingSurfaceHostMessage::PaintKeyframe`].
     PaintCapable,
-    /// Open another instance of this app as a desktop tab right after this app tab (see
+    /// Open another instance of this app as a shell tab right after this app tab (see
     /// [`crate::shell_tabs`]).
     OpenTabBeside {
         target: Option<String>,
         background: bool,
         instance: Option<u64>,
     },
-    /// Close this app tab through the desktop's tab lifecycle.
+    /// Close this app tab through the shell's tab lifecycle.
     CloseTab {
         instance: Option<u64>,
     },
@@ -311,7 +311,7 @@ pub enum FloatingSurfaceClientMessage {
         background: bool,
         instance: Option<u64>,
     },
-    /// Open another window of this app as a window of the desk, floating over it where the box of this
+    /// Open another window of this app as a window of the shell, floating over it where the box of this
     /// window last sent from stood ([`Self::SendTo`]), showing `anchor`: the item that send landed in.
     OpenFloated {
         /// The item the window opens on, as the resource that names it.
@@ -371,12 +371,12 @@ pub enum FloatingSurfaceClientMessage {
         text: String,
     },
     /// The person typed `query` into the box's recipient field: the shell answers with
-    /// [`FloatingSurfaceHostMessage::Recipients`], from the one search every part of the desk shares.
+    /// [`FloatingSurfaceHostMessage::Recipients`], from the one search every part of the shell shares.
     SearchRecipients {
         request: u64,
         query: String,
     },
-    /// The resource this window shows (the first it publishes), sent when it changes: the desktop menus
+    /// The resource this window shows (the first it publishes), sent when it changes: the shell menus
     /// for the window (its window menu) attach it, as the app menus do.
     WindowResource {
         resource: Option<tilo_actions::ActionResource>,
@@ -394,7 +394,7 @@ pub enum FloatingSurfaceClientMessage {
         answer: crate::pick_wire::PickAnswer,
     },
     /// The record this window shows, as its route names it (empty for the app record of the workspace),
-    /// and the kind of resource it keeps: the desktop lists the window among those a person may share
+    /// and the kind of resource it keeps: the shell lists the window among those a person may share
     /// ([`crate::window_share`]).
     WindowRecord {
         record: String,
@@ -411,7 +411,7 @@ pub enum FloatingSurfaceClientMessage {
         instance: Option<u64>,
     },
     /// The windows this app shares (`crate::window_share::publish_shared`), sent whenever they change,
-    /// so the desktop offers "Stop sharing" on them.
+    /// so the shell offers "Stop sharing" on them.
     SharedWindows {
         shared: Vec<crate::window_share::SharedWindow>,
     },
@@ -467,7 +467,7 @@ pub struct HostNetworkStatus {
 }
 
 /// Shell → app lifecycle. The shell supplies one authoritative combined
-/// desktop coordinate space and explicitly acknowledges ownership changes;
+/// shell coordinate space and explicitly acknowledges ownership changes;
 /// transports must not infer either from timing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -489,11 +489,11 @@ pub enum FloatingSurfaceHostMessage {
         generation: u64,
         protected: bool,
     },
-    /// The trusted desktop's answer, after supervisor admission.
+    /// The trusted shell's answer, after supervisor admission.
     HostShellAllowed {
         allowed: bool,
     },
-    DesktopBounds {
+    DisplayBounds {
         bounds: [f64; 4],
     },
     /// Someone started watching this app's window: send its page as a paint stream, starting from a
@@ -501,7 +501,7 @@ pub enum FloatingSurfaceHostMessage {
     PaintKeyframe,
     /// Nobody watches the window any more: stop capturing the page.
     PaintStop,
-    /// The person pressed the desktop's "ask an agent" chord over this app's focused window: answer
+    /// The person pressed the shell's "ask an agent" chord over this app's focused window: answer
     /// with [`FloatingSurfaceClientMessage::SendTo`] for what the box shows, or nothing when it shows
     /// none. Sent only to an app that announced
     /// [`FloatingSurfaceClientMessage::SelectionCapable`].
@@ -571,7 +571,7 @@ pub enum FloatingSurfaceHostMessage {
         /// copy immediately in that case; if capture failed it keeps drawing
         /// until the native surface acknowledges its first buffer.
         transfer_covered: bool,
-        /// App-local → desktop pointer-coordinate translation. Kept separate from clamped window
+        /// App-local → shell pointer-coordinate translation. Kept separate from clamped window
         /// geometry so a live drag can rebase without treating compositor clamping as pointer motion.
         coordinate_offset: [f64; 2],
     },

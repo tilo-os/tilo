@@ -95,15 +95,15 @@ impl Layout for FlexLayout {
         };
         // A row that wraps flows its items at their own width: one that fills breaks onto a
         // line of its own when its own width does not fit beside what comes before it, and
-        // then takes the room left on its line. From a zero basis it would never break, and
+        // then takes the area left on its line. From a zero basis it would never break, and
         // would take whatever its line left over, down to nothing (a field beside a button).
         if self.wrap && along.is_some_and(|weight| weight > 0.0) {
             style.flex_basis = taffy::Dimension::auto();
         }
-        // A spacer that takes the room its siblings leave is room, not a sibling: the gap the
+        // A spacer that takes the area its siblings leave is area, not a sibling: the gap the
         // container puts between its children is not put on both sides of it as well, so a row
-        // short of room lays out as if it held none (a card's title and its menu keep their
-        // one gap), and a row with room sends what follows it to the far end.
+        // short of area lays out as if it held none (a card's title and its menu keep their
+        // one gap), and a row with area sends what follows it to the far end.
         if along.is_some() && slot.element.name() == "Spacer" {
             let back = length(-resolved.gap(self.gap));
             let before = index > 0;

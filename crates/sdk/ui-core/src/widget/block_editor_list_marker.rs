@@ -27,17 +27,17 @@ pub(crate) fn ordinal_label(ordinal: u32, depth: u8) -> String {
     }
 }
 
-/// How much room, in logical pixels at 1× text, each block of a list needs
+/// How much area, in logical pixels at 1× text, each block of a list needs
 /// left of its marker column so the widest top-level ordinal of its list
 /// fits beside the text rather than hanging past the content edge into the
 /// handle gutter: `12.` and `100.` move their whole list in by what they
 /// need. Deeper ordinals hang into the indent to their left, which is
 /// empty. A list here is a run of items and the indented lines continuing
 /// them; every block of it moves together so its text stays in one column.
-pub(crate) fn marker_room(blocks: &[super::Block]) -> Vec<f32> {
+pub(crate) fn marker_width(blocks: &[super::Block]) -> Vec<f32> {
     use super::BlockKind;
     let ordinals = super::numbered_ordinals(blocks);
-    let mut room = vec![0.0_f32; blocks.len()];
+    let mut spare = vec![0.0_f32; blocks.len()];
     let in_list = |block: &super::Block| {
         block.kind.supports_indent()
             || (matches!(block.kind, BlockKind::Paragraph) && block.indent() > 0)
@@ -68,12 +68,12 @@ pub(crate) fn marker_room(blocks: &[super::Block]) -> Vec<f32> {
         let extra = (widest - crate::num::f32_of_f64(super::CHECKBOX_SIZE_PX))
             .max(0.0)
             .ceil();
-        for slot in room.iter_mut().take(end).skip(start) {
+        for slot in spare.iter_mut().take(end).skip(start) {
             *slot = extra;
         }
         start = end.max(start.saturating_add(1));
     }
-    room
+    spare
 }
 
 fn estimated_label_em(label: &str) -> f32 {
@@ -218,9 +218,9 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// Ordinal labels and the room a long list makes for them.
+        /// Ordinal labels and the area a long list makes for them.
         /// Each phase was a test of its own and builds its own fixture.
-        fn list_ordinals_follow_tex_enumerate_and_make_room;
+        fn list_ordinals_follow_tex_enumerate_and_make_way;
 
         phase ordinals_follow_tex_enumerate_by_depth;
         {
@@ -244,7 +244,7 @@ mod tests {
         {
             use super::super::Block;
             let short: Vec<Block> = (0..9).map(|i| Block::numbered(0, &i.to_string())).collect();
-            assert!(marker_room(&short).iter().all(|room| *room == 0.0));
+            assert!(marker_width(&short).iter().all(|spare| *spare == 0.0));
             let mut long: Vec<Block> = (0..12)
                 .map(|i| Block::numbered(0, &i.to_string()))
                 .collect();
@@ -254,14 +254,14 @@ mod tests {
                 line
             });
             long.push(Block::paragraph("after the list"));
-            let room = marker_room(&long);
-            let list = room.get(..13).unwrap();
-            assert!(list.iter().all(|r| *r > 0.0), "{room:?}");
+            let spare = marker_width(&long);
+            let list = spare.get(..13).unwrap();
+            assert!(list.iter().all(|r| *r > 0.0), "{spare:?}");
             assert!(
                 list.windows(2).all(|pair| pair[0] == pair[1]),
                 "the whole list moves together, its continuation line too"
             );
-            assert_eq!(room.last(), Some(&0.0), "the paragraph after it does not");
+            assert_eq!(spare.last(), Some(&0.0), "the paragraph after it does not");
         }
     }
 }

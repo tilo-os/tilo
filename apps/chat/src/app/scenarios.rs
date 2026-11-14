@@ -476,8 +476,8 @@ impl ChatApp {
             ),
             detached_size,
         );
-        self.call.placement.detach_to_desktop(detached);
-        self.call.placement.set_desktop_transfer_covered(true);
+        self.call.placement.detach_to_shell(detached);
+        self.call.placement.set_shell_transfer_covered(true);
         // A capture is the app's own frame, and the shell's card window is
         // not in it: the app keeps painting the card itself.
 

@@ -1,5 +1,5 @@
 //! Synthetic two-device topology rendered locally by the production widget.
-//! No desktop, pairing, input capture, video decoder, or privileged service.
+//! No shell, pairing, input capture, video decoder, or privileged service.
 use std::path::Path;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::state::State;
@@ -39,13 +39,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ArrangedDisplay {
                 movement_group: None,
                 shared: Some(SharedDisplayState {
-                    device: "fixture-desktop".into(),
-                    output: "desk".into(),
+                    device: "fixture-shell".into(),
+                    output: "monitor".into(),
                     online: true,
                     reachable: true,
                 }),
-                connector: "fixture-desktop/eDP-1".into(),
-                label: "Desktop · eDP-1".into(),
+                connector: "fixture-shell/eDP-1".into(),
+                label: "Shell · eDP-1".into(),
                 number: 2,
                 placement: Placement::new(960, 0, 1280, 720),
                 primary: false,
@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 movement_group: Some("fixture-pi".into()),
                 shared: Some(SharedDisplayState {
                     device: "fixture-pi".into(),
-                    output: "desk".into(),
+                    output: "monitor".into(),
                     online: true,
                     reachable: false,
                 }),
@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     online: false,
                     reachable: true,
                 }),
-                label: "Living room TV · HDMI-A-1".into(),
+                label: "Lounge TV · HDMI-A-1".into(),
                 number: 4,
                 placement: Placement::new(3200, 0, 1280, 720),
                 primary: false,

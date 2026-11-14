@@ -845,7 +845,7 @@ fn empty(c: &Channel, cx: &ViewCx) -> Node {
 
 /// One message: the avatar and the name with the time over a run's first message, then the
 /// message it answers, what it says, the reactions on it and what it carries. A row that
-/// continues the run above it leaves the avatar's room empty and starts at what it says.
+/// continues the run above it leaves the avatar placeholder empty and starts at what it says.
 ///
 /// The row is a page row: its author's name, and what it says, stand at the page's measure, and
 /// the message's own menu, toolbar and swipe are what its type offers.
@@ -854,17 +854,17 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
     let said = message_said(c, message, cx);
 
     // The avatar and the name with the time, over a run's first message. A run's next message
-    // keeps the avatar's room, empty, so a person's messages line up under their name once.
+    // keeps an empty avatar placeholder so a person's messages line up under their name once.
     let avatar = ui::AvatarBuilder::new(&cx.key(format!("avatar-{}", message.id)))
         .who(principal(author, &message.author))
         .square(false)
         .into();
     let leading: Node = if continues {
-        // An avatar's room, empty: the toolkit's own (a person's face drawn with nothing in
+        // An empty avatar placeholder: the toolkit's own (a person's face drawn with nothing in
         // it), so a message that continues a run lines up under the first one's avatar.
         ui::AvatarBuilder::new(&cx.key(format!("lead-{}", message.id)))
             .who(principal(author, &message.author))
-            .room(true)
+            .placeholder(true)
             .into()
     } else {
         avatar
@@ -2552,13 +2552,13 @@ mod tests {
                 2,
                 "each message has an avatar (or its empty lead), the run's first their face, the next a lead"
             );
-            // The run's second message draws an empty lead: an avatar's room with nothing in it.
+            // The run's second message draws an empty lead: an empty avatar placeholder.
             let lead = keyed(&tree, "ui.Avatar", "@lead-");
             assert_eq!(lead.len(), 1, "the run's second message has an empty lead");
             assert_eq!(
-                lead[0].props.get("room"),
+                lead[0].props.get("placeholder"),
                 Some(&Value::Bool(true)),
-                "the lead is an avatar's room, empty"
+                "the lead is an empty avatar placeholder"
             );
         }
 

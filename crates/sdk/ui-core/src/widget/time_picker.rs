@@ -26,7 +26,7 @@ const MINSEC_MAX: u8 = 59;
 const SPINNER_WIDTH: f32 = 44.0;
 /// Fixed height of the picker. Three vertical regions of equal height
 /// (arrow, value, arrow) of 24 px each — the value cell ends up matching the
-/// `lg` text height with some breathing room.
+/// `lg` text height with some breathing area.
 const PICKER_HEIGHT: f32 = 132.0;
 const COLON_WIDTH: f32 = 8.0;
 

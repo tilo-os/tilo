@@ -112,7 +112,7 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
             .map(|g| (g.results.len(), g.total))
             .collect::<Vec<_>>(),
         [(1, 1), (3, 20), (2, 10)],
-        "the groups keep their totals; the rows they leave room for are the ones offering the rest"
+        "the groups keep their totals; the rows they leave area for are the ones offering the rest"
     );
     // The rows shown plus the row offering each cut group's rest fill the budget: six
     // rows and two "Show all" rows, never a row cut away.
@@ -429,7 +429,7 @@ fn an_actions_word_typed_whole_counts_as_its_title_begun() {
 }
 
 #[test]
-fn every_builtin_kind_is_named_in_the_desktops_language() {
+fn every_builtin_kind_is_named_in_the_shells_language() {
     const SOURCE: &str = include_str!("../../../locales/en-US.ftl");
     const GERMAN: &str = include_str!("../../../locales/de-DE.ftl");
     let kinds = [

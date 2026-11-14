@@ -1,6 +1,6 @@
 //! An app in a process of its own, searched and its History opened from the
 //! window's bar over the real shell-ui connection: the app runs its own
-//! runtime on one end of a socket, the desktop's window on the other, and
+//! runtime on one end of a socket, the shell's window on the other, and
 //! nothing passes between them but the protocol's frames.
 
 #![cfg(all(feature = "native", unix))]
@@ -136,7 +136,7 @@ impl ShellEnd {
     }
 }
 
-/// The desktop carries frames between the window and the app as the
+/// The shell carries frames between the window and the app as the
 /// shell's window-bar relay does: the app's offers to its tab, the window's
 /// events back to the app.
 fn relay(app: &mut App, shell: &mut ShellEnd, window: &mut WindowGroup) {
@@ -193,7 +193,7 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
     );
     app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
 
-    // The desktop's window shows the app's surface: nothing it can look
+    // The shell's window shows the app's surface: nothing it can look
     // into, only what the app says over its connection.
     let mut window = WindowGroup::new(
         10,
@@ -526,7 +526,7 @@ fn native_frame(app: &mut App) {
     super::super::framework_history_tests::layout(app);
 }
 
-/// The desktop's relay for the window's bar, both ways: what was typed and
+/// The shell's relay for the window's bar, both ways: what was typed and
 /// done in the bar to the app, the app's slots back to the window.
 fn relay_bar(app: &mut App, shell: &mut ShellEnd, frame: &mut crate::headless::FrameHarness) {
     for _ in 0..3 {
@@ -567,7 +567,7 @@ fn bar_suggestions(frame: &crate::headless::FrameHarness) -> usize {
         .count()
 }
 
-/// An app with an address in its own process, and the desktop's window
+/// An app with an address in its own process, and the shell's window
 /// whose bar edits it.
 fn omnibox_window() -> (App, ShellEnd, crate::headless::FrameHarness) {
     let (app_side, shell_side) = UnixStream::pair().unwrap();

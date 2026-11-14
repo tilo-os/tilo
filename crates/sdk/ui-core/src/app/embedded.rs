@@ -1,4 +1,4 @@
-//! An [`App`] shown in a region of a host's scene: a tab of a desktop, a
+//! An [`App`] shown in a region of a host's scene: a tab of a shell, a
 //! pane of a device's screen. The app keeps everything a window of its own
 //! would have (its input handling, focus, palette, history, collaboration
 //! and the actions it publishes); the host only lays it out, hands it the

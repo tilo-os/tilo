@@ -147,14 +147,14 @@ tilo_test_env::scenario! {
     phase a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it;
     {
         const NARROW: u32 = 420;
-        let no_row = |h: &FrameHarness, at: &str, back_room: bool| {
+        let no_row = |h: &FrameHarness, at: &str, has_back: bool| {
             let g = geometry(h);
             assert_eq!(g.header_height, 0.0, "{at}: no header row");
             assert!(
                 g.headers.iter().all(|header| *header == Rect::ZERO),
                 "{at}: no header in any column"
             );
-            assert_eq!(shows_back_part(h), back_room, "{at}: a Back of its own");
+            assert_eq!(shows_back_part(h), has_back, "{at}: a Back of its own");
         };
         let mut shell = NavShell::new()
             .content_kind(ContentKind::Page)
@@ -464,9 +464,9 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
 }
 
 /// Every column's header row — its title and the buttons that act on what it shows — stands at
-/// the top of its column while the desktop's bar hosts the window, at rest and with the bar out:
+/// the top of its column while the shell's bar hosts the window, at rest and with the bar out:
 /// the rows share one height and top, the row is the window's bar (its controls come into the
-/// room the row keeps at its trailing end), the bar declares none of the columns' titles or
+/// area the row keeps at its trailing end), the bar declares none of the columns' titles or
 /// buttons, and a button pressed in its row runs.
 #[test]
 fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
@@ -538,7 +538,7 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
         }
         assert!(
             rect_named(&h, "mail.reply").is_some_and(|reply| reply.x1 <= g.window_controls.x0),
-            "{at}: the row's buttons stand before the room kept for the window's controls"
+            "{at}: the row's buttons stand before the area kept for the window's controls"
         );
     }
     let compose = rect_named(&h, "mail.compose").expect("Compose shows");

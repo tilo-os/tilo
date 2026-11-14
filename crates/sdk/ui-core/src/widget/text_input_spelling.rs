@@ -24,7 +24,7 @@ impl super::TextInput {
 
     /// Build the field's dictionary off the event loop, once a field that
     /// checks spelling is in use. Fields are made at startup and most are
-    /// never typed in; the dictionary is a large share of an idle desktop's
+    /// never typed in; the dictionary is a large share of an idle shell's
     /// heap, so it is not built for them.
     pub(super) fn warm_up_spelling(&self) {
         if self.checks_spelling() {

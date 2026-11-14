@@ -18,7 +18,7 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        // A surface's actions are the desktop's, which placed its window:
+        // A surface's actions are the shell's, which placed its window:
         // its records stay in its process, so it has no document route for
         // them to wait on.
         if !self.collaboration.manager.is_connected()

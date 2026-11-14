@@ -181,7 +181,7 @@ impl CaptureStudio {
         actions: &[ReceiptAction],
     ) -> ReceiptLayout {
         let bounds = self.status_rect();
-        let room = (bounds.width() - 2.0 * RECEIPT_EDGE_MARGIN).max(0.0);
+        let spare = (bounds.width() - 2.0 * RECEIPT_EDGE_MARGIN).max(0.0);
         let final_height = RECEIPT_HEIGHT;
         let thumb = preview.map_or(KurboSize::ZERO, |(w, h)| fit_preview(w, h, 46.0, 24.0));
         let lead = if preview.is_some() {
@@ -196,8 +196,8 @@ impl CaptureStudio {
             .map(|action| self.receipt_widths.actions[action.index()] + RECEIPT_BUTTON_GAP)
             .sum();
         let icon_width = ui_count(actions.len()) * (RECEIPT_BUTTON_W + RECEIPT_BUTTON_GAP);
-        let labelled = fixed + labelled_width <= room;
-        let final_width = (fixed + if labelled { labelled_width } else { icon_width }).min(room);
+        let labelled = fixed + labelled_width <= spare;
+        let final_width = (fixed + if labelled { labelled_width } else { icon_width }).min(spare);
         let (start_width, start_height) = match preview {
             Some((w, h)) => {
                 let start = fit_preview(w, h, 144.0, 66.0);
@@ -371,8 +371,8 @@ impl CaptureStudio {
                 .actions
                 .first()
                 .map_or(layout.dismiss.x0, |(_, rect)| rect.x0);
-            let room = (actions_x0 - RECEIPT_TEXT_GAP - status_x).max(0.0);
-            let shown = tr.elide_to_width_style(status, room as f32, &status_style);
+            let spare = (actions_x0 - RECEIPT_TEXT_GAP - status_x).max(0.0);
+            let shown = tr.elide_to_width_style(status, spare as f32, &status_style);
             let line = f64::from(tr.measure_style("Ag", None, &status_style).1);
             tr.draw_style(
                 scene,

@@ -1,4 +1,4 @@
-//! What the layout solver did, in counts rather than guesses. Frames of a long list or a desktop are
+//! What the layout solver did, in counts rather than guesses. Frames of a long list or a shell are
 //! dominated by layout, and which part of the solver spends that is invisible in wall time: a check or
 //! a test reads what a run cost here, and two builds of the same sources compare their numbers, on any
 //! machine and in any profile.

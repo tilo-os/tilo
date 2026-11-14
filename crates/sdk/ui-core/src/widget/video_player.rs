@@ -518,7 +518,7 @@ impl VideoPlayer {
         &self.now_playing
     }
 
-    /// Publish the player to the desktop's media controls as `identity`.
+    /// Publish the player to the shell's media controls as `identity`.
     /// The bus name is the launched package's; `app_id` names it only for an
     /// app run outside a launcher (see [`crate::mpris::MprisConfig::new`]).
     /// Without the `mpris` feature (or a session bus) this is an inert no-op,
@@ -1637,13 +1637,13 @@ impl VideoPlayer {
 
         let track_x0 = play_btn.x1 + pad;
         let time_x1 = vol_x0 - pad;
-        let room = time_x1 - (track_x0 + MIN_SCRUB_WIDTH + pad);
-        let shown = if f64::from(time.width) <= room {
+        let spare = time_x1 - (track_x0 + MIN_SCRUB_WIDTH + pad);
+        let shown = if f64::from(time.width) <= spare {
             Some((time.text.to_string(), time.width))
         } else {
             let position = format_ms(self.position_ms);
             let (pw, _) = text_renderer.measure_style(&position, None, &time.style);
-            (f64::from(pw) <= room).then_some((position, pw))
+            (f64::from(pw) <= spare).then_some((position, pw))
         };
         let track_x1 = if let Some((text, width)) = shown {
             let time_x0 = time_x1 - f64::from(width);

@@ -1,4 +1,4 @@
-//! Windows lifted over the desk: where a float is laid out and hit, and what a drag that
+//! Windows lifted over the shell: where a float is laid out and hit, and what a drag that
 //! lifts or snaps one reports.
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ fn release(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId) {
 }
 
 tilo_test_env::scenario! {
-    fn a_window_floats_over_the_desk_and_snaps_back;
+    fn a_window_floats_over_the_shell_and_snaps_back;
 
     phase a_float_is_laid_out_at_its_rect_and_leaves_the_strip_it_came_from;
     {
@@ -123,30 +123,30 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_float_keeps_its_card_room_inside_the_desk;
+    phase a_float_keeps_its_card_area_inside_the_shell;
     {
         let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         let area = row.get_rect();
-        let room = FLOAT_CARD_ROOM;
+        let spare = FLOAT_CARD_MARGIN;
         let corner = Rect::from_origin_size(Point::new(area.x0, area.y0), FLOAT_SIZE);
         let placed = row.keep_float_inside(corner);
         assert_eq!(
             placed.origin(),
-            Point::new(area.x0 + room, area.y0 + room),
-            "a float at the desk's corner stands clear of it, so its band and ring show"
+            Point::new(area.x0 + spare, area.y0 + spare),
+            "a float at the shell's corner stands clear of it, so its band and ring show"
         );
         let past = Rect::from_origin_size(Point::new(area.x1, area.y1), FLOAT_SIZE);
         let past = row.keep_float_inside(past);
         assert_eq!(
             (past.x1, past.y1),
-            (area.x1 - room, area.y1 - room),
-            "a float pushed past the desk comes back with its card on it"
+            (area.x1 - spare, area.y1 - spare),
+            "a float pushed past the shell comes back with its card on it"
         );
         let inside = Rect::from_origin_size(Point::new(area.x0 + 120.0, area.y0 + 60.0), FLOAT_SIZE);
         assert_eq!(
             row.keep_float_inside(inside),
             inside,
-            "a float with room round it stands where it was put"
+            "a float with area round it stands where it was put"
         );
     }
 
@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_float_let_go_off_the_strip_stays_over_the_desk_where_it_was_dropped;
+    phase a_float_let_go_off_the_strip_stays_over_the_shell_where_it_was_dropped;
     {
         let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
         let at = Rect::new(120.0, 60.0, 760.0, 540.0);
@@ -352,7 +352,7 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
     assert_eq!(
         covers.len(),
         1,
-        "the one float stands over the desk: {covers:?}"
+        "the one float stands over the shell: {covers:?}"
     );
     let (tab, cover) = covers[0];
     let card = row.groups[0].get_rect();

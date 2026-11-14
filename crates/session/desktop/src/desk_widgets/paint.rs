@@ -41,13 +41,13 @@ pub(super) const BAND: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 /// One band control's square.
 pub(super) const CONTROL: f64 = ui::tokens::Layout::BASE.pin as f64;
 /// The remove badge on a hovered glance.
-pub(super) const BADGE: f64 = ui::tokens::Layout::BASE.desk_badge as f64;
+pub(super) const BADGE: f64 = ui::tokens::Layout::BASE.widget_badge as f64;
 /// The system monitor's glance form: its two short readouts.
 pub(super) const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
 const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
 /// The resize handle in a card's free corner, and the band along its free side that resizes too.
-pub(super) const GRIP: f64 = ui::tokens::Layout::BASE.desk_grip as f64;
+pub(super) const GRIP: f64 = ui::tokens::Layout::BASE.widget_grip as f64;
 const GRIP_EDGE: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
 /// Inset of a card's content from its edge.
 const PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
@@ -938,7 +938,7 @@ pub(super) fn desk_widget_title(id: WidgetId) -> String {
 /// its end.
 pub(super) const MUSIC_GLANCE: Size = Size::new(268.0, 40.0);
 /// The compact music card's artwork.
-const COMPACT_ART: f64 = ui::tokens::Layout::BASE.desk_art as f64;
+const COMPACT_ART: f64 = ui::tokens::Layout::BASE.widget_art as f64;
 /// The regular music card's height: the song's lines, the playhead and the transport.
 const MUSIC_ROWS: f64 = 124.0;
 /// One round control on the music widget.

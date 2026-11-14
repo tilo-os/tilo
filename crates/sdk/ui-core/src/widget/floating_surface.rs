@@ -14,7 +14,7 @@ use crate::theme::Theme;
 /// `rect` with its edges on the device pixels the frame draws on: a panel
 /// placed against a measured label width or a rounded row would otherwise
 /// stand between two pixels and be painted soft across both. Its leading
-/// edges round out and its trailing edges up, so a snap never takes room
+/// edges round out and its trailing edges up, so a snap never takes area
 /// from a row.
 #[must_use]
 pub fn on_device_pixels(rect: Rect) -> Rect {
@@ -51,7 +51,7 @@ pub fn paint(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     paint_rounded(scene, transform, rect, radius(theme), theme);
 }
 
-/// The one floating card: a notification banner, a toast, the command palette, a desk
+/// The one floating card: a notification banner, a toast, the command palette, a shell
 /// widget's card, the frame around an app's call or navigation card.
 #[must_use]
 pub fn card_radius(rect: Rect, theme: &Theme) -> f64 {
@@ -221,10 +221,10 @@ pub fn viewport_margin(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
-/// The room an anchored floating Panel is placed in: `window` less the [`viewport_margin`]
+/// The area an anchored floating Panel is placed in: `window` less the [`viewport_margin`]
 /// on every side.
 #[must_use]
-pub fn panel_room(window: Rect, theme: &Theme) -> Rect {
+pub fn panel_area(window: Rect, theme: &Theme) -> Rect {
     let margin = viewport_margin(theme)
         .min(window.width() / 4.0)
         .min(window.height() / 4.0)
@@ -283,10 +283,10 @@ impl PopoverSide {
     }
 }
 
-/// The room a Panel has on `side` of `anchor`, `gap` away, inside `viewport`: the most a
+/// The area a Panel has on `side` of `anchor`, `gap` away, inside `viewport`: the most a
 /// menu opening there can grow before it scrolls.
 #[must_use]
-pub fn anchored_room(anchor: Rect, side: PopoverSide, gap: f64, viewport: Rect) -> f64 {
+pub fn anchored_extent(anchor: Rect, side: PopoverSide, gap: f64, viewport: Rect) -> f64 {
     let anchor = clamp_anchor(anchor, viewport);
     match side {
         PopoverSide::Below => viewport.y1 - anchor.y1 - gap,
@@ -318,19 +318,19 @@ pub fn place_anchored(
 }
 
 /// Where a sheet of `size` that asks about the control at `anchor` stands: under it where
-/// there is room (else over it), `gap` from it, inside `window` and within `room`
+/// it fits (else over it), `gap` from it, inside `window` and within `spare`
 /// vertically.
 #[must_use]
 pub fn place_sheet_beside(
     anchor: Rect,
     (w, h): (f64, f64),
     window: Rect,
-    room: Rect,
+    spare: Rect,
     gap: f64,
 ) -> Rect {
     let (placed, _) = place_anchored(anchor, (w, h), PopoverSide::Below, gap, window.inset(-gap));
     let x0 = placed.x0.clamp(window.x0, (window.x1 - w).max(window.x0));
-    let y0 = placed.y0.clamp(room.y0, (room.y1 - h).max(room.y0));
+    let y0 = placed.y0.clamp(spare.y0, (spare.y1 - h).max(spare.y0));
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
@@ -374,15 +374,15 @@ pub fn place_aligned(
     }
     let (w, h) = (size.0.max(0.0), size.1.max(0.0));
     let anchor = clamp_anchor(anchor, viewport);
-    let room = |side: PopoverSide| anchored_room(anchor, side, gap, viewport);
+    let spare = |side: PopoverSide| anchored_extent(anchor, side, gap, viewport);
     let need = if side.vertical() { h } else { w };
-    let side = if room(side) >= need || room(side) >= room(side.opposite()) {
+    let side = if spare(side) >= need || spare(side) >= spare(side.opposite()) {
         side
     } else {
         side.opposite()
     };
     // Cross axis: leading-aligned with the anchor, or trailing-aligned when
-    // the leading alignment runs past the viewport and that has more room;
+    // the leading alignment runs past the viewport and that has more area;
     // a centred panel stays centred and only shifts below.
     let cross = |a0: f64, a1: f64, len: f64, v0: f64, v1: f64| {
         if align == PanelAlign::Centre {
@@ -413,7 +413,7 @@ pub fn place_aligned(
     };
     // Shift into the viewport on the cross axis only: on the main axis the
     // panel never slides over its own anchor. A caller whose panel can be
-    // taller than either side's room caps it with [`anchored_room`].
+    // taller than either side's area caps it with [`anchored_extent`].
     let (x0, y0) = if side.vertical() {
         (x0.min(viewport.x1 - w).max(viewport.x0), y0)
     } else {
@@ -874,9 +874,9 @@ mod control_bar_tests {
             assert_eq!(side, PopoverSide::Below);
             assert!((rect.x1 - anchor.x1).abs() < 1e-9);
             assert!((rect.y0 - (anchor.y1 + 4.0)).abs() < 1e-9);
-            let room = panel_room(window, &Theme::dark());
+            let spare = panel_area(window, &Theme::dark());
             assert!(
-                room.x0 > window.x0 && room.x1 < window.x1,
+                spare.x0 > window.x0 && spare.x1 < window.x1,
                 "panels keep a margin"
             );
         }

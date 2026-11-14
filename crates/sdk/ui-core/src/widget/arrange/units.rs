@@ -235,7 +235,7 @@ impl Fit {
     /// An `aspect` decides the block size from the inline one. Taffy derives one size from the
     /// other only where the known one is definite in the style, so the ratio itself is applied
     /// out of the solved sizes ([`Arranged::derive_aspects`](super::Arranged)); here a weight on
-    /// the block axis is left out, since a share of the room is not the size the ratio asked
+    /// the block axis is left out, since a share of the area is not the size the ratio asked
     /// for.
     pub fn apply(&self, style: &mut taffy::Style, main: Axis, rem: f32) {
         use taffy::style_helpers::length;
@@ -247,7 +247,7 @@ impl Fit {
             && weight > 0.0
             && !(self.aspect.is_some() && main == Axis::Block)
         {
-            // A weight above zero takes a share of the leftover room from a zero basis; zero
+            // A weight above zero takes a share of the leftover area from a zero basis; zero
             // takes no share at all, and the child is as big as its content (a dock's body that
             // must hug its items is written `fill: 0`, not squeezed to nothing).
             style.flex_grow = weight;
@@ -255,7 +255,7 @@ impl Fit {
             style.flex_basis = length(0.0_f32);
             // Its share is all it takes: content longer than the share scrolls or overflows
             // inside it (a scrolling middle between a bar and a dock), and never pushes the
-            // container past the room it was given. A `min` written on it still holds.
+            // container past the area it was given. A `min` written on it still holds.
             match main {
                 Axis::Inline => style.min_size.width = length(0.0_f32),
                 Axis::Block => style.min_size.height = length(0.0_f32),
@@ -463,8 +463,8 @@ pub fn arrangement_for(width: f32, primary_min: f32, secondary_min: f32, gap: f3
 /// gutter on each side.
 #[must_use]
 pub fn page_content_width(width: f32, measure: Option<f32>, gutter: f32) -> f32 {
-    let room = (width - 2.0 * gutter).max(0.0);
-    measure.map_or(room, |measure| room.min(measure))
+    let spare = (width - 2.0 * gutter).max(0.0);
+    measure.map_or(spare, |measure| spare.min(measure))
 }
 
 #[cfg(test)]

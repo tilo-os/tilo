@@ -1,6 +1,6 @@
-//! Who draws the window's frame: the desktop, or the app itself. `tilo_presentation` observes what the
-//! desktop does; this decides what the app does with that, the same way on every host: a host whose
-//! chrome the app must draw itself ([`HostChrome::InWindow`]) draws the frame only where the desktop
+//! Who draws the window's frame: the shell, or the app itself. `tilo_presentation` observes what the
+//! shell does; this decides what the app does with that, the same way on every host: a host whose
+//! chrome the app must draw itself ([`HostChrome::InWindow`]) draws the frame only where the shell
 //! leaves decorations to the client, and every host with chrome of its own (the Tilo shell's, the macOS
 //! menu bar's) draws none.
 

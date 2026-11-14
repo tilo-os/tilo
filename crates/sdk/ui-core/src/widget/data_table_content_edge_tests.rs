@@ -222,7 +222,7 @@ tilo_test_env::scenario! {
         assert!(table.h_track().is_some());
     }
 
-    phase a_capped_flexible_column_leaves_its_room_to_the_others;
+    phase a_capped_flexible_column_leaves_its_area_to_the_others;
     {
         let mut table = DataTable::new(vec![
             name_col().max_width(120.0),

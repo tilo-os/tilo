@@ -2756,7 +2756,7 @@ impl ChatApp {
         // the person does from there. In its own window it stays the huddle.
         let card = matches!(
             self.call.placement.attachment(),
-            ui::floating_surface::Attachment::Desktop { .. }
+            ui::floating_surface::Attachment::Shell { .. }
         ) && !self.call.placement.is_return_pending();
         let panel = if card {
             self.call_video_rect()

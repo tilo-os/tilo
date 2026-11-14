@@ -1,6 +1,6 @@
 //! One view under each surface finish, as PNGs to look at: a real widget
 //! view (buttons, switches) and the surface roles, with text on them, over
-//! three desktops (window ground, bar, floating panel, control faces at
+//! three shells (window ground, bar, floating panel, control faces at
 //! rest, hovered and pressed), so a finish's backdrop pass, the legible
 //! range it holds what shows through in, and the theme's response show.
 //!
@@ -11,7 +11,7 @@
 //! own id. Run it on a software adapter (lavapipe) where the GPU is not to
 //! be touched.
 //!
-//! The desks: a bright, photo-like wallpaper of colour; a white page of
+//! The shells: a bright, photo-like wallpaper of colour; a white page of
 //! dark text; a dark page of light text. Text runs under every rim, so a
 //! lens's bend shows as bent lines.
 
@@ -28,7 +28,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-const DESK: (u32, u32) = (720, 420);
+const BACKDROP: (u32, u32) = (720, 420);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
@@ -72,9 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("white-page", Below::WhitePage),
             ("dark-page", Below::DarkPage),
         ] {
-            let desk = out.join(format!("{id}-desk-{name}.png"));
-            shoot_desk(&theme, below, &desk);
-            println!("{}", desk.display());
+            let shell = out.join(format!("{id}-shell-{name}.png"));
+            shoot_backdrop(&theme, below, &shell);
+            println!("{}", shell.display());
         }
     }
     Ok(())
@@ -103,7 +103,7 @@ fn view_of() -> Box<dyn tilo_ui::widget::Widget> {
     )
 }
 
-/// What a desk shows below its surfaces.
+/// What a shell shows below its surfaces.
 #[derive(Clone, Copy)]
 enum Below {
     /// Bright colour, as a photo is.
@@ -116,8 +116,8 @@ enum Below {
 
 /// The surface roles over `below`, with the backdrop pass, and text on the
 /// window and the panel in the theme's inks.
-fn shoot_desk(theme: &Theme, below: Below, out: &Path) {
-    let (width, height) = DESK;
+fn shoot_backdrop(theme: &Theme, below: Below, out: &Path) {
+    let (width, height) = BACKDROP;
     let mut scene = match below {
         Below::Bright => wallpaper(width, height),
         Below::WhitePage => page(width, height, Color::WHITE, Color::from_rgb8(24, 24, 28)),
@@ -132,7 +132,7 @@ fn shoot_desk(theme: &Theme, below: Below, out: &Path) {
     layer_scene(&scene, 0);
     let colors = &theme.tokens.colors;
     let window_radius = f64::from(theme.tokens.radii.tile);
-    // A window, the bar over the desktop, and a floating panel over both.
+    // A window, the bar over the shell, and a floating panel over both.
     let bar = RoundedRect::from_rect(Rect::new(0.0, 0.0, f64::from(width), 32.0), 0.0);
     fill_role(
         &mut scene,
@@ -269,7 +269,7 @@ fn wallpaper(width: u32, height: u32) -> Scene {
     scene
 }
 
-/// A page of `paper` across the desk, lines of `ink` text on it end to end,
+/// A page of `paper` across the shell, lines of `ink` text on it end to end,
 /// so every surface's rim crosses them.
 fn page(width: u32, height: u32, paper: Color, ink: Color) -> Scene {
     let mut scene = Scene::new();

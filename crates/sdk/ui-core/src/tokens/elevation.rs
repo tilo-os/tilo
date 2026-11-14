@@ -49,7 +49,7 @@ const fn black(offset_y: f32, blur: f32, alpha: u8) -> Shadow {
 }
 
 /// Elevation (`docs/design-language.md`, "Surfaces"): a window tile casts one soft shadow
-/// that lifts it off the desktop ground; a floating thing casts two, a tight contact
+/// that lifts it off the shell ground; a floating thing casts two, a tight contact
 /// layer that defines its edge and a wide one that reads as distance.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Elevation {

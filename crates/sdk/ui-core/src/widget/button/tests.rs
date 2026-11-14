@@ -66,7 +66,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
-        "a guest's effect the room asks about waits for the ask: {:?}",
+        "a guest's effect the area asks about waits for the ask: {:?}",
         harness.control_failures()
     );
     assert!(
@@ -1320,7 +1320,7 @@ tilo_test_env::scenario! {
                 "the row gave up the words for the face"
             );
             // A change arrives while the row is short: the mark takes the new words for when the row
-            // gives it room again, and stays one face where it stands now.
+            // gives it area again, and stays one face where it stands now.
             let fresh = Button::new("mark", "3 changes by Ada and Bo").with_faces_of(faces());
             assert!(
                 button.take_words(&fresh),
@@ -1338,7 +1338,7 @@ tilo_test_env::scenario! {
             button.set_compact_toolbar_presentation(false);
             assert_eq!(
                 button.label, "3 changes by Ada and Bo",
-                "the room back gives the mark its newest words"
+                "the area back gives the mark its newest words"
             );
         }
 
@@ -1477,8 +1477,8 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn a_button_measures_from_its_label_and_control_size;
 
-    phase a_menu_button_makes_room_for_its_chevron;
-    // A button that opens a menu makes room for its chevron after the
+    phase a_menu_button_makes_way_for_its_chevron;
+    // A button that opens a menu makes way for its chevron after the
     // label, so the label is never elided to fit it; an icon-only one
     // stays square.
     {
@@ -1742,7 +1742,7 @@ tilo_test_env::scenario! {
         }
 
         /// A long label widens the button to hold it, never elided while the
-        /// parent has room.
+        /// parent fits.
         fn a_wide_label_widens_the_button_instead_of_overflowing_it() {
             let label = "Remove every remote connection";
             let theme = Theme::dark();

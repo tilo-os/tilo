@@ -259,13 +259,13 @@ pub(crate) fn paint_caption(
         clippy::cast_possible_truncation,
         reason = "a laid-out width is far below f32::MAX"
     )]
-    let room = width.max(0.0) as f32;
+    let spare = width.max(0.0) as f32;
     ctx.text_role(
         caption,
         TextRole::Caption,
         theme.tokens.colors.text_dim,
         Point::new(x0, top + (line - own) / 2.0),
-        Some(room),
+        Some(spare),
     );
 }
 const CHIP_WIDTH_IN_LINES: u8 = 6;

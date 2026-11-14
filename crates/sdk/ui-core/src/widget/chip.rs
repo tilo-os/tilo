@@ -454,7 +454,7 @@ pub(crate) fn paint_pill(
     let label = if pill.label.is_empty() {
         String::new()
     } else {
-        let room = rect.width()
+        let spare = rect.width()
             - 2.0 * inset
             - if lead_w > 0.0 {
                 lead_w + metrics.gap
@@ -462,12 +462,12 @@ pub(crate) fn paint_pill(
                 0.0
             }
             - trailing;
-        if room <= 1.0 {
+        if spare <= 1.0 {
             String::new()
         } else {
             text_renderer.elide_to_width_style(
                 pill.label,
-                crate::num::f32_of_f64(room + 0.5),
+                crate::num::f32_of_f64(spare + 0.5),
                 &metrics.label,
             )
         }
@@ -769,7 +769,7 @@ impl Chip {
     /// How tall the chip's box is laid out: the pill, or on a coarse
     /// pointer the minimum target for a chip a person presses. The pill
     /// keeps its height and stands centred in the box, so the band a finger
-    /// may land in is the chip's own room in its line, never its
+    /// may land in is the chip's own area in its line, never its
     /// neighbour's.
     fn box_height(&self) -> f64 {
         let pill = self.metrics.height.ceil();
@@ -1465,7 +1465,7 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
 
-    /// A chip in a bar's room for it: whatever it says, its row is 60 high.
+    /// A chip in a bar's area for it: whatever it says, its row is 60 high.
     fn lay_out(w: &mut dyn Widget) {
         lay_out_with_theme(w, &Theme::dark());
     }
@@ -1868,7 +1868,7 @@ mod activation_tests {
     tilo_test_env::scenario! {
         /// A chip that is pressed or opens a menu.
         /// Each phase was a test of its own and builds its own fixture.
-        fn a_chip_that_acts_has_a_fingers_room_and_one_resource;
+        fn a_chip_that_acts_has_a_fingers_area_and_one_resource;
 
         phase a_chip_that_navigates_is_a_focusable_button;
         {
@@ -1904,11 +1904,11 @@ mod activation_tests {
             assert!(!Chip::new("label").is_focusable());
         }
 
-        // On a touchscreen a chip a person presses takes a finger's target of room in its line,
+        // On a touchscreen a chip a person presses takes a finger's target of area in its line,
         // with its pill the selector height centred in it, so a press above or below the pill
         // lands on the chip and never on what is next to it; a label chip, or a chip under a
         // mouse, keeps the pill's height.
-        phase a_pressed_chip_takes_a_fingers_room_on_touch;
+        phase a_pressed_chip_takes_a_fingers_area_on_touch;
         {
             use crate::interaction::InteractionEnvironment;
             let pill = f64::from(crate::tokens::Metrics::BASE.selector_height);
@@ -1923,7 +1923,7 @@ mod activation_tests {
                 ("label", || Chip::new("draft"), false),
             ];
             for (name, chip, pressed) in chips {
-                for (input, room) in [
+                for (input, spare) in [
                     (InteractionEnvironment::POINTER, pill),
                     (
                         InteractionEnvironment::TOUCH,
@@ -1938,8 +1938,8 @@ mod activation_tests {
                     harness.set_interaction_environment(input);
                     let [_, _, _, h] = harness.inspection().root.children[0].rect;
                     assert!(
-                        (h - room).abs() < 0.5,
-                        "the {name} chip takes {room} for {input:?}, not {h}"
+                        (h - spare).abs() < 0.5,
+                        "the {name} chip takes {spare} for {input:?}, not {h}"
                     );
                 }
             }

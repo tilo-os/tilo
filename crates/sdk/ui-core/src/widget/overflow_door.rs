@@ -1,4 +1,4 @@
-//! The overflow door: the named place a control goes when the row it belongs to has no room.
+//! The overflow door: the named place a control goes when the row it belongs to is too small.
 
 use crate::i18n::widget_text;
 use std::cell::Cell;
@@ -435,7 +435,7 @@ mod tests {
         phase what_does_not_fit_is_named_behind_the_door_not_dropped;
         {
             // Four 40 px controls and their gaps want 184 px; a 170 px row has
-            // room for two of them beside the door's own 40 px, so the last two
+            // area for two of them beside the door's own 40 px, so the last two
             // move behind it.
             assert_eq!(plan(170.0, [40.0, 40.0, 40.0, 40.0], 8.0, 40.0), 2);
         }

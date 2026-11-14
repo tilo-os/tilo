@@ -209,7 +209,7 @@ impl crate::host_core::KeyHost for App {
         self.input.platform
     }
 
-    /// The focus order, kept inside the keyboard scope (the focused desktop
+    /// The focus order, kept inside the keyboard scope (the focused shell
     /// window, [`crate::widget::Widget::scopes_keyboard_focus`])
     /// unless a trap owns the keyboard.
     fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {

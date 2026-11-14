@@ -402,7 +402,7 @@ mod tests {
         {
             let old = snapshot(items(0..3), "");
             let mut new = snapshot(items(0..3), "");
-            new.root.semantics = Some(AccessNode::new(Role::Window).with_name("Desk"));
+            new.root.semantics = Some(AccessNode::new(Role::Window).with_name("Shell"));
             let (text, stats) = patch(&old, &mut new);
             assert_eq!(stats.added, 1);
             assert!(text.starts_with(r#"[{"p":["root","s"],"full":{"role":"Window""#));

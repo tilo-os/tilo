@@ -233,7 +233,7 @@ pub(crate) fn load_first_catalog_at(
 /// fontdb opens a face's file by path whenever the face is read: each time
 /// for a `File` source, and the first time for a lazily mapped one. Text is
 /// shaped on the thread that lays it out, which in the compositor is the main
-/// loop, and a path lookup there waits on the disk with the desktop frozen.
+/// loop, and a path lookup there waits on the disk with the shell frozen.
 /// Mapping is an open, a stat and an `mmap` per file and reads no font
 /// bytes; a page of a face is read when shaping first touches it. A file
 /// that cannot be mapped loses its faces, as it would have failed to load

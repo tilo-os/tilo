@@ -22,7 +22,7 @@ pub struct TextInputProps {
     pub read_only: bool,
     /// What to type, shown while it is empty.
     pub placeholder: Option<String>,
-    /// Room for this many lines: the field wraps and grows with what is typed.
+    /// Area for this many lines: the field wraps and grows with what is typed.
     pub lines: Option<i64>,
     /// The title of the document the window is for, edited in place as its large title.
     pub title: bool,

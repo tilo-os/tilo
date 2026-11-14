@@ -170,13 +170,13 @@ pub(super) fn draw(
         let mut x = text_x;
         let right = text_x + avail;
         for fact in &row.facts {
-            let room = right - x;
-            if room <= fact_gap {
+            let spare = right - x;
+            if spare <= fact_gap {
                 break;
             }
             let shown = ctx
                 .text
-                .elide_to_width_style(fact, f32_of_f64(room), &desc_style);
+                .elide_to_width_style(fact, f32_of_f64(spare), &desc_style);
             let (w, _) = ctx.text.measure_style(&shown, None, &desc_style);
             draw_marked(
                 &mut ctx,

@@ -513,7 +513,7 @@ impl CaptureStudio {
     pub fn open(&mut self) {
         if self.take.start_pending {
             // Repeating the shortcut while encoder setup is in flight must
-            // not restore the modal selector over the desktop.
+            // not restore the modal selector over the shell.
             return;
         }
         self.armed_capture = None;
@@ -608,7 +608,7 @@ impl CaptureStudio {
         self.mode == CaptureMode::Screenshot && self.choosing()
     }
 
-    pub fn lets_desktop_navigation_through(&self) -> bool {
+    pub fn lets_shell_navigation_through(&self) -> bool {
         self.choosing() && self.source == SourceMode::Window
     }
 
@@ -1864,11 +1864,11 @@ impl CaptureStudio {
                     "2" => self.set_source_mode(SourceMode::Window),
                     "3" => self.set_source_mode(SourceMode::Display),
                     "4" => self.set_source_mode(SourceMode::Strip),
-                    _ => return !self.lets_desktop_navigation_through(),
+                    _ => return !self.lets_shell_navigation_through(),
                 }
                 true
             }
-            _ => !self.lets_desktop_navigation_through(),
+            _ => !self.lets_shell_navigation_through(),
         }
     }
 
@@ -2045,7 +2045,7 @@ impl Widget for CaptureStudio {
             }
             return;
         }
-        let through = self.lets_desktop_navigation_through();
+        let through = self.lets_shell_navigation_through();
         let consumed = match e {
             WindowEvent::CursorMoved { .. } => {
                 if let Some(drag) = self.drag.as_mut() {

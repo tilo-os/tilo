@@ -1,4 +1,4 @@
-//! The capture button: the shutter, over a camera's picture or on the desktop's capture bar.
+//! The capture button: the shutter, over a camera's picture or on the shell's capture bar.
 
 use vello::kurbo::{Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;

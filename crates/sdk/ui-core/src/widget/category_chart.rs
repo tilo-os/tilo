@@ -482,12 +482,12 @@ impl CategoryMarks {
 }
 
 /// Label every how many categories, so labels `needed` wide fit categories
-/// `room` wide.
-fn label_stride(needed: f64, room: f64) -> usize {
-    if room <= 0.0 || !needed.is_finite() {
+/// `spare` wide.
+fn label_stride(needed: f64, spare: f64) -> usize {
+    if spare <= 0.0 || !needed.is_finite() {
         return 1;
     }
-    crate::num::usize_of_f64((needed / room).ceil()).max(1)
+    crate::num::usize_of_f64((needed / spare).ceil()).max(1)
 }
 
 impl CategoryMarks {
@@ -773,7 +773,7 @@ impl PlotMarks for CategoryMarks {
             if !(last - index).is_multiple_of(every) {
                 continue;
             }
-            let label_room = group_width * crate::num::f64_of_usize(every);
+            let label_width = group_width * crate::num::f64_of_usize(every);
             let x =
                 plot.x0 + (f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5) * group_width;
             let (width, _) =
@@ -783,7 +783,7 @@ impl PlotMarks for CategoryMarks {
                 &category.label,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
-                Some(crate::num::f32_of_f64(label_room.max(0.0))),
+                Some(crate::num::f32_of_f64(label_width.max(0.0))),
                 &theme.text(TextRole::Caption),
             );
         }

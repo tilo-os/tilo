@@ -1,6 +1,6 @@
 //! The app's own vello pipelines, kept across launches. [`crate::pipeline_seed`] hands every app the
 //! pipelines the session's compositor compiled. That covers an app only when the compositor runs the
-//! same vello on the same GPU and driver; a compositor from another build, a desktop without one, or a
+//! same vello on the same GPU and driver; a compositor from another build, a shell without one, or a
 //! shader the compositor never builds leaves the app compiling from nothing on every launch.
 
 use std::path::{Path, PathBuf};

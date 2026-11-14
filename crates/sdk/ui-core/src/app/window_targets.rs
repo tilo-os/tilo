@@ -1,7 +1,7 @@
-// What a window's own content offers the desktop by name, and the press that
+// What a window's own content offers the shell by name, and the press that
 // comes back (`crate::window_targets`).
 //
-// A window drawn by another process publishes nothing of the desktop's: the app
+// A window drawn by another process publishes nothing of the shell's: the app
 // describes its controls over its `shell-ui` connection and answers a press on
 // one through `App::dispatch_a11y_action`, which is the path an assistive
 // technology's activation takes in the same window. One path, so a control a
@@ -20,7 +20,7 @@ impl App {
     /// window alike.
     ///
     /// The same list [`Self::window_targets`] hands a window's own app to
-    /// the desktop, read with one rule.
+    /// the shell, read with one rule.
     #[cfg(feature = "native")]
     #[must_use]
     pub fn window_controls(&mut self) -> Vec<crate::window_targets::WindowControl> {

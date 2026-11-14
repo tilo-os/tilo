@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
         s.set_recording_active(true);
         assert!(
             s.modal_capture().is_none(),
-            "recording leaves the desktop usable"
+            "recording leaves the shell usable"
         );
         let items: Vec<BarItem> = s.bar_items().into_iter().map(|(item, _)| item).collect();
         assert_eq!(items, vec![BarItem::Time, BarItem::Shutter]);
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
         s.set_source_mode(SourceMode::Window);
         assert_eq!(s.selected_target.as_deref(), Some("notes"));
         assert!(
-            s.lets_desktop_navigation_through(),
+            s.lets_shell_navigation_through(),
             "the keys and the strip move focus while a window is chosen"
         );
         windows[0].focused = false;
@@ -400,7 +400,7 @@ tilo_test_env::scenario! {
         s.set_candidates(windows);
         assert_eq!(s.selected_target.as_deref(), Some("files"));
         s.set_source_mode(SourceMode::Region);
-        assert!(!s.lets_desktop_navigation_through());
+        assert!(!s.lets_shell_navigation_through());
     }
 
     phase a_selection_inside_a_window_is_anchored_to_it_and_one_across_windows_is_a_screen_region;

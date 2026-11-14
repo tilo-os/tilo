@@ -171,7 +171,7 @@ impl HistorySource {
     /// Pass over the changes `pass_over` names: they are part of the
     /// document, and of the heads every later row is read at, but they make
     /// no row and take no place in the window. For a document that also
-    /// keeps view state, such as which workspace a desktop shows, so that
+    /// keeps view state, such as which workspace a shell shows, so that
     /// moving the view neither shows up as history nor pushes what people
     /// did out of the window. Decided from the change alone, so a reader
     /// that reads the log from scratch decides it for every change.

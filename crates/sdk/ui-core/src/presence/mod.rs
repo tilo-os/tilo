@@ -134,13 +134,13 @@ pub fn presence_colour((red, green, blue): (u8, u8, u8)) -> vello::peniko::Color
 /// holds for some of them (a person's own, as they announced it): everyone else
 /// takes the ring entry their identity names, stepping to a free one where
 /// somebody already wears it, walked over sorted ids so every host settles a
-/// room alike ([`assign_peer_colors`]).
+/// workspace alike ([`assign_peer_colors`]).
 ///
 /// A colour two here announced is worn by `mine` — the reader themselves —
 /// and the other steps to a free entry: nobody here is ever drawn in the
 /// reader's own colour. Without `mine`, the first id in sorted order keeps it.
 ///
-/// One settlement for the desk's faces, its roster and its cursors, so one
+/// One settlement for the shell's faces, its roster and its cursors, so one
 /// person is one colour on every surface of a workspace.
 #[must_use]
 pub fn settle_colors<S: std::hash::BuildHasher>(
@@ -437,7 +437,7 @@ mod color_tests {
                 // The same agent admitted again, with a run of its own each time.
                 ("agent:claude-code@box#1", "agent:claude-code@box#4"),
                 ("agent:helper@box#2", "agent:helper@box#12"),
-                // The name a desk shows it under, numbered per connection.
+                // The name a shell shows it under, numbered per connection.
                 ("Claude Code #1", "Claude Code #3"),
                 // Its identity, as the workspace grants name it.
                 ("agent:helper@box", "helper@box"),
@@ -543,7 +543,7 @@ struct TypingMark {
 }
 
 /// Which layer paints a peer's pointer — a **screen** position, so only one
-/// layer may place it correctly (an app painting a desktop coordinate into
+/// layer may place it correctly (an app painting a shell coordinate into
 /// its own window space is right only at the origin). The compositor owns
 /// desktop-scoped pointers, since it alone spans the strip, chrome and gaps
 /// between windows continuously; an app owns presence *inside* its own
@@ -1184,8 +1184,8 @@ impl PresenceCtx {
             list.push((user.clone(), pos));
         }
         self.pointer_seen.insert((key.clone(), user.clone()), now);
-        // Desktop scopes only: a pointer inside a surface's content is a
-        // position in a document, not a presence dot on the desktop. (Not
+        // Shell scopes only: a pointer inside a surface's content is a
+        // position in a document, not a presence dot on the shell. (Not
         // `scopes_a_desktop_pointer`, which also answers yes for a routing
         // artefact that is nobody's presence.)
         if matches!(
@@ -1899,7 +1899,7 @@ impl PresenceCtx {
             || self.typing.keys().any(|(_, typed)| typed == key)
     }
 
-    /// Whether the room says anyone is typing anywhere: the clock is only
+    /// Whether the workspace says anyone is typing anywhere: the clock is only
     /// read to place a fading mark where it says so.
     #[must_use]
     pub fn has_typing_marks(&self) -> bool {
@@ -3873,7 +3873,7 @@ mod one_person_one_pointer_tests {
         fn one_person_has_one_pointer_that_moves_between_scopes;
 
         phase a_pointer_published_without_a_scope_belongs_to_the_desktop;
-        // A pointer arriving with no scope of its own is on the *desktop*.
+        // A pointer arriving with no scope of its own is on the *shell*.
         // Reading it as a *widget* scope told every window the pointer was
         // theirs, so one person came out once per open window.
         {

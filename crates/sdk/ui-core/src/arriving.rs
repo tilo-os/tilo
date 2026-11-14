@@ -188,7 +188,7 @@ thread_local! {
         const { std::cell::Cell::new(DEFAULT_FRAME_BUDGET) };
 }
 
-/// The common desktop refresh, until the window's display says otherwise.
+/// The common shell refresh, until the window's display says otherwise.
 const DEFAULT_FRAME_BUDGET: Duration = Duration::from_nanos(16_666_667);
 
 /// One frame at the display's rate: how long a frame waits for local data,

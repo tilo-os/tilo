@@ -388,7 +388,7 @@ fn arrives_and_matches(first: &str, counted: Option<usize>) {
         );
         assert!(
             (first_row.height() - f64::from(ROW)).abs() < 0.5,
-            "the first row takes its own height, the band's room gone: {first_row:?}"
+            "the first row takes its own height, the band's area gone: {first_row:?}"
         );
     } else {
         assert_eq!(

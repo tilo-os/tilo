@@ -750,7 +750,7 @@ fn identity_mutation(
     let value = match field {
         "id" => "uuid:00000000-0000-4000-8000-000000000099",
         "kind" => "foreign-kind",
-        "room" => "00000000-0000-4000-8000-000000000099",
+        "workspace" => "00000000-0000-4000-8000-000000000099",
         "home" => "foreign-origin",
         _ => unreachable!(),
     };
@@ -831,7 +831,7 @@ tilo_test_env::scenario! {
     phase signed_owned_identity_mutations_are_atomic_invalid_and_recover_with_fresh_snapshot;
     {
         for incremental in [false, true] {
-            for field in ["id", "kind", "room", "home"] {
+            for field in ["id", "kind", "workspace", "home"] {
                 let mut fixture = RoutedOwners::new();
                 let family = "tilo:record";
                 let incoming = identity_mutation(&fixture, 0, family, field, incremental);
@@ -908,7 +908,7 @@ tilo_test_env::scenario! {
     {
         use automerge::ReadDoc;
         for incremental in [false, true] {
-            for field in ["id", "kind", "room", "home"] {
+            for field in ["id", "kind", "workspace", "home"] {
                 let mut fixture = RoutedOwners::new();
                 let binding = &fixture.bindings[0];
                 let family = "tilo:record";
@@ -1067,7 +1067,7 @@ impl RoutedPrimary {
                         .unwrap();
                     if shape.scoped() {
                         doc.put(&meta, "home", workspace).unwrap();
-                        doc.put(&meta, "room", workspace).unwrap();
+                        doc.put(&meta, "workspace", workspace).unwrap();
                     }
                     doc.put_object(&meta, "refs", automerge::ObjType::List)
                         .unwrap();
@@ -1190,9 +1190,9 @@ tilo_test_env::scenario! {
             PrimaryMetadataShape::Tilo(true),
         ] {
             for incremental in [false, true] {
-                let mut attacks = vec!["id", "kind", "home", "room"];
+                let mut attacks = vec!["id", "kind", "home", "workspace"];
                 if shape.scoped() {
-                    attacks.extend(["delete-home", "delete-room"]);
+                    attacks.extend(["delete-home", "delete-workspace"]);
                 }
                 for attack in attacks {
                     let mut fixture = RoutedPrimary::new(shape);
@@ -1211,14 +1211,14 @@ tilo_test_env::scenario! {
                                 .unwrap(),
                             "kind" => doc.put(&meta, "kind", "foreign-kind").unwrap(),
                             "home" => doc.put(&meta, "home", "foreign-home").unwrap(),
-                            "room" => doc
-                                .put(&meta, "room", "00000000-0000-4000-8000-000000000099")
+                            "workspace" => doc
+                                .put(&meta, "workspace", "00000000-0000-4000-8000-000000000099")
                                 .unwrap(),
                             "delete-home" => {
                                 let _ = doc.delete(&meta, "home");
                             }
-                            "delete-room" => {
-                                let _ = doc.delete(&meta, "room");
+                            "delete-workspace" => {
+                                let _ = doc.delete(&meta, "workspace");
                             }
                             _ => unreachable!(),
                         }
@@ -5636,7 +5636,7 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
     fixture.app.state.advance_outbound(heads);
     let mut index = automerge::AutoCommit::new();
     index.put(ROOT, "index_accepted", "keep").unwrap();
-    fixture.app.persistence.room_index = Some(crate::state::DocumentReplica::new(index));
+    fixture.app.persistence.workspace_index = Some(crate::state::DocumentReplica::new(index));
     fixture
         .app
         .collaboration
@@ -5660,7 +5660,7 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
         !fixture
             .app
             .persistence
-            .room_index
+            .workspace_index
             .as_mut()
             .unwrap()
             .pending_outbound_delta()
@@ -5794,7 +5794,7 @@ fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
     use crate::host_chrome::model::CommandGroup;
     use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "workspace").unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
     store.create_record(&checkout).unwrap();
     let mut state = State::from_doc(

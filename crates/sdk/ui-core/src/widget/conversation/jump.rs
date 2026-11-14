@@ -146,7 +146,7 @@ mod tests {
             let words = f64::from(text.measure_style(&label, None, &style).0);
             assert!(
                 width > words,
-                "{jump:?} has room for its {words} px of words and the face around them in {width} px"
+                "{jump:?} fits its {words} px of words and the face around them in {width} px"
             );
             widths.push(width);
         }

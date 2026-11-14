@@ -98,7 +98,7 @@ fn a_state_bound_banner_collapses_while_absent() {
     let shown_y = d.targets()["below"].y0;
     assert!(
         shown_y > empty_y + 30.0,
-        "the notice takes room: {empty_y} -> {shown_y}"
+        "the notice takes area: {empty_y} -> {shown_y}"
     );
     state.set(None);
     d.relayout();
@@ -187,7 +187,7 @@ fn a_banner_dismissed_by_pointer_collapses_and_by_key_lands() {
     let empty_y = d.targets()["below"].y0;
     assert!(
         empty_y < shown_y - 30.0,
-        "what follows is laid out once where it rests, with more room"
+        "what follows is laid out once where it rests, with more area"
     );
     let moving = band(&d).expect("a click collapses it");
     let (extent, drawn) = band_heights(Some(moving));

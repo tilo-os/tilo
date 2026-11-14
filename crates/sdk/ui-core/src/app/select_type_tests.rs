@@ -39,7 +39,7 @@ fn a_key_nothing_took_over_a_selection_opens_the_box_with_it() {
     set_send_host_available(false);
     assert!(
         !app.handle_unconsumed_typed_key(&typed("s")),
-        "without a desktop agent a key is nobody's"
+        "without a shell agent a key is nobody's"
     );
     set_send_host_available(true);
     assert!(

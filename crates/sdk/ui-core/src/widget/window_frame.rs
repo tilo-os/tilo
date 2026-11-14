@@ -1,11 +1,11 @@
-//! A window standing on a desktop, as a described component: what a shell draws for a place on a
-//! floating desk (`shell.md` §4, `frame_classic`) and for a strip of places (`strips_view`),
+//! A window standing on a shell, as a described component: what a shell draws for a place on a
+//! floating shell (`shell.md` §4, `frame_classic`) and for a strip of places (`strips_view`),
 //! which is the same thing.
 //!
 //! Its ground is the window level of the design language ([`SurfaceLevel::Window`]): the app's
 //! content colour, the window edge and its soft shadow at the theme's window radius, with what it
 //! holds clipped to that shape; the window in front stands higher than those behind it, as a
-//! desktop shows which window has the keyboard.
+//! shell shows which window has the keyboard.
 //!
 //! A window has one bar, never two stacked, and the bar says what state the window is in:
 //!
@@ -14,7 +14,7 @@
 //!   ([`WindowHeader::set_window_bar`](crate::widget::WindowHeader)), so the app's title and
 //!   actions and the frame's controls read as one bar;
 //! - one place with no header row of its own, in front: the frame's own bar names it;
-//! - one such place behind: the bar is the decorations alone, as a desktop draws a window nobody
+//! - one such place behind: the bar is the decorations alone, as a shell draws a window nobody
 //!   is typing into.
 //!
 //! The window's own controls stand in a pill of the floating material at the trailing end of the
@@ -41,7 +41,7 @@ use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
 use crate::widget::window_controls::WindowControls;
 use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 
-/// A window standing on a desktop: the window surface with its edge and shadow, holding the
+/// A window standing on a shell: the window surface with its edge and shadow, holding the
 /// window's content and its controls, clipped to its radius.
 #[derive(Component, Default)]
 #[component(name = "WindowFrame", role = "Group", label = "name")]
@@ -56,7 +56,7 @@ pub struct WindowFrameProps {
     pub name: Option<String>,
     /// Whether it is the window in front, the one the keyboard goes to.
     pub focused: bool,
-    /// The shell lists this window's actions where the person reaches them (the desktop
+    /// The shell lists this window's actions where the person reaches them (the shell
     /// bar's window menu): its header's actions that do not fit give way with no door of
     /// their own. Without it what does not fit goes behind the header's door.
     pub lists_actions: bool,
@@ -114,10 +114,10 @@ pub struct WindowFrame {
     /// The name the frame's own bar shows, and whether the window was in front: pressing the
     /// bar again is nothing, so the name is built again only when it says something else.
     title: Option<(String, bool)>,
-    /// The name the bar last built: the window's name elided to one line in the room the bar
-    /// has, and nothing while the bar has no room for a name at all.
+    /// The name the bar last built: the window's name elided to one line in the area the bar
+    /// has, and nothing while the bar cannot fit a name at all.
     shown: Option<(String, bool)>,
-    /// How wide the controls were laid out, the room the content's header row keeps for
+    /// How wide the controls were laid out, the area the content's header row keeps for
     /// them.
     controls_width: f64,
     /// The controls' width changed since the header row was told: lay out again.
@@ -160,14 +160,14 @@ const CONTROLS: usize = 1;
 /// In the content's column: the frame's own bar, then the content.
 const OWN_BAR: usize = 0;
 const BODY: usize = 1;
-/// The room the frame's own bar keeps for the window's name, logical pixels: below it a name
+/// The area the frame's own bar keeps for the window's name, logical pixels: below it a name
 /// would be an ellipsis and nothing more, so the bar shows the decorations alone. Six steps of
 /// the spacing scale, so it follows the theme's own.
-fn name_room(theme: &Theme) -> f64 {
+fn name_width(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s16 + theme.tokens.spacing.s8)
 }
 
-/// In the frame's own bar: the window's tabs, its name, then the room the controls keep.
+/// In the frame's own bar: the window's tabs, its name, then the area the controls keep.
 const TABS: usize = 0;
 const NAME: usize = 1;
 const AFTER: usize = 2;
@@ -177,12 +177,12 @@ fn empty() -> Element {
 }
 
 /// How the tabs stand in the frame's own bar: the bar of a window of several places is
-/// theirs, so they take its room; a window of one leaves that slot empty.
+/// theirs, so they take its area; a window of one leaves that slot empty.
 fn tabs_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::fill(1.0) } else { Fit::hug() }
 }
 
-/// How the room after the tabs stands in the bar: what the tabs leave, which a window of one
+/// How the area after the tabs stands in the bar: what the tabs leave, which a window of one
 /// gives to its name.
 fn after_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::hug() } else { Fit::fill(1.0) }
@@ -360,7 +360,7 @@ impl WindowFrame {
         self.stack_at(CONTROLS)
     }
 
-    /// The row of the frame's own bar: the window's tabs, its name, and the room the controls
+    /// The row of the frame's own bar: the window's tabs, its name, and the area the controls
     /// keep.
     fn own_bar_row(&mut self) -> Option<&mut Stack> {
         self.column()?
@@ -439,7 +439,7 @@ impl WindowFrame {
 
     /// Build the frame's own bar for `shape`: one bar tall, nothing in it while the app's
     /// header holds the bar, else its name — and never a second bar of the app's under it.
-    fn build_bar(&mut self, shape: BarShape, m: &HeaderRowMetrics, theme: &Theme, room: f64) {
+    fn build_bar(&mut self, shape: BarShape, m: &HeaderRowMetrics, theme: &Theme, spare: f64) {
         self.shape = shape;
         let bar = shape != BarShape::Merged;
         if let Some(column) = self.column() {
@@ -451,7 +451,7 @@ impl WindowFrame {
         };
         let shown = title
             .clone()
-            .map(|(name, focused)| (self.elided(&name, m, theme, room), focused));
+            .map(|(name, focused)| (self.elided(&name, m, theme, spare), focused));
         if title == self.title && shown == self.shown {
             return;
         }
@@ -463,18 +463,18 @@ impl WindowFrame {
         }
     }
 
-    /// The window's name, elided to one line of the room `room` the bar has for it, as a tab's
+    /// The window's name, elided to one line of the area `spare` the bar has for it, as a tab's
     /// title is: a name too long for the bar ends in an ellipsis, never in a second line taller
-    /// than the bar. Below the room a name needs at all the bar shows no name: the decorations
+    /// than the bar. Below the area a name needs at all the bar shows no name: the decorations
     /// alone say whose window it is.
-    fn elided(&self, name: &str, m: &HeaderRowMetrics, theme: &Theme, room: f64) -> String {
-        let budget = room - m.gutter;
-        if room < name_room(theme) || budget <= 0.0 {
+    fn elided(&self, name: &str, m: &HeaderRowMetrics, theme: &Theme, spare: f64) -> String {
+        let budget = spare - m.gutter;
+        if spare < name_width(theme) || budget <= 0.0 {
             return String::new();
         }
         #[allow(
             clippy::cast_possible_truncation,
-            reason = "a window's bar room fits f32"
+            reason = "a window's bar area fits f32"
         )]
         let budget = budget as f32;
         let style = theme.text(TextRole::Label);
@@ -483,7 +483,7 @@ impl WindowFrame {
         })
     }
 
-    /// The name the frame's own bar shows: nothing while the bar has no room for it, so a window
+    /// The name the frame's own bar shows: nothing while the bar cannot fit it, so a window
     /// too narrow for its name shows its decorations alone instead of a name folded into a column.
     fn name_element(&self, m: &HeaderRowMetrics) -> Element {
         let Some((name, focused)) = self.shown.clone().filter(|(name, _)| !name.is_empty()) else {
@@ -688,11 +688,11 @@ impl Decorator for WindowFrame {
     ) -> NodeId {
         let m = HeaderRowMetrics::resolve(theme);
         self.offer_bar(&m);
-        let room = self.rect.width()
+        let spare = self.rect.width()
             - self.controls_width
             - crate::widget::window_controls::EDGE_INSET
             - crate::widget::window_controls::LEAD_GAP;
-        self.build_bar(self.shape(), &m, theme, room);
+        self.build_bar(self.shape(), &m, theme, spare);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a header row measure fits f32"
@@ -707,21 +707,21 @@ impl Decorator for WindowFrame {
         fit.height.max = Some(height);
         self.layers
             .set_placement(CONTROLS, fit, 1, Some(At::TopTrailing));
-        // // The tabs and the name have the room the controls leave, never more: a window narrow // enough
+        // // The tabs and the name have the area the controls leave, never more: a window narrow // enough
         // that its bar cannot hold them both squeezes them, and the strip shows the // titles it can,
         // rather than the two covering each other.
-        if room > 0.0 {
+        if spare > 0.0 {
             #[allow(
                 clippy::cast_possible_truncation,
-                reason = "a window's bar room fits f32"
+                reason = "a window's bar area fits f32"
             )]
-            let room = Length::Dp(room as f32);
+            let spare = Length::Dp(spare as f32);
             let tabbed = self.tabbed;
             if let Some(row) = self.own_bar_row() {
                 let mut tabs = tabs_fit(tabbed);
-                tabs.width.max = Some(room);
+                tabs.width.max = Some(spare);
                 let mut name = Fit::hug();
-                name.width.max = Some(room);
+                name.width.max = Some(spare);
                 row.set_placement(TABS, tabs, 1, None);
                 row.set_placement(NAME, name, 1, None);
             }

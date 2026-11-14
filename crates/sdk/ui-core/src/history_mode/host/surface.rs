@@ -33,7 +33,7 @@ impl HistoryHost {
             .as_deref_mut()
             .is_some_and(|live| crate::widget::window_header::offer_history_control(live, control));
         // An app whose controls are its window bar's slots keeps History
-        // there too: whoever shows the slots (the desktop's bar, the
+        // there too: whoever shows the slots (the shell's bar, the
         // runner's row) shows it, and this bar never stands above the app.
         let presents =
             offered || (control.is_some() && crate::window_toolbar::declared().is_some());

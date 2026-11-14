@@ -70,7 +70,7 @@ struct HeaderMetrics {
     action_pad: f64,
 }
 
-/// How far below the top of `rect` the header's own box stands: room the box holds past the
+/// How far below the top of `rect` the header's own box stands: area the box holds past the
 /// header's height is the finger's, and stands over the header's line, never between it and
 /// what it heads.
 fn foot(rect: Rect, header_h: f64) -> f64 {
@@ -258,7 +258,7 @@ impl SectionHeader {
     }
 }
 
-/// The room a group's heading takes over the rows it holds: one small control's height around
+/// The area a group's heading takes over the rows it holds: one small control's height around
 /// the heading's line.
 #[must_use]
 pub fn band_height(theme: &Theme) -> f64 {
@@ -360,9 +360,9 @@ impl<'a> SectionHeaderFace<'a> {
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
-        let room = (width - self.trailing_width(text, theme, &m)).max(1.0);
+        let spare = (width - self.trailing_width(text, theme, &m)).max(1.0);
         let title_h = f64::from(
-            text.measure_style(self.title, Some(crate::num::f32_of_f64(room)), &style)
+            text.measure_style(self.title, Some(crate::num::f32_of_f64(spare)), &style)
                 .1,
         );
         let line = f64::from(style.line_height_px());
@@ -418,8 +418,8 @@ impl<'a> SectionHeaderFace<'a> {
         let theme = ctx.theme;
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
-        let room = (rect.width() - self.trailing_width(ctx.text, theme, &m)).max(1.0);
-        let wrap = crate::num::f32_of_f64(room);
+        let spare = (rect.width() - self.trailing_width(ctx.text, theme, &m)).max(1.0);
+        let wrap = crate::num::f32_of_f64(spare);
         let (title_w, title_h) = ctx.text.measure_style(self.title, Some(wrap), &style);
         let first_line = f64::from(style.line_height_px());
         let header_h = m.height(first_line);
@@ -469,7 +469,7 @@ impl<'a> SectionHeaderFace<'a> {
         if let Some(count) = self.count {
             let label = count.to_string();
             let (w, h) = m.count_size(ctx.text, &label);
-            let x = rect.x0 + f64::from(title_w).min(room) + m.gap;
+            let x = rect.x0 + f64::from(title_w).min(spare) + m.gap;
             paint_count(ctx, Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0), &label);
         }
         if let Some(count) = self.trailing_count {
@@ -1612,7 +1612,7 @@ impl Section {
 
     /// One column of trailing controls per run of consecutive list rows:
     /// where a row's control has marks after it (a status dot, a check, a
-    /// chevron), every row's control keeps that room, and a run whose
+    /// chevron), every row's control keeps that area, and a run whose
     /// controls have none keeps them on the edge.
     fn share_trailing_column(&mut self, theme: &Theme) {
         let marks: Vec<Option<f64>> = self
@@ -1822,8 +1822,8 @@ impl Widget for StatusLine {
             taffy::AvailableSpace::Definite(w) => w,
             _ => f32::INFINITY,
         });
-        let room = (f64::from(width) - self.dot - self.gap).max(1.0);
-        let (w, h) = text.measure_style(&self.text, Some(crate::num::f32_of_f64(room)), style);
+        let spare = (f64::from(width) - self.dot - self.gap).max(1.0);
+        let (w, h) = text.measure_style(&self.text, Some(crate::num::f32_of_f64(spare)), style);
         taffy::Size {
             width: if width.is_finite() {
                 width
@@ -2006,10 +2006,10 @@ impl ObjectHeader {
     }
 
     fn block(&self, text: &mut TextRenderer, m: &ObjectMetrics, width: f64) -> (f64, f64) {
-        let room = crate::num::f32_of_f64((width - self.text_x(m)).max(1.0));
-        let title = f64::from(text.measure_style(&self.title, Some(room), &m.title).1);
+        let spare = crate::num::f32_of_f64((width - self.text_x(m)).max(1.0));
+        let title = f64::from(text.measure_style(&self.title, Some(spare), &m.title).1);
         let caption = self.caption.as_ref().map_or(0.0, |caption| {
-            m.tight + f64::from(text.measure_style(caption, Some(room), &m.caption).1)
+            m.tight + f64::from(text.measure_style(caption, Some(spare), &m.caption).1)
         });
         (title, caption)
     }
@@ -2110,13 +2110,13 @@ impl Widget for ObjectHeader {
             None => {}
         }
         let x = rect.x0 + self.text_x(&m);
-        let room = crate::num::f32_of_f64((rect.x1 - x).max(1.0));
+        let spare = crate::num::f32_of_f64((rect.x1 - x).max(1.0));
         ctx.text(
             &self.title,
             &m.title,
             theme.text_primary,
             Point::new(x, top),
-            Some(room),
+            Some(spare),
         );
         if let Some(caption) = &self.caption {
             ctx.text(
@@ -2124,7 +2124,7 @@ impl Widget for ObjectHeader {
                 &m.caption,
                 theme.text_dim,
                 Point::new(x, top + title_h + m.tight),
-                Some(room),
+                Some(spare),
             );
         }
     }

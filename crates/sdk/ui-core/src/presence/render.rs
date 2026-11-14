@@ -410,7 +410,7 @@ impl PresenceCtx {
         let left = (rect.x0 - bounds.x0 - gap).max(0.0);
         let (preferred_w, preferred_h) = chip_size(ctx.theme, ctx.text, label);
         // Where the chip may stand, best first: beside the control, then under
-        // it, then squeezed into what room either side leaves.
+        // it, then squeezed into what area either side leaves.
         let mut candidates = Vec::with_capacity(4);
         if right >= preferred_w {
             candidates.push((right, rect.x1 + gap, rect.y0));
@@ -634,7 +634,7 @@ const CHAT_PAD_Y: f64 = 6.0;
 /// Gap between the name and the message inside a bubble.
 const CHAT_NAME_GAP: f64 = 1.0;
 /// Workspace after a message for the caret being typed at its end.
-const CARET_ROOM: f32 = 12.0;
+const CARET_GAP: f32 = 12.0;
 
 /// The size of the name tag of `peer`, or of the bubble carrying its message
 /// under its name while it talks.
@@ -1137,7 +1137,7 @@ pub fn paint_own_chat_bubble(
     let (nw, nh) = text_renderer.measure_style(label, None, &name);
     let (tw, _) = text_renderer.measure_style(message, None, &body);
     let line = f64::from(body.line_height_px());
-    let text_w = f64::from(nw.max(tw + CARET_ROOM))
+    let text_w = f64::from(nw.max(tw + CARET_GAP))
         .max(min_text_w)
         .min(CHAT_MAX_W - CHAT_PAD_X * 2.0);
     let width = text_w + CHAT_PAD_X * 2.0;
@@ -2830,10 +2830,7 @@ mod tests {
                 let mut r = OffscreenRenderer::new(120, 120);
                 r.render(&scene, bg)
             };
-            for (name, bg) in [
-                ("a white page", Color::WHITE),
-                ("the desktop", Color::BLACK),
-            ] {
+            for (name, bg) in [("a white page", Color::WHITE), ("the shell", Color::BLACK)] {
                 let rgba = render(bg);
                 let bgc = bg.to_rgba8();
                 // Somewhere on the ring around the dot must differ from the
@@ -3450,7 +3447,7 @@ mod tests {
             );
         }
 
-        phase an_agents_name_hangs_below_only_when_there_is_no_room_above;
+        phase an_agents_name_hangs_below_only_when_nothing_fits_above;
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
             // A first line at the very top of the frame: rising would leave it.

@@ -130,17 +130,17 @@ pub trait AppWidget: Widget {
     /// Framework-owned durability, delivered only after the record loan ends.
     fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
 
-    /// The room refused a change this record made, and the record withdrew it: the action is refused as
+    /// The workspace refused a change this record made, and the record withdrew it: the action is refused as
     /// one refused on this device is.
     fn record_refused(&mut self, _refusal: &crate::record::RecordRefusal) {}
 
     /// What the app said it did since last asked ("Added Buy milk"), for the record to hold until the
-    /// room keeps it ([`crate::record::RecordStore::hold_notice`]).
+    /// workspace keeps it ([`crate::record::RecordStore::hold_notice`]).
     fn take_notices(&mut self) -> Vec<String> {
         Vec::new()
     }
 
-    /// The room kept what `text` says the app did: say it now.
+    /// The area kept what `text` says the app did: say it now.
     fn record_said(&mut self, _text: &str) {}
 
     /// Answer a device-owner operation from the authenticated hosting shell.
@@ -192,7 +192,7 @@ pub trait AppWidget: Widget {
     fn release_live_resize_anchor(&mut self) {}
 
     /// What a private window offers its own device: the resources and actions its door publishes, for
-    /// the host to list and invoke for this device's person without publishing them to any room.
+    /// the host to list and invoke for this device's person without publishing them to any workspace.
     fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         None
     }
@@ -1173,7 +1173,7 @@ mod component_adapter {
             let Some(root) = self.component.root.as_deref_mut() else {
                 return;
             };
-            // Protection belongs to this component even inside a desktop or
+            // Protection belongs to this component even inside a shell or
             // chrome container; its enclosing presented frame must retain it.
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();

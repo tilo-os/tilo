@@ -106,10 +106,10 @@ pub fn paint(
     let ink = tone.ink_on(theme, theme.tokens.colors.surfaces.content);
     let style = theme.text(TextRole::Caption);
     let gap = f64::from(theme.tokens.spacing.s3);
-    let room = crate::num::f32_of_f64((trailing - leading).max(0.0));
+    let spare = crate::num::f32_of_f64((trailing - leading).max(0.0));
     // A label wider than the band (a long date at 1.5× in a narrow window) is elided rather than
     // drawn over the column's edges.
-    let shown = paint.text.elide_to_width_style(label, room, &style);
+    let shown = paint.text.elide_to_width_style(label, spare, &style);
     let width = f64::from(paint.text.measure_style(&shown, None, &style).0);
     let centre = band.center().x;
     let left_edge = centre - width / 2.0 - gap;

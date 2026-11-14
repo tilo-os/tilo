@@ -10,11 +10,11 @@ const MAX_PASTED_BLOCKS: usize = 20_000;
 
 const PAGE_SCHEME: &str = "tilo-page:";
 
-/// The scheme a link to a resource of this desktop is written with, the one
+/// The scheme a link to a resource of this shell is written with, the one
 /// the native link uses, so a resource link survives a copy as HTML.
 const RESOURCE_LINK_SCHEME: &str = "tilo://open#";
 
-/// `target` is an address a resource of this desktop answers, rather than a
+/// `target` is an address a resource of this shell answers, rather than a
 /// web page: a link written with it opens the resource where it lives.
 pub fn is_resource_link(target: &str) -> bool {
     target

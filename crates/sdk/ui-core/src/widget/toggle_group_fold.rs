@@ -280,7 +280,7 @@ mod tests {
         {
             let chosen = Rc::new(RefCell::new(Vec::new()));
             let wide = chooser(640.0, Rc::clone(&chosen));
-            assert!(!wide.is_folded(), "with room, every label shows whole");
+            assert!(!wide.is_folded(), "with area, every label shows whole");
 
             let mut narrow = chooser(160.0, Rc::clone(&chosen));
             assert!(narrow.is_folded(), "too narrow: a picker, not cut labels");

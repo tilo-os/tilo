@@ -161,7 +161,7 @@ fn native_text_keeps_first_compensation_latest_redo_and_different_field_boundari
     let records = crate::record::RecordOwners::portable(
         crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
     )
-    .open("so.tilo.test", "room")
+    .open("so.tilo.test", "workspace")
     .unwrap();
     let checkout = RecordCheckout::new(
         crate::record::RecordId::minted(),
@@ -205,7 +205,7 @@ fn native_text_does_not_cross_collaborator_instance_or_programmatic_edits() {
         let records = crate::record::RecordOwners::portable(
             crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
         )
-        .open("so.tilo.test", "room")
+        .open("so.tilo.test", "workspace")
         .unwrap();
         let checkout = RecordCheckout::new(
             crate::record::RecordId::minted(),
@@ -248,7 +248,7 @@ fn physical_text_provenance_is_captured_in_the_exact_owned_queue_entry() {
     let records = crate::record::RecordOwners::portable(
         crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
     )
-    .open("so.tilo.test", "room")
+    .open("so.tilo.test", "workspace")
     .unwrap();
     let checkout = RecordCheckout::new(
         crate::record::RecordId::minted(),
@@ -286,7 +286,7 @@ fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_drainin
     let records = crate::record::RecordOwners::portable(
         crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
     )
-    .open("so.tilo.test", "room")
+    .open("so.tilo.test", "workspace")
     .unwrap();
     let checkout = RecordCheckout::new(
         crate::record::RecordId::minted(),

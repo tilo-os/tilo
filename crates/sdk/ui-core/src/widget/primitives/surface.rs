@@ -18,7 +18,7 @@ use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SurfaceLevel {
-    /// The desktop behind the windows.
+    /// The shell behind the windows.
     Ground,
     /// A window's content: every app's ground.
     Window,
@@ -182,9 +182,9 @@ pub fn paint_window_card(
     on
 }
 
-/// A window card a person lifted off the desk, drawn in the shell's floating material: the
+/// A window card a person lifted off the shell, drawn in the shell's floating material: the
 /// panel ground and hairline a menu stands on and the two-layer lift under it, so the window
-/// reads as standing over the desk rather than as another window on it.
+/// reads as standing over the shell rather than as another window on it.
 pub fn paint_floating_window_card(
     scene: &mut Scene,
     transform: Affine,

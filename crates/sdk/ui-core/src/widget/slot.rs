@@ -47,7 +47,7 @@ impl Slot {
         )
     }
 
-    /// A slot with nothing in it yet: it takes no room until it is set.
+    /// A slot with nothing in it yet: it takes up nothing until it is set.
     pub fn empty() -> (Self, SlotHandle) {
         Self::new(super::optional(None))
     }

@@ -120,7 +120,7 @@ fn text_extent(rect: Rect, has_details: bool, metrics: &TileMetrics) -> (f64, f3
     (x, width)
 }
 
-/// The state line in the room it has: whole on one line when it fits, else broken after the
+/// The state line in the area it has: whole on one line when it fits, else broken after the
 /// last word that does and the rest elided on a second.
 fn detail_lines(
     text: &mut TextRenderer,
@@ -171,7 +171,7 @@ pub struct QuickTile {
     switch_action: Option<crate::widget::ActionEmitter<()>>,
     details_action: Option<crate::widget::ActionEmitter<()>>,
     metrics: Option<TileMetrics>,
-    /// How much of the room the tile is offered it draws in: half while it
+    /// How much of the area the tile is offered it draws in: half while it
     /// stands two to a row, so its state line breaks where it will when it
     /// is drawn.
     share: f32,
@@ -210,9 +210,9 @@ impl QuickTile {
         self
     }
 
-    /// How much of the room the tile is offered it draws in: half when it
+    /// How much of the area the tile is offered it draws in: half when it
     /// stands two to a row, so its height follows the state line it will
-    /// have there ([`Self::height`] alone assumes the whole room).
+    /// have there ([`Self::height`] alone assumes the whole area).
     #[must_use]
     pub fn share(mut self, share: f32) -> Self {
         self.share = share.clamp(0.0, 1.0);
@@ -675,9 +675,9 @@ impl Widget for QuickTile {
         });
         let width = known.width.unwrap_or(offered * self.share).max(0.0);
         let rect = Rect::new(0.0, 0.0, f64::from(width), metrics.height);
-        let (_, room) = text_extent(rect, self.details.is_some(), metrics);
+        let (_, spare) = text_extent(rect, self.details.is_some(), metrics);
         let fits = self.detail.is_empty()
-            || text.measure_style(&self.detail, None, &metrics.detail).0 <= room;
+            || text.measure_style(&self.detail, None, &metrics.detail).0 <= spare;
         taffy::Size {
             width,
             height: crate::num::f32_of_f64(metrics.height_for(if fits { 1 } else { 2 })),

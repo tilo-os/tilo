@@ -663,7 +663,7 @@ impl BarGauge {
         self
     }
 
-    /// A share with no status (storage by kind, a quota with room): the
+    /// A share with no status (storage by kind, a quota with area): the
     /// inverted fill, never a status colour.
     #[must_use]
     pub fn neutral(mut self) -> Self {

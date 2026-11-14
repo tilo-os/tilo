@@ -1,5 +1,5 @@
 //! The person's region and formats, as every formatter reads them: the `locale` section of their
-//! settings (date style, 12/24-hour clock, number style, first day of the week) next to the desktop's
+//! settings (date style, 12/24-hour clock, number style, first day of the week) next to the shell's
 //! language.
 
 use std::sync::RwLock;

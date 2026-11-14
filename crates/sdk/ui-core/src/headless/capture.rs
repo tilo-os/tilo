@@ -1,5 +1,5 @@
 //! Captures of a headless frame: the laid-out scene rasterised to a PNG or to RGBA rows, alone or under
-//! the desktop's window bar, at the capture's device scale.
+//! the shell's window bar, at the capture's device scale.
 
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -68,7 +68,7 @@ impl FrameHarness {
         renderer.render_png(scene, background, out);
     }
 
-    /// Write the `--shots` capture: the frame alone, or under the desktop's
+    /// Write the `--shots` capture: the frame alone, or under the shell's
     /// window bar when `window_bar` is set.
     ///
     /// The frame is the window a person sees a moment after it opened: the
@@ -92,7 +92,7 @@ impl FrameHarness {
         }
     }
 
-    /// Rasterise the most recently laid-out frame under the desktop's window
+    /// Rasterise the most recently laid-out frame under the shell's window
     /// bar ([`Self::present_in_window_bar`]) to a PNG as tall as the window:
     /// the bar, then the app's frame under it.
     /// Quiet: rasterises the last frame drawn; lays out only the bar's own row.

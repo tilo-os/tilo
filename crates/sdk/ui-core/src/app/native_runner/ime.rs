@@ -102,7 +102,7 @@ pub(super) fn apply_native_ime_content(window: &Window, intent: NativeImeWindowS
 pub(super) fn secondary_ime_state(
     root: &dyn Widget,
     id: &str,
-    desktop_rect: KurboRect,
+    shell_rect: KurboRect,
     focused: bool,
 ) -> Option<NativeImeWindowState> {
     if !focused {
@@ -111,7 +111,7 @@ pub(super) fn secondary_ime_state(
     let (content, rect) = root.floating_surface_ime(id)?;
     Some(NativeImeWindowState::from_rect(
         content,
-        rect - desktop_rect.origin().to_vec2(),
+        rect - shell_rect.origin().to_vec2(),
     ))
 }
 

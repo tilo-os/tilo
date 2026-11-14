@@ -16,7 +16,7 @@ pub trait AppSurface {
     fn request_redraw(&self);
     /// Show `cursor` while the pointer is over the app.
     fn set_cursor(&self, cursor: CursorIcon);
-    /// Whether the surface's host answers the desktop's tab chords (Ctrl+T,
+    /// Whether the surface's host answers the shell's tab chords (Ctrl+T,
     /// Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+Shift+Tab) itself, so the app leaves them unhandled for it
     /// rather than asking the session's tab service.
     fn hosts_tab_chords(&self) -> bool {
@@ -69,7 +69,7 @@ impl App {
         crate::widget::context_menu::note_input(&event);
         // What this event opens or closes follows it: a press moves, a key
         // lands at once. A host that shows an app on a surface of its own
-        // (the session's desk, its panels and sheets) reaches the toolkit
+        // (the session's shell, its panels and sheets) reaches the toolkit
         // through here, and would otherwise land everything at once.
         crate::motion::note_input(&event);
         // Controls swapped in or moved under a still pointer learn it is
@@ -278,7 +278,7 @@ impl App {
             _ => {}
         }
         // `CursorMoved` is measured in this window's own content,
-        // never the desktop — see the `pointer_space` field.
+        // never the shell — see the `pointer_space` field.
         if app.presence.broadcast_scope.is_some() {
             let publication = phases.start();
             match &event {
@@ -587,7 +587,7 @@ impl App {
             let presentation_was_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             let floating_pointer_event = app.primary_floating_pointer_event(&event, scale_factor);
-            let used_desktop_pointer_space = floating_pointer_event.is_some();
+            let used_floating_pointer_space = floating_pointer_event.is_some();
             let event_for_root = floating_pointer_event.as_ref().unwrap_or(&event);
             let was_mouse_click = matches!(
                 event,
@@ -637,7 +637,7 @@ impl App {
             );
             phases.finish(InputPhase::Resources, resources);
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
-                && (used_desktop_pointer_space
+                && (used_floating_pointer_space
                     || presentation_was_floating != presentation_is_floating);
             if was_mouse_click {
                 tracing::debug!(
@@ -680,7 +680,7 @@ impl App {
         #[cfg(feature = "native")]
         app.record_sideways_wheel(&event, window.scale_factor(), handled, crate::time::now());
 
-        // Arrows, Enter and Space, search and typed keys, the desktop's tab
+        // Arrows, Enter and Space, search and typed keys, the shell's tab
         // chords (unless the window answers them) and range steps nobody
         // consumed.
         app.handle_unconsumed_key(
@@ -879,7 +879,7 @@ impl App {
     }
 
     /// Which surface this app is on the thread's motion clock: the frames it
-    /// asks for and draws are its own, so a desk drawing on the same thread
+    /// asks for and draws are its own, so a shell drawing on the same thread
     /// never meets a lock screen's wish for it. Its state box stays put for
     /// as long as the app does.
     pub(crate) fn motion_owner(&self) -> usize {
@@ -1527,7 +1527,7 @@ impl SurfaceDamage {
     }
 
     /// The host's target has `device_per_unit` pixels per pixel of the
-    /// surface's scene (an app drawn into a desktop's logical scene shown at
+    /// surface's scene (an app drawn into a shell's logical scene shown at
     /// 200 % has 2): copies are planned in those pixels, so a step of half a
     /// scene pixel there is a whole pixel and copies. The copies
     /// [`Self::take_copying`] returns are in them.

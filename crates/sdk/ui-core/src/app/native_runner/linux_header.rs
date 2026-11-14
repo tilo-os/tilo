@@ -23,7 +23,7 @@ use crate::widget::Widget;
 pub(super) enum Decorations {
     /// Waiting for the first configure.
     Unsettled,
-    /// The desktop draws the frame, or the Tilo shell owns the chrome.
+    /// The shell draws the frame, or the Tilo shell owns the chrome.
     Host,
     Bar(Box<LiveHeader>),
 }

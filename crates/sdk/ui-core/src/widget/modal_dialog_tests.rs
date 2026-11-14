@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
         let pointer = lay(&spec, &theme);
         assert!(
             pointer.actions[0].height() < touch.actions[0].height(),
-            "a mouse needs no finger's room"
+            "a mouse needs no finger's area"
         );
         assert!(
             pointer.card.height() < touch.card.height(),

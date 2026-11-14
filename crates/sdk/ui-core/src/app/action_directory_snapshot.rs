@@ -109,7 +109,7 @@ impl App {
 
     /// A pin of the one row `capture` is reported against, so its report
     /// holds that row rather than the whole surface its input froze, which
-    /// the next keystroke's input needs room to freeze.
+    /// the next keystroke's input needs to freeze.
     pub(super) fn report_pin(
         &mut self,
         capture: &crate::local_document_action::CapturedAction,

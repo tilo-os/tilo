@@ -554,7 +554,7 @@ tilo_test_env::scenario! {
         assert!(geometry(&h).inspector_column.width() > 0.0);
     }
 
-    // The overview column follows what it lists, up to its cap: the room the
+    // The overview column follows what it lists, up to its cap: the area the
     // detail has past the measure it reads at is the list's, so a long row fits
     // whole while the page beside it still reads as a page.
     phase the_overview_grows_to_fit_its_rows_while_the_page_keeps_its_measure;
@@ -576,7 +576,7 @@ tilo_test_env::scenario! {
         assert_eq!(g.overview, OverviewPlacement::List);
         assert!(
             g.overview_column.width() > list && g.overview_column.width() <= cap,
-            "the list takes the room past the page's measure: {:?}",
+            "the list takes the area past the page's measure: {:?}",
             g.overview_column
         );
         assert!(
@@ -1597,7 +1597,7 @@ tilo_test_env::scenario! {
         let furniture = crate::widget::window_header::RowFurniture::of(slot);
         assert!(
             furniture.controls.pill.area() > 0.0,
-            "the window's own controls stand in the room it keeps: {furniture:?}"
+            "the window's own controls stand in the area it keeps: {furniture:?}"
         );
         assert_eq!(
             furniture.search,

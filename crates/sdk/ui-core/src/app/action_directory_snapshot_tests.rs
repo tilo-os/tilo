@@ -460,7 +460,7 @@ tilo_test_env::scenario! {
     phase a_report_holds_only_the_row_it_is_reported_against;
     // A change on its way to the broker holds the one row it is reported
     // against, not the whole surface its input froze: the next keystroke's
-    // input has room to freeze its own.
+    // input fits to freeze its own.
     {
         let (mut app, _) = declared_directory(2);
         publish_declared_directory(&mut app);

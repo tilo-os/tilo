@@ -18,7 +18,7 @@ pub struct HintPlaces {
     pub focused_edge: Option<(Line, WindowEdge)>,
     pub asking: bool,
     pub over: Vec<Rect>,
-    pub windows_on_desk: Vec<(Rect, Rect)>,
+    pub windows_on_strip: Vec<(Rect, Rect)>,
     pub app_cards: Vec<Rect>,
 }
 
@@ -63,7 +63,7 @@ impl GroupRow {
             .enumerate()
             .find(|(i, group)| group.focused && shown(*i, group) && !self.is_floating(group.id))
             .map(|(_, group)| group);
-        let on_desk: Vec<(Rect, Rect)> = self
+        let on_strip: Vec<(Rect, Rect)> = self
             .groups
             .iter()
             .enumerate()
@@ -93,7 +93,7 @@ impl GroupRow {
                 .filter(|group| self.is_floating(group.id))
                 .map(|group| group.get_rect().union(group.bar_rect()))
                 .collect(),
-            app_cards: on_desk
+            app_cards: on_strip
                 .iter()
                 .flat_map(|(_, content)| {
                     crate::presence::interaction_card_slots(*content)
@@ -102,7 +102,7 @@ impl GroupRow {
                         .filter(|slot| !slot.is_zero_area())
                 })
                 .collect(),
-            windows_on_desk: on_desk,
+            windows_on_strip: on_strip,
         }
     }
 
@@ -327,7 +327,7 @@ mod tests {
         }
 
         phase a_shown_window_reports_its_content_below_its_own_bar;
-        // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
+        // The shell's bar overlays the shell's top edge and the windows stand clear of it: each
         // window is reported whole, and its content from below its own bar, so a hint never stands
         // over either.
         {
@@ -336,8 +336,8 @@ mod tests {
             let (row, _taffy, _root) =
                 relayout_row_owned_with(row, 1200.0, &Theme::dark().with_reduce_motion(true));
             let places = row.hint_places();
-            assert_eq!(places.windows_on_desk.len(), 2, "{places:?}");
-            for (window, content) in &places.windows_on_desk {
+            assert_eq!(places.windows_on_strip.len(), 2, "{places:?}");
+            for (window, content) in &places.windows_on_strip {
                 assert!(
                     window.y0 > places.viewport.y0 + 1.0,
                     "fixture: the window stands clear of the bar: {window:?}"

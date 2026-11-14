@@ -868,15 +868,15 @@ tilo_test_env::scenario! {
             g.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 32.0));
             assert_eq!(g.shown_labels(), ["Privacy & Security", "Apps & Files"]);
             let full_width = g.segment_rects[1].x1;
-            let room = full_width - 1.0;
-            g.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            let spare = full_width - 1.0;
+            g.apply_layout_external(Rect::new(0.0, 0.0, spare, 32.0));
             assert_eq!(g.shown_labels(), ["Privacy", "Apps"]);
             assert!(!g.overflows(), "the short labels fit");
-            assert!(g.segment_rects[1].x1 <= room + 1e-6);
+            assert!(g.segment_rects[1].x1 <= spare + 1e-6);
             let mut plain = ToggleGroup::new(named(false), 0).with_style(SegmentedStyle::Tabs);
             plain.metrics = metrics;
             plain.measure_naturals(&mut text);
-            plain.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            plain.apply_layout_external(Rect::new(0.0, 0.0, spare, 32.0));
             assert!(plain.overflows(), "without short labels the strip scrolls");
         }
 

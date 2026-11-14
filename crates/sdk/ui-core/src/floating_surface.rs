@@ -33,7 +33,7 @@ fn settle_time() -> crate::time::Duration {
     )
 }
 
-/// Stable identity of content that can survive an app → desktop hand-off.
+/// Stable identity of content that can survive an app → shell hand-off.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FloatingSource {
     /// A semantically stable app element plus its current app-local fallback box.
@@ -433,7 +433,7 @@ pub struct FloatingSurfaceRequest {
     pub tracking_source: Option<FloatingSource>,
 }
 
-/// App-owned presentation currently living in desktop coordinates.
+/// App-owned presentation currently living in shell coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloatingSurfacePresentation {
     pub id: String,
@@ -629,8 +629,8 @@ pub fn translate_input_rect(input: Option<Rect>, from: Point, to: Point) -> Opti
 pub enum Attachment {
     /// Moves with its application.
     App { offset: Vec2 },
-    /// Independent desktop coordinates, owned by shell chrome.
-    Desktop { rect: Rect },
+    /// Independent shell coordinates, owned by shell chrome.
+    Shell { rect: Rect },
 }
 
 /// Result of updating a drag. Hosts use the edge to animate the hand-off.
@@ -677,9 +677,9 @@ pub struct FloatingPlacement {
     /// The shell has presented the app-owned secondary surface at least once.
     /// Until this flips, the app may keep painting its clipped in-window copy
     /// so a detach never contains a transparent handoff frame.
-    desktop_adopted: bool,
+    shell_adopted: bool,
     /// The shell is already drawing either the frozen transfer frame or the live native surface.
-    desktop_covered: bool,
+    shell_covered: bool,
     /// Shell → app is a handshake, not an instantaneous enum flip.
     return_pending: bool,
     /// App-local rect published by the exact boundary-crossing event. A
@@ -696,9 +696,9 @@ pub struct FloatingPlacement {
     /// Bands of the app the surface keeps clear of while attached (the window's header row), as `[left,
     /// top, right, bottom]`.
     safe_insets: [f64; 4],
-    /// Translation between the app's local widget space and the shell's desktop space while a native
+    /// Translation between the app's local widget space and the shell's coordinates while a native
     /// surface owns presentation.
-    desktop_coordinate_offset: Vec2,
+    shell_coordinate_offset: Vec2,
     handoff_motion: Option<HandoffMotion>,
     /// Exact render-only handoff phase used by deterministic visual review.
     handoff_progress_override: Option<f64>,
@@ -717,8 +717,8 @@ impl FloatingPlacement {
     pub fn attached(preferred_size: Size) -> Self {
         Self {
             attachment: Attachment::App { offset: Vec2::ZERO },
-            desktop_adopted: false,
-            desktop_covered: false,
+            shell_adopted: false,
+            shell_covered: false,
             return_pending: false,
             handoff_rect: None,
             drag: None,
@@ -726,7 +726,7 @@ impl FloatingPlacement {
             attached_region: None,
             attached_chrome: [0.0; 4],
             safe_insets: [0.0; 4],
-            desktop_coordinate_offset: Vec2::ZERO,
+            shell_coordinate_offset: Vec2::ZERO,
             handoff_motion: None,
             handoff_progress_override: None,
             settle_motion: None,
@@ -751,12 +751,12 @@ impl FloatingPlacement {
         self.drag.is_some()
     }
 
-    pub fn is_desktop_adopted(&self) -> bool {
-        self.desktop_adopted
+    pub fn is_shell_adopted(&self) -> bool {
+        self.shell_adopted
     }
 
-    pub fn is_desktop_covered(&self) -> bool {
-        self.desktop_covered
+    pub fn is_shell_covered(&self) -> bool {
+        self.shell_covered
     }
 
     pub fn is_return_pending(&self) -> bool {
@@ -766,7 +766,7 @@ impl FloatingPlacement {
     /// Ask the host to return an adopted surface without painting a second source copy before its
     /// `Suspended` acknowledgement.
     pub fn request_app_return(&mut self) {
-        if self.desktop_adopted && matches!(self.attachment, Attachment::Desktop { .. }) {
+        if self.shell_adopted && matches!(self.attachment, Attachment::Shell { .. }) {
             self.return_pending = true;
             self.drag = None;
         }
@@ -809,7 +809,7 @@ impl FloatingPlacement {
         Rect::new(x0, y0, (app.x1 - right).max(x0), (app.y1 - bottom).max(y0))
     }
 
-    /// Restore only app-local presentation; never restore desktop surface authority.
+    /// Restore only app-local presentation; never restore shell surface authority.
     pub fn restore_local_offset(&mut self, offset: Vec2) {
         self.reset_attached();
         if offset.x.is_finite() && offset.y.is_finite() {
@@ -819,30 +819,30 @@ impl FloatingPlacement {
 
     pub fn reset_attached(&mut self) {
         self.attachment = Attachment::App { offset: Vec2::ZERO };
-        self.desktop_adopted = false;
-        self.desktop_covered = false;
+        self.shell_adopted = false;
+        self.shell_covered = false;
         self.return_pending = false;
         self.handoff_rect = None;
         self.drag = None;
         self.handoff_motion = None;
         self.handoff_progress_override = None;
         self.settle_motion = None;
-        self.desktop_coordinate_offset = Vec2::ZERO;
+        self.shell_coordinate_offset = Vec2::ZERO;
     }
 
     /// Host-declined/programmatic shell → app return. The surface keeps its
-    /// current desktop rect on the first frame and eases back to the app home,
+    /// current shell rect on the first frame and eases back to the app home,
     /// so an unavailable native-surface path never makes it vanish or jump.
-    pub fn reattach_to_app(&mut self, app: Rect, desktop: Rect) {
-        let from = self.rect(app, desktop) - self.desktop_coordinate_offset;
+    pub fn reattach_to_app(&mut self, app: Rect, display: Rect) {
+        let from = self.rect(app, display) - self.shell_coordinate_offset;
         let home = self.attached_home_rect(app);
         self.attachment = Attachment::App { offset: Vec2::ZERO };
-        self.desktop_adopted = false;
-        self.desktop_covered = false;
+        self.shell_adopted = false;
+        self.shell_covered = false;
         self.return_pending = false;
         self.handoff_rect = None;
         self.drag = None;
-        self.desktop_coordinate_offset = Vec2::ZERO;
+        self.shell_coordinate_offset = Vec2::ZERO;
         self.handoff_progress_override = None;
         if self.reduce_motion {
             self.settle_motion = None;
@@ -863,10 +863,10 @@ impl FloatingPlacement {
     }
 
     /// Programmatic counterpart to crossing the app edge (for a “Float” menu action).
-    pub fn detach_to_desktop(&mut self, rect: Rect) {
-        self.attachment = Attachment::Desktop { rect };
-        self.desktop_adopted = false;
-        self.desktop_covered = false;
+    pub fn detach_to_shell(&mut self, rect: Rect) {
+        self.attachment = Attachment::Shell { rect };
+        self.shell_adopted = false;
+        self.shell_covered = false;
         self.return_pending = false;
         self.handoff_rect = None;
         self.drag = None;
@@ -881,22 +881,22 @@ impl FloatingPlacement {
 
     /// Apply the compositor's clamped transfer geometry before the native
     /// surface's first draw, without claiming that pixels are visible yet.
-    pub fn prepare_desktop_rect(&mut self, rect: Rect) {
+    pub fn prepare_shell_rect(&mut self, rect: Rect) {
         let inferred = match self.attachment {
-            Attachment::Desktop { rect: previous } => rect.origin() - previous.origin(),
+            Attachment::Shell { rect: previous } => rect.origin() - previous.origin(),
             Attachment::App { .. } => Vec2::ZERO,
         };
-        self.prepare_desktop_rect_with_offset(rect, inferred);
+        self.prepare_shell_rect_with_offset(rect, inferred);
     }
 
-    /// Prepare desktop geometry while rebasing a still-held pointer grab from
-    /// app-local into desktop coordinates. The correction term keeps the
+    /// Prepare shell geometry while rebasing a still-held pointer grab from
+    /// app-local into shell coordinates. The correction term keeps the
     /// prepared (possibly compositor-clamped) rect exact on this frame and
     /// on the first native pointer event.
-    pub fn prepare_desktop_rect_with_offset(&mut self, rect: Rect, coordinate_offset: Vec2) {
+    pub fn prepare_shell_rect_with_offset(&mut self, rect: Rect, coordinate_offset: Vec2) {
         let returning_to_app = self.return_pending;
         let previous = match self.attachment {
-            Attachment::Desktop { rect } => Some(rect),
+            Attachment::Shell { rect } => Some(rect),
             Attachment::App { .. } => None,
         };
         if let (Some(previous), Some(drag)) = (previous, self.drag.as_mut()) {
@@ -905,51 +905,51 @@ impl FloatingPlacement {
             drag.pointer_origin += coordinate_offset;
             drag.last_pointer += coordinate_offset;
             drag.rect_origin = drag.rect_origin + coordinate_offset + clamp_correction;
-            self.attachment = Attachment::Desktop {
+            self.attachment = Attachment::Shell {
                 rect: previous + coordinate_offset + clamp_correction,
             };
         } else {
-            self.attachment = Attachment::Desktop { rect };
+            self.attachment = Attachment::Shell { rect };
         }
         self.handoff_rect = None;
         self.return_pending = returning_to_app;
-        self.desktop_coordinate_offset = coordinate_offset;
+        self.shell_coordinate_offset = coordinate_offset;
         self.settle_motion = None;
     }
 
     /// Tell placement whether the shell can already cover the old app-local pixels during
     /// native-surface startup.
-    pub fn set_desktop_transfer_covered(&mut self, covered: bool) {
-        self.desktop_covered = covered;
+    pub fn set_shell_transfer_covered(&mut self, covered: bool) {
+        self.shell_covered = covered;
     }
 
     /// Confirm that the native surface has committed a visible buffer.
-    pub fn confirm_desktop_adoption(&mut self) {
-        if matches!(self.attachment, Attachment::Desktop { .. }) {
-            self.desktop_adopted = true;
-            self.desktop_covered = true;
+    pub fn confirm_shell_adoption(&mut self) {
+        if matches!(self.attachment, Attachment::Shell { .. }) {
+            self.shell_adopted = true;
+            self.shell_covered = true;
         }
     }
 
     /// Complete the shell → app half of the ownership handshake.
     pub fn confirm_app_adoption(&mut self, app: Rect) {
-        let Attachment::Desktop { rect } = self.attachment else {
+        let Attachment::Shell { rect } = self.attachment else {
             return;
         };
-        let local_rect = rect - self.desktop_coordinate_offset;
+        let local_rect = rect - self.shell_coordinate_offset;
         let home = self.attached_home_rect(app);
         self.attachment = Attachment::App {
             offset: local_rect.origin() - home.origin(),
         };
         if let Some(drag) = self.drag.as_mut() {
-            drag.pointer_origin -= self.desktop_coordinate_offset;
-            drag.last_pointer -= self.desktop_coordinate_offset;
-            drag.rect_origin = drag.rect_origin - self.desktop_coordinate_offset;
+            drag.pointer_origin -= self.shell_coordinate_offset;
+            drag.last_pointer -= self.shell_coordinate_offset;
+            drag.rect_origin = drag.rect_origin - self.shell_coordinate_offset;
         }
-        self.desktop_coordinate_offset = Vec2::ZERO;
+        self.shell_coordinate_offset = Vec2::ZERO;
         self.return_pending = false;
-        self.desktop_adopted = false;
-        self.desktop_covered = false;
+        self.shell_adopted = false;
+        self.shell_covered = false;
     }
 
     pub fn is_handoff_animating(&self) -> bool {
@@ -1012,11 +1012,11 @@ impl FloatingPlacement {
     }
 
     /// Resolve the live rect. Attached overlays follow `app`; detached ones retain screen coordinates
-    /// and only clamp to the desktop.
-    pub fn rect(&self, app: Rect, desktop: Rect) -> Rect {
+    /// and only clamp to the shell.
+    pub fn rect(&self, app: Rect, display: Rect) -> Rect {
         let resolved = match self.attachment {
             Attachment::App { offset } => self.attached_home_rect(app) + offset,
-            Attachment::Desktop { rect } => clamp_rect(rect, desktop, 64.0),
+            Attachment::Shell { rect } => clamp_rect(rect, display, 64.0),
         };
         if self.reduce_motion {
             return resolved;
@@ -1057,8 +1057,8 @@ impl FloatingPlacement {
         )
     }
 
-    pub fn begin_drag(&mut self, pointer: Point, app: Rect, desktop: Rect) {
-        let rect_origin = self.rect(app, desktop);
+    pub fn begin_drag(&mut self, pointer: Point, app: Rect, display: Rect) {
+        let rect_origin = self.rect(app, display);
         self.settle_motion = None;
         self.handoff_progress_override = None;
         self.drag = Some(Drag {
@@ -1073,13 +1073,13 @@ impl FloatingPlacement {
     /// Detaches after crossing the app by a deliberate 28px, and reattaches
     /// when the pointer returns inside it. The asymmetric thresholds stop
     /// the surface flickering between owners along the border.
-    pub fn update_drag(&mut self, pointer: Point, app: Rect, desktop: Rect) -> Handoff {
+    pub fn update_drag(&mut self, pointer: Point, app: Rect, display: Rect) -> Handoff {
         let Some(mut drag) = self.drag else {
             return Handoff::None;
         };
         self.settle_motion = None;
         let delta = pointer - drag.pointer_origin;
-        let moved = clamp_rect(drag.rect_origin + delta, desktop, 64.0);
+        let moved = clamp_rect(drag.rect_origin + delta, display, 64.0);
         let now = crate::time::now();
         let sample_delta = pointer - drag.last_pointer;
         let elapsed = now.duration_since(drag.last_sample).as_secs_f64();
@@ -1105,12 +1105,12 @@ impl FloatingPlacement {
         // gets the full (still restrained) 1.8% stretch.
         let motion_strength = (drag.velocity.hypot() / 1_200.0).clamp(0.45, 1.0);
         let app_in_pointer_space = match self.attachment {
-            Attachment::Desktop { .. } => app + self.desktop_coordinate_offset,
+            Attachment::Shell { .. } => app + self.shell_coordinate_offset,
             Attachment::App { .. } => app,
         };
         match self.attachment {
             Attachment::App { .. } if Self::is_beyond_detach_boundary(pointer, app) => {
-                self.attachment = Attachment::Desktop { rect: moved };
+                self.attachment = Attachment::Shell { rect: moved };
                 self.handoff_rect = Some(moved);
                 self.handoff_progress_override = None;
                 self.handoff_motion = Some(HandoffMotion {
@@ -1120,10 +1120,10 @@ impl FloatingPlacement {
                 });
                 Handoff::Detached
             }
-            Attachment::Desktop { .. }
+            Attachment::Shell { .. }
                 if !self.return_pending && app_in_pointer_space.inset(36.0).contains(pointer) =>
             {
-                self.attachment = Attachment::Desktop { rect: moved };
+                self.attachment = Attachment::Shell { rect: moved };
                 // Keep the primary copy hidden until the shell has consumed
                 // the final geometry and acknowledged that its proxy/native
                 // surface is no longer visible.
@@ -1136,8 +1136,8 @@ impl FloatingPlacement {
                 });
                 Handoff::Reattached
             }
-            Attachment::Desktop { .. } => {
-                self.attachment = Attachment::Desktop { rect: moved };
+            Attachment::Shell { .. } => {
+                self.attachment = Attachment::Shell { rect: moved };
                 Handoff::None
             }
             Attachment::App { .. } => {
@@ -1158,16 +1158,16 @@ impl FloatingPlacement {
         }
     }
 
-    pub fn end_drag(&mut self, desktop: Rect) {
+    pub fn end_drag(&mut self, display: Rect) {
         let released = self.drag.take();
         let release_velocity = released.map_or(Vec2::ZERO, |drag| drag.velocity);
-        if let Attachment::Desktop { rect } = self.attachment {
+        if let Attachment::Shell { rect } = self.attachment {
             if self.return_pending {
                 return;
             }
-            let from = clamp_rect(rect, desktop, 64.0);
-            let to = snap_to_edges(from, desktop, 16.0);
-            self.attachment = Attachment::Desktop { rect: to };
+            let from = clamp_rect(rect, display, 64.0);
+            let to = snap_to_edges(from, display, 16.0);
+            self.attachment = Attachment::Shell { rect: to };
             if from != to {
                 let axis = to.center() - from.center();
                 let started = crate::time::now();
@@ -1422,11 +1422,11 @@ mod tests {
             }
 
             {
-                let bounds = FloatingSurfaceHostMessage::DesktopBounds {
+                let bounds = FloatingSurfaceHostMessage::DisplayBounds {
                     bounds: [0.0, 0.0, 3200.0, 1080.0],
                 };
                 let json = serde_json::to_string(&bounds).unwrap();
-                assert!(json.contains("desktop_bounds"));
+                assert!(json.contains("display_bounds"));
                 assert_eq!(
                     serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
                     bounds
@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// A floating placement between its app and the desktop: who owns it, where it may stand
+        /// A floating placement between its app and the shell: who owns it, where it may stand
         /// and how it moves.
         /// Each phase was a test of its own and builds its own fixture.
         fn a_floating_placement_keeps_its_owner_and_moves_without_jumps;
@@ -1501,33 +1501,33 @@ mod tests {
         phase repeated_float_return_keeps_independent_conversation_ownership;
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-            let desktop = Rect::new(-800.0, 0.0, 1600.0, 900.0);
+            let display = Rect::new(-800.0, 0.0, 1600.0, 900.0);
             let inline = Rect::new(300.0, 120.0, 840.0, 660.0);
             let detached = Rect::new(-700.0, 150.0, -160.0, 690.0);
             let mut conversation = FloatingPlacement::attached(inline.size());
             conversation.set_attached_region(Some(inline));
             let mut sibling = FloatingPlacement::attached(inline.size());
-            sibling.detach_to_desktop(Rect::new(940.0, 120.0, 1480.0, 660.0));
-            sibling.confirm_desktop_adoption();
-            let sibling_rect = sibling.rect(app, desktop);
+            sibling.detach_to_shell(Rect::new(940.0, 120.0, 1480.0, 660.0));
+            sibling.confirm_shell_adoption();
+            let sibling_rect = sibling.rect(app, display);
             for _ in 0..3 {
-                conversation.detach_to_desktop(detached);
-                assert!(!conversation.is_desktop_adopted());
-                conversation.prepare_desktop_rect_with_offset(detached, Vec2::new(-1000.0, 30.0));
-                assert_eq!(conversation.rect(app, desktop), detached);
-                conversation.confirm_desktop_adoption();
+                conversation.detach_to_shell(detached);
+                assert!(!conversation.is_shell_adopted());
+                conversation.prepare_shell_rect_with_offset(detached, Vec2::new(-1000.0, 30.0));
+                assert_eq!(conversation.rect(app, display), detached);
+                conversation.confirm_shell_adoption();
                 conversation.request_app_return();
                 assert!(conversation.is_return_pending());
                 assert!(matches!(
                     conversation.attachment(),
-                    Attachment::Desktop { .. }
+                    Attachment::Shell { .. }
                 ));
                 conversation.confirm_app_adoption(app);
                 assert!(matches!(conversation.attachment(), Attachment::App { .. }));
-                assert!(!conversation.is_desktop_adopted());
+                assert!(!conversation.is_shell_adopted());
                 assert!(!conversation.is_return_pending());
-                assert!(sibling.is_desktop_adopted());
-                assert_eq!(sibling.rect(app, desktop), sibling_rect);
+                assert!(sibling.is_shell_adopted());
+                assert_eq!(sibling.rect(app, display), sibling_rect);
             }
         }
 
@@ -1535,58 +1535,58 @@ mod tests {
         {
             {
                 let p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
-                let a = p.rect(Rect::new(100.0, 80.0, 900.0, 700.0), desk);
-                let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let a = p.rect(Rect::new(100.0, 80.0, 900.0, 700.0), display);
+                let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), display);
                 assert_eq!(b.x0 - a.x0, 140.0);
                 assert_eq!(b.y0 - a.y0, 40.0);
             }
 
             {
                 let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1_400.0, 900.0);
                 let inline = Rect::new(310.0, 120.0, 840.0, 660.0);
                 let mut p = FloatingPlacement::attached(inline.size());
                 p.set_attached_region(Some(inline));
-                assert_eq!(p.rect(app, desk), inline);
+                assert_eq!(p.rect(app, display), inline);
                 p.set_attached_region(Some(Rect::new(f64::NAN, 0.0, 2.0, 2.0)));
-                assert_eq!(p.rect(app, desk), inline, "invalid geometry is ignored");
+                assert_eq!(p.rect(app, display), inline, "invalid geometry is ignored");
             }
 
             {
                 let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1_400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
                 p.request_app_return();
                 assert!(!p.is_return_pending());
-                p.detach_to_desktop(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+                p.detach_to_shell(Rect::new(940.0, 120.0, 1_260.0, 300.0));
                 p.request_app_return();
                 assert!(
                     !p.is_return_pending(),
-                    "a request is not proof that desktop pixels were adopted"
+                    "a request is not proof that shell pixels were adopted"
                 );
-                p.prepare_desktop_rect(Rect::new(940.0, 120.0, 1_260.0, 300.0));
-                p.confirm_desktop_adoption();
+                p.prepare_shell_rect(Rect::new(940.0, 120.0, 1_260.0, 300.0));
+                p.confirm_shell_adoption();
                 p.request_app_return();
                 assert!(p.is_return_pending());
-                p.reattach_to_app(app, desk);
+                p.reattach_to_app(app, display);
                 assert!(!p.is_return_pending());
             }
 
             {
                 let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                let plain = p.rect(app, desk);
+                let plain = p.rect(app, display);
                 p.set_safe_insets([0.0, 56.0, 0.0, 0.0]);
-                let home = p.rect(app, desk);
+                let home = p.rect(app, display);
                 assert!(
                     (home.y0 - (plain.y0 + 56.0)).abs() < 1e-9,
                     "home clears the header row"
                 );
-                p.begin_drag(home.center(), app, desk);
-                p.update_drag(home.center() - Vec2::new(0.0, 100.0), app, desk);
-                let dragged = p.rect(app, desk);
+                p.begin_drag(home.center(), app, display);
+                p.update_drag(home.center() - Vec2::new(0.0, 100.0), app, display);
+                let dragged = p.rect(app, display);
                 assert!(
                     dragged.y0 >= app.y0 + 56.0 - 1e-9,
                     "a drag stays below it: {dragged:?}"
@@ -1595,10 +1595,10 @@ mod tests {
 
             {
                 let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
                 p.set_attached_chrome([12.0, 40.0, 12.0, 156.0]);
-                let content = p.rect(app, desk);
+                let content = p.rect(app, display);
                 let complete = Rect::new(
                     content.x0 - 12.0,
                     content.y0 - 40.0,
@@ -1613,11 +1613,11 @@ mod tests {
 
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
                 let pointer = Point::new(600.0, 150.0);
-                let before = p.rect(app, desk);
-                p.begin_drag(pointer, app, desk);
+                let before = p.rect(app, display);
+                p.begin_drag(pointer, app, display);
                 let outside = Point::new(940.0, 150.0);
                 assert!(!FloatingPlacement::is_beyond_detach_boundary(
                     Point::new(app.x1 + 27.0, app.y0),
@@ -1628,10 +1628,10 @@ mod tests {
                     app
                 ));
                 assert!(FloatingPlacement::is_beyond_detach_boundary(outside, app));
-                assert_eq!(p.update_drag(outside, app, desk), Handoff::Detached);
-                assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
+                assert_eq!(p.update_drag(outside, app, display), Handoff::Detached);
+                assert!(matches!(p.attachment(), Attachment::Shell { .. }));
                 assert_eq!(
-                    p.rect(app, desk),
+                    p.rect(app, display),
                     before + (outside - pointer),
                     "ownership transfer must not move the surface by even one logical pixel"
                 );
@@ -1639,28 +1639,28 @@ mod tests {
 
             {
                 let app = Rect::new(100.0, 100.0, 700.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                p.begin_drag(Point::new(600.0, 150.0), app, desk);
+                p.begin_drag(Point::new(600.0, 150.0), app, display);
                 assert_eq!(
-                    p.update_drag(Point::new(6_000.0, 150.0), app, desk),
+                    p.update_drag(Point::new(6_000.0, 150.0), app, display),
                     Handoff::Detached
                 );
-                let r = p.rect(app, desk);
-                assert_eq!(r.x0, desk.x1 - 64.0);
-                assert_eq!(r.x1, desk.x1 - 64.0 + 320.0);
+                let r = p.rect(app, display);
+                assert_eq!(r.x0, display.x1 - 64.0);
+                assert_eq!(r.x1, display.x1 - 64.0 + 320.0);
             }
 
             {
                 let app = Rect::new(100.0, 100.0, 700.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let released = Rect::new(1055.0, 300.0, 1375.0, 480.0);
                 let target = Rect::new(1064.0, 300.0, 1384.0, 480.0);
                 let mut p = FloatingPlacement::attached(released.size());
-                p.attachment = Attachment::Desktop { rect: released };
-                p.end_drag(desk);
+                p.attachment = Attachment::Shell { rect: released };
+                p.end_drag(display);
                 assert!(p.is_handoff_animating());
-                assert!((p.rect(app, desk).x0 - released.x0).abs() < 1.0);
+                assert!((p.rect(app, display).x0 - released.x0).abs() < 1.0);
 
                 p.settle_motion
                     .as_mut()
@@ -1669,7 +1669,7 @@ mod tests {
                     .set(Some(instant_ago(
                         settle_time().saturating_add(crate::time::Duration::from_millis(1)),
                     )));
-                assert_eq!(p.rect(app, desk), target);
+                assert_eq!(p.rect(app, display), target);
             }
         }
 
@@ -1677,11 +1677,11 @@ mod tests {
         {
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                p.begin_drag(Point::new(600.0, 150.0), app, desk);
-                let _ = p.update_drag(Point::new(940.0, 150.0), app, desk);
-                let rect = p.rect(app, desk);
+                p.begin_drag(Point::new(600.0, 150.0), app, display);
+                let _ = p.update_drag(Point::new(940.0, 150.0), app, display);
+                let rect = p.rect(app, display);
                 let transform = p.presentation_transform(Affine::IDENTITY, rect, false);
                 assert_eq!(transform * rect.center(), rect.center());
                 assert_eq!(
@@ -1693,26 +1693,26 @@ mod tests {
 
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
+                p.detach_to_shell(Rect::new(500.0, 180.0, 820.0, 360.0));
                 p.pin_handoff_for_visual_review(500);
-                let rect = p.rect(app, desk);
-                let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
+                let rect = p.rect(app, display);
+                let shell_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
 
                 p.handoff_motion.as_mut().unwrap().started =
                     instant_ago(settle_time().saturating_add(crate::time::Duration::from_secs(1)));
                 assert_eq!(
                     p.presentation_transform(Affine::IDENTITY, rect, false),
-                    desktop_transform,
+                    shell_transform,
                     "a pinned review frame must not drift with wall-clock time"
                 );
 
                 p.confirm_app_adoption(app);
-                assert_eq!(p.rect(app, desk), rect);
+                assert_eq!(p.rect(app, display), rect);
                 assert_eq!(
                     p.presentation_transform(Affine::IDENTITY, rect, false),
-                    desktop_transform,
+                    shell_transform,
                     "switching owners must preserve the exact visual handoff phase"
                 );
                 assert!(
@@ -1723,19 +1723,19 @@ mod tests {
 
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                p.begin_drag(Point::new(600.0, 150.0), app, desk);
+                p.begin_drag(Point::new(600.0, 150.0), app, display);
                 p.drag.as_mut().unwrap().last_sample =
                     instant_ago(crate::time::Duration::from_millis(16));
                 assert_eq!(
-                    p.update_drag(Point::new(600.0, 230.0), app, desk),
+                    p.update_drag(Point::new(600.0, 230.0), app, display),
                     Handoff::None
                 );
                 p.drag.as_mut().unwrap().last_sample =
                     instant_ago(crate::time::Duration::from_millis(16));
                 assert_eq!(
-                    p.update_drag(Point::new(950.0, 220.0), app, desk),
+                    p.update_drag(Point::new(950.0, 220.0), app, display),
                     Handoff::Detached
                 );
                 let motion = p.handoff_motion.unwrap();
@@ -1748,62 +1748,62 @@ mod tests {
 
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
                 let origin = Point::new(600.0, 150.0);
-                let initial = p.rect(app, desk);
-                p.begin_drag(origin, app, desk);
+                let initial = p.rect(app, display);
+                p.begin_drag(origin, app, display);
                 assert_eq!(
-                    p.update_drag(Point::new(950.0, 150.0), app, desk),
+                    p.update_drag(Point::new(950.0, 150.0), app, display),
                     Handoff::Detached
                 );
                 let returned = Point::new(500.0, 300.0);
-                assert_eq!(p.update_drag(returned, app, desk), Handoff::Reattached);
+                assert_eq!(p.update_drag(returned, app, display), Handoff::Reattached);
                 assert!(p.is_return_pending());
-                assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
+                assert!(matches!(p.attachment(), Attachment::Shell { .. }));
                 assert_eq!(
-                    p.rect(app, desk),
+                    p.rect(app, display),
                     initial + (returned - origin),
                     "shell → app ownership transfer must preserve geometry too"
                 );
                 p.confirm_app_adoption(app);
                 assert!(!p.is_return_pending());
                 assert!(matches!(p.attachment(), Attachment::App { .. }));
-                assert_eq!(p.rect(app, desk), initial + (returned - origin));
+                assert_eq!(p.rect(app, display), initial + (returned - origin));
             }
 
             {
                 let app = Rect::new(0.0, 0.0, 700.0, 600.0);
-                let desktop = Rect::new(0.0, 0.0, 1600.0, 900.0);
-                let app_to_desktop = Vec2::new(240.0, 100.0);
+                let display = Rect::new(0.0, 0.0, 1600.0, 900.0);
+                let app_to_shell = Vec2::new(240.0, 100.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
                 let origin = Point::new(600.0, 120.0);
-                p.begin_drag(origin, app, desktop);
+                p.begin_drag(origin, app, display);
                 p.drag.as_mut().unwrap().last_sample =
                     instant_ago(crate::time::Duration::from_millis(16));
                 assert_eq!(
-                    p.update_drag(Point::new(900.0, 150.0), app, desktop),
+                    p.update_drag(Point::new(900.0, 150.0), app, display),
                     Handoff::Detached
                 );
 
-                let prepared = p.rect(app, desktop) + app_to_desktop;
-                p.prepare_desktop_rect_with_offset(prepared, app_to_desktop);
-                p.confirm_desktop_adoption();
+                let prepared = p.rect(app, display) + app_to_shell;
+                p.prepare_shell_rect_with_offset(prepared, app_to_shell);
+                p.confirm_shell_adoption();
                 p.drag.as_mut().unwrap().last_sample =
                     instant_ago(crate::time::Duration::from_millis(16));
-                let returned_desktop_pointer = Point::new(620.0, 310.0);
+                let returned_shell_pointer = Point::new(620.0, 310.0);
                 assert_eq!(
-                    p.update_drag(returned_desktop_pointer, app, desktop),
+                    p.update_drag(returned_shell_pointer, app, display),
                     Handoff::Reattached
                 );
-                let last_shell_rect = p.rect(app, desktop);
+                let last_shell_rect = p.rect(app, display);
                 let shell_velocity = p.drag.unwrap().velocity;
                 let shell_motion = p.handoff_motion.unwrap();
 
                 p.confirm_app_adoption(app);
                 assert!(p.is_dragging(), "the held drag survives the ownership edge");
                 assert_eq!(
-                    p.rect(app, desktop) + app_to_desktop,
+                    p.rect(app, display) + app_to_shell,
                     last_shell_rect,
                     "the first app-owned pixels cover the exact final shell rect"
                 );
@@ -1818,33 +1818,33 @@ mod tests {
                 assert_eq!(app_motion.strength, shell_motion.strength);
 
                 let next_delta = Vec2::new(12.0, -8.0);
-                let next_local_pointer = returned_desktop_pointer - app_to_desktop + next_delta;
+                let next_local_pointer = returned_shell_pointer - app_to_shell + next_delta;
                 assert_eq!(
-                    p.update_drag(next_local_pointer, app, desktop),
+                    p.update_drag(next_local_pointer, app, display),
                     Handoff::None
                 );
                 assert_eq!(
-                    p.rect(app, desktop) + app_to_desktop,
+                    p.rect(app, display) + app_to_shell,
                     last_shell_rect + next_delta,
                     "the first primary-window pointer event continues the same drag"
                 );
-                p.end_drag(desktop);
+                p.end_drag(display);
                 assert!(!p.is_dragging());
             }
 
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                let home = p.rect(app, desk);
+                let home = p.rect(app, display);
                 p.set_reduce_motion(true);
-                p.begin_drag(Point::new(600.0, 150.0), app, desk);
-                let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
-                p.reattach_to_app(app, desk);
-                assert_eq!(p.rect(app, desk), home, "no snap-back under reduced motion");
+                p.begin_drag(Point::new(600.0, 150.0), app, display);
+                let _ = p.update_drag(Point::new(1_050.0, 200.0), app, display);
+                p.reattach_to_app(app, display);
+                assert_eq!(p.rect(app, display), home, "no snap-back under reduced motion");
                 assert!(!p.is_handoff_animating(), "nothing asks for motion frames");
                 let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
-                p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
+                p.detach_to_shell(Rect::new(500.0, 180.0, 820.0, 360.0));
                 assert_eq!(
                     p.presentation_transform(Affine::IDENTITY, rect, false),
                     Affine::IDENTITY,
@@ -1854,15 +1854,15 @@ mod tests {
 
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1400.0, 900.0);
                 let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                p.begin_drag(Point::new(600.0, 150.0), app, desk);
-                let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
-                let detached = p.rect(app, desk);
-                p.reattach_to_app(app, desk);
+                p.begin_drag(Point::new(600.0, 150.0), app, display);
+                let _ = p.update_drag(Point::new(1_050.0, 200.0), app, display);
+                let detached = p.rect(app, display);
+                p.reattach_to_app(app, display);
                 assert!(matches!(p.attachment(), Attachment::App { .. }));
                 assert!(
-                    (p.rect(app, desk).x0 - detached.x0).abs() < 1.0,
+                    (p.rect(app, display).x0 - detached.x0).abs() < 1.0,
                     "the decline frame stays where the pointer left it"
                 );
                 p.settle_motion
@@ -1872,7 +1872,7 @@ mod tests {
                     .set(Some(instant_ago(
                         settle_time().saturating_add(crate::time::Duration::from_millis(1)),
                     )));
-                assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
+                assert_eq!(p.rect(app, display), p.attached_home_rect(app));
             }
         }
 
@@ -1880,26 +1880,26 @@ mod tests {
         {
             {
                 let app = Rect::new(200.0, 100.0, 900.0, 700.0);
-                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1_400.0, 900.0);
                 let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
-                placement.begin_drag(Point::new(600.0, 150.0), app, desk);
+                placement.begin_drag(Point::new(600.0, 150.0), app, display);
                 assert_eq!(
-                    placement.update_drag(Point::new(950.0, 150.0), app, desk),
+                    placement.update_drag(Point::new(950.0, 150.0), app, display),
                     Handoff::Detached
                 );
                 let prepared = Rect::new(1_000.0, 120.0, 1_320.0, 300.0);
-                placement.prepare_desktop_rect(prepared);
-                assert_eq!(placement.rect(app, desk), prepared);
+                placement.prepare_shell_rect(prepared);
+                assert_eq!(placement.rect(app, display), prepared);
                 assert!(placement.is_dragging(), "the pointer grab survives prepare");
                 assert!(
-                    !placement.is_desktop_adopted(),
+                    !placement.is_shell_adopted(),
                     "creation is not evidence that pixels are visible"
                 );
 
-                placement.confirm_desktop_adoption();
-                assert!(placement.is_desktop_adopted());
+                placement.confirm_shell_adoption();
+                assert!(placement.is_shell_adopted());
                 assert_eq!(
-                    placement.rect(app, desk),
+                    placement.rect(app, display),
                     prepared,
                     "ownership acknowledgement cannot replay stale geometry"
                 );
@@ -1907,90 +1907,90 @@ mod tests {
 
             {
                 let app = Rect::new(0.0, 0.0, 700.0, 600.0);
-                let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1_400.0, 900.0);
                 let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
                 let press = Point::new(600.0, 40.0);
-                placement.begin_drag(press, app, desk);
+                placement.begin_drag(press, app, display);
                 let outside = Point::new(750.0, 40.0);
-                assert_eq!(placement.update_drag(outside, app, desk), Handoff::Detached);
-                let local_detached = placement.rect(app, desk);
+                assert_eq!(placement.update_drag(outside, app, display), Handoff::Detached);
+                let local_detached = placement.rect(app, display);
                 let coordinate_offset = Vec2::new(240.0, 110.0);
                 let prepared = local_detached + coordinate_offset;
-                placement.prepare_desktop_rect_with_offset(prepared, coordinate_offset);
-                assert_eq!(placement.rect(app, desk), prepared);
+                placement.prepare_shell_rect_with_offset(prepared, coordinate_offset);
+                assert_eq!(placement.rect(app, display), prepared);
 
                 // The compositor may deliver a native cursor event without the mouse
-                // moving at all. Its coordinates are desktop-space; it must not pull
+                // moving at all. Its coordinates are shell coordinates; it must not pull
                 // the surface by the app's origin.
                 assert_eq!(
-                    placement.update_drag(outside + coordinate_offset, app, desk),
+                    placement.update_drag(outside + coordinate_offset, app, display),
                     Handoff::None
                 );
-                assert_eq!(placement.rect(app, desk), prepared);
+                assert_eq!(placement.rect(app, display), prepared);
             }
 
             {
                 let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
-                let desk = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1_600.0, 900.0);
                 let app_origin = Vec2::new(262.0, 124.0);
                 let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
                 let press = Point::new(1_114.0, 24.0);
-                placement.begin_drag(press, app, desk);
+                placement.begin_drag(press, app, display);
                 let crossing = Point::new(1_114.0, -64.0);
                 assert_eq!(
-                    placement.update_drag(crossing, app, desk),
+                    placement.update_drag(crossing, app, display),
                     Handoff::Detached
                 );
-                let request_rect = placement.rect(app, desk);
+                let request_rect = placement.rect(app, display);
 
                 let pre_prepare_pointer = Point::new(738.0, -64.0);
                 assert_eq!(
-                    placement.update_drag(pre_prepare_pointer, app, desk),
+                    placement.update_drag(pre_prepare_pointer, app, display),
                     Handoff::None
                 );
-                let live_before_prepare = placement.rect(app, desk);
+                let live_before_prepare = placement.rect(app, display);
 
-                placement.prepare_desktop_rect_with_offset(request_rect + app_origin, app_origin);
+                placement.prepare_shell_rect_with_offset(request_rect + app_origin, app_origin);
                 assert_eq!(
-                    placement.rect(app, desk),
+                    placement.rect(app, display),
                     live_before_prepare + app_origin,
                     "Prepare references the crossing frame; newer live motion must survive it"
                 );
                 assert_eq!(
-                    placement.update_drag(pre_prepare_pointer + app_origin, app, desk),
+                    placement.update_drag(pre_prepare_pointer + app_origin, app, display),
                     Handoff::None
                 );
-                assert_eq!(placement.rect(app, desk), live_before_prepare + app_origin);
+                assert_eq!(placement.rect(app, display), live_before_prepare + app_origin);
             }
 
             {
                 let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
-                let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+                let display = Rect::new(0.0, 0.0, 1_600.0, 900.0);
                 let app_origin = Vec2::new(262.0, 124.0);
                 let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
                 let press_local = Point::new(1_114.0, 24.0);
-                let initial_local = placement.rect(app, desktop);
-                placement.begin_drag(press_local, app, desktop);
+                let initial_local = placement.rect(app, display);
+                placement.begin_drag(press_local, app, display);
                 assert_eq!(
-                    placement.update_drag(Point::new(1_114.0, -104.0), app, desktop),
+                    placement.update_drag(Point::new(1_114.0, -104.0), app, display),
                     Handoff::Detached
                 );
-                let local_detached = placement.rect(app, desktop);
-                placement.prepare_desktop_rect_with_offset(local_detached + app_origin, app_origin);
+                let local_detached = placement.rect(app, display);
+                placement.prepare_shell_rect_with_offset(local_detached + app_origin, app_origin);
 
-                let returned_desktop = Point::new(1_376.0, 180.0);
-                let returned_primary_local = returned_desktop - app_origin;
+                let returned_shell = Point::new(1_376.0, 180.0);
+                let returned_primary_local = returned_shell - app_origin;
                 assert_eq!(
-                    placement.update_drag(returned_primary_local + app_origin, app, desktop),
+                    placement.update_drag(returned_primary_local + app_origin, app, display),
                     Handoff::Reattached
                 );
                 assert!(placement.is_return_pending());
-                let returned_desktop_rect = placement.rect(app, desktop);
-                let expected_desktop =
-                    initial_local + app_origin + (returned_desktop - (press_local + app_origin));
-                assert_eq!(returned_desktop_rect, expected_desktop);
+                let returned_shell_rect = placement.rect(app, display);
+                let expected_shell =
+                    initial_local + app_origin + (returned_shell - (press_local + app_origin));
+                assert_eq!(returned_shell_rect, expected_shell);
                 placement.confirm_app_adoption(app);
-                assert_eq!(placement.rect(app, desktop) + app_origin, expected_desktop);
+                assert_eq!(placement.rect(app, display) + app_origin, expected_shell);
             }
         }
     }
@@ -2045,7 +2045,7 @@ mod tests {
                 );
                 assert_eq!(read(), outbound);
 
-                let inbound = FloatingSurfaceHostMessage::DesktopBounds {
+                let inbound = FloatingSurfaceHostMessage::DisplayBounds {
                     bounds: [0.0, 0.0, 2560.0, 1440.0],
                 };
                 let mut bytes = serde_json::to_vec(&inbound).unwrap();

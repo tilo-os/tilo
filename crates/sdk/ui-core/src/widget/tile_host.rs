@@ -44,7 +44,7 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 
 /// The focused window's edge: two logical pixels, so which window takes the
 /// keyboard is seen at a glance rather than looked for. The edge sits outside
-/// the card, so the extra pixel is desktop, never the app's own.
+/// the card, so the extra pixel is shell, never the app's own.
 pub(crate) const FOCUSED_EDGE_STROKE_WIDTH: f64 = 2.0;
 
 const WIDEST_EDGE_STROKE_WIDTH: f64 = FOCUSED_EDGE_STROKE_WIDTH;
@@ -373,8 +373,8 @@ pub struct TileHost {
     pending_history: Option<crate::history_mode::HistoryRegistration>,
     history_opening: bool,
     /// Where the History control stands while History is closed: `None` in
-    /// the app's own header row (a tile outside a desktop window), `Some`
-    /// once a desktop window hosts the tile. `Some(true)`: the window's tab
+    /// the app's own header row (a tile outside a shell window), `Some`
+    /// once a shell window hosts the tile. `Some(true)`: the window's tab
     /// row presents it, so the tile draws no History control of its own;
     /// `Some(false)`: the tab row is hidden (a maximized window), so the
     /// app's header row may hold it, but never a band of its own.
@@ -529,7 +529,7 @@ impl TileHost {
         tile
     }
 
-    /// A desktop window hosts this tile; `tab_presents` says whether the
+    /// A shell window hosts this tile; `tab_presents` says whether the
     /// window's tab row shows (and so presents the History control). The
     /// tile then never draws a History band of its own: closed, History is
     /// opened from the tab row, or from the app's header row while the tab
@@ -633,7 +633,7 @@ impl TileHost {
         }
         Style {
             size: fill,
-            // The window gives its app its room; what the app shows never
+            // The window gives its app its area; what the app shows never
             // sets a floor under it. With the automatic minimum, a page whose
             // document was taller than the window kept the tile from making
             // way for the window's bar, and pushed the window past its strip.
@@ -1281,7 +1281,7 @@ impl TileHost {
         }
     }
 
-    /// Desktop-space card rect for an app-provided complete semantic canvas.
+    /// Shell-space card rect for an app-provided complete semantic canvas.
     /// The provider reports tile-content size; the shell card grows from the
     /// live tile's top-left and never shrinks below the live window surface.
     pub fn complete_content_rect(&self) -> Option<Rect> {
@@ -2676,7 +2676,7 @@ impl TileHost {
     /// The window's outline. Painted *outside* the card's silhouette, safe
     /// from app content by the clip in `draw_steady_state` rather than a
     /// paint-order race: a stroke over unknown app content can't pick one
-    /// alpha that reads right on every ground, but the desktop outside is
+    /// alpha that reads right on every ground, but the shell outside is
     /// known, so `Theme::window_edge` can derive one that does. Inflated by
     /// half the stroke width so the band sits flush with zero overlap; the
     /// radius grows by the same half so it stays concentric at the
@@ -2691,7 +2691,7 @@ impl TileHost {
         rect: Rect,
     ) {
         // Focus is the window's own edge in the accent, and a pixel heavier:
-        // the band is drawn outside the card, so the extra pixel is desktop,
+        // the band is drawn outside the card, so the extra pixel is shell,
         // and the weight is what tells the window taking the keyboard from
         // its neighbours at a glance.
         let edge_color = if self.focused {

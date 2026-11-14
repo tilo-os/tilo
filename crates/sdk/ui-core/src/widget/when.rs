@@ -64,7 +64,7 @@ impl Widget for Absent {
     }
 }
 
-/// `child` when there is one, otherwise an [`Absent`] that takes no room
+/// `child` when there is one, otherwise an [`Absent`] that takes up nothing
 /// and no gap: a caption, a badge or a help line that only some items
 /// have.
 #[must_use]
@@ -274,7 +274,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn when_gives_room_only_to_what_it_shows;
+        fn when_gives_area_only_to_what_it_shows;
 
         phase an_absent_child_takes_no_gap_in_a_column_or_a_row;
         {
@@ -307,7 +307,7 @@ mod tests {
             assert!((b.x0 - a.x1 - 8.0).abs() < 0.01, "got {}", b.x0 - a.x1);
         }
 
-        phase modal_dialogs_and_popovers_take_no_room_in_the_flow;
+        phase modal_dialogs_and_popovers_take_up_nothing_in_the_flow;
         {
             let mut column = Column::new()
                 .with_no_padding()

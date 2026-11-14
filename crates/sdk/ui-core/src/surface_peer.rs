@@ -1,5 +1,5 @@
-//! A surface app's actions on the session that places its window. The desktop's own
-//! surfaces (the bar, the desk, the panels, a sheet) are ordinary apps run as processes
+//! A surface app's actions on the session that places its window. The shell's own
+//! surfaces (the bar, the shell, the panels, a sheet) are ordinary apps run as processes
 //! of their own.
 
 use std::collections::{HashMap, VecDeque};

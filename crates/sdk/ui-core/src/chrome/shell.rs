@@ -21,7 +21,7 @@ pub const HAIRLINE_ALPHA: u8 = 26;
 pub const PANEL_BORDER_ALPHA: u8 = 92;
 
 /// Smallest relative-luminance gap for a panel to read as its surface
-/// rather than a slightly different patch of the desktop — the toolkit's
+/// rather than a slightly different patch of the shell — the toolkit's
 /// hairline threshold, spelled once.
 const PANEL_MIN_DELTA: f64 = HAIRLINE_MIN_DELTA;
 
@@ -431,7 +431,7 @@ pub fn paint_display_edge(
     );
 }
 
-/// The desktop ground: what shell chrome drawn over the whole desktop (the overview's pictured windows
+/// The shell ground: what shell chrome drawn over the whole shell (the overview's pictured windows
 /// and their captions) sits on.
 #[must_use]
 pub fn desktop_ground(theme: &Theme) -> Color {
@@ -445,7 +445,7 @@ pub fn desktop_ground(theme: &Theme) -> Color {
 ///
 /// High contrast is the exception: there the floating level is the ground
 /// itself, so the ground is walked away from it (same luminance reasoning
-/// as [`Colors::hairline_on`]) until it clears the desktop and the window;
+/// as [`Colors::hairline_on`]) until it clears the shell and the window;
 /// [`PANEL_BORDER_ALPHA`] is the edge half of the same fix.
 pub fn panel_ground(theme: &Theme) -> Color {
     use crate::a11y::relative_luminance;
@@ -634,7 +634,7 @@ pub const SCRIM_LEVEL_SHARE: f32 = 0.55;
 ///
 /// A flat wash dims by an amount that depends on the ground
 /// lightness: measured on a real frame, a flat 0.45 wash took 39.6 L* off
-/// a `bg-white` page (252→143) and 1.5 L* off the desktop beside it
+/// a `bg-white` page (252→143) and 1.5 L* off the shell beside it
 /// (20→16) — the page read as blanked out and nothing else read as dimmed
 /// — and flattened the 12 code values between the page and a rule on it
 /// down to 7.
@@ -1024,9 +1024,9 @@ mod tests {
             }
         }
 
-        // Case `a_panel_separates_from_the_desktop_on_every_theme`:
+        // Case `a_panel_separates_from_the_shell_on_every_theme`:
         // A panel is the floating level, a visible lightness step off the
-        // desktop (over a light window, where both are near white, its
+        // shell (over a light window, where both are near white, its
         // shadow and hairline separate it); on high contrast, where the
         // levels are one colour, fill *or* edge must carry the separation.
         {
@@ -1038,7 +1038,7 @@ mod tests {
                     assert_eq!(ground, theme.tokens.colors.surfaces.overlay, "{name}");
                     assert!(
                         lightness_step(ground, base) >= 0.03,
-                        "{name}: a panel is not a step off the desktop"
+                        "{name}: a panel is not a step off the shell"
                     );
                     if theme.tokens.colors.palette.dark {
                         assert!(
@@ -1061,7 +1061,7 @@ mod tests {
                 let edge_delta = (relative_luminance(edge) - relative_luminance(ground)).abs();
                 assert!(
                     fill_delta >= PANEL_MIN_DELTA || edge_delta >= PANEL_MIN_DELTA,
-                    "{name}: a panel is indistinguishable from the desktop \
+                    "{name}: a panel is indistinguishable from the shell \
                  (fill delta {fill_delta:.4}, edge delta {edge_delta:.4})"
                 );
             }
@@ -1081,7 +1081,7 @@ mod tests {
     /// Perceived lightness of an 8-bit grey, CIE L\*. A scrim's job is
     /// judged in what the eye loses, not the code value — a flat wash takes
     /// the same fraction of every code value, which is why it reads as two
-    /// different amounts of dimming on a light page versus a dark desktop.
+    /// different amounts of dimming on a light page versus a dark shell.
     fn lstar(v: u8) -> f64 {
         let s = f64::from(v) / 255.0;
         let y = if s <= 0.04045 {

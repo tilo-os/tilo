@@ -464,8 +464,8 @@ pub trait Widget {
     }
 
     /// Whether Tab and directional focus travel stay inside this subtree while no trap holds focus: the
-    /// focused desktop window, so keyboard travel cycles through the window the person is in (its bar
-    /// and its app) and never wanders onto the other windows or the desktop's chrome (top bar, menus),
+    /// focused shell window, so keyboard travel cycles through the window the person is in (its bar
+    /// and its app) and never wanders onto the other windows or the shell's chrome (top bar, menus),
     /// which the keyboard reaches through its own shortcuts.
     fn scopes_keyboard_focus(&self) -> bool {
         false
@@ -810,7 +810,7 @@ pub trait Widget {
     /// dropped, so the column a rebuild makes can draw it leaving.
     fn note_placement(&mut self, _placement: Placement) {}
 
-    /// Why this widget itself asks for animation frames, for diagnostics that name a desktop which
+    /// Why this widget itself asks for animation frames, for diagnostics that name a shell which
     /// keeps painting.
     fn animation_detail(&self) -> Option<String> {
         None

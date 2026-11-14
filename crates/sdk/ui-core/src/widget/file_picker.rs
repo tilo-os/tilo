@@ -348,12 +348,12 @@ impl FileRow for PickerRow {
         };
         let tokens = &theme.tokens;
         let x = name_end + f64::from(tokens.spacing.s3);
-        let room = cell.x1 - f64::from(tokens.spacing.s2) - x;
-        if room <= f64::from(tokens.metrics.icon_md) {
+        let spare = cell.x1 - f64::from(tokens.spacing.s2) - x;
+        if spare <= f64::from(tokens.metrics.icon_md) {
             return;
         }
         let style = theme.text(TextRole::Label);
-        let label = text_renderer.elide_to_width_style(location, px(room), &style);
+        let label = text_renderer.elide_to_width_style(location, px(spare), &style);
         let (_, h) = text_renderer.measure_style(&label, None, &style);
         text_renderer.draw_style(
             scene,

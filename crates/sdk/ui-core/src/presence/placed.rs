@@ -1,7 +1,7 @@
 //! Other people's pointers that a host has already placed in its own
 //! surface's coordinates (the browser page, which interpolates each member's
 //! live pointer itself): drawn by the frame with the same arrow, name tag
-//! and colour a native desktop draws them with, never by a second renderer.
+//! and colour a native shell draws them with, never by a second renderer.
 
 use super::{ChatBubble, PeerCursor, PresenceCtx, ReactionFloat};
 use crate::permissions::UserId;

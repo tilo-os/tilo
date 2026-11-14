@@ -129,11 +129,17 @@ mod record_index_launch_tests {
     #[test]
     fn launch_reads_the_existing_index_without_opening_its_records() {
         let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
-        let mut room_index = AutoCommit::new();
-        assert!(index::reference(&mut room_index, &entry.id, &entry.kind));
+        let mut workspace_index = AutoCommit::new();
+        assert!(index::reference(
+            &mut workspace_index,
+            &entry.id,
+            &entry.kind
+        ));
 
-        let app = App::new(State::new(), Box::new(Text::new("PDF")))
-            .with_records(RecordSet::in_memory().with_home("room-a"), room_index);
+        let app = App::new(State::new(), Box::new(Text::new("PDF"))).with_records(
+            RecordSet::in_memory().with_home("workspace-a"),
+            workspace_index,
+        );
         let records = app.records().expect("record-aware launch installs the set");
         assert_eq!(records.known_records(), vec![entry]);
         assert!(records.open_records().is_empty());
@@ -691,7 +697,7 @@ impl AppConstructionInputs {
 
     fn production(collab_manager: CollaborationManager) -> Self {
         // The screen reader below speaks through the host's services, so a
-        // process that never installed any gets the native desktop's.
+        // process that never installed any gets the native shell's.
         #[cfg(feature = "native")]
         crate::host::native::install_default_if_unset(None);
         #[cfg(feature = "native")]
@@ -2407,7 +2413,7 @@ impl App {
         self
     }
 
-    /// Name the window by what it shows, for the desktop to name it by too: the page, the record, the
+    /// Name the window by what it shows, for the shell to name it by too: the page, the record, the
     /// place its content says it is ([`crate::component_lifecycle::WindowTitle`]), and the title this
     /// window states where its content says nothing.
     #[cfg(feature = "native")]

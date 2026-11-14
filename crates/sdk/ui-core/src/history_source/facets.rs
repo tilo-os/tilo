@@ -60,7 +60,7 @@ fn bump(map: &mut BTreeMap<String, usize>, key: &str) {
 }
 
 impl EntryKind {
-    /// What kind of change this is, in the desktop's language.
+    /// What kind of change this is, in the shell's language.
     #[must_use]
     pub fn label(self) -> String {
         widget_text(match self {

@@ -26,7 +26,7 @@ pub use page::{
 pub mod profile;
 pub mod test_engine;
 
-/// The Browser's app id: the app the desktop opens a web address in when nothing else is
+/// The Browser's app id: the app the shell opens a web address in when nothing else is
 /// chosen for it.
 pub const BROWSER_APP_ID: &str = "so.tilo.browser";
 

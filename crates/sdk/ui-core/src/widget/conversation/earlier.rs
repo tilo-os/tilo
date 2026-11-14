@@ -19,8 +19,8 @@ impl EarlierUnavailableFace {
         let theme = paint.theme;
         let label = Self::label();
         let style = theme.text(TextRole::Caption);
-        let room = crate::num::f32_of_f64((trailing - leading).max(0.0));
-        let shown = paint.text.elide_to_width_style(&label, room, &style);
+        let spare = crate::num::f32_of_f64((trailing - leading).max(0.0));
+        let shown = paint.text.elide_to_width_style(&label, spare, &style);
         let width = f64::from(paint.text.measure_style(&shown, None, &style).0);
         let x = leading + ((trailing - leading) - width).max(0.0) / 2.0;
         paint.text_role_in_band(&shown, TextRole::Caption, theme.text_dim, x, band, None);

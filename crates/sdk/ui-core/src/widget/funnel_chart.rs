@@ -257,9 +257,9 @@ impl FunnelMarks {
             return;
         }
         let edge = bounds.center().x - narrow.max(geometry.wide_width) / 2.0;
-        let room = edge - pad - self.frame.rect.x0 - pad;
+        let spare = edge - pad - self.frame.rect.x0 - pad;
         let Some((name, w, _)) =
-            crate::widget::chart_labels::fit_label(tr, &stage.label, room, &name_style)
+            crate::widget::chart_labels::fit_label(tr, &stage.label, spare, &name_style)
         else {
             return;
         };
@@ -274,7 +274,7 @@ impl FunnelMarks {
         );
         if two_lines
             && let Some(value) = value.as_deref()
-            && vw <= room
+            && vw <= spare
         {
             tr.draw_style(
                 scene,

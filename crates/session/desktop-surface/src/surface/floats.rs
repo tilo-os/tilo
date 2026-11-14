@@ -14,7 +14,7 @@ use tilo_desktop_model::{
 };
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
-use ui::widget::{FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
+use ui::widget::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
 
 use super::Shared;
 
@@ -255,7 +255,7 @@ pub(super) fn dock(shared: &mut Shared, strip: StripId, row: &GroupRow, group: u
 /// other is lifted over the place it stands ([`lift`]). Returns whether the tree changed.
 pub(super) fn float(shared: &mut Shared, strip: StripId, row: &mut GroupRow, group: u64) -> bool {
     if shared.dock.born.contains(&group) {
-        row.share_with_floating_neighbour(group, FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_ROOM);
+        row.share_with_floating_neighbour(group, FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_MARGIN);
         dock(shared, strip, row, group)
     } else {
         lift(shared, strip, row, group)

@@ -16,7 +16,7 @@ use crate::tokens::{Colors, SelectorFinish, StripMaterial};
 /// What of a selector is painted.
 #[derive(Clone, Copy, Debug)]
 pub enum SelectorRole<'a> {
-    /// The body a docked strip of selectors sits on: the floating material over the desktop behind it
+    /// The body a docked strip of selectors sits on: the floating material over the shell behind it
     /// (or the opaque panel ground), edged like the panel it is made of.
     Strip(Affine),
     /// One selector, in the tier [`selector_tier`] resolved (or one a
@@ -55,7 +55,7 @@ pub fn strip_ground(theme: &Theme) -> Color {
 
 /// The active selector's fill on `ground`: one surface step of it
 /// ([`Colors::lift_on`]), opaque. On a light palette a selector rises
-/// toward the light, as a raised surface does, while the ground leaves room
+/// toward the light, as a raised surface does, while the ground leaves area
 /// for at least [`SELECTION_MIN_STEP`] above it (the strip's light ground
 /// does, a white window does not); elsewhere it takes the palette's way.
 fn active_lift(theme: &Theme, ground: Color) -> Color {
@@ -150,14 +150,14 @@ pub fn paint_selector(
         return;
     }
     match role {
-        SelectorRole::Strip(desktop) => paint_strip(scene, (transform, desktop), shape, theme),
+        SelectorRole::Strip(shell) => paint_strip(scene, (transform, shell), shape, theme),
         SelectorRole::Item(tier) => paint_item(scene, transform, shape, tier, theme),
     }
 }
 
 fn paint_strip(
     scene: &mut Scene,
-    (transform, desktop): (Affine, Affine),
+    (transform, shell): (Affine, Affine),
     shape: &RoundedRect,
     theme: &Theme,
 ) {
@@ -166,7 +166,7 @@ fn paint_strip(
         StripMaterial::Floating => Material::Floating,
         StripMaterial::Opaque => Material::Opaque,
     };
-    crate::backdrop::desktop::fill(scene, (transform, desktop), shape, material, theme, ground);
+    crate::backdrop::wallpaper::fill(scene, (transform, shell), shape, material, theme, ground);
     let radius = shape.radii().top_left;
     scene.stroke(
         &Stroke::new(1.0),

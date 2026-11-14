@@ -182,7 +182,7 @@ pub struct DocBlock {
     pub selection: Option<[usize; 2]>,
     /// It can be edited.
     pub editable: bool,
-    /// The room above it, logical pixels, as the editor stacks it.
+    /// The area above it, logical pixels, as the editor stacks it.
     pub gap: f32,
     /// Its type size, logical pixels.
     pub size: f32,

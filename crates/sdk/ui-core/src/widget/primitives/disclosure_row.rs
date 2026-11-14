@@ -482,7 +482,7 @@ impl DisclosureRow {
 
     /// What the reveal lays out at this frame: the row's height, its header
     /// and as much of its body as the reveal shows, and whether the body is
-    /// shut away (closed and at rest), taking no room and no place.
+    /// shut away (closed and at rest), taking up nothing and no place.
     fn reveal_layout(&self) -> (f32, bool) {
         let shut = !self.state.is_open() && !self.state.is_moving();
         let revealed = Disclose::reveal(self.progress(), self.state.body_height()).height;
@@ -510,7 +510,7 @@ impl DisclosureRow {
 
     /// How much of a title line of `line` width the side line may take: its
     /// own natural `wanted` width, up to two fifths of the line.
-    fn side_room(wanted: f64, line: f64) -> f64 {
+    fn side_width(wanted: f64, line: f64) -> f64 {
         wanted.min((line * 0.4).max(0.0))
     }
 
@@ -559,11 +559,11 @@ impl DisclosureRow {
         if !self.side.is_empty() {
             let style = theme.text(crate::TextRole::Caption);
             let natural = f64::from(ctx.text.measure_style(&self.side, None, &style).0);
-            let room = Self::side_room(natural, text.width());
-            let start = text.x1 - room;
+            let spare = Self::side_width(natural, text.width());
+            let start = text.x1 - spare;
             let shown =
                 ctx.text
-                    .elide_to_width_style(&self.side, crate::num::f32_of_f64(room), &style);
+                    .elide_to_width_style(&self.side, crate::num::f32_of_f64(spare), &style);
             let top = self.face().title_top(text, ctx.text, theme);
             ctx.text.draw_style(
                 ctx.scene,
@@ -1191,14 +1191,14 @@ mod tests {
             );
         }
 
-        phase a_side_line_takes_its_room_from_the_end_of_the_titles_line;
+        phase a_side_line_takes_its_area_from_the_end_of_the_titles_line;
         {
             // What the side line may take of a title's line: never more than
             // its own words need, and never more than two fifths of the line, so
             // a long byline cannot crowd the title it belongs to.
-            assert_eq!(DisclosureRow::side_room(60.0, 300.0), 60.0);
-            assert_eq!(DisclosureRow::side_room(200.0, 300.0), 120.0);
-            assert_eq!(DisclosureRow::side_room(0.0, 0.0), 0.0);
+            assert_eq!(DisclosureRow::side_width(60.0, 300.0), 60.0);
+            assert_eq!(DisclosureRow::side_width(200.0, 300.0), 120.0);
+            assert_eq!(DisclosureRow::side_width(0.0, 0.0), 0.0);
         }
 
         phase a_row_is_as_tall_as_its_lines;

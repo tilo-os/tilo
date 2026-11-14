@@ -247,7 +247,7 @@ pub(crate) fn within_keyboard_scope(
         .collect()
 }
 
-/// Whether a component boundary (an app hosted in a tile, as a desktop's
+/// Whether a component boundary (an app hosted in a tile, as a shell's
 /// windows host theirs) sits below `widget`. A component's root lays out
 /// nodes that are not its boundary's widget children, so a widget walk
 /// ([`any_trap`]) cannot reach its controls: whether one traps focus is then

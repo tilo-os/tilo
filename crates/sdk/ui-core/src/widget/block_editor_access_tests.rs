@@ -8,7 +8,7 @@ fn block_rows_are_named_items_a_reader_opens_and_a_checklist_it_ticks() {
     let mut editor = BlockEditor::new();
     editor.set_blocks(vec![
         Block::paragraph("Send the launch notes"),
-        Block::checklist(0, false, "Book the room"),
+        Block::checklist(0, false, "Book the area"),
     ]);
     let first_id = editor.blocks()[0].id.clone();
     let second_id = editor.blocks()[1].id.clone();
@@ -50,7 +50,7 @@ fn block_rows_are_named_items_a_reader_opens_and_a_checklist_it_ticks() {
         .find(|child| child.role == crate::a11y::Role::Checkbox)
         .expect("the checklist's box is a control of its own");
     assert_eq!(box_.state.checked, Some(false));
-    assert_eq!(box_.name.as_deref(), Some("Book the room"));
+    assert_eq!(box_.name.as_deref(), Some("Book the area"));
     assert!(Widget::perform_semantic_action(
         &mut editor,
         &format!("notes.block-check:{second_id}"),

@@ -344,7 +344,7 @@ impl QueryComposition {
     }
 
     /// Paint a query that wraps at `rect`'s width, for a field of more than one line: the message of a
-    /// box that makes room for what is written in it.
+    /// box that makes way for what is written in it.
     pub fn draw_wrapped(
         &mut self,
         ctx: &mut PaintCtx<'_>,

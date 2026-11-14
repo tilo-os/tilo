@@ -57,7 +57,7 @@ fn metrics() -> Metrics {
 }
 
 tilo_test_env::scenario! {
-    /// What an empty state shows in the room it has.
+    /// What an empty state shows in the area it has.
     /// Each phase was a test of its own and builds its own fixture.
     fn an_empty_state_lays_out_wraps_and_sheds;
 
@@ -76,12 +76,12 @@ tilo_test_env::scenario! {
             };
             let m = metrics();
 
-            let roomy = Fit::choose(400.0, want, m);
+            let reserved = Fit::choose(400.0, want, m);
             assert!(
-                roomy.icon && roomy.message,
+                reserved.icon && reserved.message,
                 "a full pane keeps the whole stack"
             );
-            assert!(roomy.total <= 400.0);
+            assert!(reserved.total <= 400.0);
 
             let docked = Fit::choose(120.0, want, m);
             assert!(!docked.icon, "the disc is shed first");
@@ -92,7 +92,7 @@ tilo_test_env::scenario! {
                 docked.total
             );
 
-            // Barely any room: the message goes too, but never the title.
+            // Barely any area: the message goes too, but never the title.
             let cramped = Fit::choose(30.0, want, m);
             assert!(!cramped.icon && !cramped.message);
             assert_eq!(cramped.total, m.title_h, "the title always survives");
@@ -381,7 +381,7 @@ tilo_test_env::scenario! {
             );
         }
 
-        fn roomy_scrollable_retains_the_icon_and_explanatory_message() {
+        fn wide_scrollable_retains_the_icon_and_explanatory_message() {
             let make = |icon| {
                 let mut scroll = EmptyState::new("No messages")
                     .with_message("Reconnect to load messages.")
@@ -416,11 +416,11 @@ tilo_test_env::scenario! {
                 .count();
             assert!(
                 decorated_colors > plain_colors,
-                "roomy scrollable keeps the icon disc and strokes"
+                "wide scrollable keeps the icon disc and strokes"
             );
         }
 
-        fn roomy_manual_pane_keeps_the_essential_block_centered() {
+        fn wide_manual_pane_keeps_the_essential_block_centered() {
             let theme = Theme::dark();
             let mut tr = crate::font_catalog::fixture_renderer();
             let rect = Rect::new(15.0, 25.0, 495.0, 425.0);
@@ -447,7 +447,7 @@ tilo_test_env::scenario! {
                 },
                 Point::new(-1.0, -1.0),
             )
-            .expect("roomy pane exposes action");
+            .expect("wide pane exposes action");
             let top = action.y1 - minimum;
             assert!(((top - rect.y0) - (rect.y1 - action.y1)).abs() < 0.001);
 
@@ -480,8 +480,8 @@ tilo_test_env::scenario! {
         draws_something_visible();
         immediate_mode_paint_returns_action_rect();
         retained_empty_state_has_a_scrollable_route_to_essential_content();
-        roomy_scrollable_retains_the_icon_and_explanatory_message();
-        roomy_manual_pane_keeps_the_essential_block_centered();
+        wide_scrollable_retains_the_icon_and_explanatory_message();
+        wide_manual_pane_keeps_the_essential_block_centered();
         accessibility_is_a_named_group();
     }
 
@@ -492,10 +492,10 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let message = "Bridge a server with the Discord Bridge bot and its channels and \
-                   messages show up in this room's Chat, in step both ways.";
+                   messages show up in this workspace's Chat, in step both ways.";
         let content = EmptyStateContent {
             message: Some(message),
-            ..EmptyStateContent::new("Bring a Discord server into this room")
+            ..EmptyStateContent::new("Bring a Discord server into this area")
         };
         let style = StackStyle::resolved(&theme, false);
         let wide = style.measure(&mut text, 1600.0, &content, 0.0);
@@ -1141,7 +1141,7 @@ fn an_empty_state_in_a_workspace_that_never_synced_says_so_and_offers_nothing_of
     crate::workspace_sync::set(None);
     assert!(
         paint(&mut scene).is_some(),
-        "a room with no host is the app's"
+        "a workspace with no sync state is the app's"
     );
 }
 
@@ -1187,11 +1187,11 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
     );
 
     crate::workspace_sync::set(told(WorkspaceSyncState::Synced));
-    let empty_room = Widget::accessibility(&empty).unwrap();
-    assert_eq!(empty_room.name.as_deref(), Some("No notes yet"));
-    assert!(!empty_room.state.busy);
+    let empty_node = Widget::accessibility(&empty).unwrap();
+    assert_eq!(empty_node.name.as_deref(), Some("No notes yet"));
+    assert!(!empty_node.state.busy);
     assert_eq!(
-        empty_room
+        empty_node
             .children
             .first()
             .and_then(|action| action.name.as_deref()),

@@ -1848,7 +1848,7 @@ mod native_process_tests {
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         }
         for (field, value) in [
-            ("room", "foreign-room"),
+            ("room", "foreign-workspace"),
             ("app_id", "so.tilo.other"),
             ("person", "person-b"),
         ] {
@@ -2001,7 +2001,7 @@ mod native_process_tests {
             );
             for invalid in [
                 NativeProcessEnvironment {
-                    workspace_id: Some("not-a-room".into()),
+                    workspace_id: Some("not-a-workspace".into()),
                     ..environment(temp.path())
                 },
                 NativeProcessEnvironment {

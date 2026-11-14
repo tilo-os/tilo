@@ -20,7 +20,7 @@
 //! modal_dialog::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
 //! ```
 //!
-//! On a roomy viewport the sheet is a floating Panel ([`super::floating_surface`]);
+//! On a wide viewport the sheet is a floating Panel ([`super::floating_surface`]);
 //! on a compact one an opaque full-window page. Dismissal ([`ModalDialog::on_dismiss`])
 //! is the dialog's close control, published as a view action so agents and scripts
 //! close the dialog as a person does.
@@ -1825,7 +1825,7 @@ impl Widget for ModalDialog<dyn Widget> {
         };
         let node_w = f64::from(l.size.width);
         // Compact presentation depends on both viewport axes. A synthetic
-        // one-pixel height would classify every desktop sheet as a page and
+        // one-pixel height would classify every shell sheet as a page and
         // measure its body at the wrong width, leaving it perpetually dirty.
         // A presented dialog's last painted viewport can precede a resize.
         // Measure against the current host tree before the next paint, so
@@ -2562,7 +2562,7 @@ thread_local! {
 }
 
 /// Place a window's content (`place` runs its `apply_layout`) knowing which window it is: a host
-/// laying several windows out in one tree (the desktop's strip) calls this so a dialog centres on
+/// laying several windows out in one tree (the shell's strip) calls this so a dialog centres on
 /// its own window rather than the shared tree's root.
 pub fn within_window<R>(window: NodeId, rect: Rect, place: impl FnOnce() -> R) -> R {
     struct Restore(Option<(NodeId, Rect)>);

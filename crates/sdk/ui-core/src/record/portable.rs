@@ -3,8 +3,8 @@
 use super::{
     AutoCommit, Parked, PortableStorage, Rc, RecordCheckout, RecordId, RecordOpenError,
     RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
-    Reserved, Transactable, WORKSPACE, WORKSPACE_ALIAS, identity, meta_obj, transfer,
-    validate_identity, workspace_scope,
+    Reserved, Transactable, WORKSPACE, identity, meta_obj, transfer, validate_identity,
+    workspace_scope,
 };
 // The browser cache has its own key space (with a package-primary slot).
 use crate::portable_storage::StorageKey;
@@ -127,7 +127,6 @@ impl RecordSet {
         };
         doc.put(&metadata, "home", &self.home).map_err(error)?;
         doc.put(&metadata, WORKSPACE, &self.home).map_err(error)?;
-        let _ = doc.delete(&metadata, WORKSPACE_ALIAS);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),

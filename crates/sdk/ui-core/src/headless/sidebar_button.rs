@@ -1,5 +1,5 @@
-//! The window bar's sidebar button, clicked as a person clicks it. The bar is the desktop's
-//! ([`super::window_bar`]): a click on its sidebar button lands on the bar's row as the desktop lays it
+//! The window bar's sidebar button, clicked as a person clicks it. The bar is the shell's
+//! ([`super::window_bar`]): a click on its sidebar button lands on the bar's row as the shell lays it
 //! out, and the row hands the app what was pressed, as the live window's bar does.
 
 use super::FrameHarness;
@@ -14,7 +14,7 @@ const BACK_BUTTON: &str = "nav-shell-back";
 
 struct BarSidebarButton {
     spot: Rect,
-    /// The desktop's bar draws it as one of the app's slots, so the press lands on the bar's row.
+    /// The shell's bar draws it as one of the app's slots, so the press lands on the bar's row.
     on_the_row: bool,
     shown: bool,
 }
@@ -40,7 +40,7 @@ impl SidebarShown {
 }
 
 impl FrameHarness {
-    /// The sidebar button the window's bar shows: the desktop's own slot, or — while the app's header
+    /// The sidebar button the window's bar shows: the shell's own slot, or — while the app's header
     /// row is the bar — the shell's toggle in that row.
     fn bar_sidebar_button(&mut self) -> Option<BarSidebarButton> {
         let width = f64::from(self.viewport.0);
@@ -85,7 +85,7 @@ impl FrameHarness {
         find(&self.inspection().root, id)
     }
 
-    /// Click the sidebar button where the window's bar, as the desktop or the app's own row draws it
+    /// Click the sidebar button where the window's bar, as the shell or the app's own row draws it
     /// across the window, puts it, and hand the app what the press runs ([`Self::press_window_slot`]).
     pub fn click_window_sidebar_button(&mut self) -> Result<(), String> {
         self.invalidate_local();
@@ -200,7 +200,7 @@ impl FrameHarness {
     }
 
     /// Whether the window's bar shows the way back to the screen that holds its sidebar button: the
-    /// desktop's own slot, or — while the app's header row is the bar — the shell's Back button in that
+    /// shell's own slot, or — while the app's header row is the bar — the shell's Back button in that
     /// row.
     fn window_bar_shows_back(&mut self) -> bool {
         let width = f64::from(self.viewport.0);

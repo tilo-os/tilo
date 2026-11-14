@@ -135,9 +135,9 @@ impl MapsApp {
             return;
         }
         let detached = Rect::new(820.0, 120.0, 1_180.0, 276.0);
-        self.navigation_placement.detach_to_desktop(detached);
-        self.navigation_placement.set_desktop_transfer_covered(true);
-        self.navigation_placement.confirm_desktop_adoption();
+        self.navigation_placement.detach_to_shell(detached);
+        self.navigation_placement.set_shell_transfer_covered(true);
+        self.navigation_placement.confirm_shell_adoption();
 
         if stage == "hover" {
             self.navigation_end_hovered = true;

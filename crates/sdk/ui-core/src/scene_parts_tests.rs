@@ -29,7 +29,7 @@ thread_local! {
 
 /// Background, a part at `A` drawn by `a`, chrome between, a part at `B` with a gradient
 /// and text that never changes, then more chrome.
-fn desktop(a: impl FnOnce(&mut Scene), chrome: Color) -> (Box<Scene>, SectionParts) {
+fn shell(a: impl FnOnce(&mut Scene), chrome: Color) -> (Box<Scene>, SectionParts) {
     section(|scene| {
         fill(
             scene,
@@ -81,15 +81,15 @@ fn caret(color: Color) -> impl FnOnce(&mut Scene) {
 
 #[test]
 fn an_unchanged_section_has_no_damage() {
-    let (old, old_parts) = desktop(caret(Color::WHITE), Color::WHITE);
-    let (new, new_parts) = desktop(caret(Color::WHITE), Color::WHITE);
+    let (old, old_parts) = shell(caret(Color::WHITE), Color::WHITE);
+    let (new, new_parts) = shell(caret(Color::WHITE), Color::WHITE);
     assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(Vec::new()));
 }
 
 #[test]
 fn a_change_inside_a_part_damages_only_that_part() {
-    let (old, old_parts) = desktop(caret(Color::WHITE), Color::WHITE);
-    let (new, new_parts) = desktop(caret(Color::BLACK), Color::WHITE);
+    let (old, old_parts) = shell(caret(Color::WHITE), Color::WHITE);
+    let (new, new_parts) = shell(caret(Color::BLACK), Color::WHITE);
     assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A]));
 }
 
@@ -97,8 +97,8 @@ fn a_change_inside_a_part_damages_only_that_part() {
 fn a_part_that_grows_leaves_later_text_gradients_and_chrome_proven_equal() {
     // More commands in the first part shift every stream offset, glyph run and patch
     // after it: the rest must still compare equal.
-    let (old, old_parts) = desktop(caret(Color::WHITE), Color::WHITE);
-    let (new, new_parts) = desktop(
+    let (old, old_parts) = shell(caret(Color::WHITE), Color::WHITE);
+    let (new, new_parts) = shell(
         |scene| {
             caret(Color::WHITE)(scene);
             fill(
@@ -124,8 +124,8 @@ fn a_part_that_grows_leaves_later_text_gradients_and_chrome_proven_equal() {
 
 #[test]
 fn a_change_outside_every_part_is_not_proven() {
-    let (old, old_parts) = desktop(caret(Color::WHITE), Color::WHITE);
-    let (new, new_parts) = desktop(caret(Color::WHITE), Color::BLACK);
+    let (old, old_parts) = shell(caret(Color::WHITE), Color::WHITE);
+    let (new, new_parts) = shell(caret(Color::WHITE), Color::BLACK);
     assert_eq!(
         damage(&old, &old_parts, &new, &new_parts),
         Err(Unproven::Section)
@@ -617,7 +617,7 @@ fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
     );
 }
 
-fn layered_desktop() -> (Box<Scene>, SectionParts) {
+fn layered_shell() -> (Box<Scene>, SectionParts) {
     section(|scene| {
         let all = Rect::new(0.0, 0.0, 200.0, 50.0);
         fill(scene, Affine::IDENTITY, all, Color::BLACK);
@@ -671,7 +671,7 @@ fn wants_b(bounds: &[Rect]) -> bool {
 
 #[test]
 fn counting_a_scene_s_streams_gives_what_encoding_it_counted() {
-    let (scene, _) = layered_desktop();
+    let (scene, _) = layered_shell();
     let mut counted = scene.encoding().clone();
     count_streams(&mut counted);
     let encoded = scene.encoding();
@@ -693,7 +693,7 @@ fn counting_a_scene_s_streams_gives_what_encoding_it_counted() {
 
 #[test]
 fn a_scene_culled_to_a_damage_leaves_out_only_parts_it_can_leave_out() {
-    let (scene, parts) = layered_desktop();
+    let (scene, parts) = layered_shell();
     assert!(
         culled(&scene, &parts, |_| true).is_none(),
         "every part wanted leaves the scene as it is"
@@ -708,7 +708,7 @@ fn a_scene_culled_to_a_damage_leaves_out_only_parts_it_can_leave_out() {
 #[cfg(feature = "native")]
 #[test]
 fn a_culled_scene_paints_what_the_whole_one_does_where_it_was_wanted() {
-    let (scene, parts) = layered_desktop();
+    let (scene, parts) = layered_shell();
     let culled = culled(&scene, &parts, wants_b).expect("the part at A is left out");
     let (width, height) = (200_u32, 50_u32);
     let render = |scene: &Scene| {

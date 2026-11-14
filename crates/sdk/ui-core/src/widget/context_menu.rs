@@ -591,8 +591,8 @@ pub struct ContextMenu {
     /// the entries that match it, best first, and the row that asks it.
     shown: Vec<usize>,
     /// The owner answers a typed sentence itself ([`Self::take_ask`])
-    /// rather than the desktop, and the menu takes typing however it was
-    /// opened: the desktop's own menus.
+    /// rather than the shell, and the menu takes typing however it was
+    /// opened: the shell's own menus.
     owner_asks: bool,
     /// The owner hands what its box sends to the session itself, with no app
     /// runner behind it: a shell part's menu, whose host is the session.
@@ -799,7 +799,7 @@ impl ContextMenu {
     }
 
     /// Open over `anchor`: a control, a row, or a point (a box with no area).
-    /// The menu stands below it, or above it where below has less room, and
+    /// The menu stands below it, or above it where below has less area, and
     /// inside the window it was opened in. Everything that opens a menu —
     /// the pointer, a control, the keyboard's row — names where it stands
     /// this way, so they are placed by one rule.
@@ -850,7 +850,7 @@ impl ContextMenu {
     }
 
     /// Keep the menu inside an owner-provided viewport. It opens on the side
-    /// of its anchor with more room, then wheel and keyboard navigation scroll
+    /// of its anchor with more area, then wheel and keyboard navigation scroll
     /// rows internally when neither side can fit them. The accessibility tree
     /// still exposes every complete label.
     pub fn set_viewport(&mut self, viewport: Option<Rect>) {

@@ -245,7 +245,7 @@ fn lay_out(
     let readable = f64::from(READABLE_LINES) * line;
     // A label wider than its column wraps within it; a word of one that is
     // wider than the column on its own cannot, and then every label stands
-    // over its value, as when the value has too little room beside it.
+    // over its value, as when the value has too little area beside it.
     let longest_word = all
         .iter()
         .flat_map(|row| row.label.split_whitespace())
@@ -269,14 +269,14 @@ fn lay_out(
         }
         for row in *rows {
             let value_style = m.value_style(row);
-            let (label_style, label_room) = if stacked {
+            let (label_style, label_width) = if stacked {
                 (&m.stacked_label, inner - action_col)
             } else {
                 (&m.label, label_col)
             };
             let label_wrap = (f64::from(text.measure_style(row.label, None, label_style).0)
-                > label_room + 0.5)
-                .then_some(label_room.max(1.0));
+                > label_width + 0.5)
+                .then_some(label_width.max(1.0));
             let label_h = f64::from(
                 text.measure_style(
                     row.label,
@@ -1375,11 +1375,11 @@ impl Widget for PropertyValue {
                 f64::from(text.measure_style(&self.value, None, &style).0) + self.action_w(&m),
             ),
         });
-        let room = (f64::from(width) - self.action_w(&m)).max(1.0);
+        let spare = (f64::from(width) - self.action_w(&m)).max(1.0);
         let h = if self.row().unbreakable() {
             text.measure_style(&self.value, None, &style).1
         } else {
-            text.measure_style(&self.value, Some(crate::num::f32_of_f64(room)), &style)
+            text.measure_style(&self.value, Some(crate::num::f32_of_f64(spare)), &style)
                 .1
         };
         let min = if self.copyable { m.action } else { 0.0 };
@@ -1412,13 +1412,13 @@ impl Widget for PropertyValue {
     ) {
         let m = ListMetrics::new(theme, Density::Regular);
         let style = m.value_style(&self.row());
-        let room = (self.rect.width() - self.action_w(&m)).max(1.0);
+        let spare = (self.rect.width() - self.action_w(&m)).max(1.0);
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         let (_, h) = ctx.text.measure_style(&self.value, None, &style);
         if self.row().unbreakable() {
             let shown =
                 ctx.text
-                    .elide_to_width_style(&self.value, crate::num::f32_of_f64(room), &style);
+                    .elide_to_width_style(&self.value, crate::num::f32_of_f64(spare), &style);
             let y = self.rect.center().y - f64::from(h) / 2.0;
             ctx.text(
                 &shown,
@@ -1433,7 +1433,7 @@ impl Widget for PropertyValue {
                 &style,
                 theme.text_primary,
                 self.rect.origin(),
-                Some(crate::num::f32_of_f64(room)),
+                Some(crate::num::f32_of_f64(spare)),
             );
         }
         if let Some(target) = self.copy_rect {

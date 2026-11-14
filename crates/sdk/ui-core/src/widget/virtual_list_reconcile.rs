@@ -282,7 +282,7 @@ impl<M: ListModel> VirtualList<M> {
                 continue;
             };
             if !self.row_open(index) {
-                // A closed group: its rows take no room and are never built, and its
+                // A closed group: its rows take up nothing and are never built, and its
                 // heading's band stands where its first row would (placed with the bands).
                 if self.row_starts(index) {
                     self.groups.fold(index);

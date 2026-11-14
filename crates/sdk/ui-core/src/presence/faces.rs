@@ -1,5 +1,5 @@
 //! Faces: who is here, as a row of overlapping avatars, at every scale the
-//! desktop shows people (the top bar, a window's bar, a tab, a card in the
+//! shell shows people (the top bar, a window's bar, a tab, a card in the
 //! overview). One painter so a person looks the same everywhere: their face
 //! inside a ring in their colour, dimmed while idle or away, with a soft
 //! breathing ring while they are in a call, and a drawn count badge for
@@ -517,7 +517,7 @@ mod tests {
                  {initials_right:.2}",
                     stack.side
                 );
-                // And it is the rule that decides the step for every stack the desktop draws, not the
+                // And it is the rule that decides the step for every stack the shell draws, not the
                 // overlap each was handed: an overlap alone stands closer than the letters are wide.
                 let outer = stack.side + 2.0 * (RING + GAP);
                 let plain = outer - stack.overlap;
@@ -539,7 +539,7 @@ mod tests {
 
         phase stacked_faces_still_overlap_and_fit_a_bar;
         // The overlap still reads as a stack: each face stands nearer than its whole width, and the
-        // bar's four faces fit the room a bar gives them.
+        // bar's four faces fit the area a bar gives them.
         {
             let bar = FaceStack::BAR;
             let outer = bar.side + 2.0 * (RING + GAP);

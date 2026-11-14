@@ -164,7 +164,7 @@ impl Suggestion {
 
 /// The width a row's trailing detail may take out of `free`: what the label
 /// (`label_w` wide) leaves, and at least half the row.
-fn detail_room(free: f64, label_w: f64, spacing: f64) -> f64 {
+fn detail_width(free: f64, label_w: f64, spacing: f64) -> f64 {
     (free - label_w - 2.0 * spacing).max(free / 2.0)
 }
 
@@ -383,8 +383,8 @@ fn paint_item(
     let label_x1 = if let Some(detail) = &s.detail {
         let free = (end - x).max(0.0);
         let label_w = f64::from(text.measure_style(&s.label, None, &label_style).0);
-        let room = f32_of_f64(detail_room(free, label_w, m.spacing));
-        let shown = text.elide_to_width_style(detail, room, &detail_style);
+        let spare = f32_of_f64(detail_width(free, label_w, m.spacing));
+        let shown = text.elide_to_width_style(detail, spare, &detail_style);
         let (dw, dh) = text.measure_style(&shown, None, &detail_style);
         let dx = end - f64::from(dw);
         text.draw_style(
@@ -399,11 +399,11 @@ fn paint_item(
     } else {
         end
     };
-    let room = f32_of_f64((label_x1 - x).max(0.0));
-    let label = text.elide_to_width_style(&s.label, room, &label_style);
+    let spare = f32_of_f64((label_x1 - x).max(0.0));
+    let label = text.elide_to_width_style(&s.label, spare, &label_style);
     let (lw, lh) = text.measure_style(&label, None, &label_style);
     let subtitle = s.subtitle.as_ref().map(|subtitle| {
-        let shown = text.elide_to_width_style(subtitle, room, &detail_style);
+        let shown = text.elide_to_width_style(subtitle, spare, &detail_style);
         let (_, sh) = text.measure_style(&shown, None, &detail_style);
         (shown, f64::from(sh))
     });
@@ -439,9 +439,9 @@ fn paint_item(
     }
     if let Some(aside) = &s.aside {
         let ax = x + f64::from(lw) + m.spacing;
-        let room = f32_of_f64((label_x1 - ax).max(0.0));
-        if room > 8.0 {
-            let shown = text.elide_to_width_style(aside, room, &detail_style);
+        let spare = f32_of_f64((label_x1 - ax).max(0.0));
+        if spare > 8.0 {
+            let shown = text.elide_to_width_style(aside, spare, &detail_style);
             let (_, ah) = text.measure_style(&shown, None, &detail_style);
             text.draw_style(
                 scene,
@@ -1677,8 +1677,8 @@ mod tests {
         {
             // "Amsterdam" beside "North Holland, The Netherlands" in a 300 px row:
             // the detail gets what the label leaves, not a fixed half.
-            assert!((detail_room(300.0, 80.0, 8.0) - 204.0).abs() < f64::EPSILON);
-            assert!((detail_room(300.0, 250.0, 8.0) - 150.0).abs() < f64::EPSILON);
+            assert!((detail_width(300.0, 80.0, 8.0) - 204.0).abs() < f64::EPSILON);
+            assert!((detail_width(300.0, 250.0, 8.0) - 150.0).abs() < f64::EPSILON);
         }
 
         phase the_suggestion_list_flips_scrolls_and_waits;
@@ -1694,7 +1694,7 @@ mod tests {
             let rect = list.rect().expect("rows show");
             assert!(
                 rect.y1 <= 560.0,
-                "no room below: the list opens above: {rect:?}"
+                "no area below: the list opens above: {rect:?}"
             );
             list.set_highlight(Some(7));
             assert!(

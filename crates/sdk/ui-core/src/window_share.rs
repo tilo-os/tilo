@@ -1,7 +1,7 @@
-//! Sharing a window live: one app shows another app's view of a resource, and the desktop
+//! Sharing a window live: one app shows another app's view of a resource, and the shell
 //! says which windows there are to share. A message that shares a window shows the
 //! window's resource as it is now — not a picture of the sharer's screen: every reader's
-//! desktop runs the resource's own app on its own copy of the record and draws that app's
+//! shell runs the resource's own app on its own copy of the record and draws that app's
 //! view, scaled down, where the message asked for it.
 
 use std::cell::RefCell;
@@ -17,7 +17,7 @@ pub mod host;
 /// scroll of shares shows the ones in view.
 pub const MAX_EMBEDS: usize = 4;
 const MAX_ASKS: usize = 8;
-/// The most windows a desktop lists for the sharing app's picker.
+/// The most windows a shell lists for the sharing app's picker.
 pub const MAX_WINDOWS: usize = 64;
 /// The most windows one app says it shares.
 pub const MAX_SHARED: usize = 64;
@@ -25,8 +25,8 @@ pub const MAX_SHARED: usize = 64;
 /// character boundary.
 const MAX_TEXT_BYTES: usize = 1024;
 
-/// The app that shares windows into conversations and takes the desktop's asks
-/// ([`take_ask`]): the desktop brings it forward when a window's menu asks to share.
+/// The app that shares windows into conversations and takes the shell's asks
+/// ([`take_ask`]): the shell brings it forward when a window's menu asks to share.
 pub const SHARING_APP: &str = "so.tilo.chat";
 
 /// A resource as one app's view shows it: the app, the record it keeps the resource in
@@ -56,7 +56,7 @@ pub enum EmbedState {
     Unavailable(String),
 }
 
-/// A window its person has open on a record, as the desktop lists it.
+/// A window its person has open on a record, as the shell lists it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenWindow {
     pub tab: u64,
@@ -87,7 +87,7 @@ impl OpenWindow {
     }
 }
 
-/// A window the sharing app shares, as it tells the desktop.
+/// A window the sharing app shares, as it tells the shell.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedWindow {
     pub message: String,
@@ -96,7 +96,7 @@ pub struct SharedWindow {
     pub place: String,
 }
 
-/// What the desktop asks of the sharing app on its person's behalf.
+/// What the shell asks of the sharing app on its person's behalf.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "ask", rename_all = "snake_case")]
 pub enum Ask {
@@ -219,7 +219,7 @@ impl Ask {
 }
 
 #[derive(Default)]
-struct Desktop {
+struct ShellState {
     windows: Vec<OpenWindow>,
     shared: Vec<SharedWindow>,
     shared_revision: u64,
@@ -231,7 +231,7 @@ struct Desktop {
 }
 
 thread_local! {
-    static DESKTOP: RefCell<Desktop> = RefCell::new(Desktop::default());
+    static SHELL: RefCell<ShellState> = RefCell::new(ShellState::default());
 }
 
 /// Ask for `embeds` in the window the app is shown in, at most [`MAX_EMBEDS`] (the first
@@ -242,9 +242,9 @@ pub fn declare(mut embeds: Vec<Embed>) {
         window.declare_embeds(embeds);
         return;
     }
-    DESKTOP.with_borrow_mut(|desktop| {
-        if desktop.own.declare(embeds) {
-            desktop.own_revision = desktop.own_revision.wrapping_add(1);
+    SHELL.with_borrow_mut(|shell| {
+        if shell.own.declare(embeds) {
+            shell.own_revision = shell.own_revision.wrapping_add(1);
         }
     });
 }
@@ -254,54 +254,54 @@ pub fn declare(mut embeds: Vec<Embed>) {
 pub fn state(key: &str) -> Option<EmbedState> {
     match crate::window_toolbar::window() {
         Some(window) => window.embed_state(key),
-        None => DESKTOP.with_borrow(|desktop| desktop.own.states.get(key).cloned()),
+        None => SHELL.with_borrow(|shell| shell.own.states.get(key).cloned()),
     }
 }
 
 /// Whether a host draws this window's embeds.
 #[must_use]
 pub fn drawn() -> bool {
-    DESKTOP.with_borrow(|desktop| desktop.draws)
+    SHELL.with_borrow(|shell| shell.draws)
 }
 
-/// The windows the person has open on a record, as the desktop last listed them.
+/// The windows the person has open on a record, as the shell last listed them.
 #[must_use]
 pub fn windows() -> Vec<OpenWindow> {
-    DESKTOP.with_borrow(|desktop| desktop.windows.clone())
+    SHELL.with_borrow(|shell| shell.windows.clone())
 }
 
-/// Tell the desktop which windows this app shares now.
+/// Tell the shell which windows this app shares now.
 pub fn publish_shared(shared: Vec<SharedWindow>) {
-    DESKTOP.with_borrow_mut(|desktop| {
-        if desktop.shared != shared {
-            desktop.shared = shared;
-            desktop.shared_revision = desktop.shared_revision.wrapping_add(1);
+    SHELL.with_borrow_mut(|shell| {
+        if shell.shared != shared {
+            shell.shared = shared;
+            shell.shared_revision = shell.shared_revision.wrapping_add(1);
         }
     });
 }
 
-/// Whether the desktop asked the sharing app something it has not taken yet.
+/// Whether the shell asked the sharing app something it has not taken yet.
 #[must_use]
 pub fn asked() -> bool {
-    DESKTOP.with_borrow(|desktop| !desktop.asks.is_empty())
+    SHELL.with_borrow(|shell| !shell.asks.is_empty())
 }
 
-/// The oldest thing the desktop asked of the sharing app and it has not taken yet.
+/// The oldest thing the shell asked of the sharing app and it has not taken yet.
 #[must_use]
 pub fn take_ask() -> Option<Ask> {
-    DESKTOP.with_borrow_mut(|desktop| desktop.asks.pop_front())
+    SHELL.with_borrow_mut(|shell| shell.asks.pop_front())
 }
 
 /// The host draws embeds on this thread (`true`), or no longer does.
 pub fn set_drawn(draws: bool) {
-    DESKTOP.with_borrow_mut(|desktop| desktop.draws = draws);
+    SHELL.with_borrow_mut(|shell| shell.draws = draws);
 }
 
 /// List the windows the person has open on a record.
 pub fn publish_windows(windows: Vec<OpenWindow>) -> bool {
-    DESKTOP.with_borrow_mut(|desktop| {
-        let changed = desktop.windows != windows;
-        desktop.windows = windows;
+    SHELL.with_borrow_mut(|shell| {
+        let changed = shell.windows != windows;
+        shell.windows = windows;
         changed
     })
 }
@@ -309,7 +309,7 @@ pub fn publish_windows(windows: Vec<OpenWindow>) -> bool {
 /// The windows the sharing app says it shares.
 #[must_use]
 pub fn shared() -> Vec<SharedWindow> {
-    DESKTOP.with_borrow(|desktop| desktop.shared.clone())
+    SHELL.with_borrow(|shell| shell.shared.clone())
 }
 
 /// Ask the sharing app to share `window`.
@@ -331,11 +331,11 @@ pub fn deliver_ask(ask: Ask) {
 }
 
 fn push(ask: Ask) {
-    DESKTOP.with_borrow_mut(|desktop| {
-        if desktop.asks.len() >= MAX_ASKS {
-            desktop.asks.pop_front();
+    SHELL.with_borrow_mut(|shell| {
+        if shell.asks.len() >= MAX_ASKS {
+            shell.asks.pop_front();
         }
-        desktop.asks.push_back(ask);
+        shell.asks.push_back(ask);
     });
 }
 
@@ -343,8 +343,8 @@ fn push(ask: Ask) {
 /// one last sent to the shell; 0 before any).
 #[must_use]
 pub fn own_embeds_since(seen: u64) -> Option<(u64, Vec<Embed>)> {
-    DESKTOP.with_borrow(|desktop| {
-        (desktop.own_revision != seen).then(|| (desktop.own_revision, desktop.own.declared.clone()))
+    SHELL.with_borrow(|shell| {
+        (shell.own_revision != seen).then(|| (shell.own_revision, shell.own.declared.clone()))
     })
 }
 
@@ -352,23 +352,23 @@ pub fn own_embeds_since(seen: u64) -> Option<(u64, Vec<Embed>)> {
 /// sent to the shell; 0 before any).
 #[must_use]
 pub fn shared_since(seen: u64) -> Option<(u64, Vec<SharedWindow>)> {
-    DESKTOP.with_borrow(|desktop| {
-        (desktop.shared_revision != seen).then(|| (desktop.shared_revision, desktop.shared.clone()))
+    SHELL.with_borrow(|shell| {
+        (shell.shared_revision != seen).then(|| (shell.shared_revision, shell.shared.clone()))
     })
 }
 
 /// How the shell says the process window's embeds are coming along: every one it draws,
 /// so an embed it no longer names has no state.
 pub fn set_own_states(states: Vec<KeyedEmbedState>) -> bool {
-    DESKTOP.with_borrow_mut(|desktop| {
-        let declared = &desktop.own.declared;
+    SHELL.with_borrow_mut(|shell| {
+        let declared = &shell.own.declared;
         let next: HashMap<String, EmbedState> = states
             .into_iter()
             .filter(|keyed| declared.iter().any(|embed| embed.key == keyed.key))
             .map(|keyed| (keyed.key, keyed.state))
             .collect();
-        let changed = desktop.own.states != next;
-        desktop.own.states = next;
+        let changed = shell.own.states != next;
+        shell.own.states = next;
         changed
     })
 }
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn the_desktop_lists_windows_and_asks_the_sharing_app_in_order() {
+    fn the_shell_lists_windows_and_asks_the_sharing_app_in_order() {
         let notes = OpenWindow {
             tab: 7,
             app: "so.tilo.notes".into(),

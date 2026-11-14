@@ -14,8 +14,8 @@ use automerge::transaction::Transactable as _;
 use durable_store::{DurableStore, StorageKey};
 
 use super::{
-    RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordSet, WORKSPACE, WORKSPACE_ALIAS,
-    identity, meta_obj, transfer, workspace_scope,
+    RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordSet, WORKSPACE, identity,
+    meta_obj, transfer, workspace_scope,
 };
 
 /// Where a person's own records live: the cluster their store carries them on,
@@ -107,7 +107,6 @@ impl RecordSet {
         {
             return Ok(None);
         }
-        let _ = doc.delete(&metadata, WORKSPACE_ALIAS);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),

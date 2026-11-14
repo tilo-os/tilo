@@ -83,12 +83,12 @@ tilo_test_env::scenario! {
         }
         assert!(
             title.width() >= MIN_LOCATION_PX,
-            "the title keeps room to be read: {title:?}"
+            "the title keeps area to be read: {title:?}"
         );
     }
 
     phase a_phone_window_of_several_tabs_keeps_each_tab_and_its_close;
-    // A window of several tabs on a phone, as the desk lays one out (its search, the app's History
+    // A window of several tabs on a phone, as the shell lays one out (its search, the app's History
     // and the strip's "+" in the same row): every tab stays a tab a person can read and press, the
     // active one keeps its ×, and the window keeps its maximize and close.
     {

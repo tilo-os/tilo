@@ -388,7 +388,7 @@ pub struct SearchResultsView {
     test_id: Option<String>,
     bands: RowBands,
     loading: bool,
-    /// Room kept under the empty-state line for controls its owner places
+    /// Area kept under the empty-state line for controls its owner places
     /// inside the card (a confirmation's buttons).
     empty_footer: f64,
     max_height: Option<f64>,
@@ -505,12 +505,12 @@ impl SearchResultsView {
     }
 
     /// How many rows of one band the list takes in `cap` under `groups`
-    /// headers, never less than one: the room left once the padding,
+    /// headers, never less than one: the area left once the padding,
     /// headers and gaps are paid for.
     pub(crate) fn row_capacity(&self, cap: f64, groups: usize, two_line: bool) -> usize {
         let band = self.row_band(two_line).max(1.0);
-        let room = (cap - self.rows_overhead(groups)).max(band);
-        crate::num::usize_of_f64((room / band).floor()).max(1)
+        let spare = (cap - self.rows_overhead(groups)).max(band);
+        crate::num::usize_of_f64((spare / band).floor()).max(1)
     }
 
     /// Keep `height` free under the empty-state line, for controls the
@@ -857,7 +857,7 @@ impl SearchResultsView {
     }
 
     /// The height the list takes when the most rows that fit in `cap` show, preview band
-    /// included: an owner sizing the list must leave the band its room, or it would eat into
+    /// included: an owner sizing the list must leave the band its area, or it would eat into
     /// the last row, and the card's own padding at the foot, or it would clip one.
     pub fn fitted_height(&self, cap: f64) -> f64 {
         let band = self.preview_band();
@@ -1147,8 +1147,8 @@ impl SearchResultsView {
             clippy::cast_possible_truncation,
             reason = "card widths are logical pixels well within f32 range"
         )]
-        let room = (self.rect.width() - 48.0).max(1.0) as f32;
-        let title = tr.elide_to_width_style(&self.empty_text, room, &style);
+        let spare = (self.rect.width() - 48.0).max(1.0) as f32;
+        let title = tr.elide_to_width_style(&self.empty_text, spare, &style);
         let (tw, th) = tr.measure_style(&title, None, &style);
         tr.draw_style(
             scene,
@@ -1218,10 +1218,10 @@ impl SearchResultsView {
             clippy::cast_possible_truncation,
             reason = "a preview's width is a small on-screen pixel span"
         )]
-        let room = width as f32;
+        let spare = width as f32;
         let body = preview.body.as_ref().map(|body| {
             let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
-            tr.clamp_to_lines_style(&normalized, room, PREVIEW_BODY_LINES, &caption)
+            tr.clamp_to_lines_style(&normalized, spare, PREVIEW_BODY_LINES, &caption)
         });
         let mut y = rect.y0 + PAD;
         if let Some(title) = &preview.title {
@@ -1243,8 +1243,8 @@ impl SearchResultsView {
             let column_gap = f64::from(theme.tokens.spacing.s4);
             let mut fx = x;
             for fact in &preview.facts {
-                let room = (x + width - fx).max(0.0);
-                if room <= 0.0 {
+                let spare = (x + width - fx).max(0.0);
+                if spare <= 0.0 {
                     break;
                 }
                 line(
@@ -1254,14 +1254,14 @@ impl SearchResultsView {
                     fact,
                     colors.text_dim,
                     Point::new(fx, y),
-                    room,
+                    spare,
                     &caption,
                 );
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "a fact's width is a small on-screen pixel span"
                 )]
-                let shown = tr.elide_to_width_style(fact, room as f32, &caption);
+                let shown = tr.elide_to_width_style(fact, spare as f32, &caption);
                 let (w, _) = tr.measure_style(&shown, None, &caption);
                 fx += f64::from(w) + column_gap;
             }
@@ -1327,8 +1327,8 @@ fn line(
         clippy::cast_possible_truncation,
         reason = "a row's text width is a small on-screen pixel span"
     )]
-    let room = width.max(0.0) as f32;
-    let shown = tr.elide_to_width_style(text, room, style);
+    let spare = width.max(0.0) as f32;
+    let shown = tr.elide_to_width_style(text, spare, style);
     let (_, h) = tr.measure_style(&shown, None, style);
     tr.draw_style(
         scene,
@@ -2030,7 +2030,7 @@ mod tests {
             assert!(heading_counts(&view).is_empty());
         }
 
-        phase a_fitted_list_keeps_the_preview_band_its_room;
+        phase a_fitted_list_keeps_the_preview_band_its_area;
         // A fitted list counts the preview band as part of itself: an owner
         // sizing the list to the rows alone would put the band over the last
         // row, which then never shows.
@@ -2052,7 +2052,7 @@ mod tests {
             let fitted = v.fitted_height(cap);
             assert!(
                 (fitted - cap).abs() < 0.01,
-                "the fitted list keeps its padding and the band's room: {fitted} for {cap}"
+                "the fitted list keeps its padding and the band's area: {fitted} for {cap}"
             );
             v.set_rect(Rect::new(0.0, 0.0, 360.0, fitted));
             assert!(
@@ -2063,7 +2063,7 @@ mod tests {
         }
 
         phase rows_past_the_cards_bound_scroll_under_a_fixed_preview;
-        // More rows than the window has room for scroll inside the card: it
+        // More rows than the window fits scroll inside the card: it
         // stops at its bound, the cursor's row is brought into view, a click
         // lands only on rows that show, and the preview band stays put.
         {
@@ -2177,7 +2177,7 @@ mod tests {
                 let structured = view.desired_height();
                 assert!(
                     structured > body_only + view.bands.one_line,
-                    "a heading, facts and items take more room than an excerpt: \
+                    "a heading, facts and items take more area than an excerpt: \
                  {structured} vs {body_only}"
                 );
                 view.set_cursor(1);

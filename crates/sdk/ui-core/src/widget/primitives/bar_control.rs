@@ -131,7 +131,7 @@ impl<'a> BarControlFace<'a> {
     }
 
     /// The fill behind the control on `ground` (the bar's ground: the
-    /// desktop for the top bar, the window for a window bar).
+    /// shell for the top bar, the window for a window bar).
     #[must_use]
     pub fn fill(&self, theme: &Theme, ground: Color) -> Option<Color> {
         let colors = &theme.tokens.colors;
@@ -190,7 +190,7 @@ impl<'a> BarControlFace<'a> {
             }
             if let Some(label) = self.label {
                 let style = self.style(theme);
-                let room = rect.x1
+                let spare = rect.x1
                     - Self::pad(theme)
                     - x
                     - if self.trailing.is_some() {
@@ -200,7 +200,7 @@ impl<'a> BarControlFace<'a> {
                     };
                 let shown = ctx.text.elide_to_width_style(
                     label,
-                    crate::num::f32_of_f64(room.max(0.0)),
+                    crate::num::f32_of_f64(spare.max(0.0)),
                     &style,
                 );
                 let (w, h) = ctx.text.measure_style(&shown, None, &style);

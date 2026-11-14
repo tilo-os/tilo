@@ -1003,7 +1003,7 @@ impl BlockEditor {
     /// The height of the host's visible document area (a scrolling host's
     /// viewport, not the editor's content extent). An image preview is
     /// never taller than [`IMAGE_VIEWPORT_FRACTION`] of it, so a large
-    /// picture leaves room to see and drag past it. Hosts refresh it before
+    /// picture leaves area to see and drag past it. Hosts refresh it before
     /// layout; returns whether it changed, so a host can lay out again.
     pub fn set_viewport_height(&mut self, height: Option<f64>) -> bool {
         let height = height.filter(|height| height.is_finite() && *height > 0.0);
@@ -2204,7 +2204,7 @@ impl BlockEditor {
             return false;
         };
         let line = &mut block.line;
-        // A `tilo://open#…` address names a resource of this desktop, which
+        // A `tilo://open#…` address names a resource of this shell, which
         // opens in the app that keeps it rather than in a web browser.
         let mark = if html::is_resource_link(target) {
             Mark::ResourceLink(target.to_owned())
@@ -8074,7 +8074,7 @@ impl BlockEditor {
                 (height * IMAGE_VIEWPORT_FRACTION).round(),
             ))
         });
-        let marker_room = list_marker::marker_room(&self.blocks);
+        let marker_width = list_marker::marker_width(&self.blocks);
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -8103,7 +8103,7 @@ impl BlockEditor {
             b.line.set_layout_inset(
                 (prefix_gutter_for(&b.kind) * self.text_scale) as f32
                     + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale
-                    + marker_room.get(i).copied().unwrap_or(0.0) * theme.text_scale,
+                    + marker_width.get(i).copied().unwrap_or(0.0) * theme.text_scale,
             );
             b.line.set_wrap(
                 (self.wrap_lines
@@ -8773,7 +8773,7 @@ impl Widget for BlockEditor {
                 ));
             }
             if let Some(image) = self.image_attachments.get_mut(&b.id) {
-                // The room the picture's source takes at the width this block is applied at,
+                // The area the picture's source takes at the width this block is applied at,
                 // not the one it was last measured at: a host measures lines at widths it never
                 // applies, and a source measured at one of those would place the picture inside
                 // itself.

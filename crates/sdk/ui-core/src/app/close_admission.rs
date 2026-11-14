@@ -108,7 +108,7 @@ impl App {
             }
             if let (Some(saver), Some(index)) = (
                 self.persistence.autosave.as_mut(),
-                self.persistence.room_index.as_mut(),
+                self.persistence.workspace_index.as_mut(),
             ) {
                 let index = index.document_mut();
                 index.commit();

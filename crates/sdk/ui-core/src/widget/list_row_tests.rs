@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_quiet_word_before_the_title_shares_its_line_and_takes_its_room;
+    phase a_quiet_word_before_the_title_shares_its_line_and_takes_its_area;
     {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -159,11 +159,11 @@ tilo_test_env::scenario! {
             .prefix("From the message Bo sent about the move flat on Saturday morning");
         assert!(
             long.title_elided(rect, &mut text, &theme),
-            "the title keeps only the room the word leaves it"
+            "the title keeps only the area the word leaves it"
         );
     }
 
-    phase a_row_without_its_avatar_leaves_no_room_for_one;
+    phase a_row_without_its_avatar_leaves_no_area_for_one;
     {
         let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
         let with = ListRowFace::new("Design")
@@ -187,14 +187,14 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_cards_facts_run_on_without_the_room_of_those_it_has_not;
+    phase a_cards_facts_run_on_without_the_area_of_those_it_has_not;
     {
         let theme = Theme::dark();
         let m = RowMetrics::card(&theme);
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
         let outer = Rect::new(0.0, 0.0, 320.0, 57.0);
-        let face = ListRowFace::new("Measure the new bedroom")
+        let face = ListRowFace::new("Measure the new study")
             .card()
             .meta("Saturday")
             .mark(Icon::Flag);
@@ -213,8 +213,8 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
         let m = RowMetrics::card(&theme);
-        let bare = ListRowFace::new("Measure the new bedroom").card();
-        let with_facts = ListRowFace::new("Measure the new bedroom")
+        let bare = ListRowFace::new("Measure the new study").card();
+        let with_facts = ListRowFace::new("Measure the new study")
             .card()
             .meta("Saturday");
         let facts = RowMetrics::line(&mut text, &m.meta);
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
         };
         // A title that fits keeps one line: a card never cuts what it can show.
         assert_eq!(lines(&mut text, "Book the van"), 1);
-        let long = "Order boxes, tape and bubble wrap for the kitchen, the bedroom and the hallway";
+        let long = "Order boxes, tape and bubble wrap for the kitchen, the study and the hallway";
         let wrapped = lines(&mut text, long);
         assert!(
             (2..=CARD_TITLE_LINES).contains(&wrapped),
@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
         assert_eq!(lines(&mut text, &endless), CARD_TITLE_LINES);
         assert!(
             (height(&mut text, &endless, CARD_TITLE_LINES) - height(&mut text, long, 3)).abs() < 0.01,
-            "a title past three lines stands in the room three take"
+            "a title past three lines stands in the area three take"
         );
     }
 
@@ -336,7 +336,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             geo.title_right <= geo.meta_left + 0.01,
-            "no line runs into the facts' room"
+            "no line runs into the facts' area"
         );
     }
 
@@ -537,7 +537,7 @@ fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
     );
     assert!(
         (first_cy - outer.center().y).abs() > 0.5,
-        "the card holds more room than its content, and the line is not the card's middle"
+        "the card holds more area than its content, and the line is not the card's middle"
     );
 }
 
@@ -1506,12 +1506,12 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
 fn a_control_wrapped_under_its_text_fills_the_row_to_its_trailing_edge() {
     let rows = || -> Element {
         let segmented = ListRow::new("density", "Density")
-            .secondary("How much room controls and rows leave around them")
+            .secondary("How much area controls and rows leave around them")
             .trailing(Box::new(crate::widget::ToggleGroup::new(
                 vec![
                     crate::widget::Segment::new("Compact"),
                     crate::widget::Segment::new("Regular"),
-                    crate::widget::Segment::new("Roomy"),
+                    crate::widget::Segment::new("Wide"),
                 ],
                 1,
             )));

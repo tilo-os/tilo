@@ -14,7 +14,7 @@ use crate::tokens::TextRole;
 use crate::widget::completion::Candidate;
 
 /// Paint `candidate`'s card beside `drawer`, inside `viewport`: on the trailing side where it
-/// fits, otherwise the leading side; nothing where neither has room.
+/// fits, otherwise the leading side; nothing where neither fits.
 pub(crate) fn paint(
     scene: &mut Scene,
     transform: Affine,
@@ -113,13 +113,13 @@ pub(crate) fn paint(
         );
         x += mark + f64::from(tokens.spacing.s3);
     }
-    let room = (card.x1 - pad - x).max(0.0);
+    let spare = (card.x1 - pad - x).max(0.0);
     text.draw_style(
         scene,
         &candidate.name,
         ink,
         transform.pre_translate(Vec2::new(x, y + (head - title_h) / 2.0)),
-        Some(f32_of_f64(room)),
+        Some(f32_of_f64(spare)),
         &title_style,
     );
     y += head + f64::from(tokens.spacing.s2);

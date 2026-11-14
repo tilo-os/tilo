@@ -166,10 +166,10 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
 
 /// How many pages wide a pane is before a document's text grows
 /// ([`Theme::document_zoom`]): a page then fills about two fifths of it.
-pub const DOCUMENT_ROOM: f64 = 2.6;
+pub const DOCUMENT_PAGES: f64 = 2.6;
 /// The most a document's text grows in a wide pane: body text from 14 px to 21 px, about
-/// what the same page reads at on a laptop held at arm's length against a desktop display
-/// across the desk.
+/// what the same page reads at on a laptop held at arm's length against a shell display
+/// across the shell.
 pub const MAX_DOCUMENT_ZOOM: f32 = 1.5;
 
 #[derive(Debug)]
@@ -645,7 +645,7 @@ impl Theme {
         self.tokens.colors.on_surface_at(surface, min_ratio)
     }
 
-    /// See [`crate::tokens::Colors::window_edge`] for why it's derived from the desktop
+    /// See [`crate::tokens::Colors::window_edge`] for why it's derived from the shell
     /// ground rather than a constant.
     pub fn window_edge(&self) -> Color {
         self.tokens.colors.window_edge()
@@ -728,7 +728,7 @@ impl Theme {
         // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
         // Reduced motion is either source: the person's switch in Settings (the file), or
         // the host override — the compositor is itself a UI host, so an explicitly
-        // reduced-motion session must not keep full-desktop transitions running even when
+        // reduced-motion session must not keep full-shell transitions running even when
         // settings.json has not been written yet.
         let file = stack.accessibility;
         let admitted = file.validate().is_ok();
@@ -1005,7 +1005,7 @@ impl Theme {
 
     /// How much larger a document draws its text in a pane `width` wide, whose page
     /// (reading column and its gutters) is `page` wide at this theme's size: `1.0` until
-    /// the pane is [`DOCUMENT_ROOM`] pages wide, then growing with the pane up to
+    /// the pane is [`DOCUMENT_PAGES`] pages wide, then growing with the pane up to
     /// [`MAX_DOCUMENT_ZOOM`], in steps of a sixteenth so resizing a window re-sets the
     /// text about once per pixel of type size rather than every frame. A laptop or phone
     /// window is never wide enough to grow it.
@@ -1014,7 +1014,7 @@ impl Theme {
         if !(width.is_finite() && page.is_finite() && page > 0.0) {
             return 1.0;
         }
-        let zoom = (width / (page * DOCUMENT_ROOM)).clamp(1.0, f64::from(MAX_DOCUMENT_ZOOM));
+        let zoom = (width / (page * DOCUMENT_PAGES)).clamp(1.0, f64::from(MAX_DOCUMENT_ZOOM));
         crate::num::f32_of_f64((zoom * 16.0).floor() / 16.0)
     }
 
@@ -1253,7 +1253,7 @@ impl Theme {
         }
     }
 
-    /// This theme in a window floating over the desk as a card
+    /// This theme in a window floating over the shell as a card
     /// ([`crate::window_toolbar::floats`]): its ground is the card's, so the app under
     /// the card's header draws on the same surface as the header and every other card in
     /// the column, not on a window's darker ground.
@@ -1515,7 +1515,7 @@ mod tests {
 
         phase the_window_edge_and_content_surface_register_against_their_ground;
         {
-            // phase: window_edge_registers_against_the_desktop_on_every_theme
+            // phase: window_edge_registers_against_the_shell_on_every_theme
             {
                 use crate::a11y::relative_luminance;
                 for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
@@ -2221,7 +2221,7 @@ mod configured_theme {
         }
 
         // Case `an_absent_settings_file_still_yields_a_usable_theme`: No preference is
-        // not an error, and must not stop a desktop starting.
+        // not an error, and must not stop a shell starting.
         {
             assert_eq!(
                 Theme::configured_from(&serde_json::Map::new()).name,

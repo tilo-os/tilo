@@ -355,7 +355,7 @@ impl InteractionEnvironment {
 }
 
 /// The navigation a mouse side button asks for: Back and Forward go back and forward through whatever
-/// history the view under them owns, as in every desktop browser and file manager.
+/// history the view under them owns, as in every shell browser and file manager.
 pub(crate) fn mouse_nav_direction(
     event: &winit::event::WindowEvent,
 ) -> Option<crate::gesture::NavDirection> {
@@ -889,7 +889,7 @@ mod tests {
         }
 
         {
-            // A desktop someone touched is still a desktop: the touch changes
+            // A computer someone touched is still a computer: the touch changes
             // the modality, never the pointing device the window has.
             assert!(InteractionEnvironment::default().drags_files());
             assert!(
@@ -933,13 +933,13 @@ mod tests {
         }
 
         {
-            let desktop = InteractionEnvironment {
+            let shell = InteractionEnvironment {
                 available: InputAvailability::NONE
                     .with(InputDevice::Keyboard)
                     .with(InputDevice::Pointer),
                 ..InteractionEnvironment::POINTER
             };
-            assert_eq!(desktop.preferred_hint_modality(), InputModality::Keyboard);
+            assert_eq!(shell.preferred_hint_modality(), InputModality::Keyboard);
 
             let touch_only = InteractionEnvironment {
                 modality: InputModality::Pointer,

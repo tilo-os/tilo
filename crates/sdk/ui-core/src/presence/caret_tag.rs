@@ -59,7 +59,7 @@ impl LabeledCaret {
     ///
     /// Where the glyphs around the caret are known ([`Self::among`]), the chip
     /// never covers one: right of the caret on its own line where the line has
-    /// room there (an agent writing at the end of a line), else in the gap
+    /// area there (an agent writing at the end of a line), else in the gap
     /// above the caret's line where no glyph is, else below the line. Hung a
     /// line above, it sat on the previous line's words ("write it."); pinned
     /// to the caret's top, across its own line's.
@@ -241,7 +241,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_caret_chip_stands_clear_of_the_text_around_its_caret;
 
-        phase a_chip_rises_above_its_caret_while_there_is_room;
+        phase a_chip_rises_above_its_caret_while_it_fits;
         {
             let caret = LabeledCaret::within(Rect::new(30.0, 100.0, 32.0, 120.0), 40.0);
             let chip = caret.chip_rect(80.0, 20.0);
@@ -277,7 +277,7 @@ mod tests {
         }
 
         phase a_chip_rises_into_a_free_gap_when_its_line_is_full;
-        // With text right of the caret, or no room before the column's edge,
+        // With text right of the caret, or no area before the column's edge,
         // the chip goes into the gap above where that gap has no glyphs.
         {
             // A short line above (to x = 40), the caret mid-way along a full line.
@@ -287,7 +287,7 @@ mod tests {
             let chip = caret.chip_rect(90.0, 18.0);
             assert!(chip.y1 <= 120.0, "above the caret's line: {chip:?}");
             assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
-            // At the end of a line that reaches the column's edge, there is no room beside it.
+            // At the end of a line that reaches the column's edge, nothing fits beside it.
             let ink = lines(&[40.0, 280.0]);
             let caret = LabeledCaret::within(Rect::new(280.0, 120.0, 282.0, 140.0), 0.0)
                 .among(ink.clone(), 300.0);
@@ -307,7 +307,7 @@ mod tests {
             assert!(chip.y0 >= 140.0, "below the caret's line: {chip:?}");
             assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
             // The wrapped paragraph the follower saw: "...as I / write it." above, the caret after
-            // "of you." on the second line of the next paragraph, with room beside it.
+            // "of you." on the second line of the next paragraph, with area beside it.
             let ink = vec![
                 Rect::new(10.0, 60.0, 290.0, 80.0),
                 Rect::new(10.0, 80.0, 60.0, 100.0),

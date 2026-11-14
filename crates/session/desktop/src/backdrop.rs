@@ -279,21 +279,22 @@ impl DesktopBackdrop {
                 draw_cover_image(out_scene, out_transform, &display, &image);
                 // What a docked tab strip frosts with: this display's picture blurred, made once
                 // per wallpaper and size.
-                if let Some(blurred) = ui::backdrop::desktop::blurred_cover(&image, display, blur) {
-                    pieces.push(ui::backdrop::desktop::image_piece(
+                if let Some(blurred) = ui::backdrop::wallpaper::blurred_cover(&image, display, blur)
+                {
+                    pieces.push(ui::backdrop::wallpaper::image_piece(
                         out_transform,
                         display,
                         blurred,
                     ));
                 }
             }
-            ui::backdrop::desktop::publish(pieces);
+            ui::backdrop::wallpaper::publish(pieces);
             return;
         }
         self.drawn_wallpaper = None;
         let stops = ground_stops(theme);
         // The gradient is already as smooth as its blur would be.
-        ui::backdrop::desktop::publish(vec![ui::backdrop::desktop::smooth_piece(
+        ui::backdrop::wallpaper::publish(vec![ui::backdrop::wallpaper::smooth_piece(
             out_transform,
             self.rect,
             Brush::Gradient(self.gradient(stops)),

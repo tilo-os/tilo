@@ -1,5 +1,5 @@
 //! The button beside the window's sync status (Retry): where the header row
-//! that carries the status has room for it.
+//! that carries the status fits it.
 
 use vello::kurbo::Rect;
 

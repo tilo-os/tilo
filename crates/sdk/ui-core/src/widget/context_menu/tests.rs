@@ -548,7 +548,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             menu.content_height(),
             2.0 * ROW_HEIGHT + SEPARATOR_HEIGHT,
-            "hidden separators take no room"
+            "hidden separators take up nothing"
         );
         let theme = Theme::dark();
         menu.open_anchored(

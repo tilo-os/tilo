@@ -46,7 +46,7 @@ pub(super) fn spawn_readable_watcher(
     let watched = stream.try_clone()?;
     let mut ends = [0 as libc::c_int; 2];
     // `pipe2` is Linux-only; macOS has `pipe` and the flags set afterwards.
-    // SAFETY: `ends` has room for the two descriptors pipe writes.
+    // SAFETY: `ends` fits the two descriptors pipe writes.
     if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error());
     }

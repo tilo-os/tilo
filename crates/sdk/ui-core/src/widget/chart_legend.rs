@@ -97,8 +97,8 @@ pub fn paint_entry_emphasised(
         None,
         &Circle::new(Point::new(rect.x0 + dot / 2.0, cy), dot / 2.0),
     );
-    let room = crate::num::f32_of_f64((rect.width() - dot - gap).max(0.0));
-    let label = text.elide_to_width_style(label, room, &style);
+    let spare = crate::num::f32_of_f64((rect.width() - dot - gap).max(0.0));
+    let label = text.elide_to_width_style(label, spare, &style);
     let h = f64::from(text.measure_style(&label, None, &style).1);
     text.draw_style(
         scene,

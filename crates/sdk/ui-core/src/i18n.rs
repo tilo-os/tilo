@@ -165,7 +165,7 @@ pub struct I18nManager {
 }
 
 /// Where one catalogue's Fluent text comes from. Text is parsed only while its language is shown, so a
-/// catalogue in a language nobody on the desktop reads costs its embedded bytes and nothing else.
+/// catalogue in a language nobody on the shell reads costs its embedded bytes and nothing else.
 #[derive(Clone)]
 enum CatalogText {
     Embedded(&'static str),
@@ -432,7 +432,7 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
-/// The language this desktop speaks, as a BCP 47 tag: the one the person chose in Settings, or else the
+/// The language this shell speaks, as a BCP 47 tag: the one the person chose in Settings, or else the
 /// locale the device runs in ([`settings_store::appearance::preferred_language`]).
 #[must_use]
 pub fn preferred_language() -> Option<String> {
@@ -477,8 +477,8 @@ pub fn window_language(shipped: &[&str]) -> String {
 /// the person's when the package ships it, the package's source language otherwise.
 pub fn speak_window_language(catalogues: &[(String, String)]) -> String {
     // The toolkit's own labels first: on a thread with no catalogue yet they install it, in
-    // the desktop's language, so the window's language is chosen over a catalogue that exists
-    // rather than one built after it and left speaking the desktop's.
+    // the shell's language, so the window's language is chosen over a catalogue that exists
+    // rather than one built after it and left speaking the shell's.
     I18nManager::register_widget_messages();
     for (locale, text) in catalogues {
         I18nManager::add_resource(locale, text.clone());
@@ -1411,7 +1411,7 @@ impl EmbeddedCatalog {
 
     /// Every language's Fluent source, by tag: the embedded ones and those the installed language packs
     /// hold. For content that must be read in every language at once, such as the words search matches
-    /// whatever language the desktop speaks.
+    /// whatever language the shell speaks.
     #[must_use]
     pub fn every_source(&self) -> Vec<(&'static str, std::borrow::Cow<'static, str>)> {
         let mut sources: Vec<(&'static str, std::borrow::Cow<'static, str>)> = self
@@ -1774,7 +1774,7 @@ mod tests {
         {
             let _restore = RestoreLookupState::capture();
             // A thread that has drawn nothing yet: its first catalogue is the toolkit's, installed
-            // in the desktop's language, and the window's language must win over it.
+            // in the shell's language, and the window's language must win over it.
             let language = speak_window_language(&[("en-US".to_owned(), "d-new = New".to_owned())]);
             assert_eq!(language, "en-US");
             assert_eq!(I18nManager::current_locale(), "en-US");
@@ -2454,7 +2454,7 @@ mod tests {
         }
 
         phase relative_time_messages_are_translated;
-        // A toolkit key only English defines would show English on a German desktop; every relative-time
+        // A toolkit key only English defines would show English on a German shell; every relative-time
         // message is translated with the same variables.
         {
             const EN_FTL: &str = include_str!("../locales/en-US.ftl");

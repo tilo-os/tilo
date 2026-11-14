@@ -120,8 +120,8 @@ impl ThemeDensity {
     /// The compact density Settings offers.
     pub const COMPACT: f32 = 0.85;
     pub const REGULAR: f32 = 1.0;
-    /// The roomy density Settings offers.
-    pub const ROOMY: f32 = 1.2;
+    /// The large density Settings offers.
+    pub const LARGE: f32 = 1.2;
 }
 
 /// The UI face, the reading face and the body size every text role derives from.

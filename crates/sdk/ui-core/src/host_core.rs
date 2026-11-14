@@ -36,7 +36,7 @@ pub(crate) struct HostTree<'a> {
 }
 
 impl HostTree<'_> {
-    /// The window a palette is asked for from, when the root lays several out (the desktop's strip of
+    /// The window a palette is asked for from, when the root lays several out (the shell's strip of
     /// app tiles): the tile under the pointer that pressed, else the one holding keyboard focus.
     pub(crate) fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
         crate::action_palette::invoking_window(
@@ -266,7 +266,7 @@ impl HostTree<'_> {
         false
     }
 
-    /// `order` kept inside the keyboard scope: the focused desktop window
+    /// `order` kept inside the keyboard scope: the focused shell window
     /// ([`crate::widget::Widget::scopes_keyboard_focus`]).
     pub(crate) fn within_keyboard_scope(&self, order: Vec<NodeId>) -> Vec<NodeId> {
         let scopes: Vec<NodeId> = self
@@ -403,7 +403,7 @@ pub(crate) trait HostCore {
     fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget));
 
     /// The widgets the host shows, for the lookups that must see what a container places itself (a
-    /// desktop's strip of windows, a window's bar) and so stays out of the layout maps: the app while
+    /// shell's strip of windows, a window's bar) and so stays out of the layout maps: the app while
     /// it is live, and what stands over it.
     fn presentation_roots(&self) -> Vec<&dyn Widget>;
 

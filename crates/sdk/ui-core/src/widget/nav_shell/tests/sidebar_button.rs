@@ -6,7 +6,7 @@ use super::*;
 use crate::headless::SidebarShown;
 
 /// Click the sidebar button the shell's header row holds three times in a window `width` wide
-/// that the desktop's bar hosts; each click flips the sidebar, and the shell and its frame
+/// that the shell's bar hosts; each click flips the sidebar, and the shell and its frame
 /// agree.
 fn three_clicks(shell: NavShell, width: u32, placement: SidebarPlacement) -> bool {
     let mut h = harness(shell, width, 800, Theme::dark());
@@ -148,7 +148,7 @@ fn the_bars_sidebar_button_flips_a_sidebar_drawer() {
 
 /// A narrow window whose sidebar is its places — a page beside the sections it has: the places
 /// are the window's first screen, and the page a row of them opens keeps the way back, the
-/// desktop's bar over the row or not.
+/// shell's bar over the row or not.
 #[test]
 fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
     let shell = || {
@@ -198,6 +198,6 @@ fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
     assert_eq!(
         geometry(&own).back,
         Rect::ZERO,
-        "out of a desktop window the places are the first screen too"
+        "out of a shell window the places are the first screen too"
     );
 }

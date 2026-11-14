@@ -216,7 +216,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_overlay_bar_shows_fades_and_takes_no_room;
+        fn the_overlay_bar_shows_fades_and_takes_up_nothing;
 
         phase the_bar_shows_when_the_content_scrolls_and_fades_at_rest;
         {

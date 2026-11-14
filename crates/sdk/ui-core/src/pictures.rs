@@ -82,7 +82,7 @@ impl Pictures {
             return Some(image);
         }
         // A picture that carries its own bytes needs no store to load it, so a surface painting
-        // outside the frame that answers its store (the desk's floating cards, drawn once when
+        // outside the frame that answers its store (the shell's floating cards, drawn once when
         // they change) shows it on that frame.
         carried(&picture.src)
     }

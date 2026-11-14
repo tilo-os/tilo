@@ -89,7 +89,7 @@ tilo_test_env::scenario! {
             "a group's gap parts the app's action from the window's controls",
         );
         // Without History the pill keeps its place and the app's slots take
-        // the room back.
+        // the area back.
         b.set_history_control(1, None);
         lay_out_at_width_with(&mut b, 900.0, &theme);
         assert!(b.history_action_rect().area() <= 0.0);

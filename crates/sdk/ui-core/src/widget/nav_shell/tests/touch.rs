@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
     }
 
     // The bar's trailing controls end at the same gutter its leading title starts at, at a
-    // phone as at a desktop.
+    // phone as at a computer.
     phase the_bars_trailing_controls_keep_the_titles_gutter;
     {
         let theme = Theme::light();

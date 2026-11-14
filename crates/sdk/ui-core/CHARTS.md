@@ -257,8 +257,8 @@ without accepting one hard-coded overlay.
 Identical slice updates do not restart motion; `set_slices_immediate()`,
 `finish_animation()`, and `is_animating()` provide explicit lifecycle control.
 `PieChart::with_legend()` names every slice (swatch, label and share) beside
-the chart when there is room and under it otherwise; the wedges shrink to make
-room, so the legend never overlaps them. Prefer it to a legend painted beside
+the chart when it fits and under it otherwise; the wedges shrink to make
+area, so the legend never overlaps them. Prefer it to a legend painted beside
 the chart.
 
 ```rust

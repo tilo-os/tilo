@@ -531,7 +531,7 @@ impl Widget for Card {
         // the card's height is open): measured under a min-content constraint (a hugging
         // grid's rows, a column shrinking what it holds to its minimum), the card is then
         // as tall as it is laid out. A min-content floor measured a body holding layers
-        // without them, as a layers' cell takes no room under that constraint, so the card
+        // without them, as a layers' cell takes up nothing under that constraint, so the card
         // stood past the grid that measured it.
         let body = || minmax(max_content(), fr(1.0_f32));
         let mut tracks = Vec::new();

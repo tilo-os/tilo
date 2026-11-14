@@ -40,7 +40,7 @@ pub(super) struct MenuQuery {
 impl ContextMenu {
     /// The owner answers a sentence typed into the menu itself, draining it
     /// with [`Self::take_ask`], and the menu takes typing however it was
-    /// opened. For a host with its own composer (the desktop's menus); an
+    /// opened. For a host with its own composer (the shell's menus); an
     /// app's menus open the send-to box with no code of their own.
     pub fn set_owner_asks(&mut self, asks: bool) {
         if self.owner_asks != asks {
@@ -149,7 +149,7 @@ impl ContextMenu {
     }
 
     /// Whether what the box sends reaches somewhere: an app runner under this same process hands
-    /// it to the desktop, or the owner hands it to the session itself.
+    /// it to the shell, or the owner hands it to the session itself.
     fn sends(&self) -> bool {
         self.owner_sends || crate::shared_selection::send_host_available()
     }

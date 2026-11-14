@@ -1836,7 +1836,7 @@ tilo_test_env::scenario! {
         editor.set_blocks(vec![
             Block::paragraph("Ideas for the launch"),
             Block::paragraph("Read more on the homepage"),
-            Block::paragraph("Tilo is a collaborative desktop"),
+            Block::paragraph("Tilo is a collaborative shell"),
             Block::paragraph("Untouched"),
         ]);
         layout_and_draw_editor(&mut editor, &theme);

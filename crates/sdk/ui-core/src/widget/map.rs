@@ -31,7 +31,7 @@ pub const MAP_ZOOM_MAX: f64 = 2.5;
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
 
-/// The room a place that arrives keeps from the viewport's edges when the camera shows it:
+/// The area a place that arrives keeps from the viewport's edges when the camera shows it:
 /// a window's frame at the very edge of the canvas reads as cut off, so the pan leaves a
 /// gap of one section step.
 const ARRIVAL_MARGIN: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
@@ -42,7 +42,7 @@ pub struct PinPlace {
     pub x: f64,
     pub y: f64,
     pub width: f64,
-    /// How tall it stands, when the arrangement says (a window on a desktop); `None` lets
+    /// How tall it stands, when the arrangement says (a window on a shell); `None` lets
     /// its view say, as a note on a canvas is as tall as what it holds.
     pub height: Option<f64>,
 }
@@ -105,7 +105,7 @@ impl MapCamera {
 pub struct MapProps {
     /// What the map is, for assistive technology.
     pub name: Option<String>,
-    /// Whether it is a desktop: the windows it holds stand on the desktop's ground
+    /// Whether it is a shell: the windows it holds stand on the shell's ground
     /// ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the
     /// content colour of the window the map is in.
     pub ground: bool,
@@ -219,7 +219,7 @@ pub struct Map {
     /// Where the pointer last was, in this map's logical coordinates.
     cursor: Point,
     touch: TouchGestureArena,
-    /// It stands on the desktop's ground.
+    /// It stands on the shell's ground.
     ground: bool,
     rect: Rect,
     /// How far a press may travel and still be a click, not a pan: the theme's click slop.
@@ -397,7 +397,7 @@ impl Map {
         self.shown.set(lens.shown);
         self.followed.set(lens.followed);
         self.glide = lens.glide;
-        // The room the places stand in was laid out last frame: a place that arrived is shown in
+        // The area the places stand in was laid out last frame: a place that arrived is shown in
         // it before this layout places it.
         self.rect = lens.rect;
         self.placed.borrow_mut().extend(lens.placed);
@@ -1119,7 +1119,7 @@ impl Map {
                 // no further than a click reports its point (`press`), and one that travelled
                 // more reports the rectangle it covered (`frame`). A press on a pin is the pin's,
                 // not the canvas's, and the map keeps nothing for it.
-                // A press outside the map (the desk's bar over it, a panel beside it) is not one
+                // A press outside the map (the shell's bar over it, a panel beside it) is not one
                 // on the canvas, whatever reaches the map of it.
                 if !self.rect.contains(self.cursor)
                     || self.over_pin(self.cursor - self.rect.origin().to_vec2())

@@ -16,14 +16,14 @@ pub(super) struct LocationLabel {
 }
 
 impl LocationLabel {
-    /// `shown` in `room`: the edited word keeps its place and the label
-    /// elides before it; a room too narrow for both shows the label alone.
+    /// `shown` in `spare`: the edited word keeps its place and the label
+    /// elides before it; an area too narrow for both shows the label alone.
     pub(super) fn measure(
         tr: &mut TextRenderer,
         theme: &Theme,
         shown: &str,
         word: Option<String>,
-        room: f64,
+        spare: f64,
     ) -> Self {
         let style = theme.text(TextRole::Body);
         let gap = f64::from(theme.tokens.spacing.s2);
@@ -31,20 +31,20 @@ impl LocationLabel {
             let (w, _) = tr.measure_style(&word, None, &style);
             (word, f64::from(w))
         });
-        let label_room = match &edited {
-            Some((_, w)) if room - w - gap >= *w => room - w - gap,
+        let label_width = match &edited {
+            Some((_, w)) if spare - w - gap >= *w => spare - w - gap,
             _ => {
                 edited = None;
-                room
+                spare
             }
         };
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a location's width is a bounded on-screen size, far inside f32"
         )]
-        let line = tr.elide_to_width_style(shown, label_room.max(0.0) as f32, &style);
+        let line = tr.elide_to_width_style(shown, label_width.max(0.0) as f32, &style);
         let (w, h) = tr.measure_style(&line, None, &style);
-        let width = f64::from(w).min(label_room.max(0.0));
+        let width = f64::from(w).min(label_width.max(0.0));
         let edited = edited.map(|(word, w)| (word, width + gap, w));
         Self {
             line,

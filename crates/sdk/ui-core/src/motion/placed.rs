@@ -72,7 +72,7 @@ impl Placed {
         self.motion = motion;
         // The first placement rests where it stands. A surface built up shows at rest (the first
         // paint shows the resting state); one built closed and asked to be up on its first frame
-        // comes in, as a window the desk just opened does.
+        // comes in, as a window the shell just opened does.
         if !self.settled {
             self.settled = true;
             self.rect.snap(rect);

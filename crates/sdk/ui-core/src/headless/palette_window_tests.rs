@@ -1,5 +1,5 @@
 //! The host's palette stands over the window that asked for it, as an app's own palette stands over its
-//! window: in the browser desktop a confirmation one window asked for was centred on the whole screen,
+//! window: in the browser shell a confirmation one window asked for was centred on the whole screen,
 //! across the window beside it.
 
 use super::FrameHarness;

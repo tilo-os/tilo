@@ -21,9 +21,9 @@ ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 
 [features]
 default = ["native", "broker-transport"]
-# The native desktop runner and host services: the winit event loop with its
+# The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
-# warmup, the desktop appearance a standalone app follows, and the
+# warmup, the system appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
@@ -46,7 +46,7 @@ syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
 # other build links them.
 lazy-highlight = ["dep:tilo-engine-loader"]
 # The search engine's code is not linked in: the host fetches it when something
-# first asks (`tilo-search`'s `lazy-engine`). What the browser desktop builds
+# first asks (`tilo-search`'s `lazy-engine`). What the browser shell builds
 # with, so a surface that searches fetches the engine ahead of its first query.
 lazy-engine = ["tilo-search/lazy-engine"]
 # Clients of the local session daemons: the runtime portal's inherited
@@ -67,45 +67,45 @@ test-support = ["tilo-host/test-support", "collaboration/test-support", "dep:til
 # Hyphenation patterns (hypher) are not linked into text layout: the program
 # fetches their code the first time text hyphenates and hands it over
 # (`HYPHENATION`); until then text breaks only
-# between words. The browser desktop uses this to keep them out of its start
+# between words. The browser shell uses this to keep them out of its start
 # module.
 lazy-hyphenation = []
 # The image decoders (`image`: PNG, JPEG, WebP) a web page's images and an
 # `ImageStore`'s pictures need are not linked: the program fetches their code
 # the first time something decodes and hands it over
 # (`image_decoders::IMAGE_DECODERS`); until
-# then images are left out. The browser desktop uses this to keep them out of
+# then images are left out. The browser shell uses this to keep them out of
 # its start module.
 lazy-image-decode = []
 # The code that words a control's face for a page (`composition::HTML_CODE`:
 # its icon as SVG outlines, its words and ground) is not linked: the HTML
 # presenter hands it over when it arrives, as it alone composes. The browser
-# desktop uses this to keep it out of its start module.
+# shell uses this to keep it out of its start module.
 lazy-html-faces = []
 # A theme's surface shader (the WGSL front end and the interpreter that
 # draws it) is not linked: the program fetches its code the first time a
 # theme states a shader (`part_paint::SURFACE_SHADER`); until then such
-# parts draw their fallback. The browser desktop uses this to keep it out of
+# parts draw their fallback. The browser shell uses this to keep it out of
 # its start module.
 lazy-surface-shader = []
 # The emoji catalogue (names and keywords in every language, about half a
 # megabyte) is not linked into the toolkit's own code paths: the program
 # fetches it the first time a picker, reaction or `:name:` asks and hands it
 # over (`emoji_catalogue::CATALOGUE`, `emoji_catalogue::builtin_catalogue`).
-# The browser desktop uses this to keep it out of its start module.
+# The browser shell uses this to keep it out of its start module.
 lazy-emoji = []
 # A window's History (its timeline, review, restore and file versions) is
 # not linked into the windows that register it: the program fetches its
 # code the first time one does and hands it over
 # (`history_mode::defer_history`, `history_mode::install_history_code`); until
-# then the window shows without History. The browser desktop uses this to
+# then the window shows without History. The browser shell uses this to
 # keep it out of its start module.
 lazy-history = []
 # The action palette (confirmations, argument prompts, refusals and in-app
 # search) is not linked into the windows that show it: the program fetches
 # its code as the first window lays out and hands it over
 # (`action_palette::ACTION_PALETTE`); what a window asks of it before then
-# shows once it is in. The browser desktop uses this to keep it out of its
+# shows once it is in. The browser shell uses this to keep it out of its
 # start module.
 lazy-palettes = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
@@ -139,7 +139,7 @@ dmabuf-import = ["dep:ash"]
 # decoder's output. Plane upload and the YUV->RGB conversion (`gpu_video`)
 # are always built; without this, frames are uploaded instead.
 gpu-video = ["dmabuf-import"]
-# Desktop media integration (MPRIS `org.mpris.MediaPlayer2`) for the
+# System media integration (MPRIS `org.mpris.MediaPlayer2`) for the
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
@@ -155,7 +155,7 @@ portal = ["native", "tilo-host/portal"]
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web
-# desktop's start module large.
+# shell's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 # Initials, as the login and boot sign-in screens draw them too.
 tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
@@ -187,7 +187,7 @@ emoji = { version = "0.1.0", path = "../../text/emoji" }
 # SVG parser (`svg`, usvg) is native only, below: the browser toolkit core
 # leaves it out, so `Image::from_svg` there finds no supported artwork.
 tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
-# The desktop's light/dark, accent, contrast and motion preferences, which a
+# The system's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
 # A host search result the OS wakes this app for goes to the runtime.
@@ -360,7 +360,7 @@ tilo-history = { version = "0.1.0", path = "../tilo-history" }
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 # Who may invoke which action: grants over the published tree.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
-# Window-group widths and drop targets are the desktop model's own types.
+# Window-group widths and drop targets are the layout model's own types.
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name its `SigningKey` without reaching into the

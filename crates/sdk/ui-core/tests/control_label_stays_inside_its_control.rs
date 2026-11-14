@@ -25,7 +25,7 @@ const LABELS: [&str; 6] = [
 ];
 
 /// Rail widths an app gives the rail, from a rail narrower than a control down
-/// to one with room to spare.
+/// to one with width to spare.
 const WIDTHS: [f64; 8] = [48.0, 64.0, 96.0, 112.0, 128.0, 160.0, 240.0, 320.0];
 
 /// Half a pixel of slack for the shaper's rounding, as the button's own
@@ -74,9 +74,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    // The control keeps its words when it has the room, so the invariant above
+    // The control keeps its words when it fits, so the invariant above
     // does not pass by painting nothing.
-    phase a_rail_with_room_for_the_words_paints_them;
+    phase a_rail_wide_enough_for_the_words_paints_them;
     {
         let theme = Theme::dark();
         let mut rail = PageSidebar::new(792.0 / 612.0).with_add("Import…");

@@ -50,12 +50,12 @@ impl FloatingSurfaceProvider for ChatApp {
             || self.call.expanded
             // The card's own window draws the call once it is up: this
             // window keeps its copy only for the transfer and the way back.
-            || (self.call.placement.is_desktop_adopted()
+            || (self.call.placement.is_shell_adopted()
                 && !self.call.placement.is_return_pending())
             || (!self.call.placement.is_return_pending()
                 && !matches!(
                     self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::Desktop { .. }
+                    ui::floating_surface::Attachment::Shell { .. }
                 ))
         {
             return;
@@ -94,7 +94,7 @@ impl FloatingSurfaceProvider for ChatApp {
             || (!returning_to_app
                 && !matches!(
                     self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::Desktop { .. }
+                    ui::floating_surface::Attachment::Shell { .. }
                 ))
         {
             return Vec::new();
@@ -105,7 +105,7 @@ impl FloatingSurfaceProvider for ChatApp {
         let card = !returning_to_app
             && matches!(
                 self.call.placement.attachment(),
-                ui::floating_surface::Attachment::Desktop { .. }
+                ui::floating_surface::Attachment::Shell { .. }
             );
         let content = self.call_video_rect();
         let window_rect = if card {
@@ -149,13 +149,13 @@ impl FloatingSurfaceProvider for ChatApp {
             && request_id == &id
             && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
         {
-            self.call.placement.prepare_desktop_rect_with_offset(
+            self.call.placement.prepare_shell_rect_with_offset(
                 rect,
                 vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
             );
             self.call
                 .placement
-                .set_desktop_transfer_covered(*transfer_covered);
+                .set_shell_transfer_covered(*transfer_covered);
             return;
         }
         if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
@@ -165,7 +165,7 @@ impl FloatingSurfaceProvider for ChatApp {
             && request_id == &id
             && ui::floating_surface::protocol_rect(*rect).is_ok()
         {
-            self.call.placement.confirm_desktop_adoption();
+            self.call.placement.confirm_shell_adoption();
             return;
         }
         if matches!(

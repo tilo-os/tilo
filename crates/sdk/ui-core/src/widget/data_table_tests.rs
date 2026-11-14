@@ -1814,7 +1814,7 @@ tilo_test_env::scenario! {
     // A grid's columns are its own to scroll sideways: a sideways wheel over them
     // is the grid's even at the last column, where that event moves nothing. A
     // wheel the grid cannot use would otherwise go on to whatever encloses it —
-    // on a desktop, the strip of windows the grid's window stands in, which a
+    // on a shell, the strip of windows the grid's window stands in, which a
     // person scrolling to the last column never asked to pan.
     phase a_sideways_wheel_over_the_columns_is_the_tables_even_at_the_last_column;
     {
@@ -1849,7 +1849,7 @@ tilo_test_env::scenario! {
             if table.scroll_x() == before {
                 break;
             }
-            assert!(handled, "a wheel the columns have room for is the table's");
+            assert!(handled, "a wheel the columns fit is the table's");
             moves += 1;
         }
         assert!(moves >= 2, "the columns scrolled by {moves} wheels");

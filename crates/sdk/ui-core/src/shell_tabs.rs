@@ -1,4 +1,4 @@
-//! Tabs belong to the desktop, never to an application. A Tilo app shows one thing: a
+//! Tabs belong to the shell, never to an application. A Tilo app shows one thing: a
 //! page, a file, a conversation. Requests are queued on the UI thread and the app runner
 //! hands them to the session shell over the app's authenticated `shell-ui` connection,
 //! which knows the asking app and its tab.
@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
-/// What an app may ask of the desktop's tab model about itself.
+/// What an app may ask of the shell's tab model about itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabRequest {
     OpenBeside {
@@ -70,13 +70,13 @@ fn push(request: TabRequest) {
     });
 }
 
-/// Ask the desktop for another instance of this app in a new tab right after this one,
+/// Ask the shell for another instance of this app in a new tab right after this one,
 /// opening `target` (a URI) when given.
 pub fn open_beside(target: Option<String>, background: bool) {
     push(TabRequest::OpenBeside { target, background });
 }
 
-/// Close this app's tab the way the desktop closes any tab.
+/// Close this app's tab the way the shell closes any tab.
 pub fn close_this() {
     push(TabRequest::CloseThis);
 }
@@ -91,7 +91,7 @@ pub fn place_next_window_beside(background: bool) {
     push(TabRequest::PlaceNextWindowBeside { background });
 }
 
-/// Ask the desk for another window of this app, floating where this window's send-to box
+/// Ask the shell for another window of this app, floating where this window's send-to box
 /// last sent from, showing `anchor`: the item that send landed in.
 pub fn open_floated(anchor: String) {
     push(TabRequest::OpenFloated { anchor });
@@ -113,7 +113,7 @@ pub fn launch_instance() -> Option<u64> {
         .filter(|instance| *instance != 0)
 }
 
-/// The desktop tab chord a key press names, if any: Ctrl+T opens a new tab of this app,
+/// The shell tab chord a key press names, if any: Ctrl+T opens a new tab of this app,
 /// Ctrl+Shift+T reopens the last closed tab, Ctrl+W closes this tab, Ctrl+Tab and
 /// Ctrl+Shift+Tab show the next and previous tab of the group. `command` is the
 /// platform's command modifier (Ctrl, or Cmd on macOS); Alt and Super chords are never
@@ -162,7 +162,7 @@ mod tests {
     use winit::keyboard::{Key, NamedKey};
 
     #[test]
-    fn chords_name_the_desktop_tab_requests_and_nothing_else() {
+    fn chords_name_the_shell_tab_requests_and_nothing_else() {
         let t = Key::Character("t".into());
         let w = Key::Character("W".into());
         assert_eq!(
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(
             chord_request(&tab, true, false, true),
             None,
-            "Super+Ctrl+Tab is the desktop's own, never the app's"
+            "Super+Ctrl+Tab is the shell's own, never the app's"
         );
     }
 

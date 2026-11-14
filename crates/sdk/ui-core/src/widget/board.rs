@@ -320,7 +320,7 @@ impl Board {
     }
 
     /// The width a lane takes on a board `width` wide: a lane's comfortable measure, the same
-    /// on every board and at every window width, so lanes stand left-aligned with the room a
+    /// on every board and at every window width, so lanes stand left-aligned with the area a
     /// wider pane leaves open beside them. Only a pane too narrow for one lane and the board's
     /// gutters narrows it, and then to the pane, so a narrow board shows one whole lane per
     /// page rather than one lane and a sliver of the next.
@@ -328,11 +328,11 @@ impl Board {
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
         let least = f64::from(CardWidth::Regular.min_width(theme));
         let comfortable = Self::comfortable_lane(theme);
-        let room = (width - 2.0 * gutter).max(0.0);
-        let lane = if room >= comfortable {
+        let spare = (width - 2.0 * gutter).max(0.0);
+        let lane = if spare >= comfortable {
             comfortable
         } else {
-            room.max(least)
+            spare.max(least)
         };
         #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
         {
@@ -767,8 +767,8 @@ mod tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn a_board_lays_out_lanes_and_reports_drops;
 
-        phase a_lane_shows_every_card_it_has_room_for;
-        // A lane as tall as the pane it is in shows every card it has room for under its heading,
+        phase a_lane_shows_every_card_it_fits;
+        // A lane as tall as the pane it is in shows every card it fits under its heading,
         // and the ones past that scroll in the view under it rather than being lost.
         {
             let cards: Vec<(String, Element)> = (0..8)
@@ -802,7 +802,7 @@ mod tests {
 
         phase a_board_keeps_a_gutter_at_both_ends_of_its_lanes;
         // The lanes stand left-aligned at their comfortable measure: the first a gutter in from
-        // the leading edge, each the sibling gap from the last, and the room a wider pane leaves
+        // the leading edge, each the sibling gap from the last, and the area a wider pane leaves
         // open beside them at the trailing edge.
         {
             let theme = Theme::dark();
@@ -839,7 +839,7 @@ mod tests {
             }
             assert!(
                 board.x1 - rects[2].x1 > gutter,
-                "a wider pane leaves its extra room open beside the lanes: {rects:?} in {board:?}"
+                "a wider pane leaves its extra area open beside the lanes: {rects:?} in {board:?}"
             );
         }
     }

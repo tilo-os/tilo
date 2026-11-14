@@ -343,7 +343,7 @@ pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     /// The window the palette was opened from, when the app hosts several
-    /// (the desktop's tiles): the palette centres on it, not on the screen.
+    /// (the shell's tiles): the palette centres on it, not on the screen.
     pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
@@ -621,7 +621,7 @@ pub(super) struct PersistenceRuntime {
     pub(super) autosave: Option<app_state::DocWriter>,
     /// The live document belongs to the record selected by the root widget.
     pub(super) records: Option<crate::record::RecordSet>,
-    pub(super) room_index: Option<crate::state::DocumentReplica>,
+    pub(super) workspace_index: Option<crate::state::DocumentReplica>,
 }
 
 impl PersistenceRuntime {
@@ -629,7 +629,7 @@ impl PersistenceRuntime {
         Self {
             autosave: None,
             records: None,
-            room_index: None,
+            workspace_index: None,
         }
     }
 }
@@ -648,7 +648,7 @@ pub(super) struct ContinuationRuntime {
     pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
     pub(super) private_instance: Option<u64>,
     /// The document this window shows has left its workspace, and the
-    /// window knows: it stopped editing and told its desktop once.
+    /// window knows: it stopped editing and told its shell once.
     pub(super) retired: bool,
     /// What the primary route last published to the session's persistent
     /// search index, so only changes cross again.

@@ -771,7 +771,7 @@ const TOOLKIT_EN: &str = include_str!("../../locales/en-US.ftl");
 const TOOLKIT_DE: &str = include_str!("../../locales/de-DE.ftl");
 
 #[test]
-fn history_chrome_follows_the_desktop_language() {
+fn history_chrome_follows_the_shell_language() {
     crate::i18n::I18nManager::install(
         "en-US",
         "de-DE",
@@ -818,7 +818,7 @@ fn history_chrome_follows_the_desktop_language() {
 }
 
 /// Every History host message is translated and formats with the variables the host passes, so no
-/// German desktop falls back to English copy.
+/// German shell falls back to English copy.
 #[test]
 fn history_host_messages_exist_in_every_shipped_language() {
     let keys: Vec<&str> = TOOLKIT_EN

@@ -33,7 +33,7 @@ pub use list::{
     bubble_colors, run_breaks,
 };
 
-/// Resolve one of the conversation's labels in the desktop's language.
+/// Resolve one of the conversation's labels in the shell's language.
 ///
 /// The words live in the toolkit's catalogue with every other widget's, one
 /// namespace per module (`conversation-`), so a language that ships the toolkit

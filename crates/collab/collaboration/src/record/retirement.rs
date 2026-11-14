@@ -53,14 +53,12 @@ pub fn retirement(doc: &AutoCommit) -> Option<Retirement> {
     if field("reason").as_deref() == Some("abandoned") {
         return Some(Retirement::Abandoned);
     }
-    // A stamp is written under `room`; one written while the field was named
-    // for the workspace reads as the same successor.
-    let successor = match (
-        field("room").or_else(|| field("workspace")),
-        field("record"),
-        field("by"),
-    ) {
-        (Some(room), Some(record), Some(by)) => Some(Successor { room, record, by }),
+    let successor = match (field("workspace"), field("record"), field("by")) {
+        (Some(workspace), Some(record), Some(by)) => Some(Successor {
+            room: workspace,
+            record,
+            by,
+        }),
         _ => None,
     };
     Some(Retirement::Moved(successor))

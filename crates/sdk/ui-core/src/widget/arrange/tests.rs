@@ -174,7 +174,7 @@ tilo_test_env::scenario! {
     // A hugging grid at its smallest still holds its cards whole: a card's body is as tall as
     // what it holds whether the card is measured or laid out, so a column that shrinks the grid
     // to its minimum never leaves a card standing past the grid's edge or over the next row. (A
-    // layers' cell takes the room it is given; under a min-content constraint it is given none,
+    // layers' cell takes the area it is given; under a min-content constraint it is given none,
     // so a card whose body holds layers measured them away: a preset picker's card stood past
     // its grid.)
     {
@@ -474,7 +474,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_phone_screen_keeps_no_lead_where_a_column_does;
-    // A column without the room for a row lead keeps none: on a phone's screen what a document's
+    // A column without the area for a row lead keeps none: on a phone's screen what a document's
     // body holds starts on the page's gutter, so the words keep the width a control's cell would
     // take from every line, while the column what it holds is read in is a column.
     {
@@ -484,7 +484,7 @@ tilo_test_env::scenario! {
         let lead = f64::from(Resolved::of(&theme).lead());
         assert!(lead > 0.0);
         // The narrowest a column what the lead holds stands at, and the widest box that leaves it
-        // below: `WidthClass::Medium`, where a lead has room again.
+        // below: `WidthClass::Medium`, where a lead fits again.
         let column = f64::from(COMPACT_BELOW) * rem;
         for (width, kept) in [
             (320.0, false),
@@ -664,10 +664,10 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_spacer_takes_the_leftover_room_and_no_gap_of_its_own;
-    // A spacer that takes a row's leftover room is room, not a sibling: the row's gap stands once
-    // between what comes before it and what follows, so a row with no room to spare still holds
-    // both, and with room the spacer sends what follows it to the far end — in either direction.
+    phase a_spacer_takes_the_leftover_area_and_no_gap_of_its_own;
+    // A spacer that takes a row's leftover area is area, not a sibling: the row's gap stands once
+    // between what comes before it and what follows, so a row with no area to spare still holds
+    // both, and with area the spacer sends what follows it to the far end — in either direction.
     {
         let theme = Theme::dark();
         let between = gap(&theme, Rhythm::Related);
@@ -700,9 +700,9 @@ tilo_test_env::scenario! {
                 (right.x0 - left.x1 - between).abs() < 0.5,
                 "one gap between them: {r:?}"
             );
-            let mut roomy = row();
-            solve(&mut roomy, &theme, 600.0);
-            let r = rects(&roomy);
+            let mut reserved = row();
+            solve(&mut reserved, &theme, 600.0);
+            let r = rects(&reserved);
             let (left, right) = if direction == Direction::Ltr {
                 (r[0], r[2])
             } else {
@@ -775,7 +775,7 @@ tilo_test_env::scenario! {
     phase every_text_field_in_a_wrapping_row_stands_at_least_its_own_width;
     // A text field has no width of its own content; where a row that wraps lays it out at its own
     // width it stands at the theme's least width for a field, never 0 — hugging or filling, with
-    // the show/hide control or without, beside a button — at a phone's widths and a desktop's.
+    // the show/hide control or without, beside a button — at a phone's widths and a computer's.
     {
         use crate::widget::{Button, TextInput};
         let theme = Theme::dark();
@@ -897,7 +897,7 @@ tilo_test_env::scenario! {
     phase an_aspect_layer_in_a_filling_page_keeps_its_width_and_ratio;
     // The same in a canvas that fills its pane and scrolls inside its own parts, where the layers
     // gets no width of its own from the page: the ratio must not feed its width back from the
-    // height it derived, or the box shrinks to a fraction of the room and grows back every solve.
+    // height it derived, or the box shrinks to a fraction of the area and grows back every solve.
     {
         let theme = Theme::dark();
         let inner = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
@@ -1088,7 +1088,7 @@ tilo_test_env::scenario! {
     phase a_page_keeps_one_content_gutter_at_every_width;
     // A page keeps one content gutter at every width: a phone, a laptop and a wide monitor hold
     // what they show the same distance in from the column, so what stands at the top of a page has
-    // the same room over it as the gap under it wherever the window is.
+    // the same area over it as the gap under it wherever the window is.
     {
         let theme = Theme::dark();
         let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;
@@ -1257,7 +1257,7 @@ tilo_test_env::scenario! {
                 .get_rect();
             assert!(
                 column.height() < 120.0,
-                "with {rows} rows the message column is {} tall: it took the list's room, not its \
+                "with {rows} rows the message column is {} tall: it took the list's area, not its \
              own content's",
                 column.height()
             );
@@ -1303,7 +1303,7 @@ tilo_test_env::scenario! {
                 .get_rect();
             assert!(
                 row.height() < 120.0,
-                "with {rows} rows the first is {} tall: it took the list's room, not its own",
+                "with {rows} rows the first is {} tall: it took the list's area, not its own",
                 row.height()
             );
         }

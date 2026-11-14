@@ -1896,7 +1896,7 @@ tilo_test_env::scenario! {
         feed(&mut app, &mut doc, &cursor_moved(outside.x, outside.y));
         assert!(matches!(
             app.call.placement.attachment(),
-            Attachment::Desktop { .. }
+            Attachment::Shell { .. }
         ));
         assert_eq!(
             app.call_video_rect(),
@@ -1935,7 +1935,7 @@ tilo_test_env::scenario! {
                 coordinate_offset: [0.0, 0.0],
             },
         );
-        assert!(!app.call.placement.is_desktop_adopted());
+        assert!(!app.call.placement.is_shell_adopted());
         let mut scene = Scene::new();
         let mut text_renderer = TextRenderer::new();
         ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
@@ -1955,7 +1955,7 @@ tilo_test_env::scenario! {
                 rect: ui::floating_surface::protocol_rect_array(prepared_content),
             },
         );
-        assert!(app.call.placement.is_desktop_adopted());
+        assert!(app.call.placement.is_shell_adopted());
         render_frame(&mut app, 1200.0, 800.0);
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),

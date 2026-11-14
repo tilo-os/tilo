@@ -329,7 +329,7 @@ mod tests {
         action.type_mut().contract.confirmation = confirmation;
         vec![
             tilo_actions::ResourceSpec::new(
-                "certified-host/room/record/revision",
+                "certified-host/workspace/record/revision",
                 "document",
                 "Writer",
             )
@@ -366,7 +366,7 @@ mod tests {
             .expect("real keyboard selected action");
         assert_eq!(
             intent.address.resource,
-            "certified-host/room/record/revision"
+            "certified-host/workspace/record/revision"
         );
         assert_eq!(intent.kind, tilo_actions::OperationKind::Effect);
         assert!(frame.take_caller_operation().is_none());
@@ -523,7 +523,7 @@ mod tests {
         enter(&mut frame);
         assert_eq!(
             frame.take_caller_operation().unwrap().address.resource,
-            "certified-host/room/record/revision"
+            "certified-host/workspace/record/revision"
         );
     }
 

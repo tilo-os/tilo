@@ -79,7 +79,7 @@ pub struct WebView {
     composition_emptied: bool,
     /// How much of a focused field's top the input method is told the caret
     /// takes, in logical pixels, when the engine knows the field but not its
-    /// caret: a line of text with room around it, the theme's regular control
+    /// caret: a line of text with area around it, the theme's regular control
     /// height as of the last layout. Before any layout it is the whole field.
     field_line_height: Option<f64>,
     last_mouse: Point,

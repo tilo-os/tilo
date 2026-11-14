@@ -529,7 +529,7 @@ fn hang_wrapped_rows(
             })
             .collect();
         let mut rebuilt = false;
-        let room = buffer.size().0.unwrap_or(f32::INFINITY);
+        let spare = buffer.size().0.unwrap_or(f32::INFINITY);
         let (tab, line_height) = (
             usize::from(buffer.tab_width()).max(1),
             buffer.metrics().line_height,
@@ -557,7 +557,7 @@ fn hang_wrapped_rows(
                     insertions: local.clone(),
                 },
                 tab,
-                (room, line_height),
+                (spare, line_height),
             );
             if wanted == hung {
                 break;
@@ -603,7 +603,7 @@ fn hanging_indents(
     (rows, line_text): (&[cosmic_text::LayoutLine], &str),
     map: &OffsetMap,
     tab: usize,
-    (room, line_height): (f32, f32),
+    (spare, line_height): (f32, f32),
 ) -> Vec<VirtualInsertion> {
     let mut columns = 0usize;
     let mut indent_end = 0usize;
@@ -633,7 +633,7 @@ fn hanging_indents(
             clippy::cast_precision_loss,
             reason = "a column count of one line's indentation"
         )]
-        let too_deep = columns as f32 * indent_w > room / 2.0;
+        let too_deep = columns as f32 * indent_w > spare / 2.0;
         if at <= indent_end || too_deep {
             continue;
         }

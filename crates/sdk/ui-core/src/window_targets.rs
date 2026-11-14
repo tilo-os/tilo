@@ -1,10 +1,10 @@
 //! The controls of a window's own content, as the app that draws them describes them to
-//! the desktop: what a session finds and presses by name
+//! the shell: what a session finds and presses by name
 //! ([`crate::floating_surface::FloatingSurfaceClientMessage::WindowTargets`]), and what
-//! the desktop presses on the app
+//! the shell presses on the app
 //! ([`crate::floating_surface::FloatingSurfaceHostMessage::PressTarget`]), which answers
 //! through the same path an assistive technology's activation takes. A window drawn by
-//! another process publishes no surface of the desktop's own: the controls inside it are
+//! another process publishes no surface of the shell's own: the controls inside it are
 //! the app's, and nothing outside the app could name them without this.
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// Most controls one window describes.
 pub const MAX_TARGETS: usize = 256;
 
-/// What the desktop may do to a control of a window's content.
+/// What the shell may do to a control of a window's content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetAction {

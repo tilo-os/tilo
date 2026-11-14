@@ -1,4 +1,4 @@
-//! An app's toolbar is slots in the window's bar, never a row it draws. The desktop draws
+//! An app's toolbar is slots in the window's bar, never a row it draws. The shell draws
 //! one bar per window; what an app adds it declares here, as slots the bar lays out and
 //! draws with the system's own controls.
 
@@ -138,7 +138,7 @@ impl ToolbarReactions {
 /// failure ("Page 1 captured"). A notice that asks the person to act carries what they
 /// can do: at most [`MAX_NOTICE_ACTIONS`] actions ("Sync again", "Open Settings"),
 /// standing in order right after its text, each a button that names itself where the row
-/// has room and its icon where not (the last first), and never in the overflow menu.
+/// fits and its icon where not (the last first), and never in the overflow menu.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarNotice {
     pub text: String,
@@ -217,8 +217,8 @@ pub struct ToolbarLocation {
     pub label: String,
     /// Narrower forms of the label, widest first, each saying the same (a period's
     /// `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the label does not fit,
-    /// the bar shows the widest of them that fits the room the location has once
-    /// everything else it can fold is in the menu, and keeps that room for it, so a wider
+    /// the bar shows the widest of them that fits the area the location has once
+    /// everything else it can fold is in the menu, and keeps that area for it, so a wider
     /// window never shows a narrower form.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shorter: Vec<String>,
@@ -408,7 +408,7 @@ pub struct ToolbarAction {
     pub navigates: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub destructive: bool,
-    /// Where the row has room it is a text button saying its name, as a calendar's Today;
+    /// Where the row fits it is a text button saying its name, as a calendar's Today;
     /// narrower it is its icon, and then an overflow row, in the row's fold order.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub labelled: bool,
@@ -497,7 +497,7 @@ impl ToolbarAction {
         self
     }
 
-    /// Its name as a text button where the row has room ([`Self::labelled`]).
+    /// Its name as a text button where the row fits ([`Self::labelled`]).
     #[must_use]
     pub fn labelled(mut self) -> Self {
         self.labelled = true;
@@ -821,7 +821,7 @@ impl WindowToolbar {
     #[must_use]
     pub fn bounded(mut self) -> Self {
         // A window's main action never falls out of its bar for having no glyph: its
-        // words say what it does wherever the row has room for them.
+        // words say what it does wherever the row fits them.
         self.actions
             .retain(|action| action.primary || shown_icon(&action.icon, action.menu));
         self.actions.sort_by_key(|action| action.menu);
@@ -1334,7 +1334,7 @@ pub fn take_events() -> Vec<ToolbarEvent> {
     EVENTS.with(|events| events.borrow_mut().drain(..).collect())
 }
 
-/// Whether the desktop's bar shows this window's slots, so the app draws no toolbar of
+/// Whether the shell's bar shows this window's slots, so the app draws no toolbar of
 /// its own.
 #[must_use]
 pub fn is_hosted() -> bool {
@@ -1435,7 +1435,7 @@ pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
     hands_keyboard
 }
 
-/// Whether the window floats over the desk as a card rather than standing in its strip
+/// Whether the window floats over the shell as a card rather than standing in its strip
 /// ([`ToolbarEvent::Floating`]).
 #[must_use]
 pub fn floats() -> bool {
@@ -1485,13 +1485,13 @@ pub fn deliver(event: ToolbarEvent) {
     });
 }
 
-/// Whether a desktop bar shows the slots (the runner, as its shell connection comes and
+/// Whether a shell bar shows the slots (the runner, as its shell connection comes and
 /// goes).
 pub fn set_hosted(hosted: bool) -> bool {
     HOSTED.with(|cell| cell.replace(hosted) != hosted)
 }
 
-/// One control a window's bar lays out, as the desktop draws it: what it is, what it does
+/// One control a window's bar lays out, as the shell draws it: what it is, what it does
 /// and where it stands.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BarControl {
@@ -1509,7 +1509,7 @@ pub struct BarControl {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub furniture: bool,
     pub primary: bool,
-    /// The width its words need, where it has words the bar shows only when it has room
+    /// The width its words need, where it has words the bar shows only when it fits
     /// for them (`0.0`: it asks for no words, or has none).
     pub words: f64,
     pub rect: [f64; 4],
@@ -1574,7 +1574,7 @@ impl BarControl {
         self
     }
 
-    /// Its words need `words` wide, where the bar shows them only when it has room for
+    /// Its words need `words` wide, where the bar shows them only when it fits
     /// them.
     #[must_use]
     pub fn words(mut self, words: f64) -> Self {
@@ -1608,7 +1608,7 @@ impl BarLabel {
 }
 
 /// One window's bar, as it lays itself out across the window: what a person sees in it,
-/// and what room it leaves empty.
+/// and what area it leaves empty.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BarLayout {
     pub spare: f64,

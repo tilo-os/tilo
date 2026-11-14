@@ -1,9 +1,9 @@
-//! Picking parts of a window drawn by another process: what the desktop asks the app that draws a
+//! Picking parts of a window drawn by another process: what the shell asks the app that draws a
 //! window while a person points at what is wrong
 //! ([`crate::floating_surface::FloatingSurfaceHostMessage::Pick`]), and what the app answers from its
 //! own retained tree with [`answer`]
 //! ([`crate::floating_surface::FloatingSurfaceClientMessage::PickAnswered`]). Everything is in the
-//! window's logical coordinates, rectangles as `[x0, y0, x1, y1]`. The desktop names the app by the
+//! window's logical coordinates, rectangles as `[x0, y0, x1, y1]`. The shell names the app by the
 //! launcher's id, never by anything in an answer.
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ pub const MAX_CAPTURES: usize = 16;
 /// Most recent actions a capture carries.
 pub const MAX_RECENT: usize = crate::pick::RECENT_INVOCATIONS;
 
-/// What the desktop asks a window while a person picks.
+/// What the shell asks a window while a person picks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PickQuery {

@@ -1,6 +1,6 @@
 //! The app's window-bar slots in a row of the window's own, outside a Tilo session. An
 //! app declares its toolbar once, as slots in the window's bar
-//! ([`crate::window_toolbar`]); in a Tilo session the desktop draws them in the one bar
+//! ([`crate::window_toolbar`]); in a Tilo session the shell draws them in the one bar
 //! per window.
 
 use taffy::{NodeId, TaffyTree};
@@ -79,7 +79,7 @@ pub(crate) trait SlotRowHost {
     fn history_control(&self) -> Option<HistoryControl>;
     /// Run the window's History control on the app's History door.
     fn press_history(&mut self, control: HistoryControl);
-    /// Hand the app what the person did in its slots, as the desktop's bar hands it over.
+    /// Hand the app what the person did in its slots, as the shell's bar hands it over.
     fn deliver(&mut self, event: ToolbarEvent);
     /// The slots ran something: the app syncs and lays out again.
     fn slots_acted(&mut self);
@@ -162,9 +162,9 @@ impl SlotRow {
         self.repaint = true;
         if let Some((_, rect)) = self.shown.as_ref() {
             let rect = *rect;
-            let room = self.place_controls(rect);
-            self.row.lay_out(room);
-            self.place_search(rect, room);
+            let spare = self.place_controls(rect);
+            self.row.lay_out(spare);
+            self.place_search(rect, spare);
         }
     }
 
@@ -236,9 +236,9 @@ impl SlotRow {
             );
             self.row
                 .set_popup_area(Rect::new(0.0, 0.0, width, window_height));
-            let room = self.place_controls(rect);
-            self.row.lay_out(room);
-            self.place_search(rect, room);
+            let spare = self.place_controls(rect);
+            self.row.lay_out(spare);
+            self.place_search(rect, spare);
             self.shown = Some((toolbar, rect));
             self.repaint = true;
         }
@@ -264,7 +264,7 @@ impl SlotRow {
         } else {
             WindowControls::default()
         };
-        search_room(rect, self.controls.content_limit(rect))
+        search_area(rect, self.controls.content_limit(rect))
     }
 
     fn place_search(&mut self, rect: Rect, row: Rect) {
@@ -496,7 +496,7 @@ impl SlotRow {
     /// Hand `event` to the row when it is the row's: a pointer over a slot, over one of
     /// its menus, or anything while its location is edited. Returns whether the row took
     /// it, and whether the window must draw again; what the person did reaches the app as
-    /// the desktop's bar delivers it.
+    /// the shell's bar delivers it.
     pub(crate) fn route(
         &mut self,
         host: &mut dyn SlotRowHost,
@@ -836,9 +836,9 @@ impl SlotRow {
     /// Lay the row out across `rect` without a host's frame, for a test.
     #[cfg(test)]
     pub(crate) fn show_for_test(&mut self, rect: Rect) {
-        let room = self.place_controls(rect);
-        self.row.lay_out(room);
-        self.place_search(rect, room);
+        let spare = self.place_controls(rect);
+        self.row.lay_out(spare);
+        self.place_search(rect, spare);
         self.shown = Some((WindowToolbar::default(), rect));
     }
 
@@ -870,7 +870,7 @@ impl SlotRow {
     }
 }
 
-fn search_room(rect: Rect, limit: f64) -> Rect {
+fn search_area(rect: Rect, limit: f64) -> Rect {
     Rect::new(
         rect.x0,
         rect.y0,
@@ -990,7 +990,7 @@ mod tests {
         {
             assert!(
                 slot.area() == 0.0 || slot.x1 <= row.search.anchor().x0,
-                "the app's slots keep their room before the search: {slot:?}"
+                "the app's slots keep their area before the search: {slot:?}"
             );
         }
     }

@@ -228,7 +228,7 @@ pub fn local_state() -> LocalState<String> {
 pub fn permissions() -> SharedPermissions {
     SharedPermissions::new(PermissionContext::stranger("probe-author").at_unix_time(100))
 }
-/// The author as the room's Owner: everything is allowed, so an outside
+/// The author as the workspace's Owner: everything is allowed, so an outside
 /// effect runs without asking.
 pub fn owner_permissions() -> SharedPermissions {
     SharedPermissions::new(
@@ -236,7 +236,7 @@ pub fn owner_permissions() -> SharedPermissions {
             .at_unix_time(100),
     )
 }
-/// The author as an Editor of the room: may make undoable changes.
+/// The author as an Editor of the workspace: may make undoable changes.
 pub fn editor_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member("probe-author", tilo_ui::permissions::Role::Editor)

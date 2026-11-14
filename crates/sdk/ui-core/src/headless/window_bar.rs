@@ -1,4 +1,4 @@
-//! The desktop's window bar over a headless app's frame. In a Tilo session the desktop draws one bar
+//! The shell's window bar over a headless app's frame. In a Tilo session the shell draws one bar
 //! per window: the app's icon, the slots the app declares there ([`crate::window_toolbar`]), the
 //! window's search and History controls and its own controls.
 
@@ -12,11 +12,11 @@ use crate::widget::{TabBar, TabDescriptor, Widget, WindowBar, WindowSearchReques
 
 const TAB: u64 = 1;
 
-const SEARCH_CONTROL_ROOM: f64 =
+const SEARCH_CONTROL_WIDTH: f64 =
     crate::widget::window_controls::CONTROL_PX + crate::widget::window_controls::CONTROL_GAP;
 
 impl FrameHarness {
-    /// Show the app as a desktop window shows it: its slots, search and
+    /// Show the app as a shell window shows it: its slots, search and
     /// History in the window's bar, its frame under the bar. The window
     /// keeps the size it had; the app gets the part under the bar, and a
     /// capture (`super::write_capture`) names the whole window.
@@ -99,7 +99,7 @@ impl FrameHarness {
         self.window = Some(window);
     }
 
-    /// The window this harness shows the app in, once it stands in for the desktop's bar.
+    /// The window this harness shows the app in, once it stands in for the shell's bar.
     #[must_use]
     pub fn window(&self) -> Option<&crate::hosted_window::HostedWindow> {
         self.window.as_ref()
@@ -132,7 +132,7 @@ impl FrameHarness {
         }
     }
 
-    /// The window's bar as the frame offers it to the content's header row: the room the window's
+    /// The window's bar as the frame offers it to the content's header row: the area the window's
     /// furniture takes at its trailing end ([`crate::widget::merged_row_width`]), shown now, listing
     /// nothing else.
     fn window_bar_offer(&self) -> WindowBar {
@@ -143,7 +143,7 @@ impl FrameHarness {
     }
 
     /// Whether the window presents the app's search in its own bar: always while its bar stands over
-    /// the frame, and while a row holds the bar only where the room it keeps for its furniture holds
+    /// the frame, and while a row holds the bar only where the area it keeps for its furniture holds
     /// one ([`crate::widget::merged_row_holds_search`]) — otherwise the row draws its own search
     /// control.
     fn presents_search(&self) -> bool {
@@ -176,7 +176,7 @@ impl FrameHarness {
             .map_or(0.0, crate::widget::WindowHeader::header_row_height)
     }
 
-    /// Whether the harness draws the desktop's window bar over the app.
+    /// Whether the harness draws the shell's window bar over the app.
     #[must_use]
     pub fn presents_window_bar(&self) -> bool {
         self.window_bar
@@ -234,7 +234,7 @@ impl FrameHarness {
     }
 
     /// Lay the whole window out at `viewport`, its bar included, under `theme`: the app's frame gets
-    /// the part under the bar, as the desktop gives it one.
+    /// the part under the bar, as the shell gives it one.
     pub fn relayout_window_themed(
         &mut self,
         viewport: (u32, u32),
@@ -265,7 +265,7 @@ impl FrameHarness {
         self.relayout_window_themed(viewport, theme)
     }
 
-    /// The History control the window lists beside the app's slots, as the desktop's bar (or, outside a
+    /// The History control the window lists beside the app's slots, as the shell's bar (or, outside a
     /// session, the runner's slot row) shows it: none while the app has no History to open.
     #[must_use]
     pub fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
@@ -287,7 +287,7 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Type `query` into the window bar's search, opened with Find or Replace as the desktop opens it,
+    /// Type `query` into the window bar's search, opened with Find or Replace as the shell opens it,
     /// and carry it to the app's widgets, which find it in place. Returns the current match and the
     /// count, as the bar shows them.
     pub fn search_in_window(
@@ -364,7 +364,7 @@ impl FrameHarness {
 
     /// Perform `action` on a part of the window bar's search (a `window-search-*` target: open it, type
     /// the query or the replacement, set an option, step, replace, close), as an agent performs it on
-    /// the desktop's window, then carry the search to the app's widgets.
+    /// the shell's window, then carry the search to the app's widgets.
     pub(super) fn perform_window_search_semantic(
         &mut self,
         target: &str,
@@ -394,7 +394,7 @@ impl FrameHarness {
                 }
                 WindowSearchRequest::Widen(_) => {
                     return Err(format!(
-                        "{target} widens the search to the desktop's, which a single app's window does not host"
+                        "{target} widens the search to the shell's, which a single app's window does not host"
                     ));
                 }
             }
@@ -447,7 +447,7 @@ impl FrameHarness {
     }
 
     /// Press one of the app's own slots in the window's bar (a mode, an action, the sidebar toggle), as
-    /// the desktop hands the press to the app.
+    /// the shell hands the press to the app.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
         let _running = self.running();
@@ -505,7 +505,7 @@ impl FrameHarness {
     }
 
     /// Where the app's frame stands in a window of `viewport`: how far below the window's top it starts
-    /// (the desktop's bar above it) and how tall it is, in the window's own pixels.
+    /// (the shell's bar above it) and how tall it is, in the window's own pixels.
     pub fn frame_extent(&self, viewport: (u32, u32)) -> (f64, f64) {
         let (_, height) = self.content_viewport(viewport);
         (
@@ -515,12 +515,12 @@ impl FrameHarness {
     }
 
     /// Where a point of the window (a capture's picture, as the person sees it) is in the app's frame
-    /// under the bar. The bar is the desktop's: a point on it is refused, never handed to the app.
+    /// under the bar. The bar is the shell's: a point on it is refused, never handed to the app.
     pub(super) fn frame_point(&self, x: f64, y: f64) -> Result<(f64, f64), String> {
         let frame_y = self.frame_y(y);
         if frame_y < 0.0 {
             return Err(format!(
-                "({x}, {y}) is on the window bar, which is the desktop's: invoke the \
+                "({x}, {y}) is on the window bar, which is the shell's: invoke the \
                  action its slot runs instead"
             ));
         }
@@ -566,12 +566,12 @@ impl FrameHarness {
         tab
     }
 
-    /// The bar as the desktop would draw it for this window now, laid out across `width`.
+    /// The bar as the shell would draw it for this window now, laid out across `width`.
     fn window_bar(&self, width: f64) -> TabBar {
         let tab = self.window_tab();
         let mut bar = TabBar::new("headless-window", vec![tab], TAB);
         bar.set_window_controls(true);
-        bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
+        bar.set_search_control(Some(SEARCH_CONTROL_WIDTH));
         bar.set_search_least(
             (self.window_search.in_place() != crate::widget::InPlace::Nothing)
                 .then(|| crate::widget::WindowSearch::least_span(&self.theme)),
@@ -600,7 +600,7 @@ impl FrameHarness {
         px
     }
 
-    /// The window's bar as the desktop draws it across a window `width` wide, at rest, its labels
+    /// The window's bar as the shell draws it across a window `width` wide, at rest, its labels
     /// measured as painted.
     pub(super) fn painted_window_bar(&mut self, width: f64) -> TabBar {
         let _settled = crate::motion::testing::settled();
@@ -616,9 +616,9 @@ impl FrameHarness {
         bar
     }
 
-    /// The window's bar as it lays itself out across a window `width` wide, as the desktop draws
+    /// The window's bar as it lays itself out across a window `width` wide, as the shell draws
     /// it: the app's slots, the bar's own overflow, the History control and the window's own
-    /// controls, and the room it leaves empty. A capture, an inspector and a layout check read
+    /// controls, and the area it leaves empty. A capture, an inspector and a layout check read
     /// the bar through it.
     /// Quiet: lays out a scratch bar and reads it; nothing a frame reads.
     pub fn window_bar_layout(&mut self, width: f64) -> crate::window_toolbar::BarLayout {
@@ -686,7 +686,7 @@ impl FrameHarness {
         out
     }
 
-    /// How the window's bar, as the desktop draws it across a window
+    /// How the window's bar, as the shell draws it across a window
     /// `width` wide, shows the notice up (none: no notice is up).
     /// Quiet: reads the notice off a scratch bar; nothing a frame reads.
     #[must_use]
@@ -746,7 +746,7 @@ impl FrameHarness {
         })
     }
 
-    /// Click the notice's button `index` where the window's bar, as the desktop draws it across a
+    /// Click the notice's button `index` where the window's bar, as the shell draws it across a
     /// window `width` wide, puts it (in the location's place, or in a compact window's strip), and hand
     /// the app what the press runs, as [`Self::press_window_slot`] does.
     pub fn click_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
@@ -768,7 +768,7 @@ impl FrameHarness {
     }
 
     /// Run the notice's button `index` through its semantic action, as assistive technology and
-    /// automation do, on the window's bar as the desktop draws it across a window `width` wide, and
+    /// automation do, on the window's bar as the shell draws it across a window `width` wide, and
     /// hand the app what it runs, as [`Self::press_window_slot`] does.
     pub fn invoke_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
         self.invalidate_local();
@@ -820,7 +820,7 @@ impl FrameHarness {
         let _settled = crate::motion::testing::settled();
         assert!(
             self.window_tab().app_kind.is_some(),
-            "a hosted window's bar wears its app's icon, as every desktop window's does: \
+            "a hosted window's bar wears its app's icon, as every shell window's does: \
              mount the app with FrameHarness::for_app"
         );
         let title = self.window_tab().title;
@@ -898,7 +898,7 @@ pub struct WindowBarNotice {
     pub text_bounds: Rect,
     /// Its text stands whole, not cut short.
     pub whole: bool,
-    /// Its buttons, in order, where they stand (none: it has none, or the row has no room for its
+    /// Its buttons, in order, where they stand (none: it has none, or the row cannot fit its
     /// text).
     pub buttons: Vec<WindowBarNoticeButton>,
     /// How many of the app's actions and the leading actions that do not move through the content stand
@@ -1078,7 +1078,7 @@ mod tests {
     /// A root of windows that draws no header row offers each window its bar: a row its windows draw
     /// is not a second row under it.
     #[test]
-    fn a_desk_of_windows_is_no_second_row_under_the_bar() {
+    fn a_shell_of_windows_is_no_second_row_under_the_bar() {
         use crate::component::Described as _;
         let _hosted = HostedReset;
         let inner = crate::widget::NavShell::new()
@@ -1090,20 +1090,23 @@ mod tests {
                         .with_popover(crate::widget::Text::new("What changed")),
                 )],
             );
-        let desk = crate::widget::WindowFrame::from_props(
-            "desk",
+        let shell = crate::widget::WindowFrame::from_props(
+            "frame",
             crate::widget::WindowFrameProps {
                 body: Some(Box::new(inner)),
                 ..crate::widget::WindowFrameProps::default()
             },
         );
-        let mut harness = harness_of(Box::new(desk));
+        let mut harness = harness_of(Box::new(shell));
         harness.present_in_window_bar();
-        assert!(!harness.row_holds_bar(), "the desk draws no row of its own");
+        assert!(
+            !harness.row_holds_bar(),
+            "the shell draws no row of its own"
+        );
         assert_eq!(
             harness.window_header_row_height(),
             0.0,
-            "the row its window draws is no second row under the bar over the desk"
+            "the row its window draws is no second row under the bar over the shell"
         );
     }
 
@@ -1213,7 +1216,7 @@ mod tests {
             harness
                 .perform(&super::super::Action::ClickAt(centre.x, bar / 2.0))
                 .is_err(),
-            "the bar is the desktop's"
+            "the bar is the shell's"
         );
     }
 
@@ -1272,11 +1275,11 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A compact (420 px) window with a long title and no location: the title takes the room the row
+    /// A compact (420 px) window with a long title and no location: the title takes the area the row
     /// leaves it, with no slots and beside one trailing action alike, and is cut short only where none
     /// is left.
     #[test]
-    fn a_compact_windows_long_title_takes_the_room_the_row_leaves_it() {
+    fn a_compact_windows_long_title_takes_the_area_the_row_leaves_it() {
         use crate::window_toolbar::{ToolbarAction, WindowToolbar};
         const TITLE: &str = "Video Player Library";
         let _hosted = HostedReset;
@@ -1297,7 +1300,7 @@ mod tests {
             tab.app_kind = Some(crate::widget::AppKind::Files);
             let mut bar = TabBar::new("headless-window", vec![tab], TAB);
             bar.set_window_controls(true);
-            bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
+            bar.set_search_control(Some(SEARCH_CONTROL_WIDTH));
             let slots = toolbar.is_some();
             bar.set_toolbar(TAB, toolbar);
             for _ in 0..2 {
@@ -1535,7 +1538,7 @@ mod tests {
         (hosted, harness, bar)
     }
 
-    /// A compact (420 px) window's bar, beside its search and History, has no room for the calendar's
+    /// A compact (420 px) window's bar, beside its search and History, cannot fit the calendar's
     /// views beside its navigation and period: the views and Today (which jumps rather than steps) go
     /// into the overflow menu, previous and next stay, and the period stays, elided.
     #[test]
@@ -1583,8 +1586,8 @@ mod tests {
         );
         assert!(location.x1 <= more.x0, "{rects:?}");
         assert!(
-            more.x1 + SEARCH_CONTROL_ROOM <= history.x0,
-            "the window's search keeps its room before History: {rects:?}"
+            more.x1 + SEARCH_CONTROL_WIDTH <= history.x0,
+            "the window's search keeps its area before History: {rects:?}"
         );
         assert_eq!(rect("window_leading:2"), Rect::ZERO, "Today folds");
         assert_eq!(rect("window_views_menu"), Rect::ZERO, "so do the views");
@@ -1603,7 +1606,7 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A compact window's bar has no room for the week as `Mon, Jun 29 – Sun, Jul 5`: it names it `Jun
+    /// A compact window's bar cannot fit the week as `Mon, Jun 29 – Sun, Jul 5`: it names it `Jun
     /// 29 – Jul 5`, whole, instead of cutting the wider form short.
     #[test]
     fn a_compact_window_names_its_period_in_a_form_that_fits() {
@@ -1716,7 +1719,7 @@ mod tests {
     }
 
     // A scenario drives the window bar's search through its parts, as an
-    // agent does on the desktop: open it, type, step, open the options and
+    // agent does on the shell: open it, type, step, open the options and
     // type the replacement; what the window does not host is refused.
     #[test]
     fn a_scenario_drives_the_window_bars_search_through_its_parts() {
@@ -1751,7 +1754,7 @@ mod tests {
         );
         assert!(
             perform("window-search-everywhere", Action::Activate).is_err(),
-            "the desktop's search is not the window's"
+            "the shell's search is not the window's"
         );
         assert_eq!(harness.window_search_position(), Some((2, 3)));
         assert!(harness.window_search.options_open());
@@ -1936,7 +1939,7 @@ mod tests {
     }
 
     /// A document's slots in the bar: navigation, a location and actions, which leave a narrow window's
-    /// search little room before the location.
+    /// search little area before the location.
     fn writer_slots() -> crate::window_toolbar::WindowToolbar {
         use crate::window_toolbar::{
             ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,

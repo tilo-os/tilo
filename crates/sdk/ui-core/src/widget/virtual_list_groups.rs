@@ -26,7 +26,7 @@ pub(super) struct Band {
     pub index: usize,
     pub top: f64,
     pub heading: String,
-    /// Whether the group is closed: its rows take no room and are not built.
+    /// Whether the group is closed: its rows take up nothing and are not built.
     pub closed: bool,
     pub tail: bool,
     pub tone: Tone,
@@ -309,14 +309,14 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     pub(super) fn grouped_height(&self, index: usize, height: f64) -> f64 {
-        let band = self.band_room(index);
+        let band = self.band_gap(index);
         if !self.row_open(index) {
             return band;
         }
         height + band
     }
 
-    pub(super) fn band_room(&self, index: usize) -> f64 {
+    pub(super) fn band_gap(&self, index: usize) -> f64 {
         if self.row_starts(index) {
             self.groups.height
         } else {
@@ -331,7 +331,7 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn row_box(&self, index: usize) -> Option<Rect> {
         let top = self.viewport.item_view_top(index)?;
         let height = self.viewport.item_height(index)?;
-        let band = self.band_room(index);
+        let band = self.band_gap(index);
         Some(self.lift_rect(top + band, (height - band).max(0.0)))
     }
 

@@ -355,7 +355,7 @@ impl DeviceCopy {
 
 /// A copy as a host that composites the target elsewhere sees it: the rectangle it reads
 /// and how far it moves it, in the coordinates of the scene the target is drawn into (an
-/// embedded app's region in a desktop section), before that scene is rasterised.
+/// embedded app's region in a shell section), before that scene is rasterised.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovedRegion {
     pub source: Rect,
@@ -693,7 +693,7 @@ pub fn plan(
 
 /// [`plan`] for a window drawn at `drawn_scale` scene pixels per logical pixel into a
 /// host target of `device_per_scene` pixels per scene pixel (an app drawn into a
-/// desktop's logical scene, shown at 200 %): the plan is in those device pixels, for a
+/// shell's logical scene, shown at 200 %): the plan is in those device pixels, for a
 /// `width` × `height` target of them.
 pub fn plan_scaled(
     offers: &[ScrollOffer],
@@ -710,7 +710,7 @@ pub fn plan_scaled(
     )
 }
 
-/// [`plan`] for widgets drawn with `placement` into a host's scene (an app in a desktop's
+/// [`plan`] for widgets drawn with `placement` into a host's scene (an app in a shell's
 /// window, drawn where the window stands) and clipped there to `clip` (in the widgets'
 /// own coordinates, as the window clips its app), whose target has `device_per_unit`
 /// pixels per unit of the widgets' coordinates: the plan is in those coordinates' device

@@ -12,7 +12,7 @@ use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt,
 /// The style of the boundary node a [`ModelView`] puts around its child.
 ///
 /// A dynamic page is a transparent layout boundary, not an intrinsic
-/// desktop-width island: it fills its parent's width so percent-width cards
+/// shell-width island: it fills its parent's width so percent-width cards
 /// and wrapping rows reflow on narrow windows. It hands its child's own
 /// claim on the parent through: a percent height (a pane that fills its
 /// column), flex growth (a `Scrollable` under a fixed bar) and its basis,

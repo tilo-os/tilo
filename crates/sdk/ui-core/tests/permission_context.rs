@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
             ),
             // An Editor changes the workspace; governing it is another matter.
             (
-                "workspace_admin_requires_admin_authority: editor writes the room",
+                "workspace_admin_requires_admin_authority: editor writes the workspace",
                 editor_ctx("bob"),
                 PermissionScope::workspace(ActionKind::Undoable),
                 true,

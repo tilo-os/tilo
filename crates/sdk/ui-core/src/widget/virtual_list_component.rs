@@ -1190,7 +1190,7 @@ fn message_of(
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
     let message = if continues {
-        message.push(Box::new(avatar.room()))
+        message.push(Box::new(avatar.placeholder()))
     } else {
         message.push(Box::new(avatar))
     };
@@ -2507,7 +2507,7 @@ mod tests {
         items: Vec<ViewItem>,
         /// The rows the host has named but not rendered: they are on their way.
         withheld: Vec<String>,
-        /// The room a row's leading control takes, and the gap after it.
+        /// The area a row's leading control takes, and the gap after it.
         lead: f32,
         gap: f32,
     }
@@ -2696,7 +2696,7 @@ mod tests {
     }
 
     /// What an item holds, shown where its row stands: the item's own line, and what is written
-    /// about it under that line. Its line leads with the room a row's leading control takes and
+    /// about it under that line. Its line leads with the area a row's leading control takes and
     /// the gap after it, so its title stands where the rows beside it start theirs.
     fn document(key: &str, lead: f32, gap: f32) -> Element {
         Box::new(

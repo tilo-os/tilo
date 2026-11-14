@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
             + crate::widget::window_controls::CONTROL_PX;
         let (rect, _) = bar
             .opened_by_chip(&mut tr, &theme)
-            .expect("room for the mark");
+            .expect("area for the mark");
         assert!(
             rect.x0 >= search_x1,
             "{rect:?} after the search at {search_x1}"

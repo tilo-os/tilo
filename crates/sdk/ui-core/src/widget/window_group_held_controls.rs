@@ -34,7 +34,7 @@ impl HeldControl {
         }
     }
 
-    /// Whether the row had room to place it: a control it holds nothing for is not there at all.
+    /// Whether the row had area to place it: a control it holds nothing for is not there at all.
     pub(super) fn placed(&self) -> bool {
         self.rect.area() > 0.0
     }
@@ -100,7 +100,7 @@ impl Widget for HeldControl {
 
     /// What it shows, as assistive technology reads it: named and targeted as the bar's own
     /// control for the same function, so a window shows one set of functions whether its row holds
-    /// the bar or stands as its slots. A control the row has no room for is not there.
+    /// the bar or stands as its slots. A control the row cannot fit is not there.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         self.placed().then(|| {

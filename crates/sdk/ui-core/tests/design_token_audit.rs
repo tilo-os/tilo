@@ -567,7 +567,7 @@ fn seen_over(fill: vello::peniko::Color, ground: vello::peniko::Color) -> vello:
 /// tiers to the selection step on each ground a selector really stands on,
 /// in every preset, with transparency on and reduced: the window group's
 /// docked strip, the window ground (in-app tabs, page tabs), a segmented
-/// track and the desktop (the top bar). The active tab is opaque (on the
+/// track and the shell (the top bar). The active tab is opaque (on the
 /// strip of a light palette, lighter than the strip, as on a dark one), the hover
 /// clears the step without reaching the active one, and reduced
 /// transparency (as high contrast) drops the rim.
@@ -599,7 +599,7 @@ fn selector_tiers_clear_the_selection_step_on_every_ground_they_stand_on() {
                 let active_step = lightness_step(active.fill, ground);
                 let hover_step = lightness_step(seen_over(hover.fill, ground), ground);
                 // On a light palette the active selector on the strip rises
-                // toward the light, as the strip's light ground leaves room
+                // toward the light, as the strip's light ground leaves area
                 // for; a dark one always does.
                 let light = !theme.document.palette.dark && !theme.document.palette.high_contrast;
                 if (name == "strip" || theme.document.palette.dark)

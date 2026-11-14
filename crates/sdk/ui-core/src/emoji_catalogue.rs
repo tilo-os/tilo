@@ -336,7 +336,7 @@ pub struct DeviceRecents {
     path: PathBuf,
 }
 
-/// Most a kept file may hold: room for many times the cap, never a disk.
+/// Most a kept file may hold: area for many times the cap, never a disk.
 const KEPT_LIMIT: u64 = 8 * 1024;
 
 impl DeviceRecents {

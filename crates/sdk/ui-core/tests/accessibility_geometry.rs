@@ -1,4 +1,4 @@
-//! The accessibility tree as the browser desktop and inspection tools read
+//! The accessibility tree as the browser shell and inspection tools read
 //! it (the headless host's inspection snapshot): each control is reported
 //! where it is drawn, and what is drawn is there. A node without geometry
 //! of its own would be placed over its owner's whole rect, so a pointer sent

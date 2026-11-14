@@ -204,8 +204,8 @@ impl<'a> FactsFace<'a> {
                 }
                 None => {}
             }
-            let room = crate::num::f32_of_f64((rect.x1 - x).max(0.0));
-            let label = ctx.text.elide_to_width_style(&fact.text, room, &m.style);
+            let spare = crate::num::f32_of_f64((rect.x1 - x).max(0.0));
+            let label = ctx.text.elide_to_width_style(&fact.text, spare, &m.style);
             let w = f64::from(ctx.text.measure_style(&label, None, &m.style).0);
             ctx.text.draw_style(
                 ctx.scene,
@@ -305,7 +305,7 @@ impl Widget for Facts {
         };
         // The solver rounds every edge onto the display's device pixels, so a row measured at
         // its text's exact width is handed a box up to a pixel narrower than that and the last
-        // fact elides a letter it has the room to draw ("1 he…" for "1 here").
+        // fact elides a letter it has the width to draw ("1 he…" for "1 here").
         let grid = crate::widget::device_scale();
         let width = if grid > 0.0 {
             crate::num::f32_of_f64((f64::from(width) * f64::from(grid)).ceil() / f64::from(grid))
@@ -413,9 +413,9 @@ mod tests {
                 let boxed = f64::from(measured.width) * grid;
                 let boxed = boxed.round() / grid;
                 let inset = m.mark_width(fact.mark);
-                let room = crate::num::f32_of_f64(boxed - inset);
+                let spare = crate::num::f32_of_f64(boxed - inset);
                 assert_eq!(
-                    text.elide_to_width_style(&fact.text, room, &m.style),
+                    text.elide_to_width_style(&fact.text, spare, &m.style),
                     fact.text,
                     "{:?} measured {natural} stands in a box of {boxed}",
                     fact.text
@@ -424,7 +424,7 @@ mod tests {
         }
 
         // Something happening now is marked by a dot in its own colour, in the slot an icon takes: the
-        // same room, and the words after it read as they do anywhere.
+        // same area, and the words after it read as they do anywhere.
         phase a_live_fact_is_a_dot_in_its_tone_before_its_words;
         {
             let theme = Theme::dark();

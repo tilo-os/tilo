@@ -42,7 +42,7 @@ pub struct ArrangedDisplay {
     pub connector: String,
     /// The device whose screens move together with this one. A device's screens go where they
     /// are dropped, apart from the others too; a screen with no group is placed against the
-    /// other ungrouped ones, as one desktop has no gaps.
+    /// other ungrouped ones, as one shell has no gaps.
     pub movement_group: Option<String>,
     /// Certified shared identity and layout state; absent for native-only or legacy tiles.
     pub shared: Option<SharedDisplayState>,
@@ -84,12 +84,12 @@ impl ArrangedDisplay {
 }
 
 /// What the canvas is doing with the hand: a drag in progress, a dropped display settling
-/// into place, and the part of the desktop the canvas frames while either happens.
+/// into place, and the part of the shell the canvas frames while either happens.
 #[derive(Clone, Debug, Default)]
 pub struct ArrangementGesture {
     drag: Option<ArrangementDrag>,
     settle: Option<Settle>,
-    /// The desktop rect the canvas frames, in desktop units: growing as a
+    /// The shell rect the canvas frames, in shell units: growing as a
     /// held display goes past the arrangement, settling back to fit it
     /// after the drop. `None` while the canvas simply fits the arrangement.
     view: Option<MotionValue<Rect>>,
@@ -144,8 +144,8 @@ struct Settle {
     progress: MotionValue<f64>,
 }
 
-/// Uniform scale plus offset from desktop units to canvas pixels:
-/// `canvas = desktop * scale + offset` on each axis.
+/// Uniform scale plus offset from global display units to canvas pixels:
+/// `canvas = shell * scale + offset` on each axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Mapping {
     scale: f64,
@@ -154,7 +154,7 @@ struct Mapping {
 }
 
 impl Mapping {
-    /// The mapping that shows `view` (desktop units) centred in `canvas`,
+    /// The mapping that shows `view` (shell units) centred in `canvas`,
     /// inside `padding`.
     fn frame(canvas: Rect, view: Rect, padding: f64, snap_radius: f64) -> Self {
         let inner = canvas.inset(-padding);
@@ -182,7 +182,7 @@ impl Mapping {
         self.at(placement, Vec2::ZERO)
     }
 
-    /// `placement` moved by `shift` desktop units, on the canvas.
+    /// `placement` moved by `shift` shell units, on the canvas.
     fn at(self, placement: Placement, shift: Vec2) -> Rect {
         let top_left = self.point(
             f64::from(placement.x) + shift.x,
@@ -196,7 +196,7 @@ impl Mapping {
         )
     }
 
-    fn to_desktop(self, point: Point) -> (f64, f64) {
+    fn to_global(self, point: Point) -> (f64, f64) {
         (
             (point.x - self.offset.x) / self.scale,
             (point.y - self.offset.y) / self.scale,
@@ -320,7 +320,7 @@ impl DisplayArrangement {
     }
 
     /// Where the held display stands under the hand when the canvas maps
-    /// the desktop by `mapping`, pulled onto the lines it is near, and those
+    /// the shell by `mapping`, pulled onto the lines it is near, and those
     /// lines. It goes wherever the hand takes it, even off on its own: only
     /// the drop brings it back into contact ([`placement::settle`]).
     fn held_at(&self, drag: &ArrangementDrag, mapping: Mapping) -> (Placement, Vec<Guide>) {
@@ -334,7 +334,7 @@ impl DisplayArrangement {
         let moved = match (drag.held, drag.pointer) {
             (Some(held), _) => held,
             (None, Some(pointer)) if drag.active => {
-                let (dx, dy) = mapping.to_desktop(pointer);
+                let (dx, dy) = mapping.to_global(pointer);
                 display.placement.at(
                     round_to_i32(dx - drag.grab.0 * f64::from(display.placement.width)),
                     round_to_i32(dy - drag.grab.1 * f64::from(display.placement.height)),
@@ -426,7 +426,7 @@ impl DisplayArrangement {
         )
     }
 
-    /// Where each display is drawn this frame, in desktop units: the held
+    /// Where each display is drawn this frame, in shell units: the held
     /// preview for the one being dragged (and its device's other screens),
     /// the settling place for one just dropped, its stored placement for
     /// the rest; and whether it is held.
@@ -500,7 +500,7 @@ impl DisplayArrangement {
         if grouped {
             return group;
         }
-        let desktop = self
+        let shell = self
             .displays
             .iter()
             .filter(|display| {
@@ -508,7 +508,7 @@ impl DisplayArrangement {
             })
             .map(|display| display.placement)
             .collect::<Vec<_>>();
-        placement::settle(group, &desktop, threshold)
+        placement::settle(group, &shell, threshold)
     }
 
     fn group_bounds(&self, connector: &str, destination: Placement) -> Placement {
@@ -590,7 +590,7 @@ impl DisplayArrangement {
         let now = crate::motion::frame_now();
         let mapping = self.mapping_at(now);
         let view = self.view_at(now);
-        let (dx, dy) = mapping.to_desktop(point);
+        let (dx, dy) = mapping.to_global(point);
         let mut path_x = FingerPath::default();
         let mut path_y = FingerPath::default();
         path_x.push(now, dx);
@@ -633,7 +633,7 @@ impl DisplayArrangement {
             return true;
         }
         let now = crate::motion::frame_now();
-        let (dx, dy) = self.mapping_at(now).to_desktop(point);
+        let (dx, dy) = self.mapping_at(now).to_global(point);
         self.gesture.update(|gesture| {
             if let Some(drag) = gesture.drag.as_mut() {
                 drag.active = true;
@@ -786,7 +786,7 @@ impl DisplayArrangement {
     }
 
     /// Send `connector`'s new place once and spring it there from `from`,
-    /// carrying `velocity` (desktop units per second), then frame the view
+    /// carrying `velocity` (shell units per second), then frame the view
     /// to the new arrangement.
     fn place(
         &mut self,
@@ -1445,7 +1445,7 @@ mod tests {
                 connector: "HDMI-A-1".into(),
                 movement_group: None,
                 shared: None,
-                label: "Desk monitor".into(),
+                label: "External monitor".into(),
                 number: 2,
                 placement: Placement::new(1920, 0, 1920, 1080),
                 primary: false,
@@ -1506,7 +1506,7 @@ mod tests {
                 reachable: true,
             });
             canvas.displays[1].shared = Some(SharedDisplayState {
-                device: "desk".into(),
+                device: "monitor".into(),
                 output: "edid:panel".into(),
                 online: true,
                 reachable: false,
@@ -1607,7 +1607,7 @@ mod tests {
                 names,
                 [
                     "Display 1: Built-in display, main display",
-                    "Display 2: Desk monitor"
+                    "Display 2: External monitor"
                 ]
             );
         }
@@ -1802,8 +1802,8 @@ mod tests {
                     "move {step} asks for nothing more"
                 );
                 let (held, _) = canvas.drawn().into_iter().find(|(_, held)| *held).unwrap();
-                let (dx, dy) = mapping.to_desktop(point);
-                let grab = mapping.to_desktop(monitor.center());
+                let (dx, dy) = mapping.to_global(point);
+                let grab = mapping.to_global(monitor.center());
                 let free = (
                     displays()[1].placement.x + round_to_i32(dx - grab.0),
                     displays()[1].placement.y + round_to_i32(dy - grab.1),

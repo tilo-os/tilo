@@ -60,7 +60,7 @@ tilo_test_env::scenario! {
     phase bar_controls_a_cluster_gap_apart_keep_their_press_targets_off_each_other;
     // A bar's controls stand a cluster gap apart, so no control's press target reaches into the
     // one beside it: a mouse's face is the bar's control height and its target reaches past the
-    // face into the gap, which at a cluster gap is exactly the room the face leaves; a finger's
+    // face into the gap, which at a cluster gap is exactly the area the face leaves; a finger's
     // face is the target itself, and the gap is air between two whole targets. The bar is as wide
     // as a phone and insets what it holds as a bar's body does, so the row has nowhere to put the
     // controls but beside each other.

@@ -137,9 +137,9 @@ tilo_test_env::scenario! {
         assert_eq!(header_count(&h).as_deref(), Some("7"));
     }
 
-    // Zero is never drawn: the header shows no badge and keeps the room one would
+    // Zero is never drawn: the header shows no badge and keeps the area one would
     // have taken, and the place's row says nothing.
-    phase zero_draws_no_count_and_keeps_no_room_for_one;
+    phase zero_draws_no_count_and_keeps_no_area_for_one;
     {
         let mut h = harness(places_shell(0), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
         assert_eq!(header_count(&h), None);
         assert!(
             (header_width(&h) - plain).abs() < 0.5,
-            "no room is kept for a count that is not drawn: {} against {plain}",
+            "no area is kept for a count that is not drawn: {} against {plain}",
             header_width(&h)
         );
     }

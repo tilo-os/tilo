@@ -306,9 +306,9 @@ pub(super) fn page_edges(column: Rect, lines: f64, m: &Metrics) -> Option<(f64, 
     if column.width() <= 0.0 {
         return None;
     }
-    let room = (column.width() - m.scroll_gutter).max(0.0);
-    let width = (m.body_line * lines).round().min(room);
-    let x0 = column.x0 + (room - width) / 2.0 + m.page_pad;
+    let spare = (column.width() - m.scroll_gutter).max(0.0);
+    let width = (m.body_line * lines).round().min(spare);
+    let x0 = column.x0 + (spare - width) / 2.0 + m.page_pad;
     let x1 = (x0 + width - 2.0 * m.page_pad).max(x0);
     Some((x0, x1))
 }
@@ -469,7 +469,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 .any(|c| in_row(*c) && inputs.header_wanted(*c)));
     // Each column's header is the app's own — its title and the buttons that act on what it
     // shows — never the window's: it stands at the top of its column at every time, and the
-    // window's controls come into the room the row keeps for them.
+    // window's controls come into the area the row keeps for them.
     let sidebar_reads_as_rail = match g.sidebar {
         SidebarPlacement::Docked => inputs.sidebar_reads_as_rail(sw),
         SidebarPlacement::Screen => inputs.sidebar_reads_as_rail(w),
@@ -561,8 +561,8 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
     }
     let reading = m.reading_measure + m.scroll_gutter;
-    let roomy = ow + (region_w - reading - ow).max(0.0);
-    let widest_list = roomy.min(m.overview_max);
+    let reserved = ow + (region_w - reading - ow).max(0.0);
+    let widest_list = reserved.min(m.overview_max);
     if g.side_by_side {
         let x = region.x0 + screen_x(NavPane::Content);
         let lead = match g.overview {

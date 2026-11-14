@@ -22,7 +22,7 @@ pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// controls are a section of their own, apart from the app's by the gap
 /// between sections and by the glass the app's ground has no part of, never
 /// by a drawn line. One step below the gap between groups, so the app's
-/// content keeps the room it names its place with in a narrow window.
+/// content keeps the area it names its place with in a narrow window.
 pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
 pub const HISTORY_GAP: f64 = CONTROL_GAP;
 const ACTION_GLYPH_PX: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
@@ -512,7 +512,7 @@ mod tests {
             let pill = WindowControls::around(bar, controls);
             assert!(
                 pill.contains(controls.center()) && pill.area() > controls.area(),
-                "the pill holds the controls with room around them: {pill:?} for {controls:?}"
+                "the pill holds the controls with area around them: {pill:?} for {controls:?}"
             );
             assert!(pill.height() <= bar.height() + f64::EPSILON);
             assert!(
@@ -536,7 +536,7 @@ mod tests {
             );
         }
 
-        phase a_row_with_no_room_has_no_controls;
+        phase a_row_with_no_area_has_no_controls;
         {
             let c = WindowControls::lay_out(Rect::ZERO);
             assert_eq!(c, WindowControls::default());

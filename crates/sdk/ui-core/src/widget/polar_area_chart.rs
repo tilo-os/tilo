@@ -129,7 +129,7 @@ impl PolarAreaMarks {
         )
     }
     /// Each sector's label inside its sector, centred on the sector's
-    /// middle, largest sector first: shortened to the room the sector has
+    /// middle, largest sector first: shortened to the area the sector has
     /// there and dropped (the tooltip names it) where it would spill out of
     /// the sector or collide with a label already placed.
     fn draw_sector_labels(
@@ -162,9 +162,9 @@ impl PolarAreaMarks {
                 center.x + mid_r * angle.cos(),
                 center.y + mid_r * angle.sin(),
             );
-            let room = (2.0 * mid_r * (sweep / 2.0).sin()).min(radius - inner);
+            let spare = (2.0 * mid_r * (sweep / 2.0).sin()).min(radius - inner);
             let Some((shown, w, h)) =
-                crate::widget::chart_labels::fit_label(tr, label, room, &style)
+                crate::widget::chart_labels::fit_label(tr, label, spare, &style)
             else {
                 continue;
             };

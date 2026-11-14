@@ -104,7 +104,7 @@ fn a_body_slot_child_that_fills_gets_the_slots_size() {
     let height = body_height(card, 500);
     assert!(
         height > 400.0,
-        "the view that fills took the card's room, not one line: {height}"
+        "the view that fills took the card's area, not one line: {height}"
     );
 }
 

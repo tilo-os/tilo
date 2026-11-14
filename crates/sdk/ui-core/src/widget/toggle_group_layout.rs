@@ -58,9 +58,9 @@ pub(super) fn shared(rect: Rect, naturals: &[(f64, f64)]) -> Option<(Vec<Rect>, 
     })
 }
 
-pub(super) fn tab_fit(room: f64, naturals: &[(f64, f64)]) -> (Vec<(f64, f64)>, Vec<bool>) {
+pub(super) fn tab_fit(spare: f64, naturals: &[(f64, f64)]) -> (Vec<(f64, f64)>, Vec<bool>) {
     let content: f64 = naturals.iter().map(|(full, _)| full).sum();
-    let shorten = content > room + 0.5;
+    let shorten = content > spare + 0.5;
     naturals
         .iter()
         .map(|&(full, short)| {
@@ -112,7 +112,7 @@ pub(super) fn flow(
 
 /// `rect` split among segments of natural widths `naturals` (full label,
 /// short label): equal segments while every full label fits an equal share;
-/// otherwise each segment as wide as its label needs with the room left
+/// otherwise each segment as wide as its label needs with the area left
 /// shared equally; only when the full labels cannot all fit, the short forms
 /// where a segment has one; and only past that, shares in proportion (the
 /// labels then elide). Returns the rects and, per segment, whether it shows

@@ -17,7 +17,7 @@ pub struct DockedProps {
     pub foot: Option<Element>,
 }
 
-/// [`DockedProps`] built: a stack filling its column, the content taking the room the foot
+/// [`DockedProps`] built: a stack filling its column, the content taking the area the foot
 /// leaves.
 pub struct Docked {
     stack: Stack,

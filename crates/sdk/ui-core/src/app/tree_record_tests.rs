@@ -27,7 +27,7 @@ fn write_part(fixture: &RoutedOwners, index: u64, text: &str) -> crate::record::
 
 /// A record of an open record's tree (a chat's message part, a container's
 /// child) syncs on its own route though no view owns it, and starts with
-/// its whole document: on a desktop a part one person wrote never left
+/// its whole document: on a shell a part one person wrote never left
 /// their device, so nobody else read their messages. The action that
 /// created it is answered only after that document went out: answered
 /// before, a person's first message to a new conversation was reported

@@ -45,7 +45,7 @@ impl App {
                     || workspace_route.is_some_and(|witness| *witness.route() == route)
                 {
                     // Not open yet: try again on the next pump.
-                    let Some(workspace) = self.persistence.room_index.as_mut() else {
+                    let Some(workspace) = self.persistence.workspace_index.as_mut() else {
                         return Ok(None);
                     };
                     if workspace.document().pending_ops() != 0 {

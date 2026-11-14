@@ -6,7 +6,7 @@ use crate::widget::Element;
 use super::Scrollable;
 
 /// A body that scrolls under its column's fixed header, showing the part of the content the
-/// column has room for.
+/// column fits.
 #[derive(Component, Default)]
 #[component(name = "Scroll", role = "ScrollView")]
 pub struct ScrollProps {

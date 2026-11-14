@@ -299,10 +299,10 @@ impl App {
     pub(super) fn broadcast_doc_delta(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.broadcast_doc_delta");
         self.restore_failed_document_publications();
-        // A surface's record is the desktop's own: it syncs with no one, so
+        // A surface's record is the shell's own: it syncs with no one, so
         // there is no document route to broadcast it on.
         if self.collaboration.manager.hosts_surface() {
-            self.broadcast_room_index_delta();
+            self.broadcast_workspace_index_delta();
             return;
         }
         if self.collaboration.manager.is_connected() {
@@ -331,13 +331,13 @@ impl App {
                 }
             }
         }
-        self.broadcast_room_index_delta();
+        self.broadcast_workspace_index_delta();
     }
 
     /// The workspace index is a distinct document from the live record.  Keep its
     /// incremental cursor and route separate so an annotation/document delta
     /// can never be merged into the index (or vice versa).
-    fn broadcast_room_index_delta(&mut self) {
+    fn broadcast_workspace_index_delta(&mut self) {
         self.restore_failed_document_publications();
         let connected = self.collaboration.workspace_manager.as_ref().map_or_else(
             || self.persistence.records.is_some() && self.collaboration.manager.is_connected(),
@@ -346,7 +346,7 @@ impl App {
         if !connected {
             return;
         }
-        let Some(workspace) = self.persistence.room_index.as_mut() else {
+        let Some(workspace) = self.persistence.workspace_index.as_mut() else {
             return;
         };
         let (delta, heads) = workspace.pending_outbound_delta();
@@ -512,7 +512,7 @@ impl App {
     #[doc(hidden)]
     pub fn poll_and_apply_collab_events(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.pump_room_index_events();
+        self.pump_workspace_index_events();
         let events = self.collaboration.manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
@@ -524,7 +524,7 @@ impl App {
     /// Apply a document envelope received on the unqualified workspace route.
     /// The broker authenticated the route; discovery still validates and
     /// bounds its names before exposing them to the app.
-    fn apply_room_index_document_envelope(
+    fn apply_workspace_index_document_envelope(
         &mut self,
         route: &crate::collaboration::RouteSpec,
         envelope: &collab_types::SignedOp,
@@ -550,7 +550,7 @@ impl App {
                 return false;
             }
         };
-        let Some(workspace) = self.persistence.room_index.as_mut() else {
+        let Some(workspace) = self.persistence.workspace_index.as_mut() else {
             return false;
         };
         let applied = match mutation {
@@ -564,7 +564,7 @@ impl App {
         if applied
             && let (Some(records), Some(workspace)) = (
                 self.persistence.records.as_mut(),
-                self.persistence.room_index.as_ref(),
+                self.persistence.workspace_index.as_ref(),
             )
         {
             records.discover_workspace(workspace.document());
@@ -576,7 +576,7 @@ impl App {
     /// Drain only document traffic on the workspace-index route. Actions and
     /// presence are record scoped, so an index update cannot alter the app's
     /// resource/action namespace or presentation state.
-    fn pump_room_index_events(&mut self) -> bool {
+    fn pump_workspace_index_events(&mut self) -> bool {
         let Some(manager) = self.collaboration.workspace_manager.as_mut() else {
             return false;
         };
@@ -598,7 +598,7 @@ impl App {
                     decrypted_payload,
                     ..
                 } => {
-                    any |= self.apply_room_index_document_envelope(
+                    any |= self.apply_workspace_index_document_envelope(
                         &route,
                         &envelope,
                         decrypted_payload.as_deref(),
@@ -610,7 +610,7 @@ impl App {
                     ..
                 } => {
                     for (index, envelope) in ops.into_iter().enumerate() {
-                        any |= self.apply_room_index_document_envelope(
+                        any |= self.apply_workspace_index_document_envelope(
                             &route,
                             &envelope,
                             decrypted_payloads
@@ -622,7 +622,7 @@ impl App {
                 CollabEvent::DocumentSnapshotRequested { .. } => {
                     if let (Some(manager), Some(workspace)) = (
                         self.collaboration.workspace_manager.as_mut(),
-                        self.persistence.room_index.as_mut(),
+                        self.persistence.workspace_index.as_mut(),
                     ) {
                         let snapshot = workspace.document_mut().save();
                         if let Err(error) = manager.try_send(
@@ -652,7 +652,7 @@ impl App {
         Option<action_directory_snapshot::ModelDirectoryCandidate>,
     ) {
         let _entry = self.enter_wake_scope();
-        let mut any = self.pump_room_index_events();
+        let mut any = self.pump_workspace_index_events();
         // Replies to broker pull-directory callbacks must run before regular
         // inbound events. This is the sole place capability requests acquire
         // widget/document authority, and it always runs on the App owner
@@ -751,7 +751,7 @@ impl App {
             .and_then(CollaborationManager::take_state_change)
             .is_some_and(|state| state.is_ready());
         if workspace_ready {
-            self.broadcast_room_index_delta();
+            self.broadcast_workspace_index_delta();
         }
         // What holds a join up, and a join refused or lost, change what the
         // window's status line says, not the window's model.

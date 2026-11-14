@@ -478,8 +478,8 @@ fn draw_line(
     at: (f64, f64),
     right: f64,
 ) -> f64 {
-    let room = crate::num::f32_of_f64((right - at.0).max(0.0));
-    let shown = text.elide_to_width_style(s, room, style);
+    let spare = crate::num::f32_of_f64((right - at.0).max(0.0));
+    let shown = text.elide_to_width_style(s, spare, style);
     text.draw_style(
         scene,
         &shown,

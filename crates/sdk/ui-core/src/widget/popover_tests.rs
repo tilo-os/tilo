@@ -335,7 +335,7 @@ tilo_test_env::scenario! {
                 assert!(
                     relative_luminance(panel) > relative_luminance(content)
                         && relative_luminance(panel) > relative_luminance(base),
-                    "{}: a menu is lighter than the window and the desktop on dark",
+                    "{}: a menu is lighter than the window and the shell on dark",
                     theme.name
                 );
             }

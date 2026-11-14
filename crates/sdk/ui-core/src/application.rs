@@ -1135,7 +1135,7 @@ pub struct ComponentBehaviour {
     /// manager.
     pub capture_protected: bool,
     /// What the window is to the session: an ordinary app window, the session's on-screen input
-    /// surface, or a sheet over the desktop.
+    /// surface, or a sheet over the shell.
     pub window: WindowRole,
 }
 
@@ -1147,7 +1147,7 @@ pub enum WindowRole {
     Ordinary,
     /// The session's on-screen input surface, such as an on-screen keyboard.
     InputSurface,
-    /// A sheet the shell shows over the desktop (the power menu).
+    /// A sheet the shell shows over the shell (the power menu).
     Sheet,
 }
 

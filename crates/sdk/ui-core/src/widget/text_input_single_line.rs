@@ -61,7 +61,7 @@ impl TextInput {
         let family = self.family.clone().unwrap_or_else(|| self.role_family());
         let mut area = self.rect;
         area.x1 =
-            (area.x1 - self.trailing_text_inset(padding_x) - self.accessory_room()).max(area.x0);
+            (area.x1 - self.trailing_text_inset(padding_x) - self.accessory_width()).max(area.x0);
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "Affine transform composition over f64 screen coordinates"
@@ -214,11 +214,11 @@ impl TextInput {
         }
     }
 
-    /// The room a one-line field's chrome keeps beside its text: its own inset on each edge,
+    /// The area a one-line field's chrome keeps beside its text: its own inset on each edge,
     /// whatever its trailing edge carries, and the caret that stands at either end. A field laid
     /// out at its text's width plus this shows all of its text, unscrolled.
     #[must_use]
-    pub fn field_room(&self, theme: &Theme) -> f64 {
+    pub fn field_padding(&self, theme: &Theme) -> f64 {
         let padding = self.text_padding_x(theme);
         #[allow(
             clippy::arithmetic_side_effects,
@@ -227,13 +227,13 @@ impl TextInput {
         {
             padding
                 + self.trailing_text_inset(padding)
-                + self.accessory_room()
+                + self.accessory_width()
                 + theme.caret_width * 2.0
         }
     }
 
-    pub(super) fn text_room(&self, theme: &Theme) -> f64 {
-        (self.rect.width() - self.field_room(theme)).max(0.0)
+    pub(super) fn text_width(&self, theme: &Theme) -> f64 {
+        (self.rect.width() - self.field_padding(theme)).max(0.0)
     }
 
     /// Keep the caret in view, scrolled no further than the text needs: a
@@ -244,7 +244,7 @@ impl TextInput {
         content_w: f64,
         theme: &Theme,
     ) {
-        let visible_width = self.text_room(theme);
+        let visible_width = self.text_width(theme);
         if self.is_focused {
             if cursor_x_offset - self.scroll_x < 0.0 {
                 self.scroll_x = cursor_x_offset;
@@ -356,8 +356,8 @@ impl TextInput {
         if self.shows_placeholder() {
             let placeholder = widget_text(&self.placeholder);
             let style = self.placeholder_style(text_size);
-            let room = self.text_room(theme);
-            let shown = text_renderer.elide_to_width_style(&placeholder, room as f32, &style);
+            let limit = self.text_width(theme);
+            let shown = text_renderer.elide_to_width_style(&placeholder, limit as f32, &style);
             let (width, _) = text_renderer.measure_style(&shown, None, &style);
             #[allow(
                 clippy::arithmetic_side_effects,
@@ -375,7 +375,7 @@ impl TextInput {
             self.prompt_fit = Some(super::PromptFit {
                 shown,
                 width,
-                room: room as f32,
+                limit: limit as f32,
             });
         }
         #[allow(

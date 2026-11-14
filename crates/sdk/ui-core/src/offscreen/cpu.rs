@@ -144,7 +144,7 @@ impl CpuSurface {
             tilo_cpu_raster::move_pixels(&mut target, &moved, dx, dy);
         }
         // Where the app draws nothing the surface stays transparent, so the
-        // desktop shows through.
+        // shell shows through.
         if !drawn.is_empty() {
             self.rasterizer.render_prepared(
                 &mut target,

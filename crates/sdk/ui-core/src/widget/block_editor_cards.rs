@@ -281,8 +281,8 @@ pub(super) fn draw_embed_card(
     for line in &lines {
         let mut at = title_x;
         for (word, reference) in line {
-            let room = right - at;
-            if room <= 0.0 {
+            let spare = right - at;
+            if spare <= 0.0 {
                 break;
             }
             #[expect(
@@ -291,7 +291,7 @@ pub(super) fn draw_embed_card(
             )]
             let shown = paint
                 .text_renderer
-                .elide_to_width_style(word, room as f32, &body_style);
+                .elide_to_width_style(word, spare as f32, &body_style);
             let width = f64::from(
                 paint
                     .text_renderer
@@ -338,7 +338,7 @@ impl BlockEditor {
 
     /// Measure how tall each embed's card stands at the width the blocks are stacked at: its
     /// title, and the lines of what it projects a card shows, as the draw reads them, so the
-    /// stack gives the card the room it needs as what it projects says more or less.
+    /// stack gives the card the area it needs as what it projects says more or less.
     pub(super) fn measure_card_heights(&mut self, width: f32, text_renderer: &mut TextRenderer) {
         let theme = std::sync::Arc::clone(&self.layout_theme);
         let card_width = f64::from(width) - 2.0 * self.text_pad;
@@ -449,11 +449,7 @@ mod tests {
         // of it, and says that it reads on.
         let six = body(&[long, long, long, long, long, long]);
         let lines = card_lines(&mut renderer, &style, &six, 240.0);
-        assert_eq!(
-            lines.len(),
-            CARD_BODY_LINES,
-            "the lines a card has room for"
-        );
+        assert_eq!(lines.len(), CARD_BODY_LINES, "the lines a card fits");
         assert!(
             lines.len() > 1,
             "a card shows more than the one line of what it projects"

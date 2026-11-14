@@ -302,7 +302,7 @@ fn a_middle_press_and_a_wheel_report_nothing() {
 }
 
 /// A press that lands outside the map is no pointing at the canvas, whatever of it reaches the
-/// map: the desk's bar stands over the canvas in the Desktop style, and a press on its bell or
+/// map: the shell's bar stands over the canvas in the Shell style, and a press on its bell or
 /// its window menu that the map answered as a click on the canvas opened the caret there and
 /// closed what the press had opened.
 #[test]

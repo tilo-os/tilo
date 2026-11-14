@@ -496,15 +496,15 @@ impl NavRow {
             NavRowKind::Item { label, spec, .. } => {
                 let face = paint.item_face(spec, row, label);
                 let layout = nav_row_layout(theme, text, &face);
-                let room = layout.label_x1 - layout.label_x0;
+                let spare = layout.label_x1 - layout.label_x0;
                 let elided = if paint.rail {
-                    crate::chrome::nav_row::rail_caption_lines(theme, text, label, room)
+                    crate::chrome::nav_row::rail_caption_lines(theme, text, label, spare)
                         .last()
                         .is_some_and(|line| line.ends_with('\u{2026}'))
                 } else {
                     let style = crate::chrome::nav_row::label_measure_style(theme, face.style);
                     let (width, _) = text.measure_style(label, None, &style);
-                    f64::from(width) > room + 0.5
+                    f64::from(width) > spare + 0.5
                 };
                 elided.then(|| label.clone())
             }

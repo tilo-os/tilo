@@ -135,7 +135,7 @@ pub struct Text {
     observed_renderer_text_scale: f32,
     heading_level: Option<u8>,
     max_lines: Option<u32>,
-    /// It elides at the room it is given instead of wrapping wider: it never
+    /// It elides at the area it is given instead of wrapping wider: it never
     /// holds its longest word's width, so a title in a narrow card ends in an
     /// ellipsis rather than standing the card up.
     truncate: bool,
@@ -678,7 +678,7 @@ impl Text {
 
     /// Let it take at most `lines` lines, eliding at the last of them what does not fit: a
     /// card's title is one line, the caption under it two. `None` wraps to as many as the
-    /// width needs. A clamp may elide inside a word, so the text holds no longer than the room
+    /// width needs. A clamp may elide inside a word, so the text holds no longer than the area
     /// the last line has.
     #[must_use]
     pub fn with_lines(mut self, lines: Option<u32>) -> Self {
@@ -686,7 +686,7 @@ impl Text {
         self
     }
 
-    /// Elide it at the room it is given rather than wrap wider: it never holds its longest
+    /// Elide it at the area it is given rather than wrap wider: it never holds its longest
     /// word's width, so its box may shrink to nothing and what does not fit ends in a
     /// [`ELLIPSIS`](crate::text_render::ELLIPSIS). One line, unless [`Self::with_lines`] says
     /// how many.
@@ -717,7 +717,7 @@ impl Text {
         self.max_lines
     }
 
-    /// Whether it elides at the room it is given instead of wrapping wider.
+    /// Whether it elides at the area it is given instead of wrapping wider.
     #[must_use]
     pub fn truncates(&self) -> bool {
         self.truncate

@@ -74,7 +74,7 @@ pub struct ChordMarks {
     frame: PlotFrame<ChordSelection>,
     node_geometry: Vec<NodeGeom>,
     link_geometry: Vec<LinkGeom>,
-    label_room: f64,
+    label_width: f64,
 }
 
 pub type ChordChart = Plot<ChordMarks>;
@@ -88,7 +88,7 @@ impl ChordChart {
             frame: PlotFrame::new(360.0, 180.0),
             node_geometry: Vec::new(),
             link_geometry: Vec::new(),
-            label_room: 0.0,
+            label_width: 0.0,
         })
     }
     #[must_use]
@@ -127,7 +127,7 @@ impl ChordMarks {
             self.frame.rect.x1 - 12.0,
             self.frame.rect.y1 - 12.0,
         );
-        let side = self.label_room.max(self.style.label_offset + 16.0);
+        let side = self.label_width.max(self.style.label_offset + 16.0);
         let outer = (area.width() / 2.0 - side)
             .min(area.height() / 2.0 - self.style.label_offset - 16.0)
             .max(2.0);
@@ -141,11 +141,11 @@ impl ChordMarks {
         theme.tokens.colors.presence.series(index)
     }
 
-    /// The room the labels need beside the ring: the widest label, never
+    /// The area the labels need beside the ring: the widest label, never
     /// more than a quarter of the chart, so the ring keeps its size.
-    fn measure_label_room(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+    fn measure_label_width(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         if !self.style.show_labels {
-            self.label_room = 0.0;
+            self.label_width = 0.0;
             return;
         }
         let style = theme.text(TextRole::Caption);
@@ -155,11 +155,11 @@ impl ChordMarks {
             .map(|node| f64::from(tr.measure_style(&node.label, None, &style).0))
             .fold(0.0, f64::max);
         let pad = f64::from(theme.tokens.spacing.s2);
-        self.label_room = (widest + 2.0 * pad).min(self.frame.rect.width() / 4.0);
+        self.label_width = (widest + 2.0 * pad).min(self.frame.rect.width() / 4.0);
     }
 
     /// Each arc's label outside its arc, largest arc first: shortened to the
-    /// room left before the chart's edge, and dropped (the tooltip names
+    /// area left before the chart's edge, and dropped (the tooltip names
     /// the arc) where it would collide with a label already placed.
     fn label_layout(
         &self,
@@ -190,10 +190,10 @@ impl ChordMarks {
                 label.to_owned()
             };
             let mid = geom.start.midpoint(geom.end);
-            let room =
-                crate::widget::chart_labels::radial_room(center, radius, mid, self.frame.rect);
+            let spare =
+                crate::widget::chart_labels::radial_extent(center, radius, mid, self.frame.rect);
             let Some((shown, w, h)) =
-                crate::widget::chart_labels::fit_label(tr, &label, room, &style)
+                crate::widget::chart_labels::fit_label(tr, &label, spare, &style)
             else {
                 continue;
             };
@@ -318,7 +318,7 @@ impl PlotMarks for ChordMarks {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.measure_label_room(tr, theme);
+        self.measure_label_width(tr, theme);
         draw_title(
             scene,
             transform,

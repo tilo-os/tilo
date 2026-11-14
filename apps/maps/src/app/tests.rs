@@ -2396,7 +2396,7 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
         assert!(move_to(&mut a, outside.x, outside.y));
         assert!(matches!(
             a.navigation_placement.attachment(),
-            ui::floating_surface::Attachment::Desktop { .. }
+            ui::floating_surface::Attachment::Shell { .. }
         ));
         assert_eq!(
             a.navigation_rect(),
@@ -2417,7 +2417,7 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
                 coordinate_offset: [0.0, 0.0],
             },
         );
-        assert!(!a.navigation_placement.is_desktop_adopted());
+        assert!(!a.navigation_placement.is_shell_adopted());
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut a,
             &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
@@ -2425,7 +2425,7 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
                 rect: ui::floating_surface::protocol_rect_array(prepared_content),
             },
         );
-        assert!(a.navigation_placement.is_desktop_adopted());
+        assert!(a.navigation_placement.is_shell_adopted());
         assert_eq!(a.navigation_rect(), prepared_content);
         let returned_pointer = Point::new(980.0, 310.0);
         assert!(move_to(&mut a, returned_pointer.x, returned_pointer.y));
@@ -2540,7 +2540,7 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
     {
         let mut a = app_at(1_280.0, 800.0);
         a.navigation_placement
-            .detach_to_desktop(Rect::new(820.0, 120.0, 1_180.0, 276.0));
+            .detach_to_shell(Rect::new(820.0, 120.0, 1_180.0, 276.0));
         assert!(Widget::needs_animation_frame(&a));
         Widget::set_motion_reduced(&mut a, true);
         assert!(!Widget::needs_animation_frame(&a));

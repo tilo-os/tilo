@@ -31,7 +31,7 @@ fn titled_content(actions: Vec<Element>) -> NavShell {
 }
 
 tilo_test_env::scenario! {
-    fn a_header_row_gives_its_title_and_actions_the_room_they_need;
+    fn a_header_row_gives_its_title_and_actions_the_area_they_need;
 
     // Swapping a column while the host holds the tree waits for the next
     // build: the event routed in between still reaches the widget the tree
@@ -219,10 +219,10 @@ tilo_test_env::scenario! {
         assert!(part_rect(&h, Part::Action(Column::Content, 0)).x0 >= title.x1);
     }
 
-    // A title takes the room the actions leave: where most of the row's actions wait in the
+    // A title takes the area the actions leave: where most of the row's actions wait in the
     // menu, the title says what it says instead of being held to a third of the row with empty
     // space beside it.
-    phase a_title_takes_the_room_its_actions_leave;
+    phase a_title_takes_the_area_its_actions_leave;
     {
         let theme = Theme::dark();
         let title = "Launch plan for the autumn release, and everything it has to carry with it";
@@ -332,7 +332,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    // A header row reports what it settled on: the title's width against what it says, the room it
+    // A header row reports what it settled on: the title's width against what it says, the area it
     // left beside it, and what its actions kept.
     phase a_header_row_reports_what_it_settled_on;
     {
@@ -532,7 +532,7 @@ tilo_test_env::scenario! {
         let after = part_rect(&h, Part::Title(Column::Content));
         assert!(
             after.width() > before.width() + (stood.width() - action.width()) / 2.0,
-            "the title took the room the label gave up ({before:?} then {after:?})"
+            "the title took the area the label gave up ({before:?} then {after:?})"
         );
     }
 
@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
 /// A title's box reaches the actions that follow it, not just the width its words measure: a
 /// box the size of the measure itself cuts the last glyph where the renderer shaping the words
 /// rounds wider than the measure that sized the box, so a short column name reads as
-/// "Not…" beside room standing empty.
+/// "Not…" beside area standing empty.
 #[test]
 fn a_titles_box_reaches_the_actions_that_follow_it() {
     let theme = Theme::dark();
@@ -637,11 +637,11 @@ fn a_titles_box_reaches_the_actions_that_follow_it() {
         (title.x1 + m.gap - action.x0).abs() < 0.5,
         "the title's box ends one gap before its action: {title:?}, {action:?}"
     );
-    let room = crate::num::f32_of_f64(title.width());
+    let spare = crate::num::f32_of_f64(title.width());
     assert!(
         text.elide_to_width_style(
             "Notes",
-            room,
+            spare,
             &crate::chrome::header_row::title_style(&theme)
         ) == "Notes",
         "no renderer elides the whole name in a box that wide"

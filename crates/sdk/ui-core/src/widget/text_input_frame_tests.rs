@@ -288,9 +288,9 @@ tilo_test_env::scenario! {
         let wide = drawn(600.0);
         assert_eq!(
             wide.shown, prompt,
-            "a field with room shows the whole prompt"
+            "a field with area shows the whole prompt"
         );
-        assert!(wide.width <= wide.room + 0.5, "{wide:?}");
+        assert!(wide.width <= wide.limit + 0.5, "{wide:?}");
 
         let narrow = drawn(160.0);
         assert!(narrow.shown.len() < prompt.len(), "{narrow:?}");
@@ -300,8 +300,8 @@ tilo_test_env::scenario! {
         );
         assert!(narrow.shown.ends_with('…'), "{narrow:?}");
         assert!(
-            narrow.width <= narrow.room + 0.5,
-            "what it shows fits the room it has: {narrow:?}"
+            narrow.width <= narrow.limit + 0.5,
+            "what it shows fits the area it has: {narrow:?}"
         );
     }
 }

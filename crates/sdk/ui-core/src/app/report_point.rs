@@ -267,11 +267,11 @@ fn hint(
 ) {
     let style = theme.text(TextRole::Label);
     let quiet = theme.text(TextRole::Caption);
-    let room = (bounds.width() - 64.0).max(0.0) as f32;
+    let spare = (bounds.width() - 64.0).max(0.0) as f32;
     let line = crate::i18n::I18nManager::lookup_plain("send-to-point-hint");
     let leaving = crate::i18n::I18nManager::lookup_plain("send-to-point-escape");
-    let shown = text.elide_to_width_style(&line, room, &style);
-    let leaving = text.elide_to_width_style(&leaving, room, &quiet);
+    let shown = text.elide_to_width_style(&line, spare, &style);
+    let leaving = text.elide_to_width_style(&leaving, spare, &quiet);
     let (w, h) = text.measure_style(&shown, None, &style);
     let (leaving_w, leaving_h) = text.measure_style(&leaving, None, &quiet);
     let (w, h, leaving_w, leaving_h) = (

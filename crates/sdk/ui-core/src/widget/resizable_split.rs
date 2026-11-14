@@ -1011,7 +1011,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                     style.flex_basis = taffy::Dimension::auto();
                     style.flex_grow = grow;
                 } else {
-                    // A pane that takes a share of the split's room takes that
+                    // A pane that takes a share of the split's area takes that
                     // share and no more (`layout::filling`), a long document
                     // scrolling inside its pane.
                     style.size = cross;
@@ -1688,7 +1688,7 @@ mod tests {
             let (top, _) = handle.pane_rects();
             assert!(
                 (top.height() - 300.0).abs() < 0.5,
-                "with room, the ratio is back"
+                "with area, the ratio is back"
             );
             handle.set_first_max(Some(200.0));
             assert!(handle.perform_action(&crate::a11y::Action::Decrement));

@@ -226,21 +226,21 @@ tilo_test_env::scenario! {
         let style = TextStyle::new(16.0);
         let live = renderer.shaped_runs("retained glyphs", None, &style);
         let first_glyph = live[0].glyphs[0].id;
-        let mut roomy = (*live).clone();
-        roomy[0].glyphs.reserve_exact(4096);
-        roomy[0].normalized_coords.reserve_exact(4096);
-        let roomy = Arc::new(roomy);
-        let cost = glyph_run_bytes(&roomy);
+        let mut reserved = (*live).clone();
+        reserved[0].glyphs.reserve_exact(4096);
+        reserved[0].normalized_coords.reserve_exact(4096);
+        let reserved = Arc::new(reserved);
+        let cost = glyph_run_bytes(&reserved);
         assert!(
             cost > 4096 * std::mem::size_of::<vello::Glyph>(),
             "charge capacity, including unused slots"
         );
         renderer.shape_cache = TextCache::new(1, 1024);
-        let key = CacheQuery::new("roomy", &style);
+        let key = CacheQuery::new("wide", &style);
         renderer.shape_cache.insert(
             key.key(None, 0, 1.0),
             ShapedText {
-                runs: roomy.clone(),
+                runs: reserved.clone(),
                 size: (1.0, 1.0),
             },
             cost,
@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
             renderer.shape_cache.entries, 0,
             "oversized glyph vectors are not retained"
         );
-        assert_eq!(Arc::strong_count(&roomy), 1);
+        assert_eq!(Arc::strong_count(&reserved), 1);
         assert_eq!(live[0].glyphs[0].id, first_glyph);
         let small = renderer.shaped_runs("a", None, &style);
         assert_eq!(renderer.shape_cache.entries, 1);
@@ -331,9 +331,9 @@ tilo_test_env::scenario! {
     {
         let plain = TextStyle::new(16.0).with_kerning(false);
         let first = CacheQuery::new("capacity", &plain);
-        let mut roomy = plain.clone();
-        roomy.font_features.reserve_exact(4096);
-        let prepared = PreparedText::new("capacity", roomy);
+        let mut reserved = plain.clone();
+        reserved.font_features.reserve_exact(4096);
+        let prepared = PreparedText::new("capacity", reserved);
         let mut cache = TextCache::new(4, 1024);
         cache.insert(first.key(None, 0, 1.0), 7, 0);
         let before = cache.bytes;

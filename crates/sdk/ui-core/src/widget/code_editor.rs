@@ -811,7 +811,7 @@ impl CodeEditor {
             size,
             crate::widget::PopoverSide::Below,
             f64::from(theme.tokens.spacing.s1),
-            crate::widget::floating_surface::panel_room(window, theme),
+            crate::widget::floating_surface::panel_area(window, theme),
         );
         crate::widget::floating_surface::paint(scene, transform, panel, theme);
         let ink = theme.on_ground(crate::chrome::panel_ground(theme));

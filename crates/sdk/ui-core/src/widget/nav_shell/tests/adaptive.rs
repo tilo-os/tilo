@@ -110,7 +110,7 @@ fn release(h: &mut FrameHarness) {
 }
 
 /// A short, flat set of places opens as a labeled list at the sidebar's width: the rail holds
-/// short captions, and a window with room for the labels gives them.
+/// short captions, and a window wide enough for the labels gives them.
 #[test]
 fn a_sidebar_opens_as_a_list_and_the_width_switches_it_to_a_rail() {
     let theme = Theme::dark();

@@ -71,7 +71,7 @@ impl WindowGroup {
         }
     }
 
-    /// Over a fullscreen window the bar takes no room of its own: the
+    /// Over a fullscreen window the bar takes up nothing of its own: the
     /// content keeps its whole size, and the bar stands over its top.
     pub(super) fn lay_bar_over_content(&self, taffy: &mut TaffyTree<()>, bar_node: Option<NodeId>) {
         if self.bar_over_content()

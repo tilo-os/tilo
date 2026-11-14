@@ -1,4 +1,4 @@
-//! Another window of a native app outside the desktop's tab model: another process of the same
+//! Another window of a native app outside the shell's tab model: another process of the same
 //! executable.
 
 /// Start another process of this executable showing `target`.

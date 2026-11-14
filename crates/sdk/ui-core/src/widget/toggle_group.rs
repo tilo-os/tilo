@@ -888,11 +888,11 @@ impl ToggleGroup {
         let Some(&(width, _)) = widths.get(index) else {
             return;
         };
-        let room = self.rect.width();
+        let spare = self.rect.width();
         let scroll = if start < self.scroll_x {
             start
-        } else if start + width > self.scroll_x + room {
-            start + width - room
+        } else if start + width > self.scroll_x + spare {
+            start + width - spare
         } else {
             self.scroll_x
         };
@@ -1543,10 +1543,10 @@ impl ToggleGroup {
                     ink,
                     crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
-                let room = (seg.width() - 2.0 * metrics.pad_x.min(seg.width() / 4.0)).max(1.0);
+                let spare = (seg.width() - 2.0 * metrics.pad_x.min(seg.width() / 4.0)).max(1.0);
                 let shown = text_renderer.elide_to_width_style(
                     item.label,
-                    f32_of_f64(room + 0.5),
+                    f32_of_f64(spare + 0.5),
                     &label_style,
                 );
                 let (tw, _) = text_renderer.measure_style(&shown, None, &label_style);
@@ -1599,13 +1599,13 @@ impl ToggleGroup {
             } else {
                 &metrics.label
             };
-            let room = (seg.width() - lead - pad).max(1.0);
+            let spare = (seg.width() - lead - pad).max(1.0);
             let full_w = f64::from(text_renderer.measure_style(item.label, None, style).0);
             let label = match item.short {
-                Some(short) if full_w > room + 0.5 => short,
+                Some(short) if full_w > spare + 0.5 => short,
                 _ => item.label,
             };
-            let shown = text_renderer.elide_to_width_style(label, f32_of_f64(room + 0.5), style);
+            let shown = text_renderer.elide_to_width_style(label, f32_of_f64(spare + 0.5), style);
             let (tw, th) = text_renderer.measure_style(&shown, None, style);
             let text_x = if tabs {
                 seg.x0 + lead
@@ -2134,7 +2134,7 @@ impl Widget for ToggleGroup {
             self.measured_width = Some(intrinsic);
         }
         let fitted = match available.width {
-            taffy::AvailableSpace::Definite(room) => intrinsic.min(room.max(0.0)),
+            taffy::AvailableSpace::Definite(spare) => intrinsic.min(spare.max(0.0)),
             _ => intrinsic,
         };
         Size {

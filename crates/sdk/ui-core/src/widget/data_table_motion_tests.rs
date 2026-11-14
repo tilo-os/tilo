@@ -328,6 +328,6 @@ fn a_keyed_table_whose_host_reorders_its_rows_moves_them() {
         (moving.offset(now) - (before_02 - after_02)).abs() < 2.0,
         "02 is drawn where it stood"
     );
-    let pushed = table.moving.rows.get(&key("00")).expect("00 makes room");
+    let pushed = table.moving.rows.get(&key("00")).expect("00 makes way");
     assert!(pushed.offset(now) < 0.0, "00 is drawn above its new place");
 }

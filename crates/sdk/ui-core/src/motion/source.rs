@@ -30,7 +30,7 @@ thread_local! {
 }
 
 /// How soon after an input a change counts as that input's result: the frame it was handled in and the
-/// one after, with room for a model round trip on the UI thread.
+/// one after, wide enough for a model round trip on the UI thread.
 const CAUSED_WITHIN: crate::time::Duration = crate::time::Duration::from_millis(300);
 
 /// Note that `event` is being handled: what it opens or closes follows it ([`input_source`]).

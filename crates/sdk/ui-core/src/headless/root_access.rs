@@ -146,7 +146,7 @@ impl FrameHarness {
     }
 
     /// [`Self::for_root`] for an app: its window's bar ([`Self::present_in_window_bar`]) wears the
-    /// app's icon and title, as a desktop window's tab does.
+    /// app's icon and title, as a shell window's tab does.
     pub fn for_app<W: crate::widget::AppWidget + 'static>(
         state: State,
         root: W,

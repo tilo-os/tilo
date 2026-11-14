@@ -693,7 +693,7 @@ mod tests {
             );
             let caret = Rect::new(20.0, 40.0, 21.0, 60.0);
             m.set_caret(caret, Some(bounds));
-            assert!(m.rect().y0 >= caret.y1, "with room below, it opens below");
+            assert!(m.rect().y0 >= caret.y1, "with area below, it opens below");
         }
 
         phase host_commands_are_offered_only_by_a_host_that_answers_them;

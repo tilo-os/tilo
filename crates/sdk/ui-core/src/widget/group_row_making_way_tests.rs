@@ -1,4 +1,4 @@
-//! Making room on a strip: a window arriving between others moves the ones on its right
+//! Making area on a strip: a window arriving between others moves the ones on its right
 //! along, and one leaving lets them slide back into the gap, each from where it was drawn.
 
 use super::tests::{
@@ -7,11 +7,11 @@ use super::tests::{
 use super::*;
 
 #[test]
-fn making_room_slides_pushed_groups_from_their_old_place() {
+fn making_way_slides_pushed_groups_from_their_old_place() {
     // Fresh curves are read in the instant they start: a descheduled
     // runner cannot age them.
     crate::time::testing::with_monotonic_time(crate::time::now(), || {
-        fn making_room_translates_the_groups_it_pushes_and_never_narrows_them() {
+        fn making_way_translates_the_groups_it_pushes_and_never_narrows_them() {
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
             let before: Vec<(u64, Rect)> =
                 row.groups.iter().map(|g| (g.id, g.get_rect())).collect();
@@ -36,7 +36,7 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
                     .get_rect();
                 assert!(
                     (now.width() - was.width()).abs() < 0.5,
-                    "group {id} must keep its width when room is made for \
+                    "group {id} must keep its width when area is made for \
                  another: was {} now {}",
                     was.width(),
                     now.width(),
@@ -116,11 +116,11 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
             assert!(
                 row.needs_animation_frame(),
-                "a strip making room must keep redrawing until it settles",
+                "a strip making way must keep redrawing until it settles",
             );
         }
 
-        fn reduced_motion_makes_room_without_a_slide() {
+        fn reduced_motion_makes_way_without_a_slide() {
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             let pushed: Vec<u64> = row.groups.iter().map(|g| g.id).collect();
             row.insert_group(make_group(999, &[9]), 0);
@@ -135,7 +135,7 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             }
             assert!(
                 !row.needs_animation_frame(),
-                "under reduced motion making room asks for no animation frames",
+                "under reduced motion making way asks for no animation frames",
             );
         }
 
@@ -245,7 +245,7 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             row.insert_group(make_group(999, &[9]), 0);
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-            assert!(row.shift_in_flight(), "fixture: the strip makes room");
+            assert!(row.shift_in_flight(), "fixture: the strip makes way");
             let later = crate::time::now() + Duration::from_secs(2);
             let (row, _taffy, _root) = crate::time::testing::with_monotonic_time(later, || {
                 relayout_row_owned(row, 2000.0)
@@ -317,11 +317,11 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
                 .expect("group in the row")
         }
 
-        making_room_translates_the_groups_it_pushes_and_never_narrows_them();
+        making_way_translates_the_groups_it_pushes_and_never_narrows_them();
         the_groups_that_moved_start_from_where_they_were();
         appending_at_the_end_animates_nothing();
         a_slide_in_flight_asks_for_animation_frames();
-        reduced_motion_makes_room_without_a_slide();
+        reduced_motion_makes_way_without_a_slide();
         a_second_insert_mid_flight_continues_from_where_the_group_is_drawn();
         closing_a_window_slides_its_right_neighbours_into_the_gap();
         a_reorder_springs_both_groups_from_their_old_places();

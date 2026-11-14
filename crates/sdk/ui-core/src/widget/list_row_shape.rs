@@ -220,7 +220,7 @@ impl ListRowFace<'_> {
                         clippy::cast_possible_truncation,
                         reason = "a laid-out width is far below f32::MAX"
                     )]
-                    let room = width as f32;
+                    let spare = width as f32;
                     let style = theme.text(TextRole::Caption);
                     let caption_line = f64::from(ctx.text.measure_style("Ag", None, &style).1);
                     ctx.text_role(
@@ -228,7 +228,7 @@ impl ListRowFace<'_> {
                         TextRole::Caption,
                         theme.tokens.colors.text_dim,
                         vello::kurbo::Point::new(geo.text_x, top + (line - caption_line) / 2.0),
-                        Some(room),
+                        Some(spare),
                     );
                 }
                 _ => paint_bar(ctx, geo.text_x, top, width * share, line),

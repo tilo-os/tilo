@@ -78,7 +78,7 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert_eq!(
             m.compact_breakpoint,
             m.sidebar_width + m.content_min_width,
-            "the sidebar docks while the content keeps the room it needs"
+            "the sidebar docks while the content keeps the area it needs"
         );
         assert_eq!(
             m.drawer_width, m.panel_width_utility,

@@ -808,12 +808,12 @@ tilo_test_env::scenario! {
         for test in [
             "crates/sdk/ui-core/tests/it.rs",
             "apps/chat/src/tests.rs",
-            "apps/chat/src/room_tests.rs",
+            "apps/chat/src/channel_tests.rs",
             "crates/session/desktop/src/bar/network_tests/member_controls.rs",
         ] {
             assert!(is_test_file(Path::new(test)), "{test}");
         }
-        for production in ["apps/chat/src/room.rs", "apps/latest_tests/src/main.rs"] {
+        for production in ["apps/chat/src/channel.rs", "apps/latest_tests/src/main.rs"] {
             assert!(!is_test_file(Path::new(production)), "{production}");
         }
     }

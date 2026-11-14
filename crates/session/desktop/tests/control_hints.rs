@@ -449,7 +449,7 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
             );
         }
         let content: Vec<Rect> = row
-            .windows_on_desk
+            .windows_on_strip
             .iter()
             .map(|(_, content)| *content)
             .collect();
@@ -468,7 +468,7 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
         let (painted, row, room) =
             painted_hint(&tree, "resize-window", &[], ui::time::Duration::ZERO, 1280);
         let painted = painted.expect("the resize hint shows");
-        for (_, content) in &row.windows_on_desk {
+        for (_, content) in &row.windows_on_strip {
             assert!(
                 !painted.overlaps(*content),
                 "the resize hint {painted:?} stands over a window's content {content:?}"
@@ -506,7 +506,7 @@ fn the_move_hint_covers_no_windows_content_its_own_included() {
         1280,
     );
     let painted = painted.expect("the move hint shows");
-    for (_, content) in &row.windows_on_desk {
+    for (_, content) in &row.windows_on_strip {
         assert!(
             !painted.overlaps(*content),
             "the move hint {painted:?} stands over a window's content {content:?}"

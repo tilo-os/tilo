@@ -58,7 +58,7 @@ pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace
 pub use window_place::{list_cap, placement};
 
 /// The window a palette was asked for from, when a host lays several app tiles out in one tree (the
-/// desktop's strip of windows): the innermost tile under `pressed_at` when a press asked (a control
+/// shell's strip of windows): the innermost tile under `pressed_at` when a press asked (a control
 /// that needs confirmation, clicked in a window that does not hold the keyboard), else the tile around
 /// the `focused` node.
 pub(crate) fn invoking_window(
@@ -464,7 +464,7 @@ pub struct ActionPalette {
     /// Chip rows the host's band is reserving: the palette doesn't know how many controls the host has,
     /// so this is negotiated, not fixed.
     max_list_height: Option<f64>,
-    /// The widest the card may be: the room the host has for it.
+    /// The widest the card may be: the area the host has for it.
     max_width: Option<f64>,
     /// The modifiers held now, so a selected row can show what its alternative activation would do
     /// before it is chosen.
@@ -3123,13 +3123,13 @@ mod tests {
         let two_line = palette.entry_row_capacity_for(groups, true);
         assert!(
             two_line < one_line,
-            "four headers leave room for {one_line} bare names but {two_line} rows with a line \
+            "four headers leave area for {one_line} bare names but {two_line} rows with a line \
              under each, and those are the taller rows"
         );
         let no_headers = palette.entry_row_capacity_for(0, true);
         assert!(
             two_line < no_headers,
-            "{groups} headers leave room for {two_line} rows, fewer than the {no_headers} that \
+            "{groups} headers leave area for {two_line} rows, fewer than the {no_headers} that \
              fit without them"
         );
     }
@@ -3161,7 +3161,7 @@ mod tests {
         }
     }
 
-    /// A card standing on the display — a desktop search — takes
+    /// A card standing on the display — a shell search — takes
     /// three fifths of it, between 360 and 640 wide, a little below its
     /// top, and its list grows with the display's height: the same rule a
     /// card in a window follows, so the display's card needs no size of

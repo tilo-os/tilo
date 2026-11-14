@@ -60,7 +60,7 @@ impl Widget for Page {
     }
 }
 
-/// The desktop's top bar the maximized window sits under, in logical px.
+/// The shell's top bar the maximized window sits under, in logical px.
 const TOP: f64 = 36.0;
 const W: f64 = 1280.0;
 const H: f64 = 800.0;
@@ -126,7 +126,7 @@ impl crate::widget::app_widget::AppWidget for PageApp {
     }
 }
 
-/// Lay the group out as the work area under the desktop's top bar, at
+/// Lay the group out as the work area under the shell's top bar, at
 /// `scale` (the layout is logical; the scale only matters for paint).
 fn lay_out(g: &mut WindowGroup, theme: &Theme) {
     for _ in 0..2 {
@@ -217,7 +217,7 @@ fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
 }
 
 #[test]
-fn the_desktop_bar_shown_over_a_window_moves_it_down_whole() {
+fn the_shell_bar_shown_over_a_window_moves_it_down_whole() {
     let mut theme = Theme::dark();
     theme.reduce_motion = true;
     let mut g = page_group();
@@ -228,7 +228,7 @@ fn the_desktop_bar_shown_over_a_window_moves_it_down_whole() {
     let after = g.get_rect();
     assert!(
         (after.y0 - (before.y0 + TOP)).abs() < 0.5,
-        "moved down by the desktop bar: {before:?} to {after:?}"
+        "moved down by the shell bar: {before:?} to {after:?}"
     );
     assert!(
         (after.height() - before.height()).abs() < 0.5,
@@ -463,28 +463,28 @@ fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
         );
         (theme, scene.encoding().draw_data.clone())
     };
-    let room = WindowAppearance {
+    let spare = WindowAppearance {
         workspace_hue: Some(40.0),
         your_colour: Some(PresenceHue::Magenta),
         corner_radius: Some(12.0),
     };
 
-    // The room's temperature tints the bar's material: a warm room and a cool
+    // The area's temperature tints the bar's material: a warm area and a cool
     // one are not painted the same.
-    let (_, warm) = paint(&room);
+    let (_, warm) = paint(&spare);
     let (_, cool) = paint(&WindowAppearance {
         workspace_hue: Some(220.0),
-        ..room
+        ..spare
     });
     assert_ne!(
         warm, cool,
         "the bar takes the temperature of the workspace it stands in"
     );
 
-    let (mine, mine_paint) = paint(&room);
+    let (mine, mine_paint) = paint(&spare);
     let (theirs, theirs_paint) = paint(&WindowAppearance {
         your_colour: Some(PresenceHue::Green),
-        ..room
+        ..spare
     });
     let my_ring = colour(mine.tokens.colors.intent.accent_ink);
     let their_ring = colour(theirs.tokens.colors.intent.accent_ink);
@@ -531,7 +531,7 @@ fn a_pointer_on_a_tabs_pill_names_the_whole_title() {
     );
 }
 
-/// An app whose window is the one a person's desktop draws: its shell declares what its header
+/// An app whose window is the one a person's shell draws: its shell declares what its header
 /// row holds as the window's bar's slots, unless the row holds something the bar cannot draw (a
 /// catch-up, a popover), when the shell keeps the row.
 struct ShellApp {
@@ -1269,7 +1269,7 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
     );
 }
 
-/// A leading menu the row has no room for lists its items in the overflow menu, under its name, and
+/// A leading menu the row cannot fit lists its items in the overflow menu, under its name, and
 /// a row chosen there runs for it: never one dead row standing for the button.
 #[test]
 fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
@@ -1290,7 +1290,7 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
         assert_eq!(
             leading.first().map(|rect| rect.area()),
             Some(0.0),
-            "no room: the leading menu is in the overflow menu"
+            "no area: the leading menu is in the overflow menu"
         );
     }
 
@@ -1472,7 +1472,7 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
         let mut g = frame.root_mut::<WindowGroup>();
         assert!(g.draws_its_bar_for_tests());
         g.set_focused(true);
-        // Tab travels the window there too, its bar and its app alike, never the desktop's chrome.
+        // Tab travels the window there too, its bar and its app alike, never the shell's chrome.
         assert!(
             g.active_host().is_some_and(|host| host.focused),
             "the app's own tile has the window's focus"
@@ -1598,7 +1598,7 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
 }
 
 /// The window's own keyboard stops (the agent's mark, the furniture of a row holding the bar) take
-/// no room and measure nothing: they never ask the layout to measure again, whatever the keyboard
+/// no area and measure nothing: they never ask the layout to measure again, whatever the keyboard
 /// or the bar does with them. Were they to, every frame of the window, a keystroke's included,
 /// would re-measure its whole path to the root.
 #[test]

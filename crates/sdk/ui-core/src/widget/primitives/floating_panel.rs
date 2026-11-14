@@ -279,7 +279,7 @@ impl FloatingPanel {
         self.width = px;
     }
 
-    /// Take the width of the room it is offered rather than the width of
+    /// Take the width of the area it is offered rather than the width of
     /// its content: a panel that is the whole of its surface, as a popover's
     /// is, so a long row never stands past the window's edge.
     #[must_use]
@@ -288,7 +288,7 @@ impl FloatingPanel {
         self
     }
 
-    /// Take the height of the room it is offered rather than the height of
+    /// Take the height of the area it is offered rather than the height of
     /// its content: a panel whose surface fixes its footprint, so a page that
     /// shows less never moves the panel's edges and one that shows more
     /// scrolls inside the body it was given.
@@ -598,7 +598,7 @@ impl Widget for FloatingPanel {
         let now = crate::motion::frame_now();
         // While the card refits, the window stands at the taller of where it comes from and
         // where it goes, in one step: a window resized each frame would trail the card (a size
-        // is a round trip to the desk and a frame drawn whole), cutting off what follows a
+        // is a round trip to the shell and a frame drawn whole), cutting off what follows a
         // section opening.
         let height = if !fit.extent.is_known() || self.placed.is_moving(now) {
             fit.wanted
@@ -787,10 +787,10 @@ mod tests {
     #[test]
     fn a_shrinking_card_moves_inside_a_window_resized_once() {
         let start = crate::time::now();
-        let room = Rect::new(0.0, 0.0, 380.0, 436.0);
+        let spare = Rect::new(0.0, 0.0, 380.0, 436.0);
         let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new())).fit_height();
-        panel.rect = room;
-        panel.placed.snap(room, false);
+        panel.rect = spare;
+        panel.placed.snap(spare, false);
         let fit = panel.fit.as_mut().expect("it fits its page");
         fit.extent.snap(436.0);
         fit.wanted = 344.0;
@@ -807,7 +807,7 @@ mod tests {
             let card = panel.card(crate::motion::frame_now());
             let window = Widget::preferred_window_size(&panel).map(|(_, height)| height);
             assert!(
-                card.height() <= room.height(),
+                card.height() <= spare.height(),
                 "the card stands in its window"
             );
             heights.push((window, card.height()));
@@ -833,26 +833,26 @@ mod tests {
         );
     }
 
-    /// A panel arriving asks for the height of its page on its first frame, not the room it was
+    /// A panel arriving asks for the height of its page on its first frame, not the area it was
     /// given before: the frame a person first sees is fitted.
     #[test]
     fn a_panel_arriving_asks_for_the_height_of_its_page() {
         let _frame = crate::motion::pin_frame();
         let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new())).fit_height();
         let now = crate::motion::frame_now();
-        let room = Rect::new(0.0, 0.0, 380.0, 577.0);
-        panel.rect = room;
+        let spare = Rect::new(0.0, 0.0, 380.0, 577.0);
+        panel.rect = spare;
         let fit = panel.fit.as_mut().expect("it fits its page");
         fit.extent.follow(
-            room.height(),
+            spare.height(),
             Theme::dark().motion(),
             crate::tokens::MotionSource::Pointer,
             now,
         );
         fit.wanted = 180.0;
-        panel.placed.snap(room, false);
+        panel.placed.snap(spare, false);
         panel.placed.follow(
-            room,
+            spare,
             true,
             Theme::dark().motion(),
             crate::tokens::MotionSource::Pointer,

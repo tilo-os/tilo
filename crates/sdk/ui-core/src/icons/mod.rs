@@ -327,7 +327,7 @@ icons! {
     SquareTerminal => "square-terminal",
     /// Another machine's screen, shared (VNC).
     ScreenShare => "screen-share",
-    /// A desktop session in a window (RDP).
+    /// A shell session in a window (RDP).
     AppWindow => "app-window",
     /// Recording: a dot inside a ring, the record button.
     CircleDot => "circle-dot",

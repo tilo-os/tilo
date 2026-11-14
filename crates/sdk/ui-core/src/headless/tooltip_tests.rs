@@ -1,4 +1,4 @@
-//! A host that runs a widget tree of its own — the desktop — sends its input through
+//! A host that runs a widget tree of its own — the shell — sends its input through
 //! [`FrameHarness::send`], and what its controls name of themselves is revealed there on the same dwell
 //! a window of its own uses.
 

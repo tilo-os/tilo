@@ -74,7 +74,7 @@ fn forward_stdio_to_logcat() {
         });
 }
 
-/// The directories and locale a desktop session would have exported, placed in the app's sandbox so
+/// The directories and locale a Linux session would have exported, placed in the app's sandbox so
 /// `tilo-paths`, `dirs` and every store built on them resolve there unchanged.
 fn install_environment(app: &AndroidApp) {
     let Some(files) = app.internal_data_path() else {
@@ -92,7 +92,7 @@ fn install_environment(app: &AndroidApp) {
         vars.push(("LANG", format!("{locale}.UTF-8").into()));
     }
     // The process belongs to the activity; there is no runtime host to
-    // re-exec under, as a desktop launch would.
+    // re-exec under, as a Linux launch would.
     vars.push(("TILO_RUNTIME_STANDALONE", "1".into()));
     for (name, value) in vars {
         #[allow(

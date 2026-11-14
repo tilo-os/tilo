@@ -162,7 +162,7 @@ impl<T: Clone> FilterMenu<T> {
     }
 
     /// Attach the popover to the caret's rect: below it, or above it when
-    /// `bounds` (the visible area) has more room there, and moved along it
+    /// `bounds` (the visible area) has more area there, and moved along it
     /// as far as it must to stay inside `bounds`
     /// ([`place_anchored`](crate::widget::floating_surface::place_anchored)).
     pub fn set_caret(&mut self, caret: Rect, bounds: Option<Rect>) {

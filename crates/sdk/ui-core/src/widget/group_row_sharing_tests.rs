@@ -27,7 +27,7 @@ tilo_test_env::scenario! {
 
     phase a_lone_window_takes_the_strip_until_another_opens_beside_it;
     {
-        // Phase `the_browser_desktop`: 1440 px, 1376 px between the gutters.
+        // Phase `the_browser_shell`: 1440 px, 1376 px between the gutters.
         {
             let mut row = lone_window_on(1440.0);
             assert!(
@@ -179,7 +179,7 @@ tilo_test_env::scenario! {
         relayout_strip(&mut row, display);
         assert_eq!(row.groups[0].width(), WindowWidth::Normal);
 
-        let card = 320.0 + 2.0 * crate::widget::FLOAT_CARD_ROOM;
+        let card = 320.0 + 2.0 * crate::widget::FLOAT_CARD_MARGIN;
         assert!(row.share_with_floating_neighbour(200, card));
         let mut floats = HashMap::new();
         floats.insert(
@@ -209,7 +209,7 @@ fn opened_beside(viewport_w: f64, inset: f64) -> GroupRow {
 }
 
 /// A window opened beside a lone one on a 1440 px display: the window in
-/// use narrows to make room on its slot spring while the strip pans to the
+/// use narrows to make way on its slot spring while the strip pans to the
 /// new one. The pan aims at the strip as it will be, so the new window
 /// lands whole with the strip's gutter after it, whether it grows in from
 /// nothing or arrives at its width.

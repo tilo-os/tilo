@@ -243,7 +243,7 @@ fn answer_effect(
 }
 
 fn open_on_desktop(handed: Effected, group: Option<&str>, cx: &mut EffectCx<Mail>) -> EffectAnswer {
-    use ui::desktop::{OPEN, PROVIDER, RESOURCE};
+    use ui::shell::{OPEN, PROVIDER, RESOURCE};
     let Effected::Done(handed) = handed else {
         return Err("the attachment was not handed over".into());
     };

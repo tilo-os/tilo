@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 row.slots().location,
                 quiet.slots().location,
-                "the notice reserves no room of its own at {width}"
+                "the notice reserves no area of its own at {width}"
             );
             assert!(row.slots().location.width() > 0.0);
             let nodes = row.accessibility();
@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
                 labelled_from
                     .iter()
                     .all(|from| from.is_some_and(|from| from < 1100.0)),
-                "{names:?} name themselves where the row has room"
+                "{names:?} name themselves where the row fits"
             );
         }
     }
@@ -445,7 +445,7 @@ tilo_test_env::scenario! {
         assert!(after > saved.width, "the word follows the whole label");
         assert!(edited.width > saved.width);
         assert_eq!(edited.line, saved.line, "the label itself is unchanged");
-        // Too narrow for both: the label keeps the room.
+        // Too narrow for both: the label keeps the area.
         let narrow = LocationLabel::measure(&mut tr, &theme, "Harbour cut", Some(edited_word()), 30.0);
         assert!(narrow.edited.is_none());
 
@@ -632,7 +632,7 @@ tilo_test_env::scenario! {
             find_node(&wide, Role::Button, &text("window-toolbar-more")).expect("the overflow control");
         assert_eq!(more.state.expanded, Some(false));
         let import = find_node(&more.children, Role::MenuItem, "Import contacts")
-            .expect("what the row has no room for is the overflow menu's");
+            .expect("what the row cannot fit is the overflow menu's");
         assert!(
             import.state.hidden,
             "a closed menu's item is hidden from a reader"
@@ -644,7 +644,7 @@ tilo_test_env::scenario! {
         assert_ne!(new.bounds, more.bounds);
 
         let mut narrow = address_book_row(false, 240.0);
-        assert!(narrow.slots().actions.is_empty(), "no room for any action");
+        assert!(narrow.slots().actions.is_empty(), "no area for any action");
         assert!(narrow.perform(OVERFLOW_TARGET), "More opens its menu");
         assert!(narrow.popup_open());
         let nodes = narrow.accessibility();
@@ -795,7 +795,7 @@ tilo_test_env::scenario! {
         narrow.lay_out(Rect::new(0.0, 0.0, 240.0, 40.0));
         assert!(
             narrow.slots().actions.is_empty(),
-            "no room: Format goes in the menu"
+            "no area: Format goes in the menu"
         );
         assert!(narrow.open_overflow());
         assert!(
@@ -808,12 +808,12 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_desktops_items_follow_the_apps_commands_in_one_menu;
+    phase the_shells_items_follow_the_apps_commands_in_one_menu;
     {
         let toolbar = WindowToolbar {
             actions: vec![
                 ToolbarAction::new("notes-menu-rename", "pencil", "Rename").in_menu(),
-                ToolbarAction::new("tilo.desktop.share", "copy", "Share to channel…").in_menu(),
+                ToolbarAction::new("tilo.shell.share", "copy", "Share to channel…").in_menu(),
             ],
             ..WindowToolbar::default()
         }
@@ -830,7 +830,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             row.menu_entries,
             vec![Some(MenuEntry::Action(0)), None, Some(MenuEntry::Action(1))],
-            "the desktop's item stands in a section after the app's commands"
+            "the shell's item stands in a section after the app's commands"
         );
     }
 
@@ -1064,7 +1064,7 @@ tilo_test_env::scenario! {
         assert_eq!(slots.leading.len(), 3);
         assert!(slots.sidebar.x1 < slots.leading[0].x0);
         assert!(slots.leading[2].x1 < slots.location.x0);
-        assert_eq!(slots.views.len(), 3, "the switcher has room in the row");
+        assert_eq!(slots.views.len(), 3, "the switcher fits in the row");
         assert!(slots.location.x1 < slots.views_strip().x0);
         assert!(slots.views_strip().x1 < slots.actions[0].x0);
         assert_eq!(slots.actions.len(), 1, "Import is the menu's only");
@@ -1092,7 +1092,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_has_no_room;
+    phase a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_is_too_small;
     {
         let mut row = calendar_row(1000.0);
         let month = row.slots().views[0].center();
@@ -1112,7 +1112,7 @@ tilo_test_env::scenario! {
         let mut narrow = calendar_row(120.0);
         assert!(
             narrow.slots().views.is_empty() && narrow.slots().views_menu == Rect::ZERO,
-            "no room even for the views menu: the views go in the overflow menu"
+            "no area even for the views menu: the views go in the overflow menu"
         );
         assert!(narrow.slots().overflow.area() > 0.0);
         assert!(narrow.open_overflow());
@@ -1196,7 +1196,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase today_says_its_name_where_the_row_has_room_and_folds_to_its_icon_then_the_menu;
+    phase today_says_its_name_where_the_row_fits_and_folds_to_its_icon_then_the_menu;
     {
         const TODAY: usize = 2;
         let shown = |width: f64| {
@@ -1373,7 +1373,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A row with no room for the switcher folds the views into a menu that
+/// A row with no area for the switcher folds the views into a menu that
 /// names the chosen view: a press (a click or a tap) lists every view, the
 /// chosen one checked, and choosing one hands the app its id. The menu is
 /// as wide as its widest view, so choosing another never moves the row.

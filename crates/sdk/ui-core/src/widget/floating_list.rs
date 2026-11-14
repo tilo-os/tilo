@@ -198,7 +198,7 @@ struct WidthKey {
     text_scale: f32,
 }
 
-/// A floating list of rows under (or, without room, above) an anchor: the
+/// A floating list of rows under (or, without area, above) an anchor: the
 /// one menu list behind [`crate::widget::Autocomplete`], a code editor's
 /// caret completion, the filter and slash menus, a dropdown's open list and
 /// every context menu.
@@ -206,7 +206,7 @@ struct WidthKey {
 /// It is a floating Panel (`floating_surface`, the panel radius, the floating
 /// shadow) placed by `floating_surface::place_aligned`, so it flips above its
 /// anchor near the window's bottom and shifts to stay inside it. More rows
-/// than fit scroll, the armed row always in view; a list taller than the room
+/// than fit scroll, the armed row always in view; a list taller than the area
 /// beside its anchor shrinks to it. While rows are on their way the
 /// framework's placeholder stands where the first will be
 /// ([`crate::arriving`]); a status line stands in for rows when there are
@@ -287,7 +287,7 @@ impl<R: FloatingRow> FloatingList<R> {
         }
     }
 
-    /// Open on `side` of the anchor when there is room there: above a composer at the
+    /// Open on `side` of the anchor when it fits there: above a composer at the
     /// bottom of a window, below a field near its top.
     pub fn set_side(&mut self, side: PopoverSide) {
         self.side = side;
@@ -319,7 +319,7 @@ impl<R: FloatingRow> FloatingList<R> {
     }
 
     /// Never narrower than `width`, so a picker over short labels keeps
-    /// room for its field and hints.
+    /// area for its field and hints.
     #[must_use]
     pub fn with_min_width(mut self, width: f64) -> Self {
         self.set_min_width(width);
@@ -751,11 +751,11 @@ impl<R: FloatingRow> FloatingList<R> {
         }
         if let Some(viewport) = self.viewport.filter(|_| !self.docked) {
             use PopoverSide::{Above, Below};
-            let room = [Above, Below]
+            let spare = [Above, Below]
                 .into_iter()
-                .map(|side| floating_surface::anchored_room(self.anchor, side, m.gap, viewport))
+                .map(|side| floating_surface::anchored_extent(self.anchor, side, m.gap, viewport))
                 .fold(0.0, f64::max);
-            height = height.min((room - 2.0 * m.inset - self.header).max(0.0));
+            height = height.min((spare - 2.0 * m.inset - self.header).max(0.0));
         }
         height
     }
@@ -813,7 +813,7 @@ impl<R: FloatingRow> FloatingList<R> {
             .snap(self.placed.map_or(0.0, |rect| rect.height()));
     }
 
-    /// The panel's rect: under the anchor, or above it when there is more room there,
+    /// The panel's rect: under the anchor, or above it when there is more area there,
     /// inside the viewport.
     #[must_use]
     pub fn rect(&self) -> Option<Rect> {

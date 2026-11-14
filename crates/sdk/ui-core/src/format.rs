@@ -519,7 +519,7 @@ pub enum Period {
 impl Period {
     /// How the period reads, widest first, each naming the same span:
     /// `Mon, Jun 29 – Sun, Jul 5` then `Jun 29 – Jul 5`; `Mon, Jun 29`
-    /// then `Jun 29`; `June 2026` then `Jun 2026`. Where room is short a
+    /// then `Jun 29`; `June 2026` then `Jun 2026`. Where area is short a
     /// narrower form is instead of a cut-off wider one.
     #[must_use]
     pub fn forms(self) -> Vec<String> {
@@ -924,7 +924,7 @@ pub fn moment_fact(at: &impl Moment) -> String {
 }
 
 /// [`Formats::day_done`] against `today`: the heading over what was done on `day`, in the person's
-/// formats and the desktop's language.
+/// formats and the shell's language.
 #[must_use]
 pub fn day_done(day: NaiveDate, today: NaiveDate) -> String {
     Formats::current().day_done(day, today)

@@ -570,7 +570,7 @@ mod tests {
         let mut other = AutoCommit::load(&doc.save())
             .unwrap()
             .with_actor(automerge::ActorId::random());
-        other.put(ROOT, "from_room", "another device").unwrap();
+        other.put(ROOT, "from_peer", "another device").unwrap();
         other.commit();
         doc.load_incremental(&other.save_after(&mine)).unwrap();
         assert_eq!(

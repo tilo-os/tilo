@@ -139,7 +139,7 @@ fn client() -> (Arc<FakeHost>, RemoteActions) {
     let host = Arc::new(FakeHost::default());
     let actions = RemoteActions::with_host(
         Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
-        Caller::local_app("so.tilo.example").in_workspace("room"),
+        Caller::local_app("so.tilo.example").in_workspace("workspace"),
     );
     (host, actions)
 }
@@ -586,7 +586,7 @@ fn an_entered_host_serves_the_current_client_until_the_guard_drops() {
     {
         let _served = RemoteActions::enter(
             Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
-            Caller::local_app("so.tilo.example").in_workspace("room"),
+            Caller::local_app("so.tilo.example").in_workspace("workspace"),
         );
         let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
         assert!(matches!(answer.get(), Arrival::Ready(_)));

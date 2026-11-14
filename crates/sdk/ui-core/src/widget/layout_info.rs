@@ -72,13 +72,13 @@ pub struct PageLayout {
 }
 
 /// The grid a list row lays its content out on, as the row paints it: where its title starts and
-/// ends, where the facts column stands and how wide the room for it is, and whether the title was
+/// ends, where the facts column stands and how wide the area for it is, and whether the title was
 /// cut short.
 ///
 /// An audit reads this to compare rows with each other: the titles of one list must stand on one
 /// x for each depth, a nesting step must indent by the same gutter the toolkit nests by, and a
 /// title cut short while most of the row stands empty is a grid that gave its columns the wrong
-/// room.
+/// area.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct RowLayout {
     pub depth: u32,
@@ -102,7 +102,7 @@ pub struct HeaderRowLayout {
     pub title_needs: f32,
     pub title_has: f32,
     pub free_beside_title: f32,
-    /// The row gave the title room for its first letter and an ellipsis: less than that and the
+    /// The row gave the title area for its first letter and an ellipsis: less than that and the
     /// column reads as an ellipsis alone, naming nothing the person can tell apart from another.
     pub title_opens: bool,
     pub labelled_action: bool,
@@ -151,7 +151,7 @@ pub struct TextLayout {
     pub document: bool,
 }
 
-/// A list as its last layout left it: whether its first row names a group, the room the list keeps
+/// A list as its last layout left it: whether its first row names a group, the area the list keeps
 /// over the first band it draws, and the pill it floats over its rows to take a reader back.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ListLayout {
@@ -165,7 +165,7 @@ pub struct ListLayout {
 /// as the words it says.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ListPillLayout {
-    /// The width the words need, the face's own room around them included.
+    /// The width the words need, the face's own area around them included.
     pub needs: f32,
     /// The width the pill stands.
     pub has: f32,

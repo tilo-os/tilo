@@ -358,8 +358,8 @@ impl<'a> Author<'a> {
             + gap
             + chip_width.map_or(0.0, |width| width + gap)
             + badge_width.map_or(0.0, |width| width + gap);
-        let room = (max_width - reserved).max(0.0);
-        let shown = text.elide_to_width_style(&self.label(members), room as f32, &style);
+        let spare = (max_width - reserved).max(0.0);
+        let shown = text.elide_to_width_style(&self.label(members), spare as f32, &style);
         let (width, _) = text.measure_style(&shown, None, &style);
         let x = mark.x1 + gap;
         let name = Rect::new(x, origin.y, x + f64::from(width), origin.y + side);

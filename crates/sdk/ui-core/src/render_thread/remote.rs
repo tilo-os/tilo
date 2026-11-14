@@ -604,7 +604,7 @@ impl Worker {
         let offset = session
             .ring
             .write(sequence, &record)
-            .ok_or_else(|| Lost::Failed("the ring has no room".to_owned()))?;
+            .ok_or_else(|| Lost::Failed("the ring is too small".to_owned()))?;
         if sequence == 1 {
             tilo_startup_metrics::mark("remote-render-first-frame-sent");
         }

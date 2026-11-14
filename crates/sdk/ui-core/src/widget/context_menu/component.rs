@@ -219,9 +219,9 @@ impl Described for MenuButton {
         face(key, label, icon, icon_only, role).with_menu(rows(items, actions))
     }
 
-    /// Take changed props in place: the button says the desk's new words and its menu lists the
-    /// workspaces the desk has now, while the menu the person opened stays open where it stands
-    /// (a bar whose workspace the desk renamed or switched under it closes nothing).
+    /// Take changed props in place: the button says the shell's new words and its menu lists the
+    /// workspaces the shell has now, while the menu the person opened stays open where it stands
+    /// (a bar whose workspace the shell renamed or switched under it closes nothing).
     fn set_props(&mut self, props: MenuButtonProps) -> bool {
         let MenuButtonProps {
             label,

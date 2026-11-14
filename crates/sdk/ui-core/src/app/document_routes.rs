@@ -241,7 +241,7 @@ impl App {
             self.restore_primary_publication_obligations();
         }
         if (primary_changed || workspace_changed)
-            && let Some(workspace) = self.persistence.room_index.as_mut()
+            && let Some(workspace) = self.persistence.workspace_index.as_mut()
         {
             workspace.advance_outbound(Vec::new());
         }
@@ -407,7 +407,7 @@ impl App {
     }
 
     fn queue_owned_documents_after_refresh(&mut self) -> Result<Handoff, &'static str> {
-        // A surface's records stay in its process: the desktop that placed
+        // A surface's records stay in its process: the shell that placed
         // it gets its actions, never its document, so there is no route to
         // publish one on and none it waits for.
         if self.collaboration.manager.hosts_surface() {
@@ -467,7 +467,7 @@ impl App {
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));
                 self.restore_primary_publication_obligations();
-                if let Some(workspace) = self.persistence.room_index.as_mut() {
+                if let Some(workspace) = self.persistence.workspace_index.as_mut() {
                     workspace.advance_outbound(Vec::new());
                 }
                 self.collaboration.manager.stop_after_publication_failure();
@@ -606,8 +606,11 @@ impl App {
                 .primary_route()
                 .map(|witness| witness.route().clone())
             {
-                let _ =
-                    self.apply_room_index_document_envelope(&route, envelope, decrypted_payload);
+                let _ = self.apply_workspace_index_document_envelope(
+                    &route,
+                    envelope,
+                    decrypted_payload,
+                );
             }
             return;
         }

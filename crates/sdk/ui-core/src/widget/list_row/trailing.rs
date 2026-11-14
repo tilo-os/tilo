@@ -10,7 +10,7 @@ use vello::kurbo::Rect;
 
 use crate::text_render::TextRenderer;
 
-/// Whether `control` draws a face of one size whatever room it gets (a
+/// Whether `control` draws a face of one size whatever area it gets (a
 /// switch, a checkbox), so stretching it under the text would only move it
 /// off the text's edge. Looks through wrappers that announce nothing
 /// themselves to the control they hold.

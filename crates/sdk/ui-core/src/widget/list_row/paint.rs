@@ -163,11 +163,11 @@ impl ListRowFace<'_> {
         let extra = self.extra_lines() > 0;
         let title_style = self.title_style(&m);
         let title_line = RowMetrics::line(ctx.text, &title_style);
-        let room = self.title_room(&geo, ctx.text, theme, &m);
+        let spare = self.title_width(&geo, ctx.text, theme, &m);
         let title = self.shown_title();
         let lines =
             ctx.text
-                .clamp_to_lines(&title, &title_style, room, usize::from(self.title_lines));
+                .clamp_to_lines(&title, &title_style, spare, usize::from(self.title_lines));
         let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
         let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
         let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
@@ -457,7 +457,7 @@ impl ListRowFace<'_> {
     /// The width the title is set in: its column, less the quiet word before it and the tags
     /// after it. The title keeps at least half its line; the tags take the rest and drop off
     /// before the title elides further.
-    pub(super) fn title_room(
+    pub(super) fn title_width(
         &self,
         geo: &RowGeometry,
         text: &mut TextRenderer,
@@ -470,7 +470,7 @@ impl ListRowFace<'_> {
         crate::num::f32_of_f64((title_width - accessories).max(0.0))
     }
 
-    /// The room the row's quiet word before the title takes, with the gap after it: none for
+    /// The area the row's quiet word before the title takes, with the gap after it: none for
     /// a row that names none.
     pub(super) fn prefix_width(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
         match &self.prefix {
@@ -526,11 +526,11 @@ impl ListRowFace<'_> {
         }
         let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
-        let room = self.title_room(&geo, text, theme, &m);
+        let spare = self.title_width(&geo, text, theme, &m);
         let lines = text.clamp_to_lines(
             self.title,
             &self.title_style(&m),
-            room,
+            spare,
             usize::from(self.title_lines),
         );
         lines

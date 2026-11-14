@@ -32,7 +32,7 @@ impl WindowGroup {
     /// and the window keeps its bar.
     ///
     /// A window of several places shows them as its bar, and a fullscreen window's bar is the
-    /// desktop's: neither hands its bar to the app.
+    /// shell's: neither hands its bar to the app.
     pub(super) fn offer_bar_to_app(&mut self) -> Option<crate::widget::WindowBarSlot> {
         let active = self.bar.active_id();
         let declares_nothing = self.bar.toolbar(active).is_none();
@@ -112,7 +112,7 @@ impl WindowGroup {
     /// What a control of the window's furniture does when a person presses it there, as assistive
     /// technology and automation press it by its node. `None` for a target that is not the
     /// furniture's (the window's bar answers those), else whether the action ran: nothing runs
-    /// while no row holds the bar, or where the row had no room to place the control.
+    /// while no row holds the bar, or where the row had no area to place the control.
     pub(super) fn perform_held_furniture_action(
         &mut self,
         target: &str,
@@ -168,7 +168,7 @@ impl WindowGroup {
             self.bar.set_card(floating);
             self.bar.set_resize(self.resize());
             self.bar
-                .set_search_control((!floating).then_some(super::SEARCH_CONTROL_ROOM));
+                .set_search_control((!floating).then_some(super::SEARCH_CONTROL_WIDTH));
         }
     }
 

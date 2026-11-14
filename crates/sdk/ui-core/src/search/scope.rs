@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_resource::ScopeDecl;
 
-/// One window group's identity, as the desk numbers it.
+/// One window group's identity, as the shell numbers it.
 pub type WindowGroupId = u64;
 
 /// One app's own search: the app, and the part of it a control asked for.

@@ -1387,7 +1387,7 @@ fn the_call_cards_own_frame_answers_its_presses() {
     );
     assert!(matches!(
         app.call.placement.attachment(),
-        ui::floating_surface::Attachment::Desktop { .. }
+        ui::floating_surface::Attachment::Shell { .. }
     ));
     let prepared_window = app.huddle_panel().inflate(8.0, 8.0);
     let prepared_content = app.call_video_rect();
@@ -1409,7 +1409,7 @@ fn the_call_cards_own_frame_answers_its_presses() {
             rect: ui::floating_surface::protocol_rect_array(prepared_content),
         },
     );
-    assert!(app.call.placement.is_desktop_adopted());
+    assert!(app.call.placement.is_shell_adopted());
 
     let mut scene = Scene::new();
     let mut text_renderer = TextRenderer::new();

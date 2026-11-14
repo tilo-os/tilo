@@ -1,5 +1,5 @@
 //! How a wheel's motion is read: sideways travel and the gesture that a
-//! trackpad's fingers make. The desktop's window strip and the app under the
+//! trackpad's fingers make. The shell's window strip and the app under the
 //! pointer read a wheel by these one rules.
 
 use winit::event::MouseScrollDelta;
@@ -9,7 +9,7 @@ use winit::event::MouseScrollDelta;
 /// which scrolls content toward its later columns; `None` for vertical
 /// motion. Winit reports pixels physical, so they are divided by
 /// `scale_factor`, and a line is a notch of the wheel's own metric. The
-/// desktop's window strip and the app under the pointer read a wheel by this
+/// shell's window strip and the app under the pointer read a wheel by this
 /// one rule.
 pub fn sideways_travel(delta: &MouseScrollDelta, scale_factor: f64) -> Option<f64> {
     let line = line_of_wheel();

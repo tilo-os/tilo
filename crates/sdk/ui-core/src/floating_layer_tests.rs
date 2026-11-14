@@ -304,7 +304,7 @@ tilo_test_env::scenario! {
                     .cards
                     .iter()
                     .all(|card| card.rect.y0 >= work.y0 + 300.0),
-            "the column made room"
+            "the column made way"
         );
     }
 
@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
     // `card_size` put the card's edge.
     {
         let summary = activity(Kind::Stopwatch, "watch")
-            .with_subtitle("The whole desktop")
+            .with_subtitle("The whole shell")
             .with_control(Control::new("stop", "Stop", ControlKind::Primary))
             .with_control(Control::new("pause", "Pause", ControlKind::Secondary));
         let rect = Rect::from_origin_size((100.0, 100.0), card_size(work(1280.0, 800.0), &summary));
@@ -689,7 +689,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             size.height > card_size(work, &tile).height,
-            "a card headed with a picture makes room for it"
+            "a card headed with a picture makes way for it"
         );
     }
 

@@ -77,7 +77,7 @@ const DENSITIES: [(&str, f32); 3] = [
     ),
     (
         "settings-appearance-density-roomy",
-        ui::theme::ThemeDensity::ROOMY,
+        ui::theme::ThemeDensity::LARGE,
     ),
 ];
 

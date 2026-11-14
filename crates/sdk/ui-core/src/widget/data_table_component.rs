@@ -42,7 +42,7 @@ pub struct DataTableColumnProps {
     /// What the column is called, as its header, and the key its cells are held under in a row.
     #[component(required, positional)]
     pub header: String,
-    /// How wide it is: as wide as its content, one share of the spare room, or `pixels` wide.
+    /// How wide it is: as wide as its content, one share of the spare area, or `pixels` wide.
     pub width: Option<TableColumnWidth>,
     /// Its width in pixels, when `width` is `fixed`.
     pub pixels: Option<f64>,
@@ -113,7 +113,7 @@ pub struct DataTableProps {
     /// as its rows inside another scroll.
     pub fill: bool,
     /// Rows a finger's target tall, rather than a pointer target and a step.
-    pub roomy: bool,
+    pub reserved: bool,
     /// Whether pressing a row picks it.
     pub selectable: bool,
     /// The columns, in order.
@@ -169,7 +169,7 @@ impl ColumnFace {
 struct Face {
     name: Option<String>,
     fill: bool,
-    roomy: bool,
+    reserved: bool,
     selectable: bool,
     columns: Vec<ColumnFace>,
 }
@@ -269,7 +269,7 @@ impl Described for DescribedTable {
         let DataTableProps {
             name,
             fill,
-            roomy,
+            reserved,
             selectable,
             columns,
             rows,
@@ -288,7 +288,7 @@ impl Described for DescribedTable {
         if fill {
             table = table.fill_height();
         }
-        if !roomy {
+        if !reserved {
             table = table.compact();
         }
         if selectable || !select.is_none() {
@@ -323,7 +323,7 @@ impl Described for DescribedTable {
             face: Face {
                 name,
                 fill,
-                roomy,
+                reserved,
                 selectable,
                 columns: columns.iter().map(ColumnFace::of).collect(),
             },
@@ -337,7 +337,7 @@ impl Described for DescribedTable {
         let DataTableProps {
             name,
             fill,
-            roomy,
+            reserved,
             selectable,
             columns,
             rows,
@@ -348,13 +348,13 @@ impl Described for DescribedTable {
         let face = Face {
             name,
             fill,
-            roomy,
+            reserved,
             selectable,
             columns: columns.iter().map(ColumnFace::of).collect(),
         };
         if face.columns != self.face.columns
             || face.fill != self.face.fill
-            || face.roomy != self.face.roomy
+            || face.reserved != self.face.reserved
         {
             return false;
         }

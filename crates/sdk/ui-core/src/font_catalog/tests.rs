@@ -727,7 +727,7 @@ tilo_test_env::scenario! {
 
     phase a_mapped_database_reads_and_shapes_without_its_files;
     // Shaping on the compositor's main loop must never open a font by path: a
-    // path lookup there waits on the disk with the desktop frozen. A mapped
+    // path lookup there waits on the disk with the shell frozen. A mapped
     // database has every face's bytes, so it still shapes and reads its faces
     // with the files gone, in the order and generic families it had.
     {

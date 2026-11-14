@@ -1,7 +1,7 @@
 //! `WindowPreview`: where a window's live picture shows in a view, as [`WindowWell`] names where
 //! the window itself goes.
 //!
-//! A view that shows windows small (the switcher, a canvas's miniature of a desk) never draws
+//! A view that shows windows small (the switcher, a canvas's miniature of a shell) never draws
 //! their pixels: it puts a preview where the picture goes, and the compositor draws that
 //! window's own latest buffer there, in its own pixels. The preview draws nothing and takes no
 //! input; what a person sees under it is the view's own, and the picture covers it.
@@ -30,7 +30,7 @@ use crate::theme::Theme;
 use crate::widget::window_well::Wells;
 use crate::widget::{TaffyTreeExt, Widget};
 
-/// The width of a window for every ten of its height, as every desktop shapes a window's
+/// The width of a window for every ten of its height, as every shell shapes a window's
 /// picture (the well the old switcher and the overview draw).
 const WINDOW_SHAPE: f32 = 16.0 / 10.0;
 
@@ -43,7 +43,7 @@ const WINDOW_SHAPE: f32 = 16.0 / 10.0;
 /// none installed, a preview reports nowhere and costs one thread-local read.
 ///
 /// It keeps the rects a well keeps ([`Wells`]), apart from the tree's wells: a preview moves
-/// nothing on the desk.
+/// nothing on the shell.
 #[derive(Clone, Default)]
 pub struct Previews {
     rects: Wells,
@@ -153,7 +153,7 @@ fn forget(window: &str) {
     not_in_gallery = "a preview draws nothing: the compositor draws the window's own pixels there, and a gallery entry has no window to show"
 )]
 pub struct WindowPreviewProps {
-    /// The window whose picture shows here: its key in the desk's reading (`Win.key`).
+    /// The window whose picture shows here: its key in the shell's reading (`Win.key`).
     #[component(required, positional)]
     #[component(data)]
     pub window: String,

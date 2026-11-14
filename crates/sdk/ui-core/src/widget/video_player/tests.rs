@@ -1312,11 +1312,11 @@ fn ux1x_fixture() -> VideoPlayer {
     vp
 }
 
-/// A German desktop plays, mutes, seeks and fullscreens in German: the transport's tooltips and
+/// A German shell plays, mutes, seeks and fullscreens in German: the transport's tooltips and
 /// what a reader hears come from the locale catalogue, never from copy compiled into the widget.
 /// The source copy still reads in English.
 #[test]
-fn a_german_desktop_hears_the_transport_in_german() {
+fn a_german_shell_hears_the_transport_in_german() {
     use crate::i18n::I18nManager;
     const EN: &str = include_str!("../../../locales/en-US.ftl");
     const DE: &str = include_str!("../../../locales/de-DE.ftl");
@@ -1410,6 +1410,6 @@ fn a_german_desktop_hears_the_transport_in_german() {
     assert_eq!(
         hover(&mut vp, scrub).as_deref(),
         Some("Playback position"),
-        "an English desktop reads the source catalogue"
+        "an English shell reads the source catalogue"
     );
 }

@@ -42,10 +42,10 @@ impl TextInput {
             winit::event::MouseScrollDelta::PixelDelta(_) => {
                 self.wheel_glide.set_device_scale(scale_factor);
                 let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-                let room = self.content_height() - self.multiline_padding_y() * 2.0 - view_h;
+                let spare = self.content_height() - self.multiline_padding_y() * 2.0 - view_h;
                 self.wheel_glide.set_view(
                     view_h,
-                    self.multiline && room > 0.0,
+                    self.multiline && spare > 0.0,
                     crate::tokens::EffectiveMotion::new(
                         crate::tokens::Motion::default(),
                         self.reduce_motion,

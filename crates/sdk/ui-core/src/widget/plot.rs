@@ -21,7 +21,7 @@ use crate::widget::{ModelPath, Widget};
 pub struct PlotFrame<H> {
     pub(crate) rect: Rect,
     pub(crate) title: String,
-    /// A fixed height; `None` takes the room the parent gives, measuring
+    /// A fixed height; `None` takes the area the parent gives, measuring
     /// [`PlotMarks::natural_height`] when it gives none.
     pub(crate) height: Option<f32>,
     /// The smallest height [`Plot::with_height`] accepts.

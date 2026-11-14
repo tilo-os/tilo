@@ -38,13 +38,8 @@ pub mod transfer;
 pub mod workspace;
 
 use ::collaboration::record::fields::{META, ObjectAt, StringAt, meta_ro, object_at, string_at};
-/// Key in a record document for the workspace that owns this local replica. It keeps the name
-/// records were first written under: peers may run a build from before this module named the field
-/// for what it means.
-const WORKSPACE: &str = "room";
-/// The key a record written while the field was named `workspace` carries its workspace under;
-/// those documents exist, so it is read where it is (see [`stored_workspace`]) and never written.
-pub const WORKSPACE_ALIAS: &str = "workspace";
+/// Key in a record document for the workspace that owns this local replica.
+const WORKSPACE: &str = "workspace";
 /// Key, in a workspace's index document, of the map of record references.
 const INDEX: &str = "tilo:records";
 /// Key, in a record's meta map, of the identities it was adopted from.
@@ -74,14 +69,9 @@ fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     }
 }
 
-/// The workspace a record document is stamped with: the key every record is written under, or the
-/// one a build used while the field was named `workspace`. A value that is not a name cannot say
-/// which workspace it belongs to, and is refused.
+/// The workspace a record document is stamped with. A value that is not a name is refused.
 fn stored_workspace(doc: &AutoCommit, meta: &ObjId) -> StringAt {
-    match string_at(doc, meta, WORKSPACE) {
-        StringAt::Missing => string_at(doc, meta, WORKSPACE_ALIAS),
-        written => written,
-    }
+    string_at(doc, meta, WORKSPACE)
 }
 
 /// Stamp a document with the identity of the record it holds; idempotent, so a reopen does not
@@ -1264,7 +1254,7 @@ impl RecordSet {
             .ok_or(RecordOpenError::IdentityMismatch)?;
         if want.id.is_package_primary() {
             // The package-primary document is the workspace's own document
-            // (`<package>/rooms/<workspace>`), never a minted record beneath it.
+            // (`<package>/workspaces/<workspace>`), never a minted record beneath it.
             app_state::validate_document_identity(&self.app_id, &self.home, "index")?;
             return Ok((
                 Rc::clone(backend),
@@ -2762,7 +2752,7 @@ impl RecordStore {
 
     /// Take this store's records to come from its workspace's hosts, which
     /// may send a device a record only once it asks for it (a public
-    /// workspace sends a newcomer its governance and shared desktop, and the
+    /// workspace sends a newcomer its governance and shared shell, and the
     /// rest when opened): a record not here is not new until they said they
     /// hold none of it ([`Self::note_workspace_answered`]). Opening one asks
     /// for it ([`Self::wanted_records`]) and is

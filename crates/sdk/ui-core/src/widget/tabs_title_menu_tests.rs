@@ -16,7 +16,7 @@ fn a_menu_alone_is_a_button_in_the_title_row_that_keeps_the_title() {
         actions: vec![ToolbarAction {
             menu: true,
             ..ToolbarAction::new(
-                "tilo.desktop.share-to-channel",
+                "tilo.shell.share-to-channel",
                 "screen-share",
                 "Share to channel…",
             )
@@ -74,7 +74,7 @@ fn a_menu_alone_is_a_button_in_the_title_row_that_keeps_the_title() {
             vec![(
                 1,
                 ToolbarEvent::Action {
-                    id: "tilo.desktop.share-to-channel".into()
+                    id: "tilo.shell.share-to-channel".into()
                 }
             )]
         );

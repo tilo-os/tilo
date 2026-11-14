@@ -127,12 +127,12 @@ pub mod capability_door;
 pub mod content_zoom;
 pub mod control_hints;
 pub mod control_notice;
-/// The actions the host publishes itself, named for apps to call through `ui`.
-pub mod desktop;
 /// What is running: one cancellable job with a body, which the whole system can see and which outlives
 /// the window that started it.
 pub mod jobs;
 pub mod motion;
+/// The actions the host publishes itself, named for apps to call through `ui`.
+pub mod shell;
 extern crate self as tilo_ui;
 #[cfg(test)]
 #[allow(
@@ -264,8 +264,8 @@ pub use tilo_ui_paint::raster;
 pub mod realtime_continuity;
 pub mod storage;
 pub mod workspace_sync;
-/// The desktop's keyboard shortcut table (actions, their chords and the defaults) as the settings
-/// document keeps it: what every desktop host resolves a key press through, the native shell and a
+/// The shell's keyboard shortcut table (actions, their chords and the defaults) as the settings
+/// document keeps it: what every shell host resolves a key press through, the native shell and a
 /// browser page alike.
 pub mod shortcut_table {
     pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
@@ -273,8 +273,8 @@ pub mod shortcut_table {
         FixedAction, ShortcutHome, fixed_action, fixed_shortcut,
     };
 }
-/// The desk widgets and the screen edges things kept at the screen's edges wait at, as the settings
-/// document keeps them: what every desktop host places them by, the native shell and a browser page
+/// The shell widgets and the screen edges things kept at the screen's edges wait at, as the settings
+/// document keeps them: what every shell host places them by, the native shell and a browser page
 /// alike.
 pub mod desk_widgets {
     pub use settings_store::desk_widgets::{

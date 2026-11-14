@@ -170,7 +170,7 @@ impl FieldRole {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Presentation {
-    /// The modal sheet a painted host draws: floating on a roomy display, a
+    /// The modal sheet a painted host draws: floating on a wide display, a
     /// full-window page on a phone.
     #[default]
     Sheet,
@@ -1371,7 +1371,7 @@ impl SecretPrompt {
             .dismiss_on_scrim(false)
     }
 
-    /// The room a sheet lays out in: the window above an on-screen keyboard.
+    /// The area a sheet lays out in: the window above an on-screen keyboard.
     fn sheet_window(&self) -> Rect {
         let mut window = self.window;
         window.y1 = (window.y1 - self.keyboard_inset).max(window.y0);
@@ -1385,12 +1385,12 @@ impl SecretPrompt {
         self.window = window;
         match self.presentation {
             Presentation::Sheet => {
-                let room = self.sheet_window();
-                let width = modal_dialog::body_width(room, self.max_width, &theme);
+                let spare = self.sheet_window();
+                let width = modal_dialog::body_width(spare, self.max_width, &theme);
                 let body_h = self.measure_body(width, text, &theme);
                 let actions = self.modal_actions();
                 let spec = self.modal_spec(&actions, body_h);
-                let modal = modal_dialog::layout_for(room, &spec, text, &theme, self.environment);
+                let modal = modal_dialog::layout_for(spare, &spec, text, &theme, self.environment);
                 let mut layout = self.layout_body(modal.body, &theme);
                 layout.cancel = modal.actions.first().copied().unwrap_or(Rect::ZERO);
                 layout.primary = modal.actions.get(1).copied().unwrap_or(Rect::ZERO);

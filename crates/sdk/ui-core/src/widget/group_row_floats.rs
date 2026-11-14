@@ -1,4 +1,4 @@
-//! Windows floating above the desk: a strip's window lifted out of its flow and shown at a
+//! Windows floating above the shell: a strip's window lifted out of its flow and shown at a
 //! rect of its own, over the other strips and windows.
 //!
 //! A float is the same window the strip holds — its group, tabs and hosts stay where they
@@ -25,7 +25,7 @@ use crate::widget::primitives::paint_floating_window_card;
 pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
 pub const FLOAT_CARD_SIZE: (f64, f64) = (360.0, 520.0);
 const FLOAT_GRAB: (f64, f64) = (80.0, 14.0);
-pub const FLOAT_CARD_ROOM: f64 = Spacing::BASE.s2 as f64;
+pub const FLOAT_CARD_MARGIN: f64 = Spacing::BASE.s2 as f64;
 
 /// Where a float the person moved or let go goes, for the host to keep in the workspace's
 /// record.
@@ -86,7 +86,7 @@ impl GroupRow {
         }
     }
 
-    /// The windows floating above the desk, by group id, at their rects.
+    /// The windows floating above the shell, by group id, at their rects.
     #[must_use]
     pub fn floats(&self) -> &HashMap<u64, Rect> {
         &self.floats
@@ -100,13 +100,13 @@ impl GroupRow {
         &self.drawn_covers
     }
 
-    /// Whether the group `id` floats above the desk.
+    /// Whether the group `id` floats above the shell.
     #[must_use]
     pub fn is_floating(&self, id: u64) -> bool {
         self.floats.contains_key(&id)
     }
 
-    /// Each of the row's groups in its order, whether it floats above the desk rather than
+    /// Each of the row's groups in its order, whether it floats above the shell rather than
     /// being laid out in its strip.
     pub(super) fn floating_flags(&self) -> Vec<bool> {
         self.groups
@@ -150,7 +150,7 @@ impl GroupRow {
         }
     }
 
-    /// Tell the row which of its floating cards the desk has folded to their header, so
+    /// Tell the row which of its floating cards the shell has folded to their header, so
     /// their collapse controls point the way they fold them ([`FloatAsk::Collapse`]).
     pub fn set_collapsed(&mut self, collapsed: &std::collections::BTreeSet<u64>) {
         let collapsed: std::collections::HashSet<u64> = collapsed.iter().copied().collect();
@@ -289,7 +289,7 @@ impl GroupRow {
     }
 
     /// The rect a window let go at `p` floats in: the floating size, hung from the hand,
-    /// kept inside the row's display with the room its card draws in.
+    /// kept inside the row's display with the area its card draws in.
     #[must_use]
     pub fn float_rect_at(&self, p: Point) -> Rect {
         let at = Rect::from_origin_size(
@@ -299,7 +299,7 @@ impl GroupRow {
         self.keep_float_inside(at)
     }
 
-    /// `at` kept inside the desk the row stands on ([`keep_float_inside`]).
+    /// `at` kept inside the shell the row stands on ([`keep_float_inside`]).
     #[must_use]
     pub fn keep_float_inside(&self, at: Rect) -> Rect {
         keep_float_inside(self.rect, at)
@@ -370,21 +370,21 @@ impl GroupRow {
     }
 }
 
-/// `at` kept inside the desk `area`, clear of its edge by [`FLOAT_CARD_ROOM`]: the card a
+/// `at` kept inside the shell `area`, clear of its edge by [`FLOAT_CARD_MARGIN`]: the card a
 /// float draws round its window — the band of its own ground and the focus ring outside it
 /// — stays whole.
 #[must_use]
 pub fn keep_float_inside(area: Rect, at: Rect) -> Rect {
-    let room = FLOAT_CARD_ROOM;
+    let spare = FLOAT_CARD_MARGIN;
     let x = at
         .x0
-        .min(area.x1 - room - at.width())
-        .max(area.x0 + room)
+        .min(area.x1 - spare - at.width())
+        .max(area.x0 + spare)
         .max(0.0);
     let y = at
         .y0
-        .min(area.y1 - room - at.height())
-        .max(area.y0 + room)
+        .min(area.y1 - spare - at.height())
+        .max(area.y0 + spare)
         .max(0.0);
     Rect::from_origin_size(Point::new(x, y), at.size())
 }

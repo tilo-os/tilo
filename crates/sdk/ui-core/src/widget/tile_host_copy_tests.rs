@@ -1,7 +1,7 @@
 //! A scroll in an app a window shows, drawn for a host that keeps what it presented and can move it
 //! (the web's canvas, [`crate::scroll_copy::HostCopies`]): the window hands over what moved, the
 //! host copies it ([`crate::retained_raster::RetainedFrames::repaint_copying`]) and repaints the
-//! strip the scroll exposed, and every presented frame equals a full render of the scene, the desk
+//! strip the scroll exposed, and every presented frame equals a full render of the scene, the shell
 //! under the window included.
 #![allow(
     clippy::unwrap_used,
@@ -161,7 +161,7 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
         let recording = crate::scene_parts::Recording::begin();
         let mut scene = Scene::new();
         crate::scene_parts::track(&scene);
-        // The desk under the window: something a copy must not move.
+        // The shell under the window: something a copy must not move.
         scene.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,

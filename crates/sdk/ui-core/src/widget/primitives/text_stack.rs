@@ -91,8 +91,8 @@ impl<'a> TextLineFace<'a> {
         if self.text.is_empty() || rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let room = crate::num::f32_of_f64(rect.width());
-        let shown = ctx.text.elide_to_width_style(self.text, room, &style);
+        let spare = crate::num::f32_of_f64(rect.width());
+        let shown = ctx.text.elide_to_width_style(self.text, spare, &style);
         let (w, h) = ctx.text.measure_style(&shown, None, &style);
         let x = match self.align {
             TextLineAlign::Center => rect.center().x - f64::from(w) / 2.0,

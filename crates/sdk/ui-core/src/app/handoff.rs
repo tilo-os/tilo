@@ -61,7 +61,7 @@ impl App {
             set.try_flush(&mut self.state.doc)?;
             if let (Some(saver), Some(index)) = (
                 self.persistence.autosave.as_mut(),
-                self.persistence.room_index.as_mut(),
+                self.persistence.workspace_index.as_mut(),
             ) {
                 let index = index.document_mut();
                 index.commit();
@@ -139,7 +139,7 @@ impl App {
     }
 
     /// After a document change arrived: if what this window shows was moved
-    /// to another workspace by someone, stop editing it and tell the desktop,
+    /// to another workspace by someone, stop editing it and tell the shell,
     /// which knows whether the person can see where it went.
     pub(super) fn observe_primary_retirement(&mut self) {
         if self.continuation.retired {

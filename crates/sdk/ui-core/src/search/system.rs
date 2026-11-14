@@ -30,7 +30,7 @@ pub enum ResourceKind {
 }
 
 impl ResourceKind {
-    /// Stable English name, independent of the desktop's language: the source of the chip
+    /// Stable English name, independent of the shell's language: the source of the chip
     /// strip's scriptable `palette:filter:*` address and the control socket's `kind`
     /// field.
     pub fn id(&self) -> &str {
@@ -55,7 +55,7 @@ impl ResourceKind {
         self.id()
     }
 
-    /// What the group header and the chip strip say this kind is, in the desktop's
+    /// What the group header and the chip strip say this kind is, in the shell's
     /// language.
     #[must_use]
     pub fn display_label(&self) -> String {

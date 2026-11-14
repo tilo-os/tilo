@@ -1,4 +1,4 @@
-//! A desktop's window slots: declarations, routing and the windows of apps
+//! A shell's window slots: declarations, routing and the windows of apps
 //! in the host's own process.
 
 use super::*;
@@ -168,7 +168,7 @@ fn apps_sharing_a_thread_each_declare_on_their_own_window() {
 }
 
 tilo_test_env::scenario! {
-    fn a_hosted_windows_bar_carries_its_slots_its_reactions_and_the_desktops_items;
+    fn a_hosted_windows_bar_carries_its_slots_its_reactions_and_the_shells_items;
 
     phase a_hosted_windows_slots_reach_its_bar_and_presses_reach_its_app;
     {
@@ -231,20 +231,20 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop;
-    // The desktop's own "Share to channel…" ends the menu of a window whose app has a bar,
-    // and choosing it reaches the desktop, never the app.
+    phase the_shells_own_menu_items_join_an_apps_bar_and_come_back_to_the_shell;
+    // The shell's own "Share to channel…" ends the menu of a window whose app has a bar,
+    // and choosing it reaches the shell, never the app.
     {
         let window = HostedWindow::new();
         let bare = HostedWindow::new();
         let mut groups = [group(&[5]), group(&[6])];
         let mut slots = WindowSlots::default();
         window.declare(Some(new_contact()));
-        let share = ToolbarAction::new("tilo.desktop.share", "screen-share", "Share to channel…");
+        let share = ToolbarAction::new("tilo.shell.share", "screen-share", "Share to channel…");
         slots.set_host_items(5, vec![share.clone()]);
         slots.set_host_items(6, vec![share.clone()]);
-        slots.set_host_items(5, vec![ToolbarAction::new("own", "x", "Not the desktop's")]);
-        assert!(!slots.host_items.contains_key(&5), "only the desktop's ids");
+        slots.set_host_items(5, vec![ToolbarAction::new("own", "x", "Not the shell's")]);
+        assert!(!slots.host_items.contains_key(&5), "only the shell's ids");
         slots.set_host_items(5, vec![share]);
         let windows = [(5, window.clone()), (6, bare.clone())];
         slots.sync_hosted(&windows, groups.iter_mut());
@@ -264,14 +264,14 @@ tilo_test_env::scenario! {
         assert!(slots.route(
             5,
             ToolbarEvent::Action {
-                id: "tilo.desktop.share".into()
+                id: "tilo.shell.share".into()
             }
         ));
         slots.sync_hosted(&windows, groups.iter_mut());
         assert!(window.take_events().is_empty(), "the app never hears it");
         assert_eq!(
             slots.take_host_actions(),
-            vec![(5, "tilo.desktop.share".to_owned())]
+            vec![(5, "tilo.shell.share".to_owned())]
         );
 
         slots.set_host_items(5, Vec::new());
@@ -279,8 +279,8 @@ tilo_test_env::scenario! {
         assert_eq!(groups[0].tab_toolbar(5), Some(&new_contact()));
     }
 
-    phase a_window_without_a_bar_offers_the_desktops_items_in_a_menu_alone;
-    // A window whose app declared no bar still offers the desktop's own items: they are its
+    phase a_window_without_a_bar_offers_the_shells_items_in_a_menu_alone;
+    // A window whose app declared no bar still offers the shell's own items: they are its
     // only slots, a menu alone, which leaves its title where it is.
     {
         let bare = HostedWindow::new();
@@ -291,7 +291,7 @@ tilo_test_env::scenario! {
         assert_eq!(groups[0].tab_toolbar(6), None);
 
         let share = ToolbarAction::new(
-            "tilo.desktop.share-to-channel",
+            "tilo.shell.share-to-channel",
             "screen-share",
             "Share to channel…",
         );
@@ -300,20 +300,20 @@ tilo_test_env::scenario! {
         let shown = groups[0].tab_toolbar(6).expect("the menu");
         assert!(shown.menu_only(), "{shown:?}");
         assert_eq!(shown.actions.len(), 1);
-        assert_eq!(shown.actions[0].id, "tilo.desktop.share-to-channel");
+        assert_eq!(shown.actions[0].id, "tilo.shell.share-to-channel");
         assert!(shown.location.is_none(), "the title stays in its tab");
 
         assert!(slots.route(
             6,
             ToolbarEvent::Action {
-                id: "tilo.desktop.share-to-channel".into()
+                id: "tilo.shell.share-to-channel".into()
             }
         ));
         slots.sync_hosted(&windows, groups.iter_mut());
         assert!(bare.take_events().is_empty(), "the app never hears it");
         assert_eq!(
             slots.take_host_actions(),
-            vec![(6, "tilo.desktop.share-to-channel".to_owned())]
+            vec![(6, "tilo.shell.share-to-channel".to_owned())]
         );
 
         slots.set_host_items(6, Vec::new());

@@ -2,7 +2,7 @@
 //! the keyboard under the person's hands spells it, not in the language of the interface: a German
 //! using a US layout reads `Ctrl`, the same German on a German layout reads `Strg`. The Super key is
 //! always called `Super` on PC keyboards: the key carries a vendor logo rather than a word, and `Super`
-//! is the name the desktop's documentation and onboarding use for it.
+//! is the name the shell's documentation and onboarding use for it.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -338,7 +338,7 @@ pub(crate) fn canonical_modifier(token: &str) -> Option<KeyboardModifier> {
     })
 }
 
-/// The order modifiers are listed in: the desktop's own modifier first.
+/// The order modifiers are listed in: the shell's own modifier first.
 pub(crate) fn display_rank(modifier: KeyboardModifier) -> u8 {
     match modifier {
         KeyboardModifier::Command | KeyboardModifier::System => 0,
@@ -748,7 +748,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn each_layout_writes_chords_in_its_own_legends;
 
-        phase us_is_the_default_and_keeps_the_desktop_spelling;
+        phase us_is_the_default_and_keeps_the_shell_spelling;
         {
             let us = Keycaps::from_xkb("us", "");
             assert_eq!(us, Keycaps::default());

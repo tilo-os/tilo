@@ -18,9 +18,9 @@ pub struct AvatarProps {
     pub glyph: Option<Icon>,
     /// A square rather than a circle: an account or a site, not a person.
     pub square: bool,
-    /// The avatar's room with none in it: a message that continues its author's run lines up under the
+    /// An empty avatar placeholder: a message that continues its author's run lines up under the
     /// first one's avatar without repeating it.
-    pub room: bool,
+    pub placeholder: bool,
 }
 
 impl AvatarProps {
@@ -48,8 +48,8 @@ impl Described for Avatar {
         if props.square {
             avatar = avatar.square();
         }
-        if props.room {
-            avatar = avatar.room();
+        if props.placeholder {
+            avatar = avatar.placeholder();
         }
         avatar
     }
@@ -61,7 +61,7 @@ impl Described for Avatar {
         self.glyph = props.glyph;
         self.neutral = props.glyph.is_some();
         self.square = props.square || props.glyph.is_some();
-        self.room = props.room;
+        self.placeholder = props.placeholder;
         self.dirty = true;
         true
     }

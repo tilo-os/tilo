@@ -7,7 +7,7 @@ impl TabBar {
     /// The bar as it lays itself out now: every control it shows, in reading order (the active
     /// tab's own slots — the sidebar toggle, Back and Forward, the leading actions, the views
     /// and the location's picker, the actions and the overflow button — then the window's
-    /// History control and own controls), and the room it leaves empty beside its location's
+    /// History control and own controls), and the area it leaves empty beside its location's
     /// label.
     #[must_use]
     pub fn bar_layout(&self) -> crate::window_toolbar::BarLayout {

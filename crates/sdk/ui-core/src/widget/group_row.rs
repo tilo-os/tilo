@@ -38,7 +38,7 @@ pub use hint_places::HintPlaces;
 mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
-pub use floats::{FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
+pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -251,8 +251,8 @@ pub struct GroupRow {
     /// Windows that put anything on the top layer in the last frame: an open menu may hang on where
     /// its widgets last drew, so such a window is drawn, never replayed.
     overlay_groups: Vec<u64>,
-    strip_desktop_shift: Vec<(usize, f64, bool, f64)>,
-    drawing_desktop: Affine,
+    strip_canvas_shift: Vec<(usize, f64, bool, f64)>,
+    drawing_shift: Affine,
     canvas: Option<CanvasView>,
     canvas_drag_from: Option<Rect>,
     pending_canvas_move: Option<(u64, Rect)>,
@@ -417,7 +417,7 @@ pub struct Pan {
 }
 
 impl Pan {
-    /// Room a retained canvas keeps past each end of the content, so an overscroll pans within it;
+    /// Area a retained canvas keeps past each end of the content, so an overscroll pans within it;
     /// the rubber band never reaches the viewport share.
     fn canvas_pad(&self) -> f64 {
         (self.viewport.width().max(0.0) * STRIP_OVERSCROLL_REACH_FRAC).ceil() + 1.0
@@ -964,8 +964,8 @@ impl GroupRow {
             pan_theme: None,
             pan_drawn_frame: None,
             overlay_groups: Vec::new(),
-            strip_desktop_shift: Vec::new(),
-            drawing_desktop: Affine::IDENTITY,
+            strip_canvas_shift: Vec::new(),
+            drawing_shift: Affine::IDENTITY,
             pan_unkept: Vec::new(),
             canvas: None,
             canvas_drag_from: None,
@@ -1157,7 +1157,7 @@ impl GroupRow {
         self.fullscreen_idx().is_some()
     }
 
-    /// How much of this strip's top edge something overlays now (the desktop's top bar while it
+    /// How much of this strip's top edge something overlays now (the shell's top bar while it
     /// shows over the windows under an auto-hiding one): every window in the strip moves down by
     /// it, whole, so its own bar stands below the overlay instead of under it.
     ///
@@ -1184,7 +1184,7 @@ impl GroupRow {
         self.leading_inset
     }
 
-    /// Keep `px` of the viewport's trailing edge clear for the cards floating over the desk there:
+    /// Keep `px` of the viewport's trailing edge clear for the cards floating over the shell there:
     /// a window brought into view from now on stands clear of them where it fits beside them.
     pub fn set_trailing_clear(&mut self, px: f64) {
         let px = px.max(0.0);
@@ -1715,26 +1715,26 @@ impl GroupRow {
         self.structure_dirty = true;
     }
 
-    /// Make room for a window that just opened, beside the one it opened to the right of, else the
+    /// Make area for a window that just opened, beside the one it opened to the right of, else the
     /// one after it: two that don't fit share the display, and when no share leaves both usable the
     /// strip scrolls instead. New widths are stamped as pending changes.
     pub fn share_with_neighbour(&mut self, group_id: u64) -> bool {
         self.share_with_neighbour_placing(group_id, false)
     }
 
-    /// [`Self::share_with_neighbour`] for a window back in its strip from floating over the desk:
+    /// [`Self::share_with_neighbour`] for a window back in its strip from floating over the shell:
     /// both take their share at once, so the strip shows them whole from the first frame instead of
     /// one running past its edge while its widths catch up.
     pub fn share_with_neighbour_at_once(&mut self, group_id: u64) -> bool {
         self.share_with_neighbour_placing(group_id, true)
     }
 
-    /// Make room for the window `group_id` that opened over the desk beside its neighbour: the
+    /// Make area for the window `group_id` that opened over the shell beside its neighbour: the
     /// card a floating window draws at — the window and the band and ring it draws round it — is
     /// `card_px` wide, and the window it opened next to gives up exactly that much of the strip,
     /// so the card stands beside what the person was reading rather than over it. Both widths
     /// stand there from this frame, since the card lands over the place they make. False when the
-    /// strip has no room beside the card.
+    /// strip is too small beside the card.
     pub fn share_with_floating_neighbour(&mut self, group_id: u64, card_px: f64) -> bool {
         let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
             return false;
@@ -1972,7 +1972,7 @@ impl GroupRow {
     }
 
     /// [`Pan::canvas_pad`] on the presenter's pan step, rounded up so the
-    /// canvas keeps at least that much room: with whole-device-pixel pans,
+    /// canvas keeps at least that much area: with whole-device-pixel pans,
     /// a canvas shift (`pan + pad`) is then whole device pixels too.
     fn lane_canvas_pad(&self, pan: &Pan) -> f64 {
         let pad = pan.canvas_pad();
@@ -2016,7 +2016,7 @@ impl GroupRow {
         }
     }
 
-    /// Room a retained canvas keeps left of the content and right of the furthest pan, in
+    /// Area a retained canvas keeps left of the content and right of the furthest pan, in
     /// layout pixels.
     pub fn canvas_pad(&self) -> f64 {
         self.lane_canvas_pad(self.leading_pan())
@@ -2718,12 +2718,12 @@ impl GroupRow {
             return 0.0;
         }
         let velocity = crate::edge_autoscroll::velocity(p.x, view.x0, view.x1);
-        let room = if velocity < 0.0 {
+        let spare = if velocity < 0.0 {
             pan.scroll_x > 0.0
         } else {
             pan.scroll_x < pan.max_scroll_x()
         };
-        if room { velocity } else { 0.0 }
+        if spare { velocity } else { 0.0 }
     }
 
     /// The background tab of another window under `p`: its group and tab. The tab a window already
@@ -3606,7 +3606,7 @@ impl GroupRow {
         self.sync_sibling_fade(theme);
         self.set_width_bases();
         // Every slot springs from where it is drawn to where it goes, the closing one to nothing
-        // and its neighbours into the room, whether or not the strip overflows: the pan's bounds
+        // and its neighbours into the area, whether or not the strip overflows: the pan's bounds
         // follow where the springs are going ([`Self::dest_content_w`]), so a slot in flight never
         // makes the strip scrollable.
         for group in &mut self.groups {
@@ -3749,7 +3749,7 @@ impl GroupRow {
             flex_direction: FlexDirection::Row,
             // Groups past the viewport are the strip's to pan and clip, not the extent of what
             // holds it: otherwise taffy carries their width up as every ancestor's content size and
-            // the desktop column reports itself as wide as the whole strip. `Clip`, not `Hidden`:
+            // the shell column reports itself as wide as the whole strip. `Clip`, not `Hidden`:
             // the automatic minimum size, and so the layout, stays as it was.
             overflow: taffy::Point {
                 x: Overflow::Clip,
@@ -4367,7 +4367,7 @@ impl Widget for GroupRow {
             let shifted = shift.abs() > f64::EPSILON;
             let rested = scroll + pad;
             let kept = if let Some((_, kept, was_screen, drawn)) = self
-                .strip_desktop_shift
+                .strip_canvas_shift
                 .iter_mut()
                 .find(|(lane, ..)| *lane == k)
             {
@@ -4378,11 +4378,11 @@ impl Widget for GroupRow {
                 *drawn = rested;
                 *kept
             } else {
-                self.strip_desktop_shift.push((k, rested, !unbake, rested));
+                self.strip_canvas_shift.push((k, rested, !unbake, rested));
                 rested
             };
-            let desktop_shift = if unbake { kept } else { kept - rested };
-            self.drawing_desktop = Affine::translate((desktop_shift, 0.0));
+            let drawn_shift = if unbake { kept } else { kept - rested };
+            self.drawing_shift = Affine::translate((drawn_shift, 0.0));
             if shifted {
                 self.offset_lane(k, shift);
             }
@@ -4679,7 +4679,7 @@ impl Widget for GroupRow {
             return true;
         }
         if self
-            .strip_desktop_shift
+            .strip_canvas_shift
             .iter()
             .any(|(_, kept, was_screen, drawn)| *was_screen && (kept - drawn).abs() > f64::EPSILON)
         {
@@ -4715,7 +4715,7 @@ impl Widget for GroupRow {
         }
         // The row owns drag animations outside its presentation children; propagate them alongside
         // child animation requests. Off-screen groups use the same cull as `needs_redraw`: a hosted
-        // app past the strip edge must not keep the desktop at the refresh rate.
+        // app past the strip edge must not keep the shell at the refresh rate.
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.drag_reach_pending()
@@ -5016,7 +5016,7 @@ impl GroupRow {
             // drawing still stands on a strip whose blur is recorded. Only
             // where the screen shows the group: a strip drawn off screen
             // would spend a blurred region on nothing.
-            // A damage part of its own: a strip that reads the desktop again
+            // A damage part of its own: a strip that reads the shell again
             // repaints only itself.
             match self.apart_window {
                 // Only a group at rest in its slot: one moving, lifted or
@@ -7383,7 +7383,7 @@ mod tests {
         });
     }
 
-    /// A desktop that accumulated dozens of windows must encode only those
+    /// A shell that accumulated dozens of windows must encode only those
     /// the row shows: vello sizes its GPU buffers from everything encoded,
     /// clipped or not, and WebGPU's 128 MiB binding limit is finite.
     #[test]
@@ -7732,7 +7732,7 @@ mod tests {
             let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
             assert!(
                 row.pan_max_scroll_x() > 80.0,
-                "the fixture must have room to pan"
+                "the fixture must fit to pan"
             );
             let start = group_grab_point(&row, 0);
             let before = row.scroll_x();
@@ -7784,7 +7784,7 @@ mod tests {
             drag.lifted_at = drag
                 .lifted_at
                 .checked_sub(TOUCH_GRAB_HOLD)
-                .expect("monotonic clock has room");
+                .expect("monotonic clock fits");
             let to = Point::new(row.groups[2].get_rect().center().x + 60.0, start.y);
             for step in 1..=8 {
                 let t = f64::from(step) / 8.0;
@@ -8132,7 +8132,7 @@ mod tests {
             assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
         }
 
-        phase direct_pan_keeps_trailing_room_and_elastic_overpull;
+        phase direct_pan_keeps_trailing_area_and_elastic_overpull;
         {
             fn wheel_over_strip_never_moves_it() {
                 use winit::dpi::PhysicalPosition;
@@ -10160,7 +10160,7 @@ mod tests {
             hidden_row_collapses_and_restores();
         }
 
-        phase the_bar_shown_over_the_desk_leaves_the_covering_window_where_it_stands;
+        phase the_bar_shown_over_the_shell_leaves_the_covering_window_where_it_stands;
         {
             let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
             row.set_fullscreen(Some(200), false);
@@ -10406,5 +10406,5 @@ mod presence_tests;
 mod sharing_tests;
 
 #[cfg(test)]
-#[path = "group_row_making_room_tests.rs"]
-mod making_room_tests;
+#[path = "group_row_making_way_tests.rs"]
+mod making_way_tests;

@@ -175,7 +175,7 @@ impl EmojiPicker {
     }
 
     /// A framed picker at a sheet's width ([`crate::tokens::Metrics::BASE`]'s
-    /// `panel_width_sheet`): the desk's own card over a whole session, where a wider grid
+    /// `panel_width_sheet`): the shell's own card over a whole session, where a wider grid
     /// shows more emoji before it scrolls.
     #[must_use]
     pub fn sheet() -> Self {
@@ -729,8 +729,8 @@ impl EmojiPicker {
         let cell = self.geometry.cell;
         let pad = f64::from(self.theme.tokens.spacing.s1);
         let card = self.rect;
-        let room = (card.width() - pad * 2.0).max(cell);
-        let columns = usize_of_f64((room / cell).floor()).clamp(1, forms.len());
+        let spare = (card.width() - pad * 2.0).max(cell);
+        let columns = usize_of_f64((spare / cell).floor()).clamp(1, forms.len());
         let rows = forms.len().div_ceil(columns);
         let width = cell * f64_of_usize(columns) + pad * 2.0;
         let height = (cell * f64_of_usize(rows) + pad * 2.0).min(card.height());
@@ -974,10 +974,10 @@ impl EmojiPicker {
             .text(TextRole::Caption)
             .with_weight(TextWeight::Medium);
         let x = glyph.x1 + gap;
-        let room = (footer.x1 - x - if hint_w > 0.0 { hint_w + gap } else { 0.0 }).max(0.0);
+        let spare = (footer.x1 - x - if hint_w > 0.0 { hint_w + gap } else { 0.0 }).max(0.0);
         let name = ctx
             .text
-            .elide_to_width_style(&name, f32_of_f64(room), &style);
+            .elide_to_width_style(&name, f32_of_f64(spare), &style);
         let (_, h) = ctx.text.measure_style(&name, None, &style);
         ctx.text(
             &name,
@@ -1377,11 +1377,11 @@ fn geometry_of(
     }
 }
 
-fn group_columns(room: f64, groups: usize, tab_width: f64, strip_width: f64) -> usize {
-    if room >= strip_width {
+fn group_columns(spare: f64, groups: usize, tab_width: f64, strip_width: f64) -> usize {
+    if spare >= strip_width {
         return groups;
     }
-    let fits = usize_of_f64((room / tab_width.max(1.0)).floor())
+    let fits = usize_of_f64((spare / tab_width.max(1.0)).floor())
         .max(1)
         .min(groups);
     groups.div_ceil(groups.div_ceil(fits))

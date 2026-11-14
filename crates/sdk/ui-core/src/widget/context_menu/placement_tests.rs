@@ -15,7 +15,7 @@ fn menu() -> ContextMenu {
 }
 
 /// The row "Find the last service date" in the reported capture: a wide row
-/// with room below it.
+/// with area below it.
 fn row(y0: f64) -> Rect {
     Rect::new(25.0, y0, 505.0, y0 + 39.0)
 }
@@ -51,7 +51,7 @@ tilo_test_env::scenario! {
         let rect = m.get_rect();
         assert!(
             rect.y1 <= row.y0 && row.y0 - rect.y1 <= ANCHOR_GAP + 0.5,
-            "above the row where below has no room: {rect:?} vs {row:?}"
+            "above the row where below is too small: {rect:?} vs {row:?}"
         );
     }
 
@@ -85,7 +85,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    // Taller than the room it has, a menu scrolls its rows and ends with the last one it shows
+    // Taller than the area it has, a menu scrolls its rows and ends with the last one it shows
     // whole: a row cut to a sliver at its edge is a target a person sees but cannot aim at.
     phase a_menu_that_scrolls_cuts_no_row_in_half;
     {

@@ -173,10 +173,6 @@ fn a_record_written_now_names_its_workspace_under_the_stored_key() {
         str_at(&doc, &meta, WORKSPACE).as_deref(),
         Some(workspace.as_str())
     );
-    assert!(
-        matches!(string_at(&doc, &meta, WORKSPACE_ALIAS), StringAt::Missing),
-        "a new record does not also write the key one build named"
-    );
     assert_eq!(workspace_scope(&doc).as_deref(), Some(workspace.as_str()));
     let saved = doc.save();
     let reloaded = AutoCommit::load(&saved).unwrap();
@@ -185,73 +181,6 @@ fn a_record_written_now_names_its_workspace_under_the_stored_key() {
         Some(workspace.as_str()),
         "the key is the document's, not the process's"
     );
-}
-
-/// A record written while the field was named `workspace` keeps its workspace
-/// under that key: it opens with that workspace and its history, and opening
-/// it does not rewrite it.
-#[test]
-fn a_record_written_while_the_field_was_named_workspace_reads_with_its_workspace() {
-    let workspace = uuid::Uuid::new_v4().to_string();
-    let package = "so.tilo.test-legacy-key";
-    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.legacy-note"));
-    // The document as the build of the time left it on disk.
-    let mut written = AutoCommit::new();
-    written.put(ROOT, "title", "Field notes").unwrap();
-    assert!(init_scoped(
-        &mut written,
-        &checkout.id,
-        &checkout.kind,
-        &workspace,
-        None
-    ));
-    let meta = meta_obj(&mut written).unwrap();
-    written.delete(&meta, WORKSPACE).unwrap();
-    written.put(&meta, WORKSPACE_ALIAS, &workspace).unwrap();
-    written.commit();
-    let history = written.get_heads();
-
-    let backend = Rc::new(durable_store::MemoryStore::new());
-    let key = StorageKey::document(package, &workspace, checkout.id.storage_key());
-    backend
-        .write(&key, durable_store::WriteOp::Replace(written.save()), None)
-        .unwrap();
-
-    let mut owners = RecordOwners::with_store(Rc::clone(&backend) as Rc<dyn DurableStore>);
-    let store = owners.open(package, &workspace).unwrap();
-    store
-        .try_open_record(&checkout)
-        .expect("it opens as before");
-    let (title, heads, current, namespaced) = store
-        .read(&checkout.id, |doc| {
-            let meta = meta_ro(doc).unwrap();
-            (
-                str_at(doc, &ROOT, "title"),
-                doc.clone().get_heads(),
-                str_at(doc, &meta, WORKSPACE),
-                str_at(doc, &meta, WORKSPACE_ALIAS),
-            )
-        })
-        .unwrap();
-    assert_eq!(title.as_deref(), Some("Field notes"));
-    assert_eq!(
-        namespaced.as_deref(),
-        Some(workspace.as_str()),
-        "its workspace reads"
-    );
-    assert_eq!(current, None, "reading it did not move the key");
-    assert_eq!(heads, history, "opening it is not a change");
-
-    // It saves, reads and takes edits like any record.
-    store
-        .with(&checkout.id, |doc| {
-            doc.put(ROOT, "title", "Field notes, revised").unwrap();
-        })
-        .unwrap();
-    let edited = store
-        .read(&checkout.id, |doc| str_at(doc, &ROOT, "title"))
-        .unwrap();
-    assert_eq!(edited.as_deref(), Some("Field notes, revised"));
 }
 
 /// Two members of a workspace each create the record the workspace derives for

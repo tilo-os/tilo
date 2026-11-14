@@ -886,7 +886,7 @@ mod tests {
     /// stays where it is shown.
     #[test]
     fn the_open_ask_never_meets_a_card_the_bar_opens() {
-        use ui::widget::floating_surface::{PanelAlign, PopoverSide, panel_room, place_aligned};
+        use ui::widget::floating_surface::{PanelAlign, PopoverSide, panel_area, place_aligned};
 
         let mut crowded = tree();
         crowded.workspaces[0].members_here(vec![
@@ -900,7 +900,7 @@ mod tests {
             let bar = frame.bar();
             let bar_rect = bar_rect(&frame);
             let window = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
-            let room = panel_room(window, &theme);
+            let room = panel_area(window, &theme);
             let faces = bar.avatar_stack_rect;
             let anchors = [("own avatar", bar.own_avatar_rect), ("faces", faces)];
             for (name, anchor) in anchors {

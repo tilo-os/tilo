@@ -33,9 +33,9 @@ pub(super) struct HeaderTitle {
     pub(super) edited: Option<super::TitleShown>,
     theme: Theme,
     rect: Rect,
-    /// The least room the title and its count need to read as words rather than as an ellipsis
+    /// The least area the title and its count need to read as words rather than as an ellipsis
     /// alone, as the last measure found it.
-    least_room: f64,
+    least_width: f64,
     /// The title, count, cover and edited place the last measure saw; a change needs another.
     measured: Option<(
         Option<String>,
@@ -58,27 +58,27 @@ impl HeaderTitle {
             edited: None,
             theme: Theme::dark(),
             rect: Rect::ZERO,
-            least_room: 0.0,
+            least_width: 0.0,
             measured: None,
             painted: None,
         }
     }
 
-    /// The least room the title needs to read as words rather than as an ellipsis alone, as the
+    /// The least area the title needs to read as words rather than as an ellipsis alone, as the
     /// last measure found it.
-    pub(super) fn least_room(&self) -> f64 {
-        self.least_room
+    pub(super) fn least_width(&self) -> f64 {
+        self.least_width
     }
 
-    /// Whether the row's `has` leaves the title room to show its first letter and an ellipsis,
-    /// rather than an ellipsis alone (`HeaderRowLayout::title_opens`). A title given no room at
+    /// Whether the row's `has` leaves the title area to show its first letter and an ellipsis,
+    /// rather than an ellipsis alone (`HeaderRowLayout::title_opens`). A title given no area at
     /// all is not painted, so there is no ellipsis to misread.
     pub(super) fn opens_within(&self, has: f64) -> bool {
         self.title.is_none()
             || self.covered
-            || self.least_room <= 0.0
+            || self.least_width <= 0.0
             || has <= 0.5
-            || has + 0.5 >= self.least_room
+            || has + 0.5 >= self.least_width
     }
 
     pub(super) fn is_shown(&self) -> bool {
@@ -160,7 +160,7 @@ impl Widget for HeaderTitle {
             return taffy::Size::ZERO;
         }
         let (w, h) = header_row::measure_title(text, &self.theme, title, count);
-        self.least_room = header_row::least_title_room(text, &self.theme, title);
+        self.least_width = header_row::least_title_width(text, &self.theme, title);
         taffy::Size {
             width: known.width.unwrap_or(f32_of_f64(w.ceil())),
             height: known.height.unwrap_or(f32_of_f64(h.ceil())),

@@ -291,7 +291,7 @@ impl Notice {
 /// what its lifetime counts against. The clock runs only while the card is
 /// on screen and nobody holds it (the pointer on it, keyboard focus in it):
 /// a card that never fit on screen, or one being read, never runs out under
-/// the reader. The desktop's notification banners keep it.
+/// the reader. The shell's notification banners keep it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dwell {
     spent: Duration,
@@ -756,7 +756,7 @@ fn line_height(text_renderer: &mut TextRenderer, style: &TextStyle) -> f64 {
 
 /// Height of a card `width` wide: the attribution line (the app, and how
 /// long ago it arrived), the title, the body clamped to two lines, the
-/// actions and the padding. A card never reserves less room than
+/// actions and the padding. A card never reserves less area than
 /// [`paint_card`] paints into it.
 pub fn card_height(
     text_renderer: &mut TextRenderer,
@@ -1039,20 +1039,20 @@ fn paint_reply_field(
     face.paint(scene, transform, text_renderer, theme);
     if card.reply_focused {
         let style = theme.text(TextRole::Caption);
-        let room = face.text_rect(theme);
+        let spare = face.text_rect(theme);
         let (x, line_h) = if card.reply_text.is_empty() {
             let (_, h) = text_renderer.measure_style("Ag", None, &style);
-            (room.x0, f64::from(h))
+            (spare.x0, f64::from(h))
         } else {
-            let width = f32_of_f64(room.width().max(1.0));
+            let width = f32_of_f64(spare.width().max(1.0));
             let line = text_renderer.elide_to_width_style(card.reply_text, width, &style);
             let (w, h) = text_renderer.measure_style(&line, None, &style);
             (
-                (room.x0 + f64::from(w) + 1.0).min(room.x1 - 1.0),
+                (spare.x0 + f64::from(w) + 1.0).min(spare.x1 - 1.0),
                 f64::from(h),
             )
         };
-        let y0 = room.y0 + (room.height() - line_h) / 2.0;
+        let y0 = spare.y0 + (spare.height() - line_h) / 2.0;
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1295,7 +1295,7 @@ pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color
 
 /// The width of a card's single action face.
 /// Whether a card `width` wide keeps its one action beside the text: only
-/// while the text keeps room to read, its whole title or some eight lines'
+/// while the text keeps area to read, its whole title or some eight lines'
 /// height of width. Large text in a narrow column moves the action under
 /// the text instead.
 fn single_action_inline(
@@ -1312,7 +1312,7 @@ fn single_action_inline(
     } else {
         pad_x
     };
-    let room = width
+    let spare = width
         - leading_column(theme, card)
         - pad_x
         - trailing
@@ -1321,7 +1321,7 @@ fn single_action_inline(
     let title = theme.text(TextRole::Label).strong();
     let (title_width, _) = text_renderer.measure_style(&single_line_text(card.title), None, &title);
     let (_, line) = text_renderer.measure_style("Ag", None, &theme.text(TextRole::Caption));
-    room >= f64::from(title_width) || room >= f64::from(line) * 8.0
+    spare >= f64::from(title_width) || spare >= f64::from(line) * 8.0
 }
 
 fn single_action_width(text_renderer: &mut TextRenderer, theme: &Theme, label: &str) -> f64 {
@@ -1485,9 +1485,9 @@ fn paint_card_text(
     } else {
         body_line_h
     };
-    let title_room = column.height() - 2.0 * pad_y - header_h - body_first;
+    let title_width = column.height() - 2.0 * pad_y - header_h - body_first;
     let title_cap = if title_line_h > 0.0 {
-        (title_room / title_line_h)
+        (title_width / title_line_h)
             .floor()
             .clamp(1.0, TITLE_LINES as f64) as usize
     } else {
@@ -1500,9 +1500,9 @@ fn paint_card_text(
             .clamp_to_lines(&text.title, &title_style, width, title_cap)
     };
     let title_h = title_lines.len() as f64 * title_line_h;
-    let room = column.height() - 2.0 * pad_y - header_h - title_h;
+    let spare = column.height() - 2.0 * pad_y - header_h - title_h;
     let body_cap = if body_line_h > 0.0 {
-        (room / body_line_h).floor().clamp(1.0, BODY_LINES as f64) as usize
+        (spare / body_line_h).floor().clamp(1.0, BODY_LINES as f64) as usize
     } else {
         1
     };

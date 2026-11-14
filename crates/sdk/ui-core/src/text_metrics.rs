@@ -44,7 +44,7 @@ pub fn at_least_whole(minimum: f64, measured: f64) -> f64 {
     measured.ceil().max(minimum)
 }
 
-/// An authored 1× height grown by exactly the extra room its text lines (`sizes`) need at
+/// An authored 1× height grown by exactly the extra area its text lines (`sizes`) need at
 /// `text_scale`, snapped up to a whole pixel: the design exactly at 1× (a 28 px row stays
 /// 28, not `16.25 + 12 = 28.25`), and at 2× grown by the lines' growth alone.
 pub fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {

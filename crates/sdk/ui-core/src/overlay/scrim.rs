@@ -21,11 +21,11 @@ pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, th
 }
 
 /// The ground of a whole-view surface that pictures the windows it covers (the workspace overview): the
-/// desktop, blurred and tinted as the floating material is, then the modal dim. Unlike [`modal`] it
+/// shell, blurred and tinted as the floating material is, then the modal dim. Unlike [`modal`] it
 /// hides what it covers, because the surface shows those windows itself and they must not be seen
 /// twice; it fades in as a whole ([`crate::lift`]).
 pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    crate::backdrop::desktop::fill(
+    crate::backdrop::wallpaper::fill(
         scene,
         (transform, Affine::IDENTITY),
         &rect,
@@ -135,10 +135,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_scrim_plate_and_fade_draw_what_their_room_asks;
+        fn a_scrim_plate_and_fade_draw_what_their_area_asks;
 
-        phase the_plate_keeps_its_room_behind_the_words_and_its_rounded_corners;
-        // The plate is the words' own room and nothing more: a fill over the picture, rounded at the
+        phase the_plate_keeps_its_area_behind_the_words_and_its_rounded_corners;
+        // The plate is the words' own area and nothing more: a fill over the picture, rounded at the
         // theme's control radius, so what it covers still reads as the picture around it.
         {
             let theme = Theme::dark();
@@ -168,12 +168,12 @@ mod tests {
                 );
                 assert!(
                     scene.encoding().draw_tags.is_empty(),
-                    "no room for words, no plate"
+                    "no area for words, no plate"
                 );
             }
             #[cfg(feature = "native")]
             {
-                // The words' own room is dimmed, and a corner inside the rect but
+                // The words' own area is dimmed, and a corner inside the rect but
                 // outside the radius still shows the picture, so a caption never
                 // reads as a black rectangle laid over the frame.
                 let (width, height) = (240_u32, 60_u32);
@@ -202,7 +202,7 @@ mod tests {
                 assert_ne!(
                     at(&plated, 120, 30),
                     at(&picture, 120, 30),
-                    "the words' room is dimmed"
+                    "the words' area is dimmed"
                 );
                 assert_eq!(
                     at(&plated, 21, 11),

@@ -207,7 +207,7 @@ pub struct Arranged<L: Layout> {
     /// the text its heading's control leads to.
     lead: i16,
     /// The width class of the column what this container holds was last laid out in, its lead taken
-    /// out: what decides whether that column has room for the lead.
+    /// out: what decides whether that column fits the lead.
     column: Option<WidthClass>,
     /// How the person reaches the window, which sizes a lead.
     interaction: InteractionEnvironment,
@@ -282,7 +282,7 @@ impl<L: Layout> Arranged<L> {
     }
 
     /// The box the children take, as far as they have been laid out: what a layout keeps around its
-    /// content — the gutters a page centres its column in, the room a lane keeps for the column beside
+    /// content — the gutters a page centres its column in, the area a lane keeps for the column beside
     /// it — is not part of it.
     #[must_use]
     pub fn content_box(&self) -> Option<Rect> {
@@ -610,14 +610,14 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         };
         let allocated = laid.size;
         let aspects = self.derive_aspects(tree);
-        let mut room_changed = false;
+        let mut column_changed = false;
         if self.lead > 0 {
-            let room = (allocated.width - lead_width(self.lead, &self.resolved)).max(0.0);
-            let column = WidthClass::with_history(room / self.resolved.rem, self.column);
-            room_changed = self.column != Some(column);
+            let spare = (allocated.width - lead_width(self.lead, &self.resolved)).max(0.0);
+            let column = WidthClass::with_history(spare / self.resolved.rem, self.column);
+            column_changed = self.column != Some(column);
             self.column = Some(column);
         }
-        if self.layout.settle(allocated, &self.resolved) || room_changed {
+        if self.layout.settle(allocated, &self.resolved) || column_changed {
             return self.restyle(tree) || aspects;
         }
         aspects

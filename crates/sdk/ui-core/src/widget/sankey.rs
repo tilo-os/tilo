@@ -150,7 +150,7 @@ impl SankeyMarks {
         )
     }
 
-    /// The trailing room the last column's labels need: its widest label,
+    /// The trailing area the last column's labels need: its widest label,
     /// never more than a third of the chart, so the flow keeps its width.
     fn measure_label_reserve(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let links = self.resolved_links();
@@ -338,8 +338,8 @@ impl SankeyMarks {
     }
 
     /// Where each node's label goes, laid out so no two collide at any size: after its node, in
-    /// the gap before the next column (the last column's in the trailing room the chart
-    /// reserves for them), elided to that room, and dropped (the tooltip still names the node)
+    /// the gap before the next column (the last column's in the trailing area the chart
+    /// reserves for them), elided to that area, and dropped (the tooltip still names the node)
     /// where even a short label does not fit or it would run into the label above it.
     fn label_layout(
         &self,
@@ -369,7 +369,7 @@ impl SankeyMarks {
         } else {
             0.0
         };
-        let min_room = 3.0 * f64::from(tr.measure_style("M", None, &style).0);
+        let min_label_width = 3.0 * f64::from(tr.measure_style("M", None, &style).0);
         let mut order: Vec<&NodeBox> = nodes.iter().collect();
         order.compact_sort_by(|a, b| {
             a.rect
@@ -384,15 +384,15 @@ impl SankeyMarks {
                 continue;
             };
             let column = column_of(node.rect.x0);
-            let room = if column == last {
+            let spare = if column == last {
                 self.frame.rect.x1 - node.rect.x1 - 2.0 * pad
             } else {
                 gap - 2.0 * pad
             };
-            if room < min_room {
+            if spare < min_label_width {
                 continue;
             }
-            let label = tr.elide_to_width_style(&spec.label, room as f32, &style);
+            let label = tr.elide_to_width_style(&spec.label, spare as f32, &style);
             if label.is_empty() || label == "…" {
                 continue;
             }
@@ -716,7 +716,7 @@ mod tests {
                     assert_eq!(
                         labels.len(),
                         5,
-                        "{width}: every node is named when there is room"
+                        "{width}: every node is named when it fits"
                     );
                 }
             }

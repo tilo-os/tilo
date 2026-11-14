@@ -431,7 +431,7 @@ impl Widget for DatePicker {
         let full = CELL_SIZE * grid_f64(GRID_COLS);
         let width = known.width.map_or_else(
             || match available.width {
-                taffy::AvailableSpace::Definite(room) => f64::from(room).min(full),
+                taffy::AvailableSpace::Definite(spare) => f64::from(spare).min(full),
                 _ => full,
             },
             f64::from,

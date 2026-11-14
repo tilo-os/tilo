@@ -1,6 +1,6 @@
 //! Every shipped look renders what its name promises.
 //!
-//! One floating panel and one control face are drawn over a busy desk (a
+//! One floating panel and one control face are drawn over a busy shell (a
 //! bright wallpaper of stripes and discs, the kind of thing that shows a
 //! material's work) under each theme the toolkit ships, through the same
 //! backdrop pass a live window runs, and the pixels are checked for the
@@ -48,9 +48,9 @@ const H: u32 = 300;
 const PANEL: Rect = Rect::new(110.0, 70.0, 330.0, 230.0);
 const RADIUS: f64 = 18.0;
 
-/// The desk below: bright stripes and discs, so every way a material shows
+/// The shell below: bright stripes and discs, so every way a material shows
 /// what is under it reads plainly.
-fn desk() -> Scene {
+fn shell() -> Scene {
     let mut scene = Scene::new();
     scene.fill(
         Fill::NonZero,
@@ -93,10 +93,10 @@ fn desk() -> Scene {
     scene
 }
 
-/// The desk with a floating panel and a control face on it, under `theme`,
+/// The shell with a floating panel and a control face on it, under `theme`,
 /// through the backdrop pass.
 fn render(theme: &Theme, name: &str) -> Vec<u8> {
-    let mut scene = desk();
+    let mut scene = shell();
     let recording = BackdropRecording::begin();
     layer_scene(&scene, 0);
     tilo_ui::surface::panel(&mut scene, Affine::IDENTITY, PANEL, RADIUS, theme);
@@ -153,9 +153,9 @@ fn presets() -> [(Preset, &'static str); 4] {
     ]
 }
 
-/// The desk itself, for comparing what a material lets through.
-fn bare_desk() -> Vec<u8> {
-    let scene = desk();
+/// The shell itself, for comparing what a material lets through.
+fn bare_backdrop() -> Vec<u8> {
+    let scene = shell();
     let mut renderer = OffscreenRenderer::new(W, H);
     renderer.render(&scene, Color::BLACK)
 }
@@ -200,21 +200,21 @@ fn block_is_one_flat_colour_with_square_corners() {
 }
 
 #[test]
-fn glass_lets_the_blurred_desk_through_and_lights_its_rim() {
+fn glass_lets_the_blurred_shell_through_and_lights_its_rim() {
     let _settled = tilo_ui::motion::testing::settled();
     let theme = Theme::preset(Preset::Glass);
     let rgba = render(&theme, "glass-dark");
-    let bare = bare_desk();
-    // Inside the body the desk below still reads: the blurred stripes move
+    let bare = bare_backdrop();
+    // Inside the body the shell below still reads: the blurred stripes move
     // the colour from one end of the panel to the other.
     let row: Vec<f32> = (118..322).map(|x| luma(body(&rgba, x, 100))).collect();
     let spread =
         row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min);
     assert!(
         spread >= 4.0,
-        "Glass shows the blurred desk through it: spread {spread:.1}"
+        "Glass shows the blurred shell through it: spread {spread:.1}"
     );
-    // And it is not the desk itself: the blur softened it.
+    // And it is not the shell itself: the blur softened it.
     let bare_spread = {
         let row: Vec<f32> = (118..322).map(|x| luma(pixel(&bare, x, 100))).collect();
         row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min)
@@ -233,14 +233,14 @@ fn glass_lets_the_blurred_desk_through_and_lights_its_rim() {
 }
 
 #[test]
-fn liquid_glass_shows_the_desk_in_its_middle_and_bends_it_at_the_rim() {
+fn liquid_glass_shows_the_shell_in_its_middle_and_bends_it_at_the_rim() {
     let _settled = tilo_ui::motion::testing::settled();
     let theme = Theme::preset(Preset::LiquidGlass);
     let rgba = render(&theme, "liquid-glass-dark");
-    let bare = bare_desk();
-    // The middle is nearly clear: the desk's colours are there. The
+    let bare = bare_backdrop();
+    // The middle is nearly clear: the shell's colours are there. The
     // material's legible band compresses what shows through, so the spread
-    // is measured against Block, which shows nothing of the desk at all.
+    // is measured against Block, which shows nothing of the shell at all.
     let at = |x: u32, y: u32| luma(body(&rgba, x, y));
     let bare_at = |x: u32, y: u32| luma(pixel(&bare, x, y));
     let middle_spread = {
@@ -276,7 +276,7 @@ fn liquid_glass_shows_the_desk_in_its_middle_and_bends_it_at_the_rim() {
 }
 
 #[test]
-fn pixelated_shows_the_desk_as_cells() {
+fn pixelated_shows_the_shell_as_cells() {
     let _settled = tilo_ui::motion::testing::settled();
     let theme = Theme::preset(Preset::Pixelated);
     let rgba = render(&theme, "pixelated-dark");
@@ -294,11 +294,11 @@ fn pixelated_shows_the_desk_as_cells() {
             "one cell, two colours at ({x0}, {y0})"
         );
     }
-    // Across cells the desk still reads: the cells are not one flat fill.
+    // Across cells the shell still reads: the cells are not one flat fill.
     let (colours, changes) = runs(&rgba, y0, 118..322);
     assert!(
         colours >= 3,
-        "the cells show the desk below: {colours} colours"
+        "the cells show the shell below: {colours} colours"
     );
     assert!(
         changes >= 4,
@@ -307,7 +307,7 @@ fn pixelated_shows_the_desk_as_cells() {
 }
 
 /// The cell grid reads as pixels even over a ground that varies nowhere:
-/// the surface's complaint ("boxy, not pixelated") was that a flat desk
+/// the surface's complaint ("boxy, not pixelated") was that a flat shell
 /// left nothing to quantise, so the theme showed only its corners and its
 /// border. The grid is the finish's own, so it is there whatever is below.
 #[test]
@@ -318,7 +318,7 @@ fn pixelated_shows_its_grid_over_a_flat_ground() {
         .finish(SurfaceRole::Floating)
         .param("cell")
         .expect("the pixelated floating finish states its cell") as u32;
-    // The window ground is the panel's fill with the desk replaced by one
+    // The window ground is the panel's fill with the shell replaced by one
     // flat colour: nothing below it varies, so only the grid can show.
     let mut scene = Scene::new();
     scene.fill(

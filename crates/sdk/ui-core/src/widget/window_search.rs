@@ -1215,7 +1215,7 @@ impl WindowSearch {
             (false, false) => (self.anchor.x0, self.limit),
             (false, true) => (self.cramped, self.limit),
         };
-        let room_of = |(lo, hi): (f64, f64)| (hi - lo).max(CONTROL_PX);
+        let extent_of = |(lo, hi): (f64, f64)| (hi - lo).max(CONTROL_PX);
         let app_label = self.app_label();
         let everywhere_label = tr("window-search-everywhere");
         let width_of = |label: &str, text: &mut TextRenderer| {
@@ -1252,10 +1252,10 @@ impl WindowSearch {
         };
         let field_max = 11.0 * height;
         let field_min = field_min(theme);
-        let (lo, hi) = span(room_of(span(false)) - after(false, false, false, false) < field_min);
-        let room = room_of((lo, hi));
+        let (lo, hi) = span(extent_of(span(false)) - after(false, false, false, false) < field_min);
+        let spare = extent_of((lo, hi));
         for give_way in 0..4 {
-            if room - after(want_everywhere, want_app, want_previous, want_next) >= field_min {
+            if spare - after(want_everywhere, want_app, want_previous, want_next) >= field_min {
                 break;
             }
             match give_way {
@@ -1266,7 +1266,7 @@ impl WindowSearch {
             }
         }
         let after = after(want_everywhere, want_app, want_previous, want_next);
-        let field_w = (room - after).clamp(CONTROL_PX, field_max);
+        let field_w = (spare - after).clamp(CONTROL_PX, field_max);
         let block = field_w + after;
         let start = if self.trailing {
             self.anchor.x1 - block

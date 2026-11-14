@@ -1,5 +1,5 @@
-//! What a desktop keeps of the slots its apps put in their windows' bars
-//! ([`crate::window_toolbar`]), and how it shows them: every desktop, the session's shell
+//! What a shell keeps of the slots its apps put in their windows' bars
+//! ([`crate::window_toolbar`]), and how it shows them: every shell, the session's shell
 //! and the browser's alike, holds one [`WindowSlots`].
 
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ pub type TabId = u64;
 /// the person does with them goes back on its window, never on a connection.
 const IN_PROCESS: u64 = u64::MAX;
 
-/// What the ids of the desktop's own menu items start with: an app's never do, so a
-/// choice of one reaches the desktop alone.
-pub const HOST_ACTION_PREFIX: &str = "tilo.desktop.";
+/// What the ids of the shell's own menu items start with: an app's never do, so a
+/// choice of one reaches the shell alone.
+pub const HOST_ACTION_PREFIX: &str = "tilo.shell.";
 
 /// Every tab's declared slots and the connection of the app that declared them, and what
 /// goes back to the apps on the next pump.
@@ -31,7 +31,7 @@ pub struct WindowSlots {
     outbox: Vec<(u64, ToolbarEvent)>,
     hosted_seen: HashMap<TabId, (HostedWindow, u64)>,
     hosted_outbox: Vec<(TabId, ToolbarEvent)>,
-    /// The desktop's own items in each tab's overflow menu.
+    /// The shell's own items in each tab's overflow menu.
     host_items: HashMap<TabId, Vec<ToolbarAction>>,
     shown: HashMap<TabId, WindowToolbar>,
     host_actions: Vec<(TabId, String)>,
@@ -123,7 +123,7 @@ impl WindowSlots {
         self.by_tab.get(&tab).map(|(_, toolbar)| toolbar)
     }
 
-    /// Put `items`, the desktop's own, in `tab`'s overflow menu, after its app's.
+    /// Put `items`, the shell's own, in `tab`'s overflow menu, after its app's.
     pub fn set_host_items(&mut self, tab: TabId, items: Vec<ToolbarAction>) {
         let items: Vec<ToolbarAction> = items
             .into_iter()
@@ -141,14 +141,14 @@ impl WindowSlots {
         }
     }
 
-    /// The desktop's own items in the menu of `tab`'s window bar, as last set
+    /// The shell's own items in the menu of `tab`'s window bar, as last set
     /// ([`Self::set_host_items`]).
     #[must_use]
     pub fn host_items(&self, tab: TabId) -> &[ToolbarAction] {
         self.host_items.get(&tab).map_or(&[], Vec::as_slice)
     }
 
-    /// The desktop's own items the person chose since the last call, by tab, each by its
+    /// The shell's own items the person chose since the last call, by tab, each by its
     /// id.
     pub fn take_host_actions(&mut self) -> Vec<(TabId, String)> {
         std::mem::take(&mut self.host_actions)

@@ -92,14 +92,14 @@ fn a_number_input_takes_a_value_its_view_gives_and_keeps_the_range() {
 fn a_dropdown_offers_its_options_and_reports_the_one_chosen() {
     let queue = crate::Intents::default();
     let options = || Value::List(vec![text("Studio"), text("Gallery"), text("Annex")]);
-    let mut node = Node::new("Dropdown", "room", &queue)
-        .bound(text_bound("Room", "Studio", edits(&queue, "room")))
+    let mut node = Node::new("Dropdown", "venue", &queue)
+        .bound(text_bound("Venue", "Studio", edits(&queue, "venue")))
         .prop("options", options());
     let props = DropdownProps::from_source(&mut node).unwrap();
     assert_eq!(props.options, ["Studio", "Gallery", "Annex"]);
     assert_eq!(props.value.state.get(), "Studio");
-    assert_eq!(props.value.name, "Room", "the field's spoken name");
-    let dropdown = Dropdown::from_props("room", props);
+    assert_eq!(props.value.name, "Venue", "the field's spoken name");
+    let dropdown = Dropdown::from_props("venue", props);
     assert_eq!(dropdown.selected(), "Studio");
 }
 

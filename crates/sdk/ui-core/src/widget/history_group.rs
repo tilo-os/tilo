@@ -623,7 +623,7 @@ pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
     Some(HistoryEntryId(out))
 }
 
-/// "Alice and Bob", in the desktop's language.
+/// "Alice and Bob", in the shell's language.
 pub fn authors_pair(first: &str, second: &str) -> String {
     widget_format(
         "history-authors-two",
@@ -631,7 +631,7 @@ pub fn authors_pair(first: &str, second: &str) -> String {
     )
 }
 
-/// "Alice, Bob + 4", in the desktop's language.
+/// "Alice, Bob + 4", in the shell's language.
 pub fn authors_more(first: &str, second: &str, rest: usize) -> String {
     widget_format(
         "history-authors-more",

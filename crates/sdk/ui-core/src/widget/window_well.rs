@@ -1,14 +1,14 @@
 //! `WindowWell`: where a place's window goes (`docs/designs/app-language/shell.md` §8).
 //!
 //! A shell view never draws a place's content: it puts a well where the content goes, and the
-//! app's own window shows there, composited above the desk layer. The well draws nothing and
+//! app's own window shows there, composited above the shell layer. The well draws nothing and
 //! takes no input. After each layout, and on each frame an enclosing component moves it (a
 //! canvas's pan and zoom, a strip row's scroll), it reports its rectangle in layout coordinates
 //! to the host's [`Wells`], keyed by the place it stands for. The window policy that places
 //! windows reads those rectangles, so a well that moves without changing size moves its window
 //! in the same frame.
 //!
-//! The well is a leaf that fills the room its frame leaves it: a frame's bar and chrome stand
+//! The well is a leaf that fills the area its frame leaves it: a frame's bar and chrome stand
 //! outside it, in the layout around it.
 
 use std::cell::RefCell;
@@ -153,7 +153,7 @@ fn forget(place: &str) {
     not_in_gallery = "a well draws nothing: the place's own window is composited there, so a gallery window has no well to show"
 )]
 pub struct WindowWellProps {
-    /// The place whose window shows here: the tab id the desktop model gives the window when
+    /// The place whose window shows here: the tab id the shell model gives the window when
     /// it maps (shell.md §8).
     #[component(required, positional)]
     #[component(data)]
@@ -342,7 +342,7 @@ mod tests {
         }
 
         phase a_well_in_a_framed_column_fills_the_height_it_is_given;
-        // A frame that names the well a height gets it back whole: the well fills the room it was
+        // A frame that names the well a height gets it back whole: the well fills the area it was
         // given, whatever shape a window is.
         {
             let (_, height) = well_in(column(taffy::Dimension::length(300.0)));

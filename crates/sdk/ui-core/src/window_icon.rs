@@ -1,6 +1,6 @@
 //! Resolves the raster icon named by the launcher's `TILO_APP_ICON`, falling back to a
 //! generated Tilo icon when it is missing or invalid. On Wayland, most compositors ignore
-//! a client-set toplevel icon (sourced from the `app_id` and a `.desktop` file instead).
+//! a client-set toplevel icon (sourced from the `app_id` and a `.shell` file instead).
 
 use winit::window::Icon;
 

@@ -62,7 +62,7 @@ pub struct PresenceFaceProps {
     /// Who it is: a person or an agent.
     #[component(positional)]
     pub who: Option<Person>,
-    /// What the room calls them, when it differs from their name here.
+    /// What the workspace calls them, when it differs from their name here.
     pub name: Option<String>,
 }
 

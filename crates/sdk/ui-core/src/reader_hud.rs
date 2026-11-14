@@ -72,7 +72,7 @@ pub struct HudControls<'a> {
 /// Which side of the selection a [`SelectionHud`] prefers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HudSide {
-    /// Above the selection's first line, below it only when there is no room (the default: the bar
+    /// Above the selection's first line, below it only when nothing fits (the default: the bar
     /// never covers what is being read next).
     #[default]
     Above,
@@ -161,7 +161,7 @@ impl HudMetrics {
 }
 
 /// The bar's rect: centred on the anchor, on the preferred side of the selection, inside `bounds` by
-/// the panel margin; the other side when the preferred one has no room or covers `avoid`.
+/// the panel margin; the other side when the preferred one is too small or covers `avoid`.
 fn place(m: &HudMetrics, width: f64, placement: HudPlacement) -> Rect {
     let HudPlacement {
         anchor,
@@ -622,7 +622,7 @@ mod tests {
             assert!(all > copy, "Select all follows Copy: {actions:?}");
             assert!(
                 draw(true).rect().width() > touch.rect().width(),
-                "the shortcuts take room where they show"
+                "the shortcuts take area where they show"
             );
         }
     }

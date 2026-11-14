@@ -254,11 +254,11 @@ fn place_header(
     };
 
     // The title: what it says, and what its actions must leave it. A title the row can give
-    // only an ellipsis is given no room at all rather than a name that reads as nothing: the
+    // only an ellipsis is given no area at all rather than a name that reads as nothing: the
     // column goes unnamed there, as it does where the page shows its own title.
     let mut start = lead;
     let mut title: Option<(usize, f64, f64, f64)> = None;
-    // What the title says, measured (which also finds the least room its words read in).
+    // What the title says, measured (which also finds the least area its words read in).
     let measured_title = match index_of(Part::Title(column)) {
         Some(index) => {
             let (tw, th) = measure(ctx, index, None)?;
@@ -270,17 +270,17 @@ fn place_header(
         ctx.widget(index)
             .and_then(|widget| widget.as_any())
             .and_then(|any| any.downcast_ref::<super::header_parts::HeaderTitle>())
-            .map_or(0.0, super::header_parts::HeaderTitle::least_room)
+            .map_or(0.0, super::header_parts::HeaderTitle::least_width)
     });
     if let Some((index, tw, th)) = measured_title {
         let floor = trailing(&compact, must);
-        let room = if floor > 0.0 {
+        let spare = if floor > 0.0 {
             (avail - floor - gap).max(0.0)
         } else {
             avail
         };
-        let width = if room + 0.5 >= least {
-            tw.min(room).clamp(0.0, avail)
+        let width = if spare + 0.5 >= least {
+            tw.min(spare).clamp(0.0, avail)
         } else {
             0.0
         };
@@ -322,25 +322,25 @@ fn place_header(
     let mut x = (trail - total).max(start.min(trail));
     let actions_x0 = if total > 0.0 { x } else { trail };
     // The title was given what the actions must leave it, and the row often keeps fewer of them
-    // than that: the room between the title and the first control is the title's where no
-    // leading fill stands there to take it. It takes all of that room, not just the width its
+    // than that: the area between the title and the first control is the title's where no
+    // leading fill stands there to take it. It takes all of that area, not just the width its
     // words measure: a box sized to the measure itself cuts the last glyph as soon as the
     // renderer that paints the words shapes them a hair wider than the measure that sized the
     // box. The column a status message stands beside is the exception: the message starts where
-    // the title ends, so that title keeps to what it says and leaves the row's room to the message.
+    // the title ends, so that title keeps to what it says and leaves the row's area to the message.
     if let Some((index, width, tw, th)) = title
         && width > 0.0
         && index_of(Part::Leading(column)).is_none()
         && column != g.status_column()
     {
         let end = if total > 0.0 { actions_x0 - gap } else { trail };
-        let room = (end - lead).clamp(0.0, avail);
-        if room > width + 0.5 {
+        let spare = (end - lead).clamp(0.0, avail);
+        if spare > width + 0.5 {
             if let Some(slot) = placed.get_mut(index) {
-                *slot = Some(centred(lead, room, th));
+                *slot = Some(centred(lead, spare, th));
             }
-            start = lead + room + gap;
-            title = Some((index, room, tw, th));
+            start = lead + spare + gap;
+            title = Some((index, spare, tw, th));
         }
     }
     for (k, (index, _, h)) in items.iter().enumerate() {
@@ -369,10 +369,10 @@ fn place_header(
 
     if let Some(index) = index_of(Part::Leading(column)) {
         let end = if total > 0.0 { actions_x0 - gap } else { trail };
-        let room = (end - start).max(0.0);
-        let (lw, lh) = measure(ctx, index, Some(room))?;
+        let spare = (end - start).max(0.0);
+        let (lw, lh) = measure(ctx, index, Some(spare))?;
         if let Some(slot) = placed.get_mut(index) {
-            *slot = Some(centred(start, lw.min(room), lh));
+            *slot = Some(centred(start, lw.min(spare), lh));
         }
     }
     let placed_at = |index: usize| placed.get(index).copied().flatten().unwrap_or(Rect::ZERO);
@@ -388,7 +388,7 @@ fn place_header(
                     .map(|part| part.x0)
                     .filter(|x0| *x0 >= rect.x1 - 0.5)
                     .fold(trail, f64::min);
-                // The room beside the title it could take: what stands before its neighbour's
+                // The area beside the title it could take: what stands before its neighbour's
                 // gap, never the gap the row keeps between two neighbours.
                 (tw, width, (next - rect.x1 - gap).max(0.0))
             }

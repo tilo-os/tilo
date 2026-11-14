@@ -581,7 +581,7 @@ fn dark_initials(theme: &Theme) -> bool {
 /// lightness (never in hue) away from the initials' ink until initials can
 /// reach small-text contrast on it. Presence hues sit at one mid lightness,
 /// where neither ink clears much more than 4.5:1; small bold letters on a
-/// saturated mid tone need the headroom.
+/// saturated mid tone need the margin.
 #[must_use]
 pub fn initials_fill(fill: Color, theme: &Theme) -> Color {
     use crate::color::{Oklch, contrast_ratio, oklch};
@@ -669,8 +669,8 @@ pub struct Avatar {
     side: f64,
     rect: Rect,
     dirty: bool,
-    /// Only the room it takes, shown empty: see [`Self::room`].
-    room: bool,
+    /// Only the place it takes, shown empty: see [`Self::placeholder`].
+    placeholder: bool,
 }
 
 // The photo type comes from runtime-identity, which only `local-daemons`
@@ -705,13 +705,13 @@ impl Avatar {
             side: 0.0,
             rect: Rect::ZERO,
             dirty: true,
-            room: false,
+            placeholder: false,
         }
     }
 
     #[must_use]
-    pub fn room(mut self) -> Self {
-        self.room = true;
+    pub fn placeholder(mut self) -> Self {
+        self.placeholder = true;
         self
     }
 
@@ -917,7 +917,7 @@ impl Widget for Avatar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.room || presence.should_cull(self.rect) {
+        if self.placeholder || presence.should_cull(self.rect) {
             return;
         }
         let face = self.face();
@@ -946,7 +946,7 @@ impl Widget for Avatar {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        if self.room {
+        if self.placeholder {
             return None;
         }
         let name = (!self.name.trim().is_empty()).then(|| match self.status {

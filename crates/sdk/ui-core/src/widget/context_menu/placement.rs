@@ -1,5 +1,5 @@
 //! Where a menu's panel stands: below the item it opened from, or above it where below has less
-//! room, kept inside the window and on the display's pixels the frame draws on.
+//! area, kept inside the window and on the display's pixels the frame draws on.
 
 use super::{
     ANCHOR_GAP, ContextMenu, PADDING, PanelAlign, PopoverSide, ROW_HEIGHT, Rect, floating_surface,
@@ -30,7 +30,7 @@ impl ContextMenu {
     /// The panel's box for the state it is in.
     ///
     /// One placement for every way a menu opens: below its anchor, or above
-    /// it where below has less room, hugging the anchor's leading edge,
+    /// it where below has less area, hugging the anchor's leading edge,
     /// kept inside the window, and on the device pixels the frame draws on.
     fn place_at_position(&mut self) {
         let Some(anchor) = self.anchor else {
@@ -90,23 +90,23 @@ impl ContextMenu {
             self.place_scroll();
             return;
         }
-        let below = floating_surface::anchored_room(anchor, PopoverSide::Below, gap, viewport);
-        let above = floating_surface::anchored_room(anchor, PopoverSide::Above, gap, viewport);
-        // Taller than the room on its side, a menu opened from a control or
-        // a row takes the side with more room and scrolls its rows, so what
+        let below = floating_surface::anchored_extent(anchor, PopoverSide::Below, gap, viewport);
+        let above = floating_surface::anchored_extent(anchor, PopoverSide::Above, gap, viewport);
+        // Taller than the area on its side, a menu opened from a control or
+        // a row takes the side with more area and scrolls its rows, so what
         // it stands against stays in view. A menu opened at the pointer has
         // no control to keep clear: it opens from the point, covers it where
-        // the window's edge leaves no room, and never jumps to the point's
+        // the window's edge leaves no area, and never jumps to the point's
         // other side.
-        let room = if below >= full {
+        let spare = if below >= full {
             below
         } else {
             below.max(above)
         };
         let one_row = (self.row_height + PADDING * 2.0).min(full);
-        let beside = gap > 0.0 && room >= one_row;
+        let beside = gap > 0.0 && spare >= one_row;
         let rect = if beside {
-            let height = full.min(room).min(viewport.height().max(0.0));
+            let height = full.min(spare).min(viewport.height().max(0.0));
             floating_surface::place_aligned(
                 anchor,
                 (width, height),
@@ -145,14 +145,14 @@ impl ContextMenu {
     /// `rect` with the panel's body cut back to the last row it holds whole, when it holds more
     /// rows than fit: what it cannot show scrolls in instead of being half-shown.
     fn whole_last_row(&self, rect: Rect) -> Rect {
-        let room = self.body_room(rect.height());
-        if self.content_height() <= room + 0.5 {
+        let spare = self.body_height(rect.height());
+        if self.content_height() <= spare + 0.5 {
             return rect;
         }
         let mut whole = 0.0;
         for &index in &self.shown {
             let height = self.item_height(index);
-            if whole + height > room + 0.5 {
+            if whole + height > spare + 0.5 {
                 break;
             }
             whole += height;
@@ -164,9 +164,9 @@ impl ContextMenu {
         Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + height)
     }
 
-    /// The room a panel `height` tall gives its rows: what is left of it under the query field
+    /// The area a panel `height` tall gives its rows: what is left of it under the query field
     /// and its own air.
-    fn body_room(&self, height: f64) -> f64 {
+    fn body_height(&self, height: f64) -> f64 {
         (height - PADDING * 2.0 - self.query_height()).max(0.0)
     }
 }

@@ -209,7 +209,7 @@ struct ClosingTab {
     started_at: Instant,
 }
 
-/// Whoever opened a tab on a shared desktop, when it is not this desktop's person and they may not
+/// Whoever opened a tab on a shared shell, when it is not this shell's person and they may not
 /// rearrange it: no close, a drag that springs back, and hovering names them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabHolder {
@@ -280,7 +280,7 @@ pub enum TabMark {
 }
 
 impl TabMark {
-    /// What the mark says to someone who cannot see it, in the desktop's language.
+    /// What the mark says to someone who cannot see it, in the shell's language.
     fn description(self) -> String {
         crate::i18n::I18nManager::lookup_plain(match self {
             Self::Busy => "tab-loading",
@@ -347,7 +347,7 @@ pub struct TabBar {
     pill_faces: Vec<PillFaces>,
     face_metrics: FaceMetrics,
     /// Width each unpinned tab's faces want, keyed by tab id, recorded in `draw` and added to the
-    /// pill's natural width so a short title still has room for its faces.
+    /// pill's natural width so a short title still fits its faces.
     face_demand: HashMap<u64, f64>,
     /// `face_demand` changed since the last layout: the pills must resize.
     face_demand_stale: bool,
@@ -420,8 +420,8 @@ pub struct TabBar {
     /// settings window's sections) has no close control.
     closable: bool,
     new_tab: bool,
-    /// The room the window's search keeps for its open query at the least (`None`: the app does
-    /// not search in place, so the bar's slots need no room for it): a narrow window's bar leaves
+    /// The area the window's search keeps for its open query at the least (`None`: the app does
+    /// not search in place, so the bar's slots need no area for it): a narrow window's bar leaves
     /// the app's slots at least that much to reach back over.
     search_least: Option<f64>,
     marks: HashMap<u64, TabMark>,
@@ -469,7 +469,7 @@ pub struct TabBar {
     /// The bar is a window's: the window's controls stand at its trailing end, and a window showing
     /// one tab shows it as its title rather than as a tab.
     window_controls: bool,
-    /// Room after the tabs that the window keeps for its search control
+    /// Area after the tabs that the window keeps for its search control
     /// ([`TabBar::set_search_control`]); the tabs then carry no search chip.
     search_control: Option<f64>,
     controls: super::window_controls::WindowControls,
@@ -704,13 +704,13 @@ impl TabBar {
     }
 
     /// The window carries its own search control after the tabs, `width` wide with its gap; the
-    /// tabs leave it that room and carry no chip of their own. `None` gives the room back.
+    /// tabs leave it that area and carry no chip of their own. `None` gives the area back.
     pub fn set_search_control(&mut self, width: Option<f64>) {
         self.touch();
         self.search_control = width;
     }
 
-    /// The window's search keeps `least` of room for its open query, reaching back over the
+    /// The window's search keeps `least` of area for its open query, reaching back over the
     /// active tab's slots ([`crate::widget::WindowSearch::least_span`]); `None` where the app
     /// does not search in place, and the slots owe it nothing.
     pub fn set_search_least(&mut self, least: Option<f64>) {
@@ -1601,7 +1601,7 @@ impl TabBar {
         } else if let Some(dot) = accent {
             // One slot, two occupants: the app glyph, or the accent dot for a host whose tabs are
             // classified by something the shell cannot name. Same width, so a sized leading zone
-            // always has room.
+            // always fits.
             let c = vello::kurbo::Circle::new(icon_rect.center(), ACCENT_DOT_R);
             scene.fill(vello::peniko::Fill::NonZero, transform, dot, None, &c);
             ICON_W + ICON_GAP
@@ -1672,7 +1672,7 @@ impl TabBar {
         people
     }
 
-    /// How many faces pill `i` has room for: up to the cap plus a "+N" disc, fewer when the title
+    /// How many faces pill `i` fits: up to the cap plus a "+N" disc, fewer when the title
     /// would drop under its full width or its minimum, none on a pinned or narrow pill.
     fn fit_pill_faces(&self, i: usize, presence: &PresenceCtx) -> PillFaces {
         let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
@@ -1893,7 +1893,7 @@ impl TabBar {
         );
     }
 
-    /// Maximize and search chips, painted exactly when `apply_layout` found room, so they slide out
+    /// Maximize and search chips, painted exactly when `apply_layout` found area, so they slide out
     /// of the pill's right edge as it opens. Split out to stay inside the `too_many_lines` budget.
     fn draw_pill_action_chips(&self, ctx: &mut PaintCtx<'_>, pill: &PillPaint<'_>) {
         let PaintCtx {
@@ -2993,7 +2993,7 @@ impl TabBar {
     }
 
     /// Whether `p` is on one of the bar's controls: the window's own, the toolbar's (not its
-    /// location), a tab's close or action chip, the new-tab button, the desktop chip.
+    /// location), a tab's close or action chip, the new-tab button, the shell chip.
     pub fn control_hit(&self, p: Point) -> bool {
         if self.controls.hit(p).is_some()
             || (self.active_toolbar().is_some() && self.toolbar_row.control_hit(p))
@@ -3643,7 +3643,7 @@ impl Reveal {
     }
 }
 
-/// How far a pill without History opens: the headroom a row of them holds
+/// How far a pill without History opens: the margin a row of them holds
 /// back so growth never re-fits anyone.
 #[cfg(test)]
 const HOVER_GROWTH_PX: f64 = Reveal::Full.reserve() - Reveal::None.reserve();
@@ -3752,15 +3752,15 @@ impl PillFaces {
     }
 
     /// The most faces for `peers` that still leave the title `keep` px of a
-    /// `room`-wide zone; fewer faces fold into "+N".
-    fn fit(peers: usize, room: f64, keep: f64, metrics: FaceMetrics) -> Self {
+    /// `leftover`-wide zone; fewer faces fold into "+N".
+    fn fit(peers: usize, leftover: f64, keep: f64, metrics: FaceMetrics) -> Self {
         (1..=peers.min(PILL_MAX_FACES))
             .rev()
             .map(|faces| Self {
                 faces,
                 overflow: peers.saturating_sub(faces),
             })
-            .find(|candidate| room - candidate.width(metrics) >= keep)
+            .find(|candidate| leftover - candidate.width(metrics) >= keep)
             .unwrap_or_default()
     }
 }
@@ -3939,12 +3939,12 @@ impl Widget for TabBar {
                 } else {
                     0.0
                 };
-                let room = (r.width() - PILL_PAD_X - self.leading_zone(i)).max(0.0);
+                let leftover = (r.width() - PILL_PAD_X - self.leading_zone(i)).max(0.0);
                 let protect = self
                     .shaped_title_width(i)
                     .min(MIN_TITLE_PX)
-                    .min((room - kept).max(0.0));
-                let afford = (room - protect).max(0.0);
+                    .min((leftover - kept).max(0.0));
+                let afford = (leftover - protect).max(0.0);
                 let grow_px = grow.get(slot).copied().unwrap_or(0.0);
                 (resting.reserve() + grow_px).min(afford)
             };
@@ -4635,7 +4635,7 @@ impl TabBar {
         // The widest a pill grows past its resting width as it opens: a pill with History opens
         // one chip wider, and a window's bar opens its tabs only as far as their close — keeping
         // back the whole cluster there squeezed a narrow window's tabs to slivers.
-        let headroom = visual_order
+        let spare_width = visual_order
             .iter()
             .zip(&pinned_flags)
             .filter(|(_, pinned)| !**pinned)
@@ -4678,12 +4678,12 @@ impl TabBar {
         let floors = if at_least { least } else { comfortable };
         // A pill opening under the pointer grows into what the row has left once every pill
         // stands at its floor, never into a neighbour's floor.
-        let headroom =
-            headroom.min((row.width() - floors.iter().sum::<f64>() - gaps - plus).max(0.0));
+        let spare_width =
+            spare_width.min((row.width() - floors.iter().sum::<f64>() - gaps - plus).max(0.0));
         let fit_avail = if laid_out && self.solo() {
             (row.width() - plus).max(1.0)
         } else if laid_out {
-            (row.width() - headroom - plus).max(1.0)
+            (row.width() - spare_width - plus).max(1.0)
         } else {
             row.width()
         };
@@ -4693,7 +4693,7 @@ impl TabBar {
             .collect();
         let base = fit_pill_widths(&resting, &floors, &firm, fit_avail);
         // Growth beyond resting, scaled down together if two pills are briefly
-        // part-open mid-handover so the total can't outrun the one-pill headroom.
+        // part-open mid-handover so the total can't outrun the one-pill margin.
         let mut grow: Vec<f64> = visual_order
             .iter()
             .map(|&i| {
@@ -4702,8 +4702,8 @@ impl TabBar {
             })
             .collect();
         let total_grow: f64 = grow.iter().sum();
-        if total_grow > headroom && total_grow > 0.0 {
-            let k = headroom / total_grow;
+        if total_grow > spare_width && total_grow > 0.0 {
+            let k = spare_width / total_grow;
             for g in &mut grow {
                 *g *= k;
             }
@@ -6193,12 +6193,12 @@ mod tests {
                     "the elided title must be shorter than the real one, got {long:?}",
                 );
 
-                let mut roomy = TabBar::new("g2", vec![TabDescriptor::new(1, "Notes")], 1);
-                lay_out_at_width(&mut roomy, 600.0);
+                let mut reserved = TabBar::new("g2", vec![TabDescriptor::new(1, "Notes")], 1);
+                lay_out_at_width(&mut reserved, 600.0);
                 assert_eq!(
-                    roomy.visible_title(0, &mut tr, &theme).as_deref(),
+                    reserved.visible_title(0, &mut tr, &theme).as_deref(),
                     Some("Notes"),
-                    "a title with room to spare must not be touched",
+                    "a title with width to spare must not be touched",
                 );
             }
 
@@ -6223,7 +6223,7 @@ mod tests {
                         .unwrap_or_else(|| panic!("pill {i} ({title}) renders no title"));
                     assert_eq!(
                         shown, title,
-                        "pill {i} shows {shown:?} but the row has room for {title:?}",
+                        "pill {i} shows {shown:?} but the row fits {title:?}",
                     );
                 }
             }
@@ -6261,7 +6261,7 @@ mod tests {
                         "pill {i} renders {shown:?}, which is not a prefix of {title:?}",
                     );
                 }
-                // The squeeze is what buys the titles their room, not an overflow.
+                // The squeeze is what buys the titles their area, not an overflow.
                 for (i, r) in b.tab_rects().iter().enumerate() {
                     assert!(
                         r.x1 <= bar_rect.x1 + 0.5,
@@ -6528,7 +6528,7 @@ mod tests {
                 assert_eq!(
                     b.take_activation(),
                     None,
-                    "model reconciliation must not steal desktop focus"
+                    "model reconciliation must not steal shell focus"
                 );
                 b.insert_tab(1, TabDescriptor::new(9, "New"));
                 assert_eq!(b.active_id(), 9);
@@ -6957,7 +6957,7 @@ mod tests {
 
             // Case `pinned_active_tab_still_paints_no_close_glyph`.
             // Pinned tabs stay icon-only even while active — the compact 28-px
-            // slot has no room for a `×`, and the press hit-test filters them out.
+            // slot cannot fit a `×`, and the press hit-test filters them out.
             {
                 let theme = Theme::dark();
                 let mut b = bar();
@@ -7811,8 +7811,8 @@ mod tests {
             assert!(!scene.encoding().draw_tags.is_empty());
         }
 
-        phase idle_titles_on_the_frosted_strip_read_over_any_desktop;
-        // Idle tab titles on the frosted strip stay legible over any desktop:
+        phase idle_titles_on_the_frosted_strip_read_over_any_shell;
+        // Idle tab titles on the frosted strip stay legible over any shell:
         // over the brightest and the darkest backdrop the tint can sit on.
         {
             use crate::a11y::contrast_ratio;
@@ -8562,7 +8562,7 @@ mod tests {
                 assert!(
                     (b.tab_rects()[i].width() - expected).abs() < 0.5,
                     "idle pill {i} is {} wide but its contents want {expected}; it is \
-             still holding room for chips it does not paint",
+             still holding area for chips it does not paint",
                     b.tab_rects()[i].width(),
                 );
                 let title_end =
@@ -9034,7 +9034,7 @@ mod tests {
             assert!(!b.close_popups(), "nothing was left open");
         }
 
-        phase actions_past_the_rows_room_are_in_an_overflow_menu_that_runs_them;
+        phase actions_past_the_rows_area_are_in_an_overflow_menu_that_runs_them;
         // At most three actions stand in the row, fewer when the location
         // would be squeezed; the rest are in the overflow button's menu, which
         // runs them, and every button names its outcome in a tooltip.
@@ -9369,7 +9369,7 @@ mod tests {
                     .controls
                     .into_iter()
                     .find(|control| control.slot == "new-tab")
-                    .expect("a bar with room shows its door");
+                    .expect("a bar with area shows its door");
                 assert_eq!(
                     (door.rect[2], door.rect[3]),
                     (NEW_TAB_CHIP_PX, NEW_TAB_CHIP_PX)
