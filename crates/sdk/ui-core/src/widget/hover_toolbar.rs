@@ -14,10 +14,20 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, Rhythm};
 use crate::widget::DrawChild;
-use crate::widget::arrange::{At, Layers, Row};
+use crate::widget::arrange::{Align, At, Layers, Row, Stack};
 use crate::widget::context_menu_area::focus_within;
 use crate::widget::{Decorator, Element, EventCtx, Widget};
 
+/// Where a row's controls stand.
+#[derive(Clone, Copy)]
+enum Stands {
+    /// Centred on the row's top edge at its trailing corner.
+    Straddling,
+    /// In a band of their own this tall over the row, at its trailing end.
+    Above(f64),
+}
+
+/// How the toolbar is shown, shared by the row that decides and the toolbar that draws.
 #[derive(Default)]
 struct Shown {
     openness: Cell<f64>,
@@ -36,27 +46,117 @@ pub struct HoverToolbar {
     /// The person uses a touchscreen: nothing hovers, so only focus shows the toolbar (a long
     /// press offers the same on the row's menu).
     touch: bool,
+    /// Where its controls stand, which says what focus shows them.
+    stands: Stands,
 }
 
 impl HoverToolbar {
     /// `row`, with `controls` shown over it on hover and focus.
     #[must_use]
     pub fn new(row: Element, controls: Vec<Element>) -> Self {
+        Self::around(
+            crate::widget::arrange::Slot::new(row),
+            controls,
+            Stands::Straddling,
+            None,
+        )
+    }
+
+    /// `row` filling the room it is given under a band `band` logical pixels tall its controls
+    /// are shown in — content standing at a size of its own, a place on a canvas — with
+    /// `controls` at the band's trailing end, over the content's top edge rather than on it, on
+    /// hover and focus: the band is kept whether they are shown or not, so showing them covers
+    /// nothing of the content and moves nothing, and the pointer that went to them is still over
+    /// what they belong to.
+    #[must_use]
+    pub fn above(row: Element, controls: Vec<Element>, band: f64) -> Self {
+        let mut slot = crate::widget::arrange::Slot::new(row);
+        slot.fit = crate::widget::arrange::Fit::fill(1.0);
+        Self::around(slot, controls, Stands::Above(band), None)
+    }
+
+    /// [`Self::above`], with `caption` standing at the band's leading end at rest as well as on
+    /// hover: what the content is, said quietly while its controls are away (a place on a canvas
+    /// names what it shows). The band is as tall either way, so nothing moves when the controls
+    /// come.
+    #[must_use]
+    pub fn above_captioned(
+        row: Element,
+        controls: Vec<Element>,
+        band: f64,
+        caption: Element,
+    ) -> Self {
+        let mut slot = crate::widget::arrange::Slot::new(row);
+        slot.fit = crate::widget::arrange::Fit::fill(1.0);
+        Self::around(slot, controls, Stands::Above(band), Some(caption))
+    }
+
+    /// The row in `row`, with `controls` shown on hover and focus where `stands` says, and
+    /// `caption` at rest in a band over it.
+    fn around(
+        row: crate::widget::arrange::Slot,
+        controls: Vec<Element>,
+        stands: Stands,
+        caption: Option<Element>,
+    ) -> Self {
         let shown = Rc::new(Shown::default());
         let mut bar = Row::row().gap(Rhythm::Tight);
         for control in controls {
             bar = bar.push(control);
         }
+        // A floating surface, as every control that stands over content.
+        let surface: Element = Box::new(
+            crate::widget::Surface::new(crate::widget::SurfaceLevel::Floating, Box::new(bar))
+                .padded(Rhythm::Tight),
+        );
         let face = ToolbarFace {
-            bar: Box::new(
-                crate::widget::Surface::new(crate::widget::SurfaceLevel::Floating, Box::new(bar))
-                    .padded(Rhythm::Tight),
-            ),
+            bar: surface,
             shown: Rc::clone(&shown),
         };
-        let layers = Layers::layers()
-            .push(row)
-            .push_straddling(Box::new(face), At::TopTrailing);
+        let layers = match stands {
+            // Over the row's top edge, half above it: a one-line message keeps its text clear.
+            Stands::Straddling => Layers::layers()
+                .push_slot(row)
+                .push_straddling(Box::new(face), At::TopTrailing),
+            // The band over the content, the controls at its trailing end, a tight step above
+            // the content's edge.
+            Stands::Above(height) => {
+                // The band is as tall as it is told whatever the controls are, so the content
+                // under it stands where its pin says; the controls sit at its trailing end, on
+                // its foot.
+                let mut bar = Stack::row()
+                    .fill_width()
+                    .fill_height()
+                    .gap(Rhythm::Related)
+                    .distribute(crate::widget::arrange::Distribute::End)
+                    .align(Align::End);
+                // The caption takes the band's room up to the controls, at its leading end,
+                // a tight step above the content's edge as the controls stand.
+                if let Some(caption) = caption {
+                    let mut said = crate::widget::arrange::Slot::new(caption);
+                    said.fit = crate::widget::arrange::Fit::fill(1.0);
+                    bar = bar.push_slot(said);
+                }
+                let bar = bar.push(Box::new(face));
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a band a few dozen pixels tall"
+                )]
+                let tall = crate::widget::arrange::Length::Dp(height as f32);
+                let mut band = crate::widget::arrange::Slot::new(Box::new(bar));
+                band.fit = crate::widget::arrange::Fit::fill(1.0)
+                    .height(crate::widget::arrange::Sizing::hug().min(tall).max(tall));
+                let column = Stack::stack()
+                    .fill_width()
+                    .fill_height()
+                    .gap(Rhythm::None)
+                    .push_slot(band)
+                    .push_slot(row);
+                let mut whole = crate::widget::arrange::Slot::new(Box::new(column));
+                whole.fit = crate::widget::arrange::Fit::fill(1.0);
+                Layers::layers().push_slot(whole)
+            }
+        };
         Self {
             layers,
             shown,
@@ -64,6 +164,25 @@ impl HoverToolbar {
             hovered: false,
             focused: false,
             touch: false,
+            stands,
+        }
+    }
+
+    /// Whether focus is where it shows the controls. Over a row (a message), focus anywhere in
+    /// the row does, as hover does. Over content of its own in a band (a place on a canvas), only
+    /// focus in the controls does: the content's own focus — a field, a list, a text being read —
+    /// is the content's, and a handle shown for it would stand over a place at rest. The pointer
+    /// shows them, and Tab reaches them, which shows them too.
+    fn focus_shows(&self) -> bool {
+        match self.stands {
+            Stands::Straddling => focus_within(&self.layers),
+            Stands::Above(_) => self
+                .layers
+                .children()
+                .into_iter()
+                .next()
+                .and_then(|column| column.children().into_iter().next())
+                .is_some_and(focus_within),
         }
     }
 
@@ -129,7 +248,7 @@ impl Decorator for HoverToolbar {
             _ => {}
         }
         self.layers.handle_event(event, ctx);
-        self.focused = focus_within(&self.layers);
+        self.focused = self.focus_shows();
         self.follow(None);
     }
 
@@ -141,7 +260,7 @@ impl Decorator for HoverToolbar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.focused = focus_within(&self.layers);
+        self.focused = self.focus_shows();
         self.follow(Some(theme));
         self.layers
             .draw_child(scene, transform, text, theme, presence);

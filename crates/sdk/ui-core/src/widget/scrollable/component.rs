@@ -18,6 +18,9 @@ pub struct ScrollProps {
     /// Scroll both ways, for a 2D surface wider and taller than its column (a board of strips);
     /// takes precedence over `across`.
     pub both: bool,
+    /// Show the bar for as long as the content overflows, not only while it is scrolled: a card
+    /// held to a height whose words go on below it, so the person sees there is more.
+    pub shows_bar: bool,
     /// What scrolls.
     #[component(slot(default))]
     pub content: Option<Element>,
@@ -31,6 +34,7 @@ impl Described for Scrollable {
             follow_end,
             across,
             both,
+            shows_bar,
             content,
         } = props;
         let mut scroll = if both {
@@ -42,6 +46,9 @@ impl Described for Scrollable {
         };
         if follow_end {
             scroll = scroll.following_end();
+        }
+        if shows_bar {
+            scroll = scroll.always_visible();
         }
         match content {
             Some(content) => scroll.with_child(content),
@@ -58,6 +65,10 @@ impl Described for Scrollable {
                 (true, super::ScrollAxis::Horizontal) | (false, super::ScrollAxis::Vertical)
             )
         };
+        if props.shows_bar == self.overlay {
+            self.overlay = !props.shows_bar;
+            self.bar_dirty = true;
+        }
         props.follow_end == self.follow_end && same_axis
     }
 

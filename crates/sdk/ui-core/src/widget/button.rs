@@ -471,6 +471,15 @@ impl Button {
         self.detail.as_deref()
     }
 
+    /// Whose avatar the face leads with, by name, and whether it shows a group of faces.
+    #[cfg(test)]
+    pub(crate) fn people_shown(&self) -> (Option<&str>, bool) {
+        (
+            self.avatar.as_ref().map(|(name, _, _)| name.as_str()),
+            !self.faces.is_empty(),
+        )
+    }
+
     /// Take the words and glyph of `fresh`, keeping this button's place and press; a shape apart
     /// (icon-only for a label, another role or size) can only change by building it again. A
     /// button a row has compacted takes `fresh`'s words as what it shows when the row gives it
@@ -481,6 +490,8 @@ impl Button {
             || (!compact && fresh.label.is_empty() != self.label.is_empty())
             || fresh.role != self.role
             || fresh.control_size != self.control_size
+            || fresh.faces != self.faces
+            || fresh.avatar != self.avatar
         {
             return false;
         }
@@ -1346,11 +1357,15 @@ impl FaceContent<'_> {
                 return;
             }
             if let Some((name, identity, hue)) = self.avatar {
+                // One person's avatar alone (their own menu on a bar) at an avatar's own size.
+                let side = rect
+                    .height()
+                    .min(crate::widget::AvatarSize::Regular.side(ctx.theme));
                 let face = Rect::new(
-                    rect.center().x - icon_px / 2.0,
-                    rect.center().y - icon_px / 2.0,
-                    rect.center().x + icon_px / 2.0,
-                    rect.center().y + icon_px / 2.0,
+                    rect.center().x - side / 2.0,
+                    rect.center().y - side / 2.0,
+                    rect.center().x + side / 2.0,
+                    rect.center().y + side / 2.0,
                 );
                 crate::widget::AvatarFace::new(name, identity)
                     .hue(hue)

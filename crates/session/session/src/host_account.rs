@@ -83,6 +83,7 @@ fn device_name() -> String {
 
 fn descriptor() -> ActionDescriptor {
     ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(wire::RESOURCE, wire::ACCOUNT),

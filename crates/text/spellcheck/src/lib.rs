@@ -313,6 +313,12 @@ fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<Stri
         return None;
     }
     if is_english(language) {
+        // A word English spells this way somewhere ("summarise", "colour") is the person's
+        // word, whichever English the dictionary is: an automatic replacement never turns it
+        // into another word ("summaries"). Only underlining it is the variant's to decide.
+        if english_in_another_spelling(language, lower) {
+            return None;
+        }
         let candidate = unique_adjacent_transposition(shared_english()?, lower)?;
         return Some(match_word_case(word, &candidate));
     }
@@ -321,6 +327,51 @@ fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<Stri
         .next()
         .filter(|candidate| is_adjacent_transposition(lower, &candidate.to_lowercase()))?;
     Some(match_word_case(word, &candidate))
+}
+
+/// How English spellings differ systematically between its variants, British and
+/// Commonwealth spelling on the left, American on the right: `-ise`/`-ize`, `-yse`/`-yze`,
+/// `-our`/`-or`, `-tre`/`-ter`, `-ogue`/`-og`, `-ence`/`-ense` and the doubled `l` before an
+/// ending. Each is applied where it stands in a word, so its endings follow it
+/// ("organisations", "colourful", "travelled").
+const ENGLISH_SPELLINGS: &[(&str, &str)] = &[
+    ("ise", "ize"),
+    ("isi", "izi"),
+    ("isa", "iza"),
+    ("yse", "yze"),
+    ("ysi", "yzi"),
+    ("our", "or"),
+    ("tre", "ter"),
+    ("ogue", "og"),
+    ("ence", "ense"),
+    ("lled", "led"),
+    ("lling", "ling"),
+    ("ller", "ler"),
+];
+
+/// Whether `lower` is an English word spelt as another variant of English spells it: one of
+/// [`ENGLISH_SPELLINGS`] in it, or all of them together, gives a word the dictionary knows.
+fn english_in_another_spelling(language: &str, lower: &str) -> bool {
+    let mut forms: Vec<String> = Vec::new();
+    let mut all = lower.to_owned();
+    for (theirs, ours) in ENGLISH_SPELLINGS {
+        for (at, _) in lower.match_indices(theirs) {
+            let mut form = lower.to_owned();
+            form.replace_range(at..at.saturating_add(theirs.len()), ours);
+            forms.push(form);
+        }
+        all = all.replace(theirs, ours);
+    }
+    if all != lower {
+        forms.push(all);
+    }
+    forms.sort();
+    forms.dedup();
+    if forms.is_empty() {
+        return false;
+    }
+    let words: Vec<&str> = forms.iter().map(String::as_str).collect();
+    english_results(language, &words).is_some_and(|known| known.into_iter().any(|known| known))
 }
 
 /// Adjacent transpositions have a tiny candidate space: a word of length `n`
@@ -895,6 +946,23 @@ mod tests {
                 );
             }
             assert_eq!(probable_correction("fr_FR", "doesnt"), None);
+            // A word another English spells this way is the person's word: never turned into
+            // another word by the transposition that happens to make one.
+            for typed in [
+                "summarise",
+                "Summarise",
+                "realised",
+                "colour",
+                "centre",
+                "analyse",
+            ] {
+                assert_eq!(probable_correction("en_US", typed), None, "{typed}");
+            }
+            assert_eq!(
+                probable_correction("en_US", "Wrold").as_deref(),
+                Some("World"),
+                "a word no English spells that way is still corrected"
+            );
         }
         {
             let dict = builtin();

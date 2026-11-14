@@ -127,6 +127,10 @@ pub struct PackageMeta {
     pub default_views: Vec<DefaultViewMeta>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_views: Vec<DefaultViewMeta>,
+    /// What a place of each type shows when its default view is the app's window
+    /// (`place view v for T`): the resource standing as content on its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub place_views: Vec<DefaultViewMeta>,
     /// The views a window of each type switches between (`views a, b for T`), in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views_of: Vec<ViewsMeta>,
@@ -787,6 +791,16 @@ impl PackageMeta {
             .find(|v| v.ty == ty)
             .and_then(|v| v.shown.iter().find(|s| s.view == view))
             .map_or((None, None), |s| (s.label.as_deref(), s.icon.as_deref()))
+    }
+
+    /// The id of the place view of the type `ty` (an id), when the package declares one: what a
+    /// place shows a resource of it through when the words that placed it name the resource
+    /// rather than its app.
+    pub fn place_view(&self, ty: &str) -> Option<&str> {
+        self.place_views
+            .iter()
+            .find(|d| d.ty == ty)
+            .map(|d| d.view.as_str())
     }
 
     pub fn row_view(&self, ty: &str) -> Option<&str> {

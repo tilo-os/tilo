@@ -136,9 +136,13 @@ impl ChatApp {
             return Err(crate::i18n::t("chat-send-empty"));
         }
         let id = self.conversation_named(to, chat)?;
+        // The message the post makes is the first id it mints: the sender is told it, so what
+        // asked can stand the turn it opened (canvas.md §3) by the message, not by its words.
+        drop(ui::tilo_resource::take_minted());
         self.messages_chain()?
             .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
             .map_err(|error| error.to_string())?;
+        let message = ui::tilo_resource::take_minted().into_iter().next();
         // The conversation stands where the box stood: a window of the desk,
         // floated over it, that the workspace's record keeps for every
         // member.
@@ -149,6 +153,7 @@ impl ChatApp {
         Ok(Effected::value(serde_json::json!({
             "conversation": id.to_string(),
             "anchor": anchor,
+            "message": message,
             "accepted": true,
         })))
     }

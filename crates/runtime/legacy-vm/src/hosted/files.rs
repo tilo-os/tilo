@@ -552,6 +552,10 @@ fn kind(file_type: FileType) -> FileKind {
     clippy::cast_possible_truncation,
     reason = "stat's fields are the kernel's; sizes and counts are never negative"
 )]
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "a stat's link count is u32 on aarch64 and u64 on x86_64"
+)]
 fn attr(node: u64, stat: &Stat) -> Attr {
     let time = |secs: i64, nanos: i64| Time {
         secs,

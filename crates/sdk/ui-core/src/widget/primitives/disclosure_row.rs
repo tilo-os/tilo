@@ -263,6 +263,12 @@ pub struct DisclosureRow {
     /// An inset rule under the row: a row of its list follows
     /// ([`crate::widget::Section`] sets it).
     separator: bool,
+    /// A dense row: one quiet line at the caption's size and ink, as tall as that line and its
+    /// inset, the chevron small beside its words (design-language, "A dense row"). What an
+    /// answer's steps fold under, among content rather than in a list.
+    dense: bool,
+    /// How wide a dense row's words were drawn: its chevron stands after them.
+    dense_words: std::cell::Cell<f64>,
     rect: Rect,
     header: Rect,
     header_px: f64,
@@ -297,6 +303,8 @@ impl DisclosureRow {
             pressed: false,
             focused: false,
             separator: false,
+            dense: false,
+            dense_words: std::cell::Cell::new(0.0),
             rect: Rect::ZERO,
             header: Rect::ZERO,
             header_px: 0.0,
@@ -352,6 +360,22 @@ impl DisclosureRow {
         self
     }
 
+    /// One quiet line among content: the caption's size and ink, as tall as that line and its
+    /// inset (design-language, "A dense row").
+    #[must_use]
+    pub fn dense(mut self) -> Self {
+        self.dense = true;
+        self
+    }
+
+    /// Whether it is a dense row ([`Self::dense`]).
+    #[must_use]
+    pub fn is_dense(&self) -> bool {
+        self.dense
+    }
+
+    /// A quiet line at the far end of the title's line: who did the work and
+    /// when, read after the title.
     #[must_use]
     pub fn secondary_side(mut self, side: impl Into<String>) -> Self {
         self.side = side.into();
@@ -467,6 +491,10 @@ impl DisclosureRow {
     }
 
     fn header_height(&self, theme: &Theme) -> f64 {
+        if self.dense {
+            let line = f64::from(theme.text(crate::TextRole::Caption).line_height_px());
+            return line + 2.0 * f64::from(theme.tokens.spacing.rhythm.tight);
+        }
         let m = &theme.tokens.metrics;
         let lines = self.face().lines();
         f64::from(match lines {
@@ -517,6 +545,14 @@ impl DisclosureRow {
     fn chevron_rect(&self, theme: &Theme) -> Rect {
         let icon = f64::from(theme.tokens.metrics.icon_control);
         let cy = self.header.center().y;
+        if self.dense {
+            // Small, right after the words it opens, as a link's glyph stands.
+            let small = (icon * 0.75).round();
+            let x0 = self.header.x0
+                + self.dense_words.get()
+                + f64::from(theme.tokens.spacing.rhythm.tight);
+            return Rect::new(x0, cy - small / 2.0, x0 + small, cy + small / 2.0);
+        }
         Rect::new(
             self.header.x1 - icon,
             cy - icon / 2.0,
@@ -550,7 +586,9 @@ impl DisclosureRow {
         let cy = self.header.center().y;
         let x = self.header.x0 + Self::text_inset(self.leading.as_ref(), theme);
         let chevron = self.chevron_rect(theme);
-        let text_end = if self.trailing.is_some() && self.trailing_rect.width() > 0.0 {
+        let text_end = if self.dense {
+            self.header.x1 - icon
+        } else if self.trailing.is_some() && self.trailing_rect.width() > 0.0 {
             self.trailing_rect.x0
         } else {
             chevron.x0
@@ -600,7 +638,29 @@ impl DisclosureRow {
                 }
             }
         }
-        self.face().paint(ctx, text);
+        if self.dense {
+            let style = theme.text(crate::TextRole::Caption);
+            let shown = ctx.text.elide_to_width_style(
+                &self.title,
+                crate::num::f32_of_f64(text.width().max(0.0)),
+                &style,
+            );
+            let (w, h) = ctx.text.measure_style(&shown, None, &style);
+            self.dense_words.set(f64::from(w));
+            ctx.text.draw_style(
+                ctx.scene,
+                &shown,
+                colors.text_dim,
+                ctx.transform
+                    .pre_translate((text.x0, cy - f64::from(h) / 2.0).into()),
+                None,
+                &style,
+            );
+        } else {
+            self.face().paint(ctx, text);
+        }
+        // The chevron turns a quarter, from pointing at the row's end to
+        // pointing down, with the reveal.
         let turn = Disclose::reveal(self.progress(), 1.0).turn;
         let centre = chevron.center();
         let rotated = ctx.transform
@@ -720,21 +780,27 @@ impl Widget for DisclosureRow {
 
     /// Each frame of the reveal is laid out at its height, and the body
     /// shut away once the row has closed, without building the row again.
+    ///
+    /// What it sets is read from the tree it is handed, never from what the
+    /// row last laid out: a region measures its children in a copy of the
+    /// window's tree first (`ManualContext::measure_child`), and the row,
+    /// told the reveal there, must still lay it out in the window's own.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        if !self.reveal_unlaid() {
-            return false;
-        }
         self.laid_reveal = self.reveal_layout();
         let (height, shut) = self.laid_reveal;
+        let mut changed = false;
         if let Ok(style) = taffy.style(node) {
-            let mut style = style.clone();
-            style.size.height = taffy::Dimension::length(height);
-            let _ = taffy.set_style(node, style);
+            let height = taffy::Dimension::length(height);
+            if style.size.height != height {
+                let mut style = style.clone();
+                style.size.height = height;
+                changed |= taffy.set_style(node, style).is_ok();
+            }
         }
         let body = taffy
             .children(node)
@@ -751,10 +817,10 @@ impl Widget for DisclosureRow {
             if style.display != display {
                 let mut style = style.clone();
                 style.display = display;
-                let _ = taffy.set_style(body, style);
+                changed |= taffy.set_style(body, style).is_ok();
             }
         }
-        true
+        changed
     }
 
     /// The reveal's next height is solved again; the body's own needs are

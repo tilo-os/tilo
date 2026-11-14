@@ -149,6 +149,10 @@ type Shell {
     /// Frames: whether a place let go on the canvas lands on the style's grid, so frames line
     /// up as they are placed. Off, a place stays exactly where it was let go.
     frames_snap: Bool = true
+    /// The canvas: whether the person has asked on it yet. Until they have, the empty canvas
+    /// says once, quietly, what it is for ("Click anywhere and say what you want"); the first
+    /// ask puts that away for good, on every device the person uses.
+    canvas_asked: Bool = false
 }
 
 /// One part of the top bar, in the person's order.
@@ -606,8 +610,11 @@ fn bar_is_traditional(s: Shell) -> Bool {
     s.based_on == .windows_desktop and s.preset == .windows_desktop
 }
 
-/// Whether the dock shows now.
+/// Whether the dock shows now. Never on the canvas, which is the whole screen (`canvas.md` §7):
+/// what a person launches there they ask for where they point. A person who laid the canvas's
+/// chrome out as the traditional desktop chose its dock with it, and keeps it.
 fn dock_shows(s: Shell) -> Bool {
     s.dock_shown
+        and (not frames_style() or bar_is_traditional(s))
         and shows(s.dock_showing, device.displays.dock_reached, device.displays.dock_covered)
 }

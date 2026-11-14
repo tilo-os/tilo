@@ -561,6 +561,7 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
     use tilo_desktop_surface::i18n::t;
     let (label, description) = copy_keys(step);
     tilo_actions::ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(RESOURCE, step),

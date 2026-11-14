@@ -593,8 +593,11 @@ d-irl4ws35 = Places
     .w-a-place-on-the-canvas = A place on the canvas.
     .w-tasks = Tasks
     .w-another-beside-it = Another, beside it.
-    .w-window = Window
+    .w-content = Content
+    .w-groceries-notes = Groceries — Notes
     .w-close = Close
+    .w-a-resource-s-view-on-the = A resource's view on the canvas: no frame, its handle on hover.
+    .w-window = Window
     .w-a-window-on-the-desk-its = A window on the desk: its bar, its controls, what it shows.
 
 d-tsxcwdoy = Media

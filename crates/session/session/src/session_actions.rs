@@ -116,7 +116,7 @@ impl HostStepServices for SessionActions {
         let beside = request
             .actor
             .turn()
-            .map(|turn| turn.conversation.clone())
+            .map(|turn| tilo_session_core::arrangement::turn_key(&turn.conversation, &turn.message))
             .unwrap_or_default();
         self.doors.invoke_step(
             request.actor.id().to_owned(),
