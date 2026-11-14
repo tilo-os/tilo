@@ -315,7 +315,7 @@ fn plane_route() -> DocumentRoute {
 /// The scope's keys, as the workspace's members derive them.
 fn plane_keys() -> ChannelContentKeys {
     ChannelGroup::create(
-        collab_types::ChannelId::new(),
+        collab_types::WorkspaceId::new(),
         MemberKey::generate("ada").unwrap(),
     )
     .unwrap()

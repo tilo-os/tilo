@@ -405,11 +405,6 @@ impl TreePublisher {
                 let Some(keys) = &self.keys else {
                     return Open::Later;
                 };
-                if keys.channel_id() != metadata.channel {
-                    // Sealed under another of the record's channels: the keys that open it are newer than
-                    // the ones here.
-                    return Open::Later;
-                }
                 if !keys.holds_epoch(metadata.epoch) {
                     // Sealed under an epoch this device's keys have moved past: newer keys open it.
                     return Open::Later;

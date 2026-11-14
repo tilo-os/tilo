@@ -24,8 +24,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use web_time::SystemTime;
 
+use crate::artifact::ArtifactId;
 use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
-use crate::channel::ArtifactId;
 use crate::crypto::Ed25519PublicKey;
 use crate::op::SignedOp;
 use crate::role::OpKind;
@@ -232,8 +232,8 @@ pub fn hash_target_op(op: &SignedOp) -> Result<[u8; 32], CanonicalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifact::ArtifactId;
     use crate::canonical::canonical_bytes;
-    use crate::channel::ArtifactId;
     use crate::crypto::generate_keypair;
     use crate::identity::AttestationId;
     use web_time::SystemTime;

@@ -317,7 +317,6 @@ mod tests {
         if sealed {
             op.encryption = Some(collab_types::EncryptionMetadata::content_key(
                 1,
-                collab_types::document_channel_id(app, workspace, record),
                 collab_types::ContentRetention::Delta,
             ));
         }
@@ -562,7 +561,7 @@ mod tests {
         );
         // The workspace's group requires encryption from now on.
         channels.lock().unwrap().register_channel_gate(
-            collab_types::workspace_scope(&route.cluster_id),
+            collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
             channel_crypto::ChannelGate {
                 encryption_required: true,
             },

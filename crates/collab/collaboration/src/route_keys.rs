@@ -71,8 +71,6 @@ pub(super) enum Unopened {
 /// Why an inbound envelope never opens on this route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Never {
-    /// Sealed for another channel than this route's.
-    WrongChannel,
     /// Its ciphertext is malformed, or the route's keys reject it.
     Undecryptable,
     /// Cleartext the broker says must be sealed: a broker that fanned out
@@ -85,7 +83,6 @@ pub(super) enum Never {
 impl std::fmt::Display for Never {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::WrongChannel => "sealed for another channel",
             Self::Undecryptable => "ciphertext the route's keys reject",
             Self::Downgrade => "cleartext the broker says must be sealed",
             Self::SealedOnPlain => "sealed on a cleartext route",
@@ -317,19 +314,11 @@ impl RouteKeys {
         match &mut self.keys {
             Keys::Plain | Keys::Unsealable => Err(Unopened::Never(Never::SealedOnPlain)),
             Keys::Pending(_) => Err(Unopened::Later),
-            Keys::Group(group) => {
-                if group.channel_id() != metadata.channel {
-                    return Err(Unopened::Never(Never::WrongChannel));
-                }
-                opened(
-                    group.open_content(envelope.artifact, &metadata, &ciphertext),
-                    false,
-                )
-            }
+            Keys::Group(group) => opened(
+                group.open_content(envelope.artifact, &metadata, &ciphertext),
+                false,
+            ),
             Keys::Content { keys, .. } => {
-                if keys.channel_id() != metadata.channel {
-                    return Err(Unopened::Never(Never::WrongChannel));
-                }
                 if !keys.holds_epoch(metadata.epoch) {
                     return Err(Unopened::Later);
                 }
@@ -442,12 +431,12 @@ fn opened(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{AttestationId, ChannelId, Ed25519PublicKey, OpKind};
+    use collab_types::{AttestationId, Ed25519PublicKey, OpKind, WorkspaceId};
     use runtime_identity::wire::ChannelAccess as Wire;
 
-    fn keys(channel: ChannelId) -> (channel_crypto::ChannelGroup, Vec<u8>) {
+    fn keys(workspace: WorkspaceId) -> (channel_crypto::ChannelGroup, Vec<u8>) {
         let group = channel_crypto::ChannelGroup::create(
-            channel,
+            workspace,
             channel_crypto::MemberKey::generate("device").unwrap(),
         )
         .unwrap();
@@ -456,13 +445,13 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// What a route holds while it waits for keys, each case on a route and a channel of its own.
+        /// What a route holds while it waits for keys, each case on a route and a workspace of its own.
         fn a_route_without_its_keys_holds_ops_and_releases_them_once;
 
         phase an_op_history_supplied_while_held_is_not_released_again;
         {
-            let channel = ChannelId::new();
-            let (group, encoded) = keys(channel);
+            let workspace = WorkspaceId::new();
+            let (group, encoded) = keys(workspace);
             let (metadata, sealed) = group
                 .seal_content(
                     ArtifactId(uuid::Uuid::from_bytes([1; 16])),
@@ -480,8 +469,8 @@ mod tests {
 
         phase held_ops_are_decided_again_only_when_the_route_changes;
         {
-            let channel = ChannelId::new();
-            let (_, encoded) = keys(channel);
+            let workspace = WorkspaceId::new();
+            let (_, encoded) = keys(workspace);
             let mut route = RouteKeys::requested();
             route.hold_inbound(held(envelope(vec![1], None)));
             let again = route.take_held_inbound();
@@ -494,8 +483,8 @@ mod tests {
 
         phase a_waiting_route_holds_both_directions_and_releases_them_in_order;
         {
-            let channel = ChannelId::new();
-            let (group, encoded) = keys(channel);
+            let workspace = WorkspaceId::new();
+            let (group, encoded) = keys(workspace);
             let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
             let (metadata, sealed) = group
                 .seal_content(artifact, ContentRetention::Delta, b"from a peer")
@@ -598,9 +587,9 @@ mod tests {
 
     #[test]
     fn a_payload_sealed_under_another_branch_waits_for_its_key() {
-        let channel = ChannelId::new();
-        let (_mine, mine_keys) = keys(channel);
-        let (theirs, theirs_keys) = keys(channel);
+        let workspace = WorkspaceId::new();
+        let (_mine, mine_keys) = keys(workspace);
+        let (theirs, theirs_keys) = keys(workspace);
         let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
         let (metadata, sealed) = theirs
             .seal_content(artifact, ContentRetention::Delta, b"from their branch")
@@ -632,8 +621,8 @@ mod tests {
 
     #[test]
     fn a_sealed_compaction_opens_like_a_sealed_snapshot() {
-        let channel = ChannelId::new();
-        let (group, encoded) = keys(channel);
+        let workspace = WorkspaceId::new();
+        let (group, encoded) = keys(workspace);
         let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
         let (write_metadata, write) = group
             .seal_content(artifact, ContentRetention::Delta, b"an edit")
@@ -676,13 +665,13 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// What a route opens, each case on a route and a channel of its own.
+        /// What a route opens, each case on a route and a workspace of its own.
         fn a_route_opens_only_what_its_keys_or_the_broker_admit;
 
         phase cleartext_opens_exactly_when_the_broker_admits_it;
         {
-            let channel = ChannelId::new();
-            let (_, encoded) = keys(channel);
+            let workspace = WorkspaceId::new();
+            let (_, encoded) = keys(workspace);
             let mut route = RouteKeys::requested();
             let old = envelope(b"from before encryption".to_vec(), None);
             assert!(matches!(
@@ -702,17 +691,6 @@ mod tests {
                 route.open(&old, OpAdmission::Unstated),
                 Err(Unopened::Later)
             ));
-            let other = keys(ChannelId::new()).0;
-            let (metadata, sealed) = other
-                .seal_content(old.artifact, ContentRetention::Delta, b"x")
-                .unwrap();
-            assert!(matches!(
-                route.open(
-                    &envelope(sealed, Some(metadata)),
-                    OpAdmission::EncryptionRequired
-                ),
-                Err(Unopened::Never(Never::WrongChannel))
-            ));
         }
 
         phase unopenable_ciphertext_asks_for_newer_keys_once_per_generation;
@@ -720,8 +698,8 @@ mod tests {
         // for newer keys once per generation, and never while keys are awaited
         // (those routes are asked anyway).
         {
-            let channel = ChannelId::new();
-            let (_, encoded) = keys(channel);
+            let workspace = WorkspaceId::new();
+            let (_, encoded) = keys(workspace);
             let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
             let mut route = RouteKeys::requested();
             assert!(route.awaiting_keys());
@@ -738,7 +716,7 @@ mod tests {
                 !route.wants_keys_for_held(),
                 "nothing held asks for nothing"
             );
-            let newer = keys(channel).0;
+            let newer = keys(workspace).0;
             let (metadata, sealed) = newer
                 .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
                 .unwrap();

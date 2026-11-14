@@ -1,25 +1,25 @@
-# channel-crypto
+# workspace-crypto
 
-Per-channel MLS group encryption for Tilo, with full history for members
+Per-workspace MLS group encryption for Tilo, with full history for members
 who join later.
 
 ## What this crate does
 
-Each Tilo channel maps to one MLS group, used for group key agreement: the
+Each Tilo workspace maps to one MLS group, used for group key agreement: the
 group's epoch secrets rotate on every membership change. Ops are sealed under
 per-epoch **content keys** derived from those epochs, and a joining member
-receives every earlier content key, so it can read the channel's complete
+receives every earlier content key, so it can read the workspace's complete
 history. The `SignedOp` envelope's metadata (author, artifact, op class,
 timestamp, seq, plus the versioned `EncryptionMetadata`) stays cleartext so
 the broker can route by artifact and filter by op class without decrypting.
 
 ```rust
 use channel_crypto::{ChannelGroup, MemberKey};
-use collab_types::{ChannelId, ContentRetention};
+use collab_types::{WorkspaceId, ContentRetention};
 
-// Alice creates a fresh one-member channel.
-let cid = ChannelId::new();
-let mut alice = ChannelGroup::create(cid, MemberKey::generate("alice")?)?;
+// Alice creates a fresh one-member workspace.
+let workspace = WorkspaceId::new();
+let mut alice = ChannelGroup::create(workspace, MemberKey::generate("alice")?)?;
 
 // Bob mints a KeyPackage and ships it to Alice out-of-band.
 let bob_key = MemberKey::generate("bob")?;
@@ -27,9 +27,9 @@ let addition = alice.admit(bob_key.fresh_key_package()?)?;
 // `addition.welcome` and `addition.key_history` go to Bob,
 // `addition.commit` (from the second join on) to existing members.
 let mut bob = ChannelGroup::process_welcome_with_history(
-    cid, &addition.welcome, &addition.key_history, bob_key)?;
+    workspace, &addition.welcome, &addition.key_history, bob_key)?;
 
-// Seal and open op payloads under the channel content key.
+// Seal and open op payloads under the workspace content key.
 let (metadata, ciphertext) =
     alice.seal_content(artifact, ContentRetention::Delta, b"hello bob")?;
 let plaintext = bob.open_content(artifact, &metadata, &ciphertext)?;
@@ -48,14 +48,14 @@ content key, or encrypt at the new epoch.
 
 ## History for members who join later
 
-A member invited later gets access to all of the channel's state and
+A member invited later gets access to all of the workspace's state and
 history.
 
 - **Content keys.** Every MLS epoch `e` has one 256-bit content key,
-  `MLS-Exporter("tilo channel content key v2", channel_id, 32)`, derived
+  `MLS-Exporter("tilo workspace content key v2", workspace, 32)`, derived
   independently by every member of that epoch. Ops are sealed with a
   `tilo-seal` XChaCha20-Poly1305 envelope under the key of the sender's
-  current epoch, bound to the channel, epoch and artifact. A content-key
+  current epoch, bound to the workspace, epoch and artifact. A content-key
   ciphertext can be opened any number of times by anyone holding the key,
   unlike an MLS application message, which each receiver can decrypt once and
   only at its epoch.
@@ -75,10 +75,9 @@ history.
   `collab_types::history::HistoryPager` issues pages as a view nears its
   oldest loaded op, or until an older version or search hit is reached.
 - **Granularity: per workspace.** A workspace has one MLS group and one
-  content keyring for every record in it. A record seals under the
-  workspace's keys while its payload still names the record
-  (`ChannelContentKeys::for_unit`), so content stays bound to its record and
-  artifact. Read permission inside a workspace is not a key boundary: every
+  content keyring for every record in it. The seal's associated data names
+  the workspace, the epoch and the record's artifact, so content stays bound
+  to its record. Read permission inside a workspace is not a key boundary: every
   device holding the workspace's keys can open every record.
 
   One group per workspace is what makes the cost of membership independent of
@@ -107,12 +106,12 @@ history.
 - **No sender authentication inside the envelope.** Any key holder can seal
   for that epoch. Authorship comes from the outer `SignedOp` signature and
   the broker's live role check.
-- **Stale epochs are admitted.** Content sealed under an epoch the channel
+- **Stale epochs are admitted.** Content sealed under an epoch the workspace
   has moved past is taken: its author was a member when they wrote it, and
   the receiving device still holds that epoch's key. A member's write
-  routinely reaches another device after the channel's next membership
+  routinely reaches another device after the workspace's next membership
   change, so refusing it would lose that write. A removed member gains
-  nothing by holding the old keys: the channel's frames stop reaching it, and
+  nothing by holding the old keys: the workspace's frames stop reaching it, and
   the broker refuses an op whose author no longer stands in the workspace.
 - **Integrity of retention hints.** The retention class is signed with the
   op. Endpoints reject an op whose decrypted frame does not match its class.
@@ -128,7 +127,7 @@ history.
 
 ## Participants and endpoints
 
-A channel's MLS group holds exactly the participant devices its membership
+A workspace's MLS group holds exactly the participant devices its membership
 lets read it: a projection the caller computes from the workspace's
 membership and access policy, never a second record of who belongs. Every
 participant keeps a [`ChannelPeer`]:
@@ -152,7 +151,7 @@ participant keeps a [`ChannelPeer`]:
   goes back to the group it held before (kept beside the head) and applies
   the winner, and commits again if the group still differs. The device that
   wrote the winner publishes it again when it sees the loser, so a host that
-  keeps only a channel's newest frame keeps the winner. Two geneses compete
+  keeps only a workspace's newest frame keeps the winner. Two geneses compete
   the same way.
 - **Falling behind starts over.** A member that finds a frame it can never
   reach (it missed one, or its branch lost) waits again with a fresh member
@@ -167,8 +166,8 @@ participant keeps a [`ChannelPeer`]:
   ratchet secrets, so an app can seal and open content but cannot change
   membership.
 
-A channel's first frame is `Genesis`. It closes the plaintext gate for
-good, whether the channel is new or is being migrated from plaintext.
+A workspace's first frame is `Genesis`. It closes the plaintext gate for
+good, whether the workspace is new or is being migrated from plaintext.
 
 ### Per-edit cost
 
@@ -187,11 +186,11 @@ including the encryption metadata).
 
 ## Production
 
-End-to-end encryption is on for every collaboration channel, with no
+End-to-end encryption is on for every collaboration workspace, with no
 exceptions: there is no plaintext mode to opt into and no server-side
 plaintext path.
 
-### How a channel is provisioned
+### How a workspace is provisioned
 
 - **Creation.** Any participant creates a route's MLS group and its
   `Genesis` frame (`tilo_action_broker::channel_encryption`): an allowed
@@ -203,13 +202,13 @@ plaintext path.
   device that held the other group, or sealed under it, hands its content
   keys to the winner's members with its next commit, so nothing written
   under either is lost. `Genesis` closes the plaintext gate for good.
-- **Migration.** A channel that carried plaintext before migrates the same
+- **Migration.** A workspace that carried plaintext before migrates the same
   way on its next open. New content is encrypted from then on. Old
   plaintext stays in the replicas of the members that hold it, and the local
   broker's history pages still serve it to current members, because the
   broker admitted it before the gate closed. Live plaintext on an encrypted
   route is refused as a downgrade.
-- **Access policy** (`shell/channel_policy.rs`). A channel is readable by:
+- **Access policy** (`shell/channel_policy.rs`). A workspace is readable by:
   - every person on the workspace's roster, or named by a grant (a share, a
     time-limited reader), who may Read the workspace node now, through each
     of their certified devices (root-signed, unexpired, not revoked, admitted
@@ -218,14 +217,14 @@ plaintext path.
   - live service members (below).
 
   Always-on host certificates are never a person's reading device. The
-  workspace's governor is a participant of every channel of the workspace.
+  workspace's governor is a participant of every workspace of the workspace.
   Every participant reconciles the group with this set on every policy
   change and every new request. Invites, removals, role changes that end
   reading, and device enrolment or revocation all become commits.
 - **Governance transport.** Frames and access requests travel on the
   workspace's topic (`NeighbourMsg::MlsGovernance`, `MlsAccessRequest`) to
   every member. Workspace hosts retain each
-  channel's geneses, its newest frame (and the copy with join material for
+  workspace's geneses, its newest frame (and the copy with join material for
   the devices it adds) and each device's newest request, so a device that is
   offline still gets its Welcome. A frame the transport did not take is
   published again; a member that missed a commit the host no longer holds
@@ -234,11 +233,11 @@ plaintext path.
   keys (`Request::ChannelKeys`) and gets `ChannelContentKeys`: content
   keys, and no MLS secret. It does not ask again on a timer: each route
   keeps one `channelKeysChanged` call pending at the broker, which resolves
-  the moment the channel service records a change to that channel (a commit
+  the moment the workspace service records a change to that workspace (a commit
   this device made, or a frame that reached it), and the endpoint asks for
   keys then. Every policy change above becomes such a commit within a
   participant's reconcile interval, so a removed or revoked device's
-  apps stop holding the channel's keys within about a second plus the
+  apps stop holding the workspace's keys within about a second plus the
   commit's delivery to that device; the broker's epoch gate and the identity
   service's per-signature trust check stop it publishing at once. A route
   also asks when ciphertext arrives that its keys can't open, and when the
@@ -255,23 +254,23 @@ plaintext path.
 - **Committed routes** stay cleartext. When the broker serves a route as a
   committed document, its owner (the shell's native workspace owner)
   admits and applies each edit itself, and
-  it holds no channel keys: it could not open a sealed edit, and after one
+  it holds no workspace keys: it could not open a sealed edit, and after one
   it refuses cleartext on the route as a downgrade. Endpoints therefore do
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
   as a service member.
 - **Workspaces a node governs** have no committed routes. A node is a relay
   whose certificate lets it host and own workspaces; it takes part in the
-  channels of the workspaces it governs. A desktop session enrolled in such a
-  workspace serves each route as a channel: its apps ask for keys, seal and
+  workspaces of the workspaces it governs. A desktop session enrolled in such a
+  workspace serves each route as a workspace: its apps ask for keys, seal and
   open, and its sealed writes go to the relay as the device's own, never
   through the governor. A company node's own session is such a member: a
   device of the node's person with its own key and certificate, which enters
   every workspace of the person's workspace list the node hosts, as the list
   brings it.
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
-  the channel's gate (`ChannelGate`): plaintext is closed off, and
-  ciphertext must name that channel. Relays store and
+  the workspace's gate (`ChannelGate`): plaintext is closed off, and
+  ciphertext must name that workspace. Relays store and
   forward ciphertext and MLS control material without decoding either.
 
 ### Service members
@@ -297,11 +296,11 @@ ciphertext and MLS control material without decoding either.
 
 - **Confidentiality from infrastructure.** Relays, workspace hosts and
   brokers see signed envelope metadata (author, artifact, op class, retention
-  class, channel, epoch, seq, timestamp) and ciphertext. They never see
+  class, workspace, epoch, seq, timestamp) and ciphertext. They never see
   content and never hold a content key. An end-to-end test asserts that no
   byte the relay stores contains the plaintext.
 - **Membership follows the workspace ACL and the certified device set.** No
-  separate channel membership list can drift from permissions.
+  separate workspace membership list can drift from permissions.
 - **Joiners read all history** through the key history in their Welcome.
 - **Removal protects future content.** Removing a person, a device or a
   service is an MLS commit: the next epoch's keys are unknown to the removed
@@ -316,9 +315,9 @@ ciphertext and MLS control material without decoding either.
   device keeps the same one.
 - **Forward secrecy applies to membership, not to history**, as described
   above.
-- **Known limits.** Only the governing device creates a channel's group:
-  if it is lost, existing channels go on and any participant admits and
-  removes devices, but a channel nobody opened before stays closed until
+- **Known limits.** Only the governing device creates a workspace's group:
+  if it is lost, existing workspaces go on and any participant admits and
+  removes devices, but a workspace nobody opened before stays closed until
   governance is re-established. Content a device sealed under a commit that
   lost a same-epoch race is readable only by devices that applied that
   commit. A browser follows and checks commits but writes none, since it
@@ -331,13 +330,13 @@ A `tilo-seal` identity backup (`runtime-identity::backup`) holds the root
 identity record. It does not hold device keys, device certificates, the
 fleet, the Secret Service master key or any MLS state. Restoring it on a
 replacement machine brings back the person's root identity, and onboarding
-certifies a **new** device key for that machine. Channel access comes back
+certifies a **new** device key for that machine. Workspace access comes back
 through the normal paths:
 
 1. The new device announces its root-signed certificate. Once the
    workspace's governor has admitted it, the policy allows it.
 2. A participant admits it, and its key history opens every earlier content
-   key, so the whole channel history reads again
+   key, so the whole workspace history reads again
    (`a_restored_identity_regains_the_whole_channel_on_its_new_device`).
 3. Revoking the lost device (fleet revocation) makes the next reconcile
    remove it, so it cannot read anything written afterwards.
@@ -377,5 +376,5 @@ versioned handshake.
 ## Building
 
 ```bash
-cargo test --locked -p channel-crypto
+cargo test --locked -p workspace-crypto
 ```

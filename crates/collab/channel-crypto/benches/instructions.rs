@@ -1,12 +1,12 @@
-//! CPU instructions per per-channel operation: what one channel (one record,
+//! CPU instructions per per-workspace operation: what one workspace (one record,
 //! one MLS group) costs a device to create, to ask for, to be admitted to, to
 //! be handed its keys, and to follow a membership change. Instructions are the
-//! same on any machine at any load, so instructions × channels is what a
-//! workspace of `n` channels spends, whatever it runs on.
+//! same on any machine at any load, so instructions × workspaces is what a
+//! workspace of `n` workspaces spends, whatever it runs on.
 //!
 //! Run with:
 //!
-//!     cargo bench -p channel-crypto --bench instructions
+//!     cargo bench -p workspace-crypto --bench instructions
 //!
 //! The digital signature, HPKE and MLS work here is deterministic in its code
 //! path, so the counts reproduce; setup (key generation, the frames before the
@@ -24,19 +24,19 @@
 use std::collections::BTreeSet;
 
 use channel_crypto::{Access, ChannelPeer, VaultKey};
-use collab_types::{ChannelId, Ed25519PublicKey, MlsGovernanceFrame};
+use collab_types::{Ed25519PublicKey, MlsGovernanceFrame, WorkspaceId};
 use ed25519_dalek::SigningKey;
 use iai_callgrind::{library_benchmark, library_benchmark_group};
 
 struct Fixture {
-    channel: ChannelId,
+    workspace: WorkspaceId,
     key: SigningKey,
     vault: VaultKey,
 }
 
 fn fixture() -> Box<Fixture> {
     Box::new(Fixture {
-        channel: ChannelId::new(),
+        workspace: WorkspaceId::new(),
         key: SigningKey::from_bytes(&[11; 32]),
         vault: VaultKey::new([7; 32]),
     })
@@ -47,28 +47,28 @@ fn public(key: &SigningKey) -> Ed25519PublicKey {
 }
 
 fn allowed_two(
-    channel: ChannelId,
+    workspace: WorkspaceId,
     vault: &VaultKey,
 ) -> (ChannelPeer, ChannelPeer, BTreeSet<Ed25519PublicKey>) {
     let founder_key = SigningKey::from_bytes(&[11; 32]);
-    let founder = ChannelPeer::create_now(None, channel, Box::new(founder_key.clone()), vault)
+    let founder = ChannelPeer::create_now(None, workspace, Box::new(founder_key.clone()), vault)
         .expect("genesis");
     let joiner_key = SigningKey::from_bytes(&[22; 32]);
-    let joiner =
-        ChannelPeer::waiting(None, channel, Box::new(joiner_key.clone()), vault).expect("waiting");
+    let joiner = ChannelPeer::waiting(None, workspace, Box::new(joiner_key.clone()), vault)
+        .expect("waiting");
     let allowed: BTreeSet<Ed25519PublicKey> = [public(&founder_key), public(&joiner_key)]
         .into_iter()
         .collect();
     (founder, joiner, allowed)
 }
 
-// A channel's genesis, as the device that creates it.
+// A workspace's genesis, as the device that creates it.
 #[library_benchmark(setup = fixture)]
 #[bench::one()]
 fn genesis(fixture: Box<Fixture>) -> Box<Fixture> {
     let peer = ChannelPeer::create_now(
         None,
-        fixture.channel,
+        fixture.workspace,
         Box::new(fixture.key.clone()),
         &fixture.vault,
     )
@@ -77,14 +77,14 @@ fn genesis(fixture: Box<Fixture>) -> Box<Fixture> {
     fixture
 }
 
-// A device opening a channel it holds nothing of: minting its member key and
+// A device opening a workspace it holds nothing of: minting its member key and
 // writing its state.
 #[library_benchmark(setup = fixture)]
 #[bench::one()]
 fn waiting(fixture: Box<Fixture>) -> Box<Fixture> {
     let peer = ChannelPeer::waiting(
         None,
-        fixture.channel,
+        fixture.workspace,
         Box::new(fixture.key.clone()),
         &fixture.vault,
     )
@@ -93,13 +93,13 @@ fn waiting(fixture: Box<Fixture>) -> Box<Fixture> {
     fixture
 }
 
-// The access request that asks to be let into one channel.
+// The access request that asks to be let into one workspace.
 #[library_benchmark(setup = fixture)]
 #[bench::one()]
 fn request(fixture: Box<Fixture>) -> Box<Fixture> {
     let mut peer = ChannelPeer::waiting(
         None,
-        fixture.channel,
+        fixture.workspace,
         Box::new(fixture.key.clone()),
         &fixture.vault,
     )
@@ -120,7 +120,7 @@ struct Admit {
 
 fn admitting() -> Box<Admit> {
     let fixture = fixture();
-    let (mut founder, mut joiner, allowed) = allowed_two(fixture.channel, &fixture.vault);
+    let (mut founder, mut joiner, allowed) = allowed_two(fixture.workspace, &fixture.vault);
     let request = joiner
         .access_request_now(1, false, &fixture.vault)
         .expect("request")
@@ -133,7 +133,7 @@ fn admitting() -> Box<Admit> {
     })
 }
 
-// One member admitting one device: the commit every channel of a workspace
+// One member admitting one device: the commit every workspace of a workspace
 // makes for one joined person, and its welcome.
 #[library_benchmark(setup = admitting)]
 #[bench::one()]
@@ -156,7 +156,7 @@ struct Welcome {
 
 fn welcomed() -> Box<Welcome> {
     let fixture = fixture();
-    let (mut founder, mut joiner, allowed) = allowed_two(fixture.channel, &fixture.vault);
+    let (mut founder, mut joiner, allowed) = allowed_two(fixture.workspace, &fixture.vault);
     let request = joiner
         .access_request_now(1, false, &fixture.vault)
         .expect("request")
@@ -201,18 +201,19 @@ struct MembershipChange {
     vault: VaultKey,
 }
 
-/// A channel of three devices where the second must apply the commit that
+/// A workspace of three devices where the second must apply the commit that
 /// admits the third: what every other member of a group does for one
 /// membership change, with the join material withheld.
 fn membership_change() -> Box<MembershipChange> {
     let vault = VaultKey::new([7; 32]);
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let founder_key = SigningKey::from_bytes(&[11; 32]);
-    let mut founder = ChannelPeer::create_now(None, channel, Box::new(founder_key.clone()), &vault)
-        .expect("genesis");
+    let mut founder =
+        ChannelPeer::create_now(None, workspace, Box::new(founder_key.clone()), &vault)
+            .expect("genesis");
     let second_key = SigningKey::from_bytes(&[22; 32]);
-    let mut second =
-        ChannelPeer::waiting(None, channel, Box::new(second_key.clone()), &vault).expect("waiting");
+    let mut second = ChannelPeer::waiting(None, workspace, Box::new(second_key.clone()), &vault)
+        .expect("waiting");
     let request = second
         .access_request_now(1, false, &vault)
         .expect("request")
@@ -234,8 +235,8 @@ fn membership_change() -> Box<MembershipChange> {
     assert!(matches!(second.access(), Access::Ready { .. }));
 
     let third_key = SigningKey::from_bytes(&[33; 32]);
-    let mut third =
-        ChannelPeer::waiting(None, channel, Box::new(third_key.clone()), &vault).expect("waiting");
+    let mut third = ChannelPeer::waiting(None, workspace, Box::new(third_key.clone()), &vault)
+        .expect("waiting");
     let request = third
         .access_request_now(1, false, &vault)
         .expect("request")
@@ -275,19 +276,19 @@ fn commit(mut fixture: Box<MembershipChange>) -> Box<MembershipChange> {
 }
 
 library_benchmark_group!(
-    name = channel;
+    name = workspace;
     benchmarks = waiting, genesis, request, admit, welcome, commit
 );
 
 mod entry {
     use iai_callgrind::{LibraryBenchmarkConfig, main};
 
-    use super::channel;
+    use super::workspace;
 
     main!(
         config = LibraryBenchmarkConfig::default()
             .pass_through_envs(["VALGRIND_LIB", "TMPDIR", "HOME", "XDG_RUNTIME_DIR"]);
-        library_benchmark_groups = channel
+        library_benchmark_groups = workspace
     );
 
     pub(super) fn run() {

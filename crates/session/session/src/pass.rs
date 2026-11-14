@@ -24,7 +24,7 @@ fn secret_of(
     workspace: tilo_desktop_model::WorkspaceId,
     app: &str,
 ) -> Option<tilo_seal::SymmetricKey> {
-    match engine.seal_keys(workspace, app, "") {
+    match engine.seal_keys(workspace) {
         Ok(crate::engine::SealKeys::Here(keys)) => keys.record_content_secret().ok(),
         Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore) => None,
         Err(error) => {

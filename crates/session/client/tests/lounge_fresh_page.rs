@@ -538,7 +538,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
             .into_iter()
             .all(|(app, record)| {
                 channels.lines().any(|line| {
-                    line.starts_with(&format!("route {app}/{record} ")) && line.contains(": ready;")
+                    line.starts_with(&format!("route {app}/{record}:")) && line.contains(": ready;")
                 })
             });
         if ready || tokio::time::Instant::now() >= deadline {
@@ -548,7 +548,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     };
     println!("--- the page's channels:\n{channels}");
     for (app, record) in [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)] {
-        let prefix = format!("route {app}/{record} ");
+        let prefix = format!("route {app}/{record}:");
         let line = channels
             .lines()
             .find(|line| line.starts_with(&prefix))

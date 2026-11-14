@@ -86,7 +86,7 @@ async fn hears(
 /// host keeps in the history its members catch up from.
 fn sealed(key: &SigningKey) -> NeighbourMsg {
     let keys = channel_crypto::ChannelGroup::create(
-        collab_types::document_channel_id(APP, WORKSPACE, RECORD),
+        collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
         channel_crypto::MemberKey::generate("owner").unwrap(),
     )
     .unwrap()

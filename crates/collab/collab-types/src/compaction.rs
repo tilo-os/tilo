@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
-use crate::channel::ArtifactId;
+use crate::artifact::ArtifactId;
 use crate::crypto::Ed25519PublicKey;
 use crate::op::{ContentRetention, SignedOp};
 use crate::role::OpKind;
@@ -437,8 +437,7 @@ impl SealedCompaction {
             && segment.author == head.author
             && segment.seq == head.seq
             && segment.artifact == head.artifact
-            && segment.encryption.map(|meta| (meta.channel, meta.epoch))
-                == head.encryption.map(|meta| (meta.channel, meta.epoch))
+            && segment.encryption.map(|meta| meta.epoch) == head.encryption.map(|meta| meta.epoch)
             && SealedCompactionSegment::parse(segment).is_ok()
     }
 }
@@ -590,7 +589,7 @@ mod tests {
             kind,
             SystemTime::UNIX_EPOCH,
             9,
-            crate::op::EncryptionMetadata::content_key(3, crate::ChannelId::new(), retention),
+            crate::op::EncryptionMetadata::content_key(3, retention),
         )
     }
 
@@ -718,7 +717,7 @@ mod tests {
                 op.seq = head.seq;
                 op.artifact = head.artifact;
                 op.encryption = head.encryption.map(|meta| {
-                    crate::op::EncryptionMetadata::content_key(meta.epoch, meta.channel, retention)
+                    crate::op::EncryptionMetadata::content_key(meta.epoch, retention)
                 });
                 op
             };

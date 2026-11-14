@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use channel_crypto::{ChannelGroup, Error, MemberKey, VaultKey};
 use collab_types::history::{HistoryPager, page_before};
 use collab_types::{
-    ArtifactId, AttestationId, ChannelId, ContentRetention, OpKind, SignedOp, generate_keypair,
+    ArtifactId, AttestationId, ContentRetention, OpKind, SignedOp, WorkspaceId, generate_keypair,
     sign_op, verify_op,
 };
 
@@ -91,22 +91,22 @@ fn member(name: &str) -> MemberKey {
 fn populated_channel(
     ops: usize,
 ) -> (
-    ChannelId,
+    WorkspaceId,
     ArtifactId,
     Host,
     ChannelGroup,
     ChannelGroup,
     Vec<u8>,
 ) {
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let artifact = ArtifactId::new();
     let (alice_writer, bob_writer) = (Writer::new(), Writer::new());
     let mut host = Host::default();
-    let mut alice = ChannelGroup::create(channel, member("alice")).unwrap();
+    let mut alice = ChannelGroup::create(workspace, member("alice")).unwrap();
     let bob_key = member("bob");
     let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
     let mut bob = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         bob_key,
@@ -120,7 +120,7 @@ fn populated_channel(
             bob.process_commit(addition.commit.as_ref().unwrap())
                 .unwrap();
             let mut dave = ChannelGroup::process_welcome_with_history(
-                channel,
+                workspace,
                 &addition.welcome,
                 &addition.key_history,
                 dave_key,
@@ -151,7 +151,7 @@ fn populated_channel(
         ContentRetention::Checkpoint,
         &document,
     );
-    (channel, artifact, host, alice, bob, document)
+    (workspace, artifact, host, alice, bob, document)
 }
 
 /// Page the whole history back from the host, newest first, and decrypt
@@ -193,13 +193,13 @@ fn a_joiner_reads_history_on_demand_from_transferred_keys() {
 }
 
 fn member_added_after_1000_ops_reads_every_op_and_the_full_document() {
-    let (channel, artifact, host, mut alice, mut bob, document) = populated_channel(1000);
+    let (workspace, artifact, host, mut alice, mut bob, document) = populated_channel(1000);
     let carol_key = member("carol");
     let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
     bob.process_commit(addition.commit.as_ref().unwrap())
         .unwrap();
     let mut carol = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         carol_key,
@@ -224,12 +224,12 @@ fn member_added_after_1000_ops_reads_every_op_and_the_full_document() {
 
 fn joining_transfers_the_current_state_and_keys_not_the_history() {
     let join_cost = |ops: usize| {
-        let (channel, artifact, host, mut alice, _bob, document) = populated_channel(ops);
+        let (workspace, artifact, host, mut alice, _bob, document) = populated_channel(ops);
         let carol_key = member("carol");
         let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
         let snapshot = host.latest_checkpoint(artifact).unwrap();
         let mut carol = ChannelGroup::process_welcome_with_history(
-            channel,
+            workspace,
             &addition.welcome,
             &addition.key_history,
             carol_key,
@@ -260,13 +260,13 @@ fn joining_transfers_the_current_state_and_keys_not_the_history() {
 }
 
 fn joiner_decrypts_fetched_history_after_restart_with_no_other_member_online() {
-    let (channel, artifact, host, mut alice, mut bob, document) = populated_channel(300);
+    let (workspace, artifact, host, mut alice, mut bob, document) = populated_channel(300);
     let carol_key = member("carol");
     let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
     bob.process_commit(addition.commit.as_ref().unwrap())
         .unwrap();
     let carol = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         carol_key,
@@ -287,11 +287,11 @@ fn joiner_decrypts_fetched_history_after_restart_with_no_other_member_online() {
 }
 
 fn scrolling_back_fetches_only_the_pages_it_reaches() {
-    let (channel, artifact, host, mut alice, _bob, _document) = populated_channel(1000);
+    let (workspace, artifact, host, mut alice, _bob, _document) = populated_channel(1000);
     let carol_key = member("carol");
     let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
     let mut carol = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         carol_key,
@@ -344,15 +344,15 @@ fn membership_changes_settle_one_agreed_keyring() {
 }
 
 fn removed_member_cannot_read_content_sealed_after_removal() {
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let artifact = ArtifactId::new();
     let writer = Writer::new();
     let mut host = Host::default();
-    let mut alice = ChannelGroup::create(channel, member("alice")).unwrap();
+    let mut alice = ChannelGroup::create(workspace, member("alice")).unwrap();
     let bob_key = member("bob");
     let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
     let mut bob = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         bob_key,
@@ -363,7 +363,7 @@ fn removed_member_cannot_read_content_sealed_after_removal() {
     bob.process_commit(addition.commit.as_ref().unwrap())
         .unwrap();
     let mut carol = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         carol_key,
@@ -408,7 +408,7 @@ fn removed_member_cannot_read_content_sealed_after_removal() {
             guessed.epoch = candidate;
             assert!(
                 bob.keyring()
-                    .open(channel, op.artifact, &guessed, &op.payload)
+                    .open(workspace, op.artifact, &guessed, &op.payload)
                     .is_err()
             );
         }
@@ -426,15 +426,15 @@ fn removed_member_cannot_read_content_sealed_after_removal() {
 }
 
 fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let artifact = ArtifactId::new();
     let writer = Writer::new();
     let mut host = Host::default();
-    let mut alice = ChannelGroup::create(channel, member("alice")).unwrap();
+    let mut alice = ChannelGroup::create(workspace, member("alice")).unwrap();
     let bob_key = member("bob");
     let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
     let mut bob = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         bob_key,
@@ -445,7 +445,7 @@ fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
     bob.process_commit(addition.commit.as_ref().unwrap())
         .unwrap();
     let mut carol = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         carol_key,
@@ -480,7 +480,7 @@ fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
         .process_commit(addition.commit.as_ref().unwrap())
         .unwrap();
     let mut dave = ChannelGroup::process_welcome_with_history(
-        channel,
+        workspace,
         &addition.welcome,
         &addition.key_history,
         dave_key,
@@ -526,7 +526,7 @@ fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
 
 #[test]
 fn keyring_survives_restart_for_every_member() {
-    let (channel, artifact, host, alice, bob, document) = populated_channel(40);
+    let (workspace, artifact, host, alice, bob, document) = populated_channel(40);
     let dir = tempfile::tempdir().unwrap();
     for (name, group) in [("alice", alice), ("bob", bob)] {
         let path = dir.path().join(format!("{name}.mls"));
@@ -536,7 +536,7 @@ fn keyring_survives_restart_for_every_member() {
         drop(group);
         let mut restored = ChannelGroup::load_sealed(&path, &key).unwrap();
         assert_eq!(restored.keyring().len(), before);
-        assert_eq!(restored.channel_id(), channel);
+        assert_eq!(restored.workspace(), workspace);
         let (history, _) = read_all_history(&mut restored, &host, artifact);
         assert_eq!(history[..40].concat(), document);
         assert!(

@@ -11,7 +11,6 @@
 fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     // The founder and a member read the channel under the workspace's
     // governance; the late device's own copy has heard of the member but not
     // of the founder yet.
@@ -27,7 +26,7 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     let mut late = device(&workspace, workspace_id, 2, 3, &late_policy, dirs[2].path());
     let mut now = Instant::now();
 
-    let created = create(&mut founder, workspace_id, channel, now);
+    let created = create(&mut founder, workspace_id, now);
     assert!(
         ready_epoch(&created).is_some(),
         "the founding device is handed the channel's keys: {created:?}"
@@ -41,7 +40,7 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
         device
             .service
             .peers
-            .get(&channel)
+            .get(&workspace_id)
             .is_some_and(|entry| !entry.held.is_empty())
     };
     assert!(
@@ -49,11 +48,11 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
         "a policy that does not name the founder keeps its frame, and backs none of its group"
     );
     assert!(
-        !late.service.peers[&channel].peer.has_genesis(),
+        !late.service.peers[&workspace_id].peer.has_genesis(),
         "the frame the policy does not back is not applied"
     );
     assert!(
-        late.service.existing_keys(workspace_id, channel).is_none(),
+        late.service.existing_keys(workspace_id).is_none(),
         "a policy that does not name the founder backs no frame of its group"
     );
 
@@ -61,7 +60,7 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     late_policy.allowed.lock().unwrap().insert(public(1));
     run(&mut [&mut founder, &mut member, &mut late], &mut now, 8);
 
-    let entry = &late.service.peers[&channel];
+    let entry = &late.service.peers[&workspace_id];
     assert!(
         entry.held.is_empty(),
         "the frame the policy now backs leaves the hold"
@@ -75,7 +74,7 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
         "it is handed the group that exists, and asks to join it: it founds no group of its own"
     );
     assert!(
-        late.service.existing_keys(workspace_id, channel).is_none(),
+        late.service.existing_keys(workspace_id).is_none(),
         "no keys of its own: the group it holds is the founder's"
     );
 }
@@ -87,7 +86,6 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
 fn a_device_that_entered_a_workspace_never_founds_its_group() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let policy = Policy::readers([1]);
     let dir = tempfile::tempdir().unwrap();
     let mut entered = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
@@ -101,7 +99,7 @@ fn a_device_that_entered_a_workspace_never_founds_its_group() {
         ChannelAccess::Waiting
     ));
     run(&mut [&mut entered], &mut now, 30);
-    assert!(!entered.service.peers[&channel].peer.knows_group());
+    assert!(!entered.service.peers[&workspace_id].peer.knows_group());
     assert!(matches!(
         entered.service.access(workspace_id, now),
         ChannelAccess::Waiting

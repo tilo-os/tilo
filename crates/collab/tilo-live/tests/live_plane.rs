@@ -50,12 +50,12 @@ fn scope() -> Scope {
     Scope::workspace(WORKSPACE)
 }
 
-/// The scope's channel content keys at epoch 1, as the workspace's own
-/// channel hands them to its members.
+/// The workspace's content keys at epoch 1, as its group hands them to its
+/// members.
 fn keys() -> ChannelContentKeys {
-    let channel = tilo_live::scope::Scope::workspace(WORKSPACE).channel_id();
+    let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
     let owner = MemberKey::generate("owner").unwrap();
-    ChannelGroup::create(channel, owner)
+    ChannelGroup::create(workspace, owner)
         .unwrap()
         .content_keys()
         .unwrap()

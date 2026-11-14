@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 45
+version = 46
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -28,7 +28,7 @@ sources = [
     "crates/collab/neighbour-wire/src/unit_chain.rs",
     "crates/collab/neighbour-wire/src/content.rs",
     "crates/collab/tilo-user-identity/src/cert.rs",
-    "crates/collab/collab-types/src/channel.rs",
+    "crates/collab/collab-types/src/artifact.rs",
     "crates/hosting/tilo-relay-protocol/src/voice.rs",
     "crates/collab/collab-types/src/mls_governance.rs",
     "crates/collab/tilo-user-identity/src/directory.rs",
@@ -108,7 +108,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "ChangeClaim.action" = "#1 ClaimedAction"
 "ChangeClaim.change" = "#0 [u8; 32]"
 "ChangeClaim.units" = "#2 Vec<UnitPath>"
-"ChannelId" = "tuple(Uuid) transparent"
 "ClaimedAction" = "enum external"
 "ClaimedAction::Edit" = "#1 struct"
 "ClaimedAction::Edit.kind" = "#0 String"
@@ -196,10 +195,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DoorRefused.mail" = "#4 bool"
 "DoorRefused.waitList" = "#2 bool"
 "Ed25519PublicKey" = "tuple([u8; 32]) transparent"
-"EncryptionMetadata" = "struct"
-"EncryptionMetadata.channel" = "#1 ChannelId"
+"EncryptionMetadata" = "struct deny_unknown_fields"
 "EncryptionMetadata.epoch" = "#0 u64"
-"EncryptionMetadata.scheme" = "#2 EncryptionScheme"
+"EncryptionMetadata.scheme" = "#1 EncryptionScheme"
 "EncryptionScheme" = "enum external"
 "EncryptionScheme::ContentKey" = "#1 struct"
 "EncryptionScheme::ContentKey.retention" = "#0 ContentRetention"
@@ -464,12 +462,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "MatrixCoefficients::identity" = "#2 unit"
 "MatrixCoefficients::unspecified" = "#3 unit"
 "MlsAccessRequestV1" = "struct deny_unknown_fields"
-"MlsAccessRequestV1.channel" = "#1 ChannelId"
 "MlsAccessRequestV1.device" = "#2 Ed25519PublicKey"
 "MlsAccessRequestV1.issued_at" = "#4 u64"
 "MlsAccessRequestV1.key_package" = "#3 Vec<u8>"
 "MlsAccessRequestV1.signature" = "#5 Signature"
 "MlsAccessRequestV1.version" = "#0 u16"
+"MlsAccessRequestV1.workspace" = "#1 WorkspaceId"
 "MlsGovernanceAction" = "enum external deny_unknown_fields"
 "MlsGovernanceAction::Commit" = "#1 struct"
 "MlsGovernanceAction::Commit.added" = "#1 Vec<Ed25519PublicKey>"
@@ -480,12 +478,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "MlsGovernanceAction::Genesis" = "#0 unit"
 "MlsGovernanceFrame" = "struct deny_unknown_fields"
 "MlsGovernanceFrame.action" = "#4 MlsGovernanceAction"
-"MlsGovernanceFrame.channel" = "#1 ChannelId"
 "MlsGovernanceFrame.epoch" = "#3 u64"
 "MlsGovernanceFrame.previous_frame_digest" = "#2 [u8; 32]"
 "MlsGovernanceFrame.signature" = "#6 Signature"
 "MlsGovernanceFrame.signed_by" = "#5 Ed25519PublicKey"
 "MlsGovernanceFrame.version" = "#0 u16"
+"MlsGovernanceFrame.workspace" = "#1 WorkspaceId"
 "NeighbourMsg" = "enum external"
 "NeighbourMsg::AppDocument" = "#12 struct"
 "NeighbourMsg::AppDocument.app_id" = "#1 String"
@@ -795,7 +793,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"
 "SignedOp.claims" = "#8 Vec<ChangeClaim>"
-"SignedOp.encryption" = "#7 Option<EncryptionMetadata> with=encryption_wire"
+"SignedOp.encryption" = "#7 Option<EncryptionMetadata>"
 "SignedOp.kind" = "#4 OpKind"
 "SignedOp.payload" = "#0 Vec<u8> with=serde_bytes"
 "SignedOp.seq" = "#6 u64"

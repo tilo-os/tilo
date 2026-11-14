@@ -148,7 +148,6 @@ use tilo_desktop_model::DesktopTree;
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AuthorizedDocumentRoute {
     artifact: ArtifactId,
-    channel: collab_types::ChannelId,
     payload: collab_types::RoutedDocumentPayload,
 }
 
@@ -6691,17 +6690,6 @@ impl AppBrokerState {
                 "certified document operation has an invalid routed payload: {error}"
             ))
         })?;
-        let channel = match &payload {
-            collab_types::RoutedDocumentPayload::Cleartext(_)
-            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
-                collab_types::document_channel_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                )
-            }
-            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
-        };
         // A workspace that seals its records takes every write encrypted under
         // the record channel's keys. An unencrypted one is refused here, on
         // the device that wrote it, and never reaches the workspace.
@@ -6724,11 +6712,9 @@ impl AppBrokerState {
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             BrokerError::failed("collaboration governance state is unavailable".into())
         })?;
-        if !broker_channels.document_encryption_allowed(
-            &route.cluster_id,
-            channel,
-            envelope.encryption.as_ref(),
-        ) {
+        if !broker_channels
+            .document_encryption_allowed(&route.cluster_id, envelope.encryption.as_ref())
+        {
             return Err(BrokerError::failed(
                 "plaintext document operation rejected after MLS migration".into(),
             ));
@@ -6767,7 +6753,6 @@ impl AppBrokerState {
         }
         Ok(AuthorizedDocumentRoute {
             artifact: envelope.artifact,
-            channel,
             payload,
         })
     }
@@ -8980,20 +8965,6 @@ fn handle_authorized_signed_op_send(
     envelope: SignedOp,
 ) {
     debug_assert_eq!(authorized.artifact, envelope.artifact);
-    debug_assert_eq!(
-        authorized.channel,
-        match &authorized.payload {
-            collab_types::RoutedDocumentPayload::Cleartext(_)
-            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
-                collab_types::document_channel_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                )
-            }
-            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
-        }
-    );
     handle_signed_op_send_for_artifact(
         state,
         peer_id,
@@ -13669,8 +13640,6 @@ pub mod tests {
         );
         assert_published_snapshot(&sink, &route);
 
-        let expected_channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
         let mut encrypted = SignedOp::new_unsigned_with_encryption(
             b"opaque MLS application frame".to_vec(),
             artifact,
@@ -13679,7 +13648,7 @@ pub mod tests {
             collab_types::OpKind::Change,
             tilo_clock::wall(),
             2,
-            collab_types::EncryptionMetadata::mls_application(7, expected_channel),
+            collab_types::EncryptionMetadata::mls_application(7),
         );
         sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
         let authorized = state
@@ -13687,8 +13656,7 @@ pub mod tests {
             .expect("broker authorizes signed clear metadata without decrypting");
         assert!(matches!(
             authorized.payload,
-            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
-                if channel == expected_channel
+            collab_types::RoutedDocumentPayload::Encrypted { epoch: 7 }
         ));
         handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
         let delivered = received.try_recv().expect("opaque MLS fanout");
@@ -13696,17 +13664,6 @@ pub mod tests {
             postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("opaque envelope"),
             encrypted,
             "broker must relay ciphertext byte-for-byte"
-        );
-
-        let mut wrong_channel = encrypted.clone();
-        wrong_channel.encryption.as_mut().expect("metadata").channel =
-            collab_types::ChannelId::new();
-        sign_op(&mut wrong_channel, &device).expect("re-sign adversarial envelope");
-        assert!(
-            state
-                .authorize_certified_document(&route, &admitted, &wrong_channel)
-                .is_err(),
-            "validly signed ciphertext for another MLS channel must not be routed"
         );
 
         assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);

@@ -747,7 +747,7 @@ fn drop_unpinned(
 #[cfg(test)]
 mod tests {
     use super::{Carried, NeighbourMsg, WorkspaceId, carried};
-    use collab_types::{ChannelId, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame};
+    use collab_types::{MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame};
 
     /// A host asks a linked member for the surface a change names; the member's
     /// session hears it as a member's message, which its content service keeps,
@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn channel_governance_travels_over_the_workspaces_link() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-        let channel = ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let genesis = NeighbourMsg::MlsGovernance {
             workspace: "workspace".into(),
             frame: Box::new(

@@ -1,7 +1,7 @@
 //! Versioned, signed clear metadata around opaque MLS governance bytes.
 //!
-//! Any participant of a channel writes the MLS commit that brings the
-//! channel's group in line with the membership, and signs it in a
+//! Any device of a workspace that commits writes the MLS commit that brings
+//! the workspace's group in line with the membership, and signs it in a
 //! [`MlsGovernanceFrame`]. Hosts route the frame and target its opaque
 //! Welcome and key history; they never receive group keys or decrypt
 //! application data.
@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::{
-    CanonicalError, ChannelId, Ed25519PublicKey, Signature, VerifyError, canonical_bytes,
+    CanonicalError, Ed25519PublicKey, Signature, VerifyError, WorkspaceId, canonical_bytes,
     sign_event, verify_event,
 };
 
@@ -23,13 +23,13 @@ pub const MAX_MLS_CONTROL_BYTES: usize = 16 * 1024 * 1024;
 /// Devices one commit may add or remove.
 pub const MAX_COMMIT_DEVICES: usize = 4096;
 
-/// What a frame does to its channel's group.
+/// What a frame does to its workspace's group.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum MlsGovernanceAction {
-    /// The first frame of a channel: its signer created the group alone, and
-    /// no plaintext document op is accepted for the channel from then on.
-    /// Two participants creating the same channel at once keep the genesis
+    /// The first frame of a workspace's group: its signer created the group
+    /// alone, and no plaintext document op is accepted for the workspace from
+    /// then on. Two devices creating the same group at once keep the genesis
     /// with the lower digest.
     Genesis,
     /// One MLS commit moving the group to the membership: `removed` leave,
@@ -41,7 +41,7 @@ pub enum MlsGovernanceAction {
         commit: Vec<u8>,
         /// What `added` join from; `None` exactly when `added` is empty.
         joining: Option<Joining>,
-        /// Content keys of a branch of the channel that lost (a genesis or
+        /// Content keys of a branch of the group that lost (a genesis or
         /// a commit whose sibling had the lower digest) that the committer
         /// held, sealed for the post-commit epoch: every member keeps them,
         /// so what was sealed under that branch stays readable. A commit may
@@ -54,7 +54,7 @@ pub enum MlsGovernanceAction {
 /// content-key history, sealed for the post-commit epoch, so a joiner can
 /// decrypt every earlier op without any other member online.
 ///
-/// Only those devices need it, and it grows with the channel (the Welcome
+/// Only those devices need it, and it grows with the group (the Welcome
 /// carries the group's ratchet tree), so it travels to them alone: every
 /// other member gets the frame with the material [`Joining::Withheld`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +82,7 @@ impl JoinMaterial {
 pub enum Joining {
     /// The material, for the committer and the devices it adds.
     Material(JoinMaterial),
-    /// The material's digest, for every member already in the channel:
+    /// The material's digest, for every member already in the group:
     /// they apply the commit and never need the Welcome.
     Withheld([u8; 32]),
 }
@@ -148,7 +148,7 @@ enum ActionView<'a> {
 #[serde(deny_unknown_fields)]
 pub struct MlsGovernanceFrame {
     pub version: u16,
-    pub channel: ChannelId,
+    pub workspace: WorkspaceId,
     /// Digest of the frame this one follows, or all-zero for a genesis.
     pub previous_frame_digest: [u8; 32],
     /// MLS epoch after the commit; 0 for a genesis.
@@ -162,7 +162,7 @@ pub struct MlsGovernanceFrame {
 struct SigningView<'a> {
     domain: &'static [u8],
     version: u16,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     previous_frame_digest: [u8; 32],
     epoch: u64,
     action: ActionView<'a>,
@@ -194,14 +194,14 @@ impl MlsGovernanceFrame {
     ///
     /// Returns [`CanonicalError`] if the signing view cannot be encoded.
     pub fn signed(
-        channel: ChannelId,
+        workspace: WorkspaceId,
         previous_frame_digest: [u8; 32],
         epoch: u64,
         action: MlsGovernanceAction,
         signer: &SigningKey,
     ) -> Result<Self, CanonicalError> {
         let mut frame = Self::unsigned(
-            channel,
+            workspace,
             previous_frame_digest,
             epoch,
             action,
@@ -215,7 +215,7 @@ impl MlsGovernanceFrame {
     /// see [`MlsAccessRequestV1::unsigned`]: sign [`Self::signing_bytes`] and
     /// store it in `signature`.
     pub fn unsigned(
-        channel: ChannelId,
+        workspace: WorkspaceId,
         previous_frame_digest: [u8; 32],
         epoch: u64,
         action: MlsGovernanceAction,
@@ -223,7 +223,7 @@ impl MlsGovernanceFrame {
     ) -> Self {
         Self {
             version: MLS_GOVERNANCE_VERSION,
-            channel,
+            workspace,
             previous_frame_digest,
             epoch,
             action,
@@ -245,7 +245,7 @@ impl MlsGovernanceFrame {
         Ok(SigningView {
             domain: b"tilo.mls-governance.v2",
             version: self.version,
-            channel: self.channel,
+            workspace: self.workspace,
             previous_frame_digest: self.previous_frame_digest,
             epoch: self.epoch,
             action: self.action.view()?,
@@ -409,10 +409,10 @@ impl MlsGovernanceFrame {
 /// Version of [`MlsAccessRequestV1`].
 pub const MLS_ACCESS_VERSION: u16 = 1;
 
-/// One device asking a channel's participants for membership: a fresh MLS
-/// key package for that channel, signed by the device's certified key.
+/// One device asking a workspace's key holders for membership: a fresh MLS
+/// key package for that workspace's group, signed by the device's certified key.
 ///
-/// Any participant admits the device once the channel's access policy (room
+/// Any key holder admits the device once the workspace's access policy (workspace
 /// membership through the person's certified device set, or a live service
 /// grant) names this device key. The signature binds the key
 /// package to the device, so a relay that stores or forwards the request
@@ -421,13 +421,13 @@ pub const MLS_ACCESS_VERSION: u16 = 1;
 #[serde(deny_unknown_fields)]
 pub struct MlsAccessRequestV1 {
     pub version: u16,
-    pub channel: ChannelId,
+    pub workspace: WorkspaceId,
     /// Certified device key of the requester; also its MLS credential name.
     pub device: Ed25519PublicKey,
-    /// TLS-serialised MLS `KeyPackage` minted for this channel only.
+    /// TLS-serialised MLS `KeyPackage` minted for this group only.
     pub key_package: Vec<u8>,
     /// When the device minted the request (seconds since the Unix epoch),
-    /// so a participant keeps only the newest request per device.
+    /// so a key holder keeps only the newest request per device.
     pub issued_at: u64,
     pub signature: Signature,
 }
@@ -436,7 +436,7 @@ pub struct MlsAccessRequestV1 {
 struct AccessRequestView<'a> {
     domain: &'static [u8],
     version: u16,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     device: Ed25519PublicKey,
     key_package: &'a [u8],
     issued_at: u64,
@@ -449,14 +449,14 @@ impl MlsAccessRequestV1 {
     ///
     /// Returns [`CanonicalError`] if the signing view cannot be encoded.
     pub fn signed(
-        channel: ChannelId,
+        workspace: WorkspaceId,
         key_package: Vec<u8>,
         issued_at: u64,
         device_key: &SigningKey,
     ) -> Result<Self, CanonicalError> {
         let mut request = Self {
             version: MLS_ACCESS_VERSION,
-            channel,
+            workspace,
             device: Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes()),
             key_package,
             issued_at,
@@ -470,14 +470,14 @@ impl MlsAccessRequestV1 {
     /// key this process cannot hold (a browser's non-extractable `WebCrypto`
     /// key): sign [`Self::signing_bytes`] and store it in `signature`.
     pub fn unsigned(
-        channel: ChannelId,
+        workspace: WorkspaceId,
         device: Ed25519PublicKey,
         key_package: Vec<u8>,
         issued_at: u64,
     ) -> Self {
         Self {
             version: MLS_ACCESS_VERSION,
-            channel,
+            workspace,
             device,
             key_package,
             issued_at,
@@ -498,7 +498,7 @@ impl MlsAccessRequestV1 {
         AccessRequestView {
             domain: b"tilo.mls-access-request.v1",
             version: self.version,
-            channel: self.channel,
+            workspace: self.workspace,
             device: self.device,
             key_package: &self.key_package,
             issued_at: self.issued_at,
@@ -518,81 +518,20 @@ impl MlsAccessRequestV1 {
     }
 }
 
-/// Upper bound on each id of a [`ChannelRoute`], so a claim cannot make a
-/// participant hash or store an unbounded string.
-pub const MAX_CHANNEL_ROUTE_ID_BYTES: usize = 1024;
-
-/// The record a channel carries: its app and record id, which with the room
-/// hash to the channel's id ([`crate::document_channel_id`]).
-///
-/// A channel id cannot be turned back into its record, so a participant that
-/// is to decide Read on the record (a Deny over an app or a pattern of records
-/// included) must be told the route. The claim needs no signature and no
-/// trust in whoever presents it: [`Self::proves`] holds only for the route
-/// whose hash is the channel's id, and finding another route with the same
-/// hash means breaking SHA-256. A device asking for a channel's key sends it
-/// beside its access request; a participant keeps it with the channel.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChannelRoute {
-    pub app: String,
-    pub record: String,
-}
-
-impl ChannelRoute {
-    #[must_use]
-    pub fn new(app: impl Into<String>, record: impl Into<String>) -> Self {
-        Self {
-            app: app.into(),
-            record: record.into(),
-        }
-    }
-
-    /// The channel this route's record has in `room`.
-    #[must_use]
-    pub fn channel(&self, room: &str) -> ChannelId {
-        crate::document_channel_id(&self.app, room, &self.record)
-    }
-
-    /// Whether this is the route of `channel`, one of `room`'s channels:
-    /// both ids within [`MAX_CHANNEL_ROUTE_ID_BYTES`] and hashing, with
-    /// `room`, to `channel`.
-    #[must_use]
-    pub fn proves(&self, room: &str, channel: ChannelId) -> bool {
-        self.app.len() <= MAX_CHANNEL_ROUTE_ID_BYTES
-            && self.record.len() <= MAX_CHANNEL_ROUTE_ID_BYTES
-            && self.channel(room) == channel
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::generate_keypair;
 
     tilo_test_env::scenario! {
-        /// The signed frames of channel governance: what each proves, what a signature covers and which frames are refused.
+        /// The signed frames of key governance: what each proves, what a signature covers and which frames are refused.
         fn governance_frames_are_bound_to_what_they_sign_and_refused_when_malformed;
 
-        phase a_channel_route_proves_only_its_own_channel;
-        {
-            let route = ChannelRoute::new("so.tilo.sheets", "payroll");
-            let channel = crate::document_channel_id("so.tilo.sheets", "room", "payroll");
-            assert_eq!(route.channel("room"), channel);
-            assert!(route.proves("room", channel));
-            assert!(!route.proves("other", channel));
-            assert!(!ChannelRoute::new("so.tilo.sheets", "budget").proves("room", channel));
-            assert!(!ChannelRoute::new("so.tilo.notes", "payroll").proves("room", channel));
-            let long = "x".repeat(MAX_CHANNEL_ROUTE_ID_BYTES + 1);
-            let oversized = ChannelRoute::new("so.tilo.sheets", long);
-            assert!(!oversized.proves("room", oversized.channel("room")));
-        }
-
-        phase access_request_is_bound_to_its_device_channel_and_package;
+        phase access_request_is_bound_to_its_device_workspace_and_package;
         {
             let (device, device_pk) = generate_keypair();
-            let channel = ChannelId::new();
-            let request = MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 7, &device).unwrap();
+            let workspace = WorkspaceId::new();
+            let request = MlsAccessRequestV1::signed(workspace, vec![1, 2, 3], 7, &device).unwrap();
             assert_eq!(request.device, device_pk);
             request.verify().unwrap();
 
@@ -600,13 +539,13 @@ mod tests {
             swapped.key_package = vec![9];
             assert!(swapped.verify().is_err());
             let mut moved = request.clone();
-            moved.channel = ChannelId::new();
+            moved.workspace = WorkspaceId::new();
             assert!(moved.verify().is_err());
             let (_, other) = generate_keypair();
             let mut impersonated = request;
             impersonated.device = other;
             assert!(impersonated.verify().is_err());
-            let empty = MlsAccessRequestV1::signed(channel, Vec::new(), 7, &device).unwrap();
+            let empty = MlsAccessRequestV1::signed(workspace, Vec::new(), 7, &device).unwrap();
             assert_eq!(
                 empty.verify(),
                 Err(MlsGovernanceError::InvalidControlPayload)
@@ -616,12 +555,12 @@ mod tests {
         phase a_frame_signed_elsewhere_matches_one_signed_here;
         {
             let (signer, signer_pk) = generate_keypair();
-            let channel = ChannelId::new();
+            let workspace = WorkspaceId::new();
             let expected =
-                MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, &signer)
+                MlsGovernanceFrame::signed(workspace, [0; 32], 0, MlsGovernanceAction::Genesis, &signer)
                     .unwrap();
             let mut unsigned = MlsGovernanceFrame::unsigned(
-                channel,
+                workspace,
                 [0; 32],
                 0,
                 MlsGovernanceAction::Genesis,
@@ -640,7 +579,7 @@ mod tests {
             let (signer, _) = generate_keypair();
             let (_, joiner) = generate_keypair();
             let frame = MlsGovernanceFrame::signed(
-                ChannelId::new(),
+                WorkspaceId::new(),
                 [3; 32],
                 2,
                 MlsGovernanceAction::Commit {
@@ -667,9 +606,9 @@ mod tests {
         {
             let (signer, signer_pk) = generate_keypair();
             let (_, other) = generate_keypair();
-            let channel = ChannelId::new();
+            let workspace = WorkspaceId::new();
             let frame = |previous, epoch, action| {
-                MlsGovernanceFrame::signed(channel, previous, epoch, action, &signer).unwrap()
+                MlsGovernanceFrame::signed(workspace, previous, epoch, action, &signer).unwrap()
             };
             let commit = |removed: Vec<Ed25519PublicKey>, added: Vec<Ed25519PublicKey>| {
                 let joining = (!added.is_empty()).then_some(Joining::Withheld([1; 32]));

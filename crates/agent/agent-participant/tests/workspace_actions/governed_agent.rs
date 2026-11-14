@@ -208,8 +208,6 @@ async fn retained_sealed(
     route: &DocumentRoute,
     author: [u8; 32],
 ) -> (usize, bool) {
-    let channel =
-        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
     let bodies: Vec<bool> = hosted
         .relay
         .workspace_records()
@@ -225,12 +223,9 @@ async fn retained_sealed(
                     record_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && record_id == route.record => Some(
-                    envelope
-                        .encryption
-                        .as_ref()
-                        .is_some_and(|metadata| metadata.channel == channel),
-                ),
+                }) if app_id == route.app_id && record_id == route.record => {
+                    Some(envelope.encryption.as_ref().is_some())
+                }
                 _ => None,
             },
         )

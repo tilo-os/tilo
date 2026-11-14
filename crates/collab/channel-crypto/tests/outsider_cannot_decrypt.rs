@@ -3,7 +3,7 @@
 //!
 //! The core promise is "only group members can decrypt"; this file
 //! pins that from several angles — a fresh standalone `ChannelGroup`, a
-//! different-channel group, and a tampered ciphertext.
+//! different-workspace group, and a tampered ciphertext.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,20 +12,20 @@
 )]
 
 use channel_crypto::{ChannelGroup, MemberKey};
-use collab_types::ChannelId;
+use collab_types::WorkspaceId;
 
-fn alice_bob_group() -> (ChannelId, ChannelGroup, ChannelGroup) {
-    let cid = ChannelId::new();
+fn alice_bob_group() -> (WorkspaceId, ChannelGroup, ChannelGroup) {
+    let workspace = WorkspaceId::new();
     let alice = MemberKey::generate("alice").unwrap();
     let bob = MemberKey::generate("bob").unwrap();
     let bob_kp = bob.fresh_key_package().unwrap();
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
-    let bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
-    (cid, alice_g, bob_g)
+    let bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
+    (workspace, alice_g, bob_g)
 }
 
-/// An outsider in a brand-new group, or one who never received a welcome for the same channel
+/// An outsider in a brand-new group, or one who never received a welcome for the same workspace
 /// id, cannot decrypt.
 /// Runs each phase below in order; every phase builds its own fixture.
 #[test]
@@ -41,7 +41,7 @@ fn outsider_in_a_brand_new_group_cannot_decrypt() {
     let (_cid, mut alice_g, _bob_g) = alice_bob_group();
     let ct = alice_g.encrypt(b"members only").unwrap();
 
-    let dave_cid = ChannelId::new();
+    let dave_cid = WorkspaceId::new();
     let dave = MemberKey::generate("dave").unwrap();
     let mut dave_g = ChannelGroup::create(dave_cid, dave).unwrap();
 
@@ -53,19 +53,19 @@ fn outsider_in_a_brand_new_group_cannot_decrypt() {
 }
 
 fn outsider_who_never_received_a_welcome_cannot_decrypt_from_same_channel_id() {
-    // Subtle case: the *channel id* in EncryptionMetadata is not the
+    // Subtle case: the *workspace id* in EncryptionMetadata is not the
     // security boundary, the MLS group is. Even if dave creates a fresh
-    // ChannelGroup with the *same* ChannelId as alice's, his MLS group
+    // ChannelGroup with the *same* WorkspaceId as alice's, his MLS group
     // state has no overlap with hers, so decryption fails.
-    let (cid, mut alice_g, _bob_g) = alice_bob_group();
-    let ct = alice_g.encrypt(b"colliding-channel-id payload").unwrap();
+    let (workspace, mut alice_g, _bob_g) = alice_bob_group();
+    let ct = alice_g.encrypt(b"colliding-workspace-id payload").unwrap();
 
     let dave = MemberKey::generate("dave").unwrap();
-    let mut dave_g = ChannelGroup::create(cid, dave).unwrap();
+    let mut dave_g = ChannelGroup::create(workspace, dave).unwrap();
     let err = dave_g.decrypt(&ct);
     assert!(
         err.is_err(),
-        "matching channel_id must not bypass MLS membership"
+        "matching workspace must not bypass MLS membership"
     );
 }
 

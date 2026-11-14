@@ -1,5 +1,5 @@
 use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
-use collab_types::ChannelId;
+use collab_types::WorkspaceId;
 
 /// Sealed groups survive restart with ratchet state and reject a wrong key, tampering and
 /// truncation.
@@ -14,13 +14,13 @@ fn sealed_groups_survive_restart_and_keep_ratchet_state() {
     let dir = tempfile::tempdir().unwrap();
     let alice_path = dir.path().join("alice.mls");
     let bob_path = dir.path().join("bob.mls");
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let alice_member = MemberKey::generate("alice").unwrap();
     let bob_member = MemberKey::generate("bob").unwrap();
     let bob_package = bob_member.fresh_key_package().unwrap();
-    let mut alice = ChannelGroup::create(channel, alice_member).unwrap();
+    let mut alice = ChannelGroup::create(workspace, alice_member).unwrap();
     let welcome = alice.add_member(bob_package).unwrap();
-    let mut bob = ChannelGroup::process_welcome(channel, &welcome, bob_member).unwrap();
+    let mut bob = ChannelGroup::process_welcome(workspace, &welcome, bob_member).unwrap();
 
     let before_restart = alice.encrypt(b"persist me").unwrap();
     assert_eq!(bob.decrypt(&before_restart).unwrap(), b"persist me");
@@ -41,7 +41,7 @@ fn sealed_state_rejects_wrong_key_tampering_and_truncation() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("group.mls");
     let group =
-        ChannelGroup::create(ChannelId::new(), MemberKey::generate("alice").unwrap()).unwrap();
+        ChannelGroup::create(WorkspaceId::new(), MemberKey::generate("alice").unwrap()).unwrap();
     group.save_sealed(&path, &VaultKey::new([3; 32])).unwrap();
 
     assert!(ChannelGroup::load_sealed(&path, &VaultKey::new([4; 32])).is_err());

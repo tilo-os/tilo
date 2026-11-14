@@ -5,26 +5,24 @@ use collab_types::{ContentRetention, EncryptionScheme, verify_op};
 use neighbour_wire::NeighbourMsg;
 use web_time::UNIX_EPOCH;
 
-/// One document channel and one author device's ops on it: the unit a store
-/// compacts and a subscriber resumes within.
+/// One record and one author device's ops on it: the unit a store compacts
+/// and a subscriber resumes within.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub struct Lineage {
-    /// The channel id the author sealed the op for, its UUID bytes.
-    pub channel: [u8; 16],
+    /// [`neighbour_wire::app_document_channel`] of the op's app and record.
+    pub record: [u8; 32],
     /// Device key of the op's author.
     pub author: [u8; 32],
 }
 
 impl Lineage {
-    /// The lineage of `author`'s frames on `record` of `app` in `room`: the
-    /// channel those frames are sealed for, and their author.
+    /// The lineage of `author`'s frames on `record` of `app`.
     #[must_use]
-    pub fn of(app: &str, room: &str, record: &str, author: [u8; 32]) -> Self {
-        let channel = collab_types::document_channel_id(app, room, record);
+    pub fn of(app: &str, record: &str, author: [u8; 32]) -> Self {
         Self {
-            channel: *channel.0.as_bytes(),
+            record: neighbour_wire::app_document_channel(app, record),
             author,
         }
     }
@@ -41,10 +39,9 @@ pub enum Refusal {
     #[error("the op is not signed by its author")]
     Unsigned,
     /// The op is a single-use MLS application message, which nothing can
-    /// re-deliver, or it carries no channel at all: a store keeps what a
-    /// member can read again later, sealed for a channel under its content
-    /// key.
-    #[error("the op is not sealed for a channel under a content key")]
+    /// re-deliver, or it is not sealed at all: a store keeps what a member
+    /// can read again later, sealed under a content key.
+    #[error("the op is not sealed under a content key")]
     NotSealed,
 }
 
@@ -76,7 +73,13 @@ impl Frame {
     /// when the op's signature does not verify, and [`Refusal::NotSealed`]
     /// when the op is not content-key ciphertext.
     pub fn of(message: &NeighbourMsg) -> Result<Self, Refusal> {
-        let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } = message
+        else {
             return Err(Refusal::NotADocument);
         };
         verify_op(envelope).map_err(|_| Refusal::Unsigned)?;
@@ -90,10 +93,7 @@ impl Frame {
             .map(|since| u64::try_from(since.as_nanos()).unwrap_or(u64::MAX))
             .unwrap_or_default();
         Ok(Self {
-            lineage: Lineage {
-                channel: *metadata.channel.0.as_bytes(),
-                author: *envelope.author.as_bytes(),
-            },
+            lineage: Lineage::of(app_id, record_id, *envelope.author.as_bytes()),
             seq: envelope.seq,
             authored_at_ns,
             retention,

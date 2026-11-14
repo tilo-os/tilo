@@ -11,7 +11,7 @@ fn welcome(fixture: &Fixture, authored_at_ns: u64, added: [u8; 32]) -> Envelope 
         workspace: "room".into(),
         frame: Box::new(
             MlsGovernanceFrame::signed(
-                collab_types::ChannelId::new(),
+                collab_types::WorkspaceId::new(),
                 [1; 32],
                 1,
                 MlsGovernanceAction::Commit {
@@ -99,7 +99,8 @@ async fn a_replay_carries_only_the_channel_governance_its_device_uses() {
         for frame in [&request, &others, &own] {
             fixture.publish_checkpoint_frame(frame.clone(), true).await;
         }
-        assert_eq!(fixture.store.load_retained().unwrap().len(), 3);
+        // The newer Welcome replaces the older: one group per workspace.
+        assert_eq!(fixture.store.load_retained().unwrap().len(), 2);
         let replayed = replayed(&fixture, reader).await;
         assert_eq!(
             count(&replayed, &request),

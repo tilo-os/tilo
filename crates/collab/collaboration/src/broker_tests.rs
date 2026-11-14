@@ -1558,8 +1558,7 @@ tilo_test_env::scenario! {
         let broker_captures = captures.clone();
         let (requests_tx, requests_rx) = mpsc::sync_channel(1);
         let cluster_id = Uuid::new_v4();
-        let channel =
-            collab_types::document_channel_id("so.tilo.notes", &cluster_id.to_string(), "note");
+        let channel = collab_types::WorkspaceId::parse(&cluster_id.to_string()).unwrap();
         let keys = channel_crypto::ChannelGroup::create(
             channel,
             channel_crypto::MemberKey::generate("device").unwrap(),
@@ -1658,10 +1657,9 @@ tilo_test_env::scenario! {
                     collab_types::Ed25519PublicKey::from_bytes([5; 32])
                 );
                 assert_ne!(op.payload, b"fixture document change".to_vec());
-                assert_eq!(
-                    op.encryption.map(|metadata| metadata.channel),
-                    Some(channel),
-                    "a certified endpoint seals under the route's channel"
+                assert!(
+                    op.encryption.is_some(),
+                    "a certified endpoint seals under the route's workspace keys"
                 );
             }
             _ => panic!("document must use the broker policy path"),
@@ -2643,7 +2641,7 @@ struct RefusedDocumentIdentity;
 #[cfg(unix)]
 fn ready_channel_keys() -> runtime_identity::wire::ChannelKeysReply {
     let group = channel_crypto::ChannelGroup::create(
-        collab_types::ChannelId::new(),
+        collab_types::WorkspaceId::new(),
         channel_crypto::MemberKey::generate("device").unwrap(),
     )
     .unwrap();
@@ -3073,7 +3071,7 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
     let app_id = "so.tilo.test";
     let cluster = Uuid::new_v4();
     let workspace = cluster.to_string();
-    let channel = collab_types::document_channel_id(app_id, &workspace, "");
+    let channel = collab_types::WorkspaceId::parse(&workspace).unwrap();
     let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
     let group = channel_crypto::ChannelGroup::create(
         channel,
@@ -4245,8 +4243,7 @@ tilo_test_env::scenario! {
         assert!(!mgr.is_connected());
         assert!(mgr.primary_route().is_none());
         assert_eq!(mgr.requested_primary_route(), Some(&route));
-        let channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id.to_string(), "");
+        let channel = collab_types::WorkspaceId::parse(&route.cluster_id.to_string()).unwrap();
         let group = channel_crypto::ChannelGroup::create(
             channel,
             channel_crypto::MemberKey::generate("owner").unwrap(),
@@ -5094,7 +5091,7 @@ tilo_test_env::scenario! {
 
     phase signed_document_event_decrypts_content_keys_for_history_and_late_joiners;
     {
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let artifact = collab_types::ArtifactId::new();
         let alice_key = channel_crypto::MemberKey::generate("alice").unwrap();
         let bob_key = channel_crypto::MemberKey::generate("bob").unwrap();
@@ -5135,7 +5132,6 @@ tilo_test_env::scenario! {
             panic!("a provisioned endpoint seals at once");
         };
         let metadata = metadata.expect("a provisioned endpoint never sends plaintext");
-        assert_eq!(metadata.channel, channel);
         assert_eq!(
             metadata.retention(),
             Some(collab_types::ContentRetention::Delta)
@@ -5220,7 +5216,6 @@ tilo_test_env::scenario! {
         );
         let mislabeled = collab_types::EncryptionMetadata::content_key(
             metadata.epoch,
-            channel,
             collab_types::ContentRetention::Checkpoint,
         );
         assert!(
@@ -5302,7 +5297,7 @@ tilo_test_env::scenario! {
         let app_id = "so.tilo.history-test";
         let cluster = Uuid::from_u128(7);
         let workspace = cluster.to_string();
-        let channel = collab_types::document_channel_id(app_id, &workspace, "");
+        let channel = collab_types::WorkspaceId::parse(&workspace).unwrap();
         let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
         let mut alice = channel_crypto::ChannelGroup::create(
             channel,

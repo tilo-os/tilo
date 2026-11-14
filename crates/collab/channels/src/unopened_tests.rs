@@ -116,9 +116,12 @@ fn a_failed_open_is_retried_on_the_pumps_backoff() {
     let mut service = late_readers_service(dir.path(), &directory);
     let workspace = WorkspaceId::new();
     let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
-    // The workspace's state directory cannot be created: a file is in its way.
-    let blocker = dir.path().join("channels").join(workspace.to_string());
-    std::fs::write(&blocker, b"").unwrap();
+    // The workspace's key file cannot be read: a directory is in its way.
+    let blocker = dir
+        .path()
+        .join("channels")
+        .join(format!("{workspace}.peer"));
+    std::fs::create_dir_all(&blocker).unwrap();
     let now = Instant::now();
     assert!(matches!(
         service.access(workspace, now),
@@ -139,7 +142,7 @@ fn a_failed_open_is_retried_on_the_pumps_backoff() {
         "and backs off"
     );
 
-    std::fs::remove_file(&blocker).unwrap();
+    std::fs::remove_dir(&blocker).unwrap();
     assert!(matches!(
         service.access(workspace, due),
         ChannelAccess::Waiting

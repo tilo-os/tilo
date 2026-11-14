@@ -1420,13 +1420,13 @@ impl SharedDesktops {
     /// no secret store at all — takes none. Neither is a workspace's verdict, so no notice names a
     /// workspace as having refused a write it never saw.
     fn sealed(&self, engine: &Engine, key: &Key) -> Option<Sealing> {
-        let (workspace_id, route) = key;
+        let (workspace_id, _) = key;
         if engine.commits_documents(*workspace_id) {
             // Its host takes part in no channels: its records are documents the owner commits,
             // written in the clear.
             return Some(Sealing::Clear);
         }
-        match engine.seal_keys(*workspace_id, route.app, &route.record) {
+        match engine.seal_keys(*workspace_id) {
             Ok(SealKeys::Here(keys)) => Some(Sealing::Sealed(keys)),
             // The record's channel keys are not here yet: it is written on the look after they
             // arrive, and this look leaves the workspace unread so that there is one.
@@ -1782,11 +1782,8 @@ fn laid_into(
 
 /// Whether `key`'s record waits for its channel keys to reach this device.
 fn keys_awaited(engine: &Engine, key: &Key) -> bool {
-    let (workspace_id, route) = key;
-    matches!(
-        engine.seal_keys(*workspace_id, route.app, &route.record),
-        Ok(SealKeys::Waiting)
-    )
+    let (workspace_id, _) = key;
+    matches!(engine.seal_keys(*workspace_id), Ok(SealKeys::Waiting))
 }
 
 /// Write `view` into `doc`, a person's view record. Where an arranging action changed it, the view
@@ -2262,23 +2259,15 @@ mod tests {
             person.clone(),
         );
         desktops.attach_engine(&engine);
-        // The keys of the layout record's channel, as the channel service hands them to this device.
+        // The workspace's keys, as the key service hands them to this device.
         let keys = channel_crypto::ChannelGroup::create(
-            collab_types::workspace_scope(&workspace.to_string()),
+            workspace,
             channel_crypto::MemberKey::generate("owner").expect("a member key"),
         )
-        .expect("the record's channel")
+        .expect("the workspace's group")
         .content_keys()
-        .expect("the record's keys");
-        engine.hand_keys(
-            workspace,
-            collab_types::ChannelRoute::new(DESKTOP_APP, DESKTOP_RECORD),
-            keys.for_unit(collab_types::document_channel_id(
-                DESKTOP_APP,
-                &workspace.to_string(),
-                DESKTOP_RECORD,
-            )),
-        );
+        .expect("the workspace's keys");
+        engine.hand_keys(workspace, keys);
         let layout = (workspace, Route::layout());
         // The write's signature waits for the test: it is under way, so nothing of it can have been
         // taken in here.

@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use collab_types::{
-    ArtifactId, ChannelId, Ed25519PublicKey, EncryptionMetadata, InboundState, OpId, SignedOp,
+    ArtifactId, Ed25519PublicKey, EncryptionMetadata, InboundState, OpId, SignedOp,
     ValidationError, parse_redact_payload,
 };
 
@@ -114,9 +114,13 @@ impl BrokerChannels {
         self.states.insert(artifact, state);
     }
 
-    /// Install or refresh a channel's ingress gate.
-    pub fn register_channel_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
-        self.gates.register(channel, gate);
+    /// Install or refresh a workspace's ingress gate.
+    pub fn register_channel_gate(
+        &mut self,
+        workspace: collab_types::WorkspaceId,
+        gate: channel_crypto::ChannelGate,
+    ) {
+        self.gates.register(workspace, gate);
     }
 
     /// A route with no gate has not been opened encrypted on this device
@@ -127,10 +131,9 @@ impl BrokerChannels {
     pub fn document_encryption_allowed(
         &self,
         workspace: &str,
-        channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.gates.allows_document(workspace, channel, encryption)
+        self.gates.allows_document(workspace, encryption)
     }
 
     /// Whether another device's write of `artifact`'s record may enter, by
@@ -144,13 +147,12 @@ impl BrokerChannels {
     pub fn document_order_allowed(
         &self,
         workspace: &str,
-        channel: ChannelId,
         artifact: ArtifactId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
         match encryption {
             None => !self.sealed.contains(&artifact),
-            Some(_) => self.gates.allows_document(workspace, channel, encryption),
+            Some(_) => self.gates.allows_document(workspace, encryption),
         }
     }
 
@@ -406,9 +408,13 @@ pub fn apply_redaction_from_envelope(
 pub struct BrokerGates(pub Arc<Mutex<BrokerChannels>>);
 
 impl tilo_channels::ChannelGates for BrokerGates {
-    fn register_channel_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+    fn register_channel_gate(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        gate: channel_crypto::ChannelGate,
+    ) {
         if let Ok(mut channels) = self.0.lock() {
-            channels.register_channel_gate(channel, gate);
+            channels.register_channel_gate(workspace, gate);
         }
     }
 }

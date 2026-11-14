@@ -8,8 +8,8 @@
 //! the group is followed as MLS checks it ([`ChannelPeer::follow`]).
 
 use super::{
-    Access, Arc, ChannelEncryption, ChannelId, ChannelPeer, Instant, MlsAccessRequestV1,
-    REQUEST_LONGEST, WorkspaceId,
+    Access, Arc, ChannelEncryption, ChannelPeer, Instant, MlsAccessRequestV1, REQUEST_LONGEST,
+    WorkspaceId,
 };
 
 /// The entry's access request ([`ChannelEncryption::entry_request`]): signed already, or
@@ -17,15 +17,15 @@ use super::{
 pub enum EntryRequest {
     Signed(MlsAccessRequestV1),
     Unsigned(
-        ChannelId,
+        WorkspaceId,
         MlsAccessRequestV1,
         collab_types::signer::SignFuture<'static>,
     ),
 }
 
 impl ChannelEncryption {
-    /// This device's signed request for the keys of `workspace`'s own group
-    /// ([`collab_types::workspace_scope`]), made before the workspace's
+    /// This device's signed request for the keys of `workspace`'s group,
+    /// made before the workspace's
     /// governance names this device: its entry carries it to the host, which
     /// hands it to the group's participants as it admits the device. The
     /// device then waits for the group's Welcome as if it had published the
@@ -40,7 +40,7 @@ impl ChannelEncryption {
     ) -> Option<MlsAccessRequestV1> {
         match self.entry_request(workspace, now, wall)? {
             EntryRequest::Signed(request) => Some(request),
-            EntryRequest::Unsigned(scope, mut request, signing) => {
+            EntryRequest::Unsigned(workspace, mut request, signing) => {
                 let signature = signing
                     .await
                     .inspect_err(
@@ -48,7 +48,7 @@ impl ChannelEncryption {
                     )
                     .ok()?;
                 request.signature = collab_types::Signature::from_bytes(signature);
-                Some(self.entry_signed(scope, request, now))
+                Some(self.entry_signed(workspace, request, now))
             }
         }
     }
@@ -62,9 +62,8 @@ impl ChannelEncryption {
         now: Instant,
         wall: u64,
     ) -> Option<EntryRequest> {
-        let scope = Self::workspace_scope(workspace);
-        if !self.peers.contains_key(&scope) {
-            let opened = match self.open_peer(workspace, scope, now) {
+        if !self.peers.contains_key(&workspace) {
+            let opened = match self.open_peer(workspace, now) {
                 Ok(opened) => opened,
                 Err(error) => {
                     tracing::warn!(%error, %workspace, "channel state could not be opened");
@@ -74,8 +73,8 @@ impl ChannelEncryption {
             if !opened {
                 let store = self.store.as_ref()?;
                 let peer = ChannelPeer::waiting(
-                    Some(store.state.peers(workspace)),
-                    scope,
+                    Some(store.state.peers()),
+                    workspace,
                     Box::new(Arc::clone(&store.signer)),
                     &store.vault,
                 )
@@ -83,17 +82,19 @@ impl ChannelEncryption {
                     tracing::warn!(%error, %workspace, "channel state could not be created");
                 })
                 .ok()?;
-                self.insert_peer(workspace, scope, peer, now);
+                self.insert_peer(workspace, peer, now);
             }
         }
         let store = self.store.as_ref()?;
-        let entry = self.peers.get_mut(&scope)?;
-        if entry.workspace != workspace || !matches!(entry.peer.access(), Access::Waiting) {
+        let entry = self.peers.get_mut(&workspace)?;
+        if !matches!(entry.peer.access(), Access::Waiting) {
             return None;
         }
         entry.wanted = true;
         if let Some(request) = entry.request.clone() {
-            return Some(EntryRequest::Signed(self.entry_signed(scope, request, now)));
+            return Some(EntryRequest::Signed(
+                self.entry_signed(workspace, request, now),
+            ));
         }
         let request = entry
             .peer
@@ -106,18 +107,18 @@ impl ChannelEncryption {
         let signer = Arc::clone(&store.signer);
         let signing: collab_types::signer::SignFuture<'static> =
             Box::pin(async move { signer.sign(message).await });
-        Some(EntryRequest::Unsigned(scope, request, signing))
+        Some(EntryRequest::Unsigned(workspace, request, signing))
     }
 
-    /// Keep `request`, the entry's signed request for `scope`: asked now, by the entry, so the
-    /// next request waits out the backoff.
+    /// Keep `request`, the entry's signed request for `workspace`: asked now, by the entry, so
+    /// the next request waits out the backoff.
     pub fn entry_signed(
         &mut self,
-        scope: ChannelId,
+        workspace: WorkspaceId,
         request: MlsAccessRequestV1,
         now: Instant,
     ) -> MlsAccessRequestV1 {
-        if let Some(entry) = self.peers.get_mut(&scope) {
+        if let Some(entry) = self.peers.get_mut(&workspace) {
             entry.request = Some(request.clone());
             entry.retry.fired(now, REQUEST_LONGEST);
         }

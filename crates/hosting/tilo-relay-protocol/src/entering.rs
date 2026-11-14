@@ -46,8 +46,7 @@
 //! checks the host's `HelloAck` before anything else it reads.
 //!
 //! The entry also carries the device's request to join the workspace's
-//! channel group ([`collab_types::workspace_scope`]), which its channels
-//! prepare before they know anything of the workspace's governance. The host
+//! key group, which its key service prepares before they know anything of the workspace's governance. The host
 //! hands it to the workspace's channel participants as it admits the device,
 //! as it hands every member's, so the Welcome that keys the device is the
 //! first thing its download carries, not something it asks for once the
@@ -114,8 +113,8 @@ pub enum Through {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub entering: Entering,
-    /// The device's signed request for the keys of the workspace's channel
-    /// group ([`collab_types::workspace_scope`]), as it would publish it once
+    /// The device's signed request for the keys of the workspace's group, as
+    /// it would publish it once
     /// a member: handed to the group's participants once the workspace
     /// admitted the device. `None` from a device whose channels keep no
     /// state, which asks as a member later. A request for another group, or

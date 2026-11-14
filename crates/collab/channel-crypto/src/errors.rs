@@ -1,4 +1,4 @@
-//! Error types for `channel-crypto`.
+//! Error types for `workspace-crypto`.
 //!
 //! `OpenMLS` defines a thicket of error enums parameterised over the
 //! storage backend's error type; propagating those verbatim would
@@ -141,7 +141,7 @@ pub enum WelcomeRefusal {
     /// than the one that signed the frame carrying it.
     #[error("its group information is signed by another device than its frame")]
     SignedByAnotherDevice,
-    /// A leaf of the tree names a device the channel's membership does not
+    /// A leaf of the tree names a device the workspace's membership does not
     /// let read it, as this device sees the membership now. A lie, or this
     /// device's view behind or ahead of the committer's, so the Welcome is
     /// judged again as that view changes.

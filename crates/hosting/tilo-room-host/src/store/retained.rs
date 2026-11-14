@@ -2043,7 +2043,7 @@ pub(super) mod tests {
     fn a_standalone_checkpoint_replaces_its_authors_earlier_ones() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8, timestamp: u64| {
             let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
@@ -2109,7 +2109,7 @@ pub(super) mod tests {
     /// A standalone checkpoint of `author` (its access request for
     /// `channel`), with its retention route.
     fn standalone_checkpoint(
-        channel: collab_types::ChannelId,
+        channel: collab_types::WorkspaceId,
         author: u8,
         through: u8,
     ) -> ([u8; 32], Vec<u8>) {
@@ -2152,7 +2152,7 @@ pub(super) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         // Another member's record: the workspace has retained before.
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let (earlier_route, earlier) = standalone_checkpoint(channel, 2, 1);
         store.retain_checkpoint(&earlier_route, &earlier).unwrap();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
@@ -2186,7 +2186,7 @@ pub(super) mod tests {
     fn a_stage_its_lineage_overtook_is_retained_as_usual() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
         let (_, second) = standalone_checkpoint(channel, 1, 2);
         store.retain_checkpoint(&route, &first).unwrap();
@@ -2224,7 +2224,7 @@ pub(super) mod tests {
     fn a_staged_replacement_costs_its_turn_one_barrier_and_its_collection() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
         let (_, second) = standalone_checkpoint(channel, 1, 2);
         store.retain_checkpoint(&route, &first).unwrap();
@@ -2270,7 +2270,7 @@ pub(super) mod tests {
     fn a_staged_replacement_over_a_changed_generation_is_retained_as_usual() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
         let (_, second) = standalone_checkpoint(channel, 1, 2);
         store.retain_checkpoint(&route, &first).unwrap();
@@ -2301,7 +2301,7 @@ pub(super) mod tests {
     fn a_stage_no_turn_took_is_discarded_whole() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let (earlier_route, earlier) = standalone_checkpoint(channel, 2, 1);
         store.retain_checkpoint(&earlier_route, &earlier).unwrap();
         let (route, first) = standalone_checkpoint(channel, 1, 1);
@@ -2367,7 +2367,7 @@ pub(super) mod tests {
     #[test]
     fn checkpoint_replacement_asks_the_stores_own_adapter() {
         let tmp = tempfile::tempdir().unwrap();
-        let channel = collab_types::ChannelId::new();
+        let channel = collab_types::WorkspaceId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8| {
             let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {

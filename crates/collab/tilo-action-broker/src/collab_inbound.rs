@@ -88,23 +88,12 @@ fn deliver_at(
     let route = CrdtRoute::record(&document.app_id, &document.cluster_id, &document.record_id);
     let payload = validate_route(&route, &document.envelope);
     let validation = match &payload {
-        Ok(payload) => {
+        Ok(_) => {
             let Ok(mut ch) = channels.lock() else {
                 return Delivery::Halted;
             };
-            let channel = match payload {
-                collab_types::RoutedDocumentPayload::Cleartext(_)
-                | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
-                    collab_types::document_channel_id(
-                        &document.app_id,
-                        &document.cluster_id,
-                        &document.record_id,
-                    )
-                }
-                collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
-            };
             let encryption = document.envelope.encryption.as_ref();
-            if ch.document_order_allowed(&document.cluster_id, channel, artifact, encryption) {
+            if ch.document_order_allowed(&document.cluster_id, artifact, encryption) {
                 let state = ch.state_for(artifact);
                 state.workspace.clone_from(&document.cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
@@ -125,10 +114,9 @@ fn deliver_at(
                 tracing::warn!(
                     app = %document.app_id,
                     record = %document.record_id,
-                    channel = ?channel,
                     epoch = encryption.map(|metadata| metadata.epoch),
                     replayed,
-                    "collab_broker (net): a document op its channel's gate does not take"
+                    "collab_broker (net): a document op its workspace's gate does not take"
                 );
                 Err(ValidationError::DocumentRouteMismatch)
             }
@@ -448,7 +436,6 @@ mod tests {
     /// under the current ones (epoch 2), each its own Automerge change.
     fn two_sealed_writes(key: &ed25519_dalek::SigningKey) -> [SignedOp; 2] {
         use automerge::transaction::Transactable as _;
-        let channel = collab_types::document_channel_id("notes", "workspace", "record");
         let mut note = automerge::AutoCommit::new();
         let mut write = |epoch: u64, field: &str, text: &str| {
             let heads = note.get_heads();
@@ -465,7 +452,6 @@ mod tests {
                 collab_types::next_unordered_document_sequence(now),
                 collab_types::EncryptionMetadata::content_key(
                     epoch,
-                    channel,
                     collab_types::ContentRetention::Delta,
                 ),
             );
@@ -489,10 +475,10 @@ mod tests {
     /// the writes it was shown in the order it was shown them.
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels
-            .lock()
-            .unwrap()
-            .register_channel_gate(collab_types::workspace_scope("workspace"), gate());
+        channels.lock().unwrap().register_channel_gate(
+            collab_types::WorkspaceId::parse("workspace").unwrap(),
+            gate(),
+        );
         let fanout = FanoutState::new();
         let shown = Arc::new(Mutex::new(Vec::new()));
         let app = Arc::clone(&shown);
@@ -566,10 +552,10 @@ mod tests {
             op
         };
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels
-            .lock()
-            .unwrap()
-            .register_channel_gate(collab_types::workspace_scope("workspace"), gate());
+        channels.lock().unwrap().register_channel_gate(
+            collab_types::WorkspaceId::parse("workspace").unwrap(),
+            gate(),
+        );
         let fanout = FanoutState::new();
         let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let app = Arc::clone(&delivered);

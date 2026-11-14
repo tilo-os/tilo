@@ -325,7 +325,7 @@ mod tests {
         };
         let creator = channel_crypto::ChannelPeer::create_now(
             Some(std::sync::Arc::new(channel_crypto::Files::new(dir.path()))),
-            collab_types::document_channel_id("app", "room", "record"),
+            collab_types::WorkspaceId::new(),
             Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
             &channel_crypto::VaultKey::new([8; 32]),
         )

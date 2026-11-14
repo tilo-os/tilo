@@ -68,8 +68,8 @@ file-chooser = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@23"
-tilo-fs = "optional@23"
+collab = "optional@24"
+tilo-fs = "optional@24"
 
 [entrypoint]
 bin             = "bin/mail"

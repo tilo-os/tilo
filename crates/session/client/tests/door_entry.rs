@@ -300,7 +300,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     // served, the request goes nowhere, and it is admitted nowhere.
     let (_endpoint, _connection, mut send, mut recv) = dial(&host).await;
     let access = collab_types::MlsAccessRequestV1::signed(
-        collab_types::workspace_scope(&lounge.workspace),
+        collab_types::WorkspaceId::parse(&lounge.workspace).unwrap(),
         vec![7; 512],
         tilo_clock::unix_now(),
         &device,

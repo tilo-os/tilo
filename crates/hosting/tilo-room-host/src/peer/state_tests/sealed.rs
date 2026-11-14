@@ -21,7 +21,7 @@ fn write(fixture: &Fixture, seq: u64, sealed: bool) -> Envelope {
             collab_types::OpKind::Change,
             std::time::UNIX_EPOCH,
             seq,
-            collab_types::EncryptionMetadata::mls_application(1, collab_types::ChannelId::new()),
+            collab_types::EncryptionMetadata::mls_application(1),
         )
     } else {
         collab_types::SignedOp::new_unsigned(

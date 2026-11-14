@@ -1554,18 +1554,8 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
         .bootstrap_messages(&a, now)
         .unwrap();
     let mut encrypted = messages[1].clone();
-    if let NeighbourMsg::AppDocument {
-        envelope,
-        app_id,
-        cluster_id,
-        record_id,
-        ..
-    } = &mut encrypted
-    {
-        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-            1,
-            collab_types::document_channel_id(app_id, cluster_id, record_id),
-        ));
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut encrypted {
+        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(1));
         envelope.payload = vec![1, 2, 3];
         collab_types::sign_op(envelope, &a).unwrap();
     }
@@ -1839,18 +1829,8 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                 .unwrap();
         }
         let mut encrypted = messages[1].clone();
-        if let NeighbourMsg::AppDocument {
-            envelope,
-            app_id,
-            cluster_id,
-            record_id,
-            ..
-        } = &mut encrypted
-        {
-            envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-                1,
-                collab_types::document_channel_id(app_id, cluster_id, record_id),
-            ));
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut encrypted {
+            envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(1));
             envelope.payload = vec![1, 2, 3];
             collab_types::sign_op(envelope, &a).unwrap();
         }

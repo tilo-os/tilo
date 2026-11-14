@@ -234,9 +234,6 @@ impl PeerOutbox<'_> {
                     return Err("retained local publication requires AppDocument".into());
                 };
                 let (encryption, payload) = reseal(envelope)?;
-                if Some(encryption.channel) != envelope.encryption.map(|sealed| sealed.channel) {
-                    return Err("a renewal must stay on its write's channel".into());
-                }
                 let floor = drafted.get(&local.route).copied().unwrap_or_else(|| {
                     self.peer
                         .core

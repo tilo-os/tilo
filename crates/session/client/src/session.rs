@@ -175,8 +175,8 @@ enum Sealing {
 /// What opening a sealed live frame came to.
 enum Opening {
     Opened(Vec<u8>),
-    /// This device holds no keys for the channel yet.
-    NoKeys([u8; 16]),
+    /// This device holds no keys for the record yet: the digest it carries.
+    NoKeys([u8; 32]),
     /// Malformed, or does not open.
     Dropped,
 }
@@ -1853,8 +1853,9 @@ impl Task {
                     from,
                     frame: opened,
                 }),
-                Opening::NoKeys(channel) if hold => self.held_live.hold_inbound(
-                    channel,
+                Opening::NoKeys(record) if hold => self.held_live.hold_inbound(
+                    workspace_id,
+                    record,
                     Waiting::Receive {
                         workspace_id,
                         from,
@@ -1876,11 +1877,7 @@ impl Task {
             app: route.app_id.clone(),
             record: route.record.clone(),
         };
-        let channel = unit(route).0.into_bytes();
-        let released: Vec<_> = self
-            .held_live
-            .release(workspace_id, record, channel)
-            .collect();
+        let released: Vec<_> = self.held_live.release(workspace_id, record).collect();
         for waiting in released {
             self.live_frame(waiting, false);
         }
@@ -1918,33 +1915,29 @@ impl Task {
     }
 
     /// Open sealed live `frame` of `workspace_id` with the content cipher of
-    /// its channel into the canonical frame.
+    /// the record it names into the canonical frame.
     fn open_live(&self, workspace_id: WorkspaceId, frame: &[u8]) -> Opening {
         let Ok(sealed) = tilo_relay_protocol::live::SealedLiveFrame::decode(frame) else {
             return Opening::Dropped;
         };
-        let channel = sealed.channel_id();
         let bound = self.keyed_routes().find_map(|route| {
-            (unit(route) == channel && route.workspace_id().ok() == Some(workspace_id))
-                .then(|| Some((route, self.keys_of(route)?)))
+            let record = tilo_relay_protocol::live::LiveRecord {
+                app: route.app_id.clone(),
+                record: route.record.clone(),
+            };
+            (record.digest() == sealed.record && route.workspace_id().ok() == Some(workspace_id))
+                .then(|| Some((record, self.keys_of(route)?)))
                 .flatten()
         });
-        let Some((route, keys)) = bound else {
-            return Opening::NoKeys(sealed.channel);
+        let Some((record, keys)) = bound else {
+            return Opening::NoKeys(sealed.record);
         };
         sealed
-            .open_in_record(
-                &route.cluster_id,
-                &tilo_relay_protocol::live::LiveRecord {
-                    app: route.app_id.clone(),
-                    record: route.record.clone(),
-                },
-                |artifact, metadata, payload| {
-                    keys.open_content(artifact, metadata, payload)
-                        .map(|plaintext| plaintext.to_vec())
-                        .map_err(|error| error.to_string())
-                },
-            )
+            .open_in_record(&record, |artifact, metadata, payload| {
+                keys.open_content(artifact, metadata, payload)
+                    .map(|plaintext| plaintext.to_vec())
+                    .map_err(|error| error.to_string())
+            })
             .ok()
             .and_then(|frame| frame.encode().ok())
             .map_or(Opening::Dropped, Opening::Opened)
@@ -2116,10 +2109,8 @@ impl Task {
             };
             let _ = write!(
                 channels,
-                "\nroute {}/{} {:?}: {state};",
-                route.app_id,
-                route.record,
-                unit(route)
+                "\nroute {}/{}: {state};",
+                route.app_id, route.record
             );
         }
         // A write the replica holds undecided says what it waits for, so a reader is told what
@@ -2192,19 +2183,11 @@ impl Task {
     /// The keys this device seals and opens `route`'s content with, as its engine holds them.
     fn keys_of(&self, route: &DocumentRoute) -> Option<channel_crypto::ChannelContentKeys> {
         let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)?;
-        match self
-            .engine
-            .seal_keys(workspace, &route.app_id, &route.record)
-        {
+        match self.engine.seal_keys(workspace) {
             Ok(crate::engine::SealKeys::Here(keys)) => Some(keys),
             _ => None,
         }
     }
-}
-
-/// The storage unit of `route`: the channel its content is sealed under.
-fn unit(route: &DocumentRoute) -> collab_types::ChannelId {
-    collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
 }
 
 /// This device's certificate for a workspace's other members, and the

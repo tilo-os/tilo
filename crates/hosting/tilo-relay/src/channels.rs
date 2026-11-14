@@ -26,7 +26,7 @@ use std::{
 };
 
 use channel_crypto::VaultKey;
-use collab_types::{ChannelRoute, Ed25519PublicKey};
+use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::channel_encryption::{
@@ -191,20 +191,13 @@ impl Drop for Channels {
 struct Keys(ChannelKeyProvider);
 
 impl ChannelKeys for Keys {
-    fn channel_keys<'a>(
-        &'a self,
-        workspace: &'a str,
-        route: &'a ChannelRoute,
-        create: bool,
-    ) -> ChannelKeysAnswerFuture<'a> {
+    fn channel_keys<'a>(&'a self, workspace: &'a str, create: bool) -> ChannelKeysAnswerFuture<'a> {
         let keys = self.0.clone();
-        let (workspace, route) = (workspace.to_owned(), route.clone());
         Box::pin(async move {
             if keys.get().is_none() {
                 return Some(Err("this device's channel service is not running".into()));
             }
-            keys.channel_keys(&workspace, &route, create, OPEN_WAIT)
-                .await
+            keys.channel_keys(workspace, create, OPEN_WAIT).await
         })
     }
 }

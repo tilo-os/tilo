@@ -376,7 +376,7 @@ impl Inner {
                 let sealed = if engine.commits_documents(room) {
                     None
                 } else {
-                    match engine.seal_keys(room, &app, &record) {
+                    match engine.seal_keys(room) {
                         Ok(SealKeys::Here(keys)) => Some(keys),
                         Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
                             unwritten.insert((workspace.clone(), app.clone()));

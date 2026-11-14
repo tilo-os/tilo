@@ -12,20 +12,20 @@
 )]
 
 use channel_crypto::{ChannelGroup, MemberKey};
-use collab_types::ChannelId;
+use collab_types::WorkspaceId;
 
-/// Spin up alice + bob + a fresh channel id so every test starts from a
+/// Spin up alice + bob + a fresh workspace id so every test starts from a
 /// clean slate.
-fn fixture() -> (ChannelId, MemberKey, MemberKey) {
+fn fixture() -> (WorkspaceId, MemberKey, MemberKey) {
     (
-        ChannelId::new(),
+        WorkspaceId::new(),
         MemberKey::generate("alice").unwrap(),
         MemberKey::generate("bob").unwrap(),
     )
 }
 
 /// The owner alone is a one-member group, adding a member increments epoch and count, Bob joins
-/// via Alice's welcome, the channel id is preserved, fresh key packages are distinct, and a
+/// via Alice's welcome, the workspace id is preserved, fresh key packages are distinct, and a
 /// member key's Debug exposes no secret.
 /// Runs each phase below in order; every phase builds its own fixture.
 #[test]
@@ -39,20 +39,20 @@ fn a_two_member_group_forms_from_an_owner_and_a_welcome() {
 }
 
 fn owner_alone_is_a_one_member_group() {
-    let (cid, alice, _bob) = fixture();
-    let g = ChannelGroup::create(cid, alice).unwrap();
+    let (workspace, alice, _bob) = fixture();
+    let g = ChannelGroup::create(workspace, alice).unwrap();
     assert_eq!(g.member_count(), 1);
-    assert_eq!(g.channel_id(), cid);
+    assert_eq!(g.workspace(), workspace);
     // Initial epoch is 0 (openmls convention), mirrored in
     // EncryptionMetadata so receivers can compare equal-to-zero.
     assert_eq!(g.epoch(), 0);
 }
 
 fn add_member_increments_epoch_and_member_count() {
-    let (cid, alice, bob) = fixture();
+    let (workspace, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
 
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let pre_epoch = alice_g.epoch();
     let pre_count = alice_g.member_count();
 
@@ -63,14 +63,14 @@ fn add_member_increments_epoch_and_member_count() {
 }
 
 fn bob_can_join_via_welcome_alice_minted() {
-    let (cid, alice, bob) = fixture();
+    let (workspace, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
 
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
 
-    let bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
-    assert_eq!(bob_g.channel_id(), cid);
+    let bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
+    assert_eq!(bob_g.workspace(), workspace);
     assert_eq!(bob_g.member_count(), 2);
     // After processing the Welcome, bob is at the same epoch alice
     // advanced to.
@@ -88,12 +88,12 @@ fn two_members_exchange_messages_both_ways() {
 }
 
 fn alice_encrypts_bob_decrypts() {
-    let (cid, alice, bob) = fixture();
+    let (workspace, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
 
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
-    let mut bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
+    let mut bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
 
     let ct = alice_g.encrypt(b"hello bob").unwrap();
     let pt = bob_g.decrypt(&ct).unwrap();
@@ -103,12 +103,12 @@ fn alice_encrypts_bob_decrypts() {
 fn bob_encrypts_alice_decrypts() {
     // Direction-reverse of the previous test — proves the group key
     // schedule is symmetric.
-    let (cid, alice, bob) = fixture();
+    let (workspace, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
 
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
-    let mut bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
+    let mut bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
 
     let ct = bob_g.encrypt(b"hello alice").unwrap();
     let pt = alice_g.decrypt(&ct).unwrap();
@@ -118,11 +118,11 @@ fn bob_encrypts_alice_decrypts() {
 fn multiple_messages_round_trip_in_sequence() {
     // Sanity check that the key schedule advances correctly across
     // many messages within one epoch.
-    let (cid, alice, bob) = fixture();
+    let (workspace, alice, bob) = fixture();
     let bob_kp = bob.fresh_key_package().unwrap();
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
-    let mut bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
+    let mut bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
 
     for i in 0..5u32 {
         let msg = format!("alice-{i}");
@@ -139,16 +139,16 @@ fn multiple_messages_round_trip_in_sequence() {
 }
 
 fn channel_id_is_preserved_across_create_and_join() {
-    let cid = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let alice = MemberKey::generate("alice").unwrap();
     let bob = MemberKey::generate("bob").unwrap();
     let bob_kp = bob.fresh_key_package().unwrap();
 
-    let mut alice_g = ChannelGroup::create(cid, alice).unwrap();
+    let mut alice_g = ChannelGroup::create(workspace, alice).unwrap();
     let welcome = alice_g.add_member(bob_kp).unwrap();
-    let bob_g = ChannelGroup::process_welcome(cid, &welcome, bob).unwrap();
-    assert_eq!(alice_g.channel_id(), cid);
-    assert_eq!(bob_g.channel_id(), cid);
+    let bob_g = ChannelGroup::process_welcome(workspace, &welcome, bob).unwrap();
+    assert_eq!(alice_g.workspace(), workspace);
+    assert_eq!(bob_g.workspace(), workspace);
 }
 
 fn fresh_key_packages_are_distinct() {

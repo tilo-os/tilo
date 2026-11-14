@@ -16,7 +16,6 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use channel_crypto::ChannelContentKeys;
-use collab_types::ChannelRoute;
 
 /// What a device answers about the keys of a channel of one of its workspaces.
 pub type ChannelKeysAnswer = Option<Result<ChannelContentKeys, String>>;
@@ -26,16 +25,10 @@ pub type ChannelKeysAnswerFuture<'a> = Pin<Box<dyn Future<Output = ChannelKeysAn
 
 /// The channel keys of the device a workspace host runs on, asked of it.
 pub trait ChannelKeys: Send + Sync + 'static {
-    /// The content keys of `route`'s channel in `workspace`, opening the channel
-    /// when it has none yet and `create`. `None` when the device takes no
-    /// part in `workspace`'s channels; [`Err`] when it takes part and holds no
-    /// keys of this channel yet.
-    fn channel_keys<'a>(
-        &'a self,
-        workspace: &'a str,
-        route: &'a ChannelRoute,
-        create: bool,
-    ) -> ChannelKeysAnswerFuture<'a>;
+    /// The content keys of `workspace`, opening its group when it has none
+    /// yet and `create`. `None` when the device takes no part in `workspace`'s
+    /// group; [`Err`] when it takes part and holds no keys yet.
+    fn channel_keys<'a>(&'a self, workspace: &'a str, create: bool) -> ChannelKeysAnswerFuture<'a>;
 }
 
 /// [`ChannelKeys`] as the host's shared handle.

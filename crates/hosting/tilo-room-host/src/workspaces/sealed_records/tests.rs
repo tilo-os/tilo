@@ -1435,7 +1435,7 @@ async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     .expect("the member catches up with the node")
     .unwrap();
 
-    let channel = collab_types::workspace_scope(&created.workspace);
+    let channel = collab_types::WorkspaceId::parse(&created.workspace).unwrap();
     let request =
         collab_types::MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 1, &key).unwrap();
     workspaces

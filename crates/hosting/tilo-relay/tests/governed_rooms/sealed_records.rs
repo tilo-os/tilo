@@ -146,7 +146,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let workspaces = relay.workspaces().unwrap();
     let mut followed = workspaces.record_writes();
     let group = ChannelGroup::create(
-        collab_types::document_channel_id(APP, &room.workspace, ""),
+        collab_types::WorkspaceId::parse(&room.workspace).unwrap(),
         MemberKey::generate("bob").unwrap(),
     )
     .unwrap();

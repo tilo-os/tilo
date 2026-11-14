@@ -1473,8 +1473,8 @@ impl CollaborationManager {
     ///
     /// From this point the route is fail-closed: locally generated document
     /// mutations are encrypted and encrypted inbound envelopes are decrypted
-    /// before becoming [`CollabEvent::Document`].  The channel id must be the
-    /// deterministic id for the exact app/workspace/record route.  Group
+    /// before becoming [`CollabEvent::Document`].  The group must be the
+    /// route's workspace's.  Group
     /// provisioning and durable secret storage intentionally remain outside
     /// the UI process; callers should obtain the group from the workspace
     /// identity service and must reinstall it after a process restart.
@@ -1483,10 +1483,7 @@ impl CollaborationManager {
         route: RouteSpec,
         group: channel_crypto::ChannelGroup,
     ) -> Result<(), String> {
-        let record = route.record.as_deref().unwrap_or("");
-        let expected =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id.to_string(), record);
-        if group.channel_id() != expected {
+        if group.workspace().to_string() != route.cluster_id.to_string() {
             return Err("MLS group does not belong to the requested document route".into());
         }
         if self.awaiting_primary {

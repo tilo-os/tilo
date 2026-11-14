@@ -351,19 +351,19 @@ struct Inner {
     hearing: Option<Hearing>,
     /// Handed with the catch-up ([`DirectSync::with_channel_history`]).
     channels: Option<ChannelHistory>,
-    /// The geneses of the workspace's channels this host carries.
+    /// The geneses of the workspace's group this host carries.
     geneses: Geneses,
     /// The other device's store, for a device that keeps none: where a reader
     /// that fell behind takes the frames it missed ([`Reader`]).
     other_store: Arc<std::sync::Mutex<Option<OtherStore>>>,
 }
 
-/// The geneses of a workspace's channels its host carries, each with its
-/// author, by channel: what it answers a member's access request with
+/// The geneses of a workspace's group its host carries, each with its
+/// author: what it answers a member's access request with
 /// ([`DirectSync::answer_request`]). Taken from the channel history as a link
 /// starts, and from every frame the host sends its links.
 type Geneses =
-    Arc<std::sync::Mutex<std::collections::HashMap<collab_types::ChannelId, Vec<Authored>>>>;
+    Arc<std::sync::Mutex<std::collections::HashMap<collab_types::WorkspaceId, Vec<Authored>>>>;
 
 /// The store on the other end of a device's link.
 #[derive(Clone)]
@@ -736,7 +736,7 @@ impl DirectSync {
         }
     }
 
-    /// Note `authored` when it is a channel's genesis this host carries.
+    /// Note `authored` when it is a group's genesis this host carries.
     fn note_genesis(&self, authored: &Authored) {
         let NeighbourMsg::MlsGovernance { frame, .. } = &authored.message else {
             return;
@@ -745,7 +745,7 @@ impl DirectSync {
             return;
         }
         let mut geneses = self.0.geneses.lock_recover();
-        let known = geneses.entry(frame.channel).or_default();
+        let known = geneses.entry(frame.workspace).or_default();
         if !known.iter().any(|kept| kept.message == authored.message) {
             known.push(authored.clone());
         }
@@ -759,7 +759,12 @@ impl DirectSync {
         let NeighbourMsg::MlsAccessRequest { request, .. } = message else {
             return;
         };
-        let known = self.0.geneses.lock_recover().get(&request.channel).cloned();
+        let known = self
+            .0
+            .geneses
+            .lock_recover()
+            .get(&request.workspace)
+            .cloned();
         for answer in known.unwrap_or_default() {
             let _ = self.0.outgoing.send(answer);
         }

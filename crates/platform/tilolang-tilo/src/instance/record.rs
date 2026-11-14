@@ -1813,7 +1813,7 @@ impl InstanceRecord {
             else {
                 continue;
             };
-            let mutation = match decode_routed_mutation(route, payload, decrypted_payload) {
+            let mutation = match decode_routed_mutation(payload, decrypted_payload) {
                 Ok(mutation) => mutation,
                 Err(error) => {
                     tracing::warn!(
@@ -1951,7 +1951,7 @@ impl ReadRecord {
                     envelope,
                     decrypted_payload.as_deref(),
                 )?;
-                let applied = decode_routed_mutation(route, payload, decrypted_payload.as_deref())
+                let applied = decode_routed_mutation(payload, decrypted_payload.as_deref())
                     .map_err(|error| format!("{error:?}"))
                     .and_then(|mutation| {
                         load_mutation(self.chunks.open(*chunk), &mutation)

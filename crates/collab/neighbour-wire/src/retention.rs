@@ -122,7 +122,6 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         // Welcome carrying the group's ratchet tree.
         NeighbourMsg::MlsGovernance { frame, .. } => {
             let mut route = b"mls-governance\0".to_vec();
-            route.extend_from_slice(frame.channel.0.as_bytes());
             if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
                 route.extend_from_slice(&frame.digest().ok()?);
             } else if audience(msg).is_some() {
@@ -136,7 +135,6 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         }
         NeighbourMsg::MlsAccessRequest { request, .. } => {
             let mut route = b"mls-access\0".to_vec();
-            route.extend_from_slice(request.channel.0.as_bytes());
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
@@ -253,7 +251,6 @@ mod tests {
     /// Encrypted history is retained by its signed storage class, never by
     /// decoding ciphertext; single-use MLS messages are not retained.
     fn host_retains_content_key_ciphertext_by_its_signed_class() {
-        let channel = collab_types::ChannelId::new();
         let classify = |metadata| {
             let mut msg = frame(vec![0xde, 0xad]);
             if let NeighbourMsg::AppDocument { envelope, .. } = &mut msg {
@@ -264,23 +261,19 @@ mod tests {
         assert_eq!(
             classify(collab_types::EncryptionMetadata::content_key(
                 3,
-                channel,
-                collab_types::ContentRetention::Checkpoint,
+                collab_types::ContentRetention::Checkpoint
             )),
             Some(Retention::Checkpoint)
         );
         assert_eq!(
             classify(collab_types::EncryptionMetadata::content_key(
                 3,
-                channel,
-                collab_types::ContentRetention::Delta,
+                collab_types::ContentRetention::Delta
             )),
             Some(Retention::Delta)
         );
         assert_eq!(
-            classify(collab_types::EncryptionMetadata::mls_application(
-                3, channel
-            )),
+            classify(collab_types::EncryptionMetadata::mls_application(3)),
             None
         );
     }
@@ -289,14 +282,12 @@ mod tests {
     /// of the record, which is what the host keeps it by; a sealed write or
     /// a checkpoint in the clear does not.
     fn only_a_sealed_compaction_stands_alone() {
-        let channel = collab_types::ChannelId::new();
         let sealed = |kind| {
             let mut msg = frame(vec![0xde, 0xad]);
             if let NeighbourMsg::AppDocument { envelope, .. } = &mut msg {
                 envelope.kind = kind;
                 envelope.encryption = Some(collab_types::EncryptionMetadata::content_key(
                     3,
-                    channel,
                     collab_types::ContentRetention::Checkpoint,
                 ));
             }
@@ -318,17 +309,23 @@ mod tests {
     /// and every participant each device's latest request.
     fn host_retains_channel_governance_per_channel_and_device() {
         use collab_types::{
-            ChannelId, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
+            MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame, WorkspaceId,
         };
         let signer = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
         let other = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let channel = ChannelId::new();
+        let workspace = WorkspaceId::new();
         let genesis = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsGovernance {
             workspace: "workspace".into(),
             frame: Box::new(
-                MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, key)
-                    .unwrap(),
+                MlsGovernanceFrame::signed(
+                    workspace,
+                    [0; 32],
+                    0,
+                    MlsGovernanceAction::Genesis,
+                    key,
+                )
+                .unwrap(),
             ),
             delivery: 0,
         };
@@ -340,7 +337,7 @@ mod tests {
             workspace: "workspace".into(),
             frame: Box::new(
                 MlsGovernanceFrame::signed(
-                    channel,
+                    workspace,
                     [epoch; 32],
                     u64::from(epoch),
                     MlsGovernanceAction::Commit {
@@ -365,7 +362,7 @@ mod tests {
 
         let request = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsAccessRequest {
             workspace: "workspace".into(),
-            request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
+            request: Box::new(MlsAccessRequestV1::signed(workspace, vec![1], 1, key).unwrap()),
             delivery: 0,
         };
         let (mine, kind) = retention(&request(&device), false).unwrap();

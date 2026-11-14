@@ -207,8 +207,8 @@ pub struct Engine {
     arrivals: Arc<crate::arrivals::Arrivals>,
     /// This device's own writes its replica has not taken in yet ([`HeldWrites`]).
     held: HeldWrites,
-    /// Keys of records whose channel this device takes no part in, handed to it by the records'
-    /// host ([`Self::hand_keys`]): a sealed record they open reads with them.
+    /// Keys of workspaces whose group this device takes no part in, handed to it by their host
+    /// ([`Self::hand_keys`]): a sealed record they open reads with them.
     handed: std::sync::Mutex<RouteKeys>,
     /// The keys each record's channel last gave this device: they seal and open while the channel
     /// asks for access again.
@@ -235,7 +235,7 @@ type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptRecord
 
 /// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
 /// the channel's history keys. A rotation moves the epoch.
-type KeysUsed = [Option<(collab_types::ChannelId, u64)>; 2];
+type KeysUsed = [Option<(collab_types::WorkspaceId, u64)>; 2];
 
 /// What was kept opened of a record, when it was opened with exactly the keys `used` now: a
 /// record opened under other keys is forgotten.
@@ -246,9 +246,8 @@ fn kept_under<K: Default>(kept: Option<(KeysUsed, K)>, used: &KeysUsed) -> K {
     }
 }
 
-/// Keys of records, by workspace and record.
-type RouteKeys =
-    BTreeMap<(WorkspaceId, collab_types::ChannelRoute), channel_crypto::ChannelContentKeys>;
+/// Keys, by workspace.
+type RouteKeys = BTreeMap<WorkspaceId, channel_crypto::ChannelContentKeys>;
 
 /// Opens one sealed write of a record into its plaintext.
 type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
@@ -684,12 +683,11 @@ impl Engine {
         read: &mut dyn FnMut(WorkspaceId, OpenSealed<'_>, &mut KeptRecord) -> Result<T, String>,
     ) -> Result<Option<T>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let route = collab_types::ChannelRoute::new(app, record);
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
         let keys: Option<tilo_channels::HistoryKeys> = if sealed {
-            match self.route_access(workspace, &route) {
+            match self.route_access(workspace) {
                 None => None,
                 Some(ChannelAccess::Ready(keys)) => Some(keys.into()),
                 Some(ChannelAccess::Waiting | ChannelAccess::Removed) => {
@@ -720,7 +718,7 @@ impl Engine {
         let history = self
             .keys
             .get()
-            .and_then(|keys| keys.history_keys(workspace, &route));
+            .and_then(|keys| keys.history_keys(workspace));
         // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
         // of the branch it was sealed on, has not reached this device — is a record still
         // arriving here: it reads whole once the keys have, as the app's own channel holds such a
@@ -1070,16 +1068,12 @@ impl Engine {
     /// its channel's — taking part in it asks the workspace's devices for access the first time,
     /// and its governance answers with the group — and while the channel asks again, the ones it
     /// last gave. `None` without a channel service.
-    fn route_access(
-        &self,
-        workspace: WorkspaceId,
-        route: &collab_types::ChannelRoute,
-    ) -> Option<ChannelAccess> {
-        let at = (workspace, route.clone());
+    fn route_access(&self, workspace: WorkspaceId) -> Option<ChannelAccess> {
+        let at = workspace;
         if let Some(handed) = self.handed.lock_recover().get(&at) {
             return Some(ChannelAccess::Ready(handed.clone()));
         }
-        let access = self.keys.get()?.access_record(workspace, route).0;
+        let access = self.keys.get()?.access(workspace).0;
         let mut kept = self.channel_keys.lock_recover();
         Some(match access {
             ChannelAccess::Ready(keys) => {
@@ -1096,35 +1090,26 @@ impl Engine {
         })
     }
 
-    /// The keys this device seals writes of `record` of `app` with in `workspace`.
+    /// The keys this device seals writes in `workspace` with.
     /// [`SealKeys::Waiting`] says they are not here yet and will arrive as the
     /// workspace's other messages do, which includes a channel the governance does not
     /// name this device in yet. [`SealKeys::NoSecretStore`] is this device's own lack,
     /// not any workspace's verdict.
     /// # Errors
-    /// This session has no channel service, or the workspace removed this device from
-    /// the record's channel: it holds no keys, and none are coming.
-    pub fn seal_keys(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-    ) -> Result<SealKeys, String> {
-        Ok(
-            match self.route_access(workspace, &collab_types::ChannelRoute::new(app, record)) {
-                None => return Err("this session's channel service is not running".to_owned()),
-                Some(ChannelAccess::Ready(keys)) => SealKeys::Here(keys),
-                // Asked and not admitted yet, or admitted nowhere the governance here can name:
-                // either way the keys are not here yet.
-                Some(ChannelAccess::Waiting | ChannelAccess::Unavailable) => SealKeys::Waiting,
-                Some(ChannelAccess::Removed) => {
-                    return Err(format!(
-                        "the workspace removed this device from {record}'s channel"
-                    ));
-                }
-                Some(ChannelAccess::NoSecretStore) => SealKeys::NoSecretStore,
-            },
-        )
+    /// This session has no key service, or the workspace removed this device from its
+    /// group: it holds no keys, and none are coming.
+    pub fn seal_keys(&self, workspace: WorkspaceId) -> Result<SealKeys, String> {
+        Ok(match self.route_access(workspace) {
+            None => return Err("this session's channel service is not running".to_owned()),
+            Some(ChannelAccess::Ready(keys)) => SealKeys::Here(keys),
+            // Asked and not admitted yet, or admitted nowhere the governance here can name:
+            // either way the keys are not here yet.
+            Some(ChannelAccess::Waiting | ChannelAccess::Unavailable) => SealKeys::Waiting,
+            Some(ChannelAccess::Removed) => {
+                return Err("the workspace removed this device from its group".to_owned());
+            }
+            Some(ChannelAccess::NoSecretStore) => SealKeys::NoSecretStore,
+        })
     }
 
     /// The devices the workspace `workspace` admits, by the publisher each of their
@@ -1592,15 +1577,10 @@ impl Engine {
         &self.held
     }
 
-    /// Read `workspace`'s record of `route` with `keys` from now on: the record's host handed them
-    /// to this device, which takes no part in the record's channel.
-    pub fn hand_keys(
-        &self,
-        workspace: WorkspaceId,
-        route: collab_types::ChannelRoute,
-        keys: channel_crypto::ChannelContentKeys,
-    ) {
-        self.handed.lock_recover().insert((workspace, route), keys);
+    /// Read `workspace`'s records with `keys` from now on: the workspace's host handed them to this
+    /// device, which takes no part in the workspace's group.
+    pub fn hand_keys(&self, workspace: WorkspaceId, keys: channel_crypto::ChannelContentKeys) {
+        self.handed.lock_recover().insert(workspace, keys);
     }
 
     pub fn keys(&self) -> ChannelKeyProvider {
@@ -1923,7 +1903,7 @@ mod tests {
     /// opened whole again under the keys held now; the same keys read on what was kept.
     #[test]
     fn a_record_kept_under_keys_a_rotation_replaced_is_forgotten() {
-        let channel = collab_types::ChannelId(uuid::Uuid::from_u128(7));
+        let channel = collab_types::WorkspaceId::from_u128(7);
         let held: super::KeysUsed = [None, Some((channel, 1))];
         let rotated: super::KeysUsed = [None, Some((channel, 2))];
         let handed: super::KeysUsed = [Some((channel, 1)), Some((channel, 1))];

@@ -14,12 +14,12 @@ use super::Task;
 use tilo_relay_protocol::WorkspaceId;
 
 /// The channels' workspace transport over the host session: what they say
-/// waits here for the session to send it, newest per channel, until the host
+/// waits here for the session to send it, newest per workspace, until the host
 /// admitted the session to its workspace.
 #[derive(Default)]
 pub(super) struct HostGovernance {
     pub(super) inbound: Mutex<Vec<tilo_channels::InboundChannelGovernance>>,
-    outbound: Mutex<BTreeMap<(WorkspaceId, [u8; 16]), neighbour_wire::NeighbourMsg>>,
+    outbound: Mutex<BTreeMap<WorkspaceId, neighbour_wire::NeighbourMsg>>,
 }
 
 impl HostGovernance {
@@ -31,30 +31,21 @@ impl HostGovernance {
         let outbound = std::mem::take(&mut *self.outbound.lock_recover());
         let (due, waiting): (BTreeMap<_, _>, BTreeMap<_, _>) = outbound
             .into_iter()
-            .partition(|((workspace_id, _), _)| admitted(*workspace_id));
+            .partition(|(workspace_id, _)| admitted(*workspace_id));
         self.outbound.lock_recover().extend(waiting);
-        due.into_iter()
-            .map(|((workspace_id, _), message)| (workspace_id, message))
-            .collect()
+        due.into_iter().collect()
     }
 }
 
 impl tilo_channels::GovernanceTransport for HostGovernance {
     fn publish(&self, message: neighbour_wire::NeighbourMsg) -> bool {
         use neighbour_wire::NeighbourMsg;
-        let (workspace, channel) = match &message {
-            NeighbourMsg::MlsAccessRequest {
-                workspace, request, ..
-            } => (workspace, request.channel),
-            // A reader commits nothing.
-            _ => return false,
-        };
-        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
+        // A reader commits nothing.
+        let NeighbourMsg::MlsAccessRequest { request, .. } = &message else {
             return false;
         };
-        self.outbound
-            .lock_recover()
-            .insert((workspace_id, channel.0.into_bytes()), message);
+        let workspace_id = request.workspace;
+        self.outbound.lock_recover().insert(workspace_id, message);
         true
     }
 

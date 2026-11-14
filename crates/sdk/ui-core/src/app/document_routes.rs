@@ -647,12 +647,12 @@ impl App {
                             .as_ref()
                             .is_none_or(|set| set.active().is_none()),
                     };
-                active.then(|| (witness.route().clone(), payload))
+                active.then_some(payload)
             });
-        let Some((route, payload)) = primary else {
+        let Some(payload) = primary else {
             return;
         };
-        let mutation = match decode_routed_mutation(&route, payload, decrypted_payload) {
+        let mutation = match decode_routed_mutation(payload, decrypted_payload) {
             Ok(mutation) => mutation,
             Err(error) => {
                 tracing::warn!(%error, "collab: invalid routed document mutation");
@@ -996,12 +996,11 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) -> Option<bool> {
-        let (index, route, payload) =
-            self.owners.iter().enumerate().find_map(|(index, entry)| {
-                validated_route_payload_with(&entry.route, envelope, decrypted_payload)
-                    .map(|payload| (index, entry.route.clone(), payload))
-            })?;
-        let mutation = match decode_routed_mutation(&route, payload, decrypted_payload) {
+        let (index, payload) = self.owners.iter().enumerate().find_map(|(index, entry)| {
+            validated_route_payload_with(&entry.route, envelope, decrypted_payload)
+                .map(|payload| (index, payload))
+        })?;
+        let mutation = match decode_routed_mutation(payload, decrypted_payload) {
             Ok(mutation) => mutation,
             Err(error) => {
                 tracing::warn!(%error, "collab: invalid routed document mutation");

@@ -111,7 +111,7 @@ fn live_planes() -> &'static LivePlanes {
             let _entered = runtime.enter();
             Arc::new(Relay::new(Arc::new(Nobody)))
         };
-        let channel = Scope::workspace(WORKSPACE.to_owned()).channel_id();
+        let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
         let keys =
             ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
                 .expect("the workspace's channel")

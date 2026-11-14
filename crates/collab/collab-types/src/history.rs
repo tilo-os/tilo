@@ -14,7 +14,7 @@
 //! (opening an old version, searching backwards). It is transport- and
 //! crypto-agnostic; callers decrypt pages with keys they already hold.
 
-use crate::channel::ArtifactId;
+use crate::artifact::ArtifactId;
 use crate::op::SignedOp;
 
 /// One entry of a history as people read it. Opaque: only ever compared

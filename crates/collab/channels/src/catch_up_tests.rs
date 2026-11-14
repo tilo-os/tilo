@@ -9,13 +9,12 @@
 fn a_device_takes_up_the_state_it_holds_before_any_app_reads() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let policy = Policy::readers([1, 2, 3]);
     let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
     let mut now = Instant::now();
     let mut founder = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
     let mut member = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
-    create(&mut founder, workspace_id, channel, now);
+    create(&mut founder, workspace_id, now);
     member.service.access(workspace_id, now);
     run(&mut [&mut founder, &mut member], &mut now, 10);
     let joined = ready_epoch(&member.service.access(workspace_id, now));

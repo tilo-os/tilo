@@ -541,7 +541,6 @@ impl App {
             return false;
         };
         let mutation = match crate::app::document_routes::decode_routed_mutation(
-            route,
             payload,
             decrypted_payload,
         ) {

@@ -1,4 +1,4 @@
-//! What admitting a device costs a channel's committing participant and its
+//! What admitting a device costs a workspace's committing participant and its
 //! members, counted rather than timed: the same in a group of 300 as in one of
 //! 30, and a crowd asking together is admitted in one commit.
 
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use channel_crypto::{ChannelPeer, PeerStates, VaultKey};
-use collab_types::{ChannelId, Ed25519PublicKey, MlsGovernanceFrame};
+use collab_types::{Ed25519PublicKey, MlsGovernanceFrame, WorkspaceId};
 use ed25519_dalek::SigningKey;
 
 fn vault() -> VaultKey {
@@ -27,14 +27,14 @@ impl Counted {
 }
 
 impl PeerStates for Counted {
-    fn read(&self, _: ChannelId) -> channel_crypto::Result<Option<Vec<u8>>> {
+    fn read(&self, _: WorkspaceId) -> channel_crypto::Result<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn write(&self, _: ChannelId, _: &[u8]) -> channel_crypto::Result<()> {
+    fn write(&self, _: WorkspaceId, _: &[u8]) -> channel_crypto::Result<()> {
         self.writes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
-    fn forget(&self, _: ChannelId) -> channel_crypto::Result<()> {
+    fn forget(&self, _: WorkspaceId) -> channel_crypto::Result<()> {
         Ok(())
     }
 }
@@ -49,13 +49,13 @@ fn public(key: &SigningKey) -> Ed25519PublicKey {
     Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes())
 }
 
-/// A device that asks for the channel, keeping its state in `states`.
+/// A device that asks for the workspace, keeping its state in `states`.
 fn asking(
-    channel: ChannelId,
+    workspace: WorkspaceId,
     n: u32,
     states: Option<Arc<dyn PeerStates>>,
 ) -> (ChannelPeer, collab_types::MlsAccessRequestV1) {
-    let mut peer = ChannelPeer::waiting(states, channel, Box::new(key(n)), &vault()).unwrap();
+    let mut peer = ChannelPeer::waiting(states, workspace, Box::new(key(n)), &vault()).unwrap();
     let request = peer
         .access_request_now(1, false, &vault())
         .unwrap()
@@ -81,11 +81,11 @@ struct Cost {
 /// A group of `members` (the committer, one member that follows, and the
 /// rest), then `arriving` devices asking together and admitted.
 fn admission(members: u32, arriving: u32) -> Cost {
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let states = Arc::new(Counted::default());
     let mut committer = ChannelPeer::create_now(
         Some(Arc::clone(&states) as Arc<dyn PeerStates>),
-        channel,
+        workspace,
         Box::new(key(0)),
         &vault(),
     )
@@ -96,7 +96,7 @@ fn admission(members: u32, arriving: u32) -> Cost {
     let mut follower = None;
     for n in 1..members {
         let states = (n == 1).then(|| Arc::clone(&follower_states) as Arc<dyn PeerStates>);
-        let (peer, request) = asking(channel, n, states);
+        let (peer, request) = asking(workspace, n, states);
         committer.learn_request(request).unwrap();
         allowed.insert(public(&key(n)));
         if n == 1 {
@@ -116,7 +116,7 @@ fn admission(members: u32, arriving: u32) -> Cost {
     // The crowd asks, each request on its own, and the committer settles.
     let before = states.writes();
     for n in 0..arriving {
-        let (_, request) = asking(channel, 100_000 + n, None);
+        let (_, request) = asking(workspace, 100_000 + n, None);
         committer.learn_request(request).unwrap();
         allowed.insert(public(&key(100_000 + n)));
     }
@@ -186,22 +186,23 @@ fn a_crowd_asking_together_is_admitted_in_one_commit() {
     assert_eq!(crowd.member_writes, one.member_writes, "{crowd:?}");
 }
 
-/// The signatures a device admitted to a channel of `members` checks in
+/// The signatures a device admitted to a workspace of `members` checks in
 /// full while taking in its Welcome, and those of the tree's leaves it
 /// leaves unchecked ([`channel_crypto::welcome`]).
 fn joining(members: u32) -> (u64, u64) {
-    let channel = ChannelId::new();
-    let mut committer = ChannelPeer::create_now(None, channel, Box::new(key(0)), &vault()).unwrap();
+    let workspace = WorkspaceId::new();
+    let mut committer =
+        ChannelPeer::create_now(None, workspace, Box::new(key(0)), &vault()).unwrap();
     committer.published();
     let mut allowed: BTreeSet<Ed25519PublicKey> = [public(&key(0))].into();
     for n in 1..members {
-        let (_, request) = asking(channel, n, None);
+        let (_, request) = asking(workspace, n, None);
         committer.learn_request(request).unwrap();
         allowed.insert(public(&key(n)));
     }
     committer.reconcile_now(&allowed, &vault()).unwrap();
     committer.published();
-    let (mut joiner, request) = asking(channel, 900_000, None);
+    let (mut joiner, request) = asking(workspace, 900_000, None);
     committer.learn_request(request).unwrap();
     allowed.insert(public(&key(900_000)));
     committer.reconcile_now(&allowed, &vault()).unwrap();
@@ -221,10 +222,10 @@ fn joining(members: u32) -> (u64, u64) {
     (checked, left)
 }
 
-/// A newcomer joining a channel of 300 checks as many signatures in full as
-/// one joining a channel of 30: the tree's leaves, one per member, go
+/// A newcomer joining a workspace of 300 checks as many signatures in full as
+/// one joining a workspace of 30: the tree's leaves, one per member, go
 /// unchecked. Only the tree's hash, which every leaf goes
-/// into, still grows with the channel.
+/// into, still grows with the workspace.
 #[test]
 fn joining_checks_the_same_signatures_at_300_members_as_at_30() {
     let (small, small_leaves) = joining(30);

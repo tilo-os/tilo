@@ -7,13 +7,13 @@
 //! once the record's durable change lands.
 //!
 //! A live frame travels only as a [`SealedLiveFrame`]: the frame sealed with
-//! the content keys of the channel of the record it names. Its kind,
+//! its workspace's content keys and bound to the record it names. Its kind,
 //! sequence and record digest are in the clear so a carrier can rate-limit
 //! and route a record's previews; the content never is. A frame that names
-//! no record has no channel and is never sent.
+//! no record is never sent.
 
 use collab_types::{
-    ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme, live_artifact_id,
+    ArtifactId, ContentRetention, EncryptionMetadata, EncryptionScheme, live_artifact_id,
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 
@@ -27,7 +27,7 @@ pub use pointer::{LivePointer, PointerLayout, ShownStrip};
 pub const MAX_PRESENCE_FRAME_BYTES: usize = 1100;
 /// Largest encoded ordered frame.
 pub const MAX_OPS_FRAME_BYTES: usize = 64 * 1024;
-/// What sealing adds to a frame: the clear tags, the channel and epoch, the
+/// What sealing adds to a frame: the clear tags, the epoch, the
 /// envelope's nonce and authentication tag.
 pub const SEALED_LIVE_OVERHEAD_BYTES: usize = 256;
 /// Largest sealed presence frame.
@@ -440,13 +440,13 @@ impl LiveKind {
 /// Why a live frame was not sealed or opened.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LiveSealError {
-    /// The frame names no record, so no channel's keys may seal it.
+    /// The frame names no record, so nothing may seal it.
     #[error("the live frame names no record")]
     NoRecord,
     /// The frame or its sealed form violates the wire format.
     #[error(transparent)]
     Wire(#[from] LiveWireError),
-    /// Sealing or opening failed: no key for the channel, or a payload that
+    /// Sealing or opening failed: no key for the workspace, or a payload that
     /// does not authenticate.
     #[error("the live frame could not be sealed or opened: {0}")]
     Crypto(String),
@@ -455,8 +455,8 @@ pub enum LiveSealError {
     Mismatch,
 }
 
-/// A live frame sealed with the content keys of the channel of the record it
-/// names, the only form a live frame travels in.
+/// A live frame sealed with its workspace's content keys and bound to the
+/// record it names, the only form a live frame travels in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SealedLiveFrame {
@@ -465,11 +465,9 @@ pub struct SealedLiveFrame {
     /// The presence sequence, or the preview's per-record sequence (0 when
     /// previews end).
     pub seq: u64,
-    /// [`LiveRecord::digest`] of the record whose channel seals the frame.
+    /// [`LiveRecord::digest`] of the record the frame is bound to.
     pub record: [u8; 32],
-    /// The record's channel.
-    pub channel: [u8; 16],
-    /// The channel content-key epoch the frame is sealed under.
+    /// The content-key epoch the frame is sealed under.
     pub epoch: u64,
     /// The sealed canonical [`LiveFrame`] encoding.
     #[serde(with = "serde_bytes")]
@@ -492,40 +490,31 @@ impl LiveFrame {
 }
 
 impl SealedLiveFrame {
-    /// Open only for an explicitly observed record and its canonical channel.
-    /// Holding a different channel key never authorizes a claim about this
-    /// record. Publisher identity and current membership remain the caller's
-    /// responsibility; decryption alone does not authenticate semantic work.
+    /// Open only for an explicitly observed record. Publisher identity and
+    /// current membership remain the caller's responsibility; decryption alone
+    /// does not authenticate semantic work.
     ///
     /// # Errors
     ///
-    /// Refuses a different record digest or channel before opening, and any
+    /// Refuses a different record digest before opening, and any
     /// authentication or canonical-frame failure from [`Self::open`].
     pub fn open_in_record<E: std::fmt::Display>(
         &self,
-        workspace: &str,
         record: &LiveRecord,
         open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
     ) -> std::result::Result<LiveFrame, LiveSealError> {
-        if self.record != record.digest()
-            || self.channel_id()
-                != collab_types::document_channel_id(&record.app, workspace, &record.record)
-        {
+        if self.record != record.digest() {
             return Err(LiveSealError::Mismatch);
         }
         self.open(open)
-    }
-
-    pub fn channel_id(&self) -> ChannelId {
-        ChannelId(uuid::Uuid::from_bytes(self.channel))
     }
 
     fn artifact(&self) -> ArtifactId {
         live_artifact_id(&self.record, self.kind.tag(), self.seq)
     }
 
-    /// Seal `frame` with `seal`, the content cipher of the channel of the
-    /// record the frame names, and encode the sealed form.
+    /// Seal `frame` with `seal`, the workspace's content cipher, and encode
+    /// the sealed form.
     ///
     /// # Errors
     ///
@@ -554,22 +543,21 @@ impl SealedLiveFrame {
             })
         {
             return Err(LiveSealError::Crypto(
-                "live frames are sealed with channel content keys only".into(),
+                "live frames are sealed with content keys only".into(),
             ));
         }
         Ok(Self {
             kind,
             seq,
             record,
-            channel: metadata.channel.0.into_bytes(),
             epoch: metadata.epoch,
             payload,
         }
         .encode()?)
     }
 
-    /// Open the frame with `open`, the content cipher of
-    /// [`Self::channel_id`], and check that it is the frame its tags name.
+    /// Open the frame with `open`, the workspace's content cipher, and check
+    /// that it is the frame its tags name.
     ///
     /// # Errors
     ///
@@ -578,8 +566,7 @@ impl SealedLiveFrame {
         &self,
         open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
     ) -> std::result::Result<LiveFrame, LiveSealError> {
-        let metadata =
-            EncryptionMetadata::content_key(self.epoch, self.channel_id(), ContentRetention::Delta);
+        let metadata = EncryptionMetadata::content_key(self.epoch, ContentRetention::Delta);
         let cleartext = open(self.artifact(), &metadata, &self.payload)
             .map_err(|error| LiveSealError::Crypto(error.to_string()))?;
         let frame = LiveFrame::decode(&cleartext)?;
@@ -677,10 +664,6 @@ mod tests {
         }
     }
 
-    fn channel() -> ChannelId {
-        ChannelId(uuid::Uuid::from_bytes([7; 16]))
-    }
-
     fn semantic() -> LiveFrame {
         LiveFrame::Ops(OpsFrame::Semantic {
             record: record(),
@@ -767,50 +750,30 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_live_frame_is_sealed_to_its_record_and_opens_nowhere_else;
 
-        phase opening_for_a_mounted_record_refuses_a_different_record_or_channel;
+        phase opening_for_a_mounted_record_refuses_a_different_record;
         {
             let expected = record();
-            let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-            let channel = collab_types::document_channel_id(&expected.app, workspace, &expected.record);
             let bytes = SealedLiveFrame::seal(&semantic(), |_, retention, cleartext: &[u8]| {
                 Ok::<_, String>((
-                    EncryptionMetadata::content_key(3, channel, retention),
+                    EncryptionMetadata::content_key(3, retention),
                     cleartext.to_vec(),
                 ))
             })
             .unwrap();
             let sealed = SealedLiveFrame::decode(&bytes).unwrap();
-            let opened = sealed.open_in_record(workspace, &expected, |_, _, bytes| {
-                Ok::<_, String>(bytes.to_vec())
-            });
+            let opened =
+                sealed.open_in_record(&expected, |_, _, bytes| Ok::<_, String>(bytes.to_vec()));
             assert_eq!(opened.unwrap(), semantic());
             let other = LiveRecord {
                 record: "other".into(),
-                ..expected.clone()
+                ..expected
             };
-            for (workspace, record) in [(workspace, other), ("another-room", expected.clone())] {
-                assert!(matches!(
-                    sealed.open_in_record(
-                        workspace,
-                        &record,
-                        |_, _, _| -> std::result::Result<Vec<u8>, String> {
-                            panic!("a different mounted audience must be refused before opening")
-                        }
-                    ),
-                    Err(LiveSealError::Mismatch)
-                ));
-            }
-            // A valid record claim sealed under another record's held key is not
-            // authority for this record, even when its clear digest agrees.
-            let mut wrong_channel = sealed;
-            wrong_channel.channel = [9; 16];
-            assert!(
-                wrong_channel
-                    .open_in_record(workspace, &expected, |_, _, _| {
-                        Err::<Vec<u8>, String>("must not open".into())
-                    })
-                    .is_err()
-            );
+            assert!(matches!(
+                sealed.open_in_record(&other, |_, _, _| -> std::result::Result<Vec<u8>, String> {
+                    panic!("a different mounted record must be refused before opening")
+                }),
+                Err(LiveSealError::Mismatch)
+            ));
         }
 
         phase a_live_frame_is_sealed_and_bound_to_its_exact_record;
@@ -819,8 +782,6 @@ mod tests {
                 app: "so.tilo.chat".into(),
                 record: String::new(),
             };
-            let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-            let channel = collab_types::document_channel_id(&primary.app, workspace, &primary.record);
             let frame = LiveFrame::Ops(OpsFrame::Preview {
                 seq: 1,
                 record: primary.clone(),
@@ -833,7 +794,7 @@ mod tests {
             });
             let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
                 Ok::<_, String>((
-                    EncryptionMetadata::content_key(3, channel, retention),
+                    EncryptionMetadata::content_key(3, retention),
                     cleartext.to_vec(),
                 ))
             })
@@ -841,7 +802,7 @@ mod tests {
             let sealed = SealedLiveFrame::decode(&bytes).unwrap();
             assert_eq!(
                 sealed
-                    .open_in_record(workspace, &primary, |_, _, bytes| {
+                    .open_in_record(&primary, |_, _, bytes| {
                         Ok::<_, String>(bytes.to_vec())
                     })
                     .unwrap(),
@@ -853,7 +814,6 @@ mod tests {
             };
             assert!(matches!(
                 sealed.open_in_record(
-                    workspace,
                     &named,
                     |_, _, _| -> std::result::Result<Vec<u8>, String> {
                         panic!("a different record must be refused before opening")
@@ -878,8 +838,8 @@ mod tests {
             let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
             let sealed = SealedLiveFrame::decode(&bytes).unwrap();
             assert_eq!(
-                (sealed.kind, sealed.seq, sealed.record, sealed.channel_id()),
-                (LiveKind::Ops, 0, record().digest(), channel())
+                (sealed.kind, sealed.seq, sealed.record),
+                (LiveKind::Ops, 0, record().digest())
             );
             assert!(
                 !bytes
@@ -922,7 +882,7 @@ mod tests {
             assert!(matches!(refused, Err(LiveSealError::Crypto(_))));
             let mls = SealedLiveFrame::seal(&named(), |_, _, cleartext: &[u8]| {
                 Ok::<_, String>((
-                    EncryptionMetadata::mls_application(1, channel()),
+                    EncryptionMetadata::mls_application(1),
                     cleartext.to_vec(),
                 ))
             });
@@ -936,7 +896,7 @@ mod tests {
     }
 
     /// A stand-in content cipher that authenticates the artifact it was
-    /// sealed for, as the channel's content keys do. Fallible like them.
+    /// sealed for, as the workspace's content keys do. Fallible like them.
     #[allow(
         clippy::unnecessary_wraps,
         reason = "it stands in for a cipher whose sealing can fail"
@@ -948,10 +908,7 @@ mod tests {
     ) -> std::result::Result<(EncryptionMetadata, Vec<u8>), String> {
         let mut payload = artifact.0.as_bytes().to_vec();
         payload.extend(cleartext.iter().map(|byte| byte ^ 0x5a));
-        Ok((
-            EncryptionMetadata::content_key(3, channel(), retention),
-            payload,
-        ))
+        Ok((EncryptionMetadata::content_key(3, retention), payload))
     }
 
     fn open(
@@ -960,7 +917,7 @@ mod tests {
         payload: &[u8],
     ) -> std::result::Result<Vec<u8>, String> {
         let (bound, sealed) = payload.split_at_checked(16).ok_or("short")?;
-        if bound != artifact.0.as_bytes() || metadata.channel != channel() || metadata.epoch != 3 {
+        if bound != artifact.0.as_bytes() || metadata.epoch != 3 {
             return Err("does not authenticate".into());
         }
         Ok(sealed.iter().map(|byte| byte ^ 0x5a).collect())

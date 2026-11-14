@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 45;
+pub const PEER_PROTOCOL_VERSION: u32 = 46;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -1083,10 +1083,10 @@ mod tests {
     /// bytes stay reproducible (these fixtures are not verified).
     fn fixtures_channel_governance() -> Vec<(&'static str, NeighbourMsg)> {
         use collab_types::{
-            ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction,
-            MlsGovernanceFrame, Signature,
+            Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
+            Signature, WorkspaceId,
         };
-        let channel = ChannelId(uuid::Uuid::from_bytes([0x55; 16]));
+        let workspace = WorkspaceId::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555);
         vec![
             (
                 "channel governance frame",
@@ -1094,7 +1094,7 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
-                        channel,
+                        workspace,
                         previous_frame_digest: [7; 32],
                         epoch: 3,
                         action: MlsGovernanceAction::Commit {
@@ -1116,7 +1116,7 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
-                        channel,
+                        workspace,
                         device: Ed25519PublicKey::from_bytes([2; 32]),
                         key_package: vec![0x4B, 0x50],
                         issued_at: 1_700_000_000,
@@ -1549,7 +1549,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b2d",
+                "0b2e",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",

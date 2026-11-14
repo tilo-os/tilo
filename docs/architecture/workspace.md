@@ -475,18 +475,18 @@ holds an earlier part when a reader scrolls back to it. Headless readers
 (bots, moderation, the Discord bridge, agents) read and page the chain through
 that resource instead of enumerating parts themselves.
 
-## What a unit and a key scope cost
+## What a unit and a workspace's keys cost
 
-Measured, not estimated: `channel-crypto`'s `per_channel` bench for a key
-scope, `tilo-app-state`'s `record_cost` for a unit and its document, and
+Measured, not estimated: `channel-crypto`'s `per_channel` bench for a
+workspace's group, `tilo-app-state`'s `record_cost` for a unit and its document, and
 `tilolang-tilo`'s `index_units` for the index. Numbers are medians on a
 x86_64 development container, three samples; instruction counts repeat on any
 machine, times are that container's.
 
-**One group per channel** (one MLS group per record route, three devices in
-each channel), per channel — the cost a workspace paid before key scopes:
+**One group per record** (one MLS group per record, three devices in each),
+per record — what a group per record would cost:
 
-| channels | join | per channel | join bytes | removal | removal bytes | device state |
+| records | join | per record | join bytes | removal | removal bytes | device state |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 1.99 ms | 1.99 ms | 3.1 KiB | 0.84 ms | 700 B | 757 B |
 | 10 | 22.0 ms | 2.20 ms | 3.1 KiB | 0.77 ms | 700 B | 763 B |
@@ -494,14 +494,14 @@ each channel), per channel — the cost a workspace paid before key scopes:
 | 1000 | 1989 ms | 1.99 ms | 3.1 KiB | 0.77 ms | 700 B | 760 B |
 
 The cost is flat per group and does not shrink as a workspace grows: 2.0 ms
-and 3.1 KiB of governance frames per channel to admit one device, 0.8 ms and
-700 B per channel for one removal, and 760 B of sealed peer state per channel
-on the device. A user joining a workspace of 1000 records paid about two
+and 3.1 KiB of governance frames per group to admit one device, 0.8 ms and
+700 B per group for one removal, and 760 B of sealed peer state per group on
+the device. A user joining a workspace of 1000 records would pay about two
 seconds and 3 MiB before reading anything, and every membership change after
-that repeated it — once per channel, on every device.
+that would repeat it, on every device.
 
-**One group per workspace** (one MLS group carrying every unit whose
-readers are the same devices, three devices), by the units it carries:
+**One group per workspace** (one MLS group carrying every unit of the
+workspace, three devices), by the units it carries:
 
 | units | join | per unit | join bytes | removal | removal bytes |
 | --- | --- | --- | --- | --- | --- |
@@ -512,9 +512,9 @@ readers are the same devices, three devices), by the units it carries:
 
 Flat in the units carried: a workspace of 1000 records costs 1.9 ms and 3.1
 KiB to admit a device and 0.76 ms and 700 B to remove one, instead of 1.99 s
-and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content still seals and opens
-under the scope's keys, named for the unit: 4.8 us per unit at one unit, 2.4 us
-at 1000 (`unit_content`), which is what it was per channel before.
+and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content seals and opens under
+the workspace's keys, bound to the unit's artifact: 4.8 us per unit at one
+unit, 2.4 us at 1000 (`unit_content`).
 
 **One storage unit** (one record: its own Automerge file, route and index
 row), per unit:
@@ -584,11 +584,11 @@ chunk the views do not read in full is what brings either down.
 
 What that implies for the layers above:
 
-- **Key scope, not channel.** Per-channel keys are what make a membership
-  change linear in the workspace: the 1.96 ms above is one commit and one
-  delivered frame set per channel, on every member. Keys per reader set make
-  the same change one commit for the whole workspace, and a device's sealed
-  state one file per reader set instead of 760 B per record.
+- **Keys per workspace, not per record.** Per-record keys would make a
+  membership change linear in the workspace: the 1.96 ms above is one commit
+  and one delivered frame set per group, on every member. One group per
+  workspace makes the same change one commit, and a device's sealed state one
+  file per workspace instead of 760 B per record.
 - **A chunk is a few thousand items, not a record per app.** A 10k-item chunk
   loads in 31 ms and holds 3 MiB; a 1k-item chunk in 3.6 ms and 276 KiB. A
   chunk that holds a whole collection of a few thousand small resources keeps

@@ -318,11 +318,7 @@ impl Shared {
         };
         // The plane's tracks are sealed under the workspace's media channel: taking part in it asks
         // the workspace's devices for access, and the plane opens on the keys arriving.
-        let keys = self.engine.seal_keys(
-            workspace,
-            collab_types::scope::MEDIA_APP,
-            collab_types::scope::WORKSPACE_RECORD,
-        );
+        let keys = self.engine.seal_keys(workspace);
         // A device that may hold none of them (a session in a workspace's VM) is lent its own
         // streams' keys instead, asked afresh at each join: a plane whose epoch moved is cut, and
         // joins again on the keys its host lends then.
@@ -999,8 +995,7 @@ mod tests {
             "the device serving the workspace admits"
         );
         let mut elsewhere = grant(workspace, &mine);
-        elsewhere.scope =
-            Scope::channel(workspace.to_string(), collab_types::ChannelId::default()).id();
+        elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
         assert!(
             !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
             "a scope this session carries no plane for is refused"

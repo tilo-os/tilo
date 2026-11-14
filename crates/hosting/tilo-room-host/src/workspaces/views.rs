@@ -169,8 +169,7 @@ impl Workspaces {
         runtime
             .view_read_policy(caller, &source.app_id, &source.record)
             .ok_or("resource read not permitted")?;
-        let route = collab_types::ChannelRoute::new(&source.app_id, &source.record);
-        let keys = match runtime.route_keys(&route).await {
+        let keys = match runtime.route_keys().await {
             Some(Ok(keys)) => Some(keys),
             _ => None,
         };
@@ -213,8 +212,6 @@ fn replay_source(
     primary_governor: Option<[u8; 32]>,
     retained: Vec<crate::workspace_records::RetainedBody>,
 ) -> Result<Vec<u8>, String> {
-    let channel =
-        collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
     let mut transfers = tilo_peer_state::document_frame::Transfers::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
@@ -238,7 +235,7 @@ fn replay_source(
             continue;
         }
         match envelope.encryption.as_ref() {
-            Some(metadata) if metadata.channel == channel => {}
+            Some(_) => {}
             None if primary_governor == Some(retained.author) => {}
             _ => return Err("source encrypted channel mismatch".into()),
         }

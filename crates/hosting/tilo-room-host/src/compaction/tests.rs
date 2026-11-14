@@ -66,10 +66,7 @@ fn signed_frames(
                     collab_types::OpKind::Change,
                     std::time::UNIX_EPOCH,
                     seq.saturating_add(index as u64),
-                    collab_types::EncryptionMetadata::mls_application(
-                        1,
-                        collab_types::ChannelId::new(),
-                    ),
+                    collab_types::EncryptionMetadata::mls_application(1),
                 )
             } else {
                 collab_types::SignedOp::new_unsigned(
@@ -1397,7 +1394,7 @@ fn keyed_opener(
 fn node_keys() -> channel_crypto::ChannelContentKeys {
     let route = route();
     channel_crypto::ChannelGroup::create(
-        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id),
+        collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
         channel_crypto::MemberKey::generate("node").unwrap(),
     )
     .unwrap()

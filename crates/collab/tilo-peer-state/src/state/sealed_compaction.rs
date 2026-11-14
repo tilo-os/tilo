@@ -186,7 +186,6 @@ impl<'peer> PeerPublication<'peer> {
         let snapshot = DocumentMutation::Snapshot(rebuilt);
         // A snapshot larger than one op goes as a segmented transfer: the
         // compaction carries its first segment and names the rest.
-        let channel = collab_types::document_channel_id(app, &self.peer.core.workspace, record);
         let mut sealed = Vec::new();
         for (index, frame) in snapshot.encode_frames().map_err(err)?.iter().enumerate() {
             let (metadata, ciphertext) = seal(frame)?;
@@ -195,8 +194,8 @@ impl<'peer> PeerPublication<'peer> {
             } else {
                 ContentRetention::Delta
             };
-            if metadata.retention() != Some(retention) || metadata.channel != channel {
-                return Err("a sealed compaction is a checkpoint for the record's channel".into());
+            if metadata.retention() != Some(retention) {
+                return Err("a sealed compaction is a checkpoint for the record".into());
             }
             sealed.push((metadata, ciphertext));
         }

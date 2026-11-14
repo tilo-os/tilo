@@ -37,7 +37,6 @@ fn time_to_keys(
 fn seeded_channel(
     workspace: &Arc<Workspace>,
     workspace_id: WorkspaceId,
-    channel: ChannelId,
     members: u8,
     policy: &Policy,
     dirs: &[tempfile::TempDir],
@@ -55,7 +54,7 @@ fn seeded_channel(
             )
         })
         .collect();
-    create(&mut devices[0], workspace_id, channel, *now);
+    create(&mut devices[0], workspace_id, *now);
     for device in devices.iter_mut().skip(1) {
         device.service.access(workspace_id, *now);
     }
@@ -77,19 +76,10 @@ fn seeded_channel(
 fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..40).map(|_| tempfile::tempdir().unwrap()).collect();
     let policy = Policy::readers([1, 2]);
     let mut now = Instant::now();
-    let mut members = seeded_channel(
-        &workspace,
-        workspace_id,
-        channel,
-        2,
-        &policy,
-        &dirs,
-        &mut now,
-    );
+    let mut members = seeded_channel(&workspace, workspace_id, 2, &policy, &dirs, &mut now);
 
     // An earlier guest, admitted under the members' policy.
     policy.allowed.lock().unwrap().insert(public(10));
@@ -148,19 +138,10 @@ fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy
 fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..40).map(|_| tempfile::tempdir().unwrap()).collect();
     let policy = Policy::readers([1, 2, 9]);
     let mut now = Instant::now();
-    let mut members = seeded_channel(
-        &workspace,
-        workspace_id,
-        channel,
-        2,
-        &policy,
-        &dirs,
-        &mut now,
-    );
+    let mut members = seeded_channel(&workspace, workspace_id, 2, &policy, &dirs, &mut now);
     let mut stranger = device(&workspace, workspace_id, 9, 9, &policy, dirs[9].path());
     stranger.service.access(workspace_id, now);
     {
@@ -178,7 +159,7 @@ fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
     all.push(&mut stranger);
     all.push(&mut newcomer);
     let held = |device: &Device| {
-        device.service.peers[&channel]
+        device.service.peers[&workspace_id]
             .welcome
             .as_ref()
             .map(|held| held.frame.epoch)
@@ -242,19 +223,10 @@ fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
 fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking_again() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..64).map(|_| tempfile::tempdir().unwrap()).collect();
     let policy = Policy::readers([1, 2, 3]);
     let mut now = Instant::now();
-    let mut members = seeded_channel(
-        &workspace,
-        workspace_id,
-        channel,
-        3,
-        &policy,
-        &dirs,
-        &mut now,
-    );
+    let mut members = seeded_channel(&workspace, workspace_id, 3, &policy, &dirs, &mut now);
 
     let guests: Vec<u8> = (20..40).collect();
     let views: Vec<Policy> = guests
@@ -339,21 +311,12 @@ fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking
 fn a_guest_arriving_just_after_a_device_left_holds_its_keys_within_seconds() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..40).map(|_| tempfile::tempdir().unwrap()).collect();
     // Seed 3 is the device that leaves; seed 4 stays (its person's other
     // device, when seed 3 is revoked).
     let policy = Policy::readers([1, 2, 3, 4]);
     let mut now = Instant::now();
-    let mut members = seeded_channel(
-        &workspace,
-        workspace_id,
-        channel,
-        4,
-        &policy,
-        &dirs,
-        &mut now,
-    );
+    let mut members = seeded_channel(&workspace, workspace_id, 4, &policy, &dirs, &mut now);
 
     // The guest's copy heard the device left; the members' copies hear it
     // five seconds later, after they admitted the guest.

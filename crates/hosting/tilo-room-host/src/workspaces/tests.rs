@@ -1439,7 +1439,7 @@ struct AskedForAChannel {
     relay: crate::workspaces::fixtures::TestHost,
     workspaces: Workspaces,
     workspace: String,
-    channel: collab_types::ChannelId,
+    channel: collab_types::WorkspaceId,
 }
 
 /// Start a relay certified with `capabilities`, create a workspace on it, admit
@@ -1466,7 +1466,7 @@ async fn a_member_asks_for_a_channel_through(
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
-    let channel = collab_types::workspace_scope(&created.workspace);
+    let channel = collab_types::WorkspaceId::parse(&created.workspace).unwrap();
     let vault = channel_crypto::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
@@ -1518,7 +1518,7 @@ impl AskedForAChannel {
                                     workspace,
                                     request,
                                     ..
-                                } if workspace == self.workspace && request.channel == self.channel
+                                } if workspace == self.workspace && request.workspace == self.channel
                             )
                         },
                     )

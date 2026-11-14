@@ -148,8 +148,8 @@ impl Fixture {
     }
 }
 
-fn channel() -> collab_types::ChannelId {
-    collab_types::document_channel_id(APP, WORKSPACE, RECORD)
+fn channel() -> collab_types::WorkspaceId {
+    collab_types::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
 fn artifact() -> collab_types::ArtifactId {
@@ -999,11 +999,6 @@ fn forged_compactions_are_refused() {
     other_record.artifact = collab_types::document_artifact_id(APP, WORKSPACE, "tab:2");
     collab_types::sign_op(&mut other_record, &f.owner).unwrap();
     refused(&mut f.host, &f.owner, message(other_record), now);
-
-    let mut other_channel = valid.1;
-    other_channel.channel = collab_types::ChannelId::new();
-    let forgery = forged(&f.host, &f.owner, &(valid.0.clone(), other_channel), now);
-    refused(&mut f.host, &f.owner, forgery, now);
 
     let mut delta = valid.1;
     delta.scheme = collab_types::EncryptionScheme::ContentKey {
@@ -2008,7 +2003,7 @@ fn the_key_holder_writes_a_new_records_genesis_sealed() {
     let f = fixture();
     let record = "tab:2";
     let group = ChannelGroup::create(
-        collab_types::document_channel_id(APP, WORKSPACE, record),
+        collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
         MemberKey::generate("owner").unwrap(),
     )
     .unwrap();

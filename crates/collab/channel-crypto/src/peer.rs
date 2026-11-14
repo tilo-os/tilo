@@ -1,6 +1,6 @@
-//! One participant device's side of one channel.
+//! One participant device's side of one workspace.
 //!
-//! A channel's MLS group holds exactly the devices its membership lets read
+//! A workspace's MLS group holds exactly the devices its membership lets read
 //! it: a projection the caller computes from the workspace's membership and
 //! access policy (`allowed`), never a second record of who belongs. Every
 //! participant device keeps a [`ChannelPeer`] and follows the same rules:
@@ -26,7 +26,7 @@
 //!   this) and applies the winner; if the group still differs from the
 //!   projection, its next reconcile commits again on top. The device that
 //!   committed the winner publishes it again when it sees the loser, so a
-//!   host that keeps only a channel's newest frame keeps the winner. Two
+//!   host that keeps only a workspace's newest frame keeps the winner. Two
 //!   commits for one epoch that followed different frames compete the same
 //!   way, at the point where they diverged: of the two children of the last
 //!   frame both branches share, the lower digest wins. Each device keeps the
@@ -42,7 +42,7 @@
 //!   decides nothing there; the device publishes its own branch again for
 //!   the other side to decide on.
 //! - **Any participant creates the group, once.** A participant that holds
-//!   no state for a channel waits and asks; one that sees no genesis
+//!   no state for a workspace waits and asks; one that sees no genesis
 //!   ([`ChannelPeer::found`]) creates the group, and one that has seen a
 //!   genesis never creates another. Two geneses made at once compete like
 //!   two commits: every device keeps the lower digest, and a member of the
@@ -54,13 +54,13 @@
 //!   that commit's epoch, [`MlsGovernanceAction::Commit`]'s `history`), and
 //!   every later joiner gets them with the rest of the history. Whatever was
 //!   sealed under a branch that lost stays readable to every member.
-//! - **Falling behind starts over.** Hosts keep only a channel's newest
+//! - **Falling behind starts over.** Hosts keep only a workspace's newest
 //!   frame, so a member that finds a frame it can never reach (it missed
 //!   one, or followed a branch that lost) waits again with a fresh member
 //!   key and asks anew; any participant admits it, history included.
 //!
-//! A device that cannot name the channel's record (it lost the route that
-//! says whose record the channel carries) cannot tell who may read it, so it
+//! A device that cannot name the workspace's record (it lost the route that
+//! says whose record the workspace carries) cannot tell who may read it, so it
 //! commits nothing; it still follows the commits of the participants that
 //! can ([`ChannelPeer::follow`]).
 //!
@@ -82,8 +82,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use collab_types::{
-    ChannelId, Ed25519PublicKey, JoinMaterial, Joining, MlsAccessRequestV1, MlsGovernanceAction,
-    MlsGovernanceFrame,
+    Ed25519PublicKey, JoinMaterial, Joining, MlsAccessRequestV1, MlsGovernanceAction,
+    MlsGovernanceFrame, WorkspaceId,
 };
 use openmls::prelude::BasicCredential;
 use serde::{Deserialize, Serialize};
@@ -114,7 +114,7 @@ pub fn backs(frame: &MlsGovernanceFrame, allowed: &BTreeSet<Ed25519PublicKey>) -
             .any(|device| allowed.contains(*device) && !added.contains(*device))
 }
 
-/// Requests one channel keeps, one per device.
+/// Requests one workspace keeps, one per device.
 const MAX_REQUESTS: usize = 4096;
 /// Frames below the head a peer keeps of its own branch, to find where an
 /// incoming commit's branch diverged from it. A branch that went on by more
@@ -129,11 +129,11 @@ pub const MAX_BRANCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_LOST: usize = 64;
 /// Sealed peer state larger than this is refused when read.
 const MAX_PEER_STATE: usize = 320 * 1024 * 1024;
-const PEER_RECORD: &[u8] = b"channel-crypto/channel-peer";
+const PEER_RECORD: &[u8] = b"workspace-crypto/workspace-peer";
 /// The only format of peer state this build writes and reads.
 const PEER_VERSION: u8 = 3;
 
-/// What the device can do with the channel's content right now.
+/// What the device can do with the workspace's content right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
     /// Asked for access and not admitted yet: no content key is held.
@@ -152,11 +152,11 @@ pub enum PeerEvent {
     /// The frame changes nothing here: older than the head, on a branch that
     /// lost, or a commit this device is not part of.
     Ignored,
-    /// The channel's genesis is now this one: content is sealed from now on.
+    /// The workspace's genesis is now this one: content is sealed from now on.
     Genesis,
-    /// This device joined the channel at `epoch`.
+    /// This device joined the workspace at `epoch`.
     Joined { epoch: u64 },
-    /// The channel moved to `epoch`; content keys changed.
+    /// The workspace moved to `epoch`; content keys changed.
     Advanced { epoch: u64 },
     /// This device was removed.
     Removed,
@@ -170,7 +170,7 @@ pub enum PeerEvent {
     /// A Welcome for this waiting device was refused for the reason named.
     ///
     /// [`crate::WelcomeRefusal::SignedByAnotherDevice`] is a member of the
-    /// channel sending it into a group that is not the one the frame commits.
+    /// workspace sending it into a group that is not the one the frame commits.
     /// Like [`Self::Desynchronised`], the device waits with a fresh member key
     /// and must send a new access request: the members that took the frame's
     /// commit hold this device admitted with the key it asked with, and admit
@@ -183,7 +183,7 @@ pub enum PeerEvent {
     /// that the committer has not. So the device keeps the key the Welcome
     /// is for, and the caller offers the same frame again once its view of
     /// the membership changed. It gives up with [`ChannelPeer::refuse_welcome`]
-    /// when the channel moved past the frame or its view does not come to
+    /// when the workspace moved past the frame or its view does not come to
     /// back the Welcome in time.
     WelcomeRefused(crate::WelcomeRefusal),
 }
@@ -208,9 +208,9 @@ impl Reconciled {
     }
 }
 
-/// One participant device's state for one channel.
+/// One participant device's state for one workspace.
 pub struct ChannelPeer {
-    channel: ChannelId,
+    workspace: WorkspaceId,
     device: Ed25519PublicKey,
     signer: Box<dyn DeviceSigner>,
     record: MemberRecord,
@@ -229,7 +229,7 @@ pub struct ChannelPeer {
     /// commit, or the member key `head`'s Welcome admitted. A lower sibling
     /// of `head` then replaces it.
     parent: Option<Vec<u8>>,
-    /// The digest of the genesis this channel follows.
+    /// The digest of the genesis this workspace follows.
     genesis: Option<[u8; 32]>,
     /// That genesis, published again when a losing one appears, so a device
     /// that made the loser while it heard nothing hears of the winner.
@@ -252,7 +252,7 @@ pub struct ChannelPeer {
     /// in the same second is still newer.
     issued: u64,
     /// A change not yet written to `states`: one whose loss only makes this
-    /// device ask for the channel again ([`Self::save_deferred`]).
+    /// device ask for the workspace again ([`Self::save_deferred`]).
     unsaved: bool,
 }
 
@@ -260,7 +260,7 @@ pub struct ChannelPeer {
 #[serde(deny_unknown_fields)]
 struct PeerFile {
     version: u8,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     record: Vec<u8>,
     parent: Option<Vec<u8>>,
     head: Option<MlsGovernanceFrame>,
@@ -286,34 +286,33 @@ fn governance(message: impl Into<String>) -> Error {
 }
 
 /// Where a peer's sealed state is kept between passes of the device: the
-/// files under a desktop's channels directory ([`Files`]), or a page's own
+/// files under a desktop's workspaces directory ([`Files`]), or a page's own
 /// store. `None` on a peer keeps its state in memory only.
 pub trait PeerStates: std::fmt::Debug + collab_types::signer::MaybeSendSync {
-    /// The state kept for `channel`, or `None` when there is none.
+    /// The state kept for `workspace`, or `None` when there is none.
     ///
     /// # Errors
     ///
     /// Returns an error when the store cannot be read, or holds state too
     /// large to be a peer's.
-    fn read(&self, channel: ChannelId) -> Result<Option<Vec<u8>>>;
+    fn read(&self, workspace: WorkspaceId) -> Result<Option<Vec<u8>>>;
 
-    /// Replace the state kept for `channel`.
+    /// Replace the state kept for `workspace`.
     ///
     /// # Errors
     ///
     /// Returns an error when the store refuses the write.
-    fn write(&self, channel: ChannelId, sealed: &[u8]) -> Result<()>;
+    fn write(&self, workspace: WorkspaceId, sealed: &[u8]) -> Result<()>;
 
-    /// Drop the state kept for `channel`; a channel with none is not an error.
+    /// Drop the state kept for `workspace`; a workspace with none is not an error.
     ///
     /// # Errors
     ///
     /// Returns an error when the store refuses the removal.
-    fn forget(&self, channel: ChannelId) -> Result<()>;
+    fn forget(&self, workspace: WorkspaceId) -> Result<()>;
 }
 
-/// A desktop's channels directory: one file per peer, named for the channel it
-/// belongs to.
+/// A desktop's directory of peers: one file per workspace, named for it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct Files(PathBuf);
@@ -326,24 +325,28 @@ impl Files {
         Self(dir.into())
     }
 
-    fn path(&self, channel: ChannelId) -> PathBuf {
-        self.0.join(format!("{}.peer", channel.0))
+    fn path(&self, workspace: WorkspaceId) -> PathBuf {
+        self.0.join(format!("{workspace}.peer"))
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl PeerStates for Files {
-    fn read(&self, channel: ChannelId) -> Result<Option<Vec<u8>>> {
+    fn read(&self, workspace: WorkspaceId) -> Result<Option<Vec<u8>>> {
         let too_large = Error::InvalidState("sealed peer state is too large".into());
-        tilo_files::native::bounded::read_or(&self.path(channel), MAX_PEER_STATE as u64, too_large)
+        tilo_files::native::bounded::read_or(
+            &self.path(workspace),
+            MAX_PEER_STATE as u64,
+            too_large,
+        )
     }
 
-    fn write(&self, channel: ChannelId, sealed: &[u8]) -> Result<()> {
-        tilo_files::native::atomic::write_private(&self.path(channel), sealed).map_err(Error::Io)
+    fn write(&self, workspace: WorkspaceId, sealed: &[u8]) -> Result<()> {
+        tilo_files::native::atomic::write_private(&self.path(workspace), sealed).map_err(Error::Io)
     }
 
-    fn forget(&self, channel: ChannelId) -> Result<()> {
-        match std::fs::remove_file(self.path(channel)) {
+    fn forget(&self, workspace: WorkspaceId) -> Result<()> {
+        match std::fs::remove_file(self.path(workspace)) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
             _ => Ok(()),
         }
@@ -351,33 +354,33 @@ impl PeerStates for Files {
 }
 
 impl ChannelPeer {
-    /// Open the state `states` keeps for `channel`, or `None` when there is
+    /// Open the state `states` keeps for `workspace`, or `None` when there is
     /// none.
     ///
     /// # Errors
     ///
     /// Returns an error for corrupt or undecryptable state, or state of
-    /// another channel or device.
+    /// another workspace or device.
     pub fn open(
         states: Option<Arc<dyn PeerStates>>,
-        channel: ChannelId,
+        workspace: WorkspaceId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Option<Self>> {
         let Some(bytes) = states
             .as_ref()
-            .map(|states| states.read(channel))
+            .map(|states| states.read(workspace))
             .transpose()?
             .flatten()
         else {
             return Ok(None);
         };
-        let mut peer = Self::restore(channel, signer, &bytes, vault)?;
+        let mut peer = Self::restore(workspace, signer, &bytes, vault)?;
         peer.states = states;
         Ok(Some(peer))
     }
 
-    /// A new peer for `channel` that waits for access, keeping its state in
+    /// A new peer for `workspace` that waits for access, keeping its state in
     /// `states` (or in memory when there is none).
     ///
     /// # Errors
@@ -385,13 +388,13 @@ impl ChannelPeer {
     /// Returns an error when the member key cannot be minted or written.
     pub fn waiting(
         states: Option<Arc<dyn PeerStates>>,
-        channel: ChannelId,
+        workspace: WorkspaceId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
         let mut peer = Self {
-            channel,
+            workspace,
             device,
             signer,
             record: MemberRecord::Waiting(Box::new(MemberKey::for_device(&device)?)),
@@ -413,9 +416,9 @@ impl ChannelPeer {
         Ok(peer)
     }
 
-    /// Create `channel`'s group with this device alone in it, and queue its
-    /// genesis. Only for a channel no genesis is known of: a participant
-    /// that holds no state for a channel first waits and catches up with
+    /// Create `workspace`'s group with this device alone in it, and queue its
+    /// genesis. Only for a workspace no genesis is known of: a participant
+    /// that holds no state for a workspace first waits and catches up with
     /// what its workspace retains, then creates the group with [`Self::found`].
     ///
     /// # Errors
@@ -423,11 +426,11 @@ impl ChannelPeer {
     /// Returns an error when the group cannot be created, signed or written.
     pub async fn create(
         states: Option<Arc<dyn PeerStates>>,
-        channel: ChannelId,
+        workspace: WorkspaceId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
-        let mut peer = Self::waiting(states, channel, signer, vault)?;
+        let mut peer = Self::waiting(states, workspace, signer, vault)?;
         peer.found(vault).await?;
         Ok(peer)
     }
@@ -439,15 +442,15 @@ impl ChannelPeer {
     /// As [`Self::create`], or when the signer would have to be awaited.
     pub fn create_now(
         states: Option<Arc<dyn PeerStates>>,
-        channel: ChannelId,
+        workspace: WorkspaceId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
-        complete_now(Self::create(states, channel, signer, vault))
+        complete_now(Self::create(states, workspace, signer, vault))
     }
 
-    /// Create the channel's group with this waiting device alone in it, and
-    /// queue its genesis, when no group of the channel is known here.
+    /// Create the workspace's group with this waiting device alone in it, and
+    /// queue its genesis, when no group of the workspace is known here.
     /// Returns whether it did: a device that has seen a genesis or a commit,
     /// or holds a group, never creates another ([`Self::knows_group`]). The device's own access request goes
     /// unanswered from then on; the requests it holds are admitted by its
@@ -463,7 +466,7 @@ impl ChannelPeer {
         }
         let genesis = self
             .sign(MlsGovernanceFrame::unsigned(
-                self.channel,
+                self.workspace,
                 [0; 32],
                 0,
                 MlsGovernanceAction::Genesis,
@@ -483,7 +486,7 @@ impl ChannelPeer {
             }
         };
         let founded_by = digest(&genesis)?;
-        let group = match ChannelGroup::found(self.channel, member, founded_by) {
+        let group = match ChannelGroup::found(self.workspace, member, founded_by) {
             Ok(group) => group,
             Err(error) => {
                 self.record = MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?));
@@ -519,7 +522,7 @@ impl ChannelPeer {
     pub fn export_sealed(&self, vault: &VaultKey) -> Result<Vec<u8>> {
         let file = PeerFile {
             version: PEER_VERSION,
-            channel: self.channel,
+            workspace: self.workspace,
             record: self.record.seal(vault)?,
             parent: self.parent.clone(),
             head: self.head.clone(),
@@ -554,9 +557,9 @@ impl ChannelPeer {
     /// # Errors
     ///
     /// Returns an error for corrupt or undecryptable state, or state of
-    /// another channel or device.
+    /// another workspace or device.
     pub fn restore(
-        channel: ChannelId,
+        workspace: WorkspaceId,
         signer: Box<dyn DeviceSigner>,
         bytes: &[u8],
         vault: &VaultKey,
@@ -576,9 +579,9 @@ impl ChannelPeer {
         }
         let file: PeerFile = postcard::from_bytes(&plaintext)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        if file.channel != channel {
+        if file.workspace != workspace {
             return Err(Error::InvalidState(
-                "peer state is of another channel".into(),
+                "peer state is of another workspace".into(),
             ));
         }
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
@@ -586,9 +589,9 @@ impl ChannelPeer {
         let owner = match &record {
             MemberRecord::Waiting(key) => Some(key.name()),
             MemberRecord::Joined(group) => {
-                if group.channel_id() != channel {
+                if group.workspace() != workspace {
                     return Err(Error::InvalidState(
-                        "peer state names another channel".into(),
+                        "peer state names another workspace".into(),
                     ));
                 }
                 Some(group.member().name())
@@ -599,7 +602,7 @@ impl ChannelPeer {
             return Err(Error::OtherDevice);
         }
         Ok(Self {
-            channel,
+            workspace,
             device,
             signer,
             record,
@@ -623,8 +626,8 @@ impl ChannelPeer {
         })
     }
 
-    pub fn channel_id(&self) -> ChannelId {
-        self.channel
+    pub fn workspace(&self) -> WorkspaceId {
+        self.workspace
     }
 
     /// The device key this peer acts for.
@@ -632,7 +635,7 @@ impl ChannelPeer {
         self.device
     }
 
-    /// What the device can do with the channel's content.
+    /// What the device can do with the workspace's content.
     pub fn access(&self) -> Access {
         match &self.record {
             MemberRecord::Waiting(_) => Access::Waiting,
@@ -651,10 +654,10 @@ impl ChannelPeer {
         }
     }
 
-    /// What a broker checks every document op of this channel against.
+    /// What a broker checks every document op of this workspace against.
     pub fn gate(&self) -> ChannelGate {
         ChannelGate {
-            // A device that knows the channel has a group (it saw its
+            // A device that knows the workspace has a group (it saw its
             // genesis or a commit of it, or is in it) must never take the
             // record for plaintext, whether or not it ever saw the genesis
             // itself: a member admitted later only ever sees a Welcome.
@@ -662,14 +665,14 @@ impl ChannelPeer {
         }
     }
 
-    /// Whether a genesis of this channel is known here.
+    /// Whether a genesis of this workspace is known here.
     pub fn has_genesis(&self) -> bool {
         self.genesis.is_some()
     }
 
     /// Whether `frame` is a genesis other than the one known here: a group
     /// competing with this device's, which only a device that can name the
-    /// channel's readers can judge ([`Self::receive`]).
+    /// workspace's readers can judge ([`Self::receive`]).
     pub fn competes(&self, frame: &MlsGovernanceFrame) -> bool {
         matches!(frame.action, MlsGovernanceAction::Genesis)
             && self
@@ -677,7 +680,7 @@ impl ChannelPeer {
                 .is_some_and(|known| frame.digest().is_ok_and(|incoming| incoming != known))
     }
 
-    /// Whether this device knows the channel has a group: it saw a genesis
+    /// Whether this device knows the workspace has a group: it saw a genesis
     /// or a commit of it, or is in it. Such a device never creates one.
     pub fn knows_group(&self) -> bool {
         self.genesis.is_some()
@@ -718,7 +721,7 @@ impl ChannelPeer {
     }
 
     /// Queue this device's head frame again: a transport that keeps a
-    /// channel's newest frame lost it (a host restarted empty), or a device
+    /// workspace's newest frame lost it (a host restarted empty), or a device
     /// asks for it.
     pub fn republish_head(&mut self) {
         if let Some(head) = &self.head
@@ -733,7 +736,7 @@ impl ChannelPeer {
     /// this device signed any of those frames: a device on a branch that
     /// diverged there then hears this branch's frame at that point and can
     /// tell which one won. Ending with the head keeps a host that keeps a
-    /// channel's newest frame on it. Only a device that committed on the
+    /// workspace's newest frame on it. Only a device that committed on the
     /// branch since then publishes it, so not every member repeats it.
     fn republish_from(&mut self, epoch: u64) {
         let signed = self
@@ -850,7 +853,7 @@ impl ChannelPeer {
         // it must be durable before the package leaves the device.
         self.save(vault)?;
         Ok(Some(MlsAccessRequestV1::unsigned(
-            self.channel,
+            self.workspace,
             self.device,
             package,
             self.issued,
@@ -898,7 +901,7 @@ impl ChannelPeer {
         complete_now(self.access_request(issued_at, fresh, vault))
     }
 
-    /// Keep `request`, a device's newest ask for this channel, for the next
+    /// Keep `request`, a device's newest ask for this workspace, for the next
     /// [`Self::reconcile`]. The caller has checked the request came from the
     /// device it names. Returns whether it was new.
     ///
@@ -910,10 +913,10 @@ impl ChannelPeer {
     ///
     /// # Errors
     ///
-    /// Returns an error for a request of another channel or a bad signature.
+    /// Returns an error for a request of another workspace or a bad signature.
     pub fn learn_request(&mut self, request: MlsAccessRequestV1) -> Result<bool> {
-        if request.channel != self.channel {
-            return Err(governance("access request names another channel"));
+        if request.workspace != self.workspace {
+            return Err(governance("access request names another workspace"));
         }
         request
             .verify()
@@ -922,7 +925,7 @@ impl ChannelPeer {
             return Ok(false);
         }
         if !self.requests.contains_key(&request.device) && self.requests.len() >= MAX_REQUESTS {
-            return Err(governance("the channel holds too many access requests"));
+            return Err(governance("the workspace holds too many access requests"));
         }
         self.requests.insert(request.device, request);
         Ok(true)
@@ -1020,35 +1023,6 @@ impl ChannelPeer {
         }
     }
 
-    /// Hand this group's members the content keys in `earlier`, those of a
-    /// legacy group this device holds for a unit this group now carries. The
-    /// keys travel with this group's next commit — [`Self::reconcile`]
-    /// writes one for them alone where the group does not otherwise differ —
-    /// and every later admission passes them on in the joiner's key history,
-    /// so a device that joined after key scopes reads the unit's whole
-    /// history with no holder of the old group online.
-    ///
-    /// Idempotent: keys the group already holds or already queued are not
-    /// queued again, and calling it after the commit changes nothing. The
-    /// commit is signed like every frame, so the handover is attributed to
-    /// the device that made it.
-    ///
-    /// Whether the keys may be handed over is the caller's decision: they
-    /// are the keys of a unit whose readers are exactly this group's.
-    ///
-    /// Returns whether any key was queued.
-    pub fn adopt(&mut self, earlier: &ContentKeyring) -> bool {
-        let MemberRecord::Joined(group) = &self.record else {
-            return false;
-        };
-        let missing = earlier.missing_from(group.keyring());
-        if missing.is_empty() || missing.missing_from(&self.orphaned).is_empty() {
-            return false;
-        }
-        // A full keyring keeps what it holds; nothing is handed over then.
-        self.orphaned.merge(&missing).is_ok()
-    }
-
     /// Forget the orphaned keys the group now holds.
     fn settle_orphaned(&mut self) {
         if let MemberRecord::Joined(group) = &self.record {
@@ -1135,7 +1109,7 @@ impl ChannelPeer {
         });
         let handed_over = staged.history.is_some();
         let frame = MlsGovernanceFrame::unsigned(
-            self.channel,
+            self.workspace,
             previous,
             staged.epoch,
             MlsGovernanceAction::Commit {
@@ -1259,11 +1233,11 @@ impl ChannelPeer {
     }
 
     /// Apply one frame delivered by any transport, checked against
-    /// `allowed`, the devices the membership lets read the channel now.
+    /// `allowed`, the devices the membership lets read the workspace now.
     ///
     /// # Errors
     ///
-    /// Returns an error for a frame of another channel, a bad signature, a
+    /// Returns an error for a frame of another workspace, a bad signature, a
     /// commit the membership does not back (see the module docs), or a
     /// failed write. A frame this device cannot reach is not an error: it
     /// yields [`PeerEvent::Desynchronised`].
@@ -1277,7 +1251,7 @@ impl ChannelPeer {
     }
 
     /// Apply one frame while this device cannot tell who may read the
-    /// channel (it cannot name the channel's record): a commit from a member
+    /// workspace (it cannot name the workspace's record): a commit from a member
     /// of the group is followed as MLS checks it, and a Welcome admits this
     /// device. A genesis only counts while none is known, so no one can make
     /// this device leave its group with a genesis of their own.
@@ -1295,8 +1269,8 @@ impl ChannelPeer {
         allowed: Option<&BTreeSet<Ed25519PublicKey>>,
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
-        if frame.channel != self.channel {
-            return Err(governance("frame names another channel"));
+        if frame.workspace != self.workspace {
+            return Err(governance("frame names another workspace"));
         }
         self.drop_unfinished();
         frame
@@ -1601,9 +1575,9 @@ impl ChannelPeer {
     ///
     /// The Welcome is refused unless the device that signed its `GroupInfo`
     /// is the one that signed the frame, and (when this device can tell who
-    /// may read the channel) every leaf of its tree names a device `allowed`
+    /// may read the workspace) every leaf of its tree names a device `allowed`
     /// lets read it. Without that any member could send this device into a
-    /// group of its own making, which would show only later, as a channel
+    /// group of its own making, which would show only later, as a workspace
     /// whose commits never apply. Both are a look at each leaf's credential,
     /// no signature work. A tree refused for a device `allowed` does not name
     /// leaves this device waiting with the same key, so the frame can be
@@ -1650,7 +1624,7 @@ impl ChannelPeer {
             Ok(())
         };
         match ChannelGroup::join_with_history_checked(
-            self.channel,
+            self.workspace,
             &material.welcome,
             &material.key_history,
             attempt,
@@ -1755,7 +1729,7 @@ impl ChannelPeer {
             return Ok(());
         };
         let sealed = self.export_sealed(vault)?;
-        states.write(self.channel, &sealed)?;
+        states.write(self.workspace, &sealed)?;
         self.unsaved = false;
         Ok(())
     }
@@ -1773,10 +1747,10 @@ impl ChannelPeer {
     /// waits on it: the frame taken in produced nothing that leaves this
     /// device, and every change that does is written before it leaves (the
     /// module docs), this one with it. So the caller writes it once the
-    /// person sees the channel's content, not before. A device that stops
+    /// person sees the workspace's content, not before. A device that stops
     /// first keeps the state it had before the frame: a waiting device waits
     /// again and asks anew, and a member finds the frame it missed, or starts
-    /// over and asks again. Either way it is admitted with the channel's
+    /// over and asks again. Either way it is admitted with the workspace's
     /// history.
     ///
     /// # Errors
@@ -1820,7 +1794,7 @@ fn device_key_package(request: &MlsAccessRequestV1) -> Result<KeyPackage> {
 impl std::fmt::Debug for ChannelPeer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChannelPeer")
-            .field("channel", &self.channel)
+            .field("workspace", &self.workspace)
             .field("access", &self.access())
             .field("requests", &self.requests.len())
             .field("outbox", &self.outbox.len())
@@ -1842,19 +1816,19 @@ mod format_tests {
     fn state_in_another_format_is_told_apart() {
         let vault = VaultKey::new([7; 32]);
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let channel = ChannelId::new();
-        let peer = ChannelPeer::waiting(None, channel, Box::new(key.clone()), &vault).unwrap();
+        let workspace = WorkspaceId::new();
+        let peer = ChannelPeer::waiting(None, workspace, Box::new(key.clone()), &vault).unwrap();
         let exported = peer.export_sealed(&vault).unwrap();
         let context = || Context::new(Label::ChannelMlsState, PEER_RECORD);
         let mut plaintext = tilo_seal::envelope::open(&vault.0, context(), &exported).unwrap();
         plaintext[0] = 1;
         let unreachable = tilo_seal::envelope::seal(&vault.0, context(), &plaintext).unwrap();
         assert!(matches!(
-            ChannelPeer::restore(channel, Box::new(key.clone()), &unreachable, &vault),
+            ChannelPeer::restore(workspace, Box::new(key.clone()), &unreachable, &vault),
             Err(Error::OtherFormat)
         ));
         assert!(
-            ChannelPeer::restore(channel, Box::new(key), &exported, &vault).is_ok(),
+            ChannelPeer::restore(workspace, Box::new(key), &exported, &vault).is_ok(),
             "state of this build reads as before"
         );
     }

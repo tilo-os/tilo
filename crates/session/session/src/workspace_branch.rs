@@ -210,7 +210,7 @@ async fn found(
     let sealed = if engine.commits_documents(workspace) {
         None
     } else {
-        Some(seal_keys(engine, workspace, app, record, until).await?)
+        Some(seal_keys(engine, workspace, until).await?)
     };
     engine
         .write_record(workspace, (app, record), changes, true, sealed.as_ref())
@@ -395,18 +395,16 @@ async fn read_records(
     sources
 }
 
-/// The keys `record` of `app` is sealed with in the branch: its first sealed write asks the
-/// branch's channel for them, which this device, its only member, makes.
+/// The keys the branch's records are sealed with: its first sealed write asks the branch's group
+/// for them, which this device, its only member, makes.
 async fn seal_keys(
     engine: &Engine,
     workspace: WorkspaceId,
-    app: &str,
-    record: &str,
     until: Instant,
 ) -> Result<channel_crypto::ChannelContentKeys, String> {
     loop {
         let mut events = events(engine);
-        match engine.seal_keys(workspace, app, record)? {
+        match engine.seal_keys(workspace)? {
             SealKeys::Here(keys) => return Ok(keys),
             SealKeys::NoSecretStore => {
                 return Err("this device holds no secret store to keep its keys in".to_owned());
@@ -1222,22 +1220,16 @@ mod tests {
         (app, record): (&str, &str),
         doc: &mut AutoCommit,
     ) {
-        // The keys of the record's channel in the source and in the branch, as the channel service
-        // hands them to a member.
-        let unit = |workspace: &str| {
-            keys.for_unit(collab_types::document_channel_id(app, workspace, record))
-        };
-        for (held, name) in [(ids().0, FROM), (ids().1, TO)] {
-            let route = collab_types::ChannelRoute::new(app, record);
-            engine.hand_keys(held, route, unit(name));
+        // The keys of the source and of the branch, as the key service hands them to a member.
+        for held in [ids().0, ids().1] {
+            engine.hand_keys(held, keys.clone());
         }
-        let sealed = unit(&workspace.to_string());
         pollster::block_on(engine.write_record(
             workspace,
             (app, record),
             &doc.save_after(&[]),
             true,
-            Some(&sealed),
+            Some(keys),
         ))
         .expect("the workspace takes the record");
     }
@@ -1256,7 +1248,7 @@ mod tests {
         pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
         pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         let keys = channel_crypto::ChannelGroup::create(
-            collab_types::workspace_scope(&to.to_string()),
+            collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
             channel_crypto::MemberKey::generate("owner").unwrap(),
         )
         .unwrap()
@@ -1341,7 +1333,7 @@ mod tests {
         pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
         pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         let keys = channel_crypto::ChannelGroup::create(
-            collab_types::workspace_scope(&to.to_string()),
+            collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
             channel_crypto::MemberKey::generate("owner").unwrap(),
         )
         .unwrap()
@@ -1411,7 +1403,7 @@ mod tests {
         pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
         pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         assert!(engine.holds(from) && engine.holds(to));
-        let channel = collab_types::workspace_scope(&to.to_string());
+        let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
         let keys = channel_crypto::ChannelGroup::create(
             channel,
             channel_crypto::MemberKey::generate("owner").unwrap(),

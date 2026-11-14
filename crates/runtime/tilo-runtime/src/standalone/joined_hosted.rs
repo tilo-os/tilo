@@ -349,12 +349,11 @@ impl Joined {
                 },
             )
             .map_err(|error| error.to_string())?;
-        let route = collab_types::ChannelRoute::new(app, record);
         let keys = self
             .channel_keys()
             .get()
             .ok_or("this device holds no channel keys")?
-            .record_keys(workspace, &route)
+            .record_keys(workspace)
             .ok_or_else(|| {
                 format!(
                     "the host keeps {} writes but this device takes part in no channel of {app}'s {record}",

@@ -94,15 +94,16 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         .retained(workspace.workspace_id)
         .await
         .unwrap();
-    let expected_channel =
-        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
-    assert!(retained.iter().any(|body| {
-        body.author == writer_device.cert.device_public_key &&
-        matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
+    assert!(
+        retained.iter().any(|body| {
+            body.author == writer_device.cert.device_public_key
+                && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
             Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
             if app_id == route.app_id && record_id == route.record &&
-                envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected_channel))
-    }), "the real remote writer's retained primary must be encrypted on its exact channel");
+                envelope.encryption.as_ref().is_some())
+        }),
+        "the real remote writer's retained primary must be encrypted on its exact channel"
+    );
     // The message's own record, the part, is read cold the same way.
     let query = CatalogueQuery {
         provider: Some(record_provider(&part_route)),

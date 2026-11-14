@@ -14,7 +14,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use collab_types::{DocumentMutation, document_channel_id};
+use collab_types::DocumentMutation;
 use tilo_app::prelude::*;
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
@@ -163,7 +163,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     let route = route();
     let creator = channel_crypto::ChannelPeer::create_now(
         None,
-        document_channel_id(&route.app_id, &route.cluster_id, &route.record),
+        collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
         Box::new(bob.clone()),
         &channel_crypto::VaultKey::new([7; 32]),
     )

@@ -1,7 +1,7 @@
 //! The frames a store device holds for its workspaces.
 //!
 //! Every frame is one immutable file under
-//! `workspaces/<workspace>/<channel>/<author>/<seq>.<class>`, written with a
+//! `workspaces/<workspace>/<record>/<author>/<seq>.<class>`, written with a
 //! crash-safe replace, so a store that restarts reads back exactly what it
 //! acknowledged and nothing half-written. The index the store answers
 //! replay from is rebuilt by reading those files at [`Store::open`]; the
@@ -451,8 +451,8 @@ impl Store {
             else {
                 continue;
             };
-            for channel in directories(&workspace_dir(&self.root, workspace))? {
-                for author in directories(&channel)? {
+            for record in directories(&workspace_dir(&self.root, workspace))? {
+                for author in directories(&record)? {
                     for file in files(&author)? {
                         let bytes = fs::read(&file)?;
                         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
@@ -492,11 +492,10 @@ impl Store {
 /// history: what it asks a store to continue from.
 #[must_use]
 pub fn cursors(peer: &crate::StatePeer) -> Vec<Cursor> {
-    let workspace = peer.workspace_id().to_owned();
     peer.replay_floors()
         .into_iter()
         .map(|(app, record, author, seq)| Cursor {
-            lineage: Lineage::of(&app, &workspace, &record, author),
+            lineage: Lineage::of(&app, &record, author),
             after_seq: seq,
         })
         .collect()
@@ -583,7 +582,7 @@ fn frame_path(
         ContentRetention::Delta => "d",
     };
     workspace_dir(root, workspace)
-        .join(hex::encode(lineage.channel))
+        .join(hex::encode(lineage.record))
         .join(hex::encode(lineage.author))
         .join(format!("{seq:016x}.{class}"))
 }
@@ -771,8 +770,7 @@ mod tests {
 
     use super::*;
     use collab_types::{
-        ArtifactId, AttestationId, ChannelId, Ed25519PublicKey, EncryptionMetadata, OpKind,
-        SignedOp, sign_op,
+        ArtifactId, AttestationId, Ed25519PublicKey, EncryptionMetadata, OpKind, SignedOp, sign_op,
     };
     use ed25519_dalek::SigningKey;
     use neighbour_wire::peer_handle;
@@ -796,7 +794,7 @@ mod tests {
 
     /// A sealed document frame by `key`, with whatever ciphertext a store
     /// never opens.
-    fn frame(key: &SigningKey, channel: ChannelId, seq: u64, retention: ContentRetention) -> Frame {
+    fn frame(key: &SigningKey, seq: u64, retention: ContentRetention) -> Frame {
         let mut op = SignedOp::new_unsigned(
             vec![seq as u8; 64],
             ArtifactId::new(),
@@ -806,7 +804,7 @@ mod tests {
             at(seq),
             seq,
         );
-        op.encryption = Some(EncryptionMetadata::content_key(1, channel, retention));
+        op.encryption = Some(EncryptionMetadata::content_key(1, retention));
         sign_op(&mut op, key).unwrap();
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&key.verifying_key().to_bytes()),
@@ -832,9 +830,8 @@ mod tests {
     fn replay_continues_after_a_cursor() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         let frames: Vec<Frame> = (1..=3)
-            .map(|seq| frame(&key, channel, seq, ContentRetention::Delta))
+            .map(|seq| frame(&key, seq, ContentRetention::Delta))
             .collect();
         for frame in &frames {
             assert_eq!(store.retain(workspace(), frame).unwrap(), Retained::New);
@@ -873,26 +870,19 @@ mod tests {
     #[test]
     fn a_checkpoint_retires_only_its_own_lineage() {
         let (_dir, store) = open();
-        let channel = ChannelId::new();
         let author = device(2);
         let other = device(3);
         for seq in 1..=2 {
             store
-                .retain(
-                    workspace(),
-                    &frame(&author, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&author, seq, ContentRetention::Delta))
                 .unwrap();
         }
-        let theirs = frame(&other, channel, 1, ContentRetention::Delta);
+        let theirs = frame(&other, 1, ContentRetention::Delta);
         store.retain(workspace(), &theirs).unwrap();
-        let checkpoint = frame(&author, channel, 3, ContentRetention::Checkpoint);
+        let checkpoint = frame(&author, 3, ContentRetention::Checkpoint);
         store.retain(workspace(), &checkpoint).unwrap();
         store
-            .retain(
-                workspace(),
-                &frame(&author, channel, 4, ContentRetention::Delta),
-            )
+            .retain(workspace(), &frame(&author, 4, ContentRetention::Delta))
             .unwrap();
 
         let lineages = store.lineages(workspace());
@@ -924,16 +914,15 @@ mod tests {
     #[test]
     fn replay_sends_a_records_baseline_before_its_changes() {
         let (_dir, store) = open();
-        let channel = ChannelId::new();
         let (mut founder, mut editor) = (device(2), device(3));
-        if frame(&editor, channel, 2, ContentRetention::Delta).lineage
-            > frame(&founder, channel, 1, ContentRetention::Checkpoint).lineage
+        if frame(&editor, 2, ContentRetention::Delta).lineage
+            > frame(&founder, 1, ContentRetention::Checkpoint).lineage
         {
             // The editor's line sorts first, as a line sent whole once did.
             std::mem::swap(&mut founder, &mut editor);
         }
-        let baseline = frame(&founder, channel, 1, ContentRetention::Checkpoint);
-        let edit = frame(&editor, channel, 2, ContentRetention::Delta);
+        let baseline = frame(&founder, 1, ContentRetention::Checkpoint);
+        let edit = frame(&editor, 2, ContentRetention::Delta);
         assert!(edit.lineage < baseline.lineage);
         store.retain(workspace(), &edit).unwrap();
         store.retain(workspace(), &baseline).unwrap();
@@ -946,13 +935,9 @@ mod tests {
     fn replay_reports_a_floor_it_cannot_continue_from() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         for seq in 1..=5 {
             store
-                .retain(
-                    workspace(),
-                    &frame(&key, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
                 .unwrap();
         }
         let lineage = store
@@ -985,9 +970,8 @@ mod tests {
     fn replay_stops_at_its_budget_and_says_more() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         let frames: Vec<Frame> = (1..=5)
-            .map(|seq| frame(&key, channel, seq, ContentRetention::Delta))
+            .map(|seq| frame(&key, seq, ContentRetention::Delta))
             .collect();
         for frame in &frames {
             store.retain(workspace(), frame).unwrap();
@@ -1014,16 +998,12 @@ mod tests {
     fn a_bounded_appetite_retires_the_oldest_and_keeps_a_checkpoint() {
         let (dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         for seq in 1..=2 {
             store
-                .retain(
-                    workspace(),
-                    &frame(&key, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
                 .unwrap();
         }
-        let checkpoint = frame(&key, channel, 3, ContentRetention::Checkpoint);
+        let checkpoint = frame(&key, 3, ContentRetention::Checkpoint);
         store.retain(workspace(), &checkpoint).unwrap();
         let size = store.bytes();
         let path = frame_path(
@@ -1052,13 +1032,9 @@ mod tests {
     fn compaction_retires_the_frames_a_time_covers() {
         let (_dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         for seq in 1..=3 {
             store
-                .retain(
-                    workspace(),
-                    &frame(&key, channel, seq, ContentRetention::Delta),
-                )
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
                 .unwrap();
         }
         let retired = store.compact(workspace(), 3).unwrap();
@@ -1075,9 +1051,8 @@ mod tests {
     fn reopening_reads_back_what_the_store_acknowledged() {
         let (dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
         let frames: Vec<Frame> = (1..=3)
-            .map(|seq| frame(&key, channel, seq, ContentRetention::Delta))
+            .map(|seq| frame(&key, seq, ContentRetention::Delta))
             .collect();
         for frame in &frames {
             store.retain(workspace(), frame).unwrap();
@@ -1097,8 +1072,7 @@ mod tests {
     fn a_file_that_is_not_a_frame_is_not_served() {
         let (dir, store) = open();
         let key = device(2);
-        let channel = ChannelId::new();
-        let frame = frame(&key, channel, 1, ContentRetention::Delta);
+        let frame = frame(&key, 1, ContentRetention::Delta);
         store.retain(workspace(), &frame).unwrap();
         let stray = frame_path(
             dir.path(),
@@ -1121,7 +1095,6 @@ mod tests {
     #[test]
     fn only_signed_sealed_document_frames_are_kept() {
         let key = device(2);
-        let channel = ChannelId::new();
         assert_eq!(
             Frame::of(&NeighbourMsg::Heartbeat { peer: 0, ts: 0 }),
             Err(Refusal::NotADocument)
@@ -1136,11 +1109,7 @@ mod tests {
             at(1),
             1,
         );
-        unsigned.encryption = Some(EncryptionMetadata::content_key(
-            1,
-            channel,
-            ContentRetention::Delta,
-        ));
+        unsigned.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
         let message = NeighbourMsg::AppDocument {
             peer: 0,
             app_id: APP.into(),
@@ -1178,7 +1147,7 @@ mod tests {
             at(1),
             1,
         );
-        mls.encryption = Some(EncryptionMetadata::mls_application(1, channel));
+        mls.encryption = Some(EncryptionMetadata::mls_application(1));
         sign_op(&mut mls, &key).unwrap();
         let message = NeighbourMsg::AppDocument {
             peer: 0,

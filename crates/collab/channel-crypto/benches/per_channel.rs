@@ -1,9 +1,9 @@
-//! What the channels a workspace has cost it: a device joining (minting its
+//! What the workspaces a workspace has cost it: a device joining (minting its
 //! member key, its access request, the commit that admits it, and every other
 //! member applying that commit), a member leaving, and a device's state file
-//! per channel on disk.
+//! per workspace on disk.
 //!
-//! Three kinds of row: a group per channel — one MLS group per record route,
+//! Three kinds of row: a group per workspace — one MLS group per record route,
 //! the cost a workspace paid before key scopes — a group per reader set (one
 //! key scope carrying `n` units, see `README.md`, "Granularity: per reader
 //! set"), and the content work a unit does under its scope's keys. A
@@ -12,12 +12,12 @@
 //! — so both are measured by the join.
 //!
 //! Bytes are the postcard-encoded governance frames and access requests that
-//! leave and reach a device; a time is one whole pass over the channels of a
+//! leave and reach a device; a time is one whole pass over the workspaces of a
 //! size, in memory (the path above a device's state file).
 //!
 //! Run with:
 //!
-//!     cargo bench -p channel-crypto --bench per_channel
+//!     cargo bench -p workspace-crypto --bench per_channel
 //!
 //! `--sizes 1,10,100,1000` and `--samples N` change what it measures. One CSV
 //! line per scenario and size, on stdout.
@@ -45,33 +45,33 @@ use std::time::{Duration, Instant};
 
 use channel_crypto::{Access, ChannelPeer, VaultKey};
 use collab_types::{
-    ArtifactId, ChannelId, ContentRetention, Ed25519PublicKey, MlsAccessRequestV1,
-    MlsGovernanceFrame,
+    ArtifactId, ContentRetention, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceFrame,
+    WorkspaceId,
 };
 use ed25519_dalek::SigningKey;
 
-/// Existing members every channel of the fixture starts with: the devices the
-/// channel's record route already names.
+/// Existing members every workspace of the fixture starts with: the devices the
+/// workspace's record route already names.
 const MEMBERS: usize = 3;
 
-/// One device of a workspace: its signing key and its state for one channel.
+/// One device of a workspace: its signing key and its state for one workspace.
 struct Device {
     key: SigningKey,
     peer: ChannelPeer,
 }
 
 impl Device {
-    fn waiting(seed: u8, channel: ChannelId, vault: &VaultKey) -> Self {
+    fn waiting(seed: u8, workspace: WorkspaceId, vault: &VaultKey) -> Self {
         let key = SigningKey::from_bytes(&[seed; 32]);
         let peer =
-            ChannelPeer::waiting(None, channel, Box::new(key.clone()), vault).expect("waiting");
+            ChannelPeer::waiting(None, workspace, Box::new(key.clone()), vault).expect("waiting");
         Self { key, peer }
     }
 
-    fn creating(seed: u8, channel: ChannelId, vault: &VaultKey) -> Self {
+    fn creating(seed: u8, workspace: WorkspaceId, vault: &VaultKey) -> Self {
         let key = SigningKey::from_bytes(&[seed; 32]);
-        let peer =
-            ChannelPeer::create_now(None, channel, Box::new(key.clone()), vault).expect("creating");
+        let peer = ChannelPeer::create_now(None, workspace, Box::new(key.clone()), vault)
+            .expect("creating");
         Self { key, peer }
     }
 
@@ -79,7 +79,7 @@ impl Device {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
     }
 
-    /// This device's access request for the channel, and its bytes on the wire.
+    /// This device's access request for the workspace, and its bytes on the wire.
     fn ask(&mut self, vault: &VaultKey) -> (MlsAccessRequestV1, usize) {
         let request = self
             .peer
@@ -114,14 +114,14 @@ fn allowed(devices: &[&Device]) -> BTreeSet<Ed25519PublicKey> {
     devices.iter().map(|device| device.public()).collect()
 }
 
-/// One channel of the fixture.
+/// One workspace of the fixture.
 struct Group {
-    channel: ChannelId,
+    workspace: WorkspaceId,
     members: Vec<Device>,
 }
 
-/// Every channel of the fixture holds `MEMBERS` devices, the first the one
-/// that founded its group. The same devices stand in every channel, as one
+/// Every workspace of the fixture holds `MEMBERS` devices, the first the one
+/// that founded its group. The same devices stand in every workspace, as one
 /// person's devices do across a workspace's records.
 fn groups(n: usize, vault: &VaultKey) -> Vec<Group> {
     let seeds: Vec<u8> = (0..MEMBERS)
@@ -129,15 +129,15 @@ fn groups(n: usize, vault: &VaultKey) -> Vec<Group> {
         .collect();
     (0..n)
         .map(|_| {
-            let channel = ChannelId::new();
-            let mut members = vec![Device::creating(seeds[0], channel, vault)];
+            let workspace = WorkspaceId::new();
+            let mut members = vec![Device::creating(seeds[0], workspace, vault)];
             for seed in &seeds[1..] {
-                let mut joiner = Device::waiting(*seed, channel, vault);
+                let mut joiner = Device::waiting(*seed, workspace, vault);
                 let (request, _) = joiner.ask(vault);
                 admit(&mut members, &mut joiner, request, vault);
                 members.push(joiner);
             }
-            Group { channel, members }
+            Group { workspace, members }
         })
         .collect()
 }
@@ -175,7 +175,7 @@ fn frame_bytes(frame: &MlsGovernanceFrame) -> usize {
     postcard::to_allocvec(frame).expect("frame bytes").len()
 }
 
-/// What one pass over every channel moved.
+/// What one pass over every workspace moved.
 #[derive(Default)]
 struct Totals {
     bytes: usize,
@@ -248,12 +248,12 @@ fn main() {
     let sizes = parse();
     let vault = VaultKey::new([7; 32]);
     println!(
-        "scenario,channels,members,median_ms,mean_ms,per_channel_us,frames,bytes,bytes_per_channel"
+        "scenario,workspaces,members,median_ms,mean_ms,per_channel_us,frames,bytes,bytes_per_channel"
     );
 
     for &n in &sizes.sizes {
-        // A device joining a workspace of `n` channels: it mints a member key
-        // and an access request per channel, a member of each admits it, and
+        // A device joining a workspace of `n` workspaces: it mints a member key
+        // and an access request per workspace, a member of each admits it, and
         // every other member applies that commit.
         let mut samples = Vec::new();
         let mut totals = Totals::default();
@@ -261,8 +261,8 @@ fn main() {
             let mut groups = groups(n, &vault);
             let started = Instant::now();
             for group in &mut groups {
-                // One device joins every channel of the workspace.
-                let mut joiner = Device::waiting(0x7a, group.channel, &vault);
+                // One device joins every workspace of the workspace.
+                let mut joiner = Device::waiting(0x7a, group.workspace, &vault);
                 let (request, request_bytes) = joiner.ask(&vault);
                 totals.add(request_bytes, 1);
                 let members = &mut group.members;
@@ -340,27 +340,27 @@ fn main() {
             totals.bytes / sizes.samples,
         );
 
-        // A device's state file per channel, written when it first opens a
-        // channel and read again when it next starts: the per-unit disk cost of
-        // a channel on a device.
+        // A device's state file per workspace, written when it first opens a
+        // workspace and read again when it next starts: the per-unit disk cost of
+        // a workspace on a device.
         let mut samples = Vec::new();
         let mut file_bytes = 0;
         for _ in 0..sizes.samples {
             let dir = tempdir();
             let started = Instant::now();
             for _ in 0..n {
-                let channel = ChannelId::new();
+                let workspace = WorkspaceId::new();
                 let key = SigningKey::from_bytes(&[0x41; 32]);
                 let states = std::sync::Arc::new(channel_crypto::Files::new(dir.clone()));
                 let peer = ChannelPeer::waiting(
                     Some(states.clone()),
-                    channel,
+                    workspace,
                     Box::new(key.clone()),
                     &vault,
                 )
                 .expect("waiting");
                 assert_eq!(peer.access(), Access::Waiting);
-                let opened = ChannelPeer::open(Some(states), channel, Box::new(key), &vault)
+                let opened = ChannelPeer::open(Some(states), workspace, Box::new(key), &vault)
                     .expect("open")
                     .expect("a state file");
                 assert_eq!(opened.access(), Access::Waiting);
@@ -380,7 +380,7 @@ fn main() {
         for _ in 0..sizes.samples {
             let mut scope = scope_group(&vault);
             let started = Instant::now();
-            let mut joiner = Device::waiting(0x7a, scope.channel, &vault);
+            let mut joiner = Device::waiting(0x7a, scope.workspace, &vault);
             let (request, request_bytes) = joiner.ask(&vault);
             totals.add(request_bytes, 1);
             let members = &mut scope.members;
@@ -468,8 +468,7 @@ fn main() {
         for _ in 0..sizes.samples {
             let started = Instant::now();
             for _ in 0..n {
-                let unit = ChannelId::new();
-                let named = keys.for_unit(unit);
+                let named = &keys;
                 let artifact = ArtifactId::new();
                 let (metadata, sealed) = named
                     .seal_content(artifact, ContentRetention::Delta, b"a unit's content")
@@ -490,15 +489,15 @@ fn scope_group(vault: &VaultKey) -> Group {
     let seeds: Vec<u8> = (0..MEMBERS)
         .map(|i| 11 + 17 * u8::try_from(i).unwrap_or(0))
         .collect();
-    let channel = ChannelId::new();
-    let mut members = vec![Device::creating(seeds[0], channel, vault)];
+    let workspace = WorkspaceId::new();
+    let mut members = vec![Device::creating(seeds[0], workspace, vault)];
     for seed in &seeds[1..] {
-        let mut joiner = Device::waiting(*seed, channel, vault);
+        let mut joiner = Device::waiting(*seed, workspace, vault);
         let (request, _) = joiner.ask(vault);
         admit(&mut members, &mut joiner, request, vault);
         members.push(joiner);
     }
-    Group { channel, members }
+    Group { workspace, members }
 }
 
 fn ms(elapsed: Duration) -> f64 {
@@ -506,7 +505,7 @@ fn ms(elapsed: Duration) -> f64 {
 }
 
 fn tempdir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("channel-bench-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("workspace-bench-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a scratch directory");
     dir

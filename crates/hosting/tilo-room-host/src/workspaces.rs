@@ -1137,7 +1137,7 @@ impl Workspaces {
             .map(|channels| Arc::clone(&channels.keys))
     }
 
-    /// The content keys of `route`'s channel, for this host's own endpoints
+    /// The content keys of `route`'s workspace, for this host's own endpoints
     /// (the workspace actions it runs for its members' pages and bots), as the
     /// device it runs on answers: `create` opens the channel for the record the
     /// writes are about to start, and otherwise only an existing channel is
@@ -1149,8 +1149,7 @@ impl Workspaces {
         create: bool,
     ) -> ChannelKeysAnswer {
         let device = self.device_keys()?;
-        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
-        device.channel_keys(&route.cluster_id, &named, create).await
+        device.channel_keys(&route.cluster_id, create).await
     }
 
     /// Every record this host holds of `workspace`, by the app whose document
@@ -2072,7 +2071,7 @@ impl Workspaces {
             // Still asking until what the channel's keys open is replayed:
             // whoever waits for them ([`Self::waits_for_keys`]) reads the
             // record once that is in the governor's copy.
-            if workspaces.join_channel(&name, &app, &record).await {
+            if workspaces.join_keys(&name).await {
                 workspaces.replay(&name).await;
             }
             let Ok(workspace) = workspaces.workspace(&name).await else {
@@ -2119,7 +2118,7 @@ impl Workspaces {
             && (governed
                 .asking
                 .contains(&(app.to_owned(), record.to_owned()))
-                || !governed.takes_part_in_channel(app, record).await);
+                || !governed.holds_keys().await);
         #[cfg(not(any(feature = "agents", feature = "web")))]
         let waits = {
             let _ = (&governed, app, record);
@@ -2265,7 +2264,7 @@ impl Workspaces {
         // when the group admits this host's device: the record's copy starts
         // from its first write, so it is not kept by not asking.
         #[cfg(any(feature = "agents", feature = "web"))]
-        let readable = !sealed || workspace.takes_part_in_channel(&app_id, &record_id).await;
+        let readable = !sealed || workspace.holds_keys().await;
         #[cfg(not(any(feature = "agents", feature = "web")))]
         let readable = !sealed;
         if !readable {

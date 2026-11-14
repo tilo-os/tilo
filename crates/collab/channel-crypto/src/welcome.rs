@@ -1,10 +1,10 @@
-//! What a device joining a channel reads its Welcome with.
+//! What a device joining a workspace reads its Welcome with.
 //!
 //! A Welcome carries the group's whole ratchet tree, one leaf per member
 //! device, and RFC 9420 (12.4.3.1) has the joiner validate every leaf, its
-//! signature included. In a channel of hundreds that is one Ed25519 check
+//! signature included. In a workspace of hundreds that is one Ed25519 check
 //! per member, three quarters of what joining costs, and the newcomer waits
-//! for it before it holds the channel's keys.
+//! for it before it holds the workspace's keys.
 //!
 //! The joiner leaves those leaf signatures unchecked and checks everything
 //! else the RFC lists. Why that gives up nothing:
@@ -14,7 +14,7 @@
 //!   secret, which only the committer and the joiner hold. The joiner checks
 //!   the group information's signature against the leaf it names as signer,
 //!   and that this leaf names the device that signed the frame carrying the
-//!   Welcome; the channel's membership must allow that device, every device
+//!   Welcome; the workspace's membership must allow that device, every device
 //!   the commit adds, and every device a leaf of the tree names
 //!   ([`crate::ChannelPeer::receive`]). So the tree is the committer's word,
 //!   whatever it holds.
@@ -27,7 +27,7 @@
 //!   hash covers every leaf, signature and all, and goes into the group
 //!   context every key of the epoch is derived from. A joiner given any other
 //!   tree than the members hold derives other keys, and no real commit after
-//!   it applies: it is cut off from the channel, as a committer that sent it
+//!   it applies: it is cut off from the workspace, as a committer that sent it
 //!   nothing at all would leave it. Even a tree that names only allowed
 //!   devices and keeps their real signature keys cannot do more.
 //!
@@ -286,15 +286,15 @@ impl OpenMlsCrypto for TreeAttested {
 #[cfg(test)]
 mod tests {
     use crate::{ChannelGroup, MemberKey};
-    use collab_types::ChannelId;
+    use collab_types::WorkspaceId;
     use openmls_traits::types::SignatureScheme;
 
-    /// A channel of `members` and the Welcome admitting one more, with the
+    /// A workspace of `members` and the Welcome admitting one more, with the
     /// key that joins with it.
-    fn welcome_into(members: usize) -> (ChannelId, ChannelGroup, Vec<u8>, MemberKey) {
-        let channel = ChannelId::new();
+    fn welcome_into(members: usize) -> (WorkspaceId, ChannelGroup, Vec<u8>, MemberKey) {
+        let workspace = WorkspaceId::new();
         let mut group =
-            ChannelGroup::create(channel, MemberKey::generate("founder").unwrap()).unwrap();
+            ChannelGroup::create(workspace, MemberKey::generate("founder").unwrap()).unwrap();
         let packages: Vec<_> = (1..members)
             .map(|n| {
                 MemberKey::generate(format!("member {n}"))
@@ -311,10 +311,10 @@ mod tests {
         let (welcome, _) = group
             .add_member_with_commit(joiner.fresh_key_package().unwrap())
             .unwrap();
-        (channel, group, welcome, joiner)
+        (workspace, group, welcome, joiner)
     }
 
-    /// Joining a channel of 30 checks as many signatures in full as joining
+    /// Joining a workspace of 30 checks as many signatures in full as joining
     /// one of 3: the `GroupInfo`'s, which binds the whole tree. Each leaf's is
     /// left unchecked: the tree is the committer's word either way (see the
     /// module docs).
@@ -322,9 +322,9 @@ mod tests {
     fn joining_checks_the_same_signatures_however_large_the_channel() {
         let mut checked = Vec::new();
         for members in [3, 30] {
-            let (channel, mut founder, welcome, joiner) = welcome_into(members);
+            let (workspace, mut founder, welcome, joiner) = welcome_into(members);
             let _ = super::take_welcome_signatures();
-            let mut newcomer = ChannelGroup::process_welcome(channel, &welcome, joiner).unwrap();
+            let mut newcomer = ChannelGroup::process_welcome(workspace, &welcome, joiner).unwrap();
             let (left, full) = super::take_welcome_signatures();
             assert_eq!(
                 left,
@@ -345,20 +345,20 @@ mod tests {
     /// sealed to the joiner.
     #[test]
     fn a_welcome_changed_on_its_way_is_refused() {
-        let (channel, _founder, welcome, joiner) = welcome_into(8);
+        let (workspace, _founder, welcome, joiner) = welcome_into(8);
         let mut refused = 0;
         let offsets: Vec<usize> = (0..welcome.len()).step_by(welcome.len() / 40 + 1).collect();
         for &at in &offsets {
             let mut changed = welcome.clone();
             changed[at] ^= 0x5a;
-            if ChannelGroup::process_welcome(channel, &changed, joiner.duplicate().unwrap())
+            if ChannelGroup::process_welcome(workspace, &changed, joiner.duplicate().unwrap())
                 .is_err()
             {
                 refused += 1;
             }
         }
         assert_eq!(refused, offsets.len(), "every changed Welcome is refused");
-        assert!(ChannelGroup::process_welcome(channel, &welcome, joiner).is_ok());
+        assert!(ChannelGroup::process_welcome(workspace, &welcome, joiner).is_ok());
     }
 
     /// A provider leaves leaf signatures unchecked only while it reads a
@@ -397,8 +397,9 @@ mod tests {
     /// Welcome.
     #[test]
     fn a_commit_after_the_join_with_a_broken_leaf_signature_is_refused() {
-        let (channel, mut founder, welcome, joiner) = welcome_into(4);
-        let mut newcomer = crate::ChannelGroup::process_welcome(channel, &welcome, joiner).unwrap();
+        let (workspace, mut founder, welcome, joiner) = welcome_into(4);
+        let mut newcomer =
+            crate::ChannelGroup::process_welcome(workspace, &welcome, joiner).unwrap();
         let _ = super::take_welcome_signatures();
         let forged = {
             use openmls::prelude::tls_codec::Serialize as _;

@@ -388,8 +388,8 @@ mod tests {
     const DEVICE: [u8; 32] = [3; 32];
 
     fn keys() -> ChannelContentKeys {
-        let scope = Scope::workspace(WORKSPACE);
-        ChannelGroup::create(scope.channel_id(), MemberKey::generate("owner").unwrap())
+        let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
+        ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap())
             .unwrap()
             .content_keys()
             .unwrap()

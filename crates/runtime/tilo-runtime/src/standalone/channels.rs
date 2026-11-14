@@ -149,7 +149,6 @@ impl tilo_room_host::workspaces::ChannelKeys for DeviceChannelKeys {
     fn channel_keys<'a>(
         &'a self,
         workspace: &'a str,
-        route: &'a collab_types::ChannelRoute,
         create: bool,
     ) -> std::pin::Pin<
         Box<
@@ -160,13 +159,11 @@ impl tilo_room_host::workspaces::ChannelKeys for DeviceChannelKeys {
         >,
     > {
         let keys = self.keys.clone();
-        let (workspace, route) = (workspace.to_owned(), route.clone());
         Box::pin(async move {
             if keys.get().is_none() {
                 return Some(Err("this device's channel service is not running".into()));
             }
-            keys.channel_keys(&workspace, &route, create, OPEN_WAIT)
-                .await
+            keys.channel_keys(workspace, create, OPEN_WAIT).await
         })
     }
 }

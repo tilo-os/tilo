@@ -1,8 +1,8 @@
-//! Per-edit cost of channel encryption: time to seal an op on the sending
+//! Per-edit cost of workspace encryption: time to seal an op on the sending
 //! endpoint and open it on a receiving one, and the bytes it adds.
 //!
 //! ```bash
-//! cargo run --locked --release -p channel-crypto --example edit_overhead
+//! cargo run --locked --release -p workspace-crypto --example edit_overhead
 //! ```
 
 #![allow(
@@ -16,13 +16,13 @@
 use std::time::{Duration, Instant};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
-use collab_types::{ArtifactId, ChannelId, ContentRetention};
+use collab_types::{ArtifactId, ContentRetention, WorkspaceId};
 
 const ROUNDS: u32 = 20_000;
 
 fn main() {
-    let channel = ChannelId::new();
-    let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+    let workspace = WorkspaceId::new();
+    let group = ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap()).unwrap();
     let keys: ChannelContentKeys = group.content_keys().unwrap();
     let artifact = ArtifactId::new();
     println!("payload_bytes,sealed_bytes,added_bytes,seal_us,open_us");

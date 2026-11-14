@@ -620,15 +620,13 @@ fn channel_keys(
     if !reads {
         return Response::Denied("identity may not read this workspace".into());
     }
-    // Only the workspace's canonical form: the channel is the hash of the route
-    // in it, which a participant checks the route against.
+    // Only the workspace's canonical form.
     let Some(workspace) = WorkspaceId::parse(route.workspace_id)
         .filter(|workspace| workspace.to_string() == route.workspace_id)
     else {
         return Response::Denied("channel keys requested for an invalid workspace".into());
     };
-    let record = collab_types::ChannelRoute::new(route.app_id, route.record_id);
-    match channels.access(workspace, &record, known_generation) {
+    match channels.access(workspace, known_generation) {
         None => Response::ChannelKeys {
             access: runtime_identity::wire::ChannelAccess::Unavailable,
             generation: 0,
@@ -1018,10 +1016,7 @@ mod tests {
             collab_types::OpKind::Change,
             now,
             2,
-            collab_types::EncryptionMetadata::mls_application(
-                3,
-                collab_types::document_channel_id(app_id, &workspace_id, record_id),
-            ),
+            collab_types::EncryptionMetadata::mls_application(3),
         );
         let encrypted_unsigned = postcard::to_stdvec(&encrypted).expect("encrypted envelope");
         assert!(matches!(
@@ -1035,21 +1030,6 @@ mod tests {
             ),
             Response::Signature(_)
         ));
-        let mut wrong_channel = encrypted;
-        wrong_channel.encryption.as_mut().expect("metadata").channel =
-            collab_types::ChannelId::new();
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &bound(&workspace, app_id),
-                &workspace_id,
-                app_id,
-                record_id,
-                &postcard::to_stdvec(&wrong_channel).expect("wrong channel envelope"),
-            ),
-            Response::Denied(_)
-        ));
-
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
@@ -1652,13 +1632,12 @@ params = []
         assert_eq!(partial.read(&mut byte).unwrap(), 0);
     }
 
-    /// A channel service holding keys for every route.
+    /// A key service holding keys for every workspace.
     struct ReadyChannels;
     impl ChannelKeySource for ReadyChannels {
         fn access(
             &self,
             _workspace: WorkspaceId,
-            _route: &collab_types::ChannelRoute,
             _known_generation: u64,
         ) -> Option<Result<ChannelKeys, String>> {
             Some(Ok((

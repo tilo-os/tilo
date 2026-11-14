@@ -2158,7 +2158,7 @@ fn access_request_frame(fixture: &Fixture, authored_at_ns: u64) -> Envelope {
         workspace: "room".into(),
         request: Box::new(
             collab_types::MlsAccessRequestV1::signed(
-                collab_types::ChannelId::new(),
+                collab_types::WorkspaceId::new(),
                 vec![1],
                 1,
                 &fixture.source_key,

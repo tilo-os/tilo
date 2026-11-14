@@ -418,7 +418,7 @@ fn relay() -> Arc<Relay> {
 
 /// The workspace scope's content keys, as its own channel hands them to its members.
 fn workspace_keys() -> channel_crypto::ChannelContentKeys {
-    let channel = Scope::workspace(WORKSPACE.to_owned()).channel_id();
+    let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
     ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
         .expect("the workspace's channel")
         .content_keys()

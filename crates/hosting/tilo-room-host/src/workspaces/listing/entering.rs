@@ -322,7 +322,7 @@ impl Workspaces {
     ) {
         let device = cert.device_public_key;
         if access.device.as_bytes() != &device
-            || access.channel != collab_types::workspace_scope(workspace)
+            || access.workspace.to_string() != workspace
             || access.verify().is_err()
         {
             tracing::debug!(%workspace, "an entry's channel request was not the device's own for the workspace's group");

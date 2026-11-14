@@ -223,7 +223,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     let phone_session = session(&host, &root, &phone).await;
     let mut phone_peer = ChannelPeer::waiting(
         None,
-        collab_types::workspace_scope(crate::support::WORKSPACE),
+        collab_types::WorkspaceId::parse(crate::support::WORKSPACE).unwrap(),
         Box::new(phone.key.clone()),
         &vault(),
     )

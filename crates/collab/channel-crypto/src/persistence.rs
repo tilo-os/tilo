@@ -33,7 +33,7 @@ fn read_sealed(path: &Path) -> Result<Vec<u8>> {
 
 /// Record bound into every state envelope, so the file cannot be swapped
 /// with another sealed value under the same vault key.
-const STATE_RECORD: &[u8] = b"channel-crypto/member-state";
+const STATE_RECORD: &[u8] = b"workspace-crypto/member-state";
 
 /// A vault-derived state-encryption key. It is zeroized on drop and its
 /// `Debug` representation never reveals bytes.
@@ -60,7 +60,7 @@ impl std::fmt::Debug for VaultKey {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StateV1 {
-    channel_id: collab_types::ChannelId,
+    workspace: collab_types::WorkspaceId,
     member_name: Vec<u8>,
     signer: Vec<u8>,
     group_id: Vec<u8>,
@@ -133,7 +133,7 @@ impl ChannelGroup {
         Ok(StateV2 {
             version: STATE_VERSION,
             mls: StateV1 {
-                channel_id: self.channel_id,
+                workspace: self.workspace,
                 member_name,
                 signer,
                 group_id: self.group.group_id().as_slice().to_vec(),
@@ -204,7 +204,7 @@ impl ChannelGroup {
             ));
         }
         Ok(Self {
-            channel_id: state.channel_id,
+            workspace: state.workspace,
             member,
             group,
             keyring,
@@ -279,10 +279,10 @@ impl MemberKey {
 }
 
 /// Record bound into every device member-state envelope.
-const MEMBER_RECORD: &[u8] = b"channel-crypto/device-member";
+const MEMBER_RECORD: &[u8] = b"workspace-crypto/device-member";
 const MEMBER_RECORD_VERSION: u8 = 1;
 
-/// A device's own place in one channel's group.
+/// A device's own place in one workspace's group.
 pub(crate) enum MemberRecord {
     /// Asked for access; holds the member key whose key packages are out.
     Waiting(Box<MemberKey>),

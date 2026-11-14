@@ -65,8 +65,6 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 zeroize.workspace = true
 
 [dev-dependencies]
-# Same dep that tilo-collab-types uses for ArtifactId / ChannelId /
-# SpaceId UUIDs; we mint a few in the SignedOp interop test.
 uuid.workspace = true
 # The authority an admitted op is validated under in the interop test.
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }

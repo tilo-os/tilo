@@ -12,7 +12,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
-use collab_types::ChannelRoute;
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -102,25 +101,15 @@ impl TestHost {
 /// and answers with the same keys every time after.
 #[derive(Default)]
 pub struct TestChannelKeys {
-    held: Mutex<BTreeMap<(String, String, String), ChannelContentKeys>>,
+    held: Mutex<BTreeMap<String, ChannelContentKeys>>,
 }
 
 impl ChannelKeys for TestChannelKeys {
-    fn channel_keys<'a>(
-        &'a self,
-        workspace: &'a str,
-        route: &'a ChannelRoute,
-        create: bool,
-    ) -> ChannelKeysAnswerFuture<'a> {
+    fn channel_keys<'a>(&'a self, workspace: &'a str, create: bool) -> ChannelKeysAnswerFuture<'a> {
         Box::pin(async move {
-            let named = (
-                workspace.to_owned(),
-                route.app.clone(),
-                route.record.clone(),
-            );
             let held = {
                 let keys = self.held.lock().expect("the fixture's keys");
-                keys.get(&named).cloned()
+                keys.get(workspace).cloned()
             };
             if let Some(keys) = held {
                 return Some(Ok(keys));
@@ -128,10 +117,9 @@ impl ChannelKeys for TestChannelKeys {
             if !create {
                 return Some(Err("this channel has no keys yet".into()));
             }
-            let name = format!("{workspace}/{}/{}", route.app, route.record);
             let keys = ChannelGroup::create(
-                route.channel(workspace),
-                MemberKey::generate(&name).expect("a fixture member key"),
+                collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
+                MemberKey::generate(workspace).expect("a fixture member key"),
             )
             .expect("a fixture channel opens")
             .content_keys()
@@ -139,7 +127,7 @@ impl ChannelKeys for TestChannelKeys {
             self.held
                 .lock()
                 .expect("the fixture's keys")
-                .insert(named, keys.clone());
+                .insert(workspace.to_owned(), keys.clone());
             Some(Ok(keys))
         })
     }

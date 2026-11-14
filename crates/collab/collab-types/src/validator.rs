@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use tilo_action_policy::{ActionKind, Answer, Authority, Context, Grant, Grantee, TreePath, roles};
 
-use crate::channel::ArtifactId;
+use crate::artifact::ArtifactId;
 use crate::compaction::{CompactionCheckpoint, CompactionError, hash_op_prefix};
 use crate::crypto::{Ed25519PublicKey, VerifyError, verify_op};
 use crate::op::SignedOp;
@@ -461,48 +461,6 @@ fn validate_authorized_op(
 #[must_use]
 pub fn document_node(workspace: &str, app: &str, record: &str) -> TreePath {
     TreePath::workspace(workspace).app(app).resource(record)
-}
-
-/// Every record `workspace › app › resource` one of `grants` names (at the record
-/// or anywhere below it), as `(app, record)`, in grant order and possibly
-/// repeated.
-///
-/// A record's channel id is a hash of its route, so a participant cannot turn
-/// a channel back into the record it carries. A grant that names a record
-/// gives the route itself, so a participant admitting devices per record can
-/// decide a Read Deny on that record from the first admission on, without
-/// having seen the record written and without any mapping of its own to
-/// lose on a restart. A pattern grant (every resource of an app, any depth)
-/// names no record and is not inverted here.
-pub fn named_records<'g>(
-    grants: impl IntoIterator<Item = &'g Grant>,
-    workspace: &str,
-) -> impl Iterator<Item = (&'g str, &'g str)> {
-    use tilo_action_policy::{Level, Segment};
-    grants.into_iter().filter_map(move |grant| {
-        let [
-            Segment::Name(Level::Workspace, named_workspace),
-            Segment::Name(Level::App, app),
-            Segment::Name(Level::Resource, record),
-            ..,
-        ] = grant.node.segments()
-        else {
-            return None;
-        };
-        (named_workspace == workspace).then_some((app.as_str(), record.as_str()))
-    })
-}
-
-/// The record whose channel is `channel` among those `grants` name in
-/// `workspace` ([`named_records`]); `None` when no grant names it.
-#[must_use]
-pub fn named_record_of_channel<'g>(
-    grants: impl IntoIterator<Item = &'g Grant>,
-    workspace: &str,
-    channel: crate::ChannelId,
-) -> Option<(&'g str, &'g str)> {
-    named_records(grants, workspace)
-        .find(|(app, record)| crate::document_channel_id(app, workspace, record) == channel)
 }
 
 /// The app segment of an artifact no app claims.

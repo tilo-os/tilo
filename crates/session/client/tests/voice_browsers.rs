@@ -42,7 +42,7 @@ const TICK: Duration = Duration::from_millis(20);
 const HEARTBEAT_TICKS: u64 = 250;
 /// The workspace scope's content keys, as its members derive them: what seals
 /// every frame the page and the native device exchange.
-fn channel_keys(channel: collab_types::ChannelId) -> ChannelContentKeys {
+fn channel_keys(channel: collab_types::WorkspaceId) -> ChannelContentKeys {
     ChannelGroup::create(channel, MemberKey::generate("alice").unwrap())
         .unwrap()
         .content_keys()
@@ -334,7 +334,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
 
     // The plane's frames are sealed with the workspace scope's keys; the page
     // holds them as a workspace member, and so does the device it calls.
-    let keys = channel_keys(collab_types::ChannelId::new());
+    let keys = channel_keys(collab_types::WorkspaceId::new());
     page.peer
         .send(Cmd::InstallChannelKeys(
             plane_route(&governed.cluster_id),

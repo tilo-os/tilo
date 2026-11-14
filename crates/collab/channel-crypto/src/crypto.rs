@@ -5,7 +5,7 @@
 //! keys, the FROST threshold crate, Iroh's transport key), so a
 //! different MLS signature scheme would force two key materials per
 //! member; X25519/AES-128-GCM/SHA-256 are the small-ciphersuite MLS
-//! interop defaults (no need for P-384 strength at channel scale); and
+//! interop defaults (no need for P-384 strength at workspace scale); and
 //! no negotiation removes a class of downgrade attack. A future second
 //! suite can arrive under a versioned handshake.
 //!
@@ -28,7 +28,7 @@ use crate::errors::{Error, Result};
 /// can refer to it without pulling `openmls::prelude` into scope.
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
-/// All key material + storage for one member of one channel: display
+/// All key material + storage for one member of one workspace: display
 /// name (for the MLS `BasicCredential`), the Ed25519 signature keypair
 /// openmls uses for signing, and the provider holding storage for both
 /// the keypair and any `MlsGroup` this member joins.
@@ -76,7 +76,7 @@ impl MemberKey {
         })
     }
 
-    /// Fresh key material for one device's membership of one channel. The
+    /// Fresh key material for one device's membership of one workspace. The
     /// credential names the device's certified Ed25519 key, so every
     /// participant can map each leaf back to the device it admits; the MLS signer is a
     /// separate key minted here and never leaves the device's member state.
@@ -95,7 +95,7 @@ impl MemberKey {
 
     /// The 32-byte Ed25519 public key half of this member's signer, useful
     /// for tying an MLS member back to a `collab-types` `Identity` (the
-    /// broker maps identity pubkey → member-of-channel state).
+    /// broker maps identity pubkey → member-of-workspace state).
     pub fn signature_public_key(&self) -> &[u8] {
         self.signer.public()
     }
@@ -110,7 +110,7 @@ impl MemberKey {
     }
 
     /// Mint a fresh `KeyPackage` for this member — ships out-of-band to a
-    /// channel owner for [`ChannelGroup::add_member`](crate::ChannelGroup::add_member).
+    /// workspace owner for [`ChannelGroup::add_member`](crate::ChannelGroup::add_member).
     /// Binds the ciphersuite/protocol version, the member's signature public
     /// key, and a fresh HPKE keypair (private half in this `MemberKey`'s
     /// provider).

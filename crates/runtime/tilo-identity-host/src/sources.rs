@@ -14,17 +14,14 @@ pub trait WorkspaceMembership: collab_types::signer::MaybeSendSync + 'static {
 /// answers; the keys are empty unless newly ready.
 pub type ChannelKeys = (runtime_identity::wire::ChannelAccess, u64, Vec<u8>);
 
-/// The channel service that hands apps their routes' content keys.
+/// The key service that hands apps their workspace's content keys.
 pub trait ChannelKeySource: collab_types::signer::MaybeSendSync + 'static {
-    /// The access this device has to the channel of `route`'s record in
-    /// `workspace`, its generation, and the route's content keys when ready and
-    /// newer than `known_generation`; `None` while no channel service runs.
-    /// The route goes to the channel's participants with this device's access
-    /// request, so it can decide Read on the record itself.
+    /// The access this device has to `workspace`'s keys, its generation, and
+    /// the content keys when ready and newer than `known_generation`; `None`
+    /// while no key service runs.
     fn access(
         &self,
         workspace: WorkspaceId,
-        route: &collab_types::ChannelRoute,
         known_generation: u64,
     ) -> Option<Result<ChannelKeys, String>>;
 }
@@ -64,12 +61,11 @@ impl PersonRecordKinds for () {
     }
 }
 
-/// A host without a channel service: every route is unavailable.
+/// A host without a key service: every workspace is unavailable.
 impl ChannelKeySource for () {
     fn access(
         &self,
         _workspace: WorkspaceId,
-        _route: &collab_types::ChannelRoute,
         _known_generation: u64,
     ) -> Option<Result<ChannelKeys, String>> {
         None

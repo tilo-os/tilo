@@ -643,7 +643,7 @@ pub async fn admitted(peer: &Link) {
 
 /// Whether a participant of the workspace admitted `peer` to `route`'s channel: it holds its keys.
 pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
-    let prefix = format!("route {}/{} ", route.app_id, route.record);
+    let prefix = format!("route {}/{}:", route.app_id, route.record);
     peer.status()
         .channels
         .lines()

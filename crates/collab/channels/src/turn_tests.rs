@@ -27,14 +27,13 @@ fn run_together(devices: &mut [&mut Device], now: &mut Instant, seconds: u64) {
 fn a_device_every_member_hears_ask_is_added_by_one_commit() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let policy = Policy::readers([1, 2, 3]);
     let dirs = [(); 4].map(|()| tempfile::tempdir().unwrap());
     let mut now = Instant::now();
     let mut site = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
     let mut ada = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
     let mut bob = device(&workspace, workspace_id, 2, 3, &policy, dirs[2].path());
-    create(&mut site, workspace_id, channel, now);
+    create(&mut site, workspace_id, now);
     ada.service.access(workspace_id, now);
     bob.service.access(workspace_id, now);
     run(&mut [&mut site, &mut ada, &mut bob], &mut now, 20);
@@ -73,13 +72,12 @@ fn a_device_every_member_hears_ask_is_added_by_one_commit() {
 fn devices_asking_close_together_are_admitted_in_one_commit() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let policy = Policy::readers([1, 2, 3, 4, 5]);
     let dirs = [(); 5].map(|()| tempfile::tempdir().unwrap());
     let mut now = Instant::now();
     let mut site = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
     let mut ada = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
-    create(&mut site, workspace_id, channel, now);
+    create(&mut site, workspace_id, now);
     ada.service.access(workspace_id, now);
     run(&mut [&mut site, &mut ada], &mut now, 20);
     let before = ready_epoch(&site.service.access(workspace_id, now)).unwrap();

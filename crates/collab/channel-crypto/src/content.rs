@@ -3,12 +3,12 @@
 //!
 //! ## Model
 //!
-//! Every MLS epoch `e` of a channel has one 256-bit *content key*, derived
+//! Every MLS epoch `e` of a workspace has one 256-bit *content key*, derived
 //! by every member of that epoch from the MLS exporter:
-//! `MLS-Exporter("tilo channel content key v2", channel_id, 32)`. Ops are
+//! `MLS-Exporter("tilo workspace content key v2", workspace, 32)`. Ops are
 //! sealed under the key of the sender's current epoch with a `tilo-seal`
 //! at-rest envelope ([`tilo_seal::Label::ChannelContent`]) whose context
-//! binds the channel, the epoch and the artifact. Unlike MLS application
+//! binds the workspace, the epoch and the artifact. Unlike MLS application
 //! messages, a content-key ciphertext can be opened any number of times, by
 //! any holder of the key, long after the epoch ended — that is what makes
 //! history readable.
@@ -20,7 +20,7 @@
 //! from the joiner's first epoch (so only members of that epoch — which
 //! includes the joiner and excludes anyone removed earlier — can open it).
 //! The bundle grows with the number of membership epochs, never with the
-//! amount of content: a channel with a million ops and twenty membership
+//! amount of content: a workspace with a million ops and twenty membership
 //! changes hands over twenty keys.
 //!
 //! ## Security properties
@@ -41,7 +41,7 @@
 //! * **No sender authentication inside the envelope.** Any holder of a
 //!   content key can seal for that epoch. Authorship comes from the outer
 //!   `SignedOp` signature and the broker's live role check; the broker also
-//!   refuses new ops sealed under an epoch older than the channel's latest
+//!   refuses new ops sealed under an epoch older than the workspace's latest
 //!   membership change, so a removed member cannot inject content under a
 //!   key it still holds.
 //! * **Lagging senders.** A member that has not yet processed a removal
@@ -51,7 +51,7 @@
 
 use std::collections::BTreeMap;
 
-use collab_types::{ArtifactId, ChannelId, ContentRetention, EncryptionMetadata};
+use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label, SymmetricKey};
 use zeroize::{Zeroize as _, Zeroizing};
@@ -59,17 +59,17 @@ use zeroize::{Zeroize as _, Zeroizing};
 use crate::{Error, Result};
 
 /// MLS exporter label for per-epoch content keys.
-pub(crate) const CONTENT_KEY_EXPORTER_LABEL: &str = "tilo channel content key v2";
+pub(crate) const CONTENT_KEY_EXPORTER_LABEL: &str = "tilo workspace content key v2";
 /// MLS exporter label for the transport key that seals a joiner's history.
-pub(crate) const HISTORY_TRANSPORT_EXPORTER_LABEL: &str = "tilo channel key history v2";
+pub(crate) const HISTORY_TRANSPORT_EXPORTER_LABEL: &str = "tilo workspace key history v2";
 const KEY_HISTORY_VERSION: u8 = 1;
 /// Upper bound on keys in one history bundle, far above any realistic
 /// number of membership epochs, so a hostile bundle cannot exhaust memory.
 pub const MAX_HISTORY_KEYS: usize = 1 << 20;
 
-/// Every content key a member holds for one channel, by epoch.
+/// Every content key a member holds for one workspace, by epoch.
 ///
-/// An epoch normally has one key. A channel whose group forked (two
+/// An epoch normally has one key. A workspace whose group forked (two
 /// geneses, or two commits on one epoch, before every device kept the same
 /// one) has more: the key of the branch this member follows comes first and
 /// seals, and the keys of branches that lost follow, so whatever was sealed
@@ -142,21 +142,21 @@ impl ContentKeyring {
     /// [`Error::InvalidState`] for metadata of another scheme.
     pub fn open(
         &self,
-        channel: ChannelId,
+        workspace: WorkspaceId,
         artifact: ArtifactId,
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        if metadata.retention().is_none() || metadata.channel != channel {
+        if metadata.retention().is_none() {
             return Err(Error::InvalidState(
-                "payload is not content-key ciphertext for this channel".into(),
+                "payload is not content-key ciphertext for this workspace".into(),
             ));
         }
         let keys = self
             .keys
             .get(&metadata.epoch)
             .ok_or(Error::MissingContentKey(metadata.epoch))?;
-        let record = content_record(channel, metadata.epoch, artifact);
+        let record = content_record(workspace, metadata.epoch, artifact);
         let mut failure = Error::MissingContentKey(metadata.epoch);
         for key in keys {
             match tilo_seal::envelope::open(
@@ -178,21 +178,18 @@ impl ContentKeyring {
     /// [`Error::MissingContentKey`] when the epoch's key is not held.
     pub fn seal(
         &self,
-        channel: ChannelId,
+        workspace: WorkspaceId,
         epoch: u64,
         artifact: ArtifactId,
         retention: ContentRetention,
         plaintext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>)> {
         let key = self.get(epoch).ok_or(Error::MissingContentKey(epoch))?;
-        let record = content_record(channel, epoch, artifact);
+        let record = content_record(workspace, epoch, artifact);
         let sealed =
             tilo_seal::envelope::seal(key, Context::new(Label::ChannelContent, &record), plaintext)
                 .map_err(Error::ContentCrypto)?;
-        Ok((
-            EncryptionMetadata::content_key(epoch, channel, retention),
-            sealed,
-        ))
+        Ok((EncryptionMetadata::content_key(epoch, retention), sealed))
     }
 
     /// Keep every key of `other` this keyring lacks, after the keys it
@@ -270,20 +267,20 @@ impl std::fmt::Debug for ContentKeyring {
 }
 
 /// What a content ciphertext is bound to.
-fn content_record(channel: ChannelId, epoch: u64, artifact: ArtifactId) -> [u8; 40] {
+fn content_record(workspace: WorkspaceId, epoch: u64, artifact: ArtifactId) -> [u8; 40] {
     let mut record = [0_u8; 40];
     let (channel_part, rest) = record.split_at_mut(16);
-    channel_part.copy_from_slice(channel.0.as_bytes());
+    channel_part.copy_from_slice(workspace.as_uuid().as_bytes());
     let (epoch_part, artifact_part) = rest.split_at_mut(8);
     epoch_part.copy_from_slice(&epoch.to_le_bytes());
     artifact_part.copy_from_slice(artifact.0.as_bytes());
     record
 }
 
-pub(crate) fn history_record(channel: ChannelId, epoch: u64) -> [u8; 24] {
+pub(crate) fn history_record(workspace: WorkspaceId, epoch: u64) -> [u8; 24] {
     let mut record = [0_u8; 24];
     let (channel_part, epoch_part) = record.split_at_mut(16);
-    channel_part.copy_from_slice(channel.0.as_bytes());
+    channel_part.copy_from_slice(workspace.as_uuid().as_bytes());
     epoch_part.copy_from_slice(&epoch.to_le_bytes());
     record
 }
@@ -292,7 +289,7 @@ pub(crate) fn history_record(channel: ChannelId, epoch: u64) -> [u8; 24] {
 #[serde(deny_unknown_fields)]
 struct KeyHistoryPlaintext {
     version: u8,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     keys: Vec<(u64, [u8; 32])>,
 }
 
@@ -300,7 +297,7 @@ struct KeyHistoryPlaintext {
 ///
 /// Wire form: postcard of `{ epoch, sealed }` where `sealed` is a
 /// `tilo-seal` envelope ([`Label::ChannelKeyHistory`], context =
-/// channel id ‖ epoch) under the MLS-exported transport key of `epoch`.
+/// workspace id ‖ epoch) under the MLS-exported transport key of `epoch`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyHistory {
@@ -311,14 +308,14 @@ pub struct KeyHistory {
 
 impl KeyHistory {
     pub(crate) fn seal(
-        channel: ChannelId,
+        workspace: WorkspaceId,
         epoch: u64,
         transport: &SymmetricKey,
         keyring: &ContentKeyring,
     ) -> Result<Self> {
         let mut plaintext = KeyHistoryPlaintext {
             version: KEY_HISTORY_VERSION,
-            channel,
+            workspace,
             keys: keyring.to_wire(),
         };
         let encoded = postcard::to_allocvec(&plaintext)
@@ -327,7 +324,7 @@ impl KeyHistory {
         for (_, key) in &mut plaintext.keys {
             key.zeroize();
         }
-        let record = history_record(channel, epoch);
+        let record = history_record(workspace, epoch);
         let sealed = tilo_seal::envelope::seal(
             transport,
             Context::new(Label::ChannelKeyHistory, &record),
@@ -339,10 +336,10 @@ impl KeyHistory {
 
     pub(crate) fn open(
         &self,
-        channel: ChannelId,
+        workspace: WorkspaceId,
         transport: &SymmetricKey,
     ) -> Result<ContentKeyring> {
-        let record = history_record(channel, self.epoch);
+        let record = history_record(workspace, self.epoch);
         let plaintext = tilo_seal::envelope::open(
             transport,
             Context::new(Label::ChannelKeyHistory, &record),
@@ -356,9 +353,9 @@ impl KeyHistory {
                 "unsupported key history version".into(),
             ));
         }
-        if decoded.channel != channel {
+        if decoded.workspace != workspace {
             return Err(Error::InvalidState(
-                "key history names another channel".into(),
+                "key history names another workspace".into(),
             ));
         }
         if decoded.keys.len() > MAX_HISTORY_KEYS {
@@ -409,8 +406,8 @@ impl std::fmt::Debug for KeyHistory {
 mod tests {
     use super::*;
 
-    /// Content is bound to channel, epoch and artifact; another branch's keys open and never seal; a history
-    /// bundle round-trips only for its channel and epoch.
+    /// Content is bound to workspace, epoch and artifact; another branch's keys open and never seal; a history
+    /// bundle round-trips only for its workspace and epoch.
     /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
     fn sealed_content_opens_only_for_its_channel_epoch_and_artifact() {
@@ -423,34 +420,37 @@ mod tests {
         let mut ring = ContentKeyring::new();
         ring.insert(1, SymmetricKey::generate().unwrap()).unwrap();
         ring.insert(2, SymmetricKey::generate().unwrap()).unwrap();
-        let channel = ChannelId::new();
+        let workspace = WorkspaceId::new();
         let artifact = ArtifactId::new();
         let (metadata, sealed) = ring
-            .seal(channel, 1, artifact, ContentRetention::Delta, b"op")
+            .seal(workspace, 1, artifact, ContentRetention::Delta, b"op")
             .unwrap();
         assert_eq!(
-            ring.open(channel, artifact, &metadata, &sealed)
+            ring.open(workspace, artifact, &metadata, &sealed)
                 .unwrap()
                 .as_slice(),
             b"op"
         );
         assert!(
-            ring.open(channel, ArtifactId::new(), &metadata, &sealed)
+            ring.open(workspace, ArtifactId::new(), &metadata, &sealed)
                 .is_err()
         );
         assert!(
-            ring.open(ChannelId::new(), artifact, &metadata, &sealed)
+            ring.open(WorkspaceId::new(), artifact, &metadata, &sealed)
                 .is_err()
         );
         let mut wrong_epoch = metadata;
         wrong_epoch.epoch = 2;
-        assert!(ring.open(channel, artifact, &wrong_epoch, &sealed).is_err());
-        let v1 = EncryptionMetadata::mls_application(1, channel);
-        assert!(ring.open(channel, artifact, &v1, &sealed).is_err());
+        assert!(
+            ring.open(workspace, artifact, &wrong_epoch, &sealed)
+                .is_err()
+        );
+        let v1 = EncryptionMetadata::mls_application(1);
+        assert!(ring.open(workspace, artifact, &v1, &sealed).is_err());
     }
 
     fn keys_of_another_branch_open_and_never_seal() {
-        let channel = ChannelId::new();
+        let workspace = WorkspaceId::new();
         let artifact = ArtifactId::new();
         let (own, other) = (
             SymmetricKey::generate().unwrap(),
@@ -459,7 +459,7 @@ mod tests {
         let mut lost = ContentKeyring::new();
         lost.insert(1, other.clone()).unwrap();
         let (metadata, sealed) = lost
-            .seal(channel, 1, artifact, ContentRetention::Delta, b"lost")
+            .seal(workspace, 1, artifact, ContentRetention::Delta, b"lost")
             .unwrap();
         let mut ring = ContentKeyring::new();
         ring.insert(1, own.clone()).unwrap();
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(ring.get(1), Some(&own), "the own branch's key seals");
         assert_eq!(ring.to_wire().len(), 2);
         assert_eq!(
-            ring.open(channel, artifact, &metadata, &sealed)
+            ring.open(workspace, artifact, &metadata, &sealed)
                 .unwrap()
                 .as_slice(),
             b"lost"
@@ -477,7 +477,11 @@ mod tests {
         assert!(lost.missing_from(&ring).is_empty());
         let restored = ContentKeyring::from_wire(ring.to_wire()).unwrap();
         assert_eq!(restored.get(1), Some(&own));
-        assert!(restored.open(channel, artifact, &metadata, &sealed).is_ok());
+        assert!(
+            restored
+                .open(workspace, artifact, &metadata, &sealed)
+                .is_ok()
+        );
         // Deriving a key again puts it first.
         ring.insert(1, other.clone()).unwrap();
         assert_eq!(ring.get(1), Some(&other));
@@ -490,22 +494,22 @@ mod tests {
             ring.insert(epoch, SymmetricKey::generate().unwrap())
                 .unwrap();
         }
-        let channel = ChannelId::new();
+        let workspace = WorkspaceId::new();
         let transport = SymmetricKey::generate().unwrap();
-        let history = KeyHistory::seal(channel, 20, &transport, &ring).unwrap();
+        let history = KeyHistory::seal(workspace, 20, &transport, &ring).unwrap();
         let decoded = KeyHistory::from_bytes(&history.to_bytes().unwrap()).unwrap();
-        let opened = decoded.open(channel, &transport).unwrap();
+        let opened = decoded.open(workspace, &transport).unwrap();
         assert_eq!(opened.len(), 20);
         assert_eq!(opened.get(7), ring.get(7));
-        assert!(decoded.open(ChannelId::new(), &transport).is_err());
+        assert!(decoded.open(WorkspaceId::new(), &transport).is_err());
         assert!(
             decoded
-                .open(channel, &SymmetricKey::generate().unwrap())
+                .open(workspace, &SymmetricKey::generate().unwrap())
                 .is_err()
         );
         let mut moved = decoded;
         moved.epoch = 21;
-        assert!(moved.open(channel, &transport).is_err());
+        assert!(moved.open(workspace, &transport).is_err());
         assert!(
             !format!("{ring:?}").contains(&format!("{:?}", ring.get(7).unwrap().expose_secret()))
         );

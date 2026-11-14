@@ -5,8 +5,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use collab_types::{
-    ChannelId, Ed25519PublicKey, JoinMaterial, Joining, MlsAccessRequestV1, MlsGovernanceAction,
-    MlsGovernanceFrame, Signature,
+    Ed25519PublicKey, JoinMaterial, Joining, MlsAccessRequestV1, MlsGovernanceAction,
+    MlsGovernanceFrame, Signature, WorkspaceId,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 
@@ -37,29 +37,29 @@ fn devices(ns: &[u8]) -> BTreeSet<Ed25519PublicKey> {
 
 /// A page's store: what a restart reads back is only what was written.
 #[derive(Debug, Default)]
-struct Store(Mutex<HashMap<ChannelId, Vec<u8>>>);
+struct Store(Mutex<HashMap<WorkspaceId, Vec<u8>>>);
 
 impl PeerStates for Store {
-    fn read(&self, channel: ChannelId) -> crate::Result<Option<Vec<u8>>> {
-        Ok(self.0.lock().unwrap().get(&channel).cloned())
+    fn read(&self, workspace: WorkspaceId) -> crate::Result<Option<Vec<u8>>> {
+        Ok(self.0.lock().unwrap().get(&workspace).cloned())
     }
-    fn write(&self, channel: ChannelId, sealed: &[u8]) -> crate::Result<()> {
-        self.0.lock().unwrap().insert(channel, sealed.to_vec());
+    fn write(&self, workspace: WorkspaceId, sealed: &[u8]) -> crate::Result<()> {
+        self.0.lock().unwrap().insert(workspace, sealed.to_vec());
         Ok(())
     }
-    fn forget(&self, channel: ChannelId) -> crate::Result<()> {
-        self.0.lock().unwrap().remove(&channel);
+    fn forget(&self, workspace: WorkspaceId) -> crate::Result<()> {
+        self.0.lock().unwrap().remove(&workspace);
         Ok(())
     }
 }
 
-/// Device `n` waiting for `channel`, and the request it asks with.
+/// Device `n` waiting for `workspace`, and the request it asks with.
 fn asking(
-    channel: ChannelId,
+    workspace: WorkspaceId,
     n: u8,
     states: Option<Arc<dyn PeerStates>>,
 ) -> (ChannelPeer, MlsAccessRequestV1) {
-    let mut peer = ChannelPeer::waiting(states, channel, Box::new(key(n)), &vault()).unwrap();
+    let mut peer = ChannelPeer::waiting(states, workspace, Box::new(key(n)), &vault()).unwrap();
     let request = peer
         .access_request_now(1, false, &vault())
         .unwrap()
@@ -94,17 +94,17 @@ fn group(peer: &ChannelPeer) -> &ChannelGroup {
     }
 }
 
-/// A channel the founder made and admitted the honest and the dishonest
+/// A workspace the founder made and admitted the honest and the dishonest
 /// member to.
-struct Channel {
-    id: ChannelId,
+struct Workspace {
+    id: WorkspaceId,
     founder: ChannelPeer,
     honest: ChannelPeer,
     dishonest: ChannelPeer,
 }
 
-fn channel() -> Channel {
-    let id = ChannelId::new();
+fn workspace() -> Workspace {
+    let id = WorkspaceId::new();
     let mut founder = ChannelPeer::create_now(None, id, Box::new(key(FOUNDER)), &vault()).unwrap();
     founder.published();
     let (mut honest, asked) = asking(id, HONEST, None);
@@ -119,7 +119,7 @@ fn channel() -> Channel {
         let joined = member.receive(full.clone(), &allowed, &vault()).unwrap();
         assert!(matches!(joined, PeerEvent::Joined { .. }), "{joined:?}");
     }
-    Channel {
+    Workspace {
         id,
         founder,
         honest,
@@ -133,9 +133,9 @@ fn channel() -> Channel {
 /// is admitted by an honest commit.
 #[test]
 fn a_welcome_signed_by_another_device_than_its_frame_is_refused() {
-    let Channel {
+    let Workspace {
         id, mut founder, ..
-    } = channel();
+    } = workspace();
     let (mut joiner, asked) = asking(id, JOINER, None);
     founder.learn_request(asked).unwrap();
     let allowed = devices(&[FOUNDER, HONEST, DISHONEST, JOINER]);
@@ -169,12 +169,12 @@ fn a_welcome_signed_by_another_device_than_its_frame_is_refused() {
 }
 
 /// A Welcome into a group holding a device the membership no longer lets
-/// read the channel is refused, though its frame adds only the joiner.
+/// read the workspace is refused, though its frame adds only the joiner.
 #[test]
 fn a_welcome_into_a_tree_with_a_device_not_allowed_is_refused() {
-    let Channel {
+    let Workspace {
         id, mut founder, ..
-    } = channel();
+    } = workspace();
     let (mut joiner, asked) = asking(id, JOINER, None);
     founder.learn_request(asked).unwrap();
     // The founder still lets the honest member read; the joiner's membership
@@ -192,13 +192,13 @@ fn a_welcome_into_a_tree_with_a_device_not_allowed_is_refused() {
     assert_eq!(joiner.access(), Access::Waiting);
 }
 
-/// A device that cannot name the channel's record still refuses a Welcome
+/// A device that cannot name the workspace's record still refuses a Welcome
 /// whose group information another device signed.
 #[test]
 fn a_device_following_without_a_membership_still_checks_the_welcomes_signer() {
-    let Channel {
+    let Workspace {
         id, mut founder, ..
-    } = channel();
+    } = workspace();
     let (mut joiner, asked) = asking(id, JOINER, None);
     founder.learn_request(asked).unwrap();
     founder
@@ -240,17 +240,17 @@ fn made_up_package(named: u8, signature_key: &[u8]) -> crate::KeyPackage {
 /// signed the group information and its frame, and every leaf names a device
 /// the membership allows), and the joiner takes it: it leaves leaf
 /// signatures unchecked. What it bought the committer is a joiner cut
-/// off from the channel, which it could have done by sending nothing: the
+/// off from the workspace, which it could have done by sending nothing: the
 /// tree differs from the real one, so its hash and every key derived from it
 /// do, and the next real commit does not apply.
 #[test]
 fn a_tree_the_committer_forged_cannot_follow_the_next_real_commit() {
-    let Channel {
+    let Workspace {
         id,
         mut founder,
         honest,
         mut dishonest,
-    } = channel();
+    } = workspace();
     let (mut joiner, asked) = asking(id, JOINER, None);
     let package = crate::decode_key_package(&asked.key_package).unwrap();
     dishonest.learn_request(asked).unwrap();
@@ -329,13 +329,13 @@ fn a_tree_the_committer_forged_cannot_follow_the_next_real_commit() {
 
 /// A join whose write was put off and lost (the page closed first) leaves
 /// the device waiting as it was: the Welcome taken again admits it, and
-/// without it the device asks again and is admitted with the channel's
+/// without it the device asks again and is admitted with the workspace's
 /// history.
 #[test]
 fn a_join_lost_before_it_was_written_is_asked_for_again() {
-    let Channel {
+    let Workspace {
         id, mut founder, ..
-    } = channel();
+    } = workspace();
     let store = Arc::new(Store::default());
     let states = || Some(Arc::clone(&store) as Arc<dyn PeerStates>);
     let (mut joiner, asked) = asking(id, JOINER, states());
@@ -401,9 +401,9 @@ fn a_join_lost_before_it_was_written_is_asked_for_again() {
 /// starts over and asks again.
 #[test]
 fn a_commit_lost_before_it_was_written_is_found_again_or_asked_around() {
-    let Channel {
+    let Workspace {
         id, mut founder, ..
-    } = channel();
+    } = workspace();
     let store = Arc::new(Store::default());
     let states = || Some(Arc::clone(&store) as Arc<dyn PeerStates>);
     let (mut member, asked) = asking(id, JOINER, states());

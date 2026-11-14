@@ -14,8 +14,8 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::CommitNamed as _;
 use collab_types::{
-    ChannelId, ContentRetention, Ed25519PublicKey, MlsAccessRequestV1, OpKind, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id, sign_op,
+    ContentRetention, Ed25519PublicKey, MlsAccessRequestV1, OpKind, SignedOp, document_artifact_id,
+    document_attestation_id, sign_op,
 };
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
@@ -131,10 +131,6 @@ fn files(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-fn channel() -> ChannelId {
-    document_channel_id(APP, WORKSPACE, RECORD)
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "one member's sync with the host, then a late joiner catching up from it"
@@ -234,7 +230,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
 
     // A sealed edit reaches the host, which keeps it as the history a member
     // that was away catches up from; the host holds no channel key.
-    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -563,7 +559,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     // What the device writes, or hears of the workspace another way, it sends to its members, and
     // keeps for the ones that link later: a member that linked after the device wrote never heard
     // of the write.
-    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -612,7 +608,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     let (mut b_heard, mut c_heard) = (b.heard(), c.heard());
     let asking = NeighbourMsg::MlsAccessRequest {
         workspace: WORKSPACE.into(),
-        request: Box::new(MlsAccessRequestV1::signed(channel(), vec![1], 1, &b_key).unwrap()),
+        request: Box::new(MlsAccessRequestV1::signed(workspace_id(), vec![1], 1, &b_key).unwrap()),
         delivery: 0,
     };
     b.send(asking.clone()).unwrap();
@@ -636,7 +632,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         workspace: WORKSPACE.into(),
         frame: Box::new(
             collab_types::MlsGovernanceFrame::signed(
-                channel(),
+                workspace_id(),
                 [0; 32],
                 0,
                 collab_types::MlsGovernanceAction::Genesis,
@@ -749,7 +745,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
         )
         .unwrap();
     let host = DirectSync::new(govern, host_key.clone());
-    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();

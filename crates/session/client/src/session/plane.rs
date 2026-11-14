@@ -48,8 +48,7 @@ pub(crate) const REFUSED_MS: u64 = 60_000;
 /// again.
 const JOINING_MS: u64 = 30_000;
 
-/// The workspace scope's record: the channel whose content keys seal the
-/// plane's tracks.
+/// The record the plane takes its workspace's keys through.
 pub(crate) fn route(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
@@ -501,9 +500,8 @@ impl Task {
             let Some((workspace, _)) = self.replicas.members(workspace_id) else {
                 continue;
             };
-            // The workspace scope's keys are the `so.tilo.media/live`
-            // channel's: the page asks its participants to admit it, as it
-            // does for any record, and joins once they have.
+            // The page asks for the workspace's keys through the plane's
+            // record, as it does for any record, and joins once it holds them.
             let route = route(&workspace);
             self.open_channel(&route);
             let Some(keys) = self.keys_of(&route) else {

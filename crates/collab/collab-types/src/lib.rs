@@ -7,7 +7,7 @@
 //!
 //! - [`identity`] — `AttestationId`, the route tag a signed op carries, and
 //!   avatar bytes.
-//! - [`channel`] — `ChannelId`, `ArtifactId`: ids carried by a document's ops.
+//! - [`artifact`] — `ArtifactId`: the artifact a document's ops belong to.
 //! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
 //!   make which change is decided by `tilo-action-policy` grants.
 //! - [`caps`] — the app sandbox: `(who × scope × access)` capabilities
@@ -23,8 +23,8 @@
 //! - [`crypto`] — Ed25519 signing + verification primitives.
 //! - [`validator`] — inbound document-op validation: pure functions over an
 //!   [`validator::InboundState`] snapshot.
-//! - [`scope`] — `Scope`: the workspace, channel or record whose keys seal a
-//!   live track, and the id its name carries.
+//! - [`scope`] — `Scope`: the workspace or record a live track belongs to,
+//!   and the id its name carries.
 //!
 //! Filesystem records and control protocols live in `fs-protocol`, the
 //! first-party app catalogue in `tilo-desktop-model`, and the launcher's collab
@@ -32,7 +32,7 @@
 //!
 //! Non-goals: no network code (the validator operates on a snapshot); no
 //! cryptographic key handling (this crate carries signed MLS metadata and
-//! opaque ciphertext, while `channel-crypto` owns group secrets); no
+//! opaque ciphertext, while the key crate owns group secrets); no
 //! FROST/threshold sharing; no persistence.
 //!
 //! Every on-wire struct derives `Serialize`/`Deserialize` and carries
@@ -43,9 +43,9 @@
 //! input — trailing bytes are an error, not a silent drop.
 
 pub mod action_authority;
+pub mod artifact;
 pub mod canonical;
 pub mod caps;
-pub mod channel;
 pub mod channel_key;
 pub mod claim;
 pub mod commit;
@@ -58,7 +58,6 @@ pub mod handoff;
 pub mod history;
 pub mod identity;
 pub mod inbound;
-pub mod key_scope;
 pub mod member;
 pub mod mls_governance;
 pub mod op;
@@ -88,12 +87,12 @@ pub const RECORD_URI_SCHEME: &str = "tilo-record";
 // Convenience re-exports so downstream callers can do
 // `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
+pub use artifact::ArtifactId;
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
     Access, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, ResourceRef,
     Scope, WorkspaceMember, decide_app, decide_capability, host_covers, path_covers,
 };
-pub use channel::{ArtifactId, ChannelId};
 pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
     claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
@@ -118,19 +117,17 @@ pub use document_transfer::{
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
 };
 pub use identity::{AttestationId, AvatarBytes};
-pub use key_scope::{WORKSPACE_READERS, workspace_scope};
 pub use member::{Member, Person, PersonId, assigned_colour};
 pub use mls_governance::{
-    ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MAX_COMMIT_DEVICES,
-    MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAction,
-    MlsGovernanceError, MlsGovernanceFrame,
+    JoinMaterial, Joining, MAX_COMMIT_DEVICES, MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION,
+    MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceError, MlsGovernanceFrame,
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
     SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
-    document_channel_id, live_artifact_id, next_unordered_document_sequence,
-    validate_document_payload_route, validate_whole_document_payload_route,
+    live_artifact_id, next_unordered_document_sequence, validate_document_payload_route,
+    validate_whole_document_payload_route,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
@@ -148,8 +145,8 @@ pub use redaction::{
 pub use role::{ArtifactKind, OpKind, Role};
 pub use tilo_action_policy::{MemberId, member_record, member_record_id};
 pub use validator::{
-    DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, named_record_of_channel,
-    named_records, validate_admitted_inbound_op, validate_replayed_inbound_op,
+    DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
+    validate_replayed_inbound_op,
 };
 pub use workspace_id::WorkspaceId;
 pub use workspace_record::{

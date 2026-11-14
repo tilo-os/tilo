@@ -159,10 +159,10 @@ mod tests {
     )]
     fn every_variant() -> Vec<(NeighbourMsg, Option<WorkspaceAction>)> {
         use collab_types::{
-            ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction,
-            MlsGovernanceFrame, PeerPresence, PeerPresencePayload, Signature,
+            Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
+            PeerPresence, PeerPresencePayload, Signature, WorkspaceId,
         };
-        let channel = ChannelId(uuid::Uuid::from_bytes([0x55; 16]));
+        let workspace = WorkspaceId::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555);
         let artifact = collab_types::document_artifact_id("so.tilo.notes", WORKSPACE, "notes");
         let device_cert = || Box::new(cert([1; 32], [2; 32]));
         vec![
@@ -340,7 +340,7 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
-                        channel,
+                        workspace,
                         previous_frame_digest: [7; 32],
                         epoch: 1,
                         action: MlsGovernanceAction::Commit {
@@ -362,7 +362,7 @@ mod tests {
                     workspace: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
-                        channel,
+                        workspace,
                         device: Ed25519PublicKey::from_bytes([2; 32]),
                         key_package: Vec::new(),
                         issued_at: 0,

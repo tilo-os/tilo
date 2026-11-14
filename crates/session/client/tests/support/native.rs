@@ -10,7 +10,6 @@
 use channel_crypto::{Access, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::{
     DocumentFrame, Ed25519PublicKey, EncryptionMetadata, SignedOp, document_artifact_id,
-    document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -97,7 +96,7 @@ impl NativeDevice {
             Some(std::sync::Arc::new(channel_crypto::Files::new(
                 state.path(),
             ))),
-            collab_types::workspace_scope(&workspace.to_string()),
+            collab_types::WorkspaceId::parse(&workspace.to_string()).unwrap(),
             Box::new(device.key.clone()),
             &vault(),
         )
@@ -194,11 +193,6 @@ impl NativeDevice {
         self.peer
             .content_keys()
             .unwrap()
-            .for_unit(document_channel_id(
-                &route.app_id,
-                &route.cluster_id,
-                &route.record,
-            ))
             .seal_content(
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record),
                 collab_types::ContentRetention::of_frame(frame),
@@ -234,7 +228,7 @@ impl NativeDevice {
                 .writes
                 .iter()
                 .position(|op| op.author == author && op.artifact == artifact)
-                && let Some(clear) = self.open(route, &self.writes[at])
+                && let Some(clear) = self.open(&self.writes[at])
             {
                 self.writes.remove(at);
                 return DocumentFrame::decode(&clear).unwrap();
@@ -244,16 +238,12 @@ impl NativeDevice {
     }
 
     /// `op` of `route` opened, or `None` while this device lacks its key.
-    fn open(&self, route: &DocumentRoute, op: &SignedOp) -> Option<Vec<u8>> {
+    fn open(&self, op: &SignedOp) -> Option<Vec<u8>> {
         let metadata = op
             .encryption
             .as_ref()
             .expect("a sealed record is never written in the clear");
-        let keys = self.peer.content_keys()?.for_unit(document_channel_id(
-            &route.app_id,
-            &route.cluster_id,
-            &route.record,
-        ));
+        let keys = self.peer.content_keys()?;
         match keys.open_content(op.artifact, metadata, &op.payload) {
             Ok(clear) => Some(clear.to_vec()),
             Err(channel_crypto::Error::MissingContentKey(_)) => None,

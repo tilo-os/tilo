@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use web_time::SystemTime;
 
+use crate::artifact::ArtifactId;
 use crate::canonical::{CanonicalError, canonical_bytes};
-use crate::channel::{ArtifactId, ChannelId};
 use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
 use crate::role::OpKind;
@@ -37,7 +37,6 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
     DOCUMENT_MUTATION_V2_PREFIX.len() + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES + 16;
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
-const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"tilo-document-channel-v1\0";
 const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
@@ -212,7 +211,7 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, record_id: &str) -
     ))
 }
 
-/// Artifact a sealed live frame is bound to: its record's channel content
+/// Artifact a sealed live frame is bound to: its workspace's content
 /// key seals it for this kind, sequence and record only, so a frame cannot
 /// be replayed under another sequence, record or kind.
 #[must_use]
@@ -280,22 +279,6 @@ pub fn document_attestation_id(app_id: &str, workspace_id: &str, record_id: &str
     ))
 }
 
-/// Deterministically derive the MLS channel for one collaboration route.
-///
-/// This is deliberately independent from the artifact id even though both
-/// currently have one-to-one cardinality.  Keeping a separate domain means a
-/// broker can bind clear, signed [`EncryptionMetadata`] to the joined route
-/// without learning or attempting to decode the ciphertext payload.
-#[must_use]
-pub fn document_channel_id(app_id: &str, workspace_id: &str, record_id: &str) -> ChannelId {
-    ChannelId(derived_document_uuid(
-        DOCUMENT_CHANNEL_DOMAIN,
-        app_id,
-        workspace_id,
-        record_id,
-    ))
-}
-
 /// Result of validating the clear routing layer of a document envelope.
 /// Brokers use this to distinguish a typed cleartext mutation from opaque MLS
 /// ciphertext while applying identical route binding in both cases.
@@ -306,7 +289,6 @@ pub enum RoutedDocumentPayload {
     /// other validated envelope; endpoints reassemble it.
     CleartextSegment(crate::document_transfer::DocumentSegment),
     Encrypted {
-        channel: ChannelId,
         epoch: u64,
     },
 }
@@ -316,21 +298,20 @@ pub enum RoutedDocumentPayload {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WholeDocumentPayload {
     Cleartext(DocumentMutation),
-    Encrypted { channel: ChannelId, epoch: u64 },
+    Encrypted { epoch: u64 },
 }
 
 /// Validate the fields a broker is allowed to inspect for a document route.
 ///
-/// Encrypted payloads are intentionally not decoded.  Their signed channel id
-/// must equal the deterministic channel for the route and their ciphertext
-/// must be non-empty; authenticity of the inner MLS frame remains an endpoint
+/// Encrypted payloads are intentionally not decoded.  Their ciphertext must be
+/// non-empty; authenticity of the sealed content remains an endpoint
 /// responsibility.  Cleartext payloads retain the versioned typed-mutation
 /// check.
 ///
 /// # Errors
 ///
 /// Returns [`DocumentMutationError::RouteMismatch`] when the signed routing
-/// fields or MLS channel do not match, and forwards the typed mutation decode
+/// fields do not match, and forwards the typed mutation decode
 /// error for malformed cleartext payloads.
 pub fn validate_document_payload_route(
     app_id: &str,
@@ -358,12 +339,7 @@ pub fn validate_document_payload_route(
     }
     match validate_whole_document_payload_route(app_id, workspace_id, record_id, op)? {
         WholeDocumentPayload::Cleartext(mutation) => Ok(RoutedDocumentPayload::Cleartext(mutation)),
-        WholeDocumentPayload::Encrypted { channel, epoch } => {
-            if channel != document_channel_id(app_id, workspace_id, record_id) {
-                return Err(DocumentMutationError::RouteMismatch);
-            }
-            Ok(RoutedDocumentPayload::Encrypted { channel, epoch })
-        }
+        WholeDocumentPayload::Encrypted { epoch } => Ok(RoutedDocumentPayload::Encrypted { epoch }),
     }
 }
 
@@ -401,15 +377,10 @@ pub fn validate_whole_document_payload_route(
             Ok(WholeDocumentPayload::Cleartext(mutation))
         }
         Some(meta) => {
-            if meta.channel != document_channel_id(app_id, workspace_id, record_id)
-                || op.payload.is_empty()
-            {
+            if op.payload.is_empty() {
                 return Err(DocumentMutationError::RouteMismatch);
             }
-            Ok(WholeDocumentPayload::Encrypted {
-                channel: meta.channel,
-                epoch: meta.epoch,
-            })
+            Ok(WholeDocumentPayload::Encrypted { epoch: meta.epoch })
         }
     }
 }
@@ -447,14 +418,14 @@ pub(crate) fn derived_uuid(domain: &[u8], parts: &[&str]) -> uuid::Uuid {
 
 /// How an encrypted `SignedOp.payload` was sealed. Versioned so members
 /// keep reading ciphertexts produced by earlier schemes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EncryptionScheme {
     /// Version 1: an MLS application message at `epoch`
     /// (`channel_crypto::ChannelGroup::encrypt`). Readable only by members
     /// holding that epoch's ratchet state, and only once per receiver.
     MlsApplication,
     /// Version 2: an XChaCha20-Poly1305 `tilo-seal` envelope under the
-    /// channel content key of `epoch`. Content keys are derived from the MLS
+    /// workspace content key of `epoch`. Content keys are derived from the MLS
     /// exporter of each epoch and handed to joiners as a key history, so
     /// every member (including one added later) can read every op, any
     /// number of times. `retention` tells durable hosts how to store the op
@@ -480,47 +451,35 @@ pub enum ContentRetention {
 ///
 /// The presence of this field (not a separate wire flag) tells a
 /// receiver the payload is ciphertext: `None` means `payload` is a
-/// cleartext document frame; `Some(meta)` means `payload` was sealed for
-/// `channel` at `epoch` under `scheme`.
+/// cleartext document frame; `Some(meta)` means `payload` was sealed under
+/// its workspace's keys at `epoch` under `scheme`.
 ///
 /// `SignedOp.signature` covers (cipher)bytes either way, and covers
-/// `encryption` itself too, so a malicious peer can't strip the metadata,
-/// downgrade the scheme, or re-route the ciphertext to a different channel.
-///
-/// Wire compatibility: on the wire the optional metadata is one tagged
-/// value — `0` none, `1` MLS application message `{epoch, channel}`, `2`
-/// content key `{epoch, channel, retention}`. Tags `0` and `1` are
-/// byte-identical to the `Option<{epoch, channel}>` encoding every earlier
-/// build wrote, so old ops decode and their signatures still verify.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// `encryption` itself too, so a malicious peer can't strip the metadata or
+/// downgrade the scheme.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EncryptionMetadata {
     /// MLS epoch the ciphertext belongs to: the ratchet epoch for
     /// [`EncryptionScheme::MlsApplication`], the content-key epoch for
     /// [`EncryptionScheme::ContentKey`].
     pub epoch: u64,
-    /// Channel id the ciphertext belongs to. Redundant with the
-    /// artifact→channel lookup the broker performs anyway, but cheap (a
-    /// 16-byte UUID) and lets the receiver pick the `ChannelGroup` directly.
-    pub channel: ChannelId,
-    /// Which sealing scheme produced the payload.
     pub scheme: EncryptionScheme,
 }
 
 impl EncryptionMetadata {
     /// Metadata for a version-1 MLS application message.
-    pub const fn mls_application(epoch: u64, channel: ChannelId) -> Self {
+    pub const fn mls_application(epoch: u64) -> Self {
         Self {
             epoch,
-            channel,
             scheme: EncryptionScheme::MlsApplication,
         }
     }
 
     /// Metadata for a version-2 content-key envelope.
-    pub const fn content_key(epoch: u64, channel: ChannelId, retention: ContentRetention) -> Self {
+    pub const fn content_key(epoch: u64, retention: ContentRetention) -> Self {
         Self {
             epoch,
-            channel,
             scheme: EncryptionScheme::ContentKey { retention },
         }
     }
@@ -531,95 +490,6 @@ impl EncryptionMetadata {
         match self.scheme {
             EncryptionScheme::MlsApplication => None,
             EncryptionScheme::ContentKey { retention } => Some(retention),
-        }
-    }
-}
-
-/// Serde adapter for `Option<EncryptionMetadata>`, keeping the version-1
-/// wire bytes unchanged (see [`EncryptionMetadata`]).
-mod encryption_wire {
-    use super::{ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    #[derive(Serialize)]
-    enum WireRef {
-        None,
-        MlsApplication {
-            epoch: u64,
-            channel: ChannelId,
-        },
-        ContentKey {
-            epoch: u64,
-            channel: ChannelId,
-            retention: ContentRetention,
-        },
-    }
-
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    enum Wire {
-        None,
-        MlsApplication {
-            epoch: u64,
-            channel: ChannelId,
-        },
-        ContentKey {
-            epoch: u64,
-            channel: ChannelId,
-            retention: ContentRetention,
-        },
-    }
-
-    #[allow(
-        clippy::ref_option,
-        reason = "serde's `with` adapters receive a reference to the field"
-    )]
-    pub(super) fn serialize<S: Serializer>(
-        value: &Option<EncryptionMetadata>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match *value {
-            None => WireRef::None,
-            Some(EncryptionMetadata {
-                epoch,
-                channel,
-                scheme: EncryptionScheme::MlsApplication,
-            }) => WireRef::MlsApplication { epoch, channel },
-            Some(EncryptionMetadata {
-                epoch,
-                channel,
-                scheme: EncryptionScheme::ContentKey { retention },
-            }) => WireRef::ContentKey {
-                epoch,
-                channel,
-                retention,
-            },
-        }
-        .serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<EncryptionMetadata>, D::Error> {
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::None => None,
-            Wire::MlsApplication { epoch, channel } => {
-                Some(EncryptionMetadata::mls_application(epoch, channel))
-            }
-            Wire::ContentKey {
-                epoch,
-                channel,
-                retention,
-            } => Some(EncryptionMetadata::content_key(epoch, channel, retention)),
-        })
-    }
-
-    /// Borrowing wrapper so signing views serialize exactly like the field.
-    pub(super) struct View<'a>(pub(super) &'a Option<EncryptionMetadata>);
-
-    impl Serialize for View<'_> {
-        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            serialize(self.0, serializer)
         }
     }
 }
@@ -653,12 +523,10 @@ pub struct SignedOp {
     /// validator rejects an inbound op whose `seq` isn't strictly greater
     /// than the last seen for that author. Independent per author.
     pub seq: u64,
-    /// Encryption mode. `None` means `payload` is cleartext (the legacy
-    /// form); `Some(meta)` names the channel, epoch and versioned scheme.
-    /// Part of the signed bytes so a peer can't rewrite the metadata to
-    /// mis-route or downgrade a ciphertext. See [`EncryptionMetadata`] for
-    /// the wire encoding, which keeps every earlier op decodable.
-    #[serde(default, with = "encryption_wire")]
+    /// Encryption mode. `None` means `payload` is cleartext; `Some(meta)`
+    /// names the epoch and versioned scheme. Part of the signed bytes so a
+    /// peer can't rewrite the metadata to downgrade a ciphertext.
+    #[serde(default)]
     pub encryption: Option<EncryptionMetadata>,
     /// What each change in `payload` claims to be: its action and the
     /// storage units it writes, one per change, signed with the op so a
@@ -706,7 +574,7 @@ impl SignedOp {
 
     /// Construct an unsigned op carrying an MLS ciphertext payload. The
     /// caller has already encrypted via `ChannelGroup::encrypt`; the
-    /// ciphertext goes into `payload`, the matching `epoch`/`channel` into
+    /// ciphertext goes into `payload`, the matching `epoch` into
     /// `encryption`. Sign with [`crate::crypto::sign_op`] as usual.
     pub fn new_unsigned_with_encryption(
         payload: Vec<u8>,
@@ -752,7 +620,7 @@ impl SignedOp {
     /// the record on its own, so a replica holding none of the route founds
     /// it with this op, and a writer that founds a record sealed publishes
     /// one instead of a cleartext genesis a member, who reads only what the
-    /// channel seals, could never account for.
+    /// workspace's keys seal, could never account for.
     #[must_use]
     pub fn is_whole_record(&self) -> bool {
         self.kind == OpKind::Compaction
@@ -773,7 +641,7 @@ impl SignedOp {
             kind: &'a OpKind,
             timestamp: &'a SystemTime,
             seq: u64,
-            encryption: encryption_wire::View<'a>,
+            encryption: &'a Option<EncryptionMetadata>,
             claims: &'a [crate::claim::ChangeClaim],
             surface: &'a Option<[u8; 32]>,
         }
@@ -785,7 +653,7 @@ impl SignedOp {
             kind: &self.kind,
             timestamp: &self.timestamp,
             seq: self.seq,
-            encryption: encryption_wire::View(&self.encryption),
+            encryption: &self.encryption,
             claims: &self.claims,
             surface: &self.surface,
         })
@@ -902,7 +770,7 @@ mod tests {
                 OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 42,
-                EncryptionMetadata::mls_application(3, crate::channel::ChannelId::new()),
+                EncryptionMetadata::mls_application(3),
             );
             op.signature = crate::crypto::Signature::from_bytes([1u8; 64]);
             let bytes = canonical_bytes(&op).unwrap();
@@ -918,7 +786,6 @@ mod tests {
             // signing-bytes — otherwise a peer could strip the metadata to
             // redirect a ciphertext with the signature unchanged.
             let (_, pk) = generate_keypair();
-            let cid = crate::channel::ChannelId::new();
             let a = SignedOp::new_unsigned(
                 b"x".to_vec(),
                 ArtifactId::new(),
@@ -929,7 +796,7 @@ mod tests {
                 0,
             );
             let mut b = a.clone();
-            b.encryption = Some(EncryptionMetadata::mls_application(0, cid));
+            b.encryption = Some(EncryptionMetadata::mls_application(0));
             assert_ne!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
         }
 
@@ -953,24 +820,9 @@ mod tests {
             assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
         }
 
-        phase version_one_metadata_keeps_the_legacy_wire_and_signing_bytes;
-        {
-            let channel = ChannelId::new();
-            let legacy = canonical_bytes(&Some(LegacyMetadata { epoch: 9, channel })).unwrap();
-            let current = canonical_bytes(&encryption_wire::View(&Some(
-                EncryptionMetadata::mls_application(9, channel),
-            )))
-            .unwrap();
-            assert_eq!(legacy, current);
-            let none_legacy = canonical_bytes(&Option::<LegacyMetadata>::None).unwrap();
-            let none_current = canonical_bytes(&encryption_wire::View(&None)).unwrap();
-            assert_eq!(none_legacy, none_current);
-        }
-
         phase content_key_metadata_round_trips_and_is_signed;
         {
             let (_, pk) = generate_keypair();
-            let channel = ChannelId::new();
             let mut op = SignedOp::new_unsigned_with_encryption(
                 b"sealed".to_vec(),
                 ArtifactId::new(),
@@ -979,7 +831,7 @@ mod tests {
                 OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 5,
-                EncryptionMetadata::content_key(2, channel, ContentRetention::Checkpoint),
+                EncryptionMetadata::content_key(2, ContentRetention::Checkpoint),
             );
             op.signature = Signature::from_bytes([3; 64]);
             let back: SignedOp = from_canonical_bytes(&canonical_bytes(&op).unwrap()).unwrap();
@@ -989,17 +841,14 @@ mod tests {
                 Some(ContentRetention::Checkpoint)
             );
             let mut downgraded = op.clone();
-            downgraded.encryption = Some(EncryptionMetadata::mls_application(2, channel));
+            downgraded.encryption = Some(EncryptionMetadata::mls_application(2));
             assert_ne!(
                 op.signing_bytes().unwrap(),
                 downgraded.signing_bytes().unwrap()
             );
             let mut reclassified = op.clone();
-            reclassified.encryption = Some(EncryptionMetadata::content_key(
-                2,
-                channel,
-                ContentRetention::Delta,
-            ));
+            reclassified.encryption =
+                Some(EncryptionMetadata::content_key(2, ContentRetention::Delta));
             assert_ne!(
                 op.signing_bytes().unwrap(),
                 reclassified.signing_bytes().unwrap()
@@ -1085,7 +934,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Document route ids are stable and unambiguous; an encrypted route is bound without decoding
-        /// ciphertext and rejects a wrong channel and empty ciphertext.
+        /// ciphertext and rejects empty ciphertext.
         fn document_routes_are_stable_and_bound_without_decoding;
 
         phase document_route_ids_are_stable_and_unambiguous;
@@ -1104,11 +953,6 @@ mod tests {
                 document_attestation_id("so.tilo.notes", "room-a", "record-b").0,
                 "artifact and attestation domains must not alias"
             );
-            assert_ne!(
-                first.0,
-                document_channel_id("so.tilo.notes", "room-a", "record-b").0,
-                "artifact and MLS channel domains must not alias"
-            );
             assert_eq!(first.0.get_version_num(), 8);
             assert_eq!(first.0.to_string(), "0231a3fb-e6d4-89fc-9fc4-160d44d242bf");
             assert_eq!(
@@ -1122,12 +966,6 @@ mod tests {
                     .0
                     .to_string(),
                 "fe8b6b90-8390-8f45-923c-e78d2a15cb9c"
-            );
-            assert_eq!(
-                document_channel_id("dev.tilo.notes", "room-a", "record-b")
-                    .0
-                    .to_string(),
-                "f36e8478-33d6-8069-b327-1971d231a822"
             );
             let golden = DocumentMutation::Snapshot(vec![0, 1, 2, 0xff]);
             assert_eq!(
@@ -1147,14 +985,11 @@ mod tests {
                 OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 1,
-                EncryptionMetadata::mls_application(4, document_channel_id(app, workspace, record)),
+                EncryptionMetadata::mls_application(4),
             );
             assert_eq!(
                 validate_document_payload_route(app, workspace, record, &op),
-                Ok(RoutedDocumentPayload::Encrypted {
-                    channel: document_channel_id(app, workspace, record),
-                    epoch: 4,
-                })
+                Ok(RoutedDocumentPayload::Encrypted { epoch: 4 })
             );
             assert_eq!(
                 validate_document_payload_route(app, workspace, "other", &op),
@@ -1162,10 +997,10 @@ mod tests {
             );
         }
 
-        phase encrypted_document_route_rejects_wrong_channel_and_empty_ciphertext;
+        phase encrypted_document_route_rejects_empty_ciphertext;
         {
             let (app, workspace, record) = ("notes", "workspace", "record");
-            let build = |payload, channel| {
+            let build = |payload| {
                 SignedOp::new_unsigned_with_encryption(
                     payload,
                     document_artifact_id(app, workspace, record),
@@ -1174,27 +1009,14 @@ mod tests {
                     OpKind::Change,
                     SystemTime::UNIX_EPOCH,
                     1,
-                    EncryptionMetadata::mls_application(0, channel),
+                    EncryptionMetadata::mls_application(0),
                 )
             };
-            let wrong = build(vec![1], ChannelId::new());
-            let empty = build(Vec::new(), document_channel_id(app, workspace, record));
-            assert_eq!(
-                validate_document_payload_route(app, workspace, record, &wrong),
-                Err(DocumentMutationError::RouteMismatch)
-            );
+            let empty = build(Vec::new());
             assert_eq!(
                 validate_document_payload_route(app, workspace, record, &empty),
                 Err(DocumentMutationError::RouteMismatch)
             );
         }
-    }
-
-    /// Postcard bytes of the `Option<{epoch, channel}>` tail every build
-    /// before versioned encryption metadata wrote.
-    #[derive(Serialize)]
-    struct LegacyMetadata {
-        epoch: u64,
-        channel: ChannelId,
     }
 }

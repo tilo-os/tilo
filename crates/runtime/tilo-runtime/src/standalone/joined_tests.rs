@@ -775,7 +775,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     // A sealed write, as an SDK app seals it under a key only the workspace's
     // key holders have: this member's owner and the host keep only its
     // ciphertext, and the governor receives it sealed.
-    let channel = collab_types::document_channel_id("so.tilo.chat", &workspace.to_string(), "");
+    let channel = collab_types::WorkspaceId::parse(&workspace.to_string()).unwrap();
     let content = channel_crypto::ChannelGroup::create(
         channel,
         channel_crypto::MemberKey::generate("governor").unwrap(),

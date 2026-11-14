@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use collab_types::ChannelId;
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::custody::HostIdentity;
@@ -176,14 +175,14 @@ struct Stored {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SavedChannels {
-    peers: BTreeMap<(WorkspaceId, [u8; 16]), Vec<u8>>,
+    peers: BTreeMap<WorkspaceId, Vec<u8>>,
     /// Writes held until their route's keys arrive.
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
 /// Tags stored channel state of this format: state of an earlier format does not open, and the
 /// device asks for its channels again.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v6";
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v7";
 
 impl StoredChannels {
     /// What `store` kept.
@@ -228,54 +227,30 @@ impl StoredChannels {
 }
 
 impl tilo_channels::ChannelState for StoredChannels {
-    fn peers(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates> {
-        Arc::new(StoredPeers {
-            stored: self.clone(),
-            workspace,
-        })
+    fn peers(&self) -> Arc<dyn channel_crypto::PeerStates> {
+        Arc::new(self.clone())
     }
 
-    fn held(&self) -> Vec<(WorkspaceId, Vec<ChannelId>)> {
-        let mut held: BTreeMap<WorkspaceId, Vec<ChannelId>> = BTreeMap::new();
-        for (workspace, channel) in self.0.saved.lock_recover().peers.keys() {
-            held.entry(*workspace)
-                .or_default()
-                .push(ChannelId(uuid::Uuid::from_bytes(*channel)));
-        }
-        held.into_iter().collect()
+    fn held(&self) -> Vec<WorkspaceId> {
+        self.0.saved.lock_recover().peers.keys().copied().collect()
     }
 }
 
-/// One workspace's channels in [`StoredChannels`].
-#[derive(Debug)]
-struct StoredPeers {
-    stored: StoredChannels,
-    workspace: WorkspaceId,
-}
-
-impl channel_crypto::PeerStates for StoredPeers {
-    fn read(&self, channel: ChannelId) -> channel_crypto::Result<Option<Vec<u8>>> {
-        let saved = self.stored.0.saved.lock_recover();
-        Ok(saved
-            .peers
-            .get(&(self.workspace, channel.0.into_bytes()))
-            .cloned())
+impl channel_crypto::PeerStates for StoredChannels {
+    fn read(&self, workspace: WorkspaceId) -> channel_crypto::Result<Option<Vec<u8>>> {
+        Ok(self.0.saved.lock_recover().peers.get(&workspace).cloned())
     }
 
-    fn write(&self, channel: ChannelId, sealed: &[u8]) -> channel_crypto::Result<()> {
-        self.stored.change(|saved| {
-            saved
-                .peers
-                .insert((self.workspace, channel.0.into_bytes()), sealed.to_vec());
+    fn write(&self, workspace: WorkspaceId, sealed: &[u8]) -> channel_crypto::Result<()> {
+        self.change(|saved| {
+            saved.peers.insert(workspace, sealed.to_vec());
         });
         Ok(())
     }
 
-    fn forget(&self, channel: ChannelId) -> channel_crypto::Result<()> {
-        self.stored.change(|saved| {
-            saved
-                .peers
-                .remove(&(self.workspace, channel.0.into_bytes()));
+    fn forget(&self, workspace: WorkspaceId) -> channel_crypto::Result<()> {
+        self.change(|saved| {
+            saved.peers.remove(&workspace);
         });
         Ok(())
     }
@@ -389,7 +364,6 @@ impl Sending {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_channels::ChannelState as _;
 
     fn write(id: u8) -> Outgoing<'static> {
         Outgoing {
@@ -462,21 +436,25 @@ mod tests {
             cluster_id: "workspace".into(),
             record: "note".into(),
         };
-        let (workspace, channel) = (WorkspaceId::new(), ChannelId::new());
+        let workspace = WorkspaceId::new();
         let held = vec![(route, vec![b"before the reload".to_vec()])];
         let stored = StoredChannels::load(&store);
         stored.hold(held.clone());
-        stored.peers(workspace).write(channel, b"sealed")?;
+        tilo_channels::ChannelState::peers(&stored).write(workspace, b"sealed")?;
         stored.save(&store)?;
 
         let reopened = StoredChannels::load(&store);
         if reopened.held() != held {
             return Err("the held edit changed on reopen".into());
         }
-        if reopened.peers(workspace).read(channel)?.as_deref() != Some(&b"sealed"[..]) {
+        if tilo_channels::ChannelState::peers(&reopened)
+            .read(workspace)?
+            .as_deref()
+            != Some(&b"sealed"[..])
+        {
             return Err("the channel's state changed on reopen".into());
         }
-        if tilo_channels::ChannelState::held(&reopened) != vec![(workspace, vec![channel])] {
+        if tilo_channels::ChannelState::held(&reopened) != vec![workspace] {
             return Err("the reopened state does not list its channel".into());
         }
         Ok(())

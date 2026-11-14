@@ -1,13 +1,13 @@
-//! A new write opens only under the channel's current epoch.
+//! A new write opens only under the workspace's current epoch.
 
 use channel_crypto::{ChannelGroup, MemberKey};
-use collab_types::{ArtifactId, ChannelId, ContentRetention};
+use collab_types::{ArtifactId, ContentRetention, WorkspaceId};
 
 #[test]
 fn a_payload_sealed_under_an_older_epoch_opens_as_history_but_not_as_a_new_write() {
-    let channel = ChannelId::new();
+    let workspace = WorkspaceId::new();
     let artifact = ArtifactId::new();
-    let mut group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+    let mut group = ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap()).unwrap();
     let before = group.content_keys().unwrap();
     let (old_metadata, old) = before
         .seal_content(
@@ -42,12 +42,11 @@ fn a_payload_sealed_under_an_older_epoch_opens_as_history_but_not_as_a_new_write
     let (metadata, fresh) = after
         .seal_content(artifact, ContentRetention::Delta, b"current")
         .unwrap();
-    let mut other = metadata;
-    other.channel = ChannelId::new();
     assert!(
         after
-            .open_current_content(artifact, &other, &fresh)
-            .is_err()
+            .open_current_content(ArtifactId::new(), &metadata, &fresh)
+            .is_err(),
+        "content sealed for one record does not open as another"
     );
     let mut tampered = fresh.clone();
     tampered[0] ^= 1;

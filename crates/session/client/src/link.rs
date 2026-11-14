@@ -585,11 +585,7 @@ impl Outbox for Link {
         if let Cmd::InstallChannelKeys(route, keys) = &command
             && let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
         {
-            self.engine.hand_keys(
-                workspace,
-                collab_types::ChannelRoute::new(&route.app_id, &route.record),
-                keys.clone(),
-            );
+            self.engine.hand_keys(workspace, keys.clone());
         }
         // Held before the session, which reads held writes under this lock, can look: read from
         // now on, and said to the session as the route alone.

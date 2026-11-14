@@ -241,7 +241,7 @@ impl RelayHistory {
             {
                 for (author, floor) in compaction.covers {
                     let lineage = tilo_peer_state::store::Lineage {
-                        channel: frame.lineage.channel,
+                        record: frame.lineage.record,
                         author: *author.as_bytes(),
                     };
                     let at = history.covered.entry(lineage).or_default();

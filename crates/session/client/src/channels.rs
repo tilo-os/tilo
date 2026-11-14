@@ -759,7 +759,7 @@ mod tests {
             workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
-                channel: collab_types::ChannelId::new(),
+                workspace: collab_types::WorkspaceId::new(),
                 previous_frame_digest: [0; 32],
                 epoch: 1,
                 action: collab_types::MlsGovernanceAction::Genesis,
@@ -851,7 +851,7 @@ mod tests {
             workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
-                channel: collab_types::ChannelId::new(),
+                workspace: collab_types::WorkspaceId::new(),
                 previous_frame_digest: [0; 32],
                 epoch,
                 action: collab_types::MlsGovernanceAction::Genesis,

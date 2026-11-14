@@ -1,6 +1,6 @@
-//! `ChannelGroup` — one MLS group per channel.
+//! `ChannelGroup` — one MLS group per workspace.
 //!
-//! The runtime view a single device has of one channel's MLS group: it
+//! The runtime view a single device has of one workspace's MLS group: it
 //! owns the [`MlsGroup`] state, the [`MemberKey`] secret material this
 //! device participates with, and the underlying provider. From this view
 //! it encrypts outgoing payloads under the current epoch key, decrypts
@@ -8,21 +8,23 @@
 //!
 //! **Single-tenant**: one device, one membership. Two devices of the
 //! same human are two separate `ChannelGroup` instances; so are two
-//! channels. Sharing a provider between channels is not supported.
+//! workspaces. Sharing a provider between workspaces is not supported.
 //!
 //! ## Wire shapes
 //!
 //! All output bytes are TLS-CODEC-serialised `MlsMessageOut` envelopes.
 //! The broker routes them; this crate stamps no metadata over them — the
 //! companion `EncryptionMetadata` field on `collab_types::SignedOp`
-//! names the channel + epoch so the receiver picks the right
+//! names the workspace + epoch so the receiver picks the right
 //! `ChannelGroup` before calling [`ChannelGroup::decrypt`].
 
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
 use openmls_traits::storage::StorageProvider as _;
 
-use collab_types::{ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme};
+use collab_types::{
+    ArtifactId, ContentRetention, EncryptionMetadata, EncryptionScheme, WorkspaceId,
+};
 use tilo_seal::SymmetricKey;
 use zeroize::Zeroizing;
 
@@ -75,15 +77,15 @@ pub(crate) struct WelcomeParties {
     pub(crate) members: Vec<Vec<u8>>,
 }
 
-/// One device's view of one channel's MLS group.
+/// One device's view of one workspace's MLS group.
 ///
 /// Holds `MemberKey` by value (move-in on `create`/`process_welcome`) —
 /// the secret material in the member is what makes the group state
 /// usable, so separating them would invite "wrong signer for this group" bugs.
 pub struct ChannelGroup {
-    /// The Tilo channel this group represents, so callers can route incoming
-    /// ops via [`channel_id`](Self::channel_id) without a side table.
-    pub(crate) channel_id: ChannelId,
+    /// The Tilo workspace this group represents, so callers can route incoming
+    /// ops via [`workspace`](Self::workspace) without a side table.
+    pub(crate) workspace: WorkspaceId,
     /// Secret material + provider — the group state lives in
     /// `member.provider`; do not allocate a second provider.
     pub(crate) member: MemberKey,
@@ -98,7 +100,7 @@ pub struct ChannelGroup {
 /// `MlsGroupCreateConfig` toggles always on: `use_ratchet_tree_extension(true)`
 /// makes every Welcome carry the ratchet tree inline, so a joiner needs
 /// no out-of-band tree — simpler, and the size penalty is small at
-/// human-scale channel sizes.
+/// human-scale workspace sizes.
 ///
 /// Commits travel as public messages: a frame already names the devices a
 /// commit adds and removes in the clear, and every receiver must be able to
@@ -121,7 +123,7 @@ fn group_join_config() -> MlsGroupJoinConfig {
 }
 
 impl ChannelGroup {
-    /// Bootstrap a one-member channel. `owner` becomes the sole member; its
+    /// Bootstrap a one-member workspace. `owner` becomes the sole member; its
     /// `MemberKey`'s provider takes ownership of the group state. The
     /// returned `ChannelGroup` is usable on its own — further members via
     /// [`add_member`](Self::add_member).
@@ -129,7 +131,7 @@ impl ChannelGroup {
     /// # Errors
     ///
     /// Returns [`Error::OpenMls`] if the underlying `MlsGroup::new` call fails.
-    pub fn create(channel_id: ChannelId, owner: MemberKey) -> Result<Self> {
+    pub fn create(workspace: WorkspaceId, owner: MemberKey) -> Result<Self> {
         let group = MlsGroup::new(
             &owner.provider,
             &owner.signer,
@@ -137,10 +139,10 @@ impl ChannelGroup {
             owner.credential_with_key(),
         )
         .map_err(Error::openmls)?;
-        Self::created(channel_id, owner, group)
+        Self::created(workspace, owner, group)
     }
 
-    /// [`Self::create`] for the group a channel's genesis frame founds: the
+    /// [`Self::create`] for the group a workspace's genesis frame founds: the
     /// group is named after the genesis' digest, so every member, a joiner
     /// that never saw that frame included, knows which genesis its group
     /// grew from ([`Self::genesis`]).
@@ -149,7 +151,7 @@ impl ChannelGroup {
     ///
     /// As [`Self::create`].
     pub(crate) fn found(
-        channel_id: ChannelId,
+        workspace: WorkspaceId,
         owner: MemberKey,
         genesis: [u8; 32],
     ) -> Result<Self> {
@@ -161,7 +163,7 @@ impl ChannelGroup {
             owner.credential_with_key(),
         )
         .map_err(Error::openmls)?;
-        Self::created(channel_id, owner, group)
+        Self::created(workspace, owner, group)
     }
 
     /// The digest of the genesis frame this group was founded by, as every
@@ -171,9 +173,9 @@ impl ChannelGroup {
         self.group.group_id().as_slice().try_into().ok()
     }
 
-    fn created(channel_id: ChannelId, owner: MemberKey, group: MlsGroup) -> Result<Self> {
+    fn created(workspace: WorkspaceId, owner: MemberKey, group: MlsGroup) -> Result<Self> {
         let mut created = Self {
-            channel_id,
+            workspace,
             member: owner,
             group,
             keyring: ContentKeyring::new(),
@@ -189,7 +191,10 @@ impl ChannelGroup {
         if !self.group.is_active() {
             return Ok(());
         }
-        let key = self.export_key(CONTENT_KEY_EXPORTER_LABEL, self.channel_id.0.as_bytes())?;
+        let key = self.export_key(
+            CONTENT_KEY_EXPORTER_LABEL,
+            self.workspace.as_uuid().as_bytes(),
+        )?;
         self.keyring.insert(self.epoch(), key)
     }
 
@@ -208,7 +213,7 @@ impl ChannelGroup {
     }
 
     fn history_transport_context(&self, epoch: u64) -> [u8; 24] {
-        crate::content::history_record(self.channel_id, epoch)
+        crate::content::history_record(self.workspace, epoch)
     }
 
     /// Every content key this member holds.
@@ -233,13 +238,8 @@ impl ChannelGroup {
         if !self.group.is_active() {
             return Err(Error::MissingContentKey(self.epoch()));
         }
-        self.keyring.seal(
-            self.channel_id,
-            self.epoch(),
-            artifact,
-            retention,
-            plaintext,
-        )
+        self.keyring
+            .seal(self.workspace, self.epoch(), artifact, retention, plaintext)
     }
 
     /// Open an op payload of any supported encryption scheme: version 2
@@ -257,13 +257,10 @@ impl ChannelGroup {
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        if metadata.channel != self.channel_id {
-            return Err(Error::InvalidState("payload names another channel".into()));
-        }
         match metadata.scheme {
             EncryptionScheme::ContentKey { .. } => {
                 self.keyring
-                    .open(self.channel_id, artifact, metadata, payload)
+                    .open(self.workspace, artifact, metadata, payload)
             }
             EncryptionScheme::MlsApplication => {
                 if metadata.epoch > self.epoch() {
@@ -283,7 +280,7 @@ impl ChannelGroup {
             HISTORY_TRANSPORT_EXPORTER_LABEL,
             &self.history_transport_context(epoch),
         )?;
-        KeyHistory::seal(self.channel_id, epoch, &transport, &self.keyring)?.to_bytes()
+        KeyHistory::seal(self.workspace, epoch, &transport, &self.keyring)?.to_bytes()
     }
 
     /// Import a key history sealed for the current epoch (from
@@ -306,13 +303,13 @@ impl ChannelGroup {
             HISTORY_TRANSPORT_EXPORTER_LABEL,
             &self.history_transport_context(history.epoch),
         )?;
-        let received = history.open(self.channel_id, &transport)?;
+        let received = history.open(self.workspace, &transport)?;
         self.keyring.merge(&received)
     }
 
-    /// The channel this group encrypts for.
-    pub fn channel_id(&self) -> ChannelId {
-        self.channel_id
+    /// The workspace this group encrypts for.
+    pub fn workspace(&self) -> WorkspaceId {
+        self.workspace
     }
 
     /// The MLS epoch counter, mirrored into the wire
@@ -363,7 +360,7 @@ impl ChannelGroup {
             .find_map(|(leaf, member)| (member == identity).then_some(leaf))
     }
 
-    /// What an application endpoint needs to seal and open this channel's
+    /// What an application endpoint needs to seal and open this workspace's
     /// content: the current epoch and every content key held. It carries
     /// none of the MLS signing, HPKE or ratchet secrets, so handing it to an
     /// app process never lets that process change membership.
@@ -376,7 +373,7 @@ impl ChannelGroup {
             return Err(Error::MissingContentKey(self.epoch()));
         }
         Ok(crate::ChannelContentKeys::new(
-            self.channel_id,
+            self.workspace,
             self.epoch(),
             self.keyring.clone(),
         ))
@@ -467,8 +464,8 @@ impl ChannelGroup {
         // epoch secret still changes, and joiners get the key history from
         // the committer anyway. A path is encrypted to the resolution of every
         // copath node, which grows with each member added without one, so
-        // in a busy channel it made each commit, and every member's work to
-        // apply it, grow with the channel.
+        // in a busy workspace it made each commit, and every member's work to
+        // apply it, grow with the workspace.
         let (commit_msg, welcome_msg, _gi) = self
             .group
             .add_members_without_update(&self.member.provider, &self.member.signer, key_packages)
@@ -506,7 +503,7 @@ impl ChannelGroup {
     /// frame, then merges it ([`Self::merge_pending_transaction`]) or drops
     /// it ([`Self::discard_pending_transaction`]). A removal needs an update
     /// path (RFC 9420, 12.4); an add alone does not, which keeps each commit
-    /// in a busy channel from growing with the members added before. A
+    /// in a busy workspace from growing with the members added before. A
     /// commit that only hands every member `history` (keys of a branch that
     /// lost) changes no one and carries an update path instead.
     pub(crate) fn stage_commit(
@@ -661,7 +658,10 @@ impl ChannelGroup {
         let mut keyring = self.keyring.clone();
         keyring.insert(
             epoch,
-            self.pending_export(CONTENT_KEY_EXPORTER_LABEL, self.channel_id.0.as_bytes())?,
+            self.pending_export(
+                CONTENT_KEY_EXPORTER_LABEL,
+                self.workspace.as_uuid().as_bytes(),
+            )?,
         )?;
         keyring.merge(extra)?;
         self.pending_bundle(epoch, &keyring)
@@ -674,7 +674,7 @@ impl ChannelGroup {
             HISTORY_TRANSPORT_EXPORTER_LABEL,
             &self.history_transport_context(epoch),
         )?;
-        KeyHistory::seal(self.channel_id, epoch, &transport, keyring)?.to_bytes()
+        KeyHistory::seal(self.workspace, epoch, &transport, keyring)?.to_bytes()
     }
 
     fn pending_export(&self, label: &str, context: &[u8]) -> Result<SymmetricKey> {
@@ -769,11 +769,11 @@ impl ChannelGroup {
     /// other than a Welcome; or [`Error::OpenMls`] if staging or joining
     /// the group from the Welcome fails.
     pub fn process_welcome(
-        channel_id: ChannelId,
+        workspace: WorkspaceId,
         welcome_bytes: &[u8],
         member: MemberKey,
     ) -> Result<Self> {
-        Self::join_checked(channel_id, welcome_bytes, member, |_| Ok(()))
+        Self::join_checked(workspace, welcome_bytes, member, |_| Ok(()))
     }
 
     /// [`Self::process_welcome`], with `check` judging who the Welcome says
@@ -781,7 +781,7 @@ impl ChannelGroup {
     /// taken: an `Err` from it refuses the Welcome. Reading them is a look at
     /// each leaf's credential, no signature work.
     pub(crate) fn join_checked(
-        channel_id: ChannelId,
+        workspace: WorkspaceId,
         welcome_bytes: &[u8],
         member: MemberKey,
         check: impl FnOnce(&WelcomeParties) -> Result<()>,
@@ -852,7 +852,7 @@ impl ChannelGroup {
         // with a different build is on the wire.
         debug_assert_eq!(group.ciphersuite(), CIPHERSUITE);
         let mut joined = Self {
-            channel_id,
+            workspace,
             member,
             group,
             keyring: ContentKeyring::new(),
@@ -893,24 +893,24 @@ impl ChannelGroup {
     ///
     /// As [`Self::process_welcome`] and [`Self::import_key_history`].
     pub fn process_welcome_with_history(
-        channel_id: ChannelId,
+        workspace: WorkspaceId,
         welcome_bytes: &[u8],
         key_history: &[u8],
         member: MemberKey,
     ) -> Result<Self> {
-        Self::join_with_history_checked(channel_id, welcome_bytes, key_history, member, |_| Ok(()))
+        Self::join_with_history_checked(workspace, welcome_bytes, key_history, member, |_| Ok(()))
     }
 
     /// [`Self::process_welcome_with_history`], judged by `check` as
     /// [`Self::join_checked`] judges.
     pub(crate) fn join_with_history_checked(
-        channel_id: ChannelId,
+        workspace: WorkspaceId,
         welcome_bytes: &[u8],
         key_history: &[u8],
         member: MemberKey,
         check: impl FnOnce(&WelcomeParties) -> Result<()>,
     ) -> Result<Self> {
-        let mut joined = Self::join_checked(channel_id, welcome_bytes, member, check)?;
+        let mut joined = Self::join_checked(workspace, welcome_bytes, member, check)?;
         joined.import_key_history(key_history)?;
         Ok(joined)
     }
@@ -918,7 +918,7 @@ impl ChannelGroup {
     /// Encrypt a payload under the current epoch key, returning
     /// TLS-serialised `MlsMessageOut` bytes. The caller wraps these in a
     /// `SignedOp.payload` with `encryption: Some(EncryptionMetadata { epoch:
-    /// self.epoch(), channel: self.channel_id() })`.
+    /// self.epoch(), workspace: self.workspace() })`.
     ///
     /// Two signatures are involved and are not interchangeable: the inner
     /// MLS handshake-level framing is signed by the current member's
@@ -1065,7 +1065,7 @@ impl std::fmt::Debug for ChannelGroup {
         // this can't show every field — `finish_non_exhaustive` says so
         // explicitly instead of silently pretending the summary is complete.
         f.debug_struct("ChannelGroup")
-            .field("channel_id", &self.channel_id)
+            .field("workspace", &self.workspace)
             .field("member", &self.member)
             .field("epoch", &self.epoch())
             .field("member_count", &self.member_count())

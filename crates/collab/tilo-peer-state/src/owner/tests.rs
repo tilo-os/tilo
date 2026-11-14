@@ -756,7 +756,7 @@ fn rotated_channel() -> (
     channel_crypto::ChannelContentKeys,
     channel_crypto::ChannelContentKeys,
 ) {
-    let channel = collab_types::document_channel_id(APP, WORKSPACE, "");
+    let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
     let mut group = channel_crypto::ChannelGroup::create(
         channel,
         channel_crypto::MemberKey::generate("governor").unwrap(),
@@ -885,10 +885,7 @@ fn native_sealed_checkpoint_is_classified_like_browser() {
         "a cleartext snapshot stays the governor's checkpoint"
     );
     if let NeighbourMsg::AppDocument { envelope, .. } = &mut single_use {
-        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
-            0,
-            collab_types::document_channel_id(APP, WORKSPACE, ""),
-        ));
+        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(0));
     }
     assert!(
         crate::owner::publication::metadata(&single_use).is_err(),

@@ -175,20 +175,16 @@ impl Asked {
 }
 
 /// The media keys of `device`'s own streams in `workspace`, as `keys` (this
-/// host's channel keys) derive them at the media channel's current epoch,
-/// sealed to `device`.
+/// host's workspace keys) derive them at the current epoch, sealed to
+/// `device`.
 async fn lend(
     keys: &dyn tilo_room_host::workspaces::ChannelKeys,
     workspace: &str,
     device: [u8; 32],
 ) -> Result<serde_json::Value, ActionHostError> {
     let unavailable = |reason: String| ActionHostError::Unavailable { reason };
-    let route = collab_types::ChannelRoute::new(
-        collab_types::scope::MEDIA_APP,
-        collab_types::scope::WORKSPACE_RECORD,
-    );
     let content = keys
-        .channel_keys(workspace, &route, false)
+        .channel_keys(workspace, false)
         .await
         .ok_or_else(|| unavailable("this host takes no part in the workspace's media".to_owned()))?
         .map_err(|error| {
@@ -235,28 +231,19 @@ mod tests {
 
     const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
-    /// A host holding the workspace's media channel, and no other.
+    /// A host holding the workspace's keys, and no other's.
     struct Holding(ChannelContentKeys);
 
     impl ChannelKeys for Holding {
-        fn channel_keys<'a>(
-            &'a self,
-            workspace: &'a str,
-            route: &'a collab_types::ChannelRoute,
-            _: bool,
-        ) -> ChannelKeysAnswerFuture<'a> {
-            let media = collab_types::ChannelRoute::new(
-                collab_types::scope::MEDIA_APP,
-                collab_types::scope::WORKSPACE_RECORD,
-            );
-            let answer = (workspace == WORKSPACE && *route == media).then(|| Ok(self.0.clone()));
+        fn channel_keys<'a>(&'a self, workspace: &'a str, _: bool) -> ChannelKeysAnswerFuture<'a> {
+            let answer = (workspace == WORKSPACE).then(|| Ok(self.0.clone()));
             Box::pin(std::future::ready(answer))
         }
     }
 
     fn media() -> ChannelContentKeys {
-        let channel = collab_types::scope::Scope::workspace(WORKSPACE).channel_id();
-        ChannelGroup::create(channel, MemberKey::generate("host").unwrap())
+        let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
+        ChannelGroup::create(workspace, MemberKey::generate("host").unwrap())
             .unwrap()
             .content_keys()
             .unwrap()

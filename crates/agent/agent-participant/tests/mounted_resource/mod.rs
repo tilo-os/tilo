@@ -362,14 +362,16 @@ pub async fn run() {
             .retained(workspace.workspace_id)
             .await
             .unwrap();
-        let expected =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
-        assert!(retained.iter().any(|body| body.author == publisher.cert.device_public_key &&
-            matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
+        assert!(
+            retained
+                .iter()
+                .any(|body| body.author == publisher.cert.device_public_key
+                    && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
                 Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
                 if app_id == route.app_id && record_id == route.record &&
-                    envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected))),
-            "the compiled cold journey requires the foreign writer's actual retained ciphertext");
+                    envelope.encryption.as_ref().is_some())),
+            "the compiled cold journey requires the foreign writer's actual retained ciphertext"
+        );
         native.peer.close();
         hosted.agents.shutdown();
         drop(hosted.web);

@@ -1,8 +1,8 @@
-//! What an application endpoint holds for one channel: content keys only.
+//! What an application endpoint holds for one workspace: content keys only.
 //!
 //! A device keeps its MLS member state (signer, HPKE and ratchet secrets)
 //! in its trusted session service. An application process that edits the
-//! channel's document gets a [`ChannelContentKeys`]: the current epoch and
+//! workspace's document gets a [`ChannelContentKeys`]: the current epoch and
 //! every content key the device holds. That is enough to seal new content
 //! and open history, and not enough to create commits, admit or remove
 //! anyone, or answer a Welcome. When the device's group moves to a new
@@ -11,14 +11,16 @@
 //! The same keys derive the per-stream keys a call's media frames are
 //! sealed with ([`ChannelContentKeys::media_key`]), so a call needs no key
 //! exchange of its own and no key server. A device that may publish to the
-//! channel but may hold none of its content keys is handed one sender's
+//! workspace but may hold none of its content keys is handed one sender's
 //! media keys for exactly the streams it publishes
 //! ([`ChannelContentKeys::sender_media_keys`]), sealed to that device's
 //! identity key.
 
 use std::collections::BTreeMap;
 
-use collab_types::{ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme};
+use collab_types::{
+    ArtifactId, ContentRetention, EncryptionMetadata, EncryptionScheme, WorkspaceId,
+};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Label, PublicKey, SealedBox, SecretKey, SymmetricKey};
@@ -49,10 +51,10 @@ const MEDIA_KEY_DOMAIN: &[u8] = b"tilo-call-media-v1";
 /// Domain of the secret record content keys derive from.
 const RECORD_CONTENT_DOMAIN: &[u8] = b"tilo-record-content-v1";
 
-/// Content keys of one channel, as handed to an application endpoint.
+/// Content keys of one workspace, as handed to an application endpoint.
 #[derive(Clone)]
 pub struct ChannelContentKeys {
-    channel: ChannelId,
+    workspace: WorkspaceId,
     epoch: u64,
     keyring: ContentKeyring,
 }
@@ -61,51 +63,22 @@ pub struct ChannelContentKeys {
 #[serde(deny_unknown_fields)]
 struct Wire {
     version: u8,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     epoch: u64,
     keys: Vec<(u64, [u8; 32])>,
 }
 
 impl ChannelContentKeys {
-    pub(crate) fn new(channel: ChannelId, epoch: u64, keyring: ContentKeyring) -> Self {
+    pub(crate) fn new(workspace: WorkspaceId, epoch: u64, keyring: ContentKeyring) -> Self {
         Self {
-            channel,
+            workspace,
             epoch,
             keyring,
         }
     }
 
-    /// These keys for `unit`, a storage unit of the scope they came from:
-    /// the seal context names the unit while the keys stay the scope's, so
-    /// content is bound to its own record and artifact and a membership
-    /// change costs the scope one commit, not the unit one.
-    #[must_use]
-    pub fn for_unit(&self, unit: ChannelId) -> Self {
-        Self {
-            channel: unit,
-            epoch: self.epoch,
-            keyring: self.keyring.clone(),
-        }
-    }
-
-    /// Keep the keys `earlier`, an earlier group of the same channel, left
-    /// behind: content it sealed opens still, under whichever key its epoch
-    /// names, while the current epoch's key keeps sealing. A unit that moved
-    /// from its own group to the key scope that carries it reads its whole
-    /// history from one keyring.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidState`] when the merged keyring would be full.
-    pub fn with_earlier(mut self, earlier: &Self) -> Result<Self> {
-        if earlier.channel == self.channel {
-            self.keyring.merge(&earlier.keyring)?;
-        }
-        Ok(self)
-    }
-
-    pub fn channel_id(&self) -> ChannelId {
-        self.channel
+    pub fn workspace(&self) -> WorkspaceId {
+        self.workspace
     }
 
     pub fn epoch(&self) -> u64 {
@@ -129,7 +102,7 @@ impl ChannelContentKeys {
         plaintext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>)> {
         self.keyring
-            .seal(self.channel, self.epoch, artifact, retention, plaintext)
+            .seal(self.workspace, self.epoch, artifact, retention, plaintext)
     }
 
     /// Open a content-key payload of any epoch whose key is held.
@@ -138,7 +111,7 @@ impl ChannelContentKeys {
     ///
     /// [`Error::MissingContentKey`] for an epoch not held,
     /// [`Error::ContentCrypto`] for a payload that fails to authenticate, and
-    /// [`Error::InvalidState`] for another channel or a single-use MLS
+    /// [`Error::InvalidState`] for another workspace or a single-use MLS
     /// application message, which an endpoint without MLS state cannot open.
     pub fn open_content(
         &self,
@@ -146,24 +119,22 @@ impl ChannelContentKeys {
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        if metadata.channel != self.channel {
-            return Err(Error::InvalidState("payload names another channel".into()));
-        }
         if metadata.scheme == EncryptionScheme::MlsApplication {
             return Err(Error::InvalidState(
                 "MLS application messages open only at the device's MLS member".into(),
             ));
         }
-        self.keyring.open(self.channel, artifact, metadata, payload)
+        self.keyring
+            .open(self.workspace, artifact, metadata, payload)
     }
 
-    /// Open a new write's payload: only one sealed under the channel's
-    /// current epoch. A device removed from the channel still holds older
+    /// Open a new write's payload: only one sealed under the workspace's
+    /// current epoch. A device removed from the workspace still holds older
     /// epochs' keys, so anything else is refused, never opened.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidState`] for another channel or epoch, and as
+    /// [`Error::InvalidState`] for another workspace or epoch, and as
     /// [`Self::open_content`].
     pub fn open_current_content(
         &self,
@@ -173,7 +144,7 @@ impl ChannelContentKeys {
     ) -> Result<Zeroizing<Vec<u8>>> {
         if metadata.epoch != self.epoch {
             return Err(Error::InvalidState(
-                "payload is not sealed under the channel's current epoch".into(),
+                "payload is not sealed under the workspace's current epoch".into(),
             ));
         }
         self.open_content(artifact, metadata, payload)
@@ -181,9 +152,8 @@ impl ChannelContentKeys {
 
     /// The secret the content a record references is sealed under now: a
     /// BLAKE3 keyed hash, under the current epoch's content key, of
-    /// `"tilo-record-content-v1"`. The channel is left out, so every record
-    /// one key scope carries shares it, and the same bytes stored for two
-    /// of them are one item (`tilo_content::ContentStore::put_reader`).
+    /// `"tilo-record-content-v1"`. Every record of the workspace shares it, so
+    /// the same bytes stored for two of them are one item (`tilo_content::ContentStore::put_reader`).
     ///
     /// Holders of the epoch's key derive it, and nobody else: a device
     /// removed before the epoch derives nothing.
@@ -204,7 +174,7 @@ impl ChannelContentKeys {
 
     /// The key that seals one device's frames of one media stream under
     /// `epoch`: a BLAKE3 keyed hash, under that epoch's content key, of
-    /// `"tilo-call-media-v1" ‖ channel ‖ epoch ‖ sender ‖ stream`.
+    /// `"tilo-call-media-v1" ‖ workspace ‖ epoch ‖ sender ‖ stream`.
     ///
     /// `sender` is the sending device's public key and `stream` the two
     /// bytes naming the lane and, within it, the source (a call lane's own
@@ -212,9 +182,9 @@ impl ChannelContentKeys {
     /// the epoch's content key derives the same value, which is why a member
     /// that joined later opens frames a lagging sender still seals under an
     /// earlier epoch, exactly as it reads that epoch's content. The sender,
-    /// the stream and the channel are hashed in, so a frame cannot be
+    /// the stream and the workspace are hashed in, so a frame cannot be
     /// replayed as another device's, on another stream or in another
-    /// channel's call. A device removed before `epoch` holds no key for it
+    /// workspace's call. A device removed before `epoch` holds no key for it
     /// and derives nothing.
     ///
     /// # Errors
@@ -233,7 +203,7 @@ impl ChannelContentKeys {
             .ok_or(Error::MissingContentKey(epoch))?;
         let mut hash = blake3::Hasher::new_keyed(content.expose_secret());
         hash.update(MEDIA_KEY_DOMAIN);
-        hash.update(self.channel.0.as_bytes());
+        hash.update(self.workspace.as_uuid().as_bytes());
         hash.update(&epoch.to_le_bytes());
         hash.update(&sender);
         hash.update(&stream);
@@ -241,7 +211,7 @@ impl ChannelContentKeys {
     }
 
     /// The media keys `sender` seals the `streams` given with at `epoch`, and
-    /// no others: what a device that may publish to this channel but may hold
+    /// no others: what a device that may publish to this workspace but may hold
     /// none of its content keys is handed.
     ///
     /// The keys are exactly the ones [`Self::media_key`] gives for those
@@ -266,7 +236,7 @@ impl ChannelContentKeys {
             return Err(Error::InvalidState("no media streams were named".into()));
         }
         Ok(SenderMediaKeys {
-            channel: self.channel,
+            workspace: self.workspace,
             epoch,
             sender,
             keys,
@@ -281,7 +251,7 @@ impl ChannelContentKeys {
     pub fn to_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
         let mut wire = Wire {
             version: WIRE_VERSION,
-            channel: self.channel,
+            workspace: self.workspace,
             epoch: self.epoch,
             keys: self.keyring.to_wire(),
         };
@@ -311,18 +281,20 @@ impl ChannelContentKeys {
                 key.zeroize();
             }
             return Err(Error::Serialization(
-                "malformed channel content keys".into(),
+                "malformed workspace content keys".into(),
             ));
         }
         if keys.len() > crate::content::MAX_HISTORY_KEYS {
-            return Err(Error::InvalidState("too many channel content keys".into()));
+            return Err(Error::InvalidState(
+                "too many workspace content keys".into(),
+            ));
         }
         let keyring = ContentKeyring::from_wire(keys)?;
         if keyring.get(wire.epoch).is_none() {
             return Err(Error::MissingContentKey(wire.epoch));
         }
         Ok(Self {
-            channel: wire.channel,
+            workspace: wire.workspace,
             epoch: wire.epoch,
             keyring,
         })
@@ -332,24 +304,24 @@ impl ChannelContentKeys {
 impl std::fmt::Debug for ChannelContentKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChannelContentKeys")
-            .field("channel", &self.channel)
+            .field("workspace", &self.workspace)
             .field("epoch", &self.epoch)
             .field("keyring", &self.keyring)
             .finish()
     }
 }
 
-/// One sender's media keys at one epoch of one channel: the keys a device
+/// One sender's media keys at one epoch of one workspace: the keys a device
 /// seals the streams it publishes with, derived by a member device that holds
-/// the channel's content keys and handed to that sender alone.
+/// the workspace's content keys and handed to that sender alone.
 ///
-/// It is what a device that may take part in a channel without holding any of
+/// It is what a device that may take part in a workspace without holding any of
 /// its content keys — a hosted machine confined to its own record — publishes
 /// under. It opens nothing else: not another sender's frames, not another
 /// epoch's, and no content at all.
 #[derive(Clone)]
 pub struct SenderMediaKeys {
-    channel: ChannelId,
+    workspace: WorkspaceId,
     epoch: u64,
     sender: [u8; 32],
     keys: BTreeMap<[u8; MEDIA_STREAM_TAG_LEN], SymmetricKey>,
@@ -359,7 +331,7 @@ pub struct SenderMediaKeys {
 #[serde(deny_unknown_fields)]
 struct SenderMediaWire {
     version: u8,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     epoch: u64,
     sender: [u8; 32],
     keys: Vec<([u8; MEDIA_STREAM_TAG_LEN], [u8; 32])>,
@@ -369,7 +341,7 @@ struct SenderMediaWire {
 #[serde(deny_unknown_fields)]
 struct SenderMediaBoxWire {
     version: u8,
-    channel: ChannelId,
+    workspace: WorkspaceId,
     epoch: u64,
     sender: [u8; 32],
     /// `tilo_seal::SealedBox` wire bytes.
@@ -377,8 +349,8 @@ struct SenderMediaBoxWire {
 }
 
 impl SenderMediaKeys {
-    pub fn channel_id(&self) -> ChannelId {
-        self.channel
+    pub fn workspace(&self) -> WorkspaceId {
+        self.workspace
     }
 
     pub fn epoch(&self) -> u64 {
@@ -432,7 +404,7 @@ impl SenderMediaKeys {
     pub fn to_bytes(&self) -> Result<Zeroizing<Vec<u8>>> {
         let mut wire = SenderMediaWire {
             version: WIRE_VERSION,
-            channel: self.channel,
+            workspace: self.workspace,
             epoch: self.epoch,
             sender: self.sender,
             keys: self
@@ -481,7 +453,7 @@ impl SenderMediaKeys {
             }
         }
         Ok(Self {
-            channel: wire.channel,
+            workspace: wire.workspace,
             epoch: wire.epoch,
             sender: wire.sender,
             keys: decoded,
@@ -490,9 +462,9 @@ impl SenderMediaKeys {
 
     /// Seal these keys to `device`, a device's Ed25519 identity key.
     ///
-    /// The channel, the epoch and the sender are authenticated as associated
+    /// The workspace, the epoch and the sender are authenticated as associated
     /// data under a label of their own, so a box sealed here opens as no other
-    /// sender's media keys, at no other epoch, in no other channel, and for no
+    /// sender's media keys, at no other epoch, in no other workspace, and for no
     /// other purpose.
     ///
     /// # Errors
@@ -506,13 +478,13 @@ impl SenderMediaKeys {
         let sealed = tilo_seal::hpke::seal(
             &recipient,
             Label::SenderMediaKeys,
-            &box_aad(self.channel, self.epoch, &self.sender),
+            &box_aad(self.workspace, self.epoch, &self.sender),
             &plaintext,
         )
         .map_err(Error::ContentCrypto)?;
         postcard::to_allocvec(&SenderMediaBoxWire {
             version: SENDER_MEDIA_BOX_VERSION,
-            channel: self.channel,
+            workspace: self.workspace,
             epoch: self.epoch,
             sender: self.sender,
             sealed: sealed.to_bytes(),
@@ -524,7 +496,7 @@ impl SenderMediaKeys {
     /// Open a box [`Self::seal_to`] produced for `device`, accepting only
     /// keys for `sender`: this device's own.
     ///
-    /// The channel and the epoch come from the box, which is what a device
+    /// The workspace and the epoch come from the box, which is what a device
     /// that holds no content key cannot know by itself; the sender does not,
     /// because a box that spoke for another device would let this one publish
     /// as it.
@@ -533,7 +505,7 @@ impl SenderMediaKeys {
     ///
     /// [`Error::Serialization`] for malformed bytes, and
     /// [`Error::ContentCrypto`] for a box sealed to another device or for
-    /// another sender, epoch or channel.
+    /// another sender, epoch or workspace.
     pub fn open_with(device: &SigningKey, sender: [u8; 32], sealed: &[u8]) -> Result<Self> {
         let (wire, rest) = postcard::take_from_bytes::<SenderMediaBoxWire>(sealed)
             .map_err(|error| Error::Serialization(error.to_string()))?;
@@ -548,14 +520,17 @@ impl SenderMediaKeys {
         let opened = tilo_seal::hpke::open(
             &SecretKey::from_bytes(device.to_scalar_bytes()),
             Label::SenderMediaKeys,
-            &box_aad(wire.channel, wire.epoch, &wire.sender),
+            &box_aad(wire.workspace, wire.epoch, &wire.sender),
             &SealedBox::from_bytes(&wire.sealed).map_err(Error::ContentCrypto)?,
         )
         .map_err(Error::ContentCrypto)?;
         let keys = Self::from_bytes(&opened)?;
-        if keys.channel != wire.channel || keys.epoch != wire.epoch || keys.sender != wire.sender {
+        if keys.workspace != wire.workspace
+            || keys.epoch != wire.epoch
+            || keys.sender != wire.sender
+        {
             return Err(Error::InvalidState(
-                "the sealed media keys name another channel, epoch or sender".into(),
+                "the sealed media keys name another workspace, epoch or sender".into(),
             ));
         }
         Ok(keys)
@@ -565,7 +540,7 @@ impl SenderMediaKeys {
 impl std::fmt::Debug for SenderMediaKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SenderMediaKeys")
-            .field("channel", &self.channel)
+            .field("workspace", &self.workspace)
             .field("epoch", &self.epoch)
             .field("sender", &hex::encode(self.sender))
             .field("streams", &self.keys.len())
@@ -574,9 +549,9 @@ impl std::fmt::Debug for SenderMediaKeys {
 }
 
 /// The associated data a box of one sender's media keys is sealed with: the
-/// channel, the epoch and the sender, so a box for one is never opened as
+/// workspace, the epoch and the sender, so a box for one is never opened as
 /// another's.
-fn box_aad(channel: ChannelId, epoch: u64, sender: &[u8; 32]) -> Vec<u8> {
+fn box_aad(workspace: WorkspaceId, epoch: u64, sender: &[u8; 32]) -> Vec<u8> {
     let mut aad = Vec::with_capacity(
         SENDER_MEDIA_BOX_DOMAIN
             .len()
@@ -585,7 +560,7 @@ fn box_aad(channel: ChannelId, epoch: u64, sender: &[u8; 32]) -> Vec<u8> {
             .saturating_add(32),
     );
     aad.extend_from_slice(SENDER_MEDIA_BOX_DOMAIN);
-    aad.extend_from_slice(channel.0.as_bytes());
+    aad.extend_from_slice(workspace.as_uuid().as_bytes());
     aad.extend_from_slice(&epoch.to_le_bytes());
     aad.extend_from_slice(sender);
     aad
@@ -609,8 +584,8 @@ mod tests {
 
     #[test]
     fn endpoint_keys_round_trip_and_open_what_the_group_sealed() {
-        let channel = ChannelId::new();
-        let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+        let workspace = WorkspaceId::new();
+        let group = ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap()).unwrap();
         let artifact = ArtifactId::new();
         let (metadata, sealed) = group
             .seal_content(artifact, ContentRetention::Delta, b"edit")
@@ -642,98 +617,25 @@ mod tests {
         assert!(!format!("{decoded:?}").contains("key:"));
     }
 
-    /// A scope's keys carry many units: each is named for its own channel, so a
-    /// payload stays bound to the record it was written for, and a unit's
-    /// earlier group's keys keep opening what they sealed.
     #[test]
-    fn a_scopes_keys_serve_each_unit_and_keep_its_earlier_group_readable() {
-        let scope = ChannelId::new();
-        let group = ChannelGroup::create(scope, MemberKey::generate("owner").unwrap()).unwrap();
-        let scope_keys = group.content_keys().unwrap();
-        let (unit, other) = (ChannelId::new(), ChannelId::new());
-        let unit_keys = scope_keys.for_unit(unit);
-        assert_eq!(unit_keys.channel_id(), unit);
-        assert_eq!(unit_keys.epoch(), scope_keys.epoch());
-
-        // Sealed for the unit, opened by another endpoint of the scope once it
-        // is handed the unit's keys.
-        let artifact = ArtifactId::new();
-        let (metadata, sealed) = unit_keys
-            .seal_content(artifact, ContentRetention::Delta, b"minutes")
-            .unwrap();
-        assert_eq!(metadata.channel, unit);
-        let elsewhere =
-            ChannelContentKeys::from_bytes(&scope_keys.for_unit(unit).to_bytes().unwrap()).unwrap();
-        assert_eq!(
-            elsewhere
-                .open_content(artifact, &metadata, &sealed)
-                .unwrap()
-                .as_slice(),
-            b"minutes"
-        );
-        assert!(
-            scope_keys
-                .for_unit(other)
-                .open_content(artifact, &metadata, &sealed)
-                .is_err(),
-            "another unit's keys refuse the payload"
-        );
-
-        // The unit's own group sealed before key scopes: its keys open what it
-        // sealed, merged behind the scope's.
-        let earlier_group =
-            ChannelGroup::create(unit, MemberKey::generate("owner").unwrap()).unwrap();
-        let earlier = earlier_group.content_keys().unwrap();
-        let (old_metadata, old_sealed) = earlier
-            .seal_content(artifact, ContentRetention::Delta, b"before scopes")
-            .unwrap();
-        let merged = unit_keys.with_earlier(&earlier).unwrap();
-        assert_eq!(merged.epoch(), scope_keys.epoch());
-        assert_eq!(
-            merged
-                .open_content(artifact, &old_metadata, &old_sealed)
-                .unwrap()
-                .as_slice(),
-            b"before scopes"
-        );
-        assert_eq!(
-            merged
-                .open_content(artifact, &metadata, &sealed)
-                .unwrap()
-                .as_slice(),
-            b"minutes"
-        );
-        // Keys of another channel are not merged: they would open nothing here.
-        assert!(matches!(
-            scope_keys.with_earlier(&earlier.for_unit(other)),
-            Ok(keys) if keys.channel_id() == scope
-        ));
-    }
-
-    #[test]
-    fn record_content_secret_is_the_scopes_for_every_unit_and_moves_with_the_epoch() {
-        let channel = ChannelId::new();
+    fn record_content_secret_is_the_workspaces_and_moves_with_the_epoch() {
+        let workspace = WorkspaceId::new();
         let mut group =
-            ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
-        let scope = group.content_keys().unwrap();
-        let secret = scope.record_content_secret().unwrap();
-        assert_eq!(
-            secret,
-            scope
-                .for_unit(ChannelId::new())
-                .record_content_secret()
-                .unwrap(),
-            "every record the scope carries shares it"
-        );
+            ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap()).unwrap();
+        let secret = group
+            .content_keys()
+            .unwrap()
+            .record_content_secret()
+            .unwrap();
         assert_ne!(
             secret,
-            ChannelGroup::create(ChannelId::new(), MemberKey::generate("other").unwrap())
+            ChannelGroup::create(WorkspaceId::new(), MemberKey::generate("other").unwrap())
                 .unwrap()
                 .content_keys()
                 .unwrap()
                 .record_content_secret()
                 .unwrap(),
-            "another scope has its own"
+            "another workspace has its own"
         );
         let joiner = MemberKey::generate("joiner").unwrap();
         group
@@ -750,21 +652,21 @@ mod tests {
         );
     }
 
-    /// One device's media keys are the channel's own for the streams it was
+    /// One device's media keys are the workspace's own for the streams it was
     /// handed, and nothing else at all: another stream, another sender or
     /// another epoch derives nothing, so what it publishes nobody else can
     /// claim.
     #[test]
-    fn sender_media_keys_are_the_channels_for_the_streams_handed_and_no_others() {
-        let channel = ChannelId::new();
-        let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+    fn sender_media_keys_are_the_workspaces_for_the_streams_handed_and_no_others() {
+        let workspace = WorkspaceId::new();
+        let group = ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap()).unwrap();
         let keys = group.content_keys().unwrap();
         let epoch = group.epoch();
         let sender = [7; 32];
         let handed = keys
             .sender_media_keys(epoch, sender, &[[0, 1], [2, 3]])
             .unwrap();
-        assert_eq!(handed.channel_id(), channel);
+        assert_eq!(handed.workspace(), workspace);
         assert_eq!(handed.epoch(), epoch);
         assert_eq!(handed.sender(), sender);
         assert_eq!(handed.streams().collect::<Vec<_>>(), vec![[0, 1], [2, 3]]);
@@ -791,11 +693,11 @@ mod tests {
 
     /// A device's keys travel sealed to its own identity key: another device's
     /// key opens nothing, and a box that speaks for another sender, epoch or
-    /// channel is refused however it was addressed.
+    /// workspace is refused however it was addressed.
     #[test]
     fn sender_media_keys_open_only_for_their_device_sender_and_epoch() {
-        let channel = ChannelId::new();
-        let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+        let workspace = WorkspaceId::new();
+        let group = ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap()).unwrap();
         let keys = group.content_keys().unwrap();
         let epoch = group.epoch();
         let device = SigningKey::from_bytes(&[9; 32]);
@@ -838,10 +740,10 @@ mod tests {
 
     #[test]
     fn media_keys_follow_the_epoch_sender_and_stream_and_need_the_epoch_key() {
-        let channel = ChannelId::new();
-        let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+        let workspace = WorkspaceId::new();
+        let group = ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap()).unwrap();
         let owner = group.content_keys().unwrap();
-        // Another endpoint of the same channel and epoch, keys and all.
+        // Another endpoint of the same workspace and epoch, keys and all.
         let elsewhere = ChannelContentKeys::from_bytes(&owner.to_bytes().unwrap()).unwrap();
         let epoch = group.epoch();
         let key = owner.media_key(epoch, [1; 32], [0, 0]).unwrap();
