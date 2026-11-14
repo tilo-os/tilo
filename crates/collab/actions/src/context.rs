@@ -610,7 +610,11 @@ mod wire {
         group: Option<WorkGroup>,
         #[serde(rename = "f", skip_serializing_if = "Vec::is_empty")]
         facets: Vec<ActionFacet>,
-        #[serde(rename = "by", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "by",
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "readable"
+        )]
         invoker: Option<ActionInvoker>,
         #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
         source_invocation: Option<crate::InvocationId>,
@@ -815,6 +819,18 @@ mod wire {
         T: Deserialize<'de>,
     {
         T::deserialize(deserializer).map(Some)
+    }
+
+    /// A field read as `None` when it does not parse, as [`Head`] reads it: an
+    /// invoker written in an older form leaves the rest of its entry (the
+    /// action, what it did and placed) readable.
+    fn readable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: serde::de::DeserializeOwned,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(serde_json::from_value(value).ok())
     }
 
     /// What a reader derives again, left out: a field edit's path that is
@@ -1757,6 +1773,16 @@ mod tests {
             });
             let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
             assert_eq!(read, entry);
+        }
+
+        phase an_invoker_written_in_an_older_form_keeps_the_rest_of_its_entry;
+        {
+            let context = ActionContext::for_resource("r", "k", "l");
+            let mut json: serde_json::Value =
+                serde_json::from_str(&written(&context.change_message().unwrap())).unwrap();
+            json["by"] = serde_json::json!({ "actor": "ada" });
+            let message = format!("{CHANGE_MESSAGE_PREFIX}{}", crate::compact::encode(&json));
+            assert_eq!(ActionContext::from_change_message(&message), Some(context));
         }
 
         phase defaults_are_not_written;
