@@ -1,16 +1,16 @@
-//! A window is shared with its workspace from its own menu. The row the desk offers, chosen as
+//! A window is shared with its workspace from its own menu. The row the shell offers, chosen as
 //! a person chooses it, is one more caller of the shares' own actions: what it says is what the
 //! shares' resource reads, and choosing it shares the window by its tab, or stops.
 
 use super::*;
 use crate::shell::state::WINDOW_MENU;
 
-/// The row that shares a window with its workspace, by the id the desk's menu gives it.
+/// The row that shares a window with its workspace, by the id the shell's menu gives it.
 const SHARE_ROW: &str = "window-share-with-workspace";
 /// The row that stops sharing it.
 pub(super) const STOP_ROW: &str = "window-stop-sharing-with-workspace";
 
-/// The rows of the menu of `tab` on `member` 's desk, as the session reads them once the menu is
+/// The rows of the menu of `tab` on `member` 's shell, as the session reads them once the menu is
 /// up where a person pressed for it.
 pub(super) fn menu_of(member: &mut Member, tab: u64) -> Vec<Value> {
     member
@@ -37,7 +37,7 @@ pub(super) fn label_of<'a>(menu: &'a [Value], id: &str) -> Option<&'a str> {
         .and_then(|row| row["label"].as_str())
 }
 
-/// Choose row `id` of the menu that is up on `member` 's desk. Whether the desk took it.
+/// Choose row `id` of the menu that is up on `member` 's shell. Whether the shell took it.
 fn choose(member: &mut Member, id: &str) -> bool {
     member
         .session
@@ -67,7 +67,7 @@ fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
     let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x65).as_bytes());
     let mut host = member_minting_under(
         0x65,
-        desk(
+        shell(
             TileContent::LocalApp {
                 app_id: APP.to_owned(),
                 label: "Notes".to_owned(),
@@ -177,7 +177,7 @@ fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
     assert_eq!(label_of(&menu, STOP_ROW), None);
 }
 
-/// A share another caller starts and ends is what the menu says next: the desk keeps no flag of
+/// A share another caller starts and ends is what the menu says next: the shell keeps no flag of
 /// its own beside the shares' reading.
 #[test]
 fn the_menu_follows_a_share_started_and_stopped_elsewhere() {
@@ -185,7 +185,7 @@ fn the_menu_follows_a_share_started_and_stopped_elsewhere() {
     let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x63).as_bytes());
     let mut host = member_minting_under(
         0x63,
-        desk(
+        shell(
             TileContent::LocalApp {
                 app_id: APP.to_owned(),
                 label: "Notes".to_owned(),
@@ -197,7 +197,7 @@ fn the_menu_follows_a_share_started_and_stopped_elsewhere() {
     );
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = foreign_tab(&host.session);
-    let mut viewer = member(0x64, own_desk());
+    let mut viewer = member(0x64, own_shell());
     let by_the_tab = arguments(serde_json::json!({ "tab": tab.to_string() }));
 
     host.session

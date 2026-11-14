@@ -148,7 +148,7 @@ pub struct PersonDevice {
     /// What the device calls itself, from its certificate; empty on a device that named itself
     /// none, which a card names by which one it is.
     pub label: String,
-    /// This is the device the desk is drawn on.
+    /// This is the device the shell is drawn on.
     pub this: bool,
     /// How available that device said it was.
     pub availability: ui::Availability,
@@ -1314,7 +1314,7 @@ fn worded_place(
             .iter()
             .flat_map(|group| &group.tabs)
             .find(|t| t.id == tab)?;
-        // The app the window runs: from its tile where the desk's own model names it, else from
+        // The app the window runs: from its tile where the shell's own model names it, else from
         // the app its presence focuses (a window drawn by its app's own surface names none here).
         let app = match &tab.tile {
             TileContent::LocalApp { app_id, .. } => app_name(app_id),
@@ -1393,7 +1393,7 @@ pub fn place_here(tree: &mut Layout, people: &[Person], following: Option<&str>)
 
 /// The workspace's members, each in the colour it wears everywhere: its people with their roles,
 /// the agents admitted in it, its bots and anyone here its policy does not list yet. A person here
-/// now wears the colour this desk settled for them; software the one its admission gave it.
+/// now wears the colour this session settled for them; software the one its admission gave it.
 fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member> {
     let here = |id: &MemberId| people.iter().find(|person| member_id_of(person) == *id);
     let mut rows: Vec<Member> = workspace
@@ -1469,7 +1469,7 @@ fn member_id_of(person: &Person) -> MemberId {
     MemberId::person(person.user.clone().unwrap_or_else(|| person.id.clone()))
 }
 
-/// `person`'s presence, as this desk reads it.
+/// `person`'s presence, as this session reads it.
 fn present_of(person: &Person, following: Option<&str>) -> Present {
     Present {
         member: member_id_of(person),
@@ -2064,7 +2064,7 @@ mod tests {
         }
 
         phase an_agent_steps_clear_of_its_persons_colour;
-        // One agent wears one colour on every surface that draws it: the desk's faces and the cards in
+        // One agent wears one colour on every surface that draws it: the shell's faces and the cards in
         // its windows, the People list's row, the bar's face, and the colour its own apps paint its
         // card, its text marks and its caret in — the one rule ([`ui::presence::participant_color`]),
         // never a colour a surface picked for itself.
@@ -2136,7 +2136,7 @@ mod tests {
             // The bar and the People list read the workspace's rows, which this page fills from its
             // board: the same colour again.
             let mut tree = Layout {
-                workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Desk")],
+                workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Shell")],
                 ..Layout::default()
             };
             tree.active = tree.workspaces[0].id();
@@ -2402,7 +2402,7 @@ mod tests {
         }
 
         phase one_agent_is_one_row_whichever_way_it_is_heard;
-        // One agent is one row, however it reaches this desk: its live presence lists it with its
+        // One agent is one row, however it reaches this session: its live presence lists it with its
         // colour and what it says it is doing, the person's own agent included; the same agent heard
         // through a second publisher is not drawn twice; a second session of the client stays its own
         // row.
@@ -2788,8 +2788,8 @@ mod tests {
             );
         }
 
-        phase placing_presence_marks_whom_this_desk_follows;
-        // Whose view this desk follows is said on their row and no other's, each frame: the bar keeps
+        phase placing_presence_marks_whom_this_shell_follows;
+        // Whose view this session follows is said on their row and no other's, each frame: the bar keeps
         // that face when it has room for only one.
         {
             let mut tree = Layout::default();

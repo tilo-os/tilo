@@ -27,7 +27,7 @@ use crate::i18n::t;
 use crate::{displays, input_sources};
 
 /// Type with `keyboard` : the compositor's keymap, and the words printed on the keys of what the
-/// session draws (the shortcut guide, the desk's chords), both follow it.
+/// session draws (the shortcut guide, the shell's chords), both follow it.
 pub(crate) fn apply_keyboard(
     compositor: &mut tilo_compositor::Compositor,
     keyboard: &tilo_compositor::KeyboardLayout,

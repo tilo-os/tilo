@@ -1,6 +1,6 @@
 //! The session's own surfaces published to assistive technology.
 //!
-//! Every surface the session paints into its compositor — the desk, the bar,
+//! Every surface the session paints into its compositor — the shell, the bar,
 //! the switcher, the banners, the roster, the sheets and the setup browser —
 //! has no application window of its own, so the toolkit's window adapter
 //! cannot carry it: this module owns one AccessKit Unix adapter per surface
@@ -16,7 +16,7 @@
 //! [`Accessibility::step`]. An idle desktop therefore answers an assistive
 //! client without waiting for input, which is the endpoint's contract.
 //!
-//! The controls it finds and presses are the desk's own chrome and those of
+//! The controls it finds and presses are the shell's own chrome and those of
 //! the windows in processes of their own, whose apps describe their content
 //! over their `shell-ui` connection ([`ui::window_targets`]) and take a
 //! press as an assistive technology's activation does.
@@ -303,9 +303,9 @@ impl Accessibility {
 }
 
 /// The controls of the windows the session shows, by name and place, for anything that reads the
-/// desk as an assistive technology does.
+/// shell as an assistive technology does.
 impl Session {
-    /// Every control the session shows by name, each with where it stands on the desk: the desk's
+    /// Every control the session shows by name, each with where it stands on the shell: the shell's
     /// own chrome, and the controls the apps that draw the windows describe of their content
     /// ([`ui::window_targets`]).
     #[must_use]
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn the_window_the_keys_go_to_reads_as_focused() {
         let mut doors = Doors::default();
-        doors.add(face("Desk", false));
+        doors.add(face("Shell", false));
         doors.add(face("Question", true));
         let mut export = export(Vec::new());
 

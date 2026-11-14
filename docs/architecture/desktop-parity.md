@@ -6,8 +6,8 @@ The old shell (`crates/session/shell`, crate `shell`) was removed from `main`
 in `5e0e173af2e`; its source is in git history at `5e0e173af2e^`. Everything
 the person sees today is the new desktop:
 
-- the session's desk, `crates/session/session/src/desk.rs`, which places
-  `tilo_desktop::desktop_host::DeskLayer` over
+- the session's shell, `crates/session/session/src/background.rs`, which places
+  `tilo_desktop::desktop_host::BackgroundLayer` over
   `tilo_desktop_surface::DesktopSurface` (`crates/session/desktop-surface`);
 - the bar, menus and overlays of `crates/session/desktop`;
 - the surface apps of the session: `tilo-quick-settings`, `tilo-lock-screen`,
@@ -28,7 +28,7 @@ the old file and function, what the new code has, and where the two stand.
 ## The two facts that explain most of the table
 
 1. **The new session draws the portable surface, not
-   `crates/session/desktop/src/composition.rs`.** `session/src/desk.rs` calls
+   `crates/session/desktop/src/composition.rs`.** `session/src/background.rs` calls
    `platform::surfaces::desktop_with`, which builds
    `tilo_desktop_surface::DesktopSurface`. That surface shows **one strip at
    a time**: `show_active_strip` swaps `self.shown` and marks its own
@@ -125,7 +125,7 @@ What differs is the host around it.
 
 | Behaviour | Old | New | Status |
 |---|---|---|---|
-| Banner stack: top-right, springs to its slot, hover-to-hold with an aim delay, at most three, the rest folding into `+N more from the app` which opens the centre, never ages while held | `desktop-surface/src/notifications/stack.rs`, mounted by `overlay_host/banners.rs` | the same crate; `DesktopNotifications` installed by `session/src/desk.rs` `set_notifications` | better (the corner never fills; a fold leads to the one list) |
+| Banner stack: top-right, springs to its slot, hover-to-hold with an aim delay, at most three, the rest folding into `+N more from the app` which opens the centre, never ages while held | `desktop-surface/src/notifications/stack.rs`, mounted by `overlay_host/banners.rs` | the same crate; `DesktopNotifications` installed by `session/src/background.rs` `set_notifications` | better (the corner never fills; a fold leads to the one list) |
 | Banners below window bars, shifting when a bar arrives under them | `stack.rs` `transient_slot`, `clear_top` | `DesktopNotifications` + `surface/notices.rs` `set_clear_top` | same |
 | Notification centre: groups by app, one scrolling list, per-row actions, reader, agent hand-off, clear with an 8 s undo | `notifications/center.rs`, `history.rs`, `reader.rs` | `notifications/center.rs`, and the one door to it: the bell and the Quick Settings notifications row both open the desk's centre (`quick-settings/src/verbs.rs` `ShowCentre`) | better (one list, no paging; the panel keeps no second copy) |
 | Quiet: Do Not Disturb, presenting, sharing, a focus schedule; banners held with a line saying why | `chrome_state` `notifications_quiet`, `QuietReason` | `NotificationsView::quiet`, `qs-notifications-quiet` | same |

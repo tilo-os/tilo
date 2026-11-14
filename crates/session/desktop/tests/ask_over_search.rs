@@ -22,7 +22,7 @@ use tilo_desktop_model::Layout;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::headless::FrameHarness;
 
-use crate::support::desk_tree;
+use crate::support::layout_tree;
 use ui::synthetic_input::{char_key, key_press};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -70,9 +70,9 @@ impl DesktopChromeSource for Asking {
     }
 }
 
-/// The desk, and the chrome over it whose host offers the identity ask on demand.
+/// The shell, and the chrome over it whose host offers the identity ask on demand.
 struct Session {
-    desk: FrameHarness,
+    shell: FrameHarness,
     chrome: FrameHarness,
     handle: DesktopHandle,
     host: Rc<Asking>,
@@ -80,10 +80,10 @@ struct Session {
 
 fn session(size: (u32, u32)) -> Session {
     ui::i18n::I18nManager::init("en-US");
-    let tree = desk_tree();
+    let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
-    desk.relayout();
+    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
+    shell.relayout();
     let host = Rc::new(Asking {
         tree: tree.clone(),
         ask: RefCell::new(None),
@@ -103,7 +103,7 @@ fn session(size: (u32, u32)) -> Session {
         FrameHarness::for_root(ui::state::State::new(), chrome, size, ui::Theme::dark());
     chrome.relayout();
     Session {
-        desk,
+        shell,
         chrome,
         handle,
         host,
@@ -112,7 +112,7 @@ fn session(size: (u32, u32)) -> Session {
 
 impl Session {
     fn frame(&mut self) {
-        self.desk.relayout();
+        self.shell.relayout();
         self.chrome.relayout();
     }
 
@@ -181,9 +181,9 @@ fn an_ask_that_arrives_unasked_does_not_take_the_searchs_keys() {
     session.settle_search();
     let (query, rows) = session.handle.search_rows();
     assert_eq!(query, "notes");
-    assert!(!rows.is_empty(), "the desk's own window is a row");
+    assert!(!rows.is_empty(), "the shell's own window is a row");
 
-    // The identity card opens on its own, over the desk, while the search is up.
+    // The identity card opens on its own, over the shell, while the search is up.
     session.ask_arrives();
     assert!(
         session.host.ask.borrow().is_some(),
@@ -222,7 +222,7 @@ fn an_ask_that_arrives_unasked_does_not_answer_itself_on_the_persons_enter() {
     session.type_text("notes");
     session.settle_search();
     let (_, rows) = session.handle.search_rows();
-    assert!(!rows.is_empty(), "the desk's own window is a row");
+    assert!(!rows.is_empty(), "the shell's own window is a row");
 
     session.ask_arrives();
     session
@@ -271,7 +271,7 @@ fn the_card_answers_when_the_person_moves_to_it() {
 fn an_ask_that_arrives_unasked_does_not_swallow_the_windows_escape() {
     let mut session = session((1280, 800));
     session.frame();
-    // The person moved to the desk: the window in front has the keyboard, not the bar.
+    // The person moved to the shell: the window in front has the keyboard, not the bar.
     session.ask_arrives();
     session
         .chrome
@@ -372,7 +372,7 @@ fn a_search_opened_again_after_a_press_away_starts_empty() {
     session.settle_search();
     assert_eq!(session.handle.search_rows().0, "notes");
 
-    // A press off the card closes search, as a person clicking their desk does.
+    // A press off the card closes search, as a person clicking their shell does.
     session.chrome.click_at(8.0, 780.0);
     session.frame();
     assert!(

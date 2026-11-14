@@ -1,6 +1,6 @@
 //! The shell on the native session: the tilolang shell package (`apps/tl/shell`) shown by a
 //! [`ShellPart`] per display — the whole screen under the windows, which stand in its wells — kept
-//! in step with the session's desk (`crate::desk`) and asking the session's door for what the
+//! in step with the session's shell (`crate::shell`) and asking the session's door for what the
 //! person presses.
 
 use std::cell::RefCell;
@@ -16,7 +16,7 @@ use tilo_service::Services;
 use tilo_session_core::door::Doors;
 use tilo_session_core::shell::{ArrangementReading, Ask};
 
-use crate::desk_resource::Desk;
+use crate::device_lists::DeviceLists;
 use crate::displays;
 
 #[cfg(target_os = "linux")]
@@ -42,7 +42,7 @@ pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool)
         Ok(Some(packages)) => Ok((packages, true)),
         Ok(None) => Ok((crate::platform::surfaces::compile_shell()?, false)),
         Err(error) => {
-            // A store row that does not read is the person's to see, and the desk still stands:
+            // A store row that does not read is the person's to see, and the shell still stands:
             // the fallback is what a device with no shell of its own shows.
             tracing::warn!(%error, "the installed shell does not load; the built-in one stands in");
             Ok((crate::platform::surfaces::compile_shell()?, false))
@@ -66,10 +66,10 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::notifications::surface(),
         crate::time::surface(),
         crate::controls::apps_surface(),
-        crate::desk_resource::windows_surface(),
-        crate::desk_resource::tray_surface(),
-        crate::desk_resource::agents_surface(),
-        crate::desk_resource::styles_surface(),
+        crate::device_lists::windows_surface(),
+        crate::device_lists::tray_surface(),
+        crate::device_lists::agents_surface(),
+        crate::device_lists::styles_surface(),
         crate::shell::state::overlays_surface(),
     ]
 }
@@ -88,7 +88,7 @@ fn band() -> u32 {
 
 /// The shell on the session, and what feeds it.
 pub(crate) struct Shell {
-    desk: Desk,
+    lists: DeviceLists,
     /// The due timer ids announced already, so an unchanged one is announced once.
     announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
@@ -151,7 +151,7 @@ impl Shell {
     pub(crate) fn mount(
         compositor: &mut Compositor,
         doors: &mut Doors,
-        desk: Desk,
+        lists: DeviceLists,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
         state: Option<&std::path::Path>,
@@ -165,10 +165,10 @@ impl Shell {
         // The shell's own record is the person's, kept where every app's own record of theirs is
         // kept and carried to their other devices as one: read back from what an earlier session
         // kept, or the shell's defaults on a device that never showed the shell.
-        let record = crate::shell_record::ShellRecord::open(state, &desk.person);
+        let record = crate::shell_record::ShellRecord::open(state, &lists.person);
         let shared = record.record();
         let mut shell = Self {
-            desk,
+            lists,
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             link,
             followed: None,
@@ -190,9 +190,9 @@ impl Shell {
             record_synced: std::cell::RefCell::new(None),
             theme,
         };
-        shell.person = shell.desk.person.clone();
+        shell.person = shell.lists.person.clone();
         shell.follow_outputs(compositor, doors);
-        // The desk styles every installed package offers, before the first frame draws the
+        // The styles every installed package offers, before the first frame draws the
         // switch: a shell that starts already knows what its person may pick (shell.md §6).
         shell.refresh_styles();
         shell.follow_deadline();
@@ -202,7 +202,7 @@ impl Shell {
     /// A timer Clocks says came due that the bar has not announced: its id, and what to say in the
     /// app's own words. Each id is announced once.
     pub(crate) fn new_due_timer(&self) -> Option<(String, String, String)> {
-        let (id, title, body) = self.desk.due_timer()?;
+        let (id, title, body) = self.lists.due_timer()?;
         let mut announced = self.announced.borrow_mut();
         announced.insert(id.clone()).then_some((id, title, body))
     }
@@ -278,7 +278,7 @@ impl Shell {
         // The windows the views picture, each display's own: the reading's window keys stand for
         // the tabs of the workspace in front, and a window whose app holds secrets is left out, so
         // its view shows the app's mark instead of its pixels.
-        let handle = self.desk.handle.clone();
+        let handle = self.lists.handle.clone();
         part.show_pictures(
             ui::widget::Previews::new(),
             Rc::new(move |key: &str| pictured(&handle, key)),
@@ -291,10 +291,10 @@ impl Shell {
         self.parts.push((output.to_owned(), part));
     }
 
-    /// Wake every part at the instant the desk has something to draw of its own (the switcher's
+    /// Wake every part at the instant the shell has something to draw of its own (the switcher's
     /// panel coming up while Alt is held), so nothing draws or polls in between.
     pub(crate) fn follow_deadline(&self) {
-        let deadline = self.desk.next_deadline();
+        let deadline = self.lists.next_deadline();
         for (_, part) in &self.parts {
             part.borrow_mut().set_deadline(deadline);
         }
@@ -420,7 +420,7 @@ impl Shell {
             for app in apps {
                 if let Some(module) = services
                     .module(app)
-                    .or_else(|| crate::desk_styles::module_from_store(app))
+                    .or_else(|| crate::styles::module_from_store(app))
                 {
                     packages.insert(app.to_owned(), module);
                 }
@@ -431,7 +431,7 @@ impl Shell {
             let packages = tilo_surface_host::shell_part::readings::with_uses(packages, |app| {
                 services
                     .module(app)
-                    .or_else(|| crate::desk_styles::module_from_store(app))
+                    .or_else(|| crate::styles::module_from_store(app))
             });
             // A resource of an app no package is published of any more is followed no more, and
             // neither is one of an app whose views draw it as a Rust app when none of its views is
@@ -515,7 +515,7 @@ impl Shell {
         self.link.publish_arrangement(reading);
     }
 
-    /// Read the desk styles every installed package offers, when the person's package store
+    /// Read the styles every installed package offers, when the person's package store
     /// moved: a style the person or their agent installed is offered by the switch without a
     /// restart (`shell.md` §6). The shell's own package's styles — the four that ship — always
     /// stand, from the package the shell runs, so the switch offers them even where the store
@@ -524,15 +524,15 @@ impl Shell {
     pub(crate) fn refresh_styles(&mut self) {
         // The shell's own styles, from the package it runs: the four that ship are its views.
         let Ok(catalog) = package_store::Catalog::from_env() else {
-            let own = crate::desk_styles::of_shell(&self.packages);
-            let mut styles = self.desk.styles.borrow_mut();
+            let own = crate::styles::of_shell(&self.packages);
+            let mut styles = self.lists.styles.borrow_mut();
             styles.list = own;
             styles.revision = styles.revision.saturating_add(1);
             return;
         };
-        let now = crate::desk_styles::registry(&catalog);
+        let now = crate::styles::registry(&catalog);
         {
-            let mut styles = self.desk.styles.borrow_mut();
+            let mut styles = self.lists.styles.borrow_mut();
             let former = styles.registry.as_ref();
             if former == Some(&now) {
                 return;
@@ -540,14 +540,14 @@ impl Shell {
             // The store is read on every frame, so what the log says of it is said to the frame
             // that found it changed: the warning when it starts, and the line that it reads again
             // when it recovers, rather than the same line thousands of times a second.
-            match crate::desk_styles::news(former, &now) {
-                Some(crate::desk_styles::News::Unreadable(why)) => {
+            match crate::styles::news(former, &now) {
+                Some(crate::styles::News::Unreadable(why)) => {
                     tracing::warn!(
                         error = %why,
                         "the app store's registry does not read; its styles wait"
                     );
                 }
-                Some(crate::desk_styles::News::ReadsAgain) => {
+                Some(crate::styles::News::ReadsAgain) => {
                     tracing::info!("the app store's registry reads again; its styles are read");
                 }
                 None => {}
@@ -556,17 +556,17 @@ impl Shell {
         }
         // A package installed or taken away is published again, so a style that failed and was
         // reinstalled fixed draws again with no restart (`shell.md` §6). The failure it had is
-        // cleared too: the desk must draw it again for its view to run and tell whether it is
+        // cleared too: the shell must draw it again for its view to run and tell whether it is
         // fixed, and a store that moved is the only news the session gets of a reinstall.
         self.republish = true;
-        for style in crate::desk_styles::installed(&catalog) {
+        for style in crate::styles::installed(&catalog) {
             // The shell's own package is the one the part already runs, never one loaded
             // beside itself.
             if style.package != tilo_session_core::shell::SHELL_APP {
                 self.needed.insert(style.package.clone());
             }
         }
-        for entry in &mut self.desk.styles.borrow_mut().list {
+        for entry in &mut self.lists.styles.borrow_mut().list {
             if !entry.loads {
                 entry.loads = true;
                 entry.reason.clear();
@@ -574,19 +574,19 @@ impl Shell {
         }
         // The store's styles, the shell's own among them when the store holds the shell: each
         // package's styles are offered once, the shell's own from the package the shell runs.
-        let own = crate::desk_styles::of_shell(&self.packages);
-        let mut list = crate::desk_styles::installed(&catalog);
+        let own = crate::styles::of_shell(&self.packages);
+        let mut list = crate::styles::installed(&catalog);
         for style in own {
             if !list.iter().any(|s| s.style == style.style) {
                 list.push(style);
             }
         }
-        let mut styles = self.desk.styles.borrow_mut();
+        let mut styles = self.lists.styles.borrow_mut();
         styles.list = list;
         styles.revision = styles.revision.saturating_add(1);
     }
 
-    /// The link the session publishes the desk on and the shell asks through: what a test stages a
+    /// The link the session publishes the shell on and the shell asks through: what a test stages a
     /// reading on.
     pub(crate) fn link(&self) -> Rc<SessionLink> {
         Rc::clone(&self.link)
@@ -616,11 +616,11 @@ impl Shell {
     }
 
     /// A style whose view failure ended — its package loaded, or its call ran again and
-    /// succeeded — loads again: the desk returns to the person's choice with no restart
+    /// succeeded — loads again: the shell returns to the person's choice with no restart
     /// (`shell.md` §6). `app` is the app whose failure ended, and `style` the call's view when
     /// one names it (`app:view`).
     pub(crate) fn note_style_recovered(&self, app: &str, style: Option<&str>) {
-        let mut styles = self.desk.styles.borrow_mut();
+        let mut styles = self.lists.styles.borrow_mut();
         let mut moved = false;
         for entry in &mut styles.list {
             let of_app = entry.package == app;
@@ -639,13 +639,13 @@ impl Shell {
     }
 
     /// A style the person chose could not be shown: its entry says so with `failure`'s reason,
-    /// and the desk draws the built-in strips while the person's choice stays as it was
+    /// and the shell draws the built-in strips while the person's choice stays as it was
     /// (`shell.md` §6, "Nothing can lock a person out"). The notice naming the style and why,
     /// once per failure, for the session to raise.
     ///
     /// The entry is marked by the style's own view reference: a failure names the app and the
     /// view it called (`me.styles:timeline`), and the style the switch lists is that pair.
-    /// Fixing the package flips it back: the desk asks the runtime again, the call succeeds, and
+    /// Fixing the package flips it back: the shell asks the runtime again, the call succeeds, and
     /// the next [`Self::take_view_failures`] has nothing to say of it.
     pub(crate) fn note_style_failure(
         &self,
@@ -656,10 +656,10 @@ impl Shell {
         } else {
             format!("{}:{}", failure.app, failure.view)
         };
-        let mut styles = self.desk.styles.borrow_mut();
+        let mut styles = self.lists.styles.borrow_mut();
         let Some(found) = styles.list.iter_mut().find(|s| s.style == style) else {
-            // A view that is no desk style failed some other way (a place's own view): the
-            // desk has nothing to say of it.
+            // A view that is no style failed some other way (a place's own view): the
+            // shell has nothing to say of it.
             return None;
         };
         if !found.loads && found.reason == failure.reason {
@@ -673,13 +673,10 @@ impl Shell {
             found.line.clone()
         };
         styles.revision = styles.revision.saturating_add(1);
-        Some(crate::notices::desk_style_failed_notice(
-            &name,
-            &failure.reason,
-        ))
+        Some(crate::notices::style_failed_notice(&name, &failure.reason))
     }
 
-    /// The surface the desk shows over its windows, by the name the views read (`d.here`): `none`
+    /// The surface the shell shows over its windows, by the name the views read (`d.here`): `none`
     /// at rest.
     pub(crate) fn surface(&self) -> String {
         self.link.surface()
@@ -720,7 +717,7 @@ impl Shell {
     }
 
     /// Write the record's copy out and wait for it to land: what ends the session, so the next one
-    /// starts from the desk this one left.
+    /// starts from the shell this one left.
     pub(crate) fn flush_record(&self) {
         self.record_kept.flush();
     }
@@ -736,7 +733,7 @@ impl Shell {
     }
 
     /// Where the shell's record is kept on this device: the document a test reads back to prove a
-    /// desk choice was persisted. `None` on a session that keeps no copy.
+    /// shell choice was persisted. `None` on a session that keeps no copy.
     #[must_use]
     pub fn record_path(&self) -> Option<&std::path::Path> {
         self.record_kept.path()
@@ -744,7 +741,7 @@ impl Shell {
 
     /// The shell's own record's field `field` (a field of one of its roots: `dock_edge` and
     /// `frames_snap` of the `Shell` root, `style` of the `Viewing` one) as its own record holds it
-    /// now: what a test proves a desk choice survived a session by, read the way the shell's views
+    /// now: what a test proves a shell choice survived a session by, read the way the shell's views
     /// read it.
     pub(crate) fn record_setting(&self, field: &str) -> Option<Value> {
         use tilo_resource::Model as _;
@@ -772,7 +769,7 @@ impl Shell {
     /// record is the person's, on the cluster their own store derives from their root, so their
     /// store (`personal`) carries it exactly as it carries every app's own record of theirs. What
     /// this device arranged since the last pass is published there; what another of their devices
-    /// arranged is merged here, so the desk this session draws is the one they have everywhere.
+    /// arranged is merged here, so the shell this session draws is the one they have everywhere.
     ///
     /// Cheap when nothing moved, which is what every pass runs. `None` on a session that takes part
     /// in no plane of the person's.
@@ -1071,7 +1068,7 @@ pub struct PartPlace {
 
 /// Lend `shell`'s parts the content its places draw from: the document media this session serves
 /// its apps (`TILO_FS_BLOB_SOCKET`, `fs serve-media`), read as the session itself, with
-/// `workspaces` — the workspaces the desk holds — among the scopes it serves, the one in front
+/// `workspaces` — the workspaces the shell holds — among the scopes it serves, the one in front
 /// first.
 ///
 /// A place shows a record an app's connector kept stills for (`tilo-blob://<hash>`), and the
@@ -1152,8 +1149,8 @@ fn typed(value: Value, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
-/// `host` , the desktop's bar or desk, as the desk stands under the shell: the shell draws the bar
-/// and the desk itself (its strips, their frames and the places in them, around the wells the
+/// `host` , the desktop's bar or shell, as the shell stands under the shell: the shell draws the bar
+/// and the shell itself (its strips, their frames and the places in them, around the wells the
 /// windows stand in), so the desktop's own step aside ([`Aside`]) rather than drawing a second set
 /// of either. It still keeps the windows' model the wells place them by. Without a shell, the
 /// desktop is the shell and stands as itself.
@@ -1165,14 +1162,14 @@ pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Rc<RefCell
     }
 }
 
-/// The chrome's published side as the desk stands under the shell: the shell draws the surfaces, so
+/// The chrome's published side as the shell stands under the shell: the shell draws the surfaces, so
 /// each action of the chrome's that opens one opens the shell's view of it on `surfaces` — the
 /// overview, the notifications, the quick settings and the workspaces — while the chrome's own
 /// draws nothing. Every other action is the chrome's.
 pub(crate) fn chrome_door<T: tilo_session_core::door::Published + 'static>(
     shell: bool,
     chrome: &Rc<RefCell<T>>,
-    surfaces: crate::desk_resource::Surfaces,
+    surfaces: crate::device_lists::Surfaces,
 ) -> tilo_session_core::door::Shared {
     let chrome = Rc::clone(chrome) as tilo_session_core::door::Shared;
     if shell {
@@ -1182,27 +1179,30 @@ pub(crate) fn chrome_door<T: tilo_session_core::door::Published + 'static>(
     }
 }
 
-/// The desk's published side as the desk stands under the shell: its `search` opens the shell's
+/// The shell's published side as the shell stands under the shell: its `search` opens the shell's
 /// launcher (on what the person asked for, when a query comes with it), as the desktop's own search
 /// draws nothing under the shell; a search with a query still runs, its rows published for the
 /// palette and the agents.
-pub(crate) fn desk_door<T: tilo_session_core::door::Published + 'static>(
+pub(crate) fn lists_door<T: tilo_session_core::door::Published + 'static>(
     shell: bool,
-    desk: T,
-    surfaces: crate::desk_resource::Surfaces,
+    lists: T,
+    surfaces: crate::device_lists::Surfaces,
 ) -> tilo_session_core::door::Shared {
-    let desk: tilo_session_core::door::Shared = Rc::new(RefCell::new(desk));
+    let lists: tilo_session_core::door::Shared = Rc::new(RefCell::new(lists));
     if shell {
-        Rc::new(RefCell::new(ShellDesk { desk, surfaces }))
+        Rc::new(RefCell::new(ShellDoor {
+            door: lists,
+            surfaces,
+        }))
     } else {
-        desk
+        lists
     }
 }
 
 /// The chrome's door on the shell ([`chrome_door`]).
 struct ShellChrome {
     chrome: tilo_session_core::door::Shared,
-    surfaces: crate::desk_resource::Surfaces,
+    surfaces: crate::device_lists::Surfaces,
 }
 
 impl ShellChrome {
@@ -1213,7 +1213,7 @@ impl ShellChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::DoorError> {
-        if address.resource != tilo_desktop::desk_verbs::CHROME_RESOURCE {
+        if address.resource != tilo_desktop::verbs::CHROME_RESOURCE {
             return Ok(None);
         }
         let here = |name: &str| self.surfaces.overlays.here().name() == name;
@@ -1243,7 +1243,7 @@ impl ShellChrome {
                     .toggle(tilo_desktop::overlays::Overlay::QuickSettings.name());
                 true
             }
-            // The workspaces are the shell's one workspace surface: the desk's menu, the workspaces
+            // The workspaces are the shell's one workspace surface: the shell's menu, the workspaces
             // a person switches between and the actions on them.
             "workspace-menu" => {
                 self.surfaces
@@ -1346,15 +1346,15 @@ impl tilo_session_core::door::Published for ShellChrome {
     }
 }
 
-/// The desk's door on the shell ([`desk_door`]).
-struct ShellDesk {
-    desk: tilo_session_core::door::Shared,
-    surfaces: crate::desk_resource::Surfaces,
+/// The shell's door on the shell ([`lists_door`]).
+struct ShellDoor {
+    door: tilo_session_core::door::Shared,
+    surfaces: crate::device_lists::Surfaces,
 }
 
-impl tilo_session_core::door::Published for ShellDesk {
+impl tilo_session_core::door::Published for ShellDoor {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-        self.desk.borrow_mut().resources()
+        self.door.borrow_mut().resources()
     }
 
     fn invoke(
@@ -1363,15 +1363,14 @@ impl tilo_session_core::door::Published for ShellDesk {
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-        if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
-        {
+        if address.resource == tilo_desktop::verbs::SHELL_RESOURCE && address.action == "search" {
             if let Some(Value::String(query)) = arguments.get("query")
                 && !query.is_empty()
             {
-                // The desk runs its search as it always does, so its rows are published on its
+                // The shell runs its search as it always does, so its rows are published on its
                 // search resource for the palette and the agents; the shell's launcher is what
                 // draws, and it opens on what was asked for.
-                let started = self.desk.borrow_mut().invoke(address, arguments, look)?;
+                let started = self.door.borrow_mut().invoke(address, arguments, look)?;
                 self.surfaces.overlays.search(query);
                 return Ok(started);
             }
@@ -1382,8 +1381,8 @@ impl tilo_session_core::door::Published for ShellDesk {
             ));
         }
         // The platform search door (a window's search control, its toolbar's magnifier, Ctrl+K)
-        // asks for the desk's search under the shell too: the shell draws that search, so the
-        // request opens the launcher, and its query runs the desk's search as the desk's own
+        // asks for the shell's search under the shell too: the shell draws that search, so the
+        // request opens the launcher, and its query runs the shell's search as the shell's own
         // `search` verb does, its rows published for whoever reads them.
         if ui::search::is_search_address(address) {
             let query = ui::search::SearchRequest::from_arguments(arguments)
@@ -1393,8 +1392,8 @@ impl tilo_session_core::door::Published for ShellDesk {
                 Some(query) => {
                     let asked =
                         Map::from_iter([("query".to_owned(), Value::String(query.clone()))]);
-                    self.desk.borrow_mut().invoke(
-                        &ActionAddress::new(tilo_desktop::desk_verbs::DESK_RESOURCE, "search"),
+                    self.door.borrow_mut().invoke(
+                        &ActionAddress::new(tilo_desktop::verbs::SHELL_RESOURCE, "search"),
                         &asked,
                         look,
                     )?
@@ -1411,7 +1410,7 @@ impl tilo_session_core::door::Published for ShellDesk {
             }
             return Ok(started);
         }
-        self.desk.borrow_mut().invoke(address, arguments, look)
+        self.door.borrow_mut().invoke(address, arguments, look)
     }
 
     fn invoke_as(
@@ -1422,43 +1421,43 @@ impl tilo_session_core::door::Published for ShellDesk {
         look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if ui::search::is_search_address(address)
-            || (address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE
+            || (address.resource == tilo_desktop::verbs::SHELL_RESOURCE
                 && address.action == "search")
         {
             return self.invoke(address, arguments, look);
         }
-        self.desk
+        self.door
             .borrow_mut()
             .invoke_as(actor, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        self.desk.borrow_mut().accessible_labels()
+        self.door.borrow_mut().accessible_labels()
     }
 
     fn revision(&self) -> Option<u64> {
-        self.desk.borrow().revision()
+        self.door.borrow().revision()
     }
 
     fn offered(&self) -> bool {
-        self.desk.borrow().offered()
+        self.door.borrow().offered()
     }
 
     fn exclusive(&self) -> bool {
-        self.desk.borrow().exclusive()
+        self.door.borrow().exclusive()
     }
 
     fn serves_while_locked(&self) -> bool {
-        self.desk.borrow().serves_while_locked()
+        self.door.borrow().serves_while_locked()
     }
 
     fn locked_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-        self.desk.borrow_mut().locked_resources()
+        self.door.borrow_mut().locked_resources()
     }
 }
 
 /// A surface of the session's own the shell stands in for: the desktop's bar, which the shell's bar
-/// replaces, and the desktop's desk, whose strips the shell draws. It draws nothing and takes no
+/// replaces, and the desktop's shell, whose strips the shell draws. It draws nothing and takes no
 /// pointer and no key: every chord the person presses is the shell's to answer or the session's
 /// own. What it holds still moves with what is asked of it ([`SurfaceHost::advance`]), so a
 /// workspace switched or a window closed is the shell's to draw, and it still hears the outputs
@@ -1493,7 +1492,7 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 
 impl crate::Session {
     /// What the shell's views could not show, and what came back: a style that failed is marked
-    /// not loading, with the notice naming it, and one that came back loads again — the desk
+    /// not loading, with the notice naming it, and one that came back loads again — the shell
     /// keeps the person's choice either way (`shell.md` §6, "Nothing can lock a person out").
     fn follow_view_failures(
         notices: &Rc<RefCell<crate::notifications::SessionNotifications>>,
@@ -1504,7 +1503,7 @@ impl crate::Session {
         for failure in failures {
             if let Some(notice) = shell.note_style_failure(&failure) {
                 // Raised through the session's own notices, as every notice it tells: the
-                // notifications service when one runs, the desk's own otherwise.
+                // notifications service when one runs, the shell's own otherwise.
                 notices.borrow().tell(&notice);
             }
         }
@@ -1527,8 +1526,8 @@ impl crate::Session {
         let notices = &shared.notifications;
         let personal = shared.sync.as_ref().and_then(|sync| sync.personal());
         let personal = personal.as_deref().map(crate::personal::Personal::sync);
-        // A record this device kept and this build did not open is said, once: the desk drew the
-        // shell's defaults, and the person is told where their own desk's choices still are rather
+        // A record this device kept and this build did not open is said, once: the shell drew the
+        // shell's defaults, and the person is told where their own shell's choices still are rather
         // than finding them silently reset.
         if let Some(reason) = shell.take_record_refusal() {
             notices
@@ -1536,11 +1535,11 @@ impl crate::Session {
                 .tell(&crate::notices::record_not_opened_notice(&reason));
         }
         // What the shell's parts committed into its own record this turn is written to the copy
-        // the person's desk is kept in, appending only what changed: this is what survives the
+        // the person's shell is kept in, appending only what changed: this is what survives the
         // session ending.
         shell.follow_record();
         // The record is the person's on every device of theirs: what they arranged here reaches
-        // their others through their own store, and what they arranged there reaches this desk.
+        // their others through their own store, and what they arranged there reaches this session.
         if let Some(personal) = personal {
             shell.sync_record(personal);
         }
@@ -1556,18 +1555,18 @@ impl crate::Session {
         }
     }
 
-    /// Hand the shell the desk when it changed, and run what it asked through the door, as any
+    /// Hand the shell the shell when it changed, and run what it asked through the door, as any
     /// caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
         self.publish_edges();
         let Some(shell) = self.shell.as_ref() else {
             return Ok(());
         };
-        // The shell's views draw the centre over the desk, so while it is up the person is looking
+        // The shell's views draw the centre over the shell, so while it is up the person is looking
         // at what the notices say: they are read, as they are while the panel's own centre shows
         // them. The bell's count, the centre's header and its rows read the one set, so they never
         // disagree. It is the same surface the views read (`d.here`), and the one place that knows
-        // when it closes: however the person left it, the next arrival is a banner on the desk
+        // when it closes: however the person left it, the next arrival is a banner on the shell
         // again rather than a row behind a page that is gone.
         let centre = shell.surface() == tilo_desktop::overlays::Overlay::Centre.name();
         self.shared.notices.set_shell_centre(centre);
@@ -1587,12 +1586,12 @@ impl crate::Session {
                     body,
                 ));
         }
-        // The desk styles every installed package offers: read when the store moved, so a
+        // The styles every installed package offers: read when the store moved, so a
         // style a person or their agent installed is offered without a restart (shell.md §6).
-        // Read before the desk is published, so the reading carries the list.
+        // Read before the shell is published, so the reading carries the list.
         shell.refresh_styles();
         // What the shell's views could not show — a style package that did not load, a view
-        // that failed — so the desk says so and the person's choice is kept: a style that
+        // that failed — so the shell says so and the person's choice is kept: a style that
         // cannot load shows the built-in strips until it is fixed (shell.md §6, "Nothing can
         // lock a person out").
         let failures = shell.take_view_failures();
@@ -1681,23 +1680,23 @@ impl crate::Session {
         if let Some(shell) = self.shell.as_mut() {
             shell.follow_deadline();
         }
-        // The desk's places are what the outside services keeping its records in step are due
+        // The shell's places are what the outside services keeping its records in step are due
         // for: each workspace with a place of an app's records has that app's connector, and one
         // that no longer shows any ends. Read every pass, so a place made, moved between
         // workspaces or closed is followed on the pass it happened on, in every workspace of
-        // the desk, not only the one in front (`docs/architecture/apps.md` §1, §8).
+        // the shell, not only the one in front (`docs/architecture/apps.md` §1, §8).
         crate::connectors::reconcile(self);
         Ok(())
     }
 
-    /// What the shell reads the desk through: a test stages a reading on it, as a collaborating
+    /// What the shell reads the shell through: a test stages a reading on it, as a collaborating
     /// session's presence would arrive.
     #[must_use]
     pub fn shell_link(&self) -> Option<Rc<crate::platform::surfaces::SessionLink>> {
         self.shell.as_ref().map(Shell::link)
     }
 
-    /// Where the shell's own record is kept on this device: the document a person's desk choices
+    /// Where the shell's own record is kept on this device: the document a person's shell choices
     /// are written to, which a test reads back to prove they survive the session. `None` when the
     /// shell does not run or keeps no copy.
     #[must_use]
@@ -1707,7 +1706,7 @@ impl crate::Session {
 
     /// The shell's own record as a setting's value, by the field's name in its type (`dock_edge`,
     /// `frames_snap`), read through the shell's runtime as its own views read it: what a test
-    /// proves a desk choice survived a restart by. `None` when the shell does not run or the field
+    /// proves a shell choice survived a restart by. `None` when the shell does not run or the field
     /// does not read.
     #[must_use]
     pub fn shell_setting(&self, field: &str) -> Option<Value> {
@@ -1721,7 +1720,7 @@ impl crate::Session {
         self.shared.sync.as_ref()
     }
 
-    /// The notifications the desk keeps: what apps sent, and what the centre shows. A test posts
+    /// The notifications the shell keeps: what apps sent, and what the centre shows. A test posts
     /// into it as an app's arrival would land.
     #[must_use]
     pub fn notices(&self) -> &tilo_desktop_surface::DesktopNotifications {
@@ -1802,7 +1801,7 @@ impl crate::Session {
 
     /// Where every node the shell lays out that says `text` stands, logical `(x, y, w, h)`: every
     /// label, description or value holding it, on every shown part. A test asks what the whole
-    /// desk says of a name, not what the first one of it says.
+    /// shell says of a name, not what the first one of it says.
     #[must_use]
     pub fn shell_text_bounds_all(&self, text: &str) -> Vec<(f64, f64, f64, f64)> {
         self.shell
@@ -1843,7 +1842,7 @@ impl crate::Session {
     /// Run the shell's action `action` with `arguments`, as pressing its control in the shell's
     /// own views does: `set_bar_finish` with `["translucent"]` makes the bar the theme's glass
     /// and `["solid"]` its calm ground, `apply` takes a whole preset, and `show_style` shows the
-    /// desk through the style it names (`"so.tilo.shell:frames"`).
+    /// shell through the style it names (`"so.tilo.shell:frames"`).
     ///
     /// # Errors
     /// The shell does not run, it declares no such action, an argument does not hold the type
@@ -1963,7 +1962,7 @@ mod tests {
         }
     }
 
-    /// The desk the shell stands in for draws nothing, prepares nothing and takes no key or
+    /// The shell the shell stands in for draws nothing, prepares nothing and takes no key or
     /// pointer: what it hears still reaches it, so it follows the displays the shell is on.
     #[test]
     fn the_desktop_aside_prepares_draws_and_takes_nothing() {
@@ -1980,14 +1979,14 @@ mod tests {
         };
         let mut aside = super::Aside(Asked::default());
         assert!(!aside.prepare_frame(), "nothing to draw");
-        assert_eq!(aside.0.frames, 0, "the desk behind it never prepared");
+        assert_eq!(aside.0.frames, 0, "the shell behind it never prepared");
         assert_eq!(
             aside.claim_key(&key, false, false),
             tilo_session_core::surface::KeyClaim::Pass,
             "the shell answers the keys"
         );
         aside.key(&key);
-        assert_eq!(aside.0.keys, 0, "no key reached the desk behind it");
+        assert_eq!(aside.0.keys, 0, "no key reached the shell behind it");
         assert!(aside.layers().is_empty(), "it draws nothing");
         assert!(!aside.accepts_pointer(1.0, 1.0), "it takes no pointer");
         aside.outputs_changed(&[tilo_session_core::surface::HostedOutput {

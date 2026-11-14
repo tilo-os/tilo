@@ -21,8 +21,8 @@ use std::rc::Rc;
 use tilo_actions::ActionAddress;
 use tilo_session_core::surface::{KeyClaim, KeyModifiers};
 
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
-use tilo_desktop::desk_widgets::DeskFold;
+use tilo_desktop::verbs::CHROME_RESOURCE;
+use tilo_desktop::widgets::Fold;
 use tilo_desktop::osd::OsdKind;
 use tilo_desktop::overlays::{Overlay, Overlays, Slot, SwitcherScope};
 use tilo_session_core::shell::OVERLAYS;
@@ -143,22 +143,22 @@ pub(crate) struct ControllerKeys {
     pub(crate) own: Rc<Cell<bool>>,
 }
 
-/// What stands over the desk and what the keys owe it: Escape folds the card a desk widget has
+/// What stands over the shell and what the keys owe it: Escape folds the card a Desktop widget has
 /// open, and closes the topmost surface of the stack that answers Escape. Neither hears keys
 /// itself, so both say here what theirs are worth.
 #[derive(Clone, Default)]
-pub(crate) struct DeskKeys {
-    fold: DeskFold,
+pub(crate) struct ShellKeys {
+    fold: Fold,
     overlays: Overlays,
     /// What the keys ask the panel's own app, when this device has one and draws it: Escape asks it
     /// to go back a page, and the panel answers whether it had one.
     panel: Option<Rc<RefCell<Vec<&'static str>>>>,
 }
 
-impl DeskKeys {
-    /// The desk's fold and the surfaces over it, as the session holds them.
+impl ShellKeys {
+    /// The session's fold and the surfaces over it, as the session holds them.
     #[must_use]
-    pub(crate) fn new(fold: DeskFold, overlays: Overlays) -> Self {
+    pub(crate) fn new(fold: Fold, overlays: Overlays) -> Self {
         Self {
             fold,
             overlays,
@@ -197,7 +197,7 @@ pub(crate) enum SwitcherKey {
 }
 
 impl SwitcherKey {
-    /// The desk action it asks for: the walk, the place or the commit, as the desk's own published
+    /// The session action it asks for: the walk, the place or the commit, as the session's own published
     /// action. `walking` is the scope of the walk already up: a walk going keeps it, so Alt+grave
     /// opens over the app in front's windows and Alt+Tab steps inside it.
     pub(crate) fn asks(self, walking: Option<SwitcherScope>) -> Option<Invocation> {
@@ -219,14 +219,14 @@ impl SwitcherKey {
         }
     }
 
-    /// Carry it out on `walk` over `handle`'s windows, as the desk's verb [`Self::asks`] names does.
+    /// Carry it out on `walk` over `handle`'s windows, as the session's verb [`Self::asks`] names does.
     pub(crate) fn walk(
         self,
         handle: &tilo_desktop_surface::DesktopHandle,
         walk: &Overlays,
         walking: Option<SwitcherScope>,
     ) {
-        use crate::desk_windows::{commit_switcher, select_switcher, walk_switcher};
+        use crate::windows::{commit_switcher, select_switcher, walk_switcher};
         match self {
             Self::Walk { back, opened } => walk_switcher(
                 handle,
@@ -254,7 +254,7 @@ impl SwitcherKey {
     }
 }
 
-/// Alt+Tab's keys: the chord that opens the desk's walk, and every key it answers while it is up.
+/// Alt+Tab's keys: the chord that opens the session's walk, and every key it answers while it is up.
 #[derive(Clone)]
 pub(crate) struct WalkKeys {
     walk: Overlays,
@@ -269,9 +269,9 @@ impl WalkKeys {
     /// nothing when it is not the walk's at all. While the walk is up it is modal, as every
     /// desktop's switcher is: the keys are its own, and none of them reaches the window behind it.
     pub(crate) fn key(&self, press: &Press) -> Option<SwitcherKey> {
-        let desk = &self.walk;
+        let session = &self.walk;
         let held = press.modifiers;
-        if !desk.switcher_up() {
+        if !session.switcher_up() {
             // Alt+Tab walks the workspace's windows, and Alt with the key above Tab the ones the
             // app in front shows: fixed chords, as no shortcut table holds a modifier.
             if !press.pressed || !held.alt {
@@ -306,7 +306,7 @@ impl WalkKeys {
         if press.repeat && !held.alt {
             return Some(SwitcherKey::Hold);
         }
-        let walked = desk.scope();
+        let walked = session.scope();
         let back = held.shift;
         Some(match &press.key {
             Key::Named(NamedKey::Tab) => SwitcherKey::Walk {
@@ -354,7 +354,7 @@ impl WalkKeys {
         (self.walk.switcher_up() || (!locked && !inhibited)).then_some(claim)
     }
 
-    /// Move the walk as `press` asks, on `handle`'s desk itself: what a host without the desk's
+    /// Move the walk as `press` asks, on `handle`'s session itself: what a host without the session's
     /// door does with the walk's keys. Whether the press was the walk's.
     pub(crate) fn walk(&self, press: &Press, handle: &tilo_desktop_surface::DesktopHandle) -> bool {
         let Some(key) = self.key(press) else {
@@ -371,7 +371,7 @@ pub(crate) struct SheetKeys {
     /// The display sheet's presentation: Super+P puts it up while it is not there, and once it is,
     /// the chord moves inside it instead.
     pub(crate) displays: Option<tilo_sheets::Presentation>,
-    /// The sheets that ask the person something over the desk ([`crate::sheets::mount::Sheets::modal`]).
+    /// The sheets that ask the person something over the shell ([`crate::sheets::mount::Sheets::modal`]).
     pub(crate) modal: Vec<tilo_sheets::Presentation>,
 }
 
@@ -380,7 +380,7 @@ pub(crate) struct SessionKeys {
     /// The desktop's shortcut table, shared with the shortcut guide so the guide explains the
     /// chords the keys resolve against.
     shortcuts: Rc<RefCell<ShortcutConfig>>,
-    /// The sheets over the desk: a question up holds the keys, and Super+P opens the display sheet.
+    /// The sheets over the shell: a question up holds the keys, and Super+P opens the display sheet.
     sheets: SheetKeys,
     pub(crate) invocations: Invocations,
     /// The chords pressed that run a saved shortcut's keyboard trigger: the automation host starts
@@ -389,13 +389,13 @@ pub(crate) struct SessionKeys {
     /// The shortcut guide's keys while it is up: what it holds back from the desktop behind it, and
     /// the chord it waits for.
     guide: Rc<GuideState>,
-    /// Whether a desk widget has its card open, which Escape folds. The desk is under the windows
+    /// Whether a Desktop widget has its card open, which Escape folds. The session is under the windows
     /// and hears no keys itself, so it says here what its keys are worth.
-    fold: DeskFold,
-    /// What stands over the desk: Escape closes the topmost surface that answers it, and while one
+    fold: Fold,
+    /// What stands over the shell: Escape closes the topmost surface that answers it, and while one
     /// holds the keyboard a press is that surface's and not the window's.
     overlays: Overlays,
-    /// Alt+Tab's keys: the chord that opens the desk's walk, and the keys it answers while it is up.
+    /// Alt+Tab's keys: the chord that opens the session's walk, and the keys it answers while it is up.
     switcher: WalkKeys,
     /// What the keys ask the panel's own app, when this device draws it.
     panel: Option<Rc<RefCell<Vec<&'static str>>>>,
@@ -417,7 +417,7 @@ impl SessionKeys {
         shortcuts: Rc<RefCell<ShortcutConfig>>,
         presses: Presses,
         guide: Rc<GuideState>,
-        desk: DeskKeys,
+        session: ShellKeys,
         sheets: SheetKeys,
         controller: ControllerKeys,
         reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
@@ -436,10 +436,10 @@ impl SessionKeys {
             invocations,
             triggered,
             guide,
-            fold: desk.fold,
-            switcher: WalkKeys::new(desk.overlays.clone()),
-            overlays: desk.overlays,
-            panel: desk.panel,
+            fold: session.fold,
+            switcher: WalkKeys::new(session.overlays.clone()),
+            overlays: session.overlays,
+            panel: session.panel,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -447,13 +447,13 @@ impl SessionKeys {
         }
     }
 
-    /// Whether `press` is the desk's own: Escape folds the card a desk widget has open, and what
-    /// sits behind the desk does not hear it.
-    fn folds_the_desk(&self, press: &Press) -> bool {
+    /// Whether `press` is the session's own: Escape folds the card a Desktop widget has open, and what
+    /// sits behind the session does not hear it.
+    fn folds_the_shell(&self, press: &Press) -> bool {
         press.bare == Key::Named(NamedKey::Escape) && self.fold.is_open()
     }
 
-    /// Ask the desk for what a key of the walk's is worth: whether it was the walk's.
+    /// Ask the session for what a key of the walk's is worth: whether it was the walk's.
     fn walk_the_switcher(&self, press: &Press) -> bool {
         let walk = &self.switcher;
         let Some(key) = walk.key(press) else {
@@ -628,7 +628,7 @@ impl SessionKeys {
         }
     }
 
-    /// Whether `press` waits for a question drawn over the desk: a sheet asking the person
+    /// Whether `press` waits for a question drawn over the shell: a sheet asking the person
     /// something holds the keys.
     fn holds_for_a_question(&self, press: &Press) -> bool {
         self.sheets
@@ -641,7 +641,7 @@ impl SessionKeys {
 
     /// How the session claims `press`, offered before the focused window or panel gets it.
     pub(crate) fn claim(&self, press: &Press, locked: bool, inhibited: bool) -> KeyClaim {
-        // A question over the desk is modal: what is pressed is its answer, and no chord of the
+        // A question over the shell is modal: what is pressed is its answer, and no chord of the
         // desktop's acts beneath it (the overview, a strip, search would open under the question
         // and could not be used). A chord under Super is held back rather than answering the
         // question as its bare key would. A device key answers as it does anywhere, and an app's
@@ -683,7 +683,7 @@ impl SessionKeys {
         if let Some(claim) = self.switcher.claim(press, locked, inhibited) {
             return claim;
         }
-        if self.closes_the_top_surface(press).is_some() || self.folds_the_desk(press) {
+        if self.closes_the_top_surface(press).is_some() || self.folds_the_shell(press) {
             return KeyClaim::Take;
         }
         // A chord that runs a saved shortcut is the session's, as a chord of the desktop's own
@@ -723,7 +723,7 @@ impl SessionKeys {
             self.guide_key(press);
             return;
         }
-        // Alt+Tab's walk answers the keys the desk's switcher shows: the walk, its places, and the
+        // Alt+Tab's walk answers the keys the session's switcher shows: the walk, its places, and the
         // press that settles it.
         if self.walk_the_switcher(press) {
             return;
@@ -743,7 +743,7 @@ impl SessionKeys {
                 .push(Invocation::new(OVERLAYS, "close-surface").with("slot", slot.as_str()));
             return;
         }
-        if self.folds_the_desk(press) {
+        if self.folds_the_shell(press) {
             self.fold.ask();
             return;
         }
@@ -786,10 +786,10 @@ mod tests {
     use tilo_session_core::surface::{HostKey, SurfaceHost};
     use xkeysym::key as keysyms;
 
-    /// The session's keys as this device hands them its presses: over `desk`, with `guide`, the
+    /// The session's keys as this device hands them its presses: over `session`, with `guide`, the
     /// table `shortcuts`, answering into `presses` and `commands`.
     fn on_this_device(
-        desk: DeskKeys,
+        session: ShellKeys,
         guide: Rc<GuideState>,
         shortcuts: Rc<RefCell<ShortcutConfig>>,
         presses: Presses,
@@ -799,7 +799,7 @@ mod tests {
             shortcuts,
             presses,
             guide,
-            desk,
+            session,
             SheetKeys::default(),
             ControllerKeys::default(),
             Rc::default(),
@@ -807,10 +807,10 @@ mod tests {
         NativeKeys::new(keys, None, commands)
     }
 
-    /// The session's keys over `desk`, with nothing else of theirs set.
-    fn over(desk: DeskKeys) -> NativeKeys {
+    /// The session's keys over `session`, with nothing else of theirs set.
+    fn over(session: ShellKeys) -> NativeKeys {
         on_this_device(
-            desk,
+            session,
             Rc::default(),
             Rc::default(),
             Presses::default(),
@@ -843,7 +843,7 @@ mod tests {
     }
 
     fn keys() -> NativeKeys {
-        over(DeskKeys::default())
+        over(ShellKeys::default())
     }
 
     /// The key surface with the shortcut guide up, and the guide's shared keys.
@@ -851,7 +851,7 @@ mod tests {
         let guide: Rc<GuideState> = Rc::default();
         guide.set_up(true);
         let keys = on_this_device(
-            DeskKeys::default(),
+            ShellKeys::default(),
             guide.clone(),
             Rc::default(),
             Presses::default(),
@@ -860,10 +860,10 @@ mod tests {
         (keys, guide)
     }
 
-    /// The key surface with the desk's walk to answer to, and that walk.
+    /// The key surface with the session's walk to answer to, and that walk.
     fn with_walk() -> (NativeKeys, Overlays) {
         let walk = Overlays::new();
-        let keys = over(DeskKeys::new(DeskFold::default(), walk.clone()));
+        let keys = over(ShellKeys::new(Fold::default(), walk.clone()));
         (keys, walk)
     }
 
@@ -878,7 +878,7 @@ mod tests {
         }
     }
 
-    /// What the keys asked the desk for since the last call.
+    /// What the keys asked the session for since the last call.
     fn asked(keys: &NativeKeys) -> Vec<Invocation> {
         keys.keys.invocations.borrow_mut().drain(..).collect()
     }
@@ -987,7 +987,7 @@ mod tests {
         );
     }
 
-    /// A question over the desk holds the keys: no chord of the desktop's opens anything beneath
+    /// A question over the shell holds the keys: no chord of the sessiontop's opens anything beneath
     /// it, and once it is answered the chords act again.
     #[test]
     fn a_question_over_the_desk_holds_the_desktop_chords() {
@@ -997,7 +997,7 @@ mod tests {
                 Rc::default(),
                 Presses::default(),
                 Rc::default(),
-                DeskKeys::new(DeskFold::default(), Overlays::new()),
+                ShellKeys::new(Fold::default(), Overlays::new()),
                 SheetKeys {
                     displays: None,
                     modal: vec![question.clone()],
@@ -1099,7 +1099,7 @@ mod tests {
         let overlays = Overlays::new();
         overlays.open(Slot::QuickSettings, None);
         let mut keys = over(
-            DeskKeys::new(DeskFold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
+            ShellKeys::new(Fold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
         );
         let escape = key(keysyms::Escape, None, KeyModifiers::default());
         keys.key(&escape);
@@ -1111,7 +1111,7 @@ mod tests {
 
         // A device whose shell draws the quick settings has no panel app to ask: Escape closes the
         // surface itself.
-        let mut shell = over(DeskKeys::new(DeskFold::default(), overlays));
+        let mut shell = over(ShellKeys::new(Fold::default(), overlays));
         shell.key(&escape);
         assert_eq!(
             asked(&shell),
@@ -1523,7 +1523,7 @@ mod tests {
         let shortcuts = Rc::new(RefCell::new(ShortcutConfig::default()));
         let triggered = PressedChords::default();
         let mut keys = on_this_device(
-            DeskKeys::default(),
+            ShellKeys::default(),
             Rc::default(),
             Rc::clone(&shortcuts),
             Presses {
@@ -1567,8 +1567,8 @@ mod tests {
 
     #[test]
     fn escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it() {
-        let fold = DeskFold::default();
-        let mut keys = over(DeskKeys::new(fold.clone(), Overlays::new()));
+        let fold = Fold::default();
+        let mut keys = over(ShellKeys::new(fold.clone(), Overlays::new()));
         let escape = key(keysyms::Escape, None, KeyModifiers::default());
         // Folded cards want no key: Escape goes on to whatever is up.
         assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Pass);
@@ -1580,7 +1580,7 @@ mod tests {
             "an open card folds on Escape before anything else hears it"
         );
         keys.key(&escape);
-        assert!(fold.take_asked(), "the key asks the desk to fold");
+        assert!(fold.take_asked(), "the key asks the session to fold");
         assert!(!fold.take_asked(), "and asks once");
     }
     /// Ctrl+Alt+F3 asks the session to leave for the third virtual terminal,
@@ -1590,7 +1590,7 @@ mod tests {
     fn control_alt_function_keys_ask_for_a_virtual_terminal() {
         let commands = Rc::new(RefCell::new(Vec::new()));
         let mut keys = on_this_device(
-            DeskKeys::default(),
+            ShellKeys::default(),
             Rc::default(),
             Rc::default(),
             Presses::default(),

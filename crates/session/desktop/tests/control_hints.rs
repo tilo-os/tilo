@@ -44,7 +44,7 @@ fn window(id: u64, title: &str) -> Tab {
 
 /// A strip holding `windows` windows, side by side: the move and resize hints are about a strip
 /// holding two.
-fn desk_tree(windows: u64) -> Layout {
+fn layout_tree(windows: u64) -> Layout {
     let groups: Vec<WindowGroup> = (0..windows)
         .map(|id| {
             let tab = window(20_u64.saturating_add(id), "Notes");
@@ -75,12 +75,12 @@ fn desk_tree(windows: u64) -> Layout {
     tree
 }
 
-/// The chrome over a desk with `windows` windows, lent `feed`.
+/// The chrome over a shell with `windows` windows, lent `feed`.
 fn chrome_with_hints(windows: u64, feed: &HintsFeed) -> FrameHarness {
-    chrome_over(&desk_tree(windows), feed).0
+    chrome_over(&layout_tree(windows), feed).0
 }
 
-/// The chrome over `tree`, lent `feed`, and the desk itself.
+/// The chrome over `tree`, lent `feed`, and the shell itself.
 fn chrome_over(tree: &Layout, feed: &HintsFeed) -> (FrameHarness, DesktopHandle) {
     chrome_over_at(tree, feed, 1280)
 }
@@ -88,8 +88,8 @@ fn chrome_over(tree: &Layout, feed: &HintsFeed) -> (FrameHarness, DesktopHandle)
 /// [`chrome_over`] on a screen `width` logical pixels across.
 fn chrome_over_at(tree: &Layout, feed: &HintsFeed, width: u32) -> (FrameHarness, DesktopHandle) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (width, 800));
-    desk.relayout();
+    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), (width, 800));
+    shell.relayout();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
@@ -152,10 +152,10 @@ fn a_hint_the_person_has_not_learned_shows_over_the_desktop() {
     });
 }
 
-/// The overview covers the desk: a hint pointing at a window's edge or bar goes with the windows,
+/// The overview covers the shell: a hint pointing at a window's edge or bar goes with the windows,
 /// and none stands over the overview.
 #[test]
-fn a_hint_leaves_when_the_overview_covers_the_desk() {
+fn a_hint_leaves_when_the_overview_covers_the_shell() {
     let feed = HintsFeed::default();
     feed.set_record(record_learning_all_but("resize-window"));
     feed.set_context(None, true, Vec::new());
@@ -210,10 +210,10 @@ fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrom
     visit(&mut chrome)
 }
 
-/// A strip of `windows` windows with the window `group` lifted as a card over the desk, at `dx`
+/// A strip of `windows` windows with the window `group` lifted as a card over the shell, at `dx`
 /// from the left of the work area.
-fn desk_with_card(windows: u64, group: u64, dx: i32) -> Layout {
-    let mut tree = desk_tree(windows);
+fn shell_with_card(windows: u64, group: u64, dx: i32) -> Layout {
+    let mut tree = layout_tree(windows);
     tree.workspaces[0].arrangement.set_float(
         group,
         Some(FloatPlace::new(FloatCorner::TopLeft, dx, 160, 360, 520)),
@@ -231,7 +231,7 @@ fn learning_resize_only() -> Learned {
 }
 
 /// A hint is taught beside the strip's own windows, and points at a handle that is there to take:
-/// a card standing over the desk is another surface, so no hint is anchored to it, and none is
+/// a card standing over the shell is another surface, so no hint is anchored to it, and none is
 /// drawn over its content.
 #[test]
 fn no_hint_points_at_a_card_nor_covers_one() {
@@ -240,7 +240,7 @@ fn no_hint_points_at_a_card_nor_covers_one() {
     let feed = HintsFeed::default();
     feed.set_record(learning_resize_only());
     feed.set_context(None, true, Vec::new());
-    let mut tree = desk_with_card(3, 5, 400);
+    let mut tree = shell_with_card(3, 5, 400);
     tree.active_group.insert(StripId(2), 5);
     let (mut frame, handle) = chrome_over(&tree, &feed);
     assert_eq!(
@@ -256,19 +256,19 @@ fn no_hint_points_at_a_card_nor_covers_one() {
         );
     });
 
-    // The card stands on the desk away from the handle: the hint is taught beside the handle and
+    // The card stands on the shell away from the handle: the hint is taught beside the handle and
     // keeps off the card's content.
     let feed = HintsFeed::default();
     feed.set_record(learning_resize_only());
     feed.set_context(None, true, Vec::new());
-    let (mut frame, handle) = chrome_over(&desk_with_card(3, 5, 0), &feed);
+    let (mut frame, handle) = chrome_over(&shell_with_card(3, 5, 0), &feed);
     let cards = handle.hint_places().over;
-    assert_eq!(cards.len(), 1, "the card over the desk: {cards:?}");
+    assert_eq!(cards.len(), 1, "the card over the shell: {cards:?}");
     with_chrome(&mut frame, |chrome| {
         let painted = chrome
             .hints()
             .card_rect()
-            .expect("a free desk shows the hint beside the handle");
+            .expect("a free shell shows the hint beside the handle");
         for card in &cards {
             assert!(
                 !painted.overlaps(*card),
@@ -282,9 +282,9 @@ fn no_hint_points_at_a_card_nor_covers_one() {
     let feed = HintsFeed::default();
     feed.set_record(learning_resize_only());
     feed.set_context(None, true, Vec::new());
-    let (mut frame, handle) = chrome_over(&desk_with_card(3, 5, 700), &feed);
+    let (mut frame, handle) = chrome_over(&shell_with_card(3, 5, 700), &feed);
     let cards = handle.hint_places().over;
-    assert_eq!(cards.len(), 1, "the card over the desk: {cards:?}");
+    assert_eq!(cards.len(), 1, "the card over the shell: {cards:?}");
     let (line, _) = handle
         .hint_places()
         .focused_edge
@@ -303,9 +303,9 @@ fn no_hint_points_at_a_card_nor_covers_one() {
     });
 }
 
-/// A desk whose bar is busy: a long workspace name on its left and many people on its right.
-fn busy_desk() -> Layout {
-    let mut tree = desk_tree(2);
+/// A shell whose bar is busy: a long workspace name on its left and many people on its right.
+fn busy_shell() -> Layout {
+    let mut tree = layout_tree(2);
     tree.workspaces[0].name = "Customer support and escalations for the whole team".into();
     for person in 0..6 {
         tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
@@ -316,23 +316,23 @@ fn busy_desk() -> Layout {
     tree
 }
 
-/// A desk of `windows` windows with the first of them maximized.
+/// A shell of `windows` windows with the first of them maximized.
 fn maximised(windows: u64) -> Layout {
-    let mut tree = desk_tree(windows);
+    let mut tree = layout_tree(windows);
     if let Some(group) = tree.workspaces[0].strips[0].window_groups.first_mut() {
         group.maximized = true;
     }
     tree
 }
 
-/// The desk over `tree` on a screen `width` across, with the bar's band over its top edge, and the
+/// The shell over `tree` on a screen `width` across, with the bar's band over its top edge, and the
 /// strip's row as it lays out: every window stands clear of the bar, the way the desktop stands
 /// them while its bar shows.
-fn desk_below_the_bar(tree: &Layout, width: u32) -> (FrameHarness, ui::widget::HintPlaces) {
+fn shell_below_the_bar(tree: &Layout, width: u32) -> (FrameHarness, ui::widget::HintPlaces) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     // Windows come to rest below the bar at once, as they do when the person asks for less motion:
     // the slide down to it is motion, not geometry, and a hint is placed against the geometry.
-    let mut desk = FrameHarness::for_root(
+    let mut shell = FrameHarness::for_root(
         ui::state::State::new(),
         surface,
         (width, 800),
@@ -340,20 +340,20 @@ fn desk_below_the_bar(tree: &Layout, width: u32) -> (FrameHarness, ui::widget::H
     );
     handle.set_top_overlay_inset(f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
     for _ in 0..2 {
-        desk.relayout();
-        draw_desk(&mut desk);
+        shell.relayout();
+        draw_shell(&mut shell);
     }
     let row = handle.hint_places();
-    (desk, row)
+    (shell, row)
 }
 
-/// Draw one frame of the desk, as the chrome draws it under its bar.
-fn draw_desk(desk: &mut FrameHarness) {
+/// Draw one frame of the shell, as the chrome draws it under its bar.
+fn draw_shell(shell: &mut FrameHarness) {
     let theme = ui::Theme::dark();
     let mut text = ui::TextRenderer::default();
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = ui::vello::Scene::new();
-    let mut surface = desk.root_mut::<DesktopSurface>();
+    let mut surface = shell.root_mut::<DesktopSurface>();
     surface.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
 }
 
@@ -374,7 +374,7 @@ fn bar_geometry(tree: &Layout, width: u32) -> (Option<Rect>, Vec<(String, Rect)>
 /// The card the hint `unlearned` paints over `tree`, as the chrome drives it, with the strip's own
 /// places and the room the real bar keeps beside its clock: the real geometry the hint is placed
 /// against. `cues` are what the person did just before it, for a hint whose moment is one of those;
-/// they are noted here, after the desk's own frames have drawn, since a frame of the chrome reads
+/// they are noted here, after the shell's own frames have drawn, since a frame of the chrome reads
 /// and keeps what was noted before it.
 fn painted_hint(
     tree: &Layout,
@@ -383,7 +383,7 @@ fn painted_hint(
     wait: ui::time::Duration,
     width: u32,
 ) -> (Option<Rect>, ui::widget::HintPlaces, Option<Rect>) {
-    let (_, row) = desk_below_the_bar(tree, width);
+    let (_, row) = shell_below_the_bar(tree, width);
     let (room, _) = bar_geometry(tree, width);
     let mut hints = ControlHints::new(record_learning_all_but(unlearned));
     for cue in cues {
@@ -416,7 +416,7 @@ fn painted_hint(
     (hints.card_rect(), row, room)
 }
 
-/// A hint never stands over a window's content nor over an app's activity cards, whatever the desk
+/// A hint never stands over a window's content nor over an app's activity cards, whatever the shell
 /// holds: a gesture with no control on screen is taught in the bar, right beside its clock, inside
 /// the room the bar keeps there and clear of the controls it draws itself; and the one for a
 /// window's edge covers no window, the one it teaches included: it stands beside the edge where
@@ -425,14 +425,14 @@ fn painted_hint(
 fn no_hint_stands_over_a_window_or_an_apps_cards() {
     let mut crowded = 0;
     for (tree, width) in [
-        (desk_tree(0), 1280),
-        (desk_tree(1), 1280),
-        (desk_tree(2), 1280),
+        (layout_tree(0), 1280),
+        (layout_tree(1), 1280),
+        (layout_tree(2), 1280),
         (maximised(3), 1280),
         // A busy bar: a long workspace name on its left, many people on its right, and one too
         // narrow to keep the clock's room whole.
-        (busy_desk(), 1280),
-        (busy_desk(), 640),
+        (busy_shell(), 1280),
+        (busy_shell(), 640),
     ] {
         let (painted, row, room) = painted_hint(
             &tree,
@@ -484,7 +484,7 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
     // The resize hint covers no window's content, the window whose edge it teaches included, nor
     // the cards its app stands in a corner: beside the edge where that is clear, else in the bar's
     // room. (A maximised window has no handle to take: no hint.)
-    for tree in [desk_tree(2), desk_tree(3)] {
+    for tree in [layout_tree(2), layout_tree(3)] {
         let (painted, row, room) =
             painted_hint(&tree, "resize-window", &[], ui::time::Duration::ZERO, 1280);
         let painted = painted.expect("the resize hint shows");
@@ -516,8 +516,8 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
 /// lights along its underside where the person holds it.
 #[test]
 fn the_move_hint_covers_no_windows_content_its_own_included() {
-    let tree = desk_tree(3);
-    // Its moment: a window's bar was hovered and a window opened, as the desk notes them.
+    let tree = layout_tree(3);
+    // Its moment: a window's bar was hovered and a window opened, as the shell notes them.
     let (painted, row, room) = painted_hint(
         &tree,
         "move-window",

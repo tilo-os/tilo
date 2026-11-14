@@ -172,7 +172,7 @@ fn opening_in(
 fn home_with_an_identity() -> tilo_test_env::TestHome {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     // The identity `dist/dev/nested-session.sh` mints before it starts its session: a throwaway whose
-    // certificate lets this device govern its own workspaces, so the desk's workspace is one this
+    // certificate lets this device govern its own workspaces, so the shell's workspace is one this
     // session holds.
     let identity = home.config().join("tilo/identity");
     fs::create_dir_all(&identity).expect("the identity's directory");
@@ -220,7 +220,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         })
-        .expect("the desk shows a workspace");
+        .expect("the shell shows a workspace");
 
     // An app of the workspace writes a record that mentions the person, and they are told.
     let written = Instant::now();

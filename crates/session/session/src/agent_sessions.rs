@@ -16,7 +16,7 @@ pub(crate) struct AgentSessions {
 
 #[derive(Default)]
 struct Inner {
-    /// Bumped on every change, so a reading made before it is not mistaken for the desk now.
+    /// Bumped on every change, so a reading made before it is not mistaken for the shell now.
     revision: u64,
     sessions: BTreeMap<AgentSessionId, Connection>,
 }
@@ -27,7 +27,7 @@ struct Connection {
     /// The program the person's answer was remembered for (`claude-code`), which taking that
     /// answer back names.
     program: String,
-    /// What the desk calls it (`Claude Code #2`).
+    /// What the shell calls it (`Claude Code #2`).
     name: String,
     workspace_name: String,
     workspace: String,
@@ -214,7 +214,7 @@ impl AgentSessions {
             })
     }
 
-    /// What the desk calls `session`, once admitted.
+    /// What the shell calls `session`, once admitted.
     pub(crate) fn name(&self, session: &AgentSessionId) -> Option<String> {
         self.inner
             .lock_recover()
@@ -352,7 +352,7 @@ pub(crate) struct Present {
     pub(crate) session: AgentSessionId,
     /// The agent member it is a session of: the key of its colour.
     pub(crate) agent: String,
-    /// What the desk calls it (`Claude Code #2`).
+    /// What the shell calls it (`Claude Code #2`).
     pub(crate) name: String,
     /// The workspace it works in, by id.
     pub(crate) workspace: String,
@@ -456,7 +456,7 @@ mod tests {
         let shown = sessions.revision();
         admit(&sessions, &one, "Claude Code #1");
         sessions.attached(&one, &first);
-        assert!(sessions.revision() > shown, "the desk is told");
+        assert!(sessions.revision() > shown, "the shell is told");
         let two = sessions.joining(None, None);
         admit(&sessions, &two, "Claude Code #2");
         sessions.attached(&two, &second);

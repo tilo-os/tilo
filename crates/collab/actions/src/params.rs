@@ -685,7 +685,7 @@ fn validate_shared_schema_definition(
 #[derive(Clone, PartialEq)]
 pub enum ArgValue {
     Text(String),
-    /// A whole number, as wide as JSON's integers are: a desk's ids span all of `u64`, which `i64`
+    /// A whole number, as wide as JSON's integers are: a layout's ids span all of `u64`, which `i64`
     /// does not.
     Integer(i128),
     Number(f64),
@@ -1967,7 +1967,7 @@ mod declaration_reuse_tests {
         }
     }
 
-    /// A desk's ids span all of `u64`; a device whose key folds high mints ids above `i64::MAX`,
+    /// A layout's ids span all of `u64`; a device whose key folds high mints ids above `i64::MAX`,
     /// and an integer argument has to carry them exactly.
     #[test]
     fn an_integer_argument_carries_a_whole_id() {

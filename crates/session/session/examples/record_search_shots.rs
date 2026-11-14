@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
+use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_session::platform::indexes::SessionIndexes;
@@ -204,9 +204,9 @@ fn main() -> std::process::ExitCode {
         serde_json::Value::String("ada".to_owned()),
     )]);
     session
-        .invoke(DESK_RESOURCE, "search", &query)
+        .invoke(SHELL_RESOURCE, "search", &query)
         .expect("search opens");
-    // The panel's rows are the desk's own resources: every hit the person sees is one, so the
+    // The panel's rows are the shell's own resources: every hit the person sees is one, so the
     // picture is of a search that found them.
     let mut titles = Vec::new();
     for _ in 0..200 {
@@ -235,7 +235,7 @@ fn main() -> std::process::ExitCode {
         );
     }
 
-    // The frame the person sees is the one after the rows reached the desk.
+    // The frame the person sees is the one after the rows reached the shell.
     for _ in 0..4 {
         session.step(Duration::from_millis(16)).expect("step");
     }
@@ -260,7 +260,7 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// The search resource the desk publishes, wherever it sits in its tree.
+/// The search resource the shell publishes, wherever it sits in its tree.
 fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
@@ -271,7 +271,7 @@ fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
     })
 }
 
-/// The labels of the open search's rows, as the desk publishes them.
+/// The labels of the open search's rows, as the shell publishes them.
 fn rows(session: &Session) -> Vec<String> {
     find(&session.resources(), SEARCH_RESOURCE)
         .map(|search| {

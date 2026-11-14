@@ -1,5 +1,5 @@
 //! What the headless-session tests share: a private home for a session's sockets, the frames a test
-//! runs until the desk has done what it asked, the shell's laid-out tree read as assistive
+//! runs until the shell has done what it asked, the shell's laid-out tree read as assistive
 //! technology hears it, a press on one of its controls, the REPL's end of the MCP server, and the
 //! test-control socket `tilo-control` drives a session over.
 //! Included once by `tests/it.rs` as `mod common`, as a directory is not a test target of its own:
@@ -38,10 +38,10 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
 
-/// The canvas, as assistive technology names it: the map the framed desk style draws its places
+/// The canvas, as assistive technology names it: the map the framed style draws its places
 /// on. What a test waits for to know the canvas is up, since nothing else stands on an empty one.
 pub const CANVAS: &str = "Canvas";
-/// The framed desk style, the canvas, by its id: what a fixture asks the desk to show, whatever
+/// The framed style, the canvas, by its id: what a fixture asks the shell to show, whatever
 /// the person's language calls it.
 pub const FRAMES: &str = "so.tilo.shell:frames";
 /// The caret pointing puts on the canvas (canvas.md §1), as assistive technology names it: the
@@ -444,8 +444,8 @@ pub fn type_text(session: &mut Session, text: &str) {
     }
 }
 
-/// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows ("Showing
-/// Strips", "Showing Desktop", …). Which one it names depends on the desk a test starts from, so a
+/// The shell's preset switch on screen: the bar's menu, named by the preset the shell shows ("Showing
+/// Strips", "Showing Desktop", …). Which one it names depends on the shell a test starts from, so a
 /// test asks for the menu rather than for a name. The canvas keeps no switch on its bar
 /// (`canvas.md` §7): there the presets are in the person's own menu, their face on the bar.
 pub fn preset_menu(session: &Session) -> Option<String> {
@@ -457,14 +457,14 @@ pub fn preset_menu(session: &Session) -> Option<String> {
 }
 
 /// The person's own menu on the bar, their face, named for what it holds: on the canvas it holds
-/// the desk styles and the workspaces.
+/// the styles and the workspaces.
 pub fn person_menu(session: &Session) -> Option<String> {
     session.accessible_labels().into_iter().find(|label| {
-        label.ends_with(": desk style and workspaces") && on_screen(session, label).is_some()
+        label.ends_with(": shell style and workspaces") && on_screen(session, label).is_some()
     })
 }
 
-/// Whether the desk shows the Frames canvas: its canvas stands, and its bar carries no preset
+/// Whether the shell shows the Frames canvas: its canvas stands, and its bar carries no preset
 /// switch.
 pub fn canvas_shown(session: &Session) -> bool {
     on_screen(session, CANVAS).is_some()
@@ -474,7 +474,7 @@ pub fn canvas_shown(session: &Session) -> bool {
             .any(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
 }
 
-/// The words the desk lists the style `style` (`so.tilo.shell:frames`) under: its doc line, or its
+/// The words the shell lists the style `style` (`so.tilo.shell:frames`) under: its doc line, or its
 /// view's name when its author wrote none, as the bar's switch and Settings both name it.
 fn style_label(session: &Session, style: &str) -> Option<String> {
     let found = styles(session)
@@ -485,7 +485,7 @@ fn style_label(session: &Session, style: &str) -> Option<String> {
         .find(|words| !words.is_empty())
 }
 
-/// Whether the desk's switch says it shows the style listed `label`: its words are the style's,
+/// Whether the shell's switch says it shows the style listed `label`: its words are the style's,
 /// with the sentence its own language puts them in around them.
 fn switch_says(session: &Session, label: &str) -> bool {
     session.accessible_labels().into_iter().any(|words| {
@@ -493,15 +493,15 @@ fn switch_says(session: &Session, label: &str) -> bool {
     })
 }
 
-/// Show the style `style` (`so.tilo.shell:frames`) on the desk, as the bar's switch does: the
+/// Show the style `style` (`so.tilo.shell:frames`) on the shell, as the bar's switch does: the
 /// shell's own `show_style` action, which every row of its menu runs, named by the style's id
 /// rather than by the words the person's language gives it.
 pub fn show_preset(session: &mut Session, style: &str) {
-    // The desk's own words for it, read from the styles it lists: what its switch names the style
+    // The shell's own words for it, read from the styles it lists: what its switch names the style
     // by, in whatever language the person reads.
     let label = wait_for(
         session,
-        format!("the desk to list the {style} style"),
+        format!("the shell to list the {style} style"),
         |session| style_label(session, style),
     );
     // A session whose shell has no display runs no action of it: the bar that names the style is
@@ -509,7 +509,7 @@ pub fn show_preset(session: &mut Session, style: &str) {
     wait_for(session, "the shell to draw", |session| {
         (!session.shell_parts().is_empty()).then_some(())
     });
-    // A desk already showing it says so, and refuses to show it again in the person's language:
+    // A shell already showing it says so, and refuses to show it again in the person's language:
     // what the switch names decides it.
     // The canvas keeps no switch on its bar (`canvas.md` §7): it says it shows the canvas by the
     // canvas standing under a bar that names no style.
@@ -519,9 +519,9 @@ pub fn show_preset(session: &mut Session, style: &str) {
     if !shows(session) {
         session
             .run_shell_action("show_style", vec![Value::from(style)])
-            .unwrap_or_else(|why| panic!("the desk shows {style}: {why}"));
+            .unwrap_or_else(|why| panic!("the shell shows {style}: {why}"));
     }
-    wait_for(session, format!("the desk to show {style}"), |session| {
+    wait_for(session, format!("the shell to show {style}"), |session| {
         shows(session).then_some(())
     });
 }
@@ -831,7 +831,7 @@ pub fn seeded_session_at(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    // The desk shows the Frames canvas once it says so: what the canvas's own controls are called
+    // The shell shows the Frames canvas once it says so: what the canvas's own controls are called
     // is the person's language's, so a fixture reads the style, not their words.
     show_preset(&mut session, FRAMES);
     until(&mut session, "the canvas", |session| {
@@ -868,7 +868,7 @@ pub fn repl_session(
     .expect("session")
 }
 
-/// The person's arrangement as a shell reads it: the desk as it stands now,
+/// The person's arrangement as a shell reads it: the shell as it stands now,
 /// every workspace, row, strip and place by key.
 pub fn arrangement(session: &Session) -> arrangement::Reading {
     session.arrangement().borrow().reading()
@@ -1120,7 +1120,7 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
 /// The surface the shell shows over the windows now, as the surface stack's reading names it:
 /// `none` at rest, `centre` for the notification centre, `quick-settings`, `launcher` and the rest.
 #[must_use]
-pub fn desk_here(session: &Session) -> String {
+pub fn shell_here(session: &Session) -> String {
     surface_stack(session)
         .get("here")
         .and_then(Value::as_str)
@@ -1147,14 +1147,14 @@ fn surface_stack(session: &Session) -> Value {
 /// session for the bar, the chips, the switcher and the overview, and its app's name beside it.
 ///
 /// # Panics
-/// The desk holds no place for `record`.
+/// The shell holds no place for `record`.
 #[track_caller]
 pub fn window_name_of(session: &Session, record: &str) -> String {
     places(session)
         .into_iter()
         .find(|place| place.record == record)
         .map_or_else(
-            || panic!("the desk holds a place for {record}"),
+            || panic!("the shell holds a place for {record}"),
             |place| place.name,
         )
 }
@@ -1177,16 +1177,16 @@ pub fn place_the_inbox(session: &mut Session, root: &Path) {
     );
 }
 
-/// The desk's windows, as `session:windows` publishes them.
-pub fn windows(session: &Session) -> Vec<tilo_session::desk_windows::Window> {
+/// The shell's windows, as `session:windows` publishes them.
+pub fn windows(session: &Session) -> Vec<tilo_session::windows::Window> {
     session
         .read("session:windows")
         .and_then(|windows| serde_json::from_value(windows["all"].clone()).ok())
         .expect("the session publishes its windows")
 }
 
-/// The desk styles every installed package offers, as `session:styles` publishes them.
-pub fn styles(session: &Session) -> Vec<tilo_session::desk_styles::DeskStyle> {
+/// The styles every installed package offers, as `session:styles` publishes them.
+pub fn styles(session: &Session) -> Vec<tilo_session::styles::Style> {
     session
         .read("session:styles")
         .and_then(|styles| serde_json::from_value(styles["offered"].clone()).ok())

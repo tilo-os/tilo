@@ -81,7 +81,7 @@ impl Session {
         self.shared.file_picker.as_ref()
     }
 
-    /// The keys a held Super reaches, as the chrome draws them over the desk.
+    /// The keys a held Super reaches, as the chrome draws them over the shell.
     #[must_use]
     pub fn super_peek(&self) -> &tilo_desktop::super_peek::SuperPeek {
         &self.shared.super_peek

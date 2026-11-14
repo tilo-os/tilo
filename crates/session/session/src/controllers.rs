@@ -252,7 +252,7 @@ impl Session {
                     .invocations
                     .borrow_mut()
                     .push(Invocation::shortcut(action));
-                // The desk moves before the next press is routed, so a direction after it acts on
+                // The shell moves before the next press is routed, so a direction after it acts on
                 // whatever has focus by then.
                 self.settle()?;
             } else {

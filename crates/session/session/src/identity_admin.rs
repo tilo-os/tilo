@@ -223,7 +223,7 @@ pub(crate) fn fleet_store() -> Result<tilo_identity_host::device_fleet::DeviceFl
 }
 
 /// What the files `person`'s fleet is read from looked like, as a value the
-/// session's pass over the desk compares with the one it last saw: a pairing
+/// session's pass over the shell compares with the one it last saw: a pairing
 /// writes a certificate into the fleet on a thread of its own, and the
 /// person's record keeps the keys with their list, so a fleet that moved
 /// says the list again.
@@ -488,7 +488,7 @@ pub(crate) fn revoke(
 ///
 /// Why `person` may not administer it.
 pub(crate) fn authorize(
-    desk: &crate::plane::DeskAuthority,
+    session: &crate::plane::LayoutAuthority,
     workspace: &str,
     person: &str,
 ) -> Result<IdentityProfile, String> {
@@ -496,7 +496,7 @@ pub(crate) fn authorize(
     let now = tilo_clock::unix_now();
     let mut hosted = false;
     let mut administers = false;
-    desk.with_tree(&mut |tree| {
+    session.with_tree(&mut |tree| {
         for held in &tree.workspaces {
             if held.id().to_string() == workspace {
                 hosted = true;
@@ -627,7 +627,7 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
 /// browser certified in its own tab, is listed here too. `engine` is the
 /// workspaces whose hosts answer it.
 pub(crate) struct BrokerDoor {
-    pub(crate) desk: Arc<crate::plane::DeskAuthority>,
+    pub(crate) layout: Arc<crate::plane::LayoutAuthority>,
     pub(crate) admin: &'static IdentityAdmin,
     pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
@@ -661,7 +661,7 @@ impl tilo_broker_core::steps::HostStepServices for BrokerDoor {
             .find(|step| request.address.resource == RESOURCE && request.address.action == *step)
             .ok_or("unknown identity step")?;
         let args = bind_slot(params(step), request.argument)?;
-        let identity = authorize(&self.desk, request.workspace, person)?;
+        let identity = authorize(&self.layout, request.workspace, person)?;
         let store = Store::from_env()?;
         // A device the person's root certified elsewhere is in their record on the host that
         // keeps it, and in no fleet of this one's: the list is read where it is kept, and the
@@ -1102,10 +1102,10 @@ mod tests {
         );
     }
 
-    /// A desk hosting `workspace` , with nothing else on it.
-    fn desk_with(workspace: tilo_desktop_model::Workspace) -> crate::plane::DeskAuthority {
+    /// A session hosting `workspace` , with nothing else on it.
+    fn shell_with(workspace: tilo_desktop_model::Workspace) -> crate::plane::LayoutAuthority {
         let active = workspace.id();
-        crate::plane::DeskAuthority::new(
+        crate::plane::LayoutAuthority::new(
             tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
                 active,
@@ -1121,15 +1121,16 @@ mod tests {
     fn only_a_person_who_governs_the_hosted_workspace_administers_its_devices() {
         let mut workspace = tilo_desktop_model::Workspace::new(
             tilo_desktop_model::WorkspaceId::from_u128(1),
-            "Desk",
+            "Session",
         );
         workspace.set_owner("alice");
         let hosted = workspace.id().to_string();
-        let desk = desk_with(workspace);
+        let session = shell_with(workspace);
 
-        let refused = authorize(&desk, &hosted, "bob").expect_err("a member who does not govern");
+        let refused =
+            authorize(&session, &hosted, "bob").expect_err("a member who does not govern");
         assert!(refused.contains("may not administer"), "{refused}");
-        let gone = authorize(&desk, "no such workspace", "alice").expect_err("not hosted here");
+        let gone = authorize(&session, "no such workspace", "alice").expect_err("not hosted here");
         assert!(gone.contains("no longer hosted"), "{gone}");
     }
 }

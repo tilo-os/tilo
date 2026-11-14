@@ -49,7 +49,7 @@ fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
     }
 }
 
-fn desk_tree(groups: Vec<WindowGroup>) -> Layout {
+fn layout_tree(groups: Vec<WindowGroup>) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
@@ -67,12 +67,12 @@ fn desk_tree(groups: Vec<WindowGroup>) -> Layout {
     tree
 }
 
-/// The desk with `tree` on it and the chrome that carries the desktop's chords over it: the desk
+/// The shell with `tree` on it and the chrome that carries the desktop's chords over it: the shell
 /// and the chrome are the two layers the session hosts, both driving the one desktop.
-fn desk_and_chrome(tree: &Layout) -> (FrameHarness, FrameHarness, DesktopHandle) {
+fn shell_and_chrome(tree: &Layout) -> (FrameHarness, FrameHarness, DesktopHandle) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
-    desk.relayout();
+    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    shell.relayout();
     let chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
@@ -88,7 +88,7 @@ fn desk_and_chrome(tree: &Layout) -> (FrameHarness, FrameHarness, DesktopHandle)
         ui::Theme::dark(),
     );
     frame.relayout();
-    (desk, frame, handle)
+    (shell, frame, handle)
 }
 
 fn hold(frame: &mut FrameHarness, mods: ModifiersState) {
@@ -110,7 +110,7 @@ fn windows_of(handle: &DesktopHandle, group: &str) -> Vec<String> {
         .collect()
 }
 
-/// What the desk has in front: the active window of the active strip.
+/// What the shell has in front: the active window of the active strip.
 fn in_front(handle: &DesktopHandle) -> Option<u64> {
     handle
         .snapshot("g", vec![])
@@ -122,7 +122,7 @@ fn in_front(handle: &DesktopHandle) -> Option<u64> {
 /// index in its group, in front, and only the once.
 #[test]
 fn the_reopen_chord_brings_a_closed_window_back_where_it_was() {
-    let tree = desk_tree(vec![
+    let tree = layout_tree(vec![
         group(
             3,
             vec![
@@ -133,7 +133,7 @@ fn the_reopen_chord_brings_a_closed_window_back_where_it_was() {
         ),
         group(4, vec![window(50, "Mail", "so.tilo.mail")]),
     ]);
-    let (mut desk, mut frame, handle) = desk_and_chrome(&tree);
+    let (mut shell, mut frame, handle) = shell_and_chrome(&tree);
     assert_eq!(windows_of(&handle, "3"), ["20", "30", "40"]);
 
     // The window's ✕ asks the desktop to close it, as a page's does.
@@ -143,14 +143,14 @@ fn the_reopen_chord_brings_a_closed_window_back_where_it_was() {
         .dispatch(LayoutEffect::CloseTab { tab: closed.tab })
         .unwrap();
     for _ in 0..4 {
-        desk.relayout();
+        shell.relayout();
     }
     assert_eq!(windows_of(&handle, "3"), ["20", "40"]);
 
     hold(&mut frame, ModifiersState::SUPER | ModifiersState::SHIFT);
     press(&mut frame, Key::Character("t".into()));
     for _ in 0..4 {
-        desk.relayout();
+        shell.relayout();
     }
     assert_eq!(
         windows_of(&handle, "3"),
@@ -163,7 +163,7 @@ fn the_reopen_chord_brings_a_closed_window_back_where_it_was() {
     // answers it.
     press(&mut frame, Key::Character("t".into()));
     for _ in 0..4 {
-        desk.relayout();
+        shell.relayout();
     }
     assert_eq!(windows_of(&handle, "3"), ["20", "30", "40"]);
     assert_eq!(windows_of(&handle, "4"), ["50"]);

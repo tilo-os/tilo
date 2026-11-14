@@ -1,9 +1,9 @@
-//! The desk's captures: every state of the new session's desk and overview rendered headless,
+//! The shell's captures: every state of the new session's shell and overview rendered headless,
 //! beside the old shell's captures of the same states, and the frames that show the transitions
 //! moving.
 //! Each state is a test of its own with its own session, so what one leaves open never shows in
-//! another's picture. Frames are written to `$VISUAL_DESK_OUT` (default
-//! `~/.cache/visual-desk/shots/new` ), and the pixel-parity set to `$PIXEL_PARITY_OUT` .
+//! another's picture. Frames are written to `$VISUAL_SHELL_OUT` (default
+//! `~/.cache/visual-shell/shots/new` ), and the pixel-parity set to `$PIXEL_PARITY_OUT` .
 
 use super::*;
 
@@ -51,7 +51,7 @@ fn step_from(session: &mut Session, clock: &mut std::time::Instant, millis: u64)
     }
 }
 
-/// Whether the workspace directory sheet is open over the desk.
+/// Whether the workspace directory sheet is open over the shell.
 fn directory_open(session: &Session) -> bool {
     session
         .workspace_directory()
@@ -94,7 +94,7 @@ fn invoke_with_at(
     });
 }
 
-/// A session drawing the desk in the light theme.
+/// A session drawing the shell in the light theme.
 pub(super) fn light_session() -> Session {
     Session::headless(
         Options {
@@ -107,7 +107,7 @@ pub(super) fn light_session() -> Session {
     .expect("session")
 }
 
-/// The presentation of a session drawing the desk in the light theme.
+/// The presentation of a session drawing the shell in the light theme.
 pub(super) fn light_presentation() -> ui::application::ComponentRunnerInputs {
     let mut inputs = ui::headless::fixture_runner_inputs();
     inputs.theme = ui::theme::Theme::light();
@@ -117,7 +117,7 @@ pub(super) fn light_presentation() -> ui::application::ComponentRunnerInputs {
 /// Run frames until `done` holds, with no client to pump.
 #[track_caller]
 fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    crate::common::wait_for(session, "what the capture asked of the desk", |session| {
+    crate::common::wait_for(session, "what the capture asked of the shell", |session| {
         done(session).then_some(())
     });
 }
@@ -133,7 +133,7 @@ pub(super) fn held_clock() -> ui::time::testing::SharedWall {
 #[test]
 fn pixel_parity_frames_match_the_old_shells_scenes() {
     // The set builds six sessions one after another in one thread, and a session is built under a
-    // stack the size of a whole desk: the room a test thread gets by default is not enough for the
+    // stack the size of a whole shell: the room a test thread gets by default is not enough for the
     // last of them, and a harness that overflows takes the rest of the suite with it.
     std::thread::Builder::new()
         .name("pixel-parity".into())
@@ -153,15 +153,15 @@ fn capture_parity_frames() {
     let _clock = held_clock();
     std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
 
-    // The empty desk, both themes: the old shell's `empty-desk` and `empty-desk` at `--theme light`
+    // The empty shell, both themes: the old shell's `empty-shell` and `empty-shell` at `--theme light`
     // .
     {
         let mut session = session();
         settle(&mut session, 4);
-        capture(&mut session, "empty-desk");
+        capture(&mut session, "empty-shell");
         let mut session = light_session();
         settle(&mut session, 4);
-        capture(&mut session, "empty-desk-light");
+        capture(&mut session, "empty-shell-light");
     }
 
     // One window: the old shell's `desktop` (one tabbed group).
@@ -195,12 +195,12 @@ fn capture_parity_frames() {
         capture(&mut session, "quick-settings");
     }
 
-    // Search, opened from the desk.
+    // Search, opened from the shell.
     {
-        use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
+        use tilo_desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
         let mut session = session();
         settle(&mut session, 2);
-        invoke(&mut session, DESK_RESOURCE, "search");
+        invoke(&mut session, SHELL_RESOURCE, "search");
         until_session(&mut session, |session| {
             find_resource(&session.resources(), SEARCH_RESOURCE).is_some()
         });
@@ -208,7 +208,7 @@ fn capture_parity_frames() {
         capture(&mut session, "search");
     }
 
-    // One notification banner over the desk, saying what the old shell's `notifications-one` says.
+    // One notification banner over the shell, saying what the old shell's `notifications-one` says.
     {
         use tilo_desktop::notifications::{Banner, BannerFeed, Notification, NotificationSeverity};
         let mut session = session();
@@ -253,7 +253,7 @@ fn capture_parity_frames() {
         drop(client);
     }
 
-    // The lock screen over the desk.
+    // The lock screen over the shell.
     {
         let plane = super::lock::private_home();
         let mut session = crate::common::headless(Options {
@@ -268,7 +268,7 @@ fn capture_parity_frames() {
         settle(&mut session, 2);
         invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
         // The screen is a process of its own, and the frame compared here is the one it drew: until
-        // then a locked output shows the blank the desk left behind.
+        // then a locked output shows the blank the shell left behind.
         let deadline = tilo_test_env::hang_deadline();
         while !session.compositor().lock_drawn() {
             assert!(
@@ -288,7 +288,7 @@ fn capture_parity_frames() {
 /// by the readout that answers it now.
 fn capture_readout(name: &str, readout: &serde_json::Value) {
     for style in ["", "-light"] {
-        let mut session = desk_in(style);
+        let mut session = shell_in(style);
         settle(&mut session, 2);
         invoke_with(
             &mut session,
@@ -301,8 +301,8 @@ fn capture_readout(name: &str, readout: &serde_json::Value) {
     }
 }
 
-/// The desk a capture draws on, by its style suffix: the default, or the calm light one.
-fn desk_in(style: &str) -> Session {
+/// The shell a capture draws on, by its style suffix: the default, or the calm light one.
+fn shell_in(style: &str) -> Session {
     if style == "-light" {
         light_session()
     } else {
@@ -310,13 +310,13 @@ fn desk_in(style: &str) -> Session {
     }
 }
 
-/// The desk alone in both styles: what a readout capture is drawn over, so the pill it adds can be
+/// The shell alone in both styles: what a readout capture is drawn over, so the pill it adds can be
 /// measured against it.
-fn capture_readout_desk() {
+fn capture_readout_shell() {
     for style in ["", "-light"] {
-        let mut session = desk_in(style);
+        let mut session = shell_in(style);
         settle(&mut session, 2);
-        capture(&mut session, &format!("osd-desk{style}"));
+        capture(&mut session, &format!("osd-shell{style}"));
     }
 }
 
@@ -329,9 +329,9 @@ fn pixel_parity_readout_frames_match_the_old_shells_scenes() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
     std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
-    // The desk the readouts float over, in both styles: the frame a readout's capture differs from,
+    // The shell the readouts float over, in both styles: the frame a readout's capture differs from,
     // so its pill can be measured against it.
-    capture_readout_desk();
+    capture_readout_shell();
     // A content-sized pill that names the device the key changed, its level drawn as the bar under
     // the name, and a mode change said in words. The old shell's `media_key_osd` scenes are the
     // same states, so the two sit side by side.
@@ -447,7 +447,7 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
 
     // On a 1280 by 800 output the pill rests one step of sixty-four above the screen's foot (the
     // line the old shell's pill sat on), centred, two rows of a device name and value above the
-    // bar: nothing of the desk lights up outside it, so it takes no more room than what it reads.
+    // bar: nothing of the shell lights up outside it, so it takes no more room than what it reads.
     let (left, top, right, bottom) =
         lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
             .expect("the readout paints something");
@@ -554,12 +554,12 @@ fn luma(pixel: &[u8]) -> u16 {
     u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])
 }
 
-/// Where the desk scenes are written, beside the old shell's captures of the same states.
-fn desk_shots_dir() -> std::path::PathBuf {
-    std::env::var_os("VISUAL_DESK_OUT").map_or_else(
+/// Where the shell scenes are written, beside the old shell's captures of the same states.
+fn shots_dir() -> std::path::PathBuf {
+    std::env::var_os("VISUAL_SHELL_OUT").map_or_else(
         || {
             let home = std::env::var("HOME").expect("HOME");
-            std::path::PathBuf::from(home).join(".cache/visual-desk/shots/new")
+            std::path::PathBuf::from(home).join(".cache/visual-shell/shots/new")
         },
         std::path::PathBuf::from,
     )
@@ -585,9 +585,9 @@ pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &st
     std::fs::write(dir.join(format!("{name}.labels")), labels).expect("write the labels");
 }
 
-/// Three workspaces on the desk: the first holds a window, the second two,
+/// Three workspaces on the shell: the first holds a window, the second two,
 /// the third none, and the second is in front.
-fn desk_of_three(session: &mut Session) -> Vec<TestClient> {
+fn shell_of_three(session: &mut Session) -> Vec<TestClient> {
     let a = mapped(session, "org.example.Terminal");
     invoke(session, CHROME_RESOURCE, "new-workspace");
     let b = mapped(session, "so.tilo.file-explorer");
@@ -602,52 +602,52 @@ fn desk_of_three(session: &mut Session) -> Vec<TestClient> {
     vec![a, b, c]
 }
 
-/// The desk before any window opens, for comparison with the old shell's `empty-desk` scene.
+/// The shell before any window opens, for comparison with the old shell's `empty-shell` scene.
 #[test]
-fn desk_scene_the_empty_desk() {
+fn shell_scene_the_empty_shell() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = session();
     settle(&mut session, 4);
-    capture_to(&mut session, &dir, "desk-empty");
+    capture_to(&mut session, &dir, "shell-empty");
 }
 
 /// Three workspaces, two windows in the one in front, for comparison with the old shell's `desktop`
 /// and `multi-group` scenes.
 #[test]
-fn desk_scene_three_workspaces() {
+fn shell_scene_three_workspaces() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = session();
-    let _clients = desk_of_three(&mut session);
+    let _clients = shell_of_three(&mut session);
     settle(&mut session, 8);
-    capture_to(&mut session, &dir, "desk-three");
+    capture_to(&mut session, &dir, "shell-three");
 }
 
-/// The workspace menu over that desk, for comparison with the old shell's `workspace-menu` scene.
+/// The workspace menu over that shell, for comparison with the old shell's `workspace-menu` scene.
 #[test]
-fn desk_scene_the_workspace_menu() {
+fn shell_scene_the_workspace_menu() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = session();
-    let _clients = desk_of_three(&mut session);
+    let _clients = shell_of_three(&mut session);
     settle(&mut session, 8);
     invoke(&mut session, CHROME_RESOURCE, "workspace-menu");
     settle(&mut session, 8);
     capture_to(&mut session, &dir, "workspace-menu");
 }
 
-/// Workspace settings over the desk, for comparison with the old shell's `ws-settings-*` scenes.
+/// Workspace settings over the shell, for comparison with the old shell's `ws-settings-*` scenes.
 #[test]
-fn desk_scene_workspace_settings() {
+fn shell_scene_workspace_settings() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = session();
-    let _clients = desk_of_three(&mut session);
+    let _clients = shell_of_three(&mut session);
     settle(&mut session, 8);
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     settle(&mut session, 8);
@@ -662,15 +662,15 @@ fn desk_scene_workspace_settings() {
     capture_to(&mut session, &dir, "workspace-settings");
 }
 
-/// The directory of workspaces over the desk, for comparison with the old shell's `join-empty` and
+/// The directory of workspaces over the shell, for comparison with the old shell's `join-empty` and
 /// `join-field` scenes.
 #[test]
-fn desk_scene_the_directory() {
+fn shell_scene_the_directory() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = session();
-    let _clients = desk_of_three(&mut session);
+    let _clients = shell_of_three(&mut session);
     settle(&mut session, 8);
     invoke(&mut session, CHROME_RESOURCE, "join-workspace");
     settle(&mut session, 8);
@@ -688,37 +688,37 @@ fn desk_scene_the_directory() {
 /// The overview open over the three workspaces, for comparison with the old shell's `overview`
 /// scene.
 #[test]
-fn desk_scene_the_overview() {
+fn shell_scene_the_overview() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = session();
-    let _clients = desk_of_three(&mut session);
+    let _clients = shell_of_three(&mut session);
     settle(&mut session, 8);
     let before = session.accessible_labels();
     assert!(
         !directory_open(&session),
-        "nothing is open over the desk before the overview is"
+        "nothing is open over the shell before the overview is"
     );
     invoke(&mut session, CHROME_RESOURCE, "overview");
     settle(&mut session, 10);
     assert_ne!(
         session.accessible_labels(),
         before,
-        "the overview shows over the desk"
+        "the overview shows over the shell"
     );
     assert!(
         !directory_open(&session),
         "the overview opens no sheet of its own"
     );
     // The panel takes the display's right-hand 480 px column, inset by the
-    // 48 px margin; the desk's windows stand pictured beside it, not under
+    // 48 px margin; the shell's windows stand pictured beside it, not under
     // it.
     let panel_column = f64::from(WIDTH) - 480.0 - 48.0;
     let pictures = session.overview_pictures();
     assert!(
         !pictures.is_empty(),
-        "the overview pictures the desk's windows"
+        "the overview pictures the shell's windows"
     );
     for (window, rect) in &pictures {
         assert!(
@@ -729,16 +729,16 @@ fn desk_scene_the_overview() {
     capture_to(&mut session, &dir, "overview-three");
 }
 
-/// The desk, its bar and the overview on the person's light theme, for comparison with the old
+/// The shell, its bar and the overview on the person's light theme, for comparison with the old
 /// shell's `*-light` scenes.
 #[test]
-fn desk_scene_the_light_theme() {
+fn shell_scene_the_light_theme() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = light_session();
     settle(&mut session, 6);
-    capture_to(&mut session, &dir, "desk-empty-light");
+    capture_to(&mut session, &dir, "shell-empty-light");
     invoke(&mut session, CHROME_RESOURCE, "overview");
     settle(&mut session, 10);
     capture_to(&mut session, &dir, "overview-light");
@@ -754,11 +754,11 @@ fn light_runner_inputs() -> ui::application::ComponentRunnerInputs {
 /// Frames partway through the overview opening and a workspace switch, at the instants a person
 /// sees them as they move.
 #[test]
-fn desk_motion_frames_match_the_old_shells_films() {
+fn shell_motion_frames_match_the_old_shells_films() {
     let _clock = held_clock();
-    let dir = desk_shots_dir();
+    let dir = shots_dir();
     let mut session = session();
-    let _clients = desk_of_three(&mut session);
+    let _clients = shell_of_three(&mut session);
     settle(&mut session, 6);
 
     // The overview on its way open, and on its way closed.
@@ -834,7 +834,7 @@ fn desk_motion_frames_match_the_old_shells_films() {
 /// The overview shows the windows' own pixels where its cards rest, drawn by the compositor, rather
 /// than a mark standing in for them.
 #[test]
-fn the_overview_pictures_the_desks_windows() {
+fn the_overview_pictures_the_shells_windows() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
     let mut session = session();
@@ -851,11 +851,11 @@ fn the_overview_pictures_the_desks_windows() {
     let (window, rect) = pictures
         .first()
         .copied()
-        .unwrap_or_else(|| panic!("the window on the desk is pictured: {pictures:?}"));
+        .unwrap_or_else(|| panic!("the window on the shell is pictured: {pictures:?}"));
     assert_eq!(
         Some(window),
         self::window(session.compositor(), "org.example.Terminal").map(|(id, _)| id),
-        "the pictured window is the desk's own"
+        "the pictured window is the shell's own"
     );
     assert!(
         rect.0 >= 0.0 && rect.1 >= 0.0 && rect.0 + rect.2 <= f64::from(WIDTH),
@@ -879,7 +879,7 @@ fn the_overview_pictures_the_desks_windows() {
 }
 
 /// A window the session keeps private is pictured as the placeholder a capture draws of it: the
-/// desk the picture stands on is what a screenshot, a recording and a share of the overview show.
+/// shell the picture stands on is what a screenshot, a recording and a share of the overview show.
 #[test]
 fn the_overview_pictures_a_private_window_as_its_placeholder() {
     let _settled = ui::motion::testing::settled();
@@ -925,9 +925,9 @@ fn the_overview_pictures_a_private_window_as_its_placeholder() {
     );
 }
 
-/// The person's theme reaches the desk, its bar and the overview, not only the apps.
+/// The person's theme reaches the shell, its bar and the overview, not only the apps.
 #[test]
-fn the_desk_draws_the_persons_theme() {
+fn the_shell_draws_the_persons_theme() {
     let _settled = ui::motion::testing::settled();
     let _clock = held_clock();
     let regions = |presentation: fn() -> ui::application::ComponentRunnerInputs| {
@@ -946,7 +946,7 @@ fn the_desk_draws_the_persons_theme() {
             .screenshot("HEADLESS-1")
             .expect("screenshot");
         let size = (shot.width, shot.height);
-        let desk = (
+        let shell = (
             mean_luminance(&shot.rgba),
             region_luminance(&shot.rgba, size, (400, 4, 480, 24)),
             region_luminance(&shot.rgba, size, (400, 300, 480, 200)),
@@ -958,21 +958,21 @@ fn the_desk_draws_the_persons_theme() {
             .screenshot("HEADLESS-1")
             .expect("screenshot");
         let panel = region_luminance(&shot.rgba, (shot.width, shot.height), (800, 300, 400, 220));
-        (desk, panel)
+        (shell, panel)
     };
-    let ((dark, dark_bar, dark_desk), dark_panel) = regions(ui::headless::fixture_runner_inputs);
-    let ((light, light_bar, light_desk), light_panel) = regions(light_runner_inputs);
+    let ((dark, dark_bar, dark_shell), dark_panel) = regions(ui::headless::fixture_runner_inputs);
+    let ((light, light_bar, light_shell), light_panel) = regions(light_runner_inputs);
     assert!(
         light > dark + 50.0,
-        "the desk follows the person's theme: light {light:.0}, dark {dark:.0}"
+        "the shell follows the person's theme: light {light:.0}, dark {dark:.0}"
     );
     assert!(
         light_bar > 140.0 && dark_bar < 120.0,
         "the bar follows the palette: light {light_bar:.0}, dark {dark_bar:.0}"
     );
     assert!(
-        light_desk > 110.0 && dark_desk < 90.0,
-        "the desk's ground follows the palette: light {light_desk:.0}, dark {dark_desk:.0}"
+        light_shell > 110.0 && dark_shell < 90.0,
+        "the shell's ground follows the palette: light {light_shell:.0}, dark {dark_shell:.0}"
     );
     assert!(
         light_panel > 110.0 && dark_panel < 90.0,

@@ -114,7 +114,7 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
 }
 
 /// Build the tilolang package written at `dir` (a directory of `.tl` files) and install it into
-/// the store `store`, signing it with the test process's publisher key. A desk-style package in
+/// the store `store`, signing it with the test process's publisher key. A shell-style package in
 /// a test is written into a scratch directory and installed here, exactly as a person installs
 /// one into their own store (`shell.md` §6); the session then lists its style like any other.
 ///

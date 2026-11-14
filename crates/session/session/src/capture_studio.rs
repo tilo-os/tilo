@@ -139,7 +139,7 @@ pub(crate) struct CaptureStudio {
     shown_shot: Option<ShownShot>,
     /// How many screenshots were shown there.
     shots_shown: u64,
-    /// The shot from the desk that could not be saved, while its card says so and offers to copy
+    /// The shot from the shell that could not be saved, while its card says so and offers to copy
     /// what it caught.
     failed_shot: Option<FailedShot>,
 }
@@ -148,7 +148,7 @@ pub(crate) struct CaptureStudio {
 struct Shot {
     /// Where its file was to go: what a failure names as the folder it could not be saved in.
     folder: PathBuf,
-    /// The picture itself, when it may be copied instead: a shot taken from the desk, whose card
+    /// The picture itself, when it may be copied instead: a shot taken from the shell, whose card
     /// offers that once its file could not be written.
     picture: Option<Arc<image::RgbaImage>>,
     /// What its receipt shows, when the person took it.
@@ -184,7 +184,7 @@ struct ShownShot {
     at: Instant,
 }
 
-/// A screenshot the person took from the desk that could not be saved: the card says it in their
+/// A screenshot the person took from the shell that could not be saved: the card says it in their
 /// words, with what they can do instead, while the picture is still here to do it with.
 struct FailedShot {
     /// What the person tried to keep.
@@ -555,7 +555,7 @@ impl CaptureStudio {
     }
 
     /// Say that a screenshot the person took was not saved: the bar says it in their words where
-    /// they touched it, and a shot taken from the desk — whose bar is down — is said on the
+    /// they touched it, and a shot taken from the shell — whose bar is down — is said on the
     /// floating layer's card, which offers to copy the picture instead.
     fn shot_not_saved(&mut self, shot: Shot, why: &WriteFailed) {
         self.failed(Failure::NotWritten {
@@ -731,7 +731,7 @@ impl CaptureStudio {
             }
         };
         // The first frame and the encoder are the worker's: building an encoder stalls one pass of
-        // the loop, and this one has a desk to keep drawing.
+        // the loop, and this one has a shell to keep drawing.
         let path = crate::capture::unique(
             &self.directory,
             "Recording",
@@ -890,7 +890,7 @@ impl CaptureStudio {
         feeding.last = Some(now);
         let sound = feeding.drain_audio(true);
         if !io.feed(frame, sound) {
-            // The desk keeps drawing; the recording says what it lost.
+            // The shell keeps drawing; the recording says what it lost.
             let dropped = io.dropped();
             if dropped == 1 || dropped.is_multiple_of(FALLING_BEHIND) {
                 tracing::warn!(
@@ -971,7 +971,7 @@ impl CaptureStudio {
                 ui::held_images::hero(&picture, CARD_PICTURE)
             },
         };
-        // A shot taken from the desk keeps its picture until its card is gone: a file that could
+        // A shot taken from the shell keeps its picture until its card is gone: a file that could
         // not be written can still be copied.
         let picture = Arc::new(picture);
         let keep = receipt.floating.then(|| Arc::clone(&picture));
@@ -1265,7 +1265,7 @@ impl CaptureStudio {
         ))
     }
 
-    /// A shot from the desk that could not be saved, as its card says it: why in the person's
+    /// A shot from the shell that could not be saved, as its card says it: why in the person's
     /// words, and the one action that keeps what they caught.
     fn failed_shot_summary(&self) -> Option<ui::live_activity::Summary> {
         use ui::live_activity::{Control, ControlKind, Kind, Summary};
@@ -1802,7 +1802,7 @@ mod tests {
     }
 
     /// The shot's card goes away on its own: the session comes back for it when it has been up long
-    /// enough, rather than leaving it over the desk until the person touches something.
+    /// enough, rather than leaving it over the shell until the person touches something.
     #[test]
     fn the_shots_card_goes_away_on_its_own() {
         let pictures = tempfile::tempdir().expect("a folder");
@@ -1827,7 +1827,7 @@ mod tests {
             "the pass that takes it down is due when it has been up long enough"
         );
 
-        // That pass: the card is gone, and nothing is left over the desk.
+        // That pass: the card is gone, and nothing is left over the shell.
         studio.shown_shot = Some(ShownShot {
             path: pictures.path().join("gone.png"),
             thumb: String::new(),
@@ -1888,10 +1888,10 @@ mod tests {
         );
     }
 
-    /// A shot from the desk whose file could not be written is said in the person's words, never
+    /// A shot from the shell whose file could not be written is said in the person's words, never
     /// the system's, and the card offers to copy what it caught while the picture is still here.
     #[test]
-    fn a_shot_from_the_desk_that_could_not_be_saved_offers_to_copy_it() {
+    fn a_shot_from_the_shell_that_could_not_be_saved_offers_to_copy_it() {
         let pictures = tempfile::tempdir().expect("a folder");
         let (mut studio, mut compositor, _said) = studio(pictures.path());
         let folder = pictures.path().join("Screenshots");
@@ -1971,7 +1971,7 @@ mod tests {
         );
 
         // The card goes away by itself once it has been up long enough, and the session comes back
-        // for it rather than leaving it over the desk.
+        // for it rather than leaving it over the shell.
         let due = studio.next_deadline().expect("the card is due to go");
         let now = Instant::now();
         assert!(

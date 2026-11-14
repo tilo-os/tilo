@@ -9,7 +9,7 @@
 )]
 use std::rc::Rc;
 
-use crate::support::desk_tree;
+use crate::support::layout_tree;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
@@ -23,11 +23,11 @@ const SIZE: (u32, u32) = (1280, 800);
 
 /// The chrome as the session's own host shows it: over the windows, covering the output.
 fn chrome_host() -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk =
+    let mut shell =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), SIZE);
-    desk.relayout();
+    shell.relayout();
     let chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
@@ -47,7 +47,7 @@ fn chrome_host() -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
         false,
     )
     .with_keyboard(Rc::new(move || keyboard.search_open()));
-    (host, handle, desk)
+    (host, handle, shell)
 }
 
 /// The search chord, as a person presses it.
@@ -69,7 +69,7 @@ fn send_chord(host: &mut WidgetHost) {
 
 #[test]
 fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
-    let (mut host, handle, mut desk) = chrome_host();
+    let (mut host, handle, mut shell) = chrome_host();
     assert!(!host.below_windows(), "the chrome stands above the windows");
     host.relayout();
     host.prepare_frame();
@@ -80,7 +80,7 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
     );
 
     send_chord(&mut host);
-    desk.relayout();
+    shell.relayout();
     host.relayout();
     host.prepare_frame();
     assert!(handle.search_open(), "the chord opened the palette");
@@ -103,7 +103,7 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
 
     // Closing it takes the keys back and leaves nothing painted.
     handle.toggle_search();
-    desk.relayout();
+    shell.relayout();
     host.relayout();
     host.prepare_frame();
     assert!(!handle.search_open());

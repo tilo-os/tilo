@@ -57,8 +57,8 @@ fn laptop() -> DeviceId {
 }
 
 /// A device of the person's asleep off the network.
-fn desk() -> DeviceId {
-    DeviceId::new("desk").expect("a device id")
+fn sleeping() -> DeviceId {
+    DeviceId::new("session").expect("a device id")
 }
 
 /// An awake device of the person's on the sleeping one's network.
@@ -844,7 +844,7 @@ fn a_row_a_device_left_behind_is_a_press_on_nothing() {
 fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
     let _settled = ui::motion::testing::settled();
     let link = FakeLink::joined(false);
-    link.joined_sleeping_device(desk(), "Desk", 0x0f, LAN);
+    link.joined_sleeping_device(sleeping(), "Session", 0x0f, LAN);
     let packets = Arc::new(Packets::default());
     let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, LAN)]));
     let mut harness = session_with(
@@ -855,14 +855,14 @@ fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
     );
     for _ in 0..40 {
         harness.step();
-        if harness.rows().iter().any(|row| row.key == "desk") {
+        if harness.rows().iter().any(|row| row.key == "session") {
             break;
         }
     }
     let rows = harness.rows();
     let row = rows
         .iter()
-        .find(|row| row.key == "desk")
+        .find(|row| row.key == "session")
         .expect("the sleeping device's row");
     assert_eq!(row.detail, "Offline");
     assert_eq!(
@@ -876,7 +876,7 @@ fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
         "this machine offers its own interfaces to the person's devices"
     );
 
-    harness.press("desk", RowPart::Action);
+    harness.press("session", RowPart::Action);
     let sent = packets.taken();
     assert_eq!(sent.len(), 1, "one packet, not two: {sent:?}");
     let (packet, on) = sent.first().expect("the packet");
@@ -892,8 +892,10 @@ fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
         "then the device's address, sixteen times"
     );
     assert!(
-        link.sent().iter().any(|(target, action)| target == &desk()
-            && matches!(action, PersonalFabricAction::WakeProbe { .. })),
+        link.sent()
+            .iter()
+            .any(|(target, action)| target == &sleeping()
+                && matches!(action, PersonalFabricAction::WakeProbe { .. })),
         "and the device is asked whether it came back: {:?}",
         link.sent()
     );
@@ -904,7 +906,7 @@ fn a_device_on_the_sleeping_device_s_network_is_asked_when_this_one_is_away() {
     let _settled = ui::motion::testing::settled();
     let link = FakeLink::joined(false);
     link.joined_awake_device(server(), "Server", 0x11, LAN);
-    link.joined_sleeping_device(desk(), "Desk", 0x0f, LAN);
+    link.joined_sleeping_device(sleeping(), "Session", 0x0f, LAN);
     // This machine is on another network, so it shares nothing to broadcast on: the device that
     // does sends the packet.
     let packets = Arc::new(Packets::default());
@@ -915,7 +917,7 @@ fn a_device_on_the_sleeping_device_s_network_is_asked_when_this_one_is_away() {
         Some(Arc::clone(&packets)),
         Some(interfaces),
     );
-    harness.press("desk", RowPart::Row);
+    harness.press("session", RowPart::Row);
 
     assert!(
         packets.taken().is_empty(),
@@ -929,14 +931,17 @@ fn a_device_on_the_sleeping_device_s_network_is_asked_when_this_one_is_away() {
     );
     let (target, action) = sent.first().expect("the request");
     assert_eq!(target, &server());
-    assert_eq!(action, &PersonalFabricAction::WakeDevice { target: desk() });
+    assert_eq!(
+        action,
+        &PersonalFabricAction::WakeDevice { target: sleeping() }
+    );
 }
 
 #[test]
 fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     let _settled = ui::motion::testing::settled();
     let link = FakeLink::joined(false);
-    link.joined_device(desk(), "Desk", false, false);
+    link.joined_device(sleeping(), "Session", false, false);
     let packets = Arc::new(Packets::default());
     let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, LAN)]));
     let host = Rc::new(Host::default());
@@ -948,14 +953,14 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     );
     for _ in 0..40 {
         harness.step();
-        if harness.rows().iter().any(|row| row.key == "desk") {
+        if harness.rows().iter().any(|row| row.key == "session") {
             break;
         }
     }
     let rows = harness.rows();
     let row = rows
         .iter()
-        .find(|row| row.key == "desk")
+        .find(|row| row.key == "session")
         .expect("the sleeping device's row");
     assert_eq!(
         row.actions,
@@ -963,7 +968,7 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
         "no wake route of its own: nothing to offer"
     );
 
-    harness.press("desk", RowPart::Row);
+    harness.press("session", RowPart::Row);
     assert!(packets.taken().is_empty());
     assert!(link.sent().is_empty());
     assert!(
@@ -1195,10 +1200,10 @@ fn what_plays() -> tilo_audio_service::media::Media {
     }
 }
 
-/// What plays reaches the desk's own widget from the same reading the panel shows, with the panel
+/// What plays reaches the shell's own widget from the same reading the panel shows, with the panel
 /// never opened: the widget is a view of the audio service's players, not of the panel.
 #[test]
-fn what_plays_reaches_the_desk_with_the_panel_closed() {
+fn what_plays_reaches_the_shell_with_the_panel_closed() {
     let _settled = ui::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
@@ -1215,7 +1220,7 @@ fn what_plays_reaches_the_desk_with_the_panel_closed() {
             .accessible_labels()
             .iter()
             .any(|label| label == "Open Music"),
-        "nothing plays: the desk shows no song"
+        "nothing plays: the session shows no song"
     );
 
     harness.playing();
@@ -1232,7 +1237,7 @@ fn what_plays_reaches_the_desk_with_the_panel_closed() {
             .accessible_labels()
             .iter()
             .any(|label| label == "Open Music"),
-        "the desk shows what plays: {:?}",
+        "the session shows what plays: {:?}",
         harness.session.accessible_labels()
     );
 }

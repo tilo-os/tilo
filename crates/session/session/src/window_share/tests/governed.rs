@@ -43,7 +43,7 @@ fn provisioned(root: &Path, device: &SigningKey, label: &str) -> DeviceCert {
 }
 
 /// The engine of the device certified as `cert`, keeping its workspaces under `state`, with the
-/// workspace its desk already lists.
+/// workspace its shell already lists.
 fn engine_of(
     cert: &DeviceCert,
     key: &SigningKey,
@@ -54,14 +54,14 @@ fn engine_of(
         tilo_network_actor::HostIdentity::kept(cert.clone(), key.clone()),
         Some(state),
         listed,
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("the device's engine opens")
 }
 
-/// The workspace the desk kept under `state` opens when it has none: the one the session's engine
+/// The workspace the shell kept under `state` opens when it has none: the one the session's engine
 /// and the person's other device act on.
-fn workspace_on_the_desk(state: &Path) -> WorkspaceId {
+fn workspace_on_the_shell(state: &Path) -> WorkspaceId {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -76,10 +76,10 @@ fn workspace_on_the_desk(state: &Path) -> WorkspaceId {
     session
         .handle()
         .read(|tree| tree.workspaces.first().map(Workspace::id))
-        .expect("a workspace on the desk")
+        .expect("a workspace on the shell")
 }
 
-/// The session of the device whose key is `key`, keeping its desk and its workspaces under
+/// The session of the device whose key is `key`, keeping its shell and its workspaces under
 /// `state`: the device the identity this process reads names, on a plane the test carries.
 fn session_of(key: &SigningKey, label: &str, state: &Path) -> Member {
     let (sync, said) = Client::planeless(
@@ -147,8 +147,8 @@ fn governed(engine: &Engine, workspace: &str, share: &str) -> usize {
         .count()
 }
 
-/// How many grants of the share `share` the desk's copy of the workspace `workspace` names.
-fn on_desk(session: &Session, workspace: WorkspaceId, share: &str) -> usize {
+/// How many grants of the share `share` the shell's copy of the workspace `workspace` names.
+fn on_shell(session: &Session, workspace: WorkspaceId, share: &str) -> usize {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -160,17 +160,17 @@ fn on_desk(session: &Session, workspace: WorkspaceId, share: &str) -> usize {
 }
 
 /// `tree` listing the window `tab` of another device in the workspace `workspace`, as the
-/// workspace's shared desk lists a window another device opened, which this one opens its own
+/// workspace's shared shell lists a window another device opened, which this one opens its own
 /// view of, before anything of it is shared.
 fn listing(mut tree: Layout, workspace: WorkspaceId, tab: u64) -> Layout {
     if !tree.workspaces.iter().any(|held| held.id() == workspace) {
-        tree.workspaces.push(Workspace::new(workspace, "Desk"));
+        tree.workspaces.push(Workspace::new(workspace, "Shell"));
     }
     let held = tree
         .workspaces
         .iter_mut()
         .find(|held| held.id() == workspace)
-        .expect("the workspace is on the desk");
+        .expect("the workspace is on the shell");
     let mut strip = Strip::new(StripId::from(tab.wrapping_add(2)), "Shared");
     strip.window_groups.push(WindowGroup {
         id: GroupId::from(tab.wrapping_add(1)),
@@ -197,10 +197,10 @@ fn listing(mut tree: Layout, workspace: WorkspaceId, tab: u64) -> Layout {
 }
 
 /// A person's second device shares a window with the workspace their first device hosts, naming
-/// only its tab, as the window's menu and the desk's actions do. The share is in the workspace's
-/// governance on the device that shares, not only on its desk; it waits there to leave for the
+/// only its tab, as the window's menu and the shell's actions do. The share is in the workspace's
+/// governance on the device that shares, not only on its shell; it waits there to leave for the
 /// workspace's host; the host admits it as it admits what a link from that device brings; and the
-/// first device's desk then names the share and asks the second device for the window, in the
+/// first device's shell then names the share and asks the second device for the window, in the
 /// tab that stood for it — with nobody naming the window there.
 #[test]
 fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_governance() {
@@ -221,11 +221,11 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         tempfile::tempdir().expect("the second device's state"),
     );
 
-    // The second device's desk lists the workspace. The first device hosts it and governs it,
+    // The second device's shell lists the workspace. The first device hosts it and governs it,
     // and admits the second as its person's further device: what either holds of it comes from
     // the first.
     env.set("TILO_IDENTITY_ROOT", second_root.path());
-    let workspace_id = workspace_on_the_desk(second_state.path());
+    let workspace_id = workspace_on_the_shell(second_state.path());
     let workspace = workspace_id.to_string();
     let first_engine = engine_of(&first, &first_key, first_state.path(), None);
     {
@@ -237,7 +237,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         );
         second_engine
             .delete(workspace_id)
-            .expect("the second device lets go of the workspace its desk founded");
+            .expect("the second device lets go of the workspace its shell founded");
         let governor =
             TestGovernor::empty_interactive(first.clone(), first_key.clone(), &workspace)
                 .expect("the first device governs the workspace");
@@ -292,28 +292,28 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
     alone(
         &mut sharer,
         &mut window,
-        "the share lands in the workspace's governance and on the sharer's desk",
+        "the share lands in the workspace's governance and on the sharer's shell",
         |sharer| {
             governed(&second_engine, &workspace, &share) == 1
-                && on_desk(&sharer.session, workspace_id, &share) == 1
+                && on_shell(&sharer.session, workspace_id, &share) == 1
         },
     );
     assert_eq!(
         governed(&second_engine, &workspace, &share),
         1,
         "the share is in the workspace's governance on the device that shares it, one grant \
-         to the viewers that reaches every role above them: a share only its own desk names \
+         to the viewers that reaches every role above them: a share only its own shell names \
          reaches no other device"
     );
     assert_eq!(
-        on_desk(&sharer.session, workspace_id, &share),
+        on_shell(&sharer.session, workspace_id, &share),
         1,
-        "and its own desk reads it from there"
+        "and its own shell reads it from there"
     );
 
     // What the second device wrote into the workspace's governance waits in its custody for the
     // workspace's host: what its link to that host sends. The governance alone is carried here;
-    // the desk's records are another matter.
+    // the shell's records are another matter.
     let now = tilo_clock::wall();
     let written: Vec<NeighbourMsg> = second_engine
         .owner()
@@ -333,7 +333,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         "the share waits to leave the second device for the workspace's host"
     );
 
-    // The first device's own session, on the desk that lists the window as open on another
+    // The first device's own session, on the shell that lists the window as open on another
     // device, before anything of the share reached it.
     drop(window);
     drop(second_engine);
@@ -388,13 +388,13 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         "the governance the first device holds names the share"
     );
 
-    // The share is the workspace's, so nobody asks for it on the first device: its desk names
+    // The share is the workspace's, so nobody asks for it on the first device: its shell names
     // the share and asks the device the governance says hosts the window for it.
     alone(
         &mut viewer,
         &mut None,
-        "the first device's desk names the share its workspace's governance holds",
-        |viewer| on_desk(&viewer.session, workspace_id, &share) == 1,
+        "the first device's shell names the share its workspace's governance holds",
+        |viewer| on_shell(&viewer.session, workspace_id, &share) == 1,
     );
     let host = hex::encode(second.device_public_key);
     let named = tab.to_string();
@@ -413,7 +413,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         ),
         asked,
     );
-    // The tab that listed the window is this desk's own view of it and stays as it is. The window
+    // The tab that listed the window is this session's own view of it and stays as it is. The window
     // the second device shares stands beside it, in a tab of its own that names the device it
     // runs on.
     let stands = viewer.session.handle().read(|tree| {
@@ -426,7 +426,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
     assert_eq!(stands, 1, "one tab stands under the window's own id");
     assert!(
         hosted(&viewer.session, tab).is_none(),
-        "and it is still this desk's own view of the window"
+        "and it is still this shell's own view of the window"
     );
     let place: u64 = rows(&shares(&viewer.session), "watching")
         .iter()
@@ -472,7 +472,7 @@ fn governance_handed(
 /// Browser's does, and stops. A page is shared by the same grant a captured window is: the share
 /// is a change of the governance the hosting device keeps itself, so no host hands it on, and the
 /// device's own engine hands it to the devices linked to it, as it hands them the share's end.
-/// The person's other device admits what it was handed, and its desk then names the share and
+/// The person's other device admits what it was handed, and its shell then names the share and
 /// asks the hosting device for the window, with nobody naming the window there; once it admitted
 /// the share's end it asks for nothing. Kept in its custody for a host to take, the share of a
 /// window on the machine hosting the workspace reached no other machine.
@@ -495,17 +495,17 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
         tempfile::tempdir().expect("the second device's state"),
     );
 
-    // The first device's desk lists the workspace, and the first device hosts and governs it: it
+    // The first device's shell lists the workspace, and the first device hosts and governs it: it
     // keeps the workspace's records itself. It admits the second as its person's further device.
     env.set("TILO_IDENTITY_ROOT", first_root.path());
-    let workspace_id = workspace_on_the_desk(first_state.path());
+    let workspace_id = workspace_on_the_shell(first_state.path());
     let workspace = workspace_id.to_string();
     {
         let first_engine = engine_of(&first, &first_key, first_state.path(), Some(workspace_id));
         let second_engine = engine_of(&second, &second_key, second_state.path(), None);
         first_engine
             .delete(workspace_id)
-            .expect("the first device lets go of the workspace its desk founded");
+            .expect("the first device lets go of the workspace its shell founded");
         let governor =
             TestGovernor::empty_interactive(first.clone(), first_key.clone(), &workspace)
                 .expect("the first device governs the workspace");
@@ -586,10 +586,10 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
     alone(
         &mut sharer,
         &mut window,
-        "the share lands in the governance the hosting device keeps and on its desk",
+        "the share lands in the governance the hosting device keeps and on its shell",
         |sharer| {
             governed(&first_engine, &workspace, &share) == 1
-                && on_desk(&sharer.session, workspace_id, &share) == 1
+                && on_shell(&sharer.session, workspace_id, &share) == 1
         },
     );
     let begun = governance_handed(&mut sharer, &mut window, &handed);
@@ -608,10 +608,10 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
     alone(
         &mut sharer,
         &mut window,
-        "the share's end lands in the governance the hosting device keeps and on its desk",
+        "the share's end lands in the governance the hosting device keeps and on its shell",
         |sharer| {
             governed(&first_engine, &workspace, &share) == 0
-                && on_desk(&sharer.session, workspace_id, &share) == 0
+                && on_shell(&sharer.session, workspace_id, &share) == 0
         },
     );
     let ended = governance_handed(&mut sharer, &mut window, &handed);
@@ -620,7 +620,7 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
         "the device hosting the workspace hands the share's end to the devices linked to it"
     );
 
-    // The person's other device, on a desk that lists the window as one it opens its own view of,
+    // The person's other device, on a shell that lists the window as one it opens its own view of,
     // before anything of the share reached it.
     drop(window);
     drop(first_engine);
@@ -676,8 +676,8 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
     alone(
         &mut viewer,
         &mut None,
-        "the second device's desk names the share its workspace's governance holds",
-        |viewer| on_desk(&viewer.session, workspace_id, &share) == 1,
+        "the second device's shell names the share its workspace's governance holds",
+        |viewer| on_shell(&viewer.session, workspace_id, &share) == 1,
     );
     let host = hex::encode(first.device_public_key);
     let named = tab.to_string();
@@ -701,10 +701,10 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
     assert_eq!(
         hosted(&viewer.session, place).as_deref(),
         Some(host.as_str()),
-        "the desk holds the window as one that runs on the device hosting the workspace"
+        "the shell holds the window as one that runs on the device hosting the workspace"
     );
 
-    // The share's end: the desk names no share, asks for nothing, and the tab the shared window
+    // The share's end: the shell names no share, asks for nothing, and the tab the shared window
     // stood in is gone.
     admit(ended);
     assert_eq!(
@@ -717,7 +717,7 @@ fn a_page_the_hosting_device_shares_reaches_the_persons_other_device_through_its
         &mut None,
         "the second device stops naming the share and asking for the window",
         |viewer| {
-            on_desk(&viewer.session, workspace_id, &share) == 0
+            on_shell(&viewer.session, workspace_id, &share) == 0
                 && !rows(&shares(&viewer.session), "watching")
                     .iter()
                     .any(|watched| watched["tab"] == named.as_str())

@@ -87,7 +87,7 @@ impl OverviewPanel {
         }
         self.window_selection = None;
         self.window_interrupted = false;
-        let count = self.desk.cards.len();
+        let count = self.shell.cards.len();
         if count == 0 {
             return false;
         }
@@ -106,7 +106,7 @@ impl OverviewPanel {
     fn last_row(&self, count: usize) -> usize {
         count
             .saturating_add(usize::from(self.can_add()))
-            .saturating_add(usize::from(self.desk.can_join))
+            .saturating_add(usize::from(self.shell.can_join))
             .saturating_sub(1)
     }
 
@@ -128,7 +128,7 @@ impl OverviewPanel {
             .rem_euclid(isize_of_usize(focus_count.max(1)));
         let next = usize_of_isize(next);
         // Join follows New workspace in the ring only where both are offered.
-        self.selection = Some(if next == count && !self.can_add() && self.desk.can_join {
+        self.selection = Some(if next == count && !self.can_add() && self.shell.can_join {
             count.saturating_add(1)
         } else {
             next
@@ -142,12 +142,12 @@ impl OverviewPanel {
             return;
         }
         if target == Some(count.saturating_add(1)) || (target == Some(count) && !self.can_add()) {
-            if self.desk.can_join {
+            if self.shell.can_join {
                 self.choose(OverviewPick::JoinWorkspace);
             }
             return;
         }
-        if let Some(card) = target.and_then(|index| self.desk.cards.get(index)) {
+        if let Some(card) = target.and_then(|index| self.shell.cards.get(index)) {
             let id = card.id;
             self.choose(OverviewPick::Workspace(id));
         }
@@ -245,7 +245,7 @@ impl OverviewPanel {
         let Some(strip) = picture.strips.get(si).filter(|strip| strip.renamable) else {
             return;
         };
-        // A strip nobody named starts the field empty, not with the desk's word for where it
+        // A strip nobody named starts the field empty, not with the shell's word for where it
         // stands: the person types a name, and Enter stores only what they typed.
         let text = if strip.name == names::strip_named("", si) {
             String::new()
@@ -462,16 +462,16 @@ impl OverviewPanel {
             self.tilo_press(index, on_action);
             return;
         }
-        let leaving = (0..self.desk.cards.len())
+        let leaving = (0..self.shell.cards.len())
             .find(|&idx| self.leave_rect(idx).is_some_and(|leave| leave.contains(p)));
-        if let Some(card) = leaving.and_then(|idx| self.desk.cards.get(idx)) {
+        if let Some(card) = leaving.and_then(|idx| self.shell.cards.get(idx)) {
             let id = card.id;
             self.choose(OverviewPick::LeaveWorkspace(id));
             return;
         }
         match self
             .hit_workspace(p)
-            .and_then(|idx| self.desk.cards.get(idx))
+            .and_then(|idx| self.shell.cards.get(idx))
         {
             Some(card) => {
                 let id = card.id;
@@ -626,7 +626,7 @@ impl OverviewPanel {
         if let Some(card) = self
             .hit_workspace(at)
             .filter(|index| Some(*index) != self.here_index())
-            .and_then(|index| self.desk.cards.get(index))
+            .and_then(|index| self.shell.cards.get(index))
         {
             let to = card.id;
             self.window_selection = None;

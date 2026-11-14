@@ -1,4 +1,4 @@
-//! What each window on this desk shows, and the continuation channel its app
+//! What each window on this session shows, and the continuation channel its app
 //! speaks on.
 //!
 //! A window's app holds the record it shows, and the session's broker knows
@@ -10,8 +10,8 @@
 //!
 //! That is the one source. The session reads it on every pass, writes the
 //! record beside the window in the workspace's layout
-//! ([`crate::shared_desktop`]), places the window by it in the person's
-//! arrangement ([`tilo_session_core::arrangement`]) and answers what this device's desk
+//! ([`crate::layout`]), places the window by it in the person's
+//! arrangement ([`tilo_session_core::arrangement`]) and answers what this device
 //! asks of it ([`tilo_desktop_policy::WindowNotes`]). No report from an app
 //! writes a note.
 //!
@@ -60,7 +60,7 @@ pub(crate) struct HandoffNote {
 pub(crate) struct Showing {
     pub(crate) workspace: WorkspaceId,
     /// The app the window runs, when its app said so: a window drawn by the
-    /// app's own surface names no app in the desk's own tree.
+    /// app's own surface names no app in the session's own tree.
     pub(crate) app: Option<String>,
     pub(crate) record: String,
 }
@@ -90,7 +90,7 @@ impl Continuations {
     /// notes none rather than naming the wrong one.
     ///
     /// `app_of` names the app each window runs: the records of any other app it
-    /// holds (the desk's, a service's) are not what its window shows.
+    /// holds (the session's, a service's) are not what its window shows.
     pub(crate) fn read(
         &self,
         held: &[(u64, CrdtRoute)],
@@ -102,9 +102,9 @@ impl Continuations {
             windows.entry(*instance).or_default().push(route);
         }
         let mut named = self.named.lock_recover();
-        // A window the desk no longer shows says nothing any more. A desk drawn with no window at
+        // A window the session no longer shows says nothing any more. A session drawn with no window at
         // all — the pass that lays it out, a moment between workspaces — says nothing of the kind:
-        // only a desk showing other windows can say one is gone.
+        // only a session showing other windows can say one is gone.
         if !live.is_empty() {
             named.retain(|tab, _| live.contains(tab));
         }
@@ -197,7 +197,7 @@ impl Continuations {
         self.shown.lock_recover().get(&tab)?.app.clone()
     }
 
-    /// What each window shows, by tab, as its app and its record: the desk's people and its
+    /// What each window shows, by tab, as its app and its record: the session's people and its
     /// presence read where a window is from here.
     pub(crate) fn windows(&self) -> Vec<(u64, Option<String>, String)> {
         self.shown
@@ -207,7 +207,7 @@ impl Continuations {
             .collect()
     }
 
-    /// The record each window shows, by tab: what the desk keeps beside its windows, so a place
+    /// The record each window shows, by tab: what the session keeps beside its windows, so a place
     /// comes back showing the record it was made on.
     pub(crate) fn records(&self) -> BTreeMap<u64, String> {
         self.shown
@@ -245,10 +245,10 @@ impl Continuations {
     }
 }
 
-/// The desk's reading of the notes: what the surface asks of the window a person may share.
-pub(crate) struct DeskNotes(pub(crate) std::sync::Arc<Continuations>);
+/// The session's reading of the notes: what the surface asks of the window a person may share.
+pub(crate) struct SurfaceNotes(pub(crate) std::sync::Arc<Continuations>);
 
-impl tilo_desktop_policy::WindowNotes for DeskNotes {
+impl tilo_desktop_policy::WindowNotes for SurfaceNotes {
     fn window_record(&self, tab: u64) -> Option<(String, String)> {
         self.0.window_record(tab)
     }
@@ -316,7 +316,7 @@ impl ContinuationServices for Continuations {
 mod tests {
     use super::*;
 
-    /// The tabs the desk shows in these tests: every one the broker names.
+    /// The tabs the session shows in these tests: every one the broker names.
     fn instances(held: &[(u64, CrdtRoute)]) -> std::collections::BTreeSet<u64> {
         held.iter().map(|(tab, _)| *tab).collect()
     }
@@ -412,7 +412,7 @@ mod tests {
         );
     }
 
-    /// A window holds the desk's records too (the workspace's layout, a service's): only the
+    /// A window holds the session's records too (the workspace's layout, a service's): only the
     /// record of the app it runs is what it shows, so its place and the person's are still named.
     #[test]
     fn a_window_notes_its_own_apps_record_and_no_other_apps() {
@@ -421,7 +421,7 @@ mod tests {
         let mut routes = held(room, 12, &["plan"]);
         routes.push((
             12,
-            CrdtRoute::record("so.tilo.desktop", room.to_string(), "desk"),
+            CrdtRoute::record("so.tilo.desktop", room.to_string(), "session"),
         ));
         notes.read(&routes, &notes_app(), &instances(&routes));
         assert_eq!(
@@ -467,7 +467,7 @@ mod tests {
             notes.of_workspace(room),
             [(12, "notes.notebook".to_owned())]
         );
-        // A desk drawn with no window at all says nothing of the kind: only a desk showing other
+        // A session drawn with no window at all says nothing of the kind: only a session showing other
         // windows can say this one is gone.
         notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
         assert!(notes.window_record(12).is_some());

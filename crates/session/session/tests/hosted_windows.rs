@@ -1,11 +1,11 @@
-//! Every window of an app whose windows are hosted opens in a tab of the desk's, and that tab is
+//! Every window of an app whose windows are hosted opens in a tab of the shell's, and that tab is
 //! the window's instance: what the window asks about itself — the controls of its content, its
 //! bar, its search — is answered for the tab it stands in, never for another window of its app.
 //!
-//! The session asks the desk for that tab whatever opened the window: the app's first window, a
+//! The session asks the shell for that tab whatever opened the window: the app's first window, a
 //! window of its own beside the one it shows (what search opens from a row with Ctrl+Enter), and a
 //! window on a record of the app. Each test here starts one of them and reads the instance the
-//! window's process was told: it is the tab the desk made, and the tab is the app's.
+//! window's process was told: it is the tab the shell made, and the tab is the app's.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -30,7 +30,7 @@ use tilo_session::{AppActions, Options, Session};
 use crate::common::PERSON;
 
 /// The app whose window each test opens: a tilolang app, whose windows hold none of its data, so
-/// each of them is an instance the session's host runs and a tab of the desk's.
+/// each of them is an instance the session's host runs and a tab of the shell's.
 const APP: &str = "so.tilo.lang.tasks";
 /// The record one test opens a window on.
 const RECORD: &str = "uuid:7a110d00-0000-4000-8000-000000000009";
@@ -104,7 +104,7 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: PathBuf) -> Rc<Apps> {
     Rc::new(Apps::with_launcher(environment, None, Some(launcher)))
 }
 
-/// A window of [`APP`] the compositor mapped, its bar saying the app's own id: what the desk has
+/// A window of [`APP`] the compositor mapped, its bar saying the app's own id: what the shell has
 /// when the app already shows a window.
 fn a_window(id: u64) -> Window {
     Window {
@@ -115,7 +115,7 @@ fn a_window(id: u64) -> Window {
     }
 }
 
-/// A headless session whose desk the tests open windows on, its apps started through `apps`.
+/// A headless session whose shell the tests open windows on, its apps started through `apps`.
 fn session(apps: Rc<Apps>) -> Session {
     crate::common::headless(Options {
         person: PERSON.to_owned(),
@@ -126,7 +126,7 @@ fn session(apps: Rc<Apps>) -> Session {
     })
 }
 
-/// The tabs the desk keeps of `app` anywhere on it, whether a window stands in one or one waits for
+/// The tabs the shell keeps of `app` anywhere on it, whether a window stands in one or one waits for
 /// it: the tab a window of the app takes is the app's, as every window of it is.
 fn tabs_of(session: &Session, app: &str) -> Vec<u64> {
     session.handle().read(|tree| {
@@ -159,7 +159,7 @@ fn the_instance(session: &mut Session, handed: &Path) -> u64 {
 }
 
 #[test]
-fn the_first_window_of_a_hosted_app_opens_in_the_tab_the_desk_made() {
+fn the_first_window_of_a_hosted_app_opens_in_the_tab_the_shell_made() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("handed");
@@ -177,7 +177,7 @@ fn the_first_window_of_a_hosted_app_opens_in_the_tab_the_desk_made() {
     assert_eq!(
         tabs,
         vec![instance],
-        "the window opens in the tab the desk made, which is its instance"
+        "the window opens in the tab the shell made, which is its instance"
     );
 }
 
@@ -194,9 +194,11 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
     session
         .desktop()
         .with_policy(|policy| policy.map(a_window(11)).unwrap());
-    crate::common::until(&mut session, "the app's window is on the desk", |session| {
-        tabs_of(session, APP).len() == 1
-    });
+    crate::common::until(
+        &mut session,
+        "the app's window is on the shell",
+        |session| tabs_of(session, APP).len() == 1,
+    );
     let had = tabs_of(&session, APP)[0];
 
     let workspace = session
@@ -223,7 +225,7 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
     assert_ne!(instance, had, "the window is not the one the app had");
     assert!(
         tabs.contains(&instance),
-        "the window opens in the tab the desk made beside the app's: {tabs:?}, instance {instance}"
+        "the window opens in the tab the shell made beside the app's: {tabs:?}, instance {instance}"
     );
     assert_eq!(tabs.len(), 2, "a second tab of the app: {tabs:?}");
     assert_eq!(
@@ -233,7 +235,7 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
 }
 
 #[test]
-fn a_window_on_a_record_opens_in_the_tab_the_desk_made() {
+fn a_window_on_a_record_opens_in_the_tab_the_shell_made() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
     let handed = home.home().join("handed");
@@ -252,6 +254,6 @@ fn a_window_on_a_record_opens_in_the_tab_the_desk_made() {
     assert_eq!(
         tabs,
         vec![instance],
-        "the window opens on the record, in the tab the desk made"
+        "the window opens on the record, in the tab the shell made"
     );
 }

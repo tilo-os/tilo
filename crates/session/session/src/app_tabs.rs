@@ -4,7 +4,7 @@
 //! window after its own tab, its own tab closed, the last closed tab back, its group stepped on, or
 //! its next window beside its own. The connection vouches for the app and its workspace, so an app
 //! can never place, close or step another app's tab, and a refused request changes nothing. The
-//! asks become desk commands on the session loop's own pass: the desk is never read from another
+//! asks become shell commands on the session loop's own pass: the shell is never read from another
 //! thread. An app also says here that its windows show a secret right now, which marks it private
 //! for the compositor that every capture asks, and every connection receives the appearance of its
 //! window's workspace.
@@ -93,7 +93,7 @@ impl ServiceLinks {
     }
 
     /// The window's shell-ui connection, attributed to the launch whose process `launcher` is: the
-    /// app and the workspace it runs in, without which what it asks reaches no desk. `instance` is
+    /// app and the workspace it runs in, without which what it asks reaches no shell. `instance` is
     /// the tab the window takes, which is how its asks find it.
     fn window_shell_ui(&self, app: &str, launcher: Option<u32>, instance: u64) -> Option<OwnedFd> {
         let launcher = launcher?;
@@ -171,7 +171,7 @@ struct Link {
     app: String,
     /// The launch the window that speaks on this connection belongs to: what tells it apart from
     /// another window of the same app, and so whether the very window that draws an activity is on
-    /// the desk.
+    /// the shell.
     launch: u32,
     /// The tab the window takes, when the session connected it itself: what its asks about its own
     /// window are answered for. A window the launcher connected names its tab itself, in each ask.
@@ -287,7 +287,7 @@ impl AppTabs {
     /// The app's end of a connection for a window of `app` in `workspace` that the launcher made
     /// before the app started, as every app's first window is connected: the process at the other
     /// end is the app's own, so the connection names no tab, and what the window asks about itself
-    /// is answered for the app's window on the desk. It is served as every admitted connection is;
+    /// is answered for the app's window on the shell. It is served as every admitted connection is;
     /// only the kernel's word for who is at the other end, which a test's own process cannot stand
     /// in for, is left out.
     ///
@@ -343,7 +343,7 @@ impl AppTabs {
         Ok(theirs)
     }
 
-    /// Answer what the apps asked since the last pass: each ask is a desk command, so the desk is
+    /// Answer what the apps asked since the last pass: each ask is a shell command, so the shell is
     /// read and changed on this thread alone.
     pub(crate) fn follow(
         &mut self,
@@ -376,15 +376,15 @@ impl AppTabs {
             // What the person did in the windows' bars goes back to the app whose connection
             // declared the slots there.
             answered.deliver_bar_events();
-            // A control of a window's own content, pressed where the desk lists it, goes to the app
+            // A control of a window's own content, pressed where the shell lists it, goes to the app
             // drawing that window.
             answered.deliver_target_presses();
         }
-        // What the members' desks show of these windows' pages, and what the
+        // What the members' sessions show of these windows' pages, and what the
         // apps sent of them since the last pass.
         self.follow_pages(shared);
         self.deliver_box(shared, desktop, compositor);
-        // Where each app's own card stands this pass: the floating layer's place, which the desk
+        // Where each app's own card stands this pass: the floating layer's place, which the shell
         // lays the app's window out by.
         self.follow_cards(desktop, compositor);
         // The person may have answered a question about the device's own shell since the last pass.
@@ -405,7 +405,7 @@ impl AppTabs {
             .map(crate::calls::planes_of)
             .unwrap_or_default();
         let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
-        // Only a window shared as its page goes out: a member's desk that asks for the page of
+        // Only a window shared as its page goes out: a member's shell that asks for the page of
         // a window nobody shared is sent nothing, and its app is never asked.
         let shared_pages = shared.window_shares.borrow().paged();
         let asks = shared
@@ -502,14 +502,14 @@ impl AppTabs {
     }
 
     /// Stand each app's own card where the floating layer put it this pass,
-    /// and stand it down while the window that draws it is on the desk: there
+    /// and stand it down while the window that draws it is on the shell: there
     /// the app draws the activity itself, and its card waits out of sight.
     ///
     /// The layer decides the place; the app's own geometry is a request it
     /// made when presenting, and its window is laid out by what this says.
     fn follow_cards(&self, desktop: &DesktopHost, compositor: &mut Compositor) {
         let placements = self.cards.placements();
-        // The windows on the desk this pass, and the launch each belongs to: what tells whether the
+        // The windows on the shell this pass, and the launch each belongs to: what tells whether the
         // very window that draws an activity is on screen, rather than another window of the same
         // app.
         let shown: BTreeSet<u64> = desktop.with_policy(|policy| {
@@ -530,7 +530,7 @@ impl AppTabs {
         let mut moved = false;
         for card in self.cards.presented() {
             let in_view = match self.links.get(&card.connection) {
-                // The launch that draws the activity has a window on the desk: the app draws it
+                // The launch that draws the activity has a window on the shell: the app draws it
                 // there, and another window of the same app elsewhere leaves the card to this one.
                 Some(link) => shown_launches.contains(&link.launch),
                 // A connection that has not said whose launch it is is no window of its own yet:
@@ -586,7 +586,7 @@ impl AppTabs {
                 }
             }
             // The card's window is up and draws the activity: the app records the card as adopted,
-            // so it knows the desk shows it.
+            // so it knows the shell shows it.
             if let Some((_, body)) = wanted
                 && placements.drawn(&card.token)
                 && self.cards.adopt(&card.app, &card.activity)
@@ -607,8 +607,8 @@ impl AppTabs {
         }
     }
 
-    /// A card's window that went away leaves the app drawing it on the desk with nothing to draw it
-    /// in: send it home, and it presents the card again. Says whether the desk's cards changed.
+    /// A card's window that went away leaves the app drawing it on the shell with nothing to draw it
+    /// in: send it home, and it presents the card again. Says whether the shell's cards changed.
     fn home_lost_cards(&self) -> bool {
         let placements = self.cards.placements();
         let mut moved = false;
@@ -632,7 +632,7 @@ impl AppTabs {
         moved
     }
 
-    /// Give every open window the appearance of the desk it stands on: the temperature of its
+    /// Give every open window the appearance of the shell it stands on: the temperature of its
     /// workspace, the person's colour, the theme, and its workspace's sync state, each when it
     /// differs from what that window was last told. A window opens with one, and gets another
     /// whenever any of it changes; a pass that changes nothing writes nothing.
@@ -687,12 +687,12 @@ impl AppTabs {
     }
 }
 
-/// What one pass of answers reaches: the desk, the services the person answers through, and the
+/// What one pass of answers reaches: the shell, the services the person answers through, and the
 /// connections the answers go back on.
 struct Answers<'a> {
     desktop: &'a DesktopHost,
     /// The launches of this session, which a window an app asks for starts through: it is planned
-    /// here and started once the desk asks back for the tab it takes.
+    /// here and started once the shell asks back for the tab it takes.
     apps: Option<&'a Apps>,
     compositor: &'a mut Compositor,
     services: Option<&'a DesktopServices>,
@@ -706,7 +706,7 @@ struct Answers<'a> {
 }
 
 impl Answers<'_> {
-    /// The app draws its activity in its own window again: the desk hides the card's window, the
+    /// The app draws its activity in its own window again: the shell hides the card's window, the
     /// app is told it stands down, and the window that draws it comes forward — the person asked
     /// for the activity where it lives, not for a card that vanishes.
     fn stand_down(&mut self, card: &crate::cards::Presented, reply: &Arc<Mutex<UnixStream>>) {
@@ -895,7 +895,7 @@ impl Answers<'_> {
                         self.launches.notes().forget(tab);
                     }
                 }
-                // The cards it presented, and the windows the desk stood
+                // The cards it presented, and the windows the shell stood
                 // them in, go with it.
                 let mut gone = false;
                 for card in self.cards.connection_closed(connection) {
@@ -1051,7 +1051,7 @@ impl Answers<'_> {
             }
             // An app's own card — a call, a route — is a window of its own: the app presents it,
             // the floating layer decides where it stands, and the app draws the activity inline
-            // whenever its own window is on the desk.
+            // whenever its own window is on the shell.
             FloatingSurfaceClientMessage::Present { request } => {
                 if let Err(reason) = self.cards.present(&app, connection, &request) {
                     tracing::warn!(%app, %reason, "card refused");
@@ -1070,7 +1070,7 @@ impl Answers<'_> {
                     self.stand_down(&card, &reply);
                 }
             }
-            // The app ended the activity: its card goes, and the window the desk stood there goes
+            // The app ended the activity: its card goes, and the window the shell stood there goes
             // with it.
             FloatingSurfaceClientMessage::Dismiss { id } => {
                 if let Some(card) = self.cards.dismissed(connection, &id) {
@@ -1116,7 +1116,7 @@ impl Answers<'_> {
             | FloatingSurfaceClientMessage::PickAnswered { .. } => {
                 refuse(&reply, &app, &name, NO_AGENT);
             }
-            // The app's send landed on `anchor`: a window of the desk showing it, beside the
+            // The app's send landed on `anchor`: a window of the shell showing it, beside the
             // window that sent.
             FloatingSurfaceClientMessage::OpenFloated { anchor, .. } => {
                 self.answer_open_after_send(&app, &anchor);
@@ -1208,7 +1208,7 @@ impl Answers<'_> {
         } else {
             None
         };
-        // The tab is there from this frame and the window starts once the desk asks back, so the
+        // The tab is there from this frame and the window starts once the shell asks back, so the
         // tab is the window's instance.
         apps.ask_window(
             &Launch::Package {
@@ -1224,7 +1224,7 @@ impl Answers<'_> {
 
     /// Open a window of `app` beside the one that sent from its box, showing
     /// the item `anchor` names: the conversation a message from that box
-    /// landed in. It opens in a window of its own, standing over the desk as
+    /// landed in. It opens in a window of its own, standing over the shell as
     /// the chord floats a window — over the place its strip gave it, the strip
     /// sharing out the card it draws at, so it stands beside what the person
     /// was reading instead of over it. The workspace's record keeps it there
@@ -1244,7 +1244,7 @@ impl Answers<'_> {
             // Its window closed: the item stands nowhere, and a window opens for it again.
             apps.forget_window_on(app, anchor);
         }
-        // The tab is there from this frame and the window starts once the desk asks back, so the
+        // The tab is there from this frame and the window starts once the shell asks back, so the
         // tab is the window's instance.
         apps.ask_window(
             &Launch::Package {
@@ -1456,7 +1456,7 @@ fn withhold(
     } else if asked && !withheld.values().any(|named| named == app) {
         compositor.protect_app(app, false);
     }
-    // The desk knows the same apps, so nothing it names for the compositor to draw is named for an
+    // The shell knows the same apps, so nothing it names for the compositor to draw is named for an
     // app that keeps its content, and a card in the switcher or the overview says so instead of
     // showing what the window holds back.
     desktop.set_withheld_apps(withheld.values().cloned().collect());
@@ -1715,7 +1715,7 @@ fn serve_window(
         network_allowed,
     } = window;
     let reply = Arc::new(Mutex::new(writer));
-    // From here the window is told the appearance of the desk it stands on,
+    // From here the window is told the appearance of the shell it stands on,
     // and it is told once more whenever that changes.
     if requests
         .send(Request {

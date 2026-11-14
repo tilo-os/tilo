@@ -1,8 +1,8 @@
-//! The ids the desk addresses its windows by, as a person's device mints
+//! The ids the shell addresses its windows by, as a person's device mints
 //! them: a tab's id is composed with the salt its own device's key folds to,
-//! so on some devices it is far past what an action's integer holds. The desk
+//! so on some devices it is far past what an action's integer holds. The shell
 //! still sends such a window where the person sends it, and answers a call
-//! that names something which is no window's id instead of moving the desk's
+//! that names something which is no window's id instead of moving the shell's
 //! first window.
 
 use super::*;
@@ -10,7 +10,7 @@ use super::*;
 use iroh::SecretKey;
 use tilo_desktop_model::ids::device_salt_of_key;
 
-/// A session whose desk mints its ids under `salt`: the salt another device's
+/// A session whose shell mints its ids under `salt`: the salt another device's
 /// key folds to, as this one's does.
 fn session_minting_under(salt: u16) -> Session {
     crate::common::headless(Options {
@@ -36,7 +36,7 @@ fn device_salt_past_an_integer() -> u16 {
 
 /// A window whose id is past an action's integer is sent to another strip and
 /// another workspace all the same, and a call naming no window's id is
-/// answered rather than taken for the desk's first window.
+/// answered rather than taken for the shell's first window.
 #[test]
 fn the_desktop_sends_a_window_whose_id_is_past_an_integer() {
     let _settled = ui::motion::testing::settled();

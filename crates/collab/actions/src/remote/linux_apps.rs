@@ -2,12 +2,12 @@
 //! device that runs it (`docs/hosted-browser.md`, "Linux apps").
 //!
 //! A hosted workspace's VM runs the workspace's Linux programs. A program
-//! with windows needs a display, and the person needs its windows on their
-//! desk, so the first Linux app opened starts a headless Tilo session in the
+//! with windows needs a display, and the person needs its windows in their
+//! shell, so the first Linux app opened starts a headless Tilo session in the
 //! VM: as the workspace's tenant (never as Browser's account), with Xwayland
 //! for X11 programs. That session joins the workspace as a device of it, the
 //! way a hosted Browser's session does ([`super::browser`]), and every window
-//! it runs is shared with the workspace's members, who see it on their desk
+//! it runs is shared with the workspace's members, who see it in their shell
 //! and drive it with their keyboard and pointer.
 //!
 //! The relay asks the member device over the device plane, as it asks for
@@ -17,7 +17,7 @@
 //!   ([`super::browser::RESOURCE`]); the argument is an [`OpenApp`]. It
 //!   succeeds with a [`super::browser::OpenedBrowser`] once the session is up
 //!   in the workspace and was told to start the app; the app's window joins
-//!   the desk as it maps.
+//!   the shell as it maps.
 //! - [`STOP`] ends the session and every app in it.
 //!
 //! The session in the VM is started with [`MARK`] in its environment and

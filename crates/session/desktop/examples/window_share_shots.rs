@@ -1,6 +1,6 @@
 //! Pictures of sharing a window with its workspace, from both ends.
 //!
-//! The device that has the window: one desk with a window this device maps, its menu open on the
+//! The device that has the window: one shell with a window this device maps, its menu open on the
 //! row that shares it with the workspace, on the row that stops once the session reads it as
 //! shared, and, while a device asked to see it and nothing of it went out yet, on the row that
 //! says the device waits, under a bar that says the same.
@@ -11,7 +11,7 @@
 //! and after this device let it go. None of them is an empty pane.
 //!
 //! Captured in both themes and both locales, through the production frame path
-//! ([`ui::headless::FrameHarness`]) and the menu a host without a session mounts over its desk.
+//! ([`ui::headless::FrameHarness`]) and the menu a host without a session mounts over its shell.
 //!
 //! ```text
 //! cargo run -p tilo-desktop --example window_share_shots -- ~/.cache/window-share-shots
@@ -112,11 +112,11 @@ fn clock() -> ClockSnapshot {
     }
 }
 
-/// The desk under the menu a host without a session mounts over it, and under the bar where the
+/// The shell under the menu a host without a session mounts over it, and under the bar where the
 /// picture is of what the bar says.
 struct Stage {
     bar: Option<TopBarChrome>,
-    desk: DesktopSurface,
+    shell: DesktopSurface,
     menu: WindowMenuPopup,
     rect: Rect,
 }
@@ -132,7 +132,7 @@ impl Widget for Stage {
         if let Some(bar) = &mut self.bar {
             nodes.push(bar.build_layout(taffy, theme, map));
         }
-        nodes.push(self.desk.build_layout(taffy, theme, map));
+        nodes.push(self.shell.build_layout(taffy, theme, map));
         nodes.push(self.menu.build_layout(taffy, theme, map));
         let style = Style {
             display: Display::Flex,
@@ -152,20 +152,20 @@ impl Widget for Stage {
         {
             bar.apply_layout(taffy, node, inner);
         }
-        if let Some(desk) = children.next() {
-            self.desk.apply_layout(taffy, desk, inner);
+        if let Some(shell) = children.next() {
+            self.shell.apply_layout(taffy, shell, inner);
         }
         if let Some(menu) = children.next() {
             self.menu.apply_layout(taffy, menu, inner);
         }
     }
 
-    /// The desk builds a tab's tile again in its own pass, when what the tab shows changed.
+    /// The shell builds a tab's tile again in its own pass, when what the tab shows changed.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let bar = self.bar.as_mut().is_some_and(|bar| bar.update(state, path));
-        let desk = self.desk.update(state, path);
+        let shell = self.shell.update(state, path);
         let menu = self.menu.update(state, path);
-        bar || desk || menu
+        bar || shell || menu
     }
 
     fn draw(
@@ -176,7 +176,7 @@ impl Widget for Stage {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.desk
+        self.shell
             .draw_child(scene, transform, text, theme, presence);
         if let Some(bar) = &mut self.bar {
             bar.draw_child(scene, transform, text, theme, presence);
@@ -188,7 +188,8 @@ impl Widget for Stage {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let first = usize::from(self.bar.is_some());
-        let (Some(&desk), Some(&menu)) = (children.get(first), children.get(first.wrapping_add(1)))
+        let (Some(&shell), Some(&menu)) =
+            (children.get(first), children.get(first.wrapping_add(1)))
         else {
             return;
         };
@@ -196,13 +197,13 @@ impl Widget for Stage {
             self.menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, menu));
         } else {
-            self.desk
-                .handle_event(event, &mut ctx.reborrow(ctx.path, desk));
+            self.shell
+                .handle_event(event, &mut ctx.reborrow(ctx.path, shell));
         }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.desk, &self.menu];
+        let mut children: Vec<&dyn Widget> = vec![&self.shell, &self.menu];
         if let Some(bar) = &self.bar {
             children.push(bar);
         }
@@ -210,7 +211,7 @@ impl Widget for Stage {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.desk, &mut self.menu];
+        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.shell, &mut self.menu];
         if let Some(bar) = &mut self.bar {
             children.push(bar);
         }
@@ -248,7 +249,7 @@ const SURFACE: u64 = 42;
 const SHARER: u64 = 7;
 const LOCAL: u64 = 11;
 
-/// The tab every other device lists the Browser's window in: it runs on the device the desk calls
+/// The tab every other device lists the Browser's window in: it runs on the device the shell calls
 /// `device` , and only there.
 fn hosted(device: &str) -> Tab {
     Tab {
@@ -266,7 +267,7 @@ fn hosted(device: &str) -> Tab {
     }
 }
 
-/// What the device running the window announces when its share starts, as this desk reads it.
+/// What the device running the window announces when its share starts, as this session reads it.
 fn stream_start(tab: TabId, device: &str) -> PeerStreamStart {
     let announcement = NeighbourMsg::SurfaceStreamStart {
         surface: SURFACE,
@@ -296,7 +297,7 @@ enum Tabbed {
     LetGo,
 }
 
-/// The desk of a device that lists the window of the device called `device` , its tab showing
+/// The shell of a device that lists the window of the device called `device` , its tab showing
 /// what `tabbed` says, beside a window of its own.
 fn watching(
     theme: Theme,
@@ -306,7 +307,7 @@ fn watching(
 ) -> Result<FrameHarness, String> {
     let tab = hosted(device);
     let id = tab.id;
-    let (mut frame, handle) = desk(
+    let (mut frame, handle) = shell(
         theme,
         (1280, 800),
         vec![mapped(minter), tab],
@@ -367,10 +368,10 @@ fn watching(
     Ok(frame)
 }
 
-/// A desk showing `tabs` , whose session reads every window it can share as `share` . Where a
+/// A shell showing `tabs` , whose session reads every window it can share as `share` . Where a
 /// device called `waiting` asked to see the first window and nothing of it went out yet, the bar
-/// stands over the desk and says so.
-fn desk(
+/// stands over the shell and says so.
+fn shell(
     theme: Theme,
     viewport: (u32, u32),
     tabs: Vec<Tab>,
@@ -415,7 +416,7 @@ fn desk(
     handle.reads_workspace_shares(Rc::new(move |_, _| Some(share)));
     let stage = Stage {
         bar,
-        desk: surface,
+        shell: surface,
         menu: WindowMenuPopup::new(handle.clone()),
         rect: Rect::ZERO,
     };
@@ -429,11 +430,11 @@ fn desk(
 fn settle(frame: &mut FrameHarness) {
     for _ in 0..12 {
         frame.request_layout();
-        frame.poll_frame().expect("a frame draws the desk");
+        frame.poll_frame().expect("a frame draws the shell");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     frame.request_layout();
-    frame.poll_frame().expect("a frame draws the desk");
+    frame.poll_frame().expect("a frame draws the shell");
 }
 
 /// Whether the frame shows something reading `label` .
@@ -509,7 +510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         t_args("window-menu-stop-sharing-waiting", &[("viewers", 1.into())])
                     }
                 };
-                let (mut frame, _) = desk(
+                let (mut frame, _) = shell(
                     theme.clone(),
                     (1280, 800),
                     vec![mapped(&mut minter)],

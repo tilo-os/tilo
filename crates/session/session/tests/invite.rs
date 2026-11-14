@@ -110,10 +110,10 @@ fn principal(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(root: &[u8; 32]) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn shell(root: &[u8; 32]) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Shell");
     workspace.set_owner(principal(root));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -123,7 +123,7 @@ fn desk(root: &[u8; 32]) -> Layout {
 }
 
 /// A session of this computer taking part in the collaboration plane, keeping what it holds under
-/// `state` , on the desk showing the workspace.
+/// `state` , on the shell showing the workspace.
 fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -134,7 +134,7 @@ fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
             ..Options::default()
         },
     );
-    session.handle().replace_tree(desk(root));
+    session.handle().replace_tree(shell(root));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
@@ -254,15 +254,15 @@ fn capture(app: &mut HeadlessApp<InviteApp>, name: &str) {
         .render_png(&directory.join(format!("{name}.png")));
 }
 
-/// The invitations the desk's own action lists for the workspace in front.
-fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
+/// The invitations the shell's own action lists for the workspace in front.
+fn invitations_at_the_shell(session: &mut Session) -> Vec<serde_json::Value> {
     let listed = session
         .invoke(
             tilo_actions::remote::session_actions::INVITE_RESOURCE,
             "invitations",
             &serde_json::Map::new(),
         )
-        .expect("the desk lists the invitations it made")
+        .expect("the shell lists the invitations it made")
         .completed()
         .expect("listing finishes on return")
         .value
@@ -339,7 +339,7 @@ fn redeemed(link: &str, kept: &Mutex<HashMap<String, String>>) -> String {
     tilo_workspace_join::encode_invitation_text(&bytes)
 }
 
-/// A session on a desk that holds [`WORKSPACE`], with the invite sheet up as the person who may
+/// A session on a shell that holds [`WORKSPACE`], with the invite sheet up as the person who may
 /// invite there sees it: everything either test does before it can make a link.
 struct Hosted {
     /// The identity root and the state directory the session reads from.
@@ -452,7 +452,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let person = hex::encode(cert.user_public_key);
 
     // They make a link at the part the sheet opens on: the sheet asks, the session makes it through
-    // the desk, and the sheet shows the link back.
+    // the shell, and the sheet shows the link back.
     let mut app = sheet_app(&seat);
     let link = press_create(&mut app, &mut session);
     assert!(
@@ -460,9 +460,9 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         "the link the sheet shows is the site's short one: {link:?}"
     );
     assert_eq!(
-        invitations_at_the_desk(&mut session).len(),
+        invitations_at_the_shell(&mut session).len(),
         1,
-        "the link is the desk's own invitation"
+        "the link is the shell's own invitation"
     );
     capture(&mut app, "invite-sheet");
 

@@ -138,41 +138,42 @@ fn both_online(here: &Device, there: &Device) -> bool {
 fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
     let person = person();
     let laptop = device(&person, 1, "Laptop");
-    let desk = device(&person, 2, "Desk");
-    laptop.client.connect(desk.client.endpoint_addr());
+    let session = device(&person, 2, "Session");
+    laptop.client.connect(session.client.endpoint_addr());
     assert!(
-        until(&[&laptop, &desk], || both_online(&laptop, &desk)),
+        until(&[&laptop, &session], || both_online(&laptop, &session)),
         "the two devices' sessions came up"
     );
 
-    // What a route playing the desk's sound holds while it runs: until the desk answers, its audio
+    // What a route playing the shell's sound holds while it runs: until the shell answers, its audio
     // may not start.
-    let clock = hold_fabric_clock_sync(desk.id.clone());
+    let clock = hold_fabric_clock_sync(session.id.clone());
     assert_eq!(
         clock.state(),
         ClockSyncState::Syncing,
-        "nothing is known of the desk's clock yet"
+        "nothing is known of the session's clock yet"
     );
     assert!(
-        until(&[&laptop, &desk], || clock.state() == ClockSyncState::Ready),
-        "the desk answered a probe, so the route left its syncing clock"
+        until(&[&laptop, &session], || clock.state()
+            == ClockSyncState::Ready),
+        "the session answered a probe, so the route left its syncing clock"
     );
     assert!(
-        until(&[&laptop, &desk], || {
+        until(&[&laptop, &session], || {
             clock.estimate().is_some_and(|estimate| estimate.synced)
         }),
-        "enough round trips to follow the desk's clock"
+        "enough round trips to follow the session's clock"
     );
-    // Both sessions run on this machine, so the desk's clock is this one's,
+    // Both sessions run on this machine, so the shell's clock is this one's,
     // and what plays there is scheduled from the same line.
     let now_us = fabric_monotonic_us();
     let offset_us = clock
         .estimate()
         .and_then(|estimate| estimate.offset_us(now_us))
-        .expect("an estimate of the desk's clock");
+        .expect("an estimate of the session's clock");
     assert!(
         offset_us.abs() < 1_000,
-        "the desk's clock is this device's: {offset_us} us off"
+        "the session's clock is this device's: {offset_us} us off"
     );
 }
 
@@ -185,7 +186,7 @@ fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
 fn a_device_that_starts_again_continues_its_own_revisions() {
     let person = person();
     let kept = tempfile::tempdir().expect("a state directory");
-    let desk = device(&person, 2, "Desk");
+    let session = device(&person, 2, "Session");
     let laptop = kept_device(
         &person,
         1,
@@ -194,19 +195,20 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         test_relay::loopback(),
     );
     let id = laptop.id.clone();
-    laptop.client.connect(desk.client.endpoint_addr());
+    laptop.client.connect(session.client.endpoint_addr());
     assert!(
-        until(&[&laptop, &desk], || both_online(&laptop, &desk)),
+        until(&[&laptop, &session], || both_online(&laptop, &session)),
         "the two devices' sessions came up"
     );
-    let held = |desk: &Device| {
-        desk.fabric()
+    let held = |session: &Device| {
+        session
+            .fabric()
             .device_fabric()
             .snapshots()
             .get(&id)
             .map(|record| record.presence.stamp.clone())
     };
-    let before = held(&desk).expect("the desk holds what the laptop said");
+    let before = held(&session).expect("the session holds what the laptop said");
     drop(laptop);
 
     let laptop = kept_device(
@@ -216,12 +218,12 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         Some(kept.path()),
         test_relay::loopback(),
     );
-    laptop.client.connect(desk.client.endpoint_addr());
+    laptop.client.connect(session.client.endpoint_addr());
     assert!(
-        until(&[&laptop, &desk], || {
-            held(&desk).is_some_and(|now| now.is_newer_than(&before))
+        until(&[&laptop, &session], || {
+            held(&session).is_some_and(|now| now.is_newer_than(&before))
         }),
-        "the desk took what the laptop said after starting again: it still holds {before:?}"
+        "the session took what the laptop said after starting again: it still holds {before:?}"
     );
 
     let copy = kept_device(
@@ -254,7 +256,7 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
     };
     let person = person();
     let laptop = kept_device(&person, 1, "Laptop", None, unreachable());
-    let desk = kept_device(&person, 2, "Desk", None, unreachable());
+    let session = kept_device(&person, 2, "Session", None, unreachable());
     let stranger = kept_device(
         &ed25519_dalek::SigningKey::from_bytes(&[22; 32]),
         3,
@@ -264,10 +266,12 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
     );
     laptop
         .client
-        .connect(iroh::EndpointAddr::new(desk.client.publisher()));
+        .connect(iroh::EndpointAddr::new(session.client.publisher()));
 
     assert!(
-        until(&[&laptop, &desk, &stranger], || both_online(&laptop, &desk)),
+        until(&[&laptop, &session, &stranger], || both_online(
+            &laptop, &session
+        )),
         "the two devices found each other on the local network"
     );
     let now = tilo_clock::unix_now_ms();
@@ -284,23 +288,24 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
     .expect("a shareable copy");
     laptop.fabric().share_clipboard(vec![copy]);
     assert!(
-        until(&[&laptop, &desk, &stranger], || {
-            desk.fabric()
+        until(&[&laptop, &session, &stranger], || {
+            session
+                .fabric()
                 .device_fabric()
                 .merged_clipboard()
                 .entries()
                 .any(|entry| entry.payload == ClipboardPayload::Text(text.to_owned()))
         }),
-        "the copy reached the desk over the local network"
+        "the copy reached the session over the local network"
     );
     assert!(
-        until(&[&laptop, &desk, &stranger], || {
-            laptop.fabric().nearby_device_ids().contains(&desk.id)
-                && desk.fabric().nearby_device_ids().contains(&laptop.id)
+        until(&[&laptop, &session, &stranger], || {
+            laptop.fabric().nearby_device_ids().contains(&session.id)
+                && session.fabric().nearby_device_ids().contains(&laptop.id)
         }),
         "each lists the other as nearby"
     );
-    for device in [&laptop, &desk] {
+    for device in [&laptop, &session] {
         assert!(
             !device.fabric().nearby_device_ids().contains(&stranger.id)
                 && !device.fabric().online_device_ids().contains(&stranger.id),
@@ -313,40 +318,40 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
 fn a_wake_reaches_the_other_session() {
     let person = person();
     let laptop = device(&person, 1, "Laptop");
-    let desk = device(&person, 2, "Desk");
+    let session = device(&person, 2, "Session");
     // Not in the session at all: a wake names a device of the person's by its fabric id, so the
     // waker need not have a session with it.
     let pod = device(&person, 3, "Pod");
-    laptop.client.connect(desk.client.endpoint_addr());
+    laptop.client.connect(session.client.endpoint_addr());
 
     assert!(
-        until(&[&laptop, &desk], || both_online(&laptop, &desk)),
+        until(&[&laptop, &session], || both_online(&laptop, &session)),
         "the two devices' sessions came up"
     );
 
     let request = laptop
         .fabric()
         .try_send_personal_fabric_action(
-            &desk.id,
+            &session.id,
             PersonalFabricAction::WakeDevice {
                 target: pod.id.clone(),
             },
         )
-        .expect("the wake is sent to the desk");
+        .expect("the wake is sent to the session");
 
     let mut heard: Vec<PersonalFabricActionEnvelope> = Vec::new();
-    let arrived = until(&[&laptop, &desk], || {
-        heard.extend(desk.client.fabric_actions());
+    let arrived = until(&[&laptop, &session], || {
+        heard.extend(session.client.fabric_actions());
         heard.iter().any(|envelope| envelope.request_id == request)
     });
 
-    assert!(arrived, "the wake reached the desk");
+    assert!(arrived, "the wake reached the session");
     let envelope = heard
         .iter()
         .find(|envelope| envelope.request_id == request)
-        .expect("the wake the desk heard");
+        .expect("the wake the session heard");
     assert_eq!(envelope.source, laptop.id, "the laptop sent the wake");
-    assert_eq!(envelope.target, desk.id, "the desk was addressed");
+    assert_eq!(envelope.target, session.id, "the session was addressed");
     assert_eq!(
         envelope.action,
         PersonalFabricAction::WakeDevice { target: pod.id },
@@ -358,16 +363,16 @@ fn a_wake_reaches_the_other_session() {
 fn an_action_addressed_to_a_third_device_is_not_delivered() {
     let person = person();
     let laptop = device(&person, 1, "Laptop");
-    let desk = device(&person, 2, "Desk");
+    let session = device(&person, 2, "Session");
     let pod = device(&person, 3, "Pod");
-    laptop.client.connect(desk.client.endpoint_addr());
+    laptop.client.connect(session.client.endpoint_addr());
     laptop.client.connect(pod.client.endpoint_addr());
 
     assert!(
-        until(&[&laptop, &desk, &pod], || {
-            both_online(&laptop, &desk) && both_online(&laptop, &pod)
+        until(&[&laptop, &session, &pod], || {
+            both_online(&laptop, &session) && both_online(&laptop, &pod)
         }),
-        "the laptop's sessions with the desk and the pod came up"
+        "the laptop's sessions with the session and the pod came up"
     );
 
     let request = laptop
@@ -375,31 +380,31 @@ fn an_action_addressed_to_a_third_device_is_not_delivered() {
         .try_send_personal_fabric_action(
             &pod.id,
             PersonalFabricAction::WakeDevice {
-                target: desk.id.clone(),
+                target: session.id.clone(),
             },
         )
         .expect("the wake is sent to the pod");
 
-    let mut at_desk: Vec<PersonalFabricActionEnvelope> = Vec::new();
+    let mut at_shell: Vec<PersonalFabricActionEnvelope> = Vec::new();
     let mut at_pod: Vec<PersonalFabricActionEnvelope> = Vec::new();
-    let arrived = until(&[&laptop, &desk, &pod], || {
-        at_desk.extend(desk.client.fabric_actions());
+    let arrived = until(&[&laptop, &session, &pod], || {
+        at_shell.extend(session.client.fabric_actions());
         at_pod.extend(pod.client.fabric_actions());
         at_pod.iter().any(|envelope| envelope.request_id == request)
     });
 
     assert!(arrived, "the pod was handed the action addressed to it");
-    // Whatever the transport did with the frame would have happened by now: the desk's session with
+    // Whatever the transport did with the frame would have happened by now: the shell's session with
     // the laptop runs on the same passes.
     for _ in 0..5 {
-        pass(&[&laptop, &desk, &pod]);
-        at_desk.extend(desk.client.fabric_actions());
+        pass(&[&laptop, &session, &pod]);
+        at_shell.extend(session.client.fabric_actions());
         at_pod.extend(pod.client.fabric_actions());
         std::thread::sleep(PASS);
     }
     assert!(
-        at_desk.is_empty(),
-        "the desk was handed no action addressed to the pod: {at_desk:?}"
+        at_shell.is_empty(),
+        "the session was handed no action addressed to the pod: {at_shell:?}"
     );
     assert_eq!(at_pod.len(), 1, "the pod was handed the action once");
     assert_eq!(at_pod[0].source, laptop.id);

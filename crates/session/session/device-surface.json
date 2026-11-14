@@ -1989,7 +1989,7 @@
       "types": [
         {
           "name": "App",
-          "doc": "An application installed on this device: its package id, which `open-app` names, its name in the person's language, its glyph, and its category and description when it named them.",
+          "doc": "An application installed on this device: its package id, which `open-app` names, its name in the person's language, its glyph, and its category when it named one.",
           "fields": [
             {
               "name": "key",
@@ -2005,10 +2005,6 @@
             },
             {
               "name": "category",
-              "type": "text"
-            },
-            {
-              "name": "description",
               "type": "text"
             }
           ]
@@ -2035,7 +2031,7 @@
       "types": [
         {
           "name": "Window",
-          "doc": "A window of the desk: a tab of a strip of one of its workspaces.",
+          "doc": "A window of the layout: a tab of a strip of one of its workspaces.",
           "fields": [
             {
               "name": "key",
@@ -2181,7 +2177,7 @@
         {
           "id": "stop-agent",
           "label": "Stop",
-          "description": "End the agent `agent`'s work here: the connection the person admitted closes and its presence leaves the bar",
+          "description": "End one agent session: its connection closes and its presence leaves the bar.",
           "kind": "outside",
           "params": [
             {
@@ -2207,7 +2203,7 @@
       "types": [
         {
           "name": "Agent",
-          "doc": "An agent here for the person.",
+          "doc": "One agent session.",
           "fields": [
             {
               "name": "key",
@@ -2252,7 +2248,7 @@
           "stored": "value",
           "type": {
             "list": {
-              "named": "DeskStyle"
+              "named": "Style"
             }
           },
           "readonly": true
@@ -2260,8 +2256,8 @@
       ],
       "types": [
         {
-          "name": "DeskStyle",
-          "doc": "A desk style: a view of the arrangement an installed package declares (shell.md §6).",
+          "name": "Style",
+          "doc": "A style: a view of the arrangement an installed package declares (shell.md §6).",
           "fields": [
             {
               "name": "style",
@@ -2332,7 +2328,7 @@
         {
           "id": "show-surface",
           "label": "Show or hide a panel",
-          "description": "Show the surface `surface` over the desk's windows, or close it when it is up.",
+          "description": "Show the surface `surface` over the shell's windows, or close it when it is up.",
           "kind": "outside",
           "params": [
             {

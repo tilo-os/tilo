@@ -104,19 +104,19 @@ fn main() -> std::process::ExitCode {
         Ok(Some(command)) => return tilo_session::startup::run(command, host_desktop),
         Ok(None) => {}
     }
-    // The desk placing, drawing and answering a window is what a person waits
+    // The shell placing, drawing and answering a window is what a person waits
     // on when they open something, so this session carries the session's own
     // CPU and IO weight. The image sets it on the compositor's logind scope
     // before the session starts; a session a host started without those units,
     // or from a terminal, carries it itself, and a cgroup already weighted at
     // or above it is left alone (see `launcher::priority::Tier::Session`).
     if let Err(error) = launcher::app_cgroup::claim_session_weight() {
-        eprintln!("tilo-session: keeping the desk's CPU weight: {error}");
+        eprintln!("tilo-session: keeping the shell's CPU weight: {error}");
     }
     let identity = tilo_session::startup::identity();
     tilo_startup_metrics::mark("identity-verified");
     match &identity {
-        tilo_session::startup::Identity::Desk
+        tilo_session::startup::Identity::Shell
         | tilo_session::startup::Identity::WaitForClock { .. } => {}
         tilo_session::startup::Identity::Recovery(problem) => {
             eprintln!(
@@ -359,7 +359,7 @@ struct Output {
     size: (u16, u16),
     /// The density a headless output draws at.
     headless: HeadlessPanel,
-    /// The connector a headless session's first output carries, so a desk can be posed as one whose
+    /// The connector a headless session's first output carries, so a shell can be posed as one whose
     /// panel is a named connector.
     connector: String,
     /// The displays a headless session opens after the first, each its own output where it is put.
@@ -631,7 +631,7 @@ fn start(
     // directory waits on the disk.
     tilo_session::identity::install();
     tilo_startup_metrics::mark("identity-installed");
-    // The font system every renderer shares is built on a thread from here: the services, the desk
+    // The font system every renderer shares is built on a thread from here: the services, the shell
     // build and the compositor's first frame run beside it, and what needs text finds it ready.
     // Building it on this thread instead put font discovery and face mapping (the font index alone
     // is a large read) in front of everything the session says to its first client.
@@ -695,7 +695,7 @@ fn start(
         // one the relay handed it, so nothing is left to set up and nothing stands over the window
         // it was started for.
         setup: (!serves_an_environment)
-            .then(|| tilo_session::startup::before_desk(identity, host_desktop))
+            .then(|| tilo_session::startup::before_shell(identity, host_desktop))
             .flatten(),
         captures: Some(captures),
         questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),

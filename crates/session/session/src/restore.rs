@@ -3,15 +3,15 @@
 //! A saved window is kept as the app that opens it ([`tilo_desktop_model::TileContent::LocalApp`]),
 //! because a live window's surface belongs to the compositor that mapped it and means nothing after
 //! a restart. So restoring is asking each of those apps to run again and giving its window the tab,
-//! the group and the strip it was in — the desk is the same before and after, and no second tab
+//! the group and the strip it was in — the layout is the same before and after, and no second tab
 //! opens beside a saved one.
 //! One app is asked at a time, the workspace in front's first: started together after a login, a
-//! whole desk of apps fights over CPU, disk and memory, and each one shows its window several times
+//! whole layout of apps fights over CPU, disk and memory, and each one shows its window several times
 //! later than the first would alone; one after another, the first is up soonest and the next starts
 //! on a quieter machine. The next is asked once the one before has its window, or could not open
 //! one.
 //! A tab whose app is gone — not installed any more, or it started nothing — says so where the
-//! window would be, naming the app and why, and nothing else on the desk changes: the person closes
+//! window would be, naming the app and why, and nothing else on the shell changes: the person closes
 //! it when they are done with it. The answer stands for as long as the window would have, and the
 //! next login asks again: by then the app may be installed, or the reason it would not start gone.
 
@@ -29,7 +29,7 @@ use crate::i18n::t_args;
 /// started and never mapped is not coming.
 const OPEN_DEADLINE: Duration = Duration::from_secs(15);
 
-/// The saved windows of a desk, asked for again one at a time.
+/// The saved windows of a layout, asked for again one at a time.
 #[derive(Default)]
 pub(crate) struct Restore {
     /// The saved windows not asked for yet, in the order they are asked.
@@ -41,7 +41,7 @@ pub(crate) struct Restore {
     held: Vec<Saved>,
     /// When [`Self::held`] was last read against admission: once a second, not on every pass.
     held_checked: Option<Instant>,
-    /// Whether the desk has been laid out from the workspaces' layouts, which happens once.
+    /// Whether the layout has been laid out from the workspaces' layouts, which happens once.
     seeded: bool,
 }
 
@@ -65,8 +65,8 @@ struct Opening {
 }
 
 impl Restore {
-    /// Take up the windows `tree` holds the first time this session lays the desk out from the
-    /// workspaces' layouts: every window that opens again, the ones on the desk in front first, then
+    /// Take up the windows `tree` holds the first time this session lays the layout out from the
+    /// workspaces' layouts: every window that opens again, the ones on the shell in front first, then
     /// the rest in the order the person left them. Whether this is that first time, in which case
     /// what it took is all of them and no window is one that arrived.
     pub(crate) fn start(&mut self, before: &Layout, tree: &mut Layout) -> bool {
@@ -91,14 +91,14 @@ impl Restore {
             .into_iter()
             .filter(|(_, saved)| !here.contains(&saved.tab))
             .collect();
-        // Stable, so the desk's own order stands within each workspace.
+        // Stable, so the layout's own order stands within each workspace.
         saved.sort_by_key(|(workspace, _)| *workspace != tree.active);
         self.waiting = saved.into_iter().map(|(_, saved)| saved).collect();
         true
     }
 
     /// Ask, after what is waiting already, for the windows of the workspace `workspace_id` of `tree` that
-    /// wait for their apps: a workspace put on the desk with windows to open, as a branch is.
+    /// wait for their apps: a workspace put on the shell with windows to open, as a branch is.
     pub(crate) fn add(&mut self, tree: &Layout, workspace_id: WorkspaceId) {
         self.waiting.extend(
             waiting_in(tree, |workspace| workspace == workspace_id)
@@ -274,7 +274,7 @@ impl Restore {
 /// A place stands for a launch the session asked for a moment ago. The session that asked is gone
 /// by the next start, so nothing is on its way to those any more: they are not windows the person
 /// had open, and a start that kept them would show the remains of a launch that ended — one more of
-/// them with every restart, since each is written down with the desk.
+/// them with every restart, since each is written down with the layout.
 pub(crate) fn without_unfilled(tree: &mut Layout) {
     let unfilled: Vec<TabId> = tree
         .workspaces
@@ -350,25 +350,25 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
 
 /// What a tab says when the app it holds is not on this machine.
 fn not_installed(name: &str) -> String {
-    t_args("desk-window-not-installed", &[("app", name.into())])
+    t_args("layout-window-not-installed", &[("app", name.into())])
 }
 
 /// What a tab says when its app started nothing.
 fn would_not_start(name: &str) -> String {
-    t_args("desk-window-would-not-start", &[("app", name.into())])
+    t_args("layout-window-would-not-start", &[("app", name.into())])
 }
 
 /// What a tab says while its app waits for `host` to take this device into its workspace.
 fn waits_for_host(name: &str, host: &str) -> String {
     t_args(
-        "desk-window-waits-for-host",
+        "layout-window-waits-for-host",
         &[("app", name.into()), ("host", host.into())],
     )
 }
 
 /// What a tab says when its app started and never showed a window.
 fn did_not_open(name: &str) -> String {
-    t_args("desk-window-did-not-open", &[("app", name.into())])
+    t_args("layout-window-did-not-open", &[("app", name.into())])
 }
 
 #[cfg(test)]
@@ -379,8 +379,8 @@ mod tests {
 
     use super::Restore;
 
-    /// A desk of one workspace whose one window group holds `tabs`.
-    fn desk(tabs: Vec<Tab>) -> Layout {
+    /// A layout of one workspace whose one window group holds `tabs`.
+    fn layout(tabs: Vec<Tab>) -> Layout {
         let mut workspace = Workspace::new(
             WorkspaceId::parse("3024f582-9315-461d-a32f-2c67269385e1").unwrap(),
             "Shared",
@@ -421,7 +421,7 @@ mod tests {
         }
     }
 
-    /// A window another member opened arrives in the workspace's desk as one this device opens
+    /// A window another member opened arrives in the workspace's layout as one this device opens
     /// its own instance of: the app is asked for it, and for no window that was already here.
     #[test]
     fn a_window_another_member_opened_is_asked_for_and_nothing_already_here() {
@@ -433,8 +433,8 @@ mod tests {
             },
         );
         let waiting = window(5, notes());
-        let before = desk(vec![mine.clone(), waiting.clone()]);
-        let after = desk(vec![mine, waiting, window(6, notes())]);
+        let before = layout(vec![mine.clone(), waiting.clone()]);
+        let after = layout(vec![mine, waiting, window(6, notes())]);
         let mut restore = Restore::default();
         restore.arrived(&before, &after);
         let asked: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
@@ -442,7 +442,7 @@ mod tests {
     }
 
     /// A window whose app says it runs only on the device that opened it (a Browser's page lives
-    /// in its engine there) reaches another desk as that device's window. Nothing is asked to
+    /// in its engine there) reaches another layout as that device's window. Nothing is asked to
     /// open it here, so its tab never says an app could not open. A window that shows a record,
     /// written beside it, is asked for as before.
     #[test]
@@ -456,9 +456,9 @@ mod tests {
             app_id: app.into(),
             surface_id,
         };
-        // The laptop's desk, with both windows live, as its session writes it into the
+        // The laptop's layout, with both windows live, as its session writes it into the
         // workspace's layout.
-        let opened = desk(vec![
+        let opened = layout(vec![
             window(NOTES, foreign("so.tilo.notes", 1)),
             window(BROWSER, foreign("so.tilo.browser", 2)),
         ]);
@@ -472,9 +472,9 @@ mod tests {
             },
             &|_| true,
         );
-        let mut layout = automerge::AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         device::write(
-            &mut layout,
+            &mut doc,
             room,
             &published,
             &device::Writer {
@@ -484,14 +484,14 @@ mod tests {
             },
         )
         .unwrap();
-        layout.commit();
+        doc.commit();
 
-        // Another device of the workspace lays that layout into its own desk.
-        let mut before = desk(Vec::new());
+        // Another device of the workspace lays that layout into its own layout.
+        let mut before = layout(Vec::new());
         before.workspaces[0].strips.clear();
         let mut after = before.clone();
         assert!(device::fold(
-            &layout,
+            &doc,
             &mut after.workspaces[0],
             &"cd".repeat(32),
             &device::Kept::NOTHING,
@@ -511,7 +511,7 @@ mod tests {
         let browser = after.workspaces[0]
             .tabs()
             .find(|tab| tab.id == BROWSER)
-            .expect("the desk lists the other device's window");
+            .expect("the layout lists the other device's window");
         assert_eq!(
             browser.tile,
             TileContent::HostedWindow {

@@ -143,7 +143,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_desk_widget_resizes_through_its_stages;
+        fn a_shell_widget_resizes_through_its_stages;
 
         phase resizing_through_every_breakpoint_is_continuous;
         {

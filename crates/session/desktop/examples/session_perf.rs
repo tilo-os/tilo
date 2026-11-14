@@ -106,7 +106,7 @@ enum Profile {
     Arriving,
     /// The page: the tab mounts and draws its app.
     Apps,
-    /// The floating layer over a desk: three activity cards, one ticking.
+    /// The floating layer over a shell: three activity cards, one ticking.
     Activities,
 }
 
@@ -411,7 +411,7 @@ fn phase_json(phase: &Phase) -> serde_json::Value {
 
 /// The floating layer's own frames, hosted as both hosts host it: three activity cards docked in
 /// the corner, one of them ticking, and a card dragged across the surface. What it measures is the
-/// layer alone, so the numbers are the cards' cost rather than the desk's.
+/// layer alone, so the numbers are the cards' cost rather than the shell's.
 fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String> {
     use ui::floating_layer::{Card, Corner, Placement};
     use ui::live_activity::{Control, ControlKind, Kind, Summary};
@@ -758,7 +758,7 @@ fn run() -> Result<(), String> {
     // clock barely moved and a window's entrance still counts as moving; settle the animations on
     // the toolkit's clock first, as a capture does, and then no offered frame may find work.
     harness.settle_for_capture(ui::time::Duration::from_millis(2000));
-    // Settling moves what the desk shows: a placeholder says where its content comes from once it
+    // Settling moves what the shell shows: a placeholder says where its content comes from once it
     // has stood a while. A host presents that frame as soon as it is due; presenting it here keeps
     // the offers below to the idle loop itself, rather than counting the one frame the settled
     // state is still owed six hundred times.

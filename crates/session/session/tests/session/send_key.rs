@@ -1,5 +1,5 @@
 //! The shell's send key asks the window the person works in to open its box: the app draws it
-//! alone, and a desk with nothing in front still opens Chat.
+//! alone, and a shell with nothing in front still opens Chat.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,7 +100,7 @@ fn the_send_key_asks_the_window_in_front_to_open_its_box() {
     let _ = app_process.wait();
 }
 
-/// The apps whose windows the desk holds now, tab by tab.
+/// The apps whose windows the shell holds now, tab by tab.
 fn tab_apps(session: &Session) -> Vec<String> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -119,10 +119,10 @@ fn tab_apps(session: &Session) -> Vec<String> {
     })
 }
 
-/// The send key over a desk with no window in front opens Chat, which is what a send with nothing
+/// The send key over a shell with no window in front opens Chat, which is what a send with nothing
 /// to be about has always opened, on a device that has Chat.
 #[test]
-fn the_send_key_over_an_empty_desk_opens_chat() {
+fn the_send_key_over_an_empty_shell_opens_chat() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
     let mut session = crate::common::headless(Options {
@@ -138,7 +138,7 @@ fn the_send_key_over_an_empty_desk_opens_chat() {
         ..Options::default()
     });
     session.step(Duration::from_millis(1)).expect("a frame");
-    assert!(tab_apps(&session).is_empty(), "the desk starts empty");
+    assert!(tab_apps(&session).is_empty(), "the shell starts empty");
 
     press_send_key(&mut session);
     assert!(

@@ -1,5 +1,5 @@
-//! The Calendar desk widget's content: today at a glance, and the month around it when open.
-//! No calendar service feeds the desk yet, so the widget shows only what is known for certain, the
+//! The Calendar Desktop widget's content: today at a glance, and the month around it when open.
+//! No calendar service feeds the shell yet, so the widget shows only what is known for certain, the
 //! date, and never a stand-in line about events. Pure: everything is computed from the day it is
 //! given.
 

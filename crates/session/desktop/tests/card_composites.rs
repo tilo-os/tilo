@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::support::desk_tree;
+use crate::support::layout_tree;
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
@@ -21,7 +21,7 @@ use tilo_surface_host::{Placement, WidgetHost};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
-/// The chrome over the desk at `scale` : built after `_compositor` opened its backend, as the
+/// The chrome over the shell at `scale` : built after `_compositor` opened its backend, as the
 /// session builds its surfaces after its compositor. A host built before the backend is open draws
 /// its frames for a compositor that samples textures rather than one that reads pixels, which is
 /// not the path a headless session takes.
@@ -30,11 +30,11 @@ fn chrome_host(
     scale: f64,
     size: (u32, u32),
 ) -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk =
+    let mut shell =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
-    desk.relayout();
+    shell.relayout();
     let chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
@@ -57,7 +57,7 @@ fn chrome_host(
         false,
     )
     .with_keyboard(Rc::new(move || keyboard.search_open()));
-    (host, handle, desk)
+    (host, handle, shell)
 }
 
 fn send_chord(host: &mut WidgetHost) {
@@ -92,11 +92,11 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
             .with_scale(scale),
         )
         .unwrap();
-    let (mut host, handle, mut desk) = chrome_host(&mut compositor, scale, size);
+    let (mut host, handle, mut shell) = chrome_host(&mut compositor, scale, size);
     host.relayout();
     host.prepare_frame();
     send_chord(&mut host);
-    desk.relayout();
+    shell.relayout();
     host.relayout();
     host.prepare_frame();
     assert!(
@@ -150,7 +150,7 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     );
 }
 
-/// At one pixel a point and at twice the pixels, each on a compositor, an output and a desk of its
+/// At one pixel a point and at twice the pixels, each on a compositor, an output and a shell of its
 /// own: nothing of one density's session is there for the next.
 #[test]
 fn the_open_palettes_card_reaches_the_composited_output() {

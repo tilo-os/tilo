@@ -1,5 +1,5 @@
 //! The person's own workspaces, as every device of theirs knows them: the workspace a fresh device
-//! starts from is theirs and is kept in their list beside the desk, and the workspaces they make
+//! starts from is theirs and is kept in their list beside the shell, and the workspaces they make
 //! are added to it — so their other devices learn of them and open them there.
 //! The list outlives the session: coming back to a device finds the same workspaces listed, none of
 //! them twice.
@@ -19,11 +19,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_app::framework::testing::HeadlessApp;
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 
-/// A session keeping this device's desk, and the person's list of their own workspaces, under
+/// A session keeping this device's shell, and the person's list of their own workspaces, under
 /// `state` .
 fn session_keeping(state: &Path) -> Session {
     crate::common::headless(Options {
@@ -33,7 +33,7 @@ fn session_keeping(state: &Path) -> Session {
     })
 }
 
-/// The workspaces on this desk: id, name, the id it has on every device, in order.
+/// The workspaces on this session: id, name, the id it has on every device, in order.
 fn held(session: &Session) -> Vec<(String, String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -102,16 +102,16 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
         assert_eq!(held.len(), 1, "a fresh device starts from one workspace");
         let (id, name, workspace) = held[0].clone();
         // A workspace is the same on every device, by the id its key derives: the one the person
-        // starts from opens again by that id, not by one only this desk knew.
+        // starts from opens again by that id, not by one only this session knew.
         let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace).expect("a workspace");
         assert_eq!(
             id,
             workspace.to_string(),
-            "the workspace the desk starts from is known by that id"
+            "the workspace the session starts from is known by that id"
         );
         assert!(
             list_path(state.path()).is_file(),
-            "the person's list of their own workspaces is kept beside the desk"
+            "the person's list of their own workspaces is kept beside the session"
         );
         (name, workspace.to_string())
     };
@@ -141,7 +141,7 @@ fn a_workspace_the_person_makes_here_is_listed_for_their_other_devices() {
         session.step(Duration::from_millis(1)).expect("a frame");
         session
             .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())
-            .expect("the desk makes a workspace");
+            .expect("the session makes a workspace");
         session.step(Duration::from_millis(1)).expect("a frame");
         let held = held(&session);
         assert_eq!(held.len(), 2, "the person made a second workspace");
@@ -180,20 +180,20 @@ fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
 }
 
 /// Workspace settings offers the person's devices for the workspace, and keeping this one off it
-/// takes the workspace off this desk, where it stays: the choice is theirs and their other devices
+/// takes the workspace off this session, where it stays: the choice is theirs and their other devices
 /// keep it in step.
 #[test]
-fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
+fn keeping_a_workspace_off_this_device_takes_it_off_this_shells() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _identity = this_computer(&mut env);
     let state = tempfile::tempdir().expect("a state directory");
     let mut session = session_keeping(state.path());
     session.step(Duration::from_millis(1)).expect("a frame");
-    // Two workspaces, so the desk may let one go without leaving the person with none.
+    // Two workspaces, so the shell may let one go without leaving the person with none.
     session
         .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())
-        .expect("the desk makes a workspace");
+        .expect("the session makes a workspace");
     session.step(Duration::from_millis(1)).expect("a frame");
     assert_eq!(held(&session).len(), 2, "two workspaces to choose between");
     let front = session
@@ -227,7 +227,7 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
     };
     assert!(
         device.label.ends_with("(this device)"),
-        "the device this desk runs on says so: {device:?}"
+        "the device this session runs on says so: {device:?}"
     );
     assert!(device.shown && device.toggle == "Shown", "{device:?}");
     let key = device.key.clone();
@@ -239,13 +239,13 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
     assert_eq!(
         after.len(),
         1,
-        "the workspace kept off this device is off its desk: {after:?}"
+        "the workspace kept off this device is off its session: {after:?}"
     );
     assert!(
         !after.iter().any(|(_, _, workspace)| *workspace == front),
         "the workspace in front is the one kept off"
     );
-    // It stays off: the choice is in the person's own list, not only on the desk it was made at.
+    // It stays off: the choice is in the person's own list, not only on the shell it was made at.
     for _ in 0..3 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
@@ -260,10 +260,10 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
     assert_eq!(
         held(&again),
         after,
-        "and comes back off the desk in the next session"
+        "and comes back off the session in the next session"
     );
 
-    // The desk keeps the person one workspace: their last one is not kept off this device, and its
+    // The shell keeps the person one workspace: their last one is not kept off this device, and its
     // row says it still shows here.
     session
         .invoke(
@@ -331,8 +331,8 @@ fn step_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
     panic!("{what} never came");
 }
 
-/// Branching the workspace in front through the desk's action answers the new workspace's id at
-/// once; once what the workspace holds is copied, the branch is on the desk — the person's own,
+/// Branching the workspace in front through the shell's action answers the new workspace's id at
+/// once; once what the workspace holds is copied, the branch is on the shell — the person's own,
 /// with the source's strips and what the apps keep for it — and the person is in it. The source
 /// keeps all it had, and the branch comes back after a restart.
 #[test]
@@ -363,7 +363,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
                 ("name".to_owned(), "Question 2".into()),
             ]),
         )
-        .expect("the desk branches the person's workspace");
+        .expect("the session branches the person's workspace");
     let ui::host_operation::ResourceOperationStart::Completed(output) = started else {
         panic!("the branch answers at once: {started:?}");
     };
@@ -379,7 +379,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
     );
     assert_ne!(branch, source);
 
-    step_until(&mut session, "the branch on the desk", |session| {
+    step_until(&mut session, "the branch on the session", |session| {
         held(session).iter().any(|(_, _, id)| *id == branch)
     });
     let (strips, active, owner) = session.handle().read(|tree| {
@@ -485,7 +485,7 @@ fn what_the_branch_keeps(data: &Path, source: &str, kept: &Path, branch: &str) {
     );
 }
 
-/// A branch names a workspace the desk has: one it does not have is refused, and nothing is made.
+/// A branch names a workspace the shell has: one it does not have is refused, and nothing is made.
 #[test]
 fn a_branch_of_no_workspace_here_is_refused() {
     let mut env = tilo_test_env::ScopedEnv::new();

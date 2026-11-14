@@ -105,7 +105,7 @@ impl Session {
     }
 }
 
-/// Move the built-in panel's own backlight to `percent` . A monitor across the desk is not moved:
+/// Move the built-in panel's own backlight to `percent` . A monitor across the shell is not moved:
 /// the light in the room says nothing about it, and its DDC/CI level is the person's to set.
 pub(crate) fn apply(percent: f32) {
     let service = BrightnessService::global();

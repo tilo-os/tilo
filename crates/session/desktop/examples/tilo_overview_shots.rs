@@ -1,6 +1,6 @@
 //! Pictures of the overview the Tilo mark zooms out to.
 //!
-//! A desk with two workspaces, one of them running on Tilo Cloud: the mark
+//! A shell with two workspaces, one of them running on Tilo Cloud: the mark
 //! opens the overview, caught on its way in and at rest, with the person's
 //! Tilo below the workspaces (Hosts & compute with the plan, usage and
 //! invoices, an agent let in, and the account). Captured in both themes at
@@ -30,7 +30,7 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::ClockSnapshot;
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::Overlays;
-use tilo_desktop::overview_tilo::TiloDesk;
+use tilo_desktop::overview_tilo::TiloOverview;
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_flight::WindowFlight;
 use tilo_desktop_model::{
@@ -75,7 +75,7 @@ fn workspace(id: u64, strip: u64, name: &str, apps: &[(u64, &str, &str)]) -> Wor
     workspace
 }
 
-fn desk_tree() -> Layout {
+fn layout_tree() -> Layout {
     let work = workspace(
         1,
         10,
@@ -151,8 +151,8 @@ fn tilo_cloud(build_box: &str) -> HostAccount {
     }
 }
 
-fn tilo_desk(build_box: &str) -> TiloDesk {
-    TiloDesk {
+fn tilo_shell(build_box: &str) -> TiloOverview {
+    TiloOverview {
         hosts: vec![
             HostAccount::sells_nothing("Framework 16", HostKind::Device),
             tilo_cloud(build_box),
@@ -170,7 +170,7 @@ fn tilo_desk(build_box: &str) -> TiloDesk {
             }],
             ..Door::default()
         }),
-        ..TiloDesk::default()
+        ..TiloOverview::default()
     }
 }
 
@@ -182,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::i18n::I18nManager::init("en-US");
     for (size, (w, h)) in [("desktop", (1280_u32, 800_u32)), ("phone", (390, 844))] {
         for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-            let tree = desk_tree();
+            let tree = layout_tree();
             let build_box = tree.workspaces[1].id().to_string();
             let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
             let display = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
@@ -206,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             chrome.set_overlays(overlays);
             let flight = WindowFlight::new();
             chrome.set_overview(flight.clone(), std::rc::Rc::default());
-            chrome.set_tilo(tilo_desk(&build_box));
+            chrome.set_tilo(tilo_shell(&build_box));
             let mut frame = FrameHarness::for_root(ui::state::State::new(), chrome, (w, h), theme);
             frame.relayout();
             frame

@@ -22,8 +22,8 @@
 //! A session started for a workspace's Linux apps ([`tilo_actions::remote::linux_apps`]) is the
 //! same device in the same workspace, run as the VM's tenant: it opens no Browser window, and reads
 //! every later line of its standard input as one app to start ([`AppLaunch`], a desktop file of the
-//! guest's). Each app's windows open on its desk in the workspace, and the session shares them with
-//! the workspace's members the moment they map, so they see and drive them on their own desks. It
+//! guest's). Each app's windows open on its shell in the workspace, and the session shares them with
+//! the workspace's members the moment they map, so they see and drive them on their own sessions. It
 //! reports [`USED`] while it holds any window, so its host keeps it while an app is open.
 //!
 //! [`READY`]: tilo_actions::remote::browser::READY
@@ -266,7 +266,7 @@ impl crate::window_share::ShareGovernor for HostGoverns {
     }
 }
 
-/// What reached the loop from the tasks that watch the relay and the desk.
+/// What reached the loop from the tasks that watch the relay and the shell.
 enum Arrived {
     /// The relay answered the join: the invitation text to redeem, or why it did not.
     Invitation(Result<String, String>),
@@ -302,13 +302,13 @@ enum Join {
     /// The relay has not been asked yet.
     Waiting,
     /// The relay was asked, and what it answers is on its way: the invitation is redeemed by the
-    /// session's own join, which settles the workspace on the desk.
+    /// session's own join, which settles the workspace on the shell.
     Asking,
 }
 
 /// The window the session holds.
 enum Window {
-    /// Nothing was opened: the desk does not hold the workspace yet.
+    /// Nothing was opened: the shell does not hold the workspace yet.
     Unopened,
     /// The launch was made, and no window published for it yet.
     Opening,
@@ -450,7 +450,7 @@ impl HostedBrowser {
     }
 
     /// What the session does each pass: redeem the invitation the relay answered with, open the
-    /// record's window once the desk holds the workspace, and report what became of it.
+    /// record's window once the shell holds the workspace, and report what became of it.
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived(shared);
         self.join(shared);
@@ -510,7 +510,7 @@ impl HostedBrowser {
         self.asks_host = true;
     }
 
-    /// What an apps session does each pass: say it is up once the desk holds the workspace, start
+    /// What an apps session does each pass: say it is up once the shell holds the workspace, start
     /// each app it was told to, and say it is used while any window of theirs is open.
     fn follow_apps(&mut self, shared: &Shared) {
         if !held(shared, &self.material.workspace) {
@@ -621,7 +621,7 @@ impl HostedBrowser {
         });
     }
 
-    /// Open the record's Browser window, once the desk holds the workspace the material names.
+    /// Open the record's Browser window, once the shell holds the workspace the material names.
     fn open(&mut self, shared: &Shared) {
         if !matches!(self.window, Window::Unopened) {
             return;
@@ -651,7 +651,7 @@ impl HostedBrowser {
         }
     }
 
-    /// Report the window's provider once it publishes: the window instance the desk shows the app
+    /// Report the window's provider once it publishes: the window instance the shell shows the app
     /// in, which is what every page action on it names.
     fn publish(&mut self, shared: &Shared) {
         if !matches!(self.window, Window::Opening) {
@@ -1009,7 +1009,7 @@ fn keep(mut request: InvokeRequest) -> InvokeRequest {
     request
 }
 
-/// Whether the desk holds `workspace`.
+/// Whether the shell holds `workspace`.
 fn held(shared: &Shared, workspace: &str) -> bool {
     shared.handle.read(|tree| {
         tree.workspaces
@@ -1032,7 +1032,7 @@ fn holds_windows(shared: &Shared, workspace: &str) -> bool {
     })
 }
 
-/// The tab `app`'s window takes in `workspace`, once the desk holds one: the window's instance,
+/// The tab `app`'s window takes in `workspace`, once the shell holds one: the window's instance,
 /// which is the provider its actions are published under.
 fn tab_of(shared: &Shared, workspace: &str, app: &str) -> Option<u64> {
     shared.handle.read(|tree| {

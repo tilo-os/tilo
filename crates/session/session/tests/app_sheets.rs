@@ -1,5 +1,5 @@
-//! "Uninstall \<app\> and remove its data?", as a person on a headless desk meets it: asking about
-//! a program they downloaded puts the question on the desk, listing every copy that goes, and its
+//! "Uninstall \<app\> and remove its data?", as a person on a headless shell meets it: asking about
+//! a program they downloaded puts the question on the shell, listing every copy that goes, and its
 //! answers reach the registry of their downloaded programs — the one place their apps are kept.
 //! Uninstalling takes every copy to the Trash and says so; keeping the app changes nothing; and
 //! asking about an app that is not there any more says so rather than leaving a question standing
@@ -22,7 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
-use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
+use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::{Options, Session};
 
 /// A session on the headless backend, taking no part in the collaboration plane.
@@ -101,7 +101,7 @@ fn published(session: &Session, desktop_id: &str) -> bool {
     )
 }
 
-/// The titles and bodies of the notices the desk shows now.
+/// The titles and bodies of the notices the shell shows now.
 fn notices(session: &Session) -> Vec<(String, String)> {
     session
         .notifications()
@@ -137,8 +137,8 @@ fn search(session: &mut Session, query: &str) {
         .expect("an object")
         .clone();
     session
-        .invoke(DESK_RESOURCE, "search", &arguments)
-        .expect("the desk opens search");
+        .invoke(SHELL_RESOURCE, "search", &arguments)
+        .expect("the shell opens search");
     until(session, "search's rows", |session| {
         !rows(session).is_empty() && !searching(session)
     });
@@ -372,7 +372,7 @@ fn asking_about_an_app_that_is_not_there_any_more_says_so() {
 
 /// Search lists the app the person downloaded with the rows that act on it,
 /// under the app's own row; choosing "Uninstall Tilo Imager" puts the
-/// question on the desk, and answering it uninstalls the app.
+/// question on the shell, and answering it uninstalls the app.
 #[test]
 fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
     let _settled = ui::motion::testing::settled();

@@ -116,10 +116,10 @@ TL_APPS = ["notes", "tasks", "mail", "chat"]
 NATIVE = "agent tasks chat"
 # The provider the session publishes its own actions under, the desk's among them
 # (tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and the resource the desk publishes, whose
-# `search` verb opens search on what was typed (tilo_desktop::desk_verbs::DESK_RESOURCE) and
+# `search` verb opens search on what was typed (tilo_desktop::verbs::SHELL_RESOURCE) and
 # whose rows are children of its open search (SEARCH_RESOURCE).
 SESSION_PROVIDER = "so.tilo.session"
-DESK_RESOURCE = "desktop:desk"
+SHELL_RESOURCE = "desktop:shell"
 SEARCH_RESOURCE = "desktop:search"
 # How long any one wait may take before it counts as a hang: a first frame takes well under a
 # second here, so this bounds only a path that never answers.
@@ -669,7 +669,7 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
     # What the person does: the desk's own search, with the request typed into it.
     desk = wait_for("the desk's search", lambda: next((
         a for a in session.actions("search")
-        if a.get("resource") == DESK_RESOURCE and a.get("operation") == "search"), None),
+        if a.get("resource") == SHELL_RESOURCE and a.get("operation") == "search"), None),
         lambda: [{"resource": a.get("resource"), "operation": a.get("operation")}
                  for a in session.actions("search")])
     session.invoke(desk["provider"], desk["id"], {"query": REQUEST})
@@ -680,7 +680,7 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
 
     def agent_row() -> dict | None:
         """The row handing what was typed to the person's agent, at the place the desk gives it
-        (`desk_verbs::search_row_id`)."""
+        (`verbs::search_row_id`)."""
         for at, row in enumerate(shown_rows()):
             title = row.get("title") or ""
             if title.startswith("Send to ") and REQUEST in title:

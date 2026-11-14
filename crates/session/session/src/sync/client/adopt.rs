@@ -1,16 +1,16 @@
-//! A workspace taken in: entered through its door or redeemed from an invitation the desk made for
+//! A workspace taken in: entered through its door or redeemed from an invitation the shell made for
 //! it, or entered as a further device of the person at the device hosting it.
 
 use std::sync::Arc;
 
-use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
+use tilo_desktop_model::WorkspaceId as InviteWorkspaceId;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
 use crate::engine::Engine;
 use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
 use crate::workspace_keys::KeyLink;
 
-/// Come into the workspace the desk made for the join, through its door or with an invitation: this
+/// Come into the workspace the shell made for the join, through its door or with an invitation: this
 /// device becomes a member of the workspace, takes in what it held before it arrived, and takes part
 /// in it from then on.
 /// The workspace's state arrives as the host's answer: a person who joins late reads the whole
@@ -126,7 +126,7 @@ async fn through_door(
     endpoint: iroh::Endpoint,
     identity: &HostIdentity,
     door: &url::Url,
-    workspace: DeskWorkspaceId,
+    workspace: InviteWorkspaceId,
     name: &str,
 ) -> Result<tilo_peer_state::join::TransportHint, String> {
     use tilo_relay_protocol::entering::{Entered, Entering, Through};
@@ -215,7 +215,7 @@ async fn through_door(
 /// the workspace is subscribed to, and this device's native ingress connects to it.
 pub(super) async fn take_part_in(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
-    workspace_id: DeskWorkspaceId,
+    workspace_id: InviteWorkspaceId,
     link: Option<&KeyLink>,
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,

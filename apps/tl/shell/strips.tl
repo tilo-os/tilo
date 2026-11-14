@@ -65,7 +65,7 @@ view style_switch(v: Viewing) {
 /// its doc line, or its view's name when its author wrote none. A style a package offers but
 /// cannot name — a package that carries no description that reads — is named by its package, so
 /// no menu lists a blank row a person cannot read or pick.
-fn style_label(style: device.DeskStyle) -> Text {
+fn style_label(style: device.Style) -> Text {
     if style.line != "" {
         style.line
     } else if style.name != "" { style.name } else { style.package }
@@ -74,7 +74,7 @@ fn style_label(style: device.DeskStyle) -> Text {
 /// Whether a style is one a person can pick: a named style, or one whose package is named. A
 /// style nothing names (no view, no doc line, no package) stands for nothing in the shell, so
 /// the switch lists none: an empty row is a band of the panel with nothing in it.
-fn style_listed(style: device.DeskStyle) -> Bool {
+fn style_listed(style: device.Style) -> Bool {
     style.line != "" or style.name != "" or style.package != ""
 }
 

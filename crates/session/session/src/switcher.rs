@@ -1,9 +1,9 @@
-//! Alt+Tab's panel: what the desk's walk shows, kept in step with the chrome that draws it and the
+//! Alt+Tab's panel: what the shell's walk shows, kept in step with the chrome that draws it and the
 //! windows it pictures.
-//! The walk itself is the desk's ([`tilo_desktop::overlays`]): Alt+Tab's presses ask its verbs, and it
+//! The walk itself is the shell's ([`tilo_desktop::overlays`]): Alt+Tab's presses ask its verbs, and it
 //! says which window it reached. This reads that once a pass, as the panel shows it, so the chrome
-//! draws what the desk decided and nothing of its own.
-//! A host without the desk's door, the page, moves the same walk through [`WindowWalk`].
+//! draws what the shell decided and nothing of its own.
+//! A host without the shell's door, the page, moves the same walk through [`WindowWalk`].
 
 use tilo_desktop::overlays::{Overlay, Overlays};
 use tilo_desktop::window_switcher::Switcher;
@@ -37,16 +37,16 @@ pub(crate) fn show(
         walk.forget_walk();
     }
     // A flick shorter than the panel's reveal delay shows nothing, and costs no reading of the
-    // desk's windows.
+    // shell's windows.
     let view = (!locked && walk.revealed(tilo_clock::now()))
-        .then(|| crate::desk_windows::switcher_view(handle, walk, sizes))
+        .then(|| crate::windows::switcher_view(handle, walk, sizes))
         .flatten();
     panel.set(view)
 }
 
-/// Alt+Tab on a host that hands the session its keys itself, as the page does: the desk's walk over
+/// Alt+Tab on a host that hands the session its keys itself, as the page does: the shell's walk over
 /// its windows, the panel the chrome draws of it, and the keys that move it. The walk is the one the
-/// desk's verbs move on a native desktop; with no door to the desk here, its keys move it directly.
+/// shell's verbs move on a native desktop; with no door to the shell here, its keys move it directly.
 pub struct WindowWalk {
     handle: tilo_desktop_surface::DesktopHandle,
     walk: Overlays,
@@ -164,7 +164,7 @@ mod tests {
         }
     }
 
-    /// A page's desk with three windows, and the walk over them.
+    /// A page's shell with three windows, and the walk over them.
     fn walk() -> (WindowWalk, tilo_desktop_surface::DesktopSurface) {
         let mut minter = tilo_desktop_model::IdMinter::new(5);
         let tabs = ["Mail", "Notes", "Budget"].map(|title| tilo_desktop_model::Tab {
@@ -179,7 +179,7 @@ mod tests {
             view: String::new(),
             pinned: false,
         });
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", tabs.into());
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", tabs.into());
         let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(tree, 5, Box::new(Blank));
         (WindowWalk::new(handle), surface)
     }
@@ -187,9 +187,9 @@ mod tests {
     /// The windows the walk crosses, in its order, and the place of the one it reached.
     fn walked(walk: &WindowWalk) -> (Vec<String>, Option<usize>, Option<usize>) {
         walk.handle.read(|tree| {
-            let windows = crate::desk_windows::windows(tree, &walk.handle);
-            let (walked, front) = crate::desk_windows::walked(&windows, walk.walk.scope());
-            let reached = crate::desk_windows::reaching(&walk.walk, &windows)
+            let windows = crate::windows::windows(tree, &walk.handle);
+            let (walked, front) = crate::windows::walked(&windows, walk.walk.scope());
+            let reached = crate::windows::reaching(&walk.walk, &windows)
                 .and_then(|at| walked.iter().position(|place| *place == at));
             let titles = walked
                 .iter()

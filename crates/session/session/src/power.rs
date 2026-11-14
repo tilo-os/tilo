@@ -246,7 +246,7 @@ impl Session {
             }
             PowerSignal::Notify(battery) => {
                 // What the service saw on the pack in the words this session's own catalogue has,
-                // so the heads-up reads on every desk as the machine's news rather than an app's
+                // so the heads-up reads on every shell as the machine's news rather than an app's
                 // claim.
                 let notice = crate::notices::battery_notice(
                     battery.percent,

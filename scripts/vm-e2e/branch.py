@@ -928,7 +928,7 @@ def open_window(vm: TiloVm, ws: dict) -> object:
 
 # What the person's session says of its workspaces' sync, at debug: set on box before it is
 # branched, so a and b inherit it. Read back only when a window does not travel.
-SYNC_LOG = ("info,tilo_session::sync=debug,tilo_session::shared_desktop=debug,"
+SYNC_LOG = ("info,tilo_session::sync=debug,tilo_session::layout=debug,"
             "tilo_session::workspaces=debug,tilo_peer_state=debug,tilo::join_flow=debug,"
             "tilo_network_actor=debug,tilo_action_broker=debug,tilo_session::agent_door=debug")
 
@@ -969,7 +969,7 @@ def sync_excerpt(vm: TiloVm) -> str:
     text = vm.root_exec("journalctl -m --since \"$(uptime -s)\" --no-pager -o short-iso "
                         "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
                         "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
-                        "| grep -a 'sync\\|shared_desktop\\|workspaces\\|peer_state\\|join_flow\\|network_actor\\|WARN\\|ERROR' "
+                        "| grep -a 'sync\\|layout\\|workspaces\\|peer_state\\|join_flow\\|network_actor\\|WARN\\|ERROR' "
                         "| tail -n 400 | cut -c1-500", timeout=120, check=False)
     return text or "(nothing)"
 

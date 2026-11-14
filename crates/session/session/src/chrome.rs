@@ -29,7 +29,7 @@ use ui::vello::kurbo::Rect;
 use crate::notifications::NoticeSignals;
 use crate::platform::notice::{Notice, Notices as Told};
 
-/// The app whose live activity is the clocks app's when the desk reads the running timer.
+/// The app whose live activity is the clocks app's when the shell reads the running timer.
 pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
 
 /// What the board published, parsed, at the revision it was read at.
@@ -134,7 +134,7 @@ impl Activities {
                 let mut card = Card::new(app.clone(), summary);
                 // A call or a route is drawn by its app: the layer keeps its place, and its body
                 // comes from the app's own window while that app has no window of its own on the
-                // desk.
+                // shell.
                 if let Some(size) = self.cards.size(&card.app, &card.summary.id) {
                     if self.cards.in_view(&card.app, &card.summary.id) {
                         return None;
@@ -352,7 +352,7 @@ fn key(app: &str, summary: &Summary) -> String {
     format!("{app}:{}", summary.id)
 }
 
-/// What the bar reads of the session besides the desk's tree: the
+/// What the bar reads of the session besides the layout: the
 /// notifications' state, the machine's own status, the apps' live activities,
 /// and the running applications' tray items.
 pub(crate) struct BarFeeds {
@@ -413,7 +413,7 @@ pub(crate) struct SessionChrome {
     /// Who is here, when this session takes part in the collaboration plane: the bar's trees carry
     /// them as the active workspace's members and their presence.
     sync: Option<Rc<crate::sync::Client>>,
-    /// What each window of the desk shows, as its app reports it: where a person's record stands,
+    /// What each window of the shell shows, as its app reports it: where a person's record stands,
     /// so the roster places them in the window they work in.
     notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The machine as the services last published it: the status cluster's battery, network and
@@ -615,7 +615,7 @@ impl ChromeSource for SessionChrome {
     }
 
     /// A workspace may be branched by whoever reads all of it: the person is in it here and not
-    /// removed. One this device holds no governance of is the desk's own, and the person's unless
+    /// removed. One this device holds no governance of is the shell's own, and the person's unless
     /// it names someone else as its owner.
     fn may_branch_workspace(
         &self,
@@ -748,11 +748,11 @@ impl crate::Session {
     }
 }
 
-/// What holds the keyboard over the desk: a surface opened over the field the person types in,
-/// else the desk's search from the pass it says it is open, and what the overlay stack says
+/// What holds the keyboard over the shell: a surface opened over the field the person types in,
+/// else the shell's search from the pass it says it is open, and what the overlay stack says
 /// otherwise.
-/// The palette is the desk's own state while it is the chrome that draws it and publishes its
-/// surface. A key typed between the desk opening it and the chrome drawing it is the palette's, not
+/// The palette is the shell's own state while it is the chrome that draws it and publishes its
+/// surface. A key typed between the shell opening it and the chrome drawing it is the palette's, not
 /// the window's behind it: what the person typed goes into the search, and the frame that key asks
 /// for is the one that publishes the palette's surface.
 pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Target {
@@ -766,7 +766,7 @@ pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Ta
 }
 
 /// The chrome above the windows (the top bar, overview, menus) as the session hosts it: its own
-/// tree beside the desk's, covering the outputs.
+/// tree beside the shell's, covering the outputs.
 pub(crate) fn host(
     handle: &DesktopHandle,
     options: &crate::Options,
@@ -788,7 +788,7 @@ pub(crate) fn host(
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
     let tree = handle.read(Clone::clone);
-    // The bar's source hands its intents to the chrome it sits in, and answers the desk's rules
+    // The bar's source hands its intents to the chrome it sits in, and answers the shell's rules
     // from the same facts.
     let source = Rc::new(HostChrome::new(Rc::new(SessionChrome::new(
         handle.clone(),
@@ -813,7 +813,7 @@ pub(crate) fn host(
     );
     chrome.set_intents(intents);
     chrome.set_asks(asks);
-    // Where a shell covers the desk, the shell's view is the overview and the chrome's stays shut.
+    // Where a shell covers the shell, the shell's view is the overview and the chrome's stays shut.
     if !options.shell {
         chrome.set_overview(overview.flight(), overview.open_flag());
     }
@@ -826,10 +826,10 @@ pub(crate) fn host(
     chrome.set_super_peek(peek);
     // Keys come to the chrome while one of the surfaces it draws holds the keyboard: the stack says
     // which, and it says the window's again as soon as the top surface closes.
-    let desk = handle.clone();
+    let shell = handle.clone();
     let holds = overlays.clone();
     let keyboard = Rc::new(move || {
-        keyboard_target(&desk, &holds)
+        keyboard_target(&shell, &holds)
             .slot()
             .is_some_and(Slot::is_chrome)
     });
@@ -877,7 +877,7 @@ pub(crate) fn host(
 }
 
 impl crate::Shared {
-    /// A verb of the empty desk's launchpad, as its card, its host action and its resource action
+    /// A verb of the empty shell's launchpad, as its card, its host action and its resource action
     /// all ask for it: the app action the verb declares, what only the session can do, and else the
     /// app itself. A verb whose app this device does not have opens nothing: the person is shown
     /// the apps it does have, never a window of an app that is not here.
@@ -1020,7 +1020,7 @@ mod tests {
         assert!(activities.cards()[0].rich, "the app draws it now");
 
         // Chat's own window comes on screen: the call is drawn there, and no card stands on the
-        // desk at all.
+        // shell at all.
         cards.see(CHAT_APP, "chat-call:voice", true);
         assert!(activities.cards().is_empty());
         cards.see(CHAT_APP, "chat-call:voice", false);

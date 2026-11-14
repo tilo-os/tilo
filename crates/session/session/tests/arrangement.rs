@@ -1,14 +1,14 @@
-//! What a person arranges on a workspace's desk is theirs to see, and a desk this device cannot
+//! What a person arranges on a workspace's layout is theirs to see, and a layout this device cannot
 //! write is never said to have been refused by the workspace it shows.
-//! A workspace whose records are its members' sealed channels keeps its desk sealed, and a device
+//! A workspace whose records are its members' sealed channels keeps its layout sealed, and a device
 //! writes it with the channel keys its secret store holds. A session with no secret store — as a
 //! development session on a headless machine is, and any build the platform's store does not reach
 //! — holds no channel keys of any workspace. That is this device's own lack, not any workspace's
-//! verdict: the desk stays the one this device keeps, and the person is told nothing, because no
+//! verdict: the layout stays the one this device keeps, and the person is told nothing, because no
 //! workspace refused a write it never saw.
 //! The bug this holds: the device tried the write anyway, was told by its own engine
 //! `this device has no secret store, so it holds no channel keys` , and raised that as a
-//! shared-desk refusal — "… did not take your window arrangement: It stays on this device: the
+//! shared-layout refusal — "… did not take your window arrangement: It stays on this device: the
 //! change could not be read" — a notice that names the workspace and blames the change's shape.
 
 #![cfg(target_os = "linux")]
@@ -22,7 +22,7 @@
               outlives every call made into it"
 )]
 
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
 /// The person at this device, as `dist/dev/nested-session.sh` mints them: a throwaway test identity
@@ -42,7 +42,7 @@ fn notices(session: &Session) -> Vec<String> {
         .collect()
 }
 
-/// A session as `dist/dev/nested-session.sh` starts it: it keeps its desk in
+/// A session as `dist/dev/nested-session.sh` starts it: it keeps its layout in
 /// `state`, takes part in the collaboration plane, shows the tilolang shell,
 /// and holds the workspace it founds there.
 ///
@@ -59,7 +59,7 @@ fn session(state: &std::path::Path) -> Session {
     })
 }
 
-/// The workspaces the desk shows, by name and id.
+/// The workspaces the layout shows, by name and id.
 fn workspaces(session: &Session) -> Vec<(String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -70,24 +70,24 @@ fn workspaces(session: &Session) -> Vec<(String, String)> {
 }
 
 /// The desktop's own action that opens an app, as `dist/dev/nested-session.sh` drives a session:
-/// an app opened on the desk is a window of the workspace in front, and so a change of that
-/// workspace's shared desk.
+/// an app opened on the shell is a window of the workspace in front, and so a change of that
+/// workspace's shared layout.
 const OPEN_APP: &str = "open-app";
 
-/// A session whose device holds no channel keys arranges its desk — an app is opened in the
-/// workspace in front — and no workspace is said to have refused the arrangement: the desk stays
+/// A session whose device holds no channel keys arranges its layout — an app is opened in the
+/// workspace in front — and no workspace is said to have refused the arrangement: the layout stays
 /// this device's, and the person hears nothing.
 #[test]
-fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
+fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     let _settled = ui::motion::testing::settled();
-    // What the session says about the desk's write: the log is where a write that was not made says
+    // What the session says about the layout's write: the log is where a write that was not made says
     // why, and this test reads it too.
     let logged = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     {
         let sink = LogSink(std::sync::Arc::clone(&logged));
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(
-                "tilo_session::shared_desktop=warn",
+                "tilo_session::layout=warn",
             ))
             .with_ansi(false)
             .with_writer(sink)
@@ -110,14 +110,14 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     let state = home.state().to_path_buf();
     let mut session = session(&state);
 
-    // The desk is up, and the workspace it shows is one the engine holds: a workspace it founded
+    // The layout is up, and the workspace it shows is one the engine holds: a workspace it founded
     // here keeps its records as sealed channels.
-    crate::common::until(&mut session, "the workspace the desk shows", |session| {
+    crate::common::until(&mut session, "the workspace the layout shows", |session| {
         !workspaces(session).is_empty()
     });
 
-    // The person arranges the desk: an app opens in the workspace in front,
-    // which is a change of that workspace's shared desk. This device holds no
+    // The person arranges the layout: an app opens in the workspace in front,
+    // which is a change of that workspace's shared layout. This device holds no
     // channel keys, so it keeps the change itself.
     session
         .invoke(
@@ -127,8 +127,8 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
                 .as_object()
                 .expect("an object"),
         )
-        .expect("an app opens on the desk");
-    crate::common::until(&mut session, "the app's window on the desk", |session| {
+        .expect("an app opens on the layout");
+    crate::common::until(&mut session, "the app's window on the layout", |session| {
         session.handle().read(|tree| {
             tree.workspaces
                 .iter()
@@ -138,11 +138,11 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
                 .any(|tab| tab.title == "Notes")
         })
     });
-    // What the desk says to itself: the write was not made, and why.
+    // What the layout says to itself: the write was not made, and why.
     let refusal = logged.lock().expect("the log").clone();
     assert!(
         !refusal.contains("was not written"),
-        "the desk is not said to have failed a write it never had the keys to make: {refusal}"
+        "the layout is not said to have failed a write it never had the keys to make: {refusal}"
     );
 
     let told = notices(&session);
@@ -150,7 +150,7 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
         !told
             .iter()
             .any(|notice| notice.contains("did not take your window arrangement")),
-        "no workspace is said to have refused the desk: {told:?}"
+        "no workspace is said to have refused the layout: {told:?}"
     );
 }
 

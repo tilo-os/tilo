@@ -14,11 +14,9 @@ pub mod about;
 pub mod authority;
 pub mod backdrop;
 pub mod control_hints;
-pub mod desk_edges;
-pub mod desk_verbs;
-pub mod desk_widgets;
 pub mod desktop_host;
 pub mod display_identify;
+pub mod edges;
 pub mod emoji;
 pub mod feedback;
 pub mod feedback_picker;
@@ -44,6 +42,8 @@ pub mod strip_switcher;
 pub mod super_peek;
 pub mod text_entry;
 pub mod topbar;
+pub mod verbs;
+pub mod widgets;
 pub mod window_flight;
 pub mod window_switcher;
 pub mod workspace_menu;
@@ -54,7 +54,7 @@ pub mod workspace_settings;
 // desktop's catalogue are portable: they live with the desktop surface, which the browser builds
 // too.
 pub use tilo_desktop_surface::{activity, drill_in, history_log, i18n, notifications};
-// The host contract — the bar's snapshots, what a host answers the desk's rules, the asks the desk
+// The host contract — the bar's snapshots, what a host answers the shell's rules, the asks the shell
 // leaves it — is portable: it lives with the desktop surface, which a page builds too.
 pub use tilo_desktop_surface::host::chrome;
 pub use tilo_desktop_surface::host::contract as host_contract;

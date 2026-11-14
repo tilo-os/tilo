@@ -1,4 +1,4 @@
-//! A person's desk style as their own package in their workspace (`docs/designs/app-language/
+//! A person's style as their own package in their workspace (`docs/designs/app-language/
 //! shell.md` §6, "Make it mine" and "Agents make styles with the same commands a person types").
 
 #![cfg(target_os = "linux")]
@@ -76,7 +76,7 @@ fn style_action(
 }
 
 /// Step 1 of "Make it mine": the shipped Strips style becomes the person's own package, with a
-/// view of its own the switch offers and the desk draws.
+/// view of its own the switch offers and the shell draws.
 ///
 /// This fails without the change: there was no command that copied a shipped style, and the
 /// person had only the four the shell ships.
@@ -120,7 +120,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     assert_eq!(answer["ok"], true, "{answer}");
     assert_eq!(answer["package"], tilo_session::style_packages::COPY_ID);
     // The copy is the person's own short style package: one .tl file, its own `app` header, the
-    // shell it uses, and one view of `shell.Arrangement` whose body draws the desk through the
+    // shell it uses, and one view of `shell.Arrangement` whose body draws the shell through the
     // shell's own template.
     let source = workspace().join(tilo_session::style_packages::COPY_ID);
     let text = std::fs::read_to_string(source.join("app.tl")).expect("the copy's app.tl");
@@ -129,8 +129,8 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
         "the copy is the person's own package: {text}"
     );
     assert!(
-        text.contains("shell.desk_style(a, false)") && text.contains("shell.strips_view"),
-        "the copy draws the desk through the shell's own chrome and its places: {text}"
+        text.contains("shell.style_shell(a, false)") && text.contains("shell.strips_view"),
+        "the copy draws the shell through the shell's own chrome and its places: {text}"
     );
     // The store moved, so the session reads it again: the copy's style is offered and loads.
     let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
@@ -146,14 +146,14 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
         style_state(&session, "so.tilo.shell:strips").is_some(),
         "the shipped style stands beside the copy"
     );
-    // Choosing it draws the desk: the copy draws the shell's own chrome and its places, so the
+    // Choosing it draws the shell: the copy draws the shell's own chrome and its places, so the
     // screen shows what the shipped Strips shows, the place's own empty state.
     let (answer, failed) = repl.run(
         &mut session,
         &format!("shell.show_style(shell.viewing, style: \"{copy}\")"),
     );
-    assert!(!failed, "the desk shows the copy: {answer}");
-    crate::common::until(&mut session, "the copy draws the desk", |session| {
+    assert!(!failed, "the shell shows the copy: {answer}");
+    crate::common::until(&mut session, "the copy draws the shell", |session| {
         crate::common::on_screen(session, "No window here yet").is_some()
     });
     assert!(
@@ -162,12 +162,12 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     );
     // Editing the copy and installing it again is the loop an agent runs: `check` reads it,
     // `install` puts the edited code in the store under the same package id, and the store
-    // moving makes the session read it again — the change reaches the desk with no restart.
+    // moving makes the session read it again — the change reaches the shell with no restart.
     // The edit stops drawing through the shell's chrome: the copy shows its places flat, so the
     // bar's own style switch is gone from the screen while the copy is chosen.
     let edited = text
         .replacen("/// Strips\n", "/// My strips\n", 1)
-        .replace("shell.desk_style(a, false) {", "stack(fill) {");
+        .replace("shell.style_shell(a, false) {", "stack(fill) {");
     assert!(
         edited.contains("stack(fill) {"),
         "the edit reaches the body"
@@ -190,14 +190,14 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     .expect("completed");
     assert_eq!(installed["ok"], true, "{installed}");
     // The copy the person chose is now the edited one, drawn without the shell's chrome: the
-    // bar's style switch, which only `shell.desk_style` draws, is gone from the screen, and the
+    // bar's style switch, which only `shell.style_shell` draws, is gone from the screen, and the
     // copy's places still stand. The reinstall redraws it where it stands: no switch needed.
     crate::common::until(&mut session, "the edited copy draws", |session| {
         crate::common::on_screen(session, "No window here yet").is_some()
             && crate::common::preset_menu(session).is_none()
     });
     // The switch lists the edited copy by its new name, and it loads: a reinstall clears a
-    // failure, as `desk_styles::a_fixed_style_package_brings_the_style_back_live` holds.
+    // failure, as `styles::a_fixed_style_package_brings_the_style_back_live` holds.
     crate::common::until(
         &mut session,
         "the switch names the edited copy",
@@ -302,13 +302,13 @@ fn the_repl_makes_a_style_with_the_same_call() {
             .iter()
             .any(|style| style.style == copy)
     });
-    // The REPL switches to it by the same door, and the desk draws the copy.
+    // The REPL switches to it by the same door, and the shell draws the copy.
     let (answer, failed) = repl.run(
         &mut session,
         &format!("shell.show_style(shell.viewing, style: \"{copy}\")"),
     );
     assert!(!failed, "the REPL switches to the copy: {answer}");
-    crate::common::until(&mut session, "the copy draws the desk", |session| {
+    crate::common::until(&mut session, "the copy draws the shell", |session| {
         crate::common::on_screen(session, "No window here yet").is_some()
     });
 }

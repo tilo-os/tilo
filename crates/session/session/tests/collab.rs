@@ -24,7 +24,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_actions::DoorError;
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
+use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_desktop_model::{
     GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
@@ -49,11 +49,11 @@ fn workspace_id() -> WorkspaceId {
     WorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
-/// A desk showing one workspace it takes part in, with one window called Notes: where the other
+/// A shell showing one workspace it takes part in, with one window called Notes: where the other
 /// person is working.
-fn desk() -> Layout {
+fn shell() -> Layout {
     let workspace = workspace_id();
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Session");
     let tab = Tab {
         id: TabId::from(NOTES),
         title: "Notes".to_owned(),
@@ -185,7 +185,7 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
     sync.heard_presence(WORKSPACE, device(from), &frame);
 }
 
-/// Everyone's pointer as a desk showing `tiles` draws it: the tab each is over, and where it stands
+/// Everyone's pointer as a shell showing `tiles` draws it: the tab each is over, and where it stands
 /// on the surface.
 #[expect(
     clippy::cast_precision_loss,
@@ -211,14 +211,14 @@ fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64,
         .collect()
 }
 
-/// A session taking part in the workspace through `sync` , showing `desk` .
+/// A session taking part in the workspace through `sync` , showing `shell` .
 fn session(sync: &Rc<Client>) -> Session {
     session_over(sync, None)
 }
 
 /// [`session`], with `apps` answering what an app asks or is asked to do.
 fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session {
-    showing(sync, apps, desk())
+    showing(sync, apps, shell())
 }
 
 /// A session taking part in the workspace through `sync` , showing `tree` .
@@ -241,9 +241,9 @@ fn showing(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>, tree: Layout) ->
 /// The window of Chat, which Ada is not in.
 const CHAT_TAB: u64 = 9;
 
-/// [`desk`], with Chat in front of Notes.
-fn desk_of_two() -> Layout {
-    let mut tree = desk();
+/// [`shell`], with Chat in front of Notes.
+fn shell_of_two() -> Layout {
+    let mut tree = shell();
     let workspace = tree.workspaces.first_mut().expect("a workspace");
     workspace.strips[0].window_groups.push(WindowGroup {
         id: GroupId::from(2_u64),
@@ -269,7 +269,7 @@ fn desk_of_two() -> Layout {
     tree
 }
 
-/// The window in front of the desk `session` shows.
+/// The window in front of the shell `session` shows.
 fn front(session: &Session) -> Option<TabId> {
     session
         .handle()
@@ -345,7 +345,7 @@ fn call_row_label() -> String {
     tilo_desktop_search::i18n::t_args("search-launcher-call-in", &[("channel", "Standup".into())])
 }
 
-/// The resource `id` , however deep the desk nests it.
+/// The resource `id` , however deep the shell nests it.
 fn find(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
@@ -365,7 +365,7 @@ fn palette_rows(session: &mut Session) -> Vec<String> {
         session.step(Duration::from_millis(1)).expect("step");
     }
     session
-        .invoke(DESK_RESOURCE, "search", &Arguments::new())
+        .invoke(SHELL_RESOURCE, "search", &Arguments::new())
         .expect("the palette opens");
     for _ in 0..8 {
         session.step(Duration::from_millis(1)).expect("step");
@@ -485,7 +485,7 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
         )],
     );
     let [(tab, x, y)] = pointers.as_slice() else {
-        panic!("their pointer is over Notes, where the desk draws it: {pointers:?}");
+        panic!("their pointer is over Notes, where the session draws it: {pointers:?}");
     };
     assert_eq!((*tab, *x, *y), (NOTES, 12.0, 34.0));
 
@@ -793,7 +793,7 @@ fn assert_ada_card(labels: &[String]) {
 }
 
 /// A press on a person's face in the bar opens their card, and Message opens
-/// Chat on the conversation they have: the same card the web desk shows,
+/// Chat on the conversation they have: the same card the web shell shows,
 /// handed the app invocation that reveals it.
 #[test]
 fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() {
@@ -1025,7 +1025,7 @@ fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
         ..OwnPresence::default()
     };
     let sync = Rc::new(Client::untethered(device(0xf0), own));
-    let mut session = showing(&sync, None, desk_of_two());
+    let mut session = showing(&sync, None, shell_of_two());
     assert_eq!(
         front(&session),
         Some(TabId::from(CHAT_TAB)),
@@ -1244,7 +1244,7 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
     }
     assert_eq!(sync.own().following, None, "following ends where it began");
 
-    // Putting it back in the bar takes the panel off the desk.
+    // Putting it back in the bar takes the panel off the shell.
     let put = holding(&people(&session), "Put back in the bar");
     press(&mut session, put);
     for _ in 0..8 {
@@ -1255,7 +1255,7 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
             .a11y_windows()
             .iter()
             .all(|(_, window, _)| window != "People"),
-        "the panel is gone from the desk"
+        "the panel is gone from the session"
     );
 }
 
@@ -1341,7 +1341,7 @@ fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
             ..Options::default()
         },
     );
-    session.handle().replace_tree(desk());
+    session.handle().replace_tree(shell());
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -1371,14 +1371,14 @@ fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
         .filter_map(|(_, node)| node.description().map(str::to_owned))
         .collect();
     assert!(
-        said.iter().any(|said| said.starts_with("Desk. ")),
+        said.iter().any(|said| said.starts_with("Session. ")),
         "{said:?}"
     );
     let names = said_by(&panel);
     assert!(names.iter().any(|name| name == "Ada"), "{names:?}");
 }
 
-/// What the desk shows now.
+/// What the shell shows now.
 fn frame(session: &mut Session) -> tilo_compositor::Screenshot {
     session
         .compositor()
@@ -1386,10 +1386,10 @@ fn frame(session: &mut Session) -> tilo_compositor::Screenshot {
         .expect("a frame of the session")
 }
 
-/// How far around a panel its shadow reaches, in the desk's pixels.
+/// How far around a panel its shadow reaches, in the shell's pixels.
 const SHADOW: f64 = 32.0;
 
-/// How many pixels differ between two frames of the desk where a panel standing at the rect
+/// How many pixels differ between two frames of the shell where a panel standing at the rect
 /// draws: the panel itself and the shadow around it.
 fn differing(
     before: &tilo_compositor::Screenshot,
@@ -1409,10 +1409,10 @@ fn differing(
         .count()
 }
 
-/// Kept on screen with nobody else here, the roster waits off the desk with its pin kept: the desk
+/// Kept on screen with nobody else here, the roster waits off the shell with its pin kept: the shell
 /// is the person's work, not a card saying there is no one to show. Someone arriving brings it in.
 #[test]
-fn a_pinned_roster_waits_off_the_desk_while_the_person_is_alone() {
+fn a_pinned_roster_waits_off_the_shell_while_the_person_is_alone() {
     let _settled = ui::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
@@ -1436,14 +1436,14 @@ fn a_pinned_roster_waits_off_the_desk_while_the_person_is_alone() {
         .collect::<Vec<String>>();
     assert!(
         !named.iter().any(|window| window == "People"),
-        "nothing of the roster stands over the desk: {named:?}"
+        "nothing of the roster stands over the session: {named:?}"
     );
     let said = session.accessible_labels();
     assert!(
         !said
             .iter()
             .any(|name| name == "Nobody else is here right now"),
-        "the desk holds no card saying nobody is here: {said:?}"
+        "the session holds no card saying nobody is here: {said:?}"
     );
     capture(&mut session, "roster-waiting-alone");
 
@@ -1463,10 +1463,10 @@ fn a_pinned_roster_waits_off_the_desk_while_the_person_is_alone() {
     capture(&mut session, "roster-back-for-ada");
 }
 
-/// The roster's first frame on the desk is its last: the material it is made of is blurred before
-/// the frame is shown, so a still desk does not keep a flat card and repaint it a frame later.
+/// The roster's first frame on the shell is its last: the material it is made of is blurred before
+/// the frame is shown, so a still shell does not keep a flat card and repaint it a frame later.
 #[test]
-fn the_rosters_first_frame_on_the_desk_is_final() {
+fn the_rosters_first_frame_on_the_shell_is_final() {
     let _settled = ui::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
@@ -1488,11 +1488,11 @@ fn the_rosters_first_frame_on_the_desk_is_final() {
     let first = frame(&mut session);
     session.step(Duration::from_millis(1)).expect("step");
     let second = frame(&mut session);
-    // What the roster draws is where it stands, its shadow around it. The rest of the desk is the
+    // What the roster draws is where it stands, its shadow around it. The rest of the shell is the
     // shell's, which redraws on turns of its own: its dock takes a mark away under its launcher
     // a few turns after the roster opens, on whichever turn the shell hears of it, and that turn
     // is not the roster's frame.
-    let roster = control(&session, &["people-panel"]).expect("the roster stands on the desk");
+    let roster = control(&session, &["people-panel"]).expect("the roster stands on the session");
     assert_eq!(
         differing(&first, &second, roster),
         0,

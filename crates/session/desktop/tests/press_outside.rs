@@ -1,4 +1,4 @@
-//! A press on the desk is the desk's: the chrome over it never hears it, so the menu hanging off
+//! A press on the shell is the shell's: the chrome over it never hears it, so the menu hanging off
 //! the bar learns from the stack where it stands, and a press that misses it takes it down — and
 //! stays down for that press.
 
@@ -7,7 +7,7 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use crate::support::desk_tree;
+use crate::support::layout_tree;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Slot};
@@ -20,19 +20,19 @@ use ui::kurbo::Rect;
 
 const DISPLAY: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
-/// The chrome over a desk, with the stack the session shares with it.
+/// The chrome over a shell, with the stack the session shares with it.
 fn chrome() -> (FrameHarness, Overlays) {
     chrome_over(None)
 }
 
-/// The chrome over a desk the host installed `notifications` on, with the stack the session shares
+/// The chrome over a shell the host installed `notifications` on, with the stack the session shares
 /// with it.
 fn chrome_over(notifications: Option<DesktopNotifications>) -> (FrameHarness, Overlays) {
-    let tree = desk_tree();
-    // The desk's own tree stays unmounted: the chrome is what the press is judged against.
-    let (mut desk, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+    let tree = layout_tree();
+    // The shell's own tree stays unmounted: the chrome is what the press is judged against.
+    let (mut shell, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     if let Some(notifications) = notifications {
-        desk.set_notifications(notifications);
+        shell.set_notifications(notifications);
     }
     let overlays = Overlays::new();
     overlays.set_displays(&[DISPLAY], Some(DISPLAY));
@@ -117,22 +117,22 @@ fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrom
     visit(&mut chrome)
 }
 
-/// A press on the desk, far from both menus.
-const DESK_PRESS: (f64, f64) = (640.0, 700.0);
+/// A press on the shell, far from both menus.
+const SHELL_PRESS: (f64, f64) = (640.0, 700.0);
 
 #[test]
-fn a_press_on_the_desk_closes_the_workspace_menu_and_it_stays_down() {
+fn a_press_on_the_shell_closes_the_workspace_menu_and_it_stays_down() {
     let (mut frame, overlays) = chrome();
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
     });
     frame.relayout();
     assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
-    let slot = overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1);
+    let slot = overlays.press_outside(SHELL_PRESS.0, SHELL_PRESS.1);
     assert_eq!(
         slot,
         Some(Slot::WorkspaceMenu),
-        "the desk press misses the menu the bar opened"
+        "the shell press misses the menu the bar opened"
     );
 
     overlays.dismiss(Slot::WorkspaceMenu);
@@ -192,7 +192,7 @@ fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
 }
 
 /// The Tilo mark zooms out of the workspace to the overview of the person's Tilo, and a second
-/// press zooms back in: no menu hangs off it for a desk press to take down.
+/// press zooms back in: no menu hangs off it for a shell press to take down.
 #[test]
 fn the_tilo_mark_zooms_out_and_back_in() {
     let (mut frame, overlays) = chrome();
@@ -203,9 +203,9 @@ fn the_tilo_mark_zooms_out_and_back_in() {
     assert!(with_chrome(&mut frame, |chrome| chrome.overview_open()));
     assert!(!with_chrome(&mut frame, |chrome| chrome.menu_open()));
     assert_eq!(
-        overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
+        overlays.press_outside(SHELL_PRESS.0, SHELL_PRESS.1),
         None,
-        "the overview answers no press of the desk's"
+        "the overview answers no press of the shell's"
     );
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleOverview);
@@ -277,9 +277,9 @@ fn banners_line_up_with_the_centre_and_quick_settings() {
 }
 
 #[test]
-fn nothing_up_means_the_desk_press_is_the_desks() {
+fn nothing_up_means_the_shell_press_is_the_shells() {
     let (_frame, overlays) = chrome();
-    assert_eq!(overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1), None);
+    assert_eq!(overlays.press_outside(SHELL_PRESS.0, SHELL_PRESS.1), None);
 }
 
 /// The notification centre is a surface over the windows like every other one on the stack: the
@@ -313,7 +313,7 @@ fn the_centre_stands_on_the_stack_where_quick_settings_hangs() {
         "a press on the panel is the panel's"
     );
     assert_eq!(
-        overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
+        overlays.press_outside(SHELL_PRESS.0, SHELL_PRESS.1),
         Some(Slot::Centre),
         "a press on the windows misses it"
     );

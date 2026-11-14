@@ -56,7 +56,7 @@ pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
 /// Whether this device has setup to do before its desktop is used: it has no identity yet, the last
 /// startup found its identity unusable, or the person began setting it up and has not finished —
 /// the ceremony's journal, or a prepared setup neither consumed nor declined. A finished setup
-/// leaves none of these behind, so a restart goes straight to the person's desk.
+/// leaves none of these behind, so a restart goes straight to the person's session.
 pub fn setup_due(identity_missing: bool, recovery: bool, identity_dir: &std::path::Path) -> bool {
     recovery
         || identity_missing
@@ -108,7 +108,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_device_that_finished_its_setup_starts_at_its_desk() {
+    fn a_device_that_finished_its_setup_starts_at_its_shell() {
         let (_env, home) = home();
         let dir = identity_dir(home.path());
         assert!(!setup_due(false, false, &dir), "nothing is left to set up");
@@ -116,7 +116,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_device_with_no_identity_sets_up_before_its_desk() {
+    fn a_device_with_no_identity_sets_up_before_its_shell() {
         let (_env, home) = home();
         let dir = identity_dir(home.path());
         assert!(setup_due(true, false, &dir));

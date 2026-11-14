@@ -26,7 +26,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_action_policy::{ActionKind, Answer, Context};
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
+use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
@@ -144,7 +144,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
 fn choose(session: &mut Session, query: &str, title: &str) {
     invoke(
         session,
-        DESK_RESOURCE,
+        SHELL_RESOURCE,
         "search",
         serde_json::json!({"query": query}),
     );
@@ -256,10 +256,11 @@ fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
     choose(&mut session, "probe", "Probe");
     until(&mut session, "the notice is shown", |session| {
         find(&session.resources(), |resource| {
-            resource.id.as_str() == DESK_RESOURCE
+            resource.id.as_str() == SHELL_RESOURCE
         })
-        .is_some_and(|desk| {
-            desk.children
+        .is_some_and(|session| {
+            session
+                .children
                 .iter()
                 .any(|child| child.kind == WINDOW_KIND && child.label.contains("Probe"))
         })
@@ -305,12 +306,12 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
     choose(&mut session, "probe", "Probe");
     until(&mut session, "the launcher starts", |_| records.exists());
 
-    // The app's window is on the desk, showing another app's window in front.
+    // The app's window is on the shell, showing another app's window in front.
     session.desktop().with_policy(|policy| {
         policy.map(window(11, "org.example.Probe")).unwrap();
         policy.map(window(12, "org.example.Other")).unwrap();
     });
-    until(&mut session, "both windows are on the desk", |session| {
+    until(&mut session, "both windows are on the session", |session| {
         session
             .desktop()
             .with_policy(|policy| policy.app_tabs_in_front().len())
@@ -558,7 +559,7 @@ fn session_through(
         services,
         wake,
         // A login's services take part in no collaboration plane of their own; the tests of the
-        // desk alone do.
+        // shell alone do.
         collab: desktop.is_none(),
         desktop,
         ..Options::default()
@@ -613,7 +614,7 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     assert_eq!(
         (width, height),
         (40.0, 18.0),
-        "listed at the size it is drawn, on the desk"
+        "listed at the size it is drawn, on the session"
     );
     assert!(
         (x, y) != (4.0, 6.0),
@@ -731,7 +732,7 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     assert_eq!(
         groups(&session),
         vec![vec![PROBE_NAME.to_owned()]],
-        "the window whose markers were read stays on the desk"
+        "the window whose markers were read stays on the session"
     );
 }
 
@@ -766,7 +767,7 @@ fn a_message_the_session_cannot_answer_is_said_so() {
     );
 }
 
-/// The workspace in front, and who the desk holds as its owner.
+/// The workspace in front, and who the shell holds as its owner.
 fn front_workspace(session: &Session) -> (String, Option<String>) {
     session.handle().read(|tree| {
         tree.active_workspace().map_or_else(
@@ -796,7 +797,7 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     let (mut session, apps, _started) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
 
-    let (desk, _) = front_workspace(&session);
+    let (name, _) = front_workspace(&session);
     invoke(
         &mut session,
         CHROME_RESOURCE,
@@ -805,10 +806,10 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     );
     until(
         &mut session,
-        "the desk holds a workspace of the person's",
+        "the session holds a workspace of the person's",
         |session| {
             let (workspace, owner) = front_workspace(session);
-            workspace != desk && owner.as_deref() == Some(person.as_str())
+            workspace != name && owner.as_deref() == Some(person.as_str())
         },
     );
     let (workspace, owner) = front_workspace(&session);
@@ -857,8 +858,8 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     capture_to(&mut session, "fresh-workspace-new-note");
 }
 
-/// A workspace this desk joined, as a join leaves it: the id it is shared under, the slot derived
-/// from that id, and no strip of this desk's own — its strips are the workspace's, which come from
+/// A workspace this session joined, as a join leaves it: the id it is shared under, the slot derived
+/// from that id, and no strip of this session's own — its strips are the workspace's, which come from
 /// the workspace's record. A person standing in it who opens an app gets that app's window there,
 /// never in the workspace of their own they came from: once for the first workspace they join, and
 /// again for a second one.
@@ -874,12 +875,12 @@ fn an_app_opened_in_a_joined_workspace_opens_there() {
     let (mut session, _apps, _started) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let (their_own, _) = front_workspace(&session);
-    assert!(!their_own.is_empty(), "this desk starts in a workspace");
+    assert!(!their_own.is_empty(), "this session starts in a workspace");
     assert!(!apps_in(&session, &their_own).contains(&PROBE.to_owned()));
 
     // Where the person starts: the app they open in their own workspace runs there, so what a join
-    // changes is read against a desk the same press already worked on.
-    open_from_the_desk(&session, PROBE);
+    // changes is read against a shell the same press already worked on.
+    open_from_the_shell(&session, PROBE);
     until(&mut session, "the app is started", |_| {
         starts(&arguments) > 0
     });
@@ -889,8 +890,8 @@ fn an_app_opened_in_a_joined_workspace_opens_there() {
         "the app's tab stands in the workspace the person opened it in"
     );
 
-    // What a join hands the desk, through the desk's own verb: the workspace's id, and nothing
-    // else of this desk's.
+    // What a join hands the shell, through the shell's own verb: the workspace's id, and nothing
+    // else of this session's.
     for (joined, name) in [
         ("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", "Studio"),
         ("7d3b6c1e-2f4a-4c8e-9d1b-5a6e7f8c9d0e", "Garden"),
@@ -903,15 +904,15 @@ fn an_app_opened_in_a_joined_workspace_opens_there() {
         );
         until(
             &mut session,
-            "the desk stands in the workspace",
+            "the session stands in the workspace",
             |session| front_workspace(session).0 == joined,
         );
         assert_ne!(joined, their_own, "the person left their own workspace");
 
-        // The person opens the app from the desk's own launchpad, which holds the tab its window
+        // The person opens the app from the shell's own launchpad, which holds the tab its window
         // takes from the frame they pressed it in.
         let before = starts(&arguments);
-        open_from_the_desk(&session, PROBE);
+        open_from_the_shell(&session, PROBE);
         until(&mut session, "the app is started", |_| {
             starts(&arguments) > before
         });
@@ -926,7 +927,7 @@ fn an_app_opened_in_a_joined_workspace_opens_there() {
         assert_eq!(
             front_workspace(&session).0,
             joined,
-            "the desk stays where the person stood"
+            "the session stays where the person stood"
         );
     }
 }
@@ -936,9 +937,9 @@ fn starts(records: &Path) -> usize {
     fs::read_to_string(records).map_or(0, |lines| lines.lines().count())
 }
 
-/// Open `app` from the desk, as a press on its tile there does: the desk makes the tab the app's
+/// Open `app` from the shell, as a press on its tile there does: the shell makes the tab the app's
 /// window takes, in the workspace the person is in, and queues the launch the session starts.
-fn open_from_the_desk(session: &Session, app: &str) {
+fn open_from_the_shell(session: &Session, app: &str) {
     session
         .handle()
         .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
@@ -947,15 +948,15 @@ fn open_from_the_desk(session: &Session, app: &str) {
             background: None,
             float: None,
         })
-        .expect("the desk takes the open");
+        .expect("the session takes the open");
 }
 
-/// The tab the desk made for an app's window decides where the app runs: a person who opens an app
-/// and whose desk moves on before the pass that starts it — a switch of theirs, a workspace that
+/// The tab the shell made for an app's window decides where the app runs: a person who opens an app
+/// and whose shell moves on before the pass that starts it — a switch of theirs, a workspace that
 /// arrived — gets the app in the workspace they opened it in, with that workspace's records and
-/// grants, never in the one the desk stands in by then.
+/// grants, never in the one the shell stands in by then.
 #[test]
-fn an_app_runs_in_the_workspace_the_desk_made_its_tab_in() {
+fn an_app_runs_in_the_workspace_the_shell_made_its_tab_in() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (_identity, _person) = this_computer(&mut home);
@@ -967,7 +968,7 @@ fn an_app_runs_in_the_workspace_the_desk_made_its_tab_in() {
     session.step(Duration::from_millis(1)).unwrap();
     let (their_own, _) = front_workspace(&session);
 
-    // Another workspace of theirs, made through the desk's own verb and left for last.
+    // Another workspace of theirs, made through the shell's own verb and left for last.
     invoke(
         &mut session,
         CHROME_RESOURCE,
@@ -976,18 +977,18 @@ fn an_app_runs_in_the_workspace_the_desk_made_its_tab_in() {
     );
     until(
         &mut session,
-        "the desk stands in the workspace made",
+        "the session stands in the workspace made",
         |session| front_workspace(session).0 != their_own,
     );
     let (elsewhere, _) = front_workspace(&session);
     stand_in(&session, &their_own);
-    until(&mut session, "the desk stands there again", |session| {
+    until(&mut session, "the session stands there again", |session| {
         front_workspace(session).0 == their_own
     });
 
-    // The person opens the app where they stand, and their desk moves on to the other workspace
-    // before the desk's next pass — the pass that starts the app.
-    open_from_the_desk(&session, PROBE);
+    // The person opens the app where they stand, and their shell moves on to the other workspace
+    // before the shell's next pass — the pass that starts the app.
+    open_from_the_shell(&session, PROBE);
     stand_in(&session, &elsewhere);
     until(&mut session, "the app is started", |_| {
         starts(&arguments) > 0
@@ -995,12 +996,12 @@ fn an_app_runs_in_the_workspace_the_desk_made_its_tab_in() {
     assert_eq!(
         front_workspace(&session).0,
         elsewhere,
-        "the desk stands where the person switched to"
+        "the session stands where the person switched to"
     );
     assert_eq!(
         handed(&arguments, "--workspace-id"),
         their_own,
-        "the app runs in the workspace whose tab the desk made for its window"
+        "the app runs in the workspace whose tab the session made for its window"
     );
 }
 
@@ -1012,7 +1013,7 @@ fn stand_in(session: &Session, workspace: &str) {
             .find(|held| held.id().to_string() == workspace)
             .map(|held| held.id().to_string())
     });
-    let slot = slot.unwrap_or_else(|| panic!("the desk holds the workspace {workspace}"));
+    let slot = slot.unwrap_or_else(|| panic!("the session holds the workspace {workspace}"));
     session
         .handle()
         .dispatch(
@@ -1021,7 +1022,7 @@ fn stand_in(session: &Session, workspace: &str) {
                 delta: None,
             },
         )
-        .expect("the desk takes the switch");
+        .expect("the session takes the switch");
 }
 
 /// What the projection says about the app's own new-note action: the question a window bar asks to
@@ -1054,8 +1055,8 @@ fn groups(session: &Session) -> Vec<Vec<String>> {
     })
 }
 
-/// The apps whose windows the workspace `workspace` holds on this desk, by app id, wherever the
-/// desk stands: the tabs it keeps, each named by the app its window belongs to.
+/// The apps whose windows the workspace `workspace` holds on this session, by app id, wherever the
+/// shell stands: the tabs it keeps, each named by the app its window belongs to.
 fn apps_in(session: &Session, workspace: &str) -> Vec<String> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -1086,7 +1087,7 @@ fn shown_windows(session: &Session) -> Vec<Option<u64>> {
     })
 }
 
-/// Open [`PROBE`] as the desk does, then its window as the compositor would,
+/// Open [`PROBE`] as the shell does, then its window as the compositor would,
 /// and hand back the process it runs in, the workspace it runs in, and the tab
 /// its window took: the instance the session names that window's own
 /// connections by.
@@ -1124,7 +1125,7 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
     session
         .desktop()
         .with_policy(|policy| policy.map(window(11, PROBE)).unwrap());
-    until(session, "the app's window is on the desk", |session| {
+    until(session, "the app's window is on the session", |session| {
         groups(session) == vec![vec![PROBE_NAME.to_owned()]]
     });
     let tab = session
@@ -1215,7 +1216,7 @@ fn tell(connection: &mut UnixStream, message: &FloatingSurfaceClientMessage) {
 }
 
 /// A sideways wheel the app under the pointer did not scroll with pans the strip its window stands
-/// in, by the travel it left: the desk moves the window, and everything the app drew in it, by that
+/// in, by the travel it left: the shell moves the window, and everything the app drew in it, by that
 /// much.
 #[test]
 fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
@@ -1227,7 +1228,7 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
     let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
-    // The window in front describes a control of its content, so where it stands on the desk is
+    // The window in front describes a control of its content, so where it stands on the shell is
     // something this test reads.
     let mut connection = ask(
         &launches,
@@ -1245,7 +1246,7 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
             instance: None,
         },
     );
-    // More windows than the desk shows at once, each of an app of its own,
+    // More windows than the shell shows at once, each of an app of its own,
     // so its strip has somewhere to pan to.
     for id in 12..=15 {
         session

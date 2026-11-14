@@ -1,10 +1,10 @@
 //! The desktop every host shows: the native session and the web page compose the same two layers
 //! around the [`DesktopSurface`].
-//! [`DeskLayer`] is what lies under the windows: the backdrop, the launchpad on a desk with no
+//! [`BackgroundLayer`] is what lies under the windows: the backdrop, the launchpad on a shell with no
 //! windows yet, and the surface's strips and window bars. [`DesktopChrome`] is what lies above
 //! them: the top bar, the strip ribbon and rail ([`StripNavigator`]), the overview panel, the Tilo
-//! menu and the workspace menu, and the desktop's chords. A page draws the chrome over the desk in
-//! one widget tree; the native session hosts the desk under its client windows and the chrome above
+//! menu and the workspace menu, and the shelltop's chords. A page draws the chrome over the shell in
+//! one widget tree; the native session hosts the shell under its client windows and the chrome above
 //! them.
 //! Neither layer knows its host. What a person may change is asked of [`DesktopRules`]; what only
 //! the host can do (inviting someone, a host action, the bar's people and profile popovers, quick
@@ -38,7 +38,7 @@ mod testing;
 use start_cards::{DisplayPad, EmptyWorkspace};
 
 use crate::chrome::{ChromeIntent, TopBarPresence};
-use crate::desk_verbs::{self, OpenSearch, desk_resource, launchpad_resource};
+use crate::verbs::{self, OpenSearch, launchpad_resource, shell_resource};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overview::OverviewHost;
 use crate::topbar::{BarSpace, Reveals};
@@ -57,11 +57,11 @@ pub use crate::host_contract::{
 
 pub use testing::{NoticeTiles, PermissiveRules};
 
-/// Whether the desk shown has no window. Every desk, not only a workspace's first: a new desk
+/// Whether the shell shown has no window. Every shell, not only a workspace's first: a new shell
 /// beside others with windows is as blank as a new workspace, and the launchpad is the way in from
 /// either.
 #[must_use]
-pub fn desk_is_empty(tree: &Layout) -> bool {
+pub fn shell_is_empty(tree: &Layout) -> bool {
     tree.active_workspace().is_some_and(|workspace| {
         tilo_desktop_surface::navigation::active_strip(tree, workspace)
             .and_then(|id| workspace.strips.iter().find(|strip| strip.id == id))
@@ -70,7 +70,7 @@ pub fn desk_is_empty(tree: &Layout) -> bool {
 }
 
 /// Queue `ask` for the host, and ask it for the pass that answers it. What the person chose on the
-/// desk is carried out by the host on its next pass: a desk that drew the press and then went quiet
+/// shell is carried out by the host on its next pass: a shell that drew the press and then went quiet
 /// would answer it only whenever something else woke the host, so the window it opens comes long
 /// after the press, and a person who presses again meanwhile gets a second one.
 pub(crate) fn ask(handle: &DesktopHandle, asks: &Rc<RefCell<Vec<DesktopAsk>>>, asked: DesktopAsk) {
@@ -116,8 +116,8 @@ fn grow(taffy: &mut TaffyTree<()>, node: NodeId) {
 }
 
 /// What lies under the windows: the backdrop, and below the bar's room the strips of the desktop
-/// surface over the empty desk's launchpad.
-pub struct DeskLayer {
+/// surface over the empty shell's launchpad.
+pub struct BackgroundLayer {
     backdrop: crate::backdrop::DesktopBackdrop,
     /// The room the bar takes above the strips: none under a fullscreen window, else the bar's
     /// height.
@@ -126,17 +126,17 @@ pub struct DeskLayer {
     handle: DesktopHandle,
     /// The workspace whose picture the backdrop shows.
     workspace: Cell<Option<tilo_desktop_model::WorkspaceId>>,
-    /// Where the pointer is, in the desk's own coordinates: a press carries no place, and the menu
+    /// Where the pointer is, in the shell's own coordinates: a press carries no place, and the menu
     /// a secondary press opens stands at the pointer.
     cursor: Option<Point>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    /// The verbs the empty desk offers now: the cards whose apps this host has, read every pass so
-    /// an app installed or removed while the desk stands changes them.
+    /// The verbs the empty shell offers now: the cards whose apps this host has, read every pass so
+    /// an app installed or removed while the shell stands changes them.
     start_cards: Rc<dyn Fn() -> Vec<LaunchpadAction>>,
-    /// The cards the windows' apps present over the desk, for a host with no
+    /// The cards the windows' apps present over the shell, for a host with no
     /// compositor to give each one a window of its own.
     cards: cards::Cards,
-    /// Whether this desk hosts those cards.
+    /// Whether this session hosts those cards.
     hosts_cards: bool,
     rect: Rect,
 }
@@ -152,7 +152,7 @@ pub(crate) fn place(at: Point) -> (i32, i32) {
     place
 }
 
-/// Close the tab `tab` on this device's desk, wherever it stands.
+/// Close the tab `tab` on this device, wherever it stands.
 pub(crate) fn close_tab(handle: &DesktopHandle, tab: TabId) {
     let mut tree = handle.read(Clone::clone);
     if tree.close_tab(tab).is_some() {
@@ -160,7 +160,7 @@ pub(crate) fn close_tab(handle: &DesktopHandle, tab: TabId) {
     }
 }
 
-impl DeskLayer {
+impl BackgroundLayer {
     /// Take when the bar shows over the window covering its display from `reveals` , which the
     /// chrome reads too: the strip above the area takes the bar's room only while it is docked in
     /// the column.
@@ -170,9 +170,9 @@ impl DeskLayer {
         self
     }
 
-    /// The desk over `surface` (whose host side is `handle` ), with `launchpad` on a desk with no
+    /// The shell over `surface` (whose host side is `handle` ), with `launchpad` on a shell with no
     /// windows and `beneath` (a host's own layers) under both, putting what it asks into `asks` .
-    /// `start_cards` names the verbs that desk offers, read each pass: the cards of the apps this
+    /// `start_cards` names the verbs that shell offers, read each pass: the cards of the apps this
     /// host has ([`LaunchpadAction::ALL`] for a host that can open them all).
     #[must_use]
     pub fn new(
@@ -189,11 +189,11 @@ impl DeskLayer {
         });
         // The room the bar takes above the strips, at the same height it takes itself. The bar
         // docks in this desktop's column, so its room is there until a window covers its display; a
-        // desk that follows the reveal (see [`Self::with_reveals`]) replaces this with whether the
+        // shell that follows the reveal (see [`Self::with_reveals`]) replaces this with whether the
         // bar shows, hidden or docked.
-        let desk = handle.clone();
+        let shell = handle.clone();
         let band = BarSpace::new(Rc::new(move || {
-            if desk.read(|tree| tree.fullscreen_group().is_some()) {
+            if shell.read(|tree| tree.fullscreen_group().is_some()) {
                 TopBarPresence::Hidden
             } else {
                 TopBarPresence::Docked
@@ -238,7 +238,7 @@ impl DeskLayer {
         }
     }
 
-    /// Host the cards the windows' apps present over the desk: the desk draws
+    /// Host the cards the windows' apps present over the shell: the shell draws
     /// each at the place its floating column gives it, and hands the app that
     /// draws it the input and the reading that follow from there. A host that
     /// gives a card a window of its own leaves this off.
@@ -248,7 +248,7 @@ impl DeskLayer {
         self
     }
 
-    /// Where a secondary press landed, when `event` is one and the pointer stands on the desk: the
+    /// Where a secondary press landed, when `event` is one and the pointer stands on the shell: the
     /// menu a press asks for stands there.
     fn secondary_press(&self, event: &WindowEvent) -> Option<(i32, i32)> {
         let WindowEvent::MouseInput {
@@ -282,7 +282,7 @@ impl DeskLayer {
         std::mem::take(&mut *self.asks.borrow_mut())
     }
 
-    /// Take the pictures the desk shows, looked up by the workspace in front.
+    /// Take the pictures the shell shows, looked up by the workspace in front.
     #[must_use]
     pub fn with_wallpaper(
         mut self,
@@ -293,8 +293,8 @@ impl DeskLayer {
     }
 }
 
-impl DeskLayer {
-    /// Carry out a verb of the desk's.
+impl BackgroundLayer {
+    /// Carry out a verb of the shell's.
     fn perform(&self, verb: &LayoutEffect) -> bool {
         match verb {
             LayoutEffect::Focus { tab } => {
@@ -366,13 +366,13 @@ impl DeskLayer {
     }
 }
 
-impl ui::resources::PublishesResources for DeskLayer {
+impl ui::resources::PublishesResources for BackgroundLayer {
     fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let windows: Vec<desk_verbs::Shown> = self.handle.read(|tree| {
+        let windows: Vec<verbs::Shown> = self.handle.read(|tree| {
             tree.tabs()
                 .map(|tab| {
                     let title = tilo_desktop_surface::window_name(tab);
-                    // A window the session does not run is read of through the desk, unless its app
+                    // A window the session does not run is read of through the shell, unless its app
                     // keeps what it shows to itself: the address is not offered, so no row names a
                     // picture nobody may make.
                     let foreign = match &tab.tile {
@@ -381,7 +381,7 @@ impl ui::resources::PublishesResources for DeskLayer {
                         }
                         _ => None,
                     };
-                    desk_verbs::Shown {
+                    verbs::Shown {
                         tab: tab.id,
                         title,
                         foreign,
@@ -396,20 +396,20 @@ impl ui::resources::PublishesResources for DeskLayer {
             searching: self.handle.search_searching(),
         });
         let hung = self.handle.unresponsive_tabs();
-        let mut resources = vec![desk_resource(
+        let mut resources = vec![shell_resource(
             &windows,
             &hung,
             &self.handle.displays(),
             search,
         )];
-        if self.handle.read(desk_is_empty) {
+        if self.handle.read(shell_is_empty) {
             resources.push(launchpad_resource(&(self.start_cards)()));
         }
         resources
     }
 }
 
-impl ui::host_operation::ResourceOperations for DeskLayer {
+impl ui::host_operation::ResourceOperations for BackgroundLayer {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[LayoutEffect::OPERATION]
     }
@@ -433,7 +433,7 @@ impl ui::host_operation::ResourceOperations for DeskLayer {
     }
 }
 
-impl Widget for DeskLayer {
+impl Widget for BackgroundLayer {
     ui::provides!(
         dyn ui::resources::PublishesResources,
         dyn ui::host_operation::ResourceOperations
@@ -507,7 +507,7 @@ impl Widget for DeskLayer {
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
         }
-        // A card the desk stands over its windows takes the pointer where it
+        // A card the shell stands over its windows takes the pointer where it
         // is drawn: the app that paints it is the one the press is for.
         if self.hosts_cards
             && matches!(
@@ -527,8 +527,8 @@ impl Widget for DeskLayer {
             self.area
                 .handle_event(event, &mut ctx.reborrow(ctx.path, area));
         }
-        // A secondary press the desk takes — no window stands under the pointer, and nothing in the
-        // desk beneath it claimed the press — is the menu of the place it pressed: the chrome's
+        // A secondary press the shell takes — no window stands under the pointer, and nothing in the
+        // shell beneath it claimed the press — is the menu of the place it pressed: the chrome's
         // own, offered where the person is looking.
         if !*ctx.handled
             && let Some(at) = self.secondary_press(event)
@@ -606,12 +606,12 @@ impl Widget for DeskLayer {
         }
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                .with_hashed_key("desk-cards")
+                .with_hashed_key("shell-cards")
                 .with_children(cards),
         )
     }
 
-    /// A control a card over the desk publishes is the app's: the press goes
+    /// A control a card over the shell publishes is the app's: the press goes
     /// to the app that draws the card.
     fn perform_semantic_action(
         &mut self,
@@ -631,7 +631,7 @@ impl Widget for DeskLayer {
     }
 
     fn name(&self) -> &'static str {
-        "DeskLayer"
+        "BackgroundLayer"
     }
 
     fn get_rect(&self) -> Rect {

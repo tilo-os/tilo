@@ -1,5 +1,5 @@
 //! The person's region formats reach the session's own surfaces when they change them in
-//! Settings: the first day of their week, their date and clock styles, which their desk's
+//! Settings: the first day of their week, their date and clock styles, which their shell's
 //! calendar, their shell's views and the tilolang hosts the session runs write by
 //! (`crate::formats`). A session that started with one region reads the next one on a pass of its
 //! own loop, without a restart.
@@ -53,7 +53,7 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     let before = ui::format::region::current();
 
     // The person starts their week on Sunday and reads a 12-hour clock: the session's own
-    // formatters — the week their desk's calendar starts on, the clocks its views write — follow
+    // formatters — the week their shell's calendar starts on, the clocks its views write — follow
     // on a later pass, though the session started with Monday.
     choose("Sunday", "H12");
     when(&mut session, || {

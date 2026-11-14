@@ -1,6 +1,6 @@
-//! The desk styles every installed package offers (`docs/designs/app-language/shell.md` §6).
+//! The styles every installed package offers (`docs/designs/app-language/shell.md` §6).
 //!
-//! A desk style is a view of the person's arrangement, and the arrangement's type is the one
+//! A style is a view of the person's arrangement, and the arrangement's type is the one
 //! whose origin is `session.arrangement`. Any installed tilolang package may declare one: the
 //! session reads each installed package's module the way `seeded_apps` reads every app — its
 //! payload from the store row, `Bundle::read`, and the metadata the module embeds — and lists
@@ -9,15 +9,15 @@
 //!
 //! The list is read when the session starts and again when its package store moved, so a style
 //! a person installs (their own, an agent's) is offered without a restart. It is published as
-//! the device's styles (`device.styles`), which the person's switch and the Desk page of
-//! Settings list.
+//! the device's styles (`device.styles`), which the person's switch and Settings' appearance pane
+//! list.
 
 use std::collections::BTreeSet;
 
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::runtime::meta::{Meta, Ty};
 
-/// The origin of the arrangement's type: a view of a type holding it is a desk style.
+/// The origin of the arrangement's type: a view of a type holding it is a style.
 const ARRANGEMENT_ORIGIN: &str = "session.arrangement";
 
 /// What the person's package store's registry says now.
@@ -81,8 +81,8 @@ pub enum News {
 
 /// The styles the shell's own package offers — the four that ship — from the packages the shell
 /// runs, whether they came from the store or this build's fallback copy (`shell.md` §6). The
-/// switch always offers them, so a device with no store still shows a desk.
-pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<DeskStyle> {
+/// switch always offers them, so a device with no store still shows a layout.
+pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<Style> {
     let metas: Vec<(String, Meta)> = packages
         .iter()
         .map(|package| (package.meta.app.clone(), package.meta.clone()))
@@ -93,13 +93,13 @@ pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<DeskStyle
     }
 }
 
-/// The desk styles every installed package offers, in the order the store lists its apps.
+/// The styles every installed package offers, in the order the store lists its apps.
 ///
 /// `loads` says whether the style's package compiles enough to run: a module whose metadata
 /// reads is one whose views are declared, and the shell's runtime finds them by the type they
 /// take. `false` for one whose payload does not read, so the switch can say so without the
 /// style drawing anything.
-pub fn installed(catalog: &package_store::Catalog) -> Vec<DeskStyle> {
+pub fn installed(catalog: &package_store::Catalog) -> Vec<Style> {
     let Ok(apps) = app_catalogue::apps::read(catalog) else {
         return Vec::new();
     };
@@ -141,7 +141,7 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<DeskStyle> {
 /// The compiled module of the installed package `app`, from the person's store: what a view of
 /// its that the shell composes runs as, when the session's own services keep no records of it.
 ///
-/// A desk style is a view of another installed package, and no session service runs that
+/// A style is a view of another installed package, and no session service runs that
 /// package's records — a style is code and nothing else — so the module is read from the
 /// store's row the way `installed_shell` reads the shell's (`Bundle::read`). Without it, a
 /// style the person chose would wait for a package nothing would ever publish.
@@ -162,8 +162,8 @@ pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
 
 /// One app whose module did not read: a style the switch says it cannot load, named by the
 /// package, so a person who installed it sees why rather than seeing nothing.
-fn unreadable(package: &str) -> DeskStyle {
-    DeskStyle {
+fn unreadable(package: &str) -> Style {
+    Style {
         style: format!("{package}:"),
         package: package.to_owned(),
         name: String::new(),
@@ -173,12 +173,12 @@ fn unreadable(package: &str) -> DeskStyle {
     }
 }
 
-/// The views `meta` declares that draw the arrangement: a desk style is a view whose one
+/// The views `meta` declares that draw the arrangement: a style is a view whose one
 /// parameter is a record type whose origin is `session.arrangement`. The arrangement's type is
 /// declared once, by the package that owns it (`so.tilo.shell`); another package's style names
 /// it as `shell.Arrangement`, so `modules` is read to know which names hold the arrangement,
 /// never a list in code (`shell.md` §6).
-fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<DeskStyle> {
+fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Style> {
     // The arrangement type as any view names it: the package declaring it, and the name the
     // declaring package gives it. `parse_ty`, below, turns a style's parameter into the same
     // app and name, whether the style writes `Arrangement` (the declaring package) or
@@ -198,7 +198,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Desk
         return Vec::new();
     }
     // The arrangement type's default view is the screen layer the shell draws a style *through*
-    // (`desk_view`): offering it as a style would have it draw itself. Its `show` picks the
+    // (`shell_view`): offering it as a style would have it draw itself. Its `show` picks the
     // style, so it is the dispatch, never one of the choices.
     let defaults: BTreeSet<&str> = meta
         .types
@@ -228,7 +228,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Desk
                         .any(|(app, name)| app == &key.app && name == &key.name)
             ))
         })
-        .map(|v| DeskStyle {
+        .map(|v| Style {
             style: format!("{package}:{}", v.name),
             package: package.to_owned(),
             name: v.name.clone(),
@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     /// A meta of one arrangement type and the views that draw it, as the store's module carries
-    /// it: what the session reads to find the desk styles (`shell.md` §6).
+    /// it: what the session reads to find the styles (`shell.md` §6).
     fn meta(types: &serde_json::Value, views: &serde_json::Value) -> Meta {
         serde_json::from_value(serde_json::json!({
             "app": "so.tilo.shell",
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_view_of_the_arrangement_is_a_desk_style_and_another_view_is_not() {
+    fn a_view_of_the_arrangement_is_a_style_shell_and_another_view_is_not() {
         let meta = meta(
             &arrangement_type(),
             &serde_json::json!([
@@ -322,7 +322,7 @@ mod tests {
                     "Arrangement"
                 ),
                 // A view of another type is no style.
-                view("notes", "Notes", "Desk"),
+                view("notes", "Notes", "Layout"),
             ]),
         );
         let modules = [("so.tilo.shell".to_owned(), meta.clone())];
@@ -375,7 +375,7 @@ mod tests {
     }
 }
 
-/// A desk style: a view of the arrangement an installed package declares (shell.md §6).
+/// A style: a view of the arrangement an installed package declares (shell.md §6).
 #[derive(
     Clone,
     Debug,
@@ -386,7 +386,7 @@ mod tests {
     serde::Deserialize,
     tilo_resource::JsonSchema,
 )]
-pub struct DeskStyle {
+pub struct Style {
     /// The view reference: a package and a view (`so.tilo.shell:strips`), as `Viewing.style`
     /// names it.
     pub style: String,

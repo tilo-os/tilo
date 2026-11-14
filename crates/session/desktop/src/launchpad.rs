@@ -30,7 +30,7 @@ use crate::i18n::t;
 use tilo_desktop_surface::HostAction;
 use ui::TextRole;
 
-/// The "Open an app" button in the desk's targets and the accessibility tree; a card is
+/// The "Open an app" button in the shell's targets and the accessibility tree; a card is
 /// [`LaunchpadAction::target`].
 pub const LAUNCHPAD_OPEN_APP: &str = "launchpad:open-app";
 
@@ -83,7 +83,7 @@ impl LaunchpadAppAction {
     }
 }
 
-/// A welcome verb of the empty desk, declared once: the card that shows it,
+/// A welcome verb of the empty shell, declared once: the card that shows it,
 /// the host action that offers it to search and agents, and the app action it
 /// runs all come from the row below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -118,7 +118,7 @@ impl LaunchpadAction {
         }
     }
 
-    /// The verb's stable name among the desk's targets and in the accessibility tree
+    /// The verb's stable name among the shell's targets and in the accessibility tree
     /// (`launchpad:notes`), so a driver presses the card a person sees.
     #[must_use]
     pub fn target(self) -> String {
@@ -132,7 +132,7 @@ impl LaunchpadAction {
         format!("launchpad-{}", self.slug())
     }
 
-    /// The verb the host action `id` names, when it is one of the desk's.
+    /// The verb the host action `id` names, when it is one of the shell's.
     #[must_use]
     pub fn from_host_id(id: &str) -> Option<Self> {
         let slug = id.strip_prefix("launchpad-")?;
@@ -140,7 +140,7 @@ impl LaunchpadAction {
     }
 
     /// The app the verb happens in, with the name a person reads for it: the launchpad's Chat room,
-    /// its Notes and its tracker, Tasks. Inviting and catching up happen on the desk itself.
+    /// its Notes and its tracker, Tasks. Inviting and catching up happen on the shell itself.
     pub const fn app_target(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Chat | Self::Meet => Some(("so.tilo.chat", "Chat")),
@@ -150,8 +150,8 @@ impl LaunchpadAction {
         }
     }
 
-    /// Whether this desk, which has `installed` to open apps from, offers the verb: a card that
-    /// opens an app stands only where the app is there to open, and a card of the desk's own
+    /// Whether this session, which has `installed` to open apps from, offers the verb: a card that
+    /// opens an app stands only where the app is there to open, and a card of the shell's own
     /// (inviting someone, catching up) always stands. `installed` is the host's app catalogue, the
     /// same answer search lists an app by.
     #[must_use]
@@ -242,8 +242,8 @@ impl LaunchpadAction {
     }
 }
 
-/// What a person chose on the launchpad, waiting for the desk to take it: a card's verb, or the app
-/// opener. The launchpad decides nothing itself — the desk carries the choice out through the door
+/// What a person chose on the launchpad, waiting for the shell to take it: a card's verb, or the app
+/// opener. The launchpad decides nothing itself — the shell carries the choice out through the door
 /// every other host action uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchpadPress {
@@ -265,7 +265,7 @@ pub struct CollaborationLaunchpad {
     rect: Rect,
     /// The display the launchpad presents on when the canvas spans several.
     presentation: Option<Rect>,
-    /// The verbs this desk offers as cards, in the order a person reads them: what its host
+    /// The verbs this session offers as cards, in the order a person reads them: what its host
     /// publishes for the apps it has ([`LaunchpadAction::offered`]).
     cards: Vec<LaunchpadAction>,
     card_rects: Vec<Rect>,
@@ -281,7 +281,7 @@ pub struct CollaborationLaunchpad {
     dirty: bool,
     copy: LaunchpadCopy,
     scope: WorkspaceScope,
-    /// What the person chose, waiting for the desk to carry it out.
+    /// What the person chose, waiting for the shell to carry it out.
     press: Cell<Option<LaunchpadPress>>,
     targets: ui::widget::PaintedTargets,
     target_geometry: Option<(Vec<Rect>, Rect)>,
@@ -358,7 +358,7 @@ impl CollaborationLaunchpad {
         self
     }
 
-    /// The verbs this desk offers, in the order a person reads them.
+    /// The verbs this session offers, in the order a person reads them.
     #[must_use]
     pub fn cards(&self) -> &[LaunchpadAction] {
         &self.cards
@@ -376,7 +376,7 @@ impl CollaborationLaunchpad {
         self.dirty = true;
     }
 
-    /// Another launchpad saying the same words, for a second display's empty desk: every empty
+    /// Another launchpad saying the same words, for a second display's empty shell: every empty
     /// display shows the start cards, and each takes its own pointer and keyboard.
     #[must_use]
     pub fn for_another_display(&self) -> Self {
@@ -487,7 +487,7 @@ impl CollaborationLaunchpad {
             .collect()
     }
 
-    /// Take the person's choice, for the desk to carry out on its next pass.
+    /// Take the person's choice, for the shell to carry out on its next pass.
     fn activate(&self, press: LaunchpadPress) -> bool {
         self.press.set(Some(press));
         // The compositor's session log keeps this target
@@ -1095,7 +1095,7 @@ mod tests {
 
     use ui::synthetic_input::mouse_release;
 
-    /// A launchpad offering every card, as a desk whose device has every app shows: the six verbs
+    /// A launchpad offering every card, as a shell whose device has every app shows: the six verbs
     /// are its own, and none of these tests is about which apps a host has.
     fn every_card() -> CollaborationLaunchpad {
         let mut pad = CollaborationLaunchpad::new();
@@ -1166,8 +1166,8 @@ mod tests {
         }
 
         phase a_card_stands_only_where_its_app_is_installed;
-        // A card that opens an app stands only where the host has it, and a card of the desk's own
-        // stands everywhere: the desk offers what a person can open, never a window of an app that is
+        // A card that opens an app stands only where the host has it, and a card of the shell's own
+        // stands everywhere: the shell offers what a person can open, never a window of an app that is
         // not here.
         {
             let only = ["so.tilo.lang.tasks"];
@@ -1178,7 +1178,7 @@ mod tests {
                     .filter(|card| card.offered(installed))
                     .collect::<Vec<_>>(),
                 [LaunchpadAction::Invite, LaunchpadAction::Activity],
-                "no card of an app this device has not got, and the desk's own always"
+                "no card of an app this device has not got, and the shell's own always"
             );
             assert!(
                 !LaunchpadAction::Tasks.offered(installed),
@@ -1191,7 +1191,7 @@ mod tests {
                     .all(|card| card.offered(all))
             );
 
-            // What a host narrows them to is what the desk draws, lays out and announces: two cards
+            // What a host narrows them to is what the shell draws, lays out and announces: two cards
             // take two places, and nothing of the others is left to press.
             let mut pad = every_card();
             pad.set_cards(

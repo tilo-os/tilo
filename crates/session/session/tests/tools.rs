@@ -1,5 +1,5 @@
 //! The tools service a session serves its apps, and the one launch path everything that is not the
-//! desk starts apps through: an agent's launch asked of the session's launcher, Files asking for
+//! shell starts apps through: an agent's launch asked of the session's launcher, Files asking for
 //! the drives and the apps it may open, and a tool opened at the folder it was asked for.
 
 #![cfg(target_os = "linux")]
@@ -253,7 +253,7 @@ fn an_agent_opens_notes_in_a_workspace() {
     let workspace = front(&session);
 
     // An agent asks the session's launcher for Notes in the workspace in front, from a thread that
-    // owns no part of the desk: the broker's launcher seam is the one path such an open takes.
+    // owns no part of the shell: the broker's launcher seam is the one path such an open takes.
     let asked = {
         let opened = Arc::clone(&opened);
         let workspace = workspace.clone();
@@ -269,7 +269,7 @@ fn an_agent_opens_notes_in_a_workspace() {
         .expect("the asking thread")
         .expect("the agent's launch is made");
 
-    // The launch is the desk's own path: the app is planned into the workspace the agent named, by
+    // The launch is the shell's own path: the app is planned into the workspace the agent named, by
     // the pass that starts it, and written down as a launch of this session in that workspace.
     let (args, _, pid) = started(&records, NOTES);
     assert!(
@@ -284,15 +284,17 @@ fn an_agent_opens_notes_in_a_workspace() {
     session
         .desktop()
         .with_policy(|policy| policy.map(window(11, NOTES)).unwrap());
-    until(&mut session, "the app's window is on the desk", |session| {
-        groups(session) == vec![vec!["Notes".to_owned()]]
-    });
+    until(
+        &mut session,
+        "the app's window is on the shell",
+        |session| groups(session) == vec![vec!["Notes".to_owned()]],
+    );
 }
 
-/// An agent whose `notes#open` asks for the place beside the view it works in, on a desk that
+/// An agent whose `notes#open` asks for the place beside the view it works in, on a shell that
 /// already shows Notes: the person's own window comes forward, and nothing starts a second one.
 #[test]
-fn an_agents_open_brings_the_window_the_desk_already_shows_forward() {
+fn an_agents_open_brings_the_window_the_shell_already_shows_forward() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("starts");
@@ -302,13 +304,13 @@ fn an_agents_open_brings_the_window_the_desk_already_shows_forward() {
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session);
 
-    // The person's desk: Notes, and another app's window in front of it.
+    // The person's shell: Notes, and another app's window in front of it.
     for (id, app) in [(11, NOTES), (12, CLOCKS)] {
         session
             .desktop()
             .with_policy(|policy| policy.map(window(id, app)).unwrap());
     }
-    until(&mut session, "both windows are on the desk", |session| {
+    until(&mut session, "both windows are on the shell", |session| {
         groups(session) == vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]]
     });
     let clocks = session
@@ -331,11 +333,11 @@ fn an_agents_open_brings_the_window_the_desk_already_shows_forward() {
         };
         std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &place))
     };
-    // The pass that answers the ask is the desk's own: frames run until the window comes forward,
+    // The pass that answers the ask is the shell's own: frames run until the window comes forward,
     // and the asker is told once it is made.
     until(
         &mut session,
-        "the window the desk had comes forward",
+        "the window the shell had comes forward",
         |session| in_front(session, "Notes"),
     );
     asked

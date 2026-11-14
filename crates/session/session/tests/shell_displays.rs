@@ -204,7 +204,7 @@ fn a_part_steps_aside_on_the_display_a_fullscreen_window_owns() {
 }
 
 /// The shell on a `HiDPI` display draws at that display's scale: its part paints the pixels the
-/// panel shows, so the bar and the desk are as crisp as the display allows rather than one scale's
+/// panel shows, so the bar and the shell are as crisp as the display allows rather than one scale's
 /// worth stretched over twice the area.
 #[test]
 fn a_shell_on_a_scaled_display_draws_at_that_scale() {

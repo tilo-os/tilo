@@ -45,7 +45,7 @@ pub(crate) struct Sheets {
 }
 
 impl Sheets {
-    /// Every sheet that asks the person something over the desk: while one is drawn it holds the
+    /// Every sheet that asks the person something over the shell: while one is drawn it holds the
     /// keys, so the desktop's chords wait until it is answered. Not the guide, whose own state
     /// holds its keys, nor the lock's view, which locking holds.
     pub(crate) fn modal(&self) -> Vec<tilo_sheets::Presentation> {
@@ -255,7 +255,7 @@ fn mount_lock_view(
 }
 
 /// The questions about the person's apps: adding one from an installer, and uninstalling one — each
-/// its own sheet over the desk.
+/// its own sheet over the shell.
 fn mount_app_questions(
     compositor: &mut Compositor,
     doors: &mut Doors,

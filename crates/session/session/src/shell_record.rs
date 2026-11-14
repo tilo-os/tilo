@@ -1,7 +1,7 @@
 //! The shell's own record, kept as the person's real record: where its document lives on this
 //! device, and how it reaches the person's other devices.
 //!
-//! The shell keeps the person's desk choices in its own record (`records: .own`): the desk style,
+//! The shell keeps the person's shell choices in its own record (`records: .own`): the style,
 //! the bar and the dock, the strips' and the frames' settings, and the person's arrangement. That
 //! record is the person's as any app's is, so it is kept where an app's own record of the person's
 //! is kept: one document opened through `app_state` — the store `ui::record` opens a record
@@ -18,7 +18,7 @@
 //!
 //! A document this build cannot read is never written over: the session keeps the shell's record
 //! in memory for that session alone and says so (`ShellRecord::take_refusal`), so a person is
-//! never shown a desk whose choices were quietly reset.
+//! never shown a shell whose choices were quietly reset.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -106,11 +106,11 @@ impl ShellRecord {
     }
 
     /// A record this build did not open, kept in memory for this session and never written over:
-    /// the person's desk starts from the shell's defaults, and they are told why.
+    /// the person's shell starts from the shell's defaults, and they are told why.
     fn refusing(reason: String, id: String) -> Self {
         tracing::error!(
             %reason,
-            "the shell's record is not opened; the desk starts from the defaults this session"
+            "the shell's record is not opened; the shell starts from the defaults this session"
         );
         Self {
             doc: std::rc::Rc::new(RefCell::new(AutoCommit::new())),
@@ -156,7 +156,7 @@ impl ShellRecord {
     }
 
     /// Write the copy out now and wait for it to land: what ends the session, so the next one
-    /// starts from exactly the desk this one left.
+    /// starts from exactly the shell this one left.
     pub(crate) fn flush(&self) {
         self.follow();
         if let Some(saver) = self.saver.borrow_mut().as_mut()
@@ -246,7 +246,7 @@ fn person_store() -> Option<std::rc::Rc<dyn durable_store::DurableStore>> {
 impl Drop for ShellRecord {
     /// The last changes the shell's parts committed, written before the record lets go: a session
     /// that ends on its own flushes them through [`Self::flush`], and one that is dropped without
-    /// that — a test, a process taken down — still leaves the desk the person chose on disk rather
+    /// that — a test, a process taken down — still leaves the shell the person chose on disk rather
     /// than the one from before their last change.
     fn drop(&mut self) {
         self.flush();

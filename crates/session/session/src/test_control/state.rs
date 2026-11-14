@@ -1,6 +1,6 @@
-//! What a connection may see of the desk's state: the dump the tools that drive a desktop
+//! What a connection may see of the session's state: the dump the tools that drive a sessiontop
 //! read, one row per open window, and the narrowing of both to the workspace an app acts in and
-//! to nothing of the desk while the screen is locked.
+//! to nothing of the session while the screen is locked.
 
 use std::collections::BTreeSet;
 use std::hash::Hash as _;
@@ -8,9 +8,9 @@ use std::hash::Hash as _;
 use serde_json::{Value as Json, json};
 use tilo_desktop_model::Layout;
 
-use super::{Context, Desk, Gate, Scope, Slot};
+use super::{Context, Session, Gate, Scope, Slot};
 
-/// What a socket at `gate` may see of the state `dump`: a development socket sees the desk as
+/// What a socket at `gate` may see of the state `dump`: a development socket sees the session as
 /// it is, and the owner's door sees it too — except while the screen is locked, where it learns
 /// that it is and nothing of what the lock covers: no windows, no workspaces, no titles or the
 /// text in them.
@@ -24,7 +24,7 @@ pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
     };
     state.insert("workspace_tree".into(), Json::Null);
     state.insert("held_workspaces".into(), json!([]));
-    // Who is here is desk state like the rest: a locked desk names nobody.
+    // Who is here is session state like the rest: a locked session names nobody.
     state.insert("peers".into(), Json::Null);
     state.insert("sharing".into(), Json::Null);
     if let Some(open) = state
@@ -39,8 +39,8 @@ pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
     dump
 }
 
-/// The desk's state as `ctx` may read it: an app's own workspace only, and
-/// nothing of the desk while the screen is locked.
+/// The session's state as `ctx` may read it: an app's own workspace only, and
+/// nothing of the session while the screen is locked.
 pub(super) fn shown(ctx: &Context, dump: Json) -> Json {
     match &ctx.scope {
         None => owner_shown(ctx.gate, dump),
@@ -70,7 +70,7 @@ fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
     {
         rows.retain(|workspace| in_scope(workspace, scope));
     }
-    // The window shares are the desk's, of every workspace it holds: an app reads none of them.
+    // The window shares are the session's, of every workspace it holds: an app reads none of them.
     state.insert("sharing".into(), Json::Null);
     dump
 }
@@ -103,11 +103,11 @@ fn locked_in(dump: &Json) -> bool {
 /// device), `received` (the streams that reached it, and whether their tab pictures them) and
 /// `live` (each workspace's live plane, which the pictures travel: open, or what it waits for and
 /// which device it waits to reach). A window shared or watched under a plane that is not open
-/// says what it waits for on its own row. A tool driving two desks reads on each end how far a
+/// says what it waits for on its own row. A tool driving two sessions reads on each end how far a
 /// share came. The identifier a window is
 /// captured under is left out: it is the compositor's, for the clients it trusts.
-fn shares_shown(desk: &Desk<'_>) -> Json {
-    let Ok(shares) = desk.shares.try_borrow() else {
+fn shares_shown(session: &Session<'_>) -> Json {
+    let Ok(shares) = session.shares.try_borrow() else {
         return Json::Null;
     };
     let mut reading = shares.reading();
@@ -121,11 +121,11 @@ fn shares_shown(desk: &Desk<'_>) -> Json {
     reading
 }
 
-/// The desk as it is now: its tree without its history, the workspaces this computer holds, what
+/// The session as it is now: its tree without its history, the workspaces this computer holds, what
 /// stands over it, whether the screen is locked and what the session shares of its windows — the
 /// shape the tools that drive a desktop read, and the line a `watch` streams as it changes.
-pub(super) fn state_dump(tree: &Layout, desk: &Desk<'_>) -> Json {
-    let held: BTreeSet<String> = desk
+pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
+    let held: BTreeSet<String> = session
         .engine
         .map(|engine| {
             engine
@@ -143,12 +143,12 @@ pub(super) fn state_dump(tree: &Layout, desk: &Desk<'_>) -> Json {
         .collect();
     let mut open = serde_json::Map::new();
     for slot in Slot::ALL {
-        let up = desk.overlays.is_open(slot) || (slot == Slot::Overview && desk.overview.get());
+        let up = session.overlays.is_open(slot) || (slot == Slot::Overview && session.overview.get());
         open.insert(slot.as_str().to_owned(), up.into());
     }
     let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
         .unwrap_or(Json::Null);
-    let agents: Vec<Json> = desk
+    let agents: Vec<Json> = session
         .agent_sessions
         .readings()
         .iter()
@@ -166,19 +166,19 @@ pub(super) fn state_dump(tree: &Layout, desk: &Desk<'_>) -> Json {
         "held_workspaces": held_workspaces,
         "agents": agents,
         "chrome": {
-            "session_locked": desk.locked,
+            "session_locked": session.locked,
             // The lock screen's own frame is what the outputs show, not the
-            // desk's last one: the lock is up and covering the desk.
-            "lock_screen_drawn": desk.lock_screen_drawn,
+            // session's last one: the lock is up and covering the session.
+            "lock_screen_drawn": session.lock_screen_drawn,
             "in_transition": false,
             "overlays": open,
             // Where the person types, which a surface a key opens stands beside, and where the
             // stack placed each surface that is up: `[x0, y0, x1, y1]`.
-            "caret": desk.overlays.caret().map(|at| [at.x0, at.y0, at.x1, at.y1]),
+            "caret": session.overlays.caret().map(|at| [at.x0, at.y0, at.x1, at.y1]),
             "places": Slot::ALL
                 .into_iter()
                 .filter_map(|slot| {
-                    let at = desk.overlays.place(slot)?.room;
+                    let at = session.overlays.place(slot)?.room;
                     Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
                 })
                 .collect::<serde_json::Map<_, _>>(),
@@ -187,7 +187,7 @@ pub(super) fn state_dump(tree: &Layout, desk: &Desk<'_>) -> Json {
             "surfaces": Slot::ALL
                 .into_iter()
                 .filter_map(|slot| {
-                    let at = desk.overlays.surface(slot)?;
+                    let at = session.overlays.surface(slot)?;
                     Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
                 })
                 .collect::<serde_json::Map<_, _>>(),
@@ -198,27 +198,27 @@ pub(super) fn state_dump(tree: &Layout, desk: &Desk<'_>) -> Json {
                 "trims": tilo_compositor::heap_trim::trims_completed(),
             },
         },
-        "peers": presence(desk),
-        "sharing": shares_shown(desk),
+        "peers": presence(session),
+        "sharing": shares_shown(session),
         // The person's keyboard and pointer across their devices: where the pointer is here, the
         // device it drives, and what the devices driving this one sent.
-        "shared_input": desk.shared_input.map_or_else(
-            || json!({"pointer": [desk.pointer.0, desk.pointer.1], "pointer_shown": desk.pointer_shown}),
-            |shared_input| shared_input.inspection(desk.pointer, desk.pointer_shown),
+        "shared_input": session.shared_input.map_or_else(
+            || json!({"pointer": [session.pointer.0, session.pointer.1], "pointer_shown": session.pointer_shown}),
+            |shared_input| shared_input.inspection(session.pointer, session.pointer_shown),
         ),
         // The text on the clipboard, as the history last read it.
-        "clipboard": desk.clipboard.text(),
+        "clipboard": session.clipboard.text(),
     }})
 }
 
 /// Who hosts each workspace this computer holds, and whether its host took this computer in yet: a
 /// machine copied from another holds its workspaces before their hosts admit it, and `tilo-vm vm
-/// branch` waits for that. One row per held workspace: its id (`room`), its name on the desk, the
+/// branch` waits for that. One row per held workspace: its id (`room`), its name on the shell, the
 /// host's name as its person gave it, whether this computer is the host, and whether it still
-/// waits for the host. A socket sees what [`shown`] lets it see of the desk: an app its own
-/// workspace, and nothing of a locked desk but through a development socket.
-pub(super) fn workspace_hosts(tree: &Layout, desk: &Desk<'_>, ctx: &Context) -> Json {
-    let rows: Vec<Json> = if ctx.gate != Gate::Dev && desk.locked {
+/// waits for the host. A socket sees what [`shown`] lets it see of the session: an app its own
+/// workspace, and nothing of a locked session but through a development socket.
+pub(super) fn workspace_hosts(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
+    let rows: Vec<Json> = if ctx.gate != Gate::Dev && session.locked {
         Vec::new()
     } else {
         tree.workspaces
@@ -229,7 +229,7 @@ pub(super) fn workspace_hosts(tree: &Layout, desk: &Desk<'_>, ctx: &Context) -> 
                     .is_none_or(|scope| workspace.id().to_string() == scope.workspace)
             })
             .filter_map(|workspace| {
-                let hosting = desk.engine?.hosting(workspace.id())?;
+                let hosting = session.engine?.hosting(workspace.id())?;
                 Some(json!({
                     "workspace": workspace.id().to_string(),
                     "name": workspace.name.clone(),
@@ -246,8 +246,8 @@ pub(super) fn workspace_hosts(tree: &Layout, desk: &Desk<'_>, ctx: &Context) -> 
 /// Who is here, as every surface here draws them: this device's own row, and each workspace this
 /// session takes part in with everyone present in it, as the collaboration plane says. `Null` when
 /// this session takes part in no plane.
-fn presence(desk: &Desk<'_>) -> Json {
-    let Some(sync) = desk.sync else {
+fn presence(session: &Session<'_>) -> Json {
+    let Some(sync) = session.sync else {
         return Json::Null;
     };
     json!({
@@ -270,7 +270,7 @@ fn row(member: &collab_types::presence::Shown) -> Json {
 }
 
 /// The row of `member` as a watcher is told about it: without where their pointer is, which moves
-/// every frame of its own and moves nothing of the desk.
+/// every frame of its own and moves nothing of the session.
 fn settled(member: &collab_types::presence::Shown) -> String {
     let mut row = row(member);
     if let Some(row) = row.as_object_mut() {
@@ -282,8 +282,8 @@ fn settled(member: &collab_types::presence::Shown) -> String {
 /// What a watcher of the state dump is told changed about who is here: the rows [`presence`]
 /// publishes, as one hash. A watcher that asks who is here while nothing moved is answered from
 /// the dump it already has.
-pub(super) fn presence_stamp(desk: &Desk<'_>, hash: &mut impl std::hash::Hasher) {
-    let Some(sync) = desk.sync else {
+pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::Hasher) {
+    let Some(sync) = session.sync else {
         return;
     };
     settled(&sync.own_here()).hash(hash);

@@ -13,7 +13,7 @@ use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 
 use super::{DoorRead, agent_door};
 use crate::overview_panel::OverviewPick;
-use crate::overview_tilo::{TiloDesk, TiloItem, TiloRow, rows};
+use crate::overview_tilo::{TiloItem, TiloOverview, TiloRow, rows};
 
 fn en() {
     ui::i18n::I18nManager::init("en-US");
@@ -134,12 +134,12 @@ fn facts(item: &TiloItem) -> Vec<&str> {
     item.facts.iter().map(|fact| fact.text.as_str()).collect()
 }
 
-/// The desk the page fills from the read: nothing else of the person's Tilo
+/// The shell the page fills from the read: nothing else of the person's Tilo
 /// is known from a door.
-fn desk(read: &DoorRead) -> TiloDesk {
-    TiloDesk {
+fn shell(read: &DoorRead) -> TiloOverview {
+    TiloOverview {
         door: read.door().cloned(),
-        ..TiloDesk::default()
+        ..TiloOverview::default()
     }
 }
 
@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
             "the same answer again"
         );
 
-        let rows = rows(&desk(&read));
+        let rows = rows(&shell(&read));
         let agent = items(&rows)[0];
         assert_eq!(agent.title, "Claude Code", "whose grant it is");
         assert_eq!(
@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
         let mut read = DoorRead::default();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         assert!(read.follow(&host, &caller(), &wake));
-        let rows = rows(&desk(&read));
+        let rows = rows(&shell(&read));
         assert_eq!(facts(items(&rows)[0]), ["Build"]);
     }
 
@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
         let mut read = DoorRead::default();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         assert!(read.follow(&host, &caller(), &wake));
-        let action = items(&rows(&desk(&read)))[0].action.clone();
+        let action = items(&rows(&shell(&read)))[0].action.clone();
         let Some((label, OverviewPick::RevokeGrant(grant))) = action else {
             panic!("the agents' row offers to take its grant back");
         };
@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         assert!(read.follow(&host, &caller(), &wake), "it answered, empty");
         assert_eq!(read.door().map(|door| door.grants.len()), Some(0));
-        let rows = rows(&desk(&read));
+        let rows = rows(&shell(&read));
         assert!(
             !rows
                 .iter()

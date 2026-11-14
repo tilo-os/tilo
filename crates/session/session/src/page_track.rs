@@ -4,9 +4,9 @@
 //! drawing leaves the device: an app that runs a page engine offers its
 //! window's page as a paint stream (`FloatingSurfaceClientMessage::PaintCapable`,
 //! `PaintStream`), and this publishes it as one `tilo_page/1` track per window
-//! on the workspace's live plane, where the members' desks draw it.
+//! on the workspace's live plane, where the members' sessions draw it.
 //!
-//! The track exists only while someone shows it: a member's desk asks the
+//! The track exists only while someone shows it: a member's shell asks the
 //! plane for `page/<tab>`, the plane tells this session
 //! ([`Plane::wanted_pages`]), and only then is the app asked for a whole frame
 //! ([`FloatingSurfaceHostMessage::PaintKeyframe`]). When the last viewer stops,
@@ -105,7 +105,7 @@ struct Offered {
 }
 
 impl Offered {
-    /// What the app must be told now of a window a member's desk shows (`shown`) or not, whose
+    /// What the app must be told now of a window a member's shell shows (`shown`) or not, whose
     /// viewers must start over at a whole frame (`start_over`: one joined, or lost the chain of
     /// changes). A window that waits for a whole frame is asked for it once, and again each time
     /// [`HAND_OVER_BOUND`] passes without one: also a window that waits because the plane fell
@@ -266,7 +266,7 @@ impl PageTracks {
     /// clock in microseconds.
     ///
     /// `shared` are the windows this session shares as their page. A plane takes any member's
-    /// ask for any window's page track, so what a desk asks for is no word on whether it may
+    /// ask for any window's page track, so what a shell asks for is no word on whether it may
     /// have it: a window that is not shared is shown to nobody, whoever asks.
     pub(crate) fn step(
         &mut self,
@@ -315,7 +315,7 @@ impl PageTracks {
         asks
     }
 
-    /// The windows whose page somebody shows: a member's desk wants the track, so the page is in
+    /// The windows whose page somebody shows: a member's shell wants the track, so the page is in
     /// use while it does, whether or not an action runs on it.
     pub(crate) fn viewed(&self) -> Vec<TabId> {
         self.offered
@@ -326,7 +326,7 @@ impl PageTracks {
     }
 
     /// The windows whose page went out to the members showing them: a whole frame of it was
-    /// published since a desk asked for it. A window that is asked for and whose app handed
+    /// published since a shell asked for it. A window that is asked for and whose app handed
     /// nothing over is not among them.
     pub(crate) fn sent(&self) -> Vec<TabId> {
         self.offered
@@ -675,7 +675,7 @@ mod over_the_plane {
         }
     }
 
-    /// A desk asks for the page of a window nobody shared: its app is asked for nothing, and
+    /// A shell asks for the page of a window nobody shared: its app is asked for nothing, and
     /// the window is shown to nobody.
     fn unshared_is_shown_to_nobody(pages: &mut PageTracks, planes: &BTreeMap<String, Arc<Plane>>) {
         assert!(
@@ -726,7 +726,7 @@ mod over_the_plane {
                 .is_err()
         );
 
-        // A member's desk shows the window: the app is asked for a whole frame.
+        // A member's shell shows the window: the app is asked for a whole frame.
         watching.show(a, &[Track::Page(TAB)]);
         wait_until("the window's page is asked for", || {
             publishing.wanted_pages() == [TAB]
@@ -779,7 +779,7 @@ mod over_the_plane {
             "the viewer draws what was published"
         );
 
-        // The desk stops showing the window: the app is told so, and nothing
+        // The shell stops showing the window: the app is told so, and nothing
         // more of it is captured or sent.
         watching.show(a, &[]);
         wait_until("the page is no longer shown", || {

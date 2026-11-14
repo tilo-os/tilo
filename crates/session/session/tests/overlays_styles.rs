@@ -1,12 +1,12 @@
-//! The tilolang shell's system overlays in every desk style: the quick settings the bar's status
+//! The tilolang shell's system overlays in every style: the quick settings the bar's status
 //! opens, the notification centre the bell opens (and the banner a notice rises as), and the
-//! launcher the dock's entry opens. Each is the shell's own view of the desk (`apps/tl/shell`),
+//! launcher the dock's entry opens. Each is the shell's own view of the layout (`apps/tl/shell`),
 //! drawn over the same bar and dock whatever style the person shows, and each runs the session's
 //! own published actions, so a press, the agent and the REPL change the same thing.
 //!
 //! These fail without the change:
 //!
-//! - the launcher listed only the desk's doors, never the installed apps, so a person could type
+//! - the launcher listed only the layout's doors, never the installed apps, so a person could type
 //!   "no" and Enter found nothing to open;
 //! - there was no way to post a notice as a script or an agent (only an app's `notify`, or a
 //!   service's own notice), so `session.notify` — and the banner and centre count it feeds — could
@@ -62,7 +62,7 @@ fn session() -> Session {
     session
 }
 
-/// The desk as the session publishes it on its door: what an agent reads.
+/// The layout as the session publishes it on its door: what an agent reads.
 fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre {
     serde_json::from_value(
         session
@@ -90,7 +90,7 @@ fn appearance_mode(session: &Session) -> Value {
         .unwrap_or_default()
 }
 
-/// Show the surface `surface` over the desk through the desk's own `show-surface`, as an agent
+/// Show the surface `surface` over the shell through the layout's own `show-surface`, as an agent
 /// does, and run frames until it is up.
 fn show(session: &mut Session, surface: &str) {
     session
@@ -101,11 +101,11 @@ fn show(session: &mut Session, surface: &str) {
         )
         .unwrap();
     until(session, |session| {
-        crate::common::desk_here(session) == surface
+        crate::common::shell_here(session) == surface
     });
 }
 
-/// Close the surface `surface` through the desk's own `close-surface`.
+/// Close the surface `surface` through the layout's own `close-surface`.
 fn close(session: &mut Session, surface: &str) {
     session
         .invoke(
@@ -115,7 +115,7 @@ fn close(session: &mut Session, surface: &str) {
         )
         .unwrap();
     until(session, |session| {
-        crate::common::desk_here(session) == "none"
+        crate::common::shell_here(session) == "none"
     });
 }
 
@@ -149,12 +149,12 @@ fn type_text(session: &mut Session, text: &str) {
 /// Show the style `style` (`strips`, `frames`, `spaces`, `desktop`), as the bar's switch does: the
 /// three canvas styles through the shell's own `show_style` (`show_preset`), and the desktop through
 /// the chrome's `apply(windows_desktop)` preset, which draws the traditional desktop. Frames until
-/// the desk has drawn it and placed its bar.
+/// the layout has drawn it and placed its bar.
 fn show_style(session: &mut Session, style: &str) {
     if style == "desktop" {
         session
             .run_shell_action("apply", vec![Value::from("windows_desktop")])
-            .unwrap_or_else(|why| panic!("the desk shows {style}: {why}"));
+            .unwrap_or_else(|why| panic!("the layout shows {style}: {why}"));
         until(session, |session| {
             crate::common::preset_menu(session).is_none()
         });
@@ -171,7 +171,7 @@ fn show_style(session: &mut Session, style: &str) {
     }
 }
 
-/// The styles the desk's bar offers, by the name the switch lists each under. The desktop is last:
+/// The styles the layout's bar offers, by the name the switch lists each under. The layouttop is last:
 /// it is the chrome's own preset, so switching away from it mid-run would change the bar too.
 fn styles() -> [(&'static str, &'static str); 4] {
     [
@@ -184,7 +184,7 @@ fn styles() -> [(&'static str, &'static str); 4] {
 
 // ---- Quick settings ------------------------------------------------------------------------
 
-/// In every desk style, the bar's status opens the quick settings, and the Dark mode tile runs
+/// In every style, the bar's status opens the quick settings, and the Dark mode tile runs
 /// the appearance settings' own published action: the mode turns from what it was to the other,
 /// as Settings and an agent turn it. The panel closes on Escape.
 #[test]
@@ -213,7 +213,7 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
             )
             .unwrap();
         until(&mut session, |session| {
-            crate::common::desk_here(session) == "quick-settings"
+            crate::common::shell_here(session) == "quick-settings"
         });
         until(&mut session, |session| {
             session.shell_control("Dark mode").is_some()
@@ -230,10 +230,10 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
             "{name}: the dark mode tile reached the settings: {:?}",
             session.shell_refusals()
         );
-        // Escape closes it, as a surface over the desk does.
+        // Escape closes it, as a surface over the shell does.
         tap(&mut session, KEY_ESCAPE);
         until(&mut session, |session| {
-            crate::common::desk_here(session) == "none"
+            crate::common::shell_here(session) == "none"
         });
     }
 }
@@ -242,7 +242,7 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
 
 /// A notice posted through the session's own `notify` rises as the shell's banner (the toast) and
 /// shows in the bell's count; the bell opens the centre with it listed, and its Dismiss takes it
-/// off. Holds in every desk style: the banner and the centre are the desk's, drawn over whatever
+/// off. Holds in every style: the banner and the centre are the layout's, drawn over whatever
 /// style shows.
 #[test]
 fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
@@ -287,7 +287,7 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
             )
             .unwrap();
         until(&mut session, |session| {
-            crate::common::desk_here(session) == "centre"
+            crate::common::shell_here(session) == "centre"
         });
         until(&mut session, |session| {
             session.shell_control("Tea is ready").is_some()
@@ -316,7 +316,7 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
         });
         assert!(
             session.shell_refusals().is_empty(),
-            "{style}: the notice's actions reached the desk: {:?}",
+            "{style}: the notice's actions reached the layout: {:?}",
             session.shell_refusals()
         );
         close(&mut session, "centre");
@@ -326,8 +326,8 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
 // ---- The launcher --------------------------------------------------------------------------
 
 /// The launcher lists the installed apps (Notes among them), typing narrows them, and Enter opens
-/// the first: typing "no" and Enter presses the desk's own `open-app` for Notes. Holds in every
-/// desk style, the launcher being the shell's one view over all of them.
+/// the first: typing "no" and Enter presses the layout's own `open-app` for Notes. Holds in every
+/// style, the launcher being the shell's one view over all of them.
 #[test]
 fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
     let _settled = ui::motion::testing::settled();
@@ -352,11 +352,11 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         show_style(&mut session, key);
         show(&mut session, "launcher");
         // The launcher lists Notes before anything is typed: the installed apps are the list,
-        // not only the desk's own doors.
+        // not only the layout's own doors.
         until(&mut session, |session| {
             session.shell_control("Notes").is_some()
         });
-        // Typing narrows to Notes: the only app row left named before the desk's own doors.
+        // Typing narrows to Notes: the only app row left named before the layout's own doors.
         // The launcher keeps the person's last query in its field (`launcher.tl`): a style shown
         // after another opens it on the "no" typed there, which the person clears first.
         let field = crate::common::LAUNCHER_SEARCH;
@@ -368,7 +368,7 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         until(&mut session, |session| {
             session.shell_control("Notes").is_some()
         });
-        // Enter opens the first app: the desk starts Notes, through its own `open-app`.
+        // Enter opens the first app: the layout starts Notes, through its own `open-app`.
         tap(&mut session, KEY_ENTER);
         until(&mut session, |session| {
             crate::common::windows(session)
@@ -377,12 +377,12 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         });
         assert!(
             session.shell_refusals().is_empty(),
-            "{style}: the launcher's Enter reached the desk: {:?}",
+            "{style}: the launcher's Enter reached the layout: {:?}",
             session.shell_refusals()
         );
         // The app opened as a tab of the workspace in front, so the launcher is done: a later
-        // style starts from the desk at rest with Notes closed again.
-        if crate::common::desk_here(&session) != "none" {
+        // style starts from the layout at rest with Notes closed again.
+        if crate::common::shell_here(&session) != "none" {
             close(&mut session, "launcher");
         }
     }

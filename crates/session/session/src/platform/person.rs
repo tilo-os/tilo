@@ -1,15 +1,15 @@
 //! What this host calls the person at it.
 //!
-//! The desk, its bar and the roster name the person they belong to: the name they chose, else the
+//! The shell, its bar and the roster name the person they belong to: the name they chose, else the
 //! name this host knows them by. A computer whose identity is in is named by its key, which is
 //! never shown as a name.
 
-/// The name this person goes by at their own desk: the one they chose, else the name the session
+/// The name this person goes by at their own shell: the one they chose, else the name the session
 /// already knows them by, else the name this host knows whoever is at it by. A computer with no
-/// identity of its own goes by that account, which is the session's person there, so the desk and
+/// identity of its own goes by that account, which is the session's person there, so the shell and
 /// its bar name them alike; a computer whose identity is in is named by its key, which is never
 /// shown as a name.
-pub fn desk_person_name(chosen: Option<String>, person: &str) -> String {
+pub fn person_name(chosen: Option<String>, person: &str) -> String {
     chosen_name(chosen).unwrap_or_else(|| {
         let known = person.trim();
         if known.is_empty() || is_identity_key(known) {

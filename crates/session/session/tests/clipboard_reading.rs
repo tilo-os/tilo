@@ -41,7 +41,7 @@ fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
             ..Options::default()
         },
     );
-    // The app runs in the workspace the session opened its desk on, which is the workspace it reads
+    // The app runs in the workspace the session opened its shell on, which is the workspace it reads
     // the session's resources in.
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()

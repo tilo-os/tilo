@@ -11,7 +11,7 @@ pub struct Ident {
     pub name: String,
     pub span: Span,
     /// The package a `template view` came from, when import qualified this name with it
-    /// (`shell.desk_style`): the resolver admits such a plain name, since the template's body is
+    /// (`shell.style_shell`): the resolver admits such a plain name, since the template's body is
     /// the one place that may call the package's unoffered helpers.
     pub from_template_of: Option<String>,
 }

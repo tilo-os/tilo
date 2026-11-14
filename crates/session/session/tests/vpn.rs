@@ -654,7 +654,7 @@ const PERSON: &str = "ada";
 /// What the person calls the laptop they take with them.
 const LAPTOP: &str = "Laptop";
 /// And what they call this device.
-const DESK: &str = "Desk";
+const SHELL: &str = "Shell";
 /// And the phone they carry.
 const PHONE: &str = "Phone";
 
@@ -678,8 +678,8 @@ fn step_both_until(one: &mut Session, other: &mut Session, what: &str, done: imp
 fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let runtime = tilo_test_env::runtime_tempdir().expect("a runtime directory");
-    let desk_socket: PathBuf = runtime.path().join("desk-helper.sock");
-    let desk_helper = Helper::at(&desk_socket);
+    let shell_socket: PathBuf = runtime.path().join("shell-helper.sock");
+    let shell_helper = Helper::at(&shell_socket);
     let laptop_socket: PathBuf = runtime.path().join("laptop-helper.sock");
     let laptop_helper = Helper::at(&laptop_socket);
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -690,12 +690,12 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
 
     // This device's endpoint, with the exit on it: what answers another of the person's devices
     // asking to route through this one.
-    let (_desk_reading, desk_vpns) = tokio::sync::watch::channel(reading(None));
-    let desk_vpn = Vpn::with(Sources {
-        helper: desk_socket,
-        vpns: Vpns::Fed(VpnWatch::following(desk_vpns)),
+    let (_shell_reading, shell_vpns) = tokio::sync::watch::channel(reading(None));
+    let shell_vpn = Vpn::with(Sources {
+        helper: shell_socket,
+        vpns: Vpns::Fed(VpnWatch::following(shell_vpns)),
     });
-    let desk_sync = Client::start(
+    let shell_sync = Client::start(
         Entry {
             identity: None,
             own: OwnPresence::default(),
@@ -707,7 +707,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         },
         None,
         None,
-        desk_vpn.served(),
+        shell_vpn.served(),
         None,
     )
     .expect("this device's endpoint binds");
@@ -742,13 +742,13 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             .expect("the phone's endpoint binds")
     });
     let phone_device = DeviceId::new(hex::encode(phone.id().as_bytes())).expect("the phone's id");
-    let desk_addr = desk_sync.endpoint_addr();
-    let desk_device =
-        DeviceId::new(hex::encode(desk_sync.publisher().as_bytes())).expect("this device's id");
+    let shell_addr = shell_sync.endpoint_addr();
+    let device =
+        DeviceId::new(hex::encode(shell_sync.publisher().as_bytes())).expect("this device's id");
     let laptop_id = laptop_sync.publisher();
     let laptop_device = DeviceId::new(hex::encode(laptop_id.as_bytes())).expect("the laptop's id");
     // The laptop was told where this device is: its route dials the tunnel by the same id.
-    laptop_sync.connect(desk_addr.clone());
+    laptop_sync.connect(shell_addr.clone());
 
     let mut laptop = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -758,8 +758,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             services: vec![Box::new(SettingsService::new())],
             sync: Some(Rc::new(laptop_sync)),
             fabric: Some(Arc::new(KnownDevices::of(vec![(
-                desk_device.clone(),
-                DESK.to_owned(),
+                device.clone(),
+                SHELL.to_owned(),
             )]))),
             vpn: Some(Vpn::with(Sources {
                 helper: laptop_socket,
@@ -768,38 +768,40 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             ..Options::default()
         },
     );
-    let mut desk = crate::common::headless_on(
+    let mut shell = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             collab: false,
             user: PERSON.to_owned(),
             services: vec![Box::new(SettingsService::new())],
-            sync: Some(Rc::new(desk_sync)),
+            sync: Some(Rc::new(shell_sync)),
             fabric: Some(Arc::new(KnownDevices::of(vec![
                 (laptop_device.clone(), LAPTOP.to_owned()),
                 (phone_device.clone(), PHONE.to_owned()),
             ]))),
-            vpn: Some(desk_vpn),
+            vpn: Some(shell_vpn),
             ..Options::default()
         },
     );
 
     // This device can carry an exit: its helper is installed and its endpoint answers the tunnel.
     // Settings here says so, and that the person has not turned it on.
-    step_until(&mut desk, "this device to say it can carry an exit", || {
-        published_status().is_some_and(|status| status.exit_available && !status.exit_on)
-    });
+    step_until(
+        &mut shell,
+        "this device to say it can carry an exit",
+        || published_status().is_some_and(|status| status.exit_available && !status.exit_on),
+    );
 
     // The person chooses the laptop's route before they turn their exit on: a route asked for here
     // is refused for that reason.
     THROUGH
-        .set(Some(Through::device(desk_device.as_str())))
+        .set(Some(Through::device(device.as_str())))
         .expect("the laptop routes through this device");
     step_until(&mut laptop, "the route to be refused", || {
         published_status()
             .and_then(|status| status.client)
             .is_some_and(|client| {
-                client.device == desk_device.as_str()
+                client.device == device.as_str()
                     && client.state
                         == ClientState::Refused {
                             reason: ShownRefusal::ExitOff,
@@ -809,7 +811,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     let status = published_status().expect("a published status");
     assert_eq!(
         status.client.expect("the route").label,
-        DESK,
+        SHELL,
         "the laptop's route says which of the person's devices it goes to"
     );
 
@@ -824,7 +826,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             .await
             .expect("a stranger's endpoint binds")
     });
-    let refused = rt.block_on(async { client::connect(&stranger, desk_addr.clone()).await });
+    let refused = rt.block_on(async { client::connect(&stranger, shell_addr.clone()).await });
     assert_eq!(
         refused.err(),
         Some(ClientError::Refused(Refusal::NotYours)),
@@ -835,7 +837,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     // The person turns their exit on, and chooses the route again: the laptop's tunnel comes up,
     // through this device.
     EXIT.set(true).expect("the exit is on");
-    step_until(&mut desk, "this device to say its exit is on", || {
+    step_until(&mut shell, "this device to say its exit is on", || {
         published_status().is_some_and(|status| status.exit_available && status.exit_on)
     });
 
@@ -845,11 +847,11 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         published_status().is_some_and(|status| status.client.is_none())
     });
     THROUGH
-        .set(Some(Through::device(desk_device.as_str())))
+        .set(Some(Through::device(device.as_str())))
         .expect("the laptop routes through this device");
 
     step_until(&mut laptop, "the tunnel to come up", || {
-        laptop_helper.opened().is_some() && desk_helper.exit_opened().is_some()
+        laptop_helper.opened().is_some() && shell_helper.exit_opened().is_some()
     });
     let Some(Request::OpenClient { link }) = laptop_helper.opened() else {
         panic!("the laptop asked its helper for the tunnel");
@@ -865,7 +867,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         link.mtu
     );
     assert_eq!(
-        desk_helper.exit_opened(),
+        shell_helper.exit_opened(),
         Some(Request::OpenExit {
             link: device_vpn::protocol::ExitLink {
                 mtu: device_vpn::tunnel::exit::EXIT_MTU,
@@ -882,9 +884,9 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     });
     let status = published_status().expect("a published status");
     let client = status.client.expect("the route");
-    assert_eq!(client.device, desk_device.as_str());
+    assert_eq!(client.device, device.as_str());
     assert_eq!(
-        client.label, DESK,
+        client.label, SHELL,
         "by the name the person gave this device"
     );
     assert_eq!(client.routes, Routes::All);
@@ -895,12 +897,12 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     let outward = packet::udp_packet(
         SocketAddrV4::new(link.address, 50_000),
         web,
-        b"hello through the desk",
+        b"hello through the shell",
     )
     .expect("a packet to send through the tunnel");
     tun.send(&outward).expect("the packet goes into the tunnel");
     assert_eq!(
-        desk_helper.received(),
+        shell_helper.received(),
         outward,
         "the packet leaves through this device as the laptop sent it"
     );
@@ -908,9 +910,9 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     // The person's phone routes through this device as well: Settings here says both of their
     // devices do, by the names they gave them.
     let phone_tunnel = rt
-        .block_on(async { client::connect(&phone, desk_addr.clone()).await })
+        .block_on(async { client::connect(&phone, shell_addr.clone()).await })
         .expect("the phone routes through this device");
-    step_until(&mut desk, "Settings to show both devices", || {
+    step_until(&mut shell, "Settings to show both devices", || {
         published_status().is_some_and(|status| status.exit_users.len() == 2)
     });
     let status = published_status().expect("a published status");
@@ -942,7 +944,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     let before = settings_changes().len();
     STOP.set(Some(StopRequest::after(None, phone_device.as_str())))
         .expect("the person stops the phone routing through this device");
-    step_until(&mut desk, "the phone's tunnel to go", || {
+    step_until(&mut shell, "the phone's tunnel to go", || {
         published_status().is_some_and(|status| {
             status.exit_users.len() == 1 && status.exit_users[0].device == laptop_device.as_str()
         })
@@ -967,18 +969,18 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     let stopped = StopRequest::after(STOP.get().as_ref(), laptop_device.as_str());
     STOP.set(Some(stopped))
         .expect("the person stops the laptop routing through this device too");
-    step_both_until(&mut laptop, &mut desk, "the tunnel to go", || {
+    step_both_until(&mut laptop, &mut shell, "the tunnel to go", || {
         laptop_helper.closed()
     });
-    step_both_until(&mut laptop, &mut desk, "Settings to show no route", || {
+    step_both_until(&mut laptop, &mut shell, "Settings to show no route", || {
         published_status()
             .is_some_and(|status| status.client.is_none() && status.exit_users.is_empty())
     });
     step_both_until(
         &mut laptop,
-        &mut desk,
+        &mut shell,
         "this device's exit to close",
-        || desk_helper.exit_closed(),
+        || shell_helper.exit_closed(),
     );
     let cleared = settings_changes()
         .into_iter()

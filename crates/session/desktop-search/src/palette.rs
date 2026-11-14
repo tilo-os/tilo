@@ -2054,7 +2054,7 @@ mod tests {
             // An action can carry an app's name (the empty desk's cards did):
             // a person typing a name wants the app, and Enter on the top row
             // must start it.
-            let mut desk = ResourceSpec::new("desktop:desk", "desktop", "Desk");
+            let mut desk = ResourceSpec::new("desktop:shell", "desktop", "Shell");
             desk.actions
                 .push(tilo_actions::ActionSpec::immediate_encoded(
                     "notes",

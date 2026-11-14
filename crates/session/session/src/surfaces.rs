@@ -1,5 +1,5 @@
 //! Starting the desktop's surface apps as processes of their own.
-//! The bar, the desk, the panels and the sheets are ordinary apps, and the session runs each in a
+//! The bar, the shell, the panels and the sheets are ordinary apps, and the session runs each in a
 //! process of its own: it hands the app one end of a socket it trusts
 //! ([`Compositor::connect_trusted_client`]) and names the layer surface its window is to become in
 //! its environment. What the app draws reaches the compositor as a client's buffer, shown and given
@@ -37,7 +37,7 @@ use ui::surface_services::{ACTIONS_FD_ENV, APP_ID_ENV, SOCKET_ENV, WORKSPACE_ENV
 /// Where on an output a surface app's window stands, lowest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
-    /// Below the desk's own content: a wallpaper or a stand-in background.
+    /// Below the shell's own content: a wallpaper or a stand-in background.
     Background,
     /// Below every window, above the background.
     Bottom,
@@ -111,7 +111,7 @@ impl std::ops::BitOr for Anchor {
 /// Whether a surface app's window takes the keyboard, and how.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Keyboard {
-    /// Never: the window takes the pointer only (the bar, the desk).
+    /// Never: the window takes the pointer only (the bar, the shell).
     #[default]
     None,
     /// When the person clicks it (a panel with a field in it).
@@ -143,7 +143,7 @@ pub struct Surface {
     /// Where its window stands on the output.
     pub layer: Layer,
     /// The kind of surface it is, as the compositor and a person's tools name it (`tilo-bar`,
-    /// `tilo-desk` , …).
+    /// `tilo-shell` , …).
     pub namespace: String,
     /// The edges it is pinned to.
     pub anchor: Anchor,

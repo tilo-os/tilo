@@ -25,13 +25,13 @@ import sys
 #: Phases in the order a login pays them. Each is named by the mark that ends
 #: it and the mark it starts at (`None` is the process origin), with an
 #: earlier pair kept for a session that still shows the deleted compositor's
-#: desk. A mark that is absent leaves its phase out of the report.
+#: shell. A mark that is absent leaves its phase out of the report.
 PHASES = [
     ("process", [(None, "main-start")]),
     (
         "setup",
         [
-            ("main-start", "desk-build-start"),
+            ("main-start", "shell-build-start"),
             ("main-start", "compositor-native-run-start"),
         ],
     ),
@@ -40,16 +40,16 @@ PHASES = [
         [("compositor-native-run-start", "compositor-desktop-build-start")],
     ),
     (
-        "desk_build",
+        "shell_build",
         [
-            ("desk-build-start", "desk-build-done"),
+            ("shell-build-start", "shell-build-done"),
             ("compositor-desktop-build-start", "compositor-desktop-build-done"),
         ],
     ),
     (
         "window",
         [
-            ("desk-build-done", "window-render-context-done"),
+            ("shell-build-done", "window-render-context-done"),
             ("compositor-desktop-build-done", "window-render-context-done"),
         ],
     ),
@@ -70,7 +70,7 @@ def measure(path: pathlib.Path, device: str) -> dict:
     gaps: dict[str, float] = {}
     for name, pairs in PHASES:
         # The first pair whose marks a session wrote names its phase: a
-        # session that still shows the deleted compositor's desk has the
+        # session that still shows the deleted compositor's layout has the
         # later pairs' marks only.
         for start, end in pairs:
             if end not in timeline:

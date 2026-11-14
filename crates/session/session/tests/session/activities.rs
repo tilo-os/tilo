@@ -1,6 +1,6 @@
-//! The floating layer on the desk: the bar's pill names the activity an app publishes, the card
-//! opens from the pill, and a narrow desk keeps its cards in the pill. Each state is a test with
-//! its own session, and every state is written as a picture beside the desk's own captures.
+//! The floating layer on the shell: the bar's pill names the activity an app publishes, the card
+//! opens from the pill, and a narrow shell keeps its cards in the pill. Each state is a test with
+//! its own session, and every state is written as a picture beside the shell's own captures.
 
 use super::*;
 use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
@@ -9,11 +9,11 @@ use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
 const CLOCKS: &str = "so.tilo.clocks";
 
 /// The bar's height, whole logical pixels: everything above stands in the bar, everything below is
-/// the desk the cards float over.
+/// the shell the cards float over.
 const BAR: u32 = 32;
 
-/// The first row under the desk.
-fn desk_bottom() -> u32 {
+/// The first row under the shell.
+fn shell_bottom() -> u32 {
     u32::try_from(HEIGHT).expect("a display with rows")
 }
 
@@ -103,7 +103,7 @@ fn click_the_bar(session: &mut Session, width: u32) {
     }
 }
 
-/// A session on a display `width` wide, for the desk a phone shows.
+/// A session on a display `width` wide, for the shell a phone shows.
 fn session_wide(width: i32) -> Session {
     crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
@@ -114,18 +114,18 @@ fn session_wide(width: i32) -> Session {
     )
 }
 
-/// A running timer is the bar's pill, and the pill opens as its card over the desk.
+/// A running timer is the bar's pill, and the pill opens as its card over the shell.
 #[test]
 fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session();
     settle(&mut session, 8);
     let (empty, width) = shot(&mut session);
 
     // A timer that keeps to the bar: its reading stands in the pill, and nothing stands over the
-    // desk.
+    // shell.
     show(&session, CLOCKS, tea(), false);
     settle(&mut session, 8);
     let (named, _) = shot(&mut session);
@@ -135,29 +135,29 @@ fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
         changed(&empty, &named, width, 0, BAR)
     );
     assert_eq!(
-        changed(&empty, &named, width, BAR, desk_bottom()),
+        changed(&empty, &named, width, BAR, shell_bottom()),
         0,
-        "nothing stands over the desk yet"
+        "nothing stands over the shell yet"
     );
-    super::desk::capture_to(&mut session, &dir, "bar-pill");
+    super::shell::capture_to(&mut session, &dir, "bar-pill");
 
     click_the_bar(&mut session, width);
     settle(&mut session, 8);
     let (opened, _) = shot(&mut session);
     assert!(
-        changed(&named, &opened, width, BAR, desk_bottom()) > 1_000,
-        "the card stands over the desk: {} pixels of it moved",
-        changed(&named, &opened, width, BAR, desk_bottom())
+        changed(&named, &opened, width, BAR, shell_bottom()) > 1_000,
+        "the card stands over the shell: {} pixels of it moved",
+        changed(&named, &opened, width, BAR, shell_bottom())
     );
-    super::desk::capture_to(&mut session, &dir, "card");
+    super::shell::capture_to(&mut session, &dir, "card");
 }
 
-/// A phone's desk has no room beside a window for a card: every activity waits in the pill, and
-/// none stands on the desk.
+/// A phone's shell has no room beside a window for a card: every activity waits in the pill, and
+/// none stands on the shell.
 #[test]
-fn a_narrow_desk_keeps_its_cards_in_the_pill() {
+fn a_narrow_shell_keeps_its_cards_in_the_pill() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session_wide(420);
     settle(&mut session, 8);
@@ -171,9 +171,9 @@ fn a_narrow_desk_keeps_its_cards_in_the_pill() {
         "the bar names the timer on a phone too"
     );
     assert_eq!(
-        changed(&empty, &named, width, BAR, desk_bottom()),
+        changed(&empty, &named, width, BAR, shell_bottom()),
         0,
-        "no card stands on a phone's desk"
+        "no card stands on a phone's shell"
     );
-    super::desk::capture_to(&mut session, &dir, "phone-pill");
+    super::shell::capture_to(&mut session, &dir, "phone-pill");
 }

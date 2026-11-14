@@ -494,7 +494,7 @@ mod tests {
     use ui::kurbo::Rect;
 
     /// Where the banner's bar and Stop stand on a display `width` wide, its top bar the height the
-    /// desktop gives it, the desk under it filled from edge to edge by a window's content.
+    /// desktop gives it, the shell under it filled from edge to edge by a window's content.
     fn placed(width: f64, following: bool) -> (Rect, Rect, Rect, Rect, Vec<Rect>) {
         let theme = Theme::default();
         let mut text = TextRenderer::new();
@@ -515,7 +515,7 @@ mod tests {
             following,
         );
         let (chip, stop) = (card.chip, card.stop);
-        // A desk with a window filling it: its content starts where the bar ends.
+        // A shell with a window filling it: its content starts where the bar ends.
         let windows = vec![Rect::new(0.0, work_area.y0, width, work_area.y1)];
         (bar, work_area, chip, stop, windows)
     }

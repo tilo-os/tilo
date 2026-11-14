@@ -1,9 +1,9 @@
-//! Floating a window over the desk in a real session: the chord and the window's own menu lift it
-//! out of its strip and keep the place it stands at in the desk's record, the same record's undo
+//! Floating a window over the shell in a real session: the chord and the window's own menu lift it
+//! out of its strip and keep the place it stands at in the shell's record, the same record's undo
 //! floats it again, and a float carried back over its strip shows the gap it would land in and
 //! snaps into it.
 //! The pictures are written to `$FLOAT_WINDOWS_OUT` (default `~/.cache/float-snap/shots` ): the
-//! desk with the conversation floating over its strip, carried over the windows it covers, and the
+//! shell with the conversation floating over its strip, carried over the windows it covers, and the
 //! gap it snaps into, in both themes.
 
 #![cfg(target_os = "linux")]
@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_compositor::InputEvent;
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_session_core::arrangement::StripReading;
@@ -62,7 +62,7 @@ fn session() -> Session {
         shell: false,
         collab: false,
         // The apps installed on this device, as a real session reads them: the launcher opens
-        // them, and the desk names their windows by their own names.
+        // them, and the shell names their windows by their own names.
         lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
         services,
         ..Options::default()
@@ -73,7 +73,7 @@ fn step(session: &mut Session) {
     session.step(REFRESH).expect("a turn of the session");
 }
 
-/// Open `app` on the desk, the way the launcher opens one, and answer its tab's id once the desk
+/// Open `app` on the shell, the way the launcher opens one, and answer its tab's id once the shell
 /// has it.
 fn open(session: &mut Session, app: &str) -> u64 {
     let arguments = json!({ "app": app });
@@ -83,15 +83,15 @@ fn open(session: &mut Session, app: &str) -> u64 {
             "open-app",
             arguments.as_object().expect("an object"),
         )
-        .unwrap_or_else(|error| panic!("{app} opens on the desk: {error:?}"));
+        .unwrap_or_else(|error| panic!("{app} opens on the shell: {error:?}"));
     until(session, &format!("{app}'s window"), |session| {
         tab_of(session, app).is_some()
     });
     step(session);
-    tab_of(session, app).expect("the app's window is on the desk")
+    tab_of(session, app).expect("the app's window is on the shell")
 }
 
-/// The tab of `app` 's window, while the desk holds one.
+/// The tab of `app` 's window, while the shell holds one.
 fn tab_of(session: &Session, app: &str) -> Option<u64> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -115,7 +115,7 @@ fn rect(session: &Session, tab: u64) -> ui::kurbo::Rect {
         .unwrap_or_else(|| panic!("the window {tab} is drawn"))
 }
 
-/// Where the desk draws each of its three windows, while it draws one.
+/// Where the shell draws each of its three windows, while it draws one.
 fn drawn_windows(session: &Session) -> Vec<Option<ui::kurbo::Rect>> {
     [CHAT, MAIL, NOTES]
         .iter()
@@ -123,8 +123,8 @@ fn drawn_windows(session: &Session) -> Vec<Option<ui::kurbo::Rect>> {
         .collect()
 }
 
-/// The window `tab` , as the desk's record reads it: the place it keeps, and whether it floats
-/// above the desk.
+/// The window `tab` , as the shell's record reads it: the place it keeps, and whether it floats
+/// above the shell.
 fn held(session: &Session, tab: u64) -> StripReading {
     let reading = session.arrangement().borrow().reading();
     let key = tab.to_string();
@@ -132,13 +132,13 @@ fn held(session: &Session, tab: u64) -> StripReading {
         .places
         .into_iter()
         .find(|place| place.key == key)
-        .unwrap_or_else(|| panic!("the desk keeps a place for the window {tab}"));
+        .unwrap_or_else(|| panic!("the shell keeps a place for the window {tab}"));
     let strip = place.strip;
     reading
         .strips
         .into_iter()
         .find(|held| held.key == strip)
-        .unwrap_or_else(|| panic!("the desk keeps the strip of the window {tab}"))
+        .unwrap_or_else(|| panic!("the shell keeps the strip of the window {tab}"))
 }
 
 /// The windows of the strip holding `tab` , in the order it lays them out.
@@ -164,9 +164,9 @@ fn order(session: &Session, tab: u64) -> Vec<u64> {
     })
 }
 
-/// The desk the captures show: a conversation, a letter and a note in one strip, the conversation
+/// The shell the captures show: a conversation, a letter and a note in one strip, the conversation
 /// in front.
-fn desk() -> Session {
+fn shell() -> Session {
     let mut session = session();
     step(&mut session);
     for app in [CHAT, MAIL, NOTES] {
@@ -203,11 +203,11 @@ fn desk() -> Session {
     }
     let before = drawn_windows(&session);
     handle.replace_tree(tree);
-    // The desk lays the windows it was handed out on its next look: wait until it draws the three
+    // The shell lays the windows it was handed out on its next look: wait until it draws the three
     // of them at the widths the record now holds, so what is measured below is that layout.
     until(
         &mut session,
-        "the desk draws its windows where it holds them",
+        "the shell draws its windows where it holds them",
         |session| {
             let windows = drawn_windows(session);
             windows.iter().all(Option::is_some) && windows != before
@@ -398,13 +398,13 @@ fn capture(session: &mut Session, name: &str) {
     .expect("write the labels");
 }
 
-/// The chord lifts the window in front above the desk at the floating window's size, the place it
-/// stands at is the desk's record, the window's own menu offers it back into its strip, and the
+/// The chord lifts the window in front above the shell at the floating window's size, the place it
+/// stands at is the shell's record, the window's own menu offers it back into its strip, and the
 /// record's undo floats it again.
 #[test]
 fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     let _settled = ui::motion::testing::settled();
-    let mut session = desk();
+    let mut session = shell();
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
     let in_strip = rect(&session, chat);
     let before = held(&session, chat);
@@ -434,7 +434,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
         floating.float_corner
     );
 
-    // And the desk draws it there, at the floating size, on the display.
+    // And the shell draws it there, at the floating size, on the display.
     until(&mut session, "the window is drawn floating", |session| {
         let over = rect(session, chat);
         (over.width(), over.height()) == (640.0, 480.0) && over != in_strip
@@ -477,7 +477,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     });
     until(
         &mut session,
-        "the desk draws the window back in its strip",
+        "the shell draws the window back in its strip",
         |session| rect(session, chat) == in_strip,
     );
     assert_eq!(
@@ -489,7 +489,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     // The record's undo takes that one step back, and the window floats again.
     session
         .undo_arrangement()
-        .expect("the desk undoes the step");
+        .expect("the shell undoes the step");
     until(
         &mut session,
         "one undo floats the window again",
@@ -497,7 +497,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     );
     until(
         &mut session,
-        "the desk draws the floated window again",
+        "the shell draws the floated window again",
         |session| {
             let over = rect(session, chat);
             (over.width(), over.height()) == (640.0, 480.0)
@@ -510,11 +510,11 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
 }
 
 /// A float carried back over its strip shows the gap it would land in while the hand is still down,
-/// and letting go there snaps it into that gap as one step of the desk's record.
+/// and letting go there snaps it into that gap as one step of the shell's record.
 #[test]
 fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     let _settled = ui::motion::testing::settled();
-    let mut session = desk();
+    let mut session = shell();
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
     let mail = tab_of(&session, MAIL).expect("a letter is open");
     let notes = tab_of(&session, NOTES).expect("a note is open");
@@ -534,7 +534,7 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     assert_eq!(
         order(&session, chat),
         vec![chat, mail, notes],
-        "the conversation is the first window of the desk"
+        "the conversation is the first window of the shell"
     );
 
     // The hand takes the float by the ground of its bar, right of its tabs,
@@ -603,7 +603,7 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
             .strips
             .iter()
             .all(|reading| !reading.floating),
-        "and nothing of the desk floats"
+        "and nothing of the shell floats"
     );
     capture(&mut session, "snapped-dark");
 
@@ -615,7 +615,7 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     });
     until(
         &mut session,
-        "the desk draws the window floating again",
+        "the shell draws the window floating again",
         |session| {
             let over = rect(session, chat);
             (over.width(), over.height()) == (640.0, 480.0)

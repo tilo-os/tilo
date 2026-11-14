@@ -15,7 +15,7 @@
 //! test can reach: the session opens "Join a workspace", reads the site, joins
 //! through its door, and shows what the member laid out and where their
 //! pointer is. A person nobody invited is refused in the door's own words, and
-//! the desk is unchanged. An app the person opens in the joined workspace is
+//! the shell is unchanged. An app the person opens in the joined workspace is
 //! launched there and shows its window.
 
 #![cfg(target_os = "linux")]
@@ -37,7 +37,7 @@ use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -416,7 +416,7 @@ fn the_members_desktop(member: &Member) -> SharedDesktop {
     }
 }
 
-/// The strips and windows a shared desktop holds, as a desk shows them, in order: each strip by its
+/// The strips and windows a shared desktop holds, as a shell shows them, in order: each strip by its
 /// name and the titles of the windows in it.
 fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
     let mut layout: Vec<(String, Vec<String>)> = desktop
@@ -444,9 +444,9 @@ fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
     layout
 }
 
-/// The strips and windows a desk shows in `workspace` , as [`recorded_layout`] gives a shared
+/// The strips and windows a shell shows in `workspace` , as [`recorded_layout`] gives a shared
 /// desktop's: what every device showing it should see.
-fn desk_layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)> {
+fn layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -661,7 +661,7 @@ fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
     crate::common::until(session, what, |session| done(session));
 }
 
-/// The workspaces this computer holds: the desk's id, the name shown and the workspace's id.
+/// The workspaces this computer holds: the shell's id, the name shown and the workspace's id.
 fn held(session: &Session) -> Vec<(String, String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -677,7 +677,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
     })
 }
 
-/// Where the desk draws the tile of window `tab` : `None` while it is not shown.
+/// Where the shell draws the tile of window `tab` : `None` while it is not shown.
 fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
     session
         .handle()
@@ -687,7 +687,7 @@ fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
         .map(|(_, rect)| rect)
 }
 
-/// Whether the desk drew someone's pointer at `(x, y)` of the tile of `tab` .
+/// Whether the shell drew someone's pointer at `(x, y)` of the tile of `tab` .
 fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
     session
         .drawn_peer_pointers()
@@ -700,7 +700,7 @@ fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
         })
 }
 
-/// Wait until the desk draws the member's pointer at `(x, y)` over the tile of `tab` , pointing
+/// Wait until the shell draws the member's pointer at `(x, y)` over the tile of `tab` , pointing
 /// again as it waits.
 /// Their pointer is a live frame the host fans out and never keeps: a host whose queue for this
 /// device is full drops it, so the test says where they are more than once rather than sampling a
@@ -746,7 +746,7 @@ fn wait_until_their_pointer(
     }
 }
 
-/// The id of the window on the strip in front: whose tile the desk shows, so a pointer over it is
+/// The id of the window on the strip in front: whose tile the shell shows, so a pointer over it is
 /// drawn.
 fn window_in_front(session: &Session) -> Option<u64> {
     session.handle().read(|tree| {
@@ -762,10 +762,10 @@ fn window_in_front(session: &Session) -> Option<u64> {
     })
 }
 
-/// The member's pointer is drawn on the desk where they put it, and follows when they move it.
+/// The member's pointer is drawn on the shell where they put it, and follows when they move it.
 #[track_caller]
 fn the_pointer_follows(session: &mut Session, member_page: &Link, room: &Room) {
-    // Their pointer, over a window they work in: the desk draws it there,
+    // Their pointer, over a window they work in: the shell draws it there,
     // without the roster being opened.
     let shown =
         window_in_front(session).expect("the workspace in front shows a strip with a window");
@@ -881,8 +881,8 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
 
     // The person opens "Join a workspace" before anyone invited them: the
     // Lounge is listed, and pressing Join is refused in the door's own words,
-    // leaving the desk as it was.
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    // leaving the shell as it was.
+    let state = tempfile::tempdir().expect("a directory for this computer's shell");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
@@ -913,8 +913,8 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         |session| {
             // A refusal is a banner that stays until the person acts on it, and is kept behind it
             // in the centre once it left: either is where the person reads it.
-            let desk = session.notifications();
-            let log = desk.log();
+            let shell = session.notifications();
+            let log = shell.log();
             log.active().iter().chain(log.history()).any(|notice| {
                 notice.body.contains("Lounge") && notice.body.contains("joined by invitation")
             })
@@ -924,7 +924,7 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         !held(&session)
             .iter()
             .any(|(_, _, workspace)| workspace == &room.workspace),
-        "and the desk is unchanged: no empty workspace to arrive in"
+        "and the shell is unchanged: no empty workspace to arrive in"
     );
 
     // The members invite them through the room's own API: a page's invite over the host's session,
@@ -946,14 +946,12 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
     let shown = crate::common::wait_maybe_past(
         &mut session,
         tilo_session::sync::JOIN_PATIENCE,
-        |session| {
-            (desk_layout(session, &room.workspace) == recorded_layout(&desktop)).then_some(())
-        },
+        |session| (layout(session, &room.workspace) == recorded_layout(&desktop)).then_some(()),
     );
     assert!(
         shown.is_some(),
-        "the desk shows what the member laid out: {:?}, the room holds {:?}; refusals: {:?}",
-        desk_layout(&session, &room.workspace),
+        "the shell shows what the member laid out: {:?}, the room holds {:?}; refusals: {:?}",
+        layout(&session, &room.workspace),
         recorded_layout(&desktop),
         session.shell_refusals()
     );
@@ -1107,7 +1105,7 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
     let site = site(&room);
     let site_url = format!("{}/", site.url());
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's shell");
     let (mut session, apps) = session_opening(state.path(), &home, &launcher);
     session.step(Duration::from_millis(1)).unwrap();
 
@@ -1155,13 +1153,13 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
         launch.contains(&format!("--workspace-id {}", room.workspace)),
         "the app is started in the workspace the person opened it in: {launch}"
     );
-    // The app's window is a window of the Lounge: its ticket is the one the desk makes for the
+    // The app's window is a window of the Lounge: its ticket is the one the shell makes for the
     // workspace the person opened it in, not for their own.
     wait_until(
         &mut session,
         "the app shows its window in the Lounge",
         |session| {
-            desk_layout(session, &room.workspace)
+            layout(session, &room.workspace)
                 .iter()
                 .any(|(_, windows)| windows.iter().any(|title| title == app || title == "Probe"))
         },

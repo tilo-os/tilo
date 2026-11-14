@@ -352,7 +352,7 @@ struct Fields<'a> {
 impl Target for Fields<'_> {
     fn field(&mut self) -> Result<Field, FieldRefusal> {
         // What the session draws itself stands over the windows it shows: while the person types
-        // into the desk's own search, that is the field. It answers whether it owns the keys at
+        // into the shell's own search, that is the field. It answers whether it owns the keys at
         // all, so a refusal there never falls through into a window behind it.
         match self.own.field() {
             Some(field) => field,
@@ -442,7 +442,7 @@ impl OwnFields for DesktopHandle {
             Err(refusal) => {
                 tracing::warn!(
                     ?refusal,
-                    "typing was refused for a reason no field of this desk answers; the words are dropped"
+                    "typing was refused for a reason no field of this shell answers; the words are dropped"
                 );
                 None
             }
@@ -538,7 +538,7 @@ mod tests {
         }
 
         fn insert(&self, field: Field, text: &str) -> Insertion {
-            // A field that moved since it was bound takes nothing, as the desk's own field rechecks
+            // A field that moved since it was bound takes nothing, as the shell's own field rechecks
             // its revision.
             if self.field != Some(Ok(field)) {
                 return Insertion::Changed;
@@ -563,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn the_desks_own_field_stands_over_the_compositors() {
+    fn the_shells_own_field_stands_over_the_compositors() {
         let mut compositor = FakeCompositor {
             field: Some(COMPOSITOR_FIELD),
             ..FakeCompositor::default()
@@ -581,7 +581,7 @@ mod tests {
         );
         assert!(
             compositor.inserted.borrow().is_empty(),
-            "the app's field behind the desk is not typed into"
+            "the app's field behind the shell is not typed into"
         );
     }
 
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn a_desk_holding_the_keys_without_a_field_takes_none_either() {
+    fn a_shell_holding_the_keys_without_a_field_takes_none_either() {
         let mut compositor = FakeCompositor {
             field: Some(COMPOSITOR_FIELD),
             ..FakeCompositor::default()

@@ -1,7 +1,7 @@
 //! Workspace settings: what the sheet shows of the workspace in front, and what the person's
 //! choices there change.
 //! The sheet shows and asks; this carries out. Every change to the workspace goes through the
-//! workspace's own policy functions — the ones the desk's member commands use — so a change the
+//! workspace's own policy functions — the ones the shell's member commands use — so a change the
 //! person may not make is refused there, whatever the sheet showed, and the tree is only written
 //! when something changed.
 
@@ -53,7 +53,7 @@ impl WorkspaceTabs {
     }
 }
 
-/// What the sheet is fed from: the desk in front, the lists its tabs offer,
+/// What the sheet is fed from: the shell in front, the lists its tabs offer,
 /// and the workspace's own records its tabs read.
 pub(crate) struct Feeding<'a> {
     pub(crate) handle: &'a DesktopHandle,
@@ -61,7 +61,7 @@ pub(crate) struct Feeding<'a> {
     /// This session's search: the machine's app lists, and the apps a page or a link the sheet asks
     /// for opens in.
     pub(crate) search: &'a SessionSearch,
-    /// The desk revision the panes were last fed at.
+    /// The shell revision the panes were last fed at.
     pub(crate) fed: &'a Cell<Option<u64>>,
     /// The workspace's agents and emoji, read and changed through Chat's records.
     pub(crate) tabs: &'a WorkspaceTabs,
@@ -153,7 +153,7 @@ pub(crate) fn refresh(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding
     show(seat, fed, shown.tab, review.as_deref());
 }
 
-/// Show the sheet's panes as the desk stands for the person, on `tab` .
+/// Show the sheet's panes as the shell stands for the person, on `tab` .
 fn show(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -176,7 +176,7 @@ fn show(
 }
 
 /// Show the workspace in front on one of the person's devices, or keep it off there: the row says
-/// the choice at once, since a workspace kept off this device leaves the desk under the sheet.
+/// the choice at once, since a workspace kept off this device leaves the shell under the sheet.
 fn toggle_workspace_device(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, device: &str) {
     if !toggle_device(fed.handle, fed.personal, device) {
         return;
@@ -297,7 +297,7 @@ fn ask(
         // The workspace leaves this device's desktop; it stays for everyone in it, on their
         // devices.
         sheet::WorkspaceSettingsEffect::Delete => intent(intents, ChromeIntent::LeaveWorkspace),
-        // The person answered the sheet's own question: the desk deletes the workspace with
+        // The person answered the sheet's own question: the shell deletes the workspace with
         // everything in it, and tells the session it went.
         sheet::WorkspaceSettingsEffect::DeleteWorkspace => {
             intent(intents, ChromeIntent::DeleteWorkspaceConfirmed);
@@ -345,7 +345,7 @@ fn dismiss_notice(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>) {
     show(seat, fed, shown.tab, review.as_deref());
 }
 
-/// Say what the desk does next, for the sheet.
+/// Say what the shell does next, for the sheet.
 fn intent(intents: &RefCell<Vec<ChromeIntent>>, what: ChromeIntent) {
     intents.borrow_mut().push(what);
 }
@@ -436,10 +436,10 @@ fn edit(
 /// A change to the workspace's people, made where the workspace keeps them.
 /// The workspace's governance is the only source of who shares it, so the change goes there first,
 /// signed with this device's key: every member admits what it answers as it admits every change its
-/// people make. The desk keeps the change only once the workspace took it; one it refuses leaves
-/// the desk as it was, and the sheet says why in the workspace's own words.
-/// A workspace whose governance this device does not hold has only the desk: the change is the
-/// desk's, as it was before workspaces had governance here.
+/// people make. The shell keeps the change only once the workspace took it; one it refuses leaves
+/// the shell as it was, and the sheet says why in the workspace's own words.
+/// A workspace whose governance this device does not hold has only the shell: the change is the
+/// shell's, as it was before workspaces had governance here.
 fn govern(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
@@ -479,7 +479,7 @@ fn govern(
             return refused(&seat, &reason);
         }
         seat.dismiss_notice();
-        // The desk takes the change as it stands now, which moved while the workspace answered.
+        // The shell takes the change as it stands now, which moved while the workspace answered.
         let mut tree = handle.read(Clone::clone);
         let Some(workspace) = tree
             .workspaces
@@ -1031,7 +1031,7 @@ fn going(tree: &Layout, engine: Option<&Engine>) -> Going {
             if sole_member {
                 t("workspace-settings-leave-sole-member")
             } else {
-                // The desk keeps the person one workspace, so the last one is not theirs to leave.
+                // The shell keeps the person one workspace, so the last one is not theirs to leave.
                 t("workspace-settings-leave-last")
             }
         }),
@@ -1101,7 +1101,7 @@ fn toggle_device(
     if !shown {
         return personal.set_shown(workspace_id, device, true);
     }
-    // The desk keeps the person one workspace: keeping this device's last one off it would leave
+    // The shell keeps the person one workspace: keeping this device's last one off it would leave
     // them with none, and the workspace would stay whatever the choice said.
     if personal.is_this_device(&device) && handle.read(|tree| tree.workspaces.len()) <= 1 {
         return false;

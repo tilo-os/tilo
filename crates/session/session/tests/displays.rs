@@ -1,6 +1,6 @@
 //! The native session across two displays, with real Wayland clients: each display holds its own
 //! windows, new windows open on the display with focus, focus and windows move between displays
-//! through the desk's published actions, a mirror is one display, and dialogs float over the window
+//! through the shell's published actions, a mirror is one display, and dialogs float over the window
 //! they belong to instead of taking a tab.
 
 #![cfg(target_os = "linux")]
@@ -20,7 +20,7 @@ use std::time::Duration;
 use crate::common::window::{Client, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
+use tilo_desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::WindowWidth;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
@@ -110,7 +110,7 @@ fn find(resources: &[ResourceSpec], hit: &dyn Fn(&ResourceSpec) -> bool) -> Vec<
         .collect()
 }
 
-/// The displays the desk publishes, in reading order.
+/// The displays the shell publishes, in reading order.
 fn displays(session: &Session) -> Vec<ResourceSpec> {
     find(&session.resources(), &|resource| {
         resource.kind == DISPLAY_KIND
@@ -126,8 +126,8 @@ fn window_tabs(session: &Session) -> Vec<String> {
     .collect()
 }
 
-/// The name the desk gives a window whose bar says its own app id.
-fn desk_name(app: &str) -> String {
+/// The name the shell gives a window whose bar says its own app id.
+fn shell_name(app: &str) -> String {
     tilo_desktop_search::names::window_name(app, app)
 }
 
@@ -344,7 +344,7 @@ fn new_windows_open_on_the_display_with_focus() {
     assert_eq!(
         names.len(),
         2,
-        "the desk publishes both displays: {names:?}"
+        "the shell publishes both displays: {names:?}"
     );
 
     tab(&mut session, &mut client, "org.example.Left");
@@ -443,7 +443,7 @@ fn focus_steps_across_displays_and_a_window_moves_to_the_next() {
     invoke(
         &mut session,
         &mut client,
-        DESK_RESOURCE,
+        SHELL_RESOURCE,
         "step-focus",
         serde_json::json!({"steps": -1}),
     );
@@ -454,7 +454,7 @@ fn focus_steps_across_displays_and_a_window_moves_to_the_next() {
     invoke(
         &mut session,
         &mut client,
-        DESK_RESOURCE,
+        SHELL_RESOURCE,
         "move-to-display",
         serde_json::json!({"steps": 1}),
     );
@@ -476,7 +476,7 @@ fn a_mirror_is_one_display() {
     );
     tab(&mut session, &mut client, "org.example.Only");
     assert_eq!(display_of(&mut session, "org.example.Only"), Some(0));
-    assert_eq!(window_tabs(&session), [desk_name("org.example.Only")]);
+    assert_eq!(window_tabs(&session), [shell_name("org.example.Only")]);
 }
 
 #[test]
@@ -505,7 +505,7 @@ fn a_dialog_floats_centred_over_its_parent_without_a_tab() {
     );
     assert_eq!(
         window_tabs(&session),
-        [desk_name("org.example.Editor")],
+        [shell_name("org.example.Editor")],
         "a dialog takes no tab"
     );
     assert_eq!(

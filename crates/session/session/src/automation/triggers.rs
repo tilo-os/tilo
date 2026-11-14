@@ -1256,7 +1256,7 @@ impl TriggerHost {
     }
 
     /// The session's triggers: the system clock, schedules persisted under the state root the
-    /// session keeps its desk in, in the file the shell kept them in.
+    /// session keeps its shell in, in the file the shell kept them in.
     #[must_use]
     pub fn for_session(state: Option<&Path>, wake: crate::automation::Wake) -> Self {
         let schedules = state.map(|state| state.join("tilo/automation/schedules.json"));

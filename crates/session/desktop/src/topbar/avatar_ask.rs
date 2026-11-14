@@ -508,7 +508,7 @@ mod tests {
     use ui::headless::Framed;
     use ui::widget::TileHost;
 
-    /// The desk's windows, with their content as plain notices.
+    /// The shell's windows, with their content as plain notices.
     struct Notices;
 
     impl TileSource for Notices {
@@ -520,7 +520,7 @@ mod tests {
         }
     }
 
-    /// The desk the chrome stands over, answering what the chrome asks of it as the session does.
+    /// The shell the chrome stands over, answering what the chrome asks of it as the session does.
     struct Rules {
         handle: DesktopHandle,
     }
@@ -620,7 +620,7 @@ mod tests {
         }
     }
 
-    /// The real chrome over a desk with one window, at `viewport` .
+    /// The real chrome over a shell with one window, at `viewport` .
     fn asking_desktop(viewport: (u32, u32)) -> (Framed<DesktopChrome>, Rc<Asking>) {
         asking_desktop_over(viewport, &tree())
     }
@@ -641,7 +641,7 @@ mod tests {
             })),
             intents: RefCell::default(),
         });
-        let (_desk, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
+        let (_shell, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
         let chrome: crate::chrome::Chrome = host.clone();
         let bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
         let chrome = DesktopChrome::new(

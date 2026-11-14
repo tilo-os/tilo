@@ -1,5 +1,5 @@
-//! The welcome card on an empty desk: one press opens one window, on the pass the desk asks its
-//! host for. A host draws only when something asks it to, so a desk that answered the press in its
+//! The welcome card on an empty shell: one press opens one window, on the pass the shell asks its
+//! host for. A host draws only when something asks it to, so a shell that answered the press in its
 //! own pass and left the host idle would open the window whenever an unrelated frame came — and a
 //! person who pressed again meanwhile would have two windows open.
 
@@ -13,7 +13,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
+use tilo_desktop::desktop_host::{BackgroundLayer, DesktopAsk};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop_model::{Layout, Strip, StripId, Tab, TileContent, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::ChromeEffect;
@@ -22,8 +22,8 @@ use ui::headless::FrameHarness;
 use ui::kurbo::Point;
 use ui::widget::TileHost;
 
-/// A desk with a workspace, a strip and no window: the welcome card stands on it.
-fn empty_desk() -> Layout {
+/// A shell with a workspace, a strip and no window: the welcome card stands on it.
+fn empty_shell() -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip::new(StripId(2), "Main")];
     let mut tree = Layout {
@@ -63,20 +63,20 @@ impl TileSource for Apps {
     }
 }
 
-/// An empty desk and the host holding it: what it shows, what it asks of the host, and how many
+/// An empty shell and the host holding it: what it shows, what it asks of the host, and how many
 /// times it asked for the pass that answers the ask.
-struct Desk {
+struct Shell {
     frame: FrameHarness,
     handle: DesktopHandle,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     woken: Rc<Cell<u64>>,
 }
 
-impl Desk {
-    /// The desk as its host mounts it: the host wakes, counted in `woken`, when the desk asks for a
+impl Shell {
+    /// The shell as its host mounts it: the host wakes, counted in `woken`, when the shell asks for a
     /// pass.
     fn new() -> Self {
-        let (surface, handle) = DesktopSurface::new(empty_desk(), 7, Box::new(Apps));
+        let (surface, handle) = DesktopSurface::new(empty_shell(), 7, Box::new(Apps));
         handle.set_viewport_width(1280.0);
         let asks: Rc<RefCell<Vec<DesktopAsk>>> = Rc::default();
         let woken = Rc::new(Cell::new(0u64));
@@ -84,7 +84,7 @@ impl Desk {
             let woken = Rc::clone(&woken);
             Rc::new(move || woken.set(woken.get().wrapping_add(1)))
         });
-        let layer = DeskLayer::new(
+        let layer = BackgroundLayer::new(
             Box::new(surface),
             handle.clone(),
             CollaborationLaunchpad::new(),
@@ -107,7 +107,7 @@ impl Desk {
         }
     }
 
-    /// What the desk asked of its host since the last call.
+    /// What the shell asked of its host since the last call.
     fn asked(&self) -> Vec<DesktopAsk> {
         std::mem::take(&mut *self.asks.borrow_mut())
     }
@@ -123,11 +123,11 @@ fn card(frame: &FrameHarness, label: &str) -> Point {
                 .then(|| node.bounds())
                 .flatten()
         })
-        .expect("the welcome card names its place on the empty desk");
+        .expect("the welcome card names its place on the empty shell");
     Point::new(node.x0.midpoint(node.x1), node.y0.midpoint(node.y1))
 }
 
-/// The apps of the windows on the desk, in the order they stand.
+/// The apps of the windows on the shell, in the order they stand.
 fn windows(handle: &DesktopHandle) -> Vec<String> {
     handle.read(|tree| {
         tree.tabs()
@@ -141,52 +141,53 @@ fn windows(handle: &DesktopHandle) -> Vec<String> {
 /// the window: the window is there on that pass, with no wait on anything else.
 #[test]
 fn one_press_on_the_welcome_card_opens_one_window_on_the_pass_it_asks_for() {
-    let mut desk = Desk::new();
+    let mut shell = Shell::new();
     assert!(
-        windows(&desk.handle).is_empty(),
-        "an empty desk has no window"
+        windows(&shell.handle).is_empty(),
+        "an empty shell has no window"
     );
-    let notes = card(&desk.frame, "Notes");
+    let notes = card(&shell.frame, "Notes");
 
-    desk.frame.click_at(notes.x, notes.y);
+    shell.frame.click_at(notes.x, notes.y);
     assert_eq!(
-        desk.asked(),
+        shell.asked(),
         [DesktopAsk::HostAction("launchpad-notes".to_owned())],
         "one press asks for Notes once"
     );
     assert!(
-        desk.woken.get() > 0,
-        "the desk asked its host for the pass that opens it, rather than leaving the choice \
+        shell.woken.get() > 0,
+        "the shell asked its host for the pass that opens it, rather than leaving the choice \
          waiting for whatever frame came next"
     );
 
     // The host carries the choice out as a host does, and the pass it asks for draws the window.
-    let woken_before = desk.woken.get();
-    desk.handle
+    let woken_before = shell.woken.get();
+    shell
+        .handle
         .dispatch(ChromeEffect::OpenApp {
             app: "so.tilo.notes".to_owned(),
             beside: None,
             background: None,
             float: None,
         })
-        .expect("Notes opens on the desk");
+        .expect("Notes opens on the shell");
     assert!(
-        desk.woken.get() > woken_before,
+        shell.woken.get() > woken_before,
         "a queued open asks for the pass that applies it"
     );
-    desk.frame.relayout();
+    shell.frame.relayout();
     assert_eq!(
-        windows(&desk.handle),
+        windows(&shell.handle),
         ["so.tilo.notes"],
         "one window, and nothing else"
     );
 
     // The press that follows finds the window there, so a person who presses again while the
     // application's code is still arriving gets no second copy of it.
-    desk.frame.click_at(notes.x, notes.y);
-    desk.frame.relayout();
+    shell.frame.click_at(notes.x, notes.y);
+    shell.frame.relayout();
     assert_eq!(
-        windows(&desk.handle),
+        windows(&shell.handle),
         ["so.tilo.notes"],
         "a second press does not open a second window"
     );

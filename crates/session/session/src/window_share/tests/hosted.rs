@@ -1,10 +1,10 @@
-//! What a desk says of a window that runs on another device while nothing of it is shown there:
+//! What a shell says of a window that runs on another device while nothing of it is shown there:
 //! the session reads how the window stands, its tab says it instead of standing empty, and the
 //! shares' reading says the same in a word (`hosted`).
 
 use super::*;
 
-/// How the reading of `member` says the window its desk lists in `tab` stands, with what it says
+/// How the reading of `member` says the window its shell lists in `tab` stands, with what it says
 /// the window waits for.
 fn stands(member: &Member, tab: u64) -> Option<(String, String)> {
     let wanted = tab.to_string();
@@ -17,9 +17,9 @@ fn stands(member: &Member, tab: u64) -> Option<(String, String)> {
         })
 }
 
-/// Whether `member` 's desk says `words` : what a reader who cannot see the desk, and a tool
+/// Whether `member` 's shell says `words` : what a reader who cannot see the shell, and a tool
 /// that lists it, read there.
-fn desk_says(member: &Member, words: &str) -> bool {
+fn shell_says(member: &Member, words: &str) -> bool {
     member
         .session
         .accessible_labels()
@@ -46,7 +46,7 @@ fn until_stands(
     });
 }
 
-/// A window that runs only on its device stands on every other desk, shared or not. Its tab there
+/// A window that runs only on its device stands on every other shell, shared or not. Its tab there
 /// never stands empty: it says the app and the device the window runs on, and the session reads
 /// why nothing of it is shown. Nothing is heard of its device: it is away. Its device is in the
 /// workspace and shares no such window: it is not shared. Its device shares it: the share's own
@@ -57,7 +57,7 @@ fn a_window_on_another_device_is_said_not_shared_until_it_is_and_again_once_its_
     let salt = tilo_desktop_model::ids::device_salt_of_key(device(0xA1).as_bytes());
     let mut host = member_minting_under(
         0xA1,
-        desk(
+        shell(
             TileContent::LocalApp {
                 app_id: APP.to_owned(),
                 label: "Notes".to_owned(),
@@ -69,7 +69,7 @@ fn a_window_on_another_device_is_said_not_shared_until_it_is_and_again_once_its_
     );
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = tab_of(&host.session, APP);
-    // The other desk lists the window as the workspace's layout does: as one that runs on its
+    // The other shell lists the window as the workspace's layout does: as one that runs on its
     // device, before anything is shared.
     let mut viewer = member_minting_under(0xA2, showing(device(0xA1), APP, tab), 1);
     let where_it_runs = "Notes runs on Framework";
@@ -78,7 +78,7 @@ fn a_window_on_another_device_is_said_not_shared_until_it_is_and_again_once_its_
     // Nothing was heard of the window's device in the workspace.
     until_stands(&mut host, &mut window, &mut viewer, (tab, "away"), None);
     assert!(
-        desk_says(&viewer, where_it_runs),
+        shell_says(&viewer, where_it_runs),
         "the tab says where the window runs: {:?}",
         viewer.session.accessible_labels()
     );
@@ -91,7 +91,7 @@ fn a_window_on_another_device_is_said_not_shared_until_it_is_and_again_once_its_
         (tab, "not-shared"),
         named,
     );
-    assert!(desk_says(&viewer, where_it_runs));
+    assert!(shell_says(&viewer, where_it_runs));
     assert!(viewer.session.handle().peer_surface_tabs().is_empty());
 
     // Its device shares it: the share's own tile takes the tab.
@@ -103,7 +103,7 @@ fn a_window_on_another_device_is_said_not_shared_until_it_is_and_again_once_its_
     until_stands(&mut host, &mut window, &mut viewer, (tab, "shown"), named);
     assert_eq!(viewer.session.handle().peer_surface_tabs(), vec![tab]);
     assert!(
-        !desk_says(&viewer, where_it_runs),
+        !shell_says(&viewer, where_it_runs),
         "a tab that shows the window's share does not say it is elsewhere: {:?}",
         viewer.session.accessible_labels()
     );
@@ -135,7 +135,7 @@ fn a_window_on_another_device_is_said_not_shared_until_it_is_and_again_once_its_
     );
     assert!(viewer.session.handle().peer_surface_tabs().is_empty());
     assert!(
-        desk_says(&viewer, where_it_runs),
+        shell_says(&viewer, where_it_runs),
         "the tab says where the window runs once its share ended: {:?}",
         viewer.session.accessible_labels()
     );
@@ -148,7 +148,7 @@ fn a_window_this_device_asks_for_is_awaited_until_something_of_it_arrives() {
     let host = device(0xB1);
     let salt = tilo_desktop_model::ids::device_salt_of_key(host.as_bytes());
     let tab = tilo_desktop_model::ids::compose_id(salt, 1);
-    let mut sharer = member_minting_under(0xB1, own_desk(), salt);
+    let mut sharer = member_minting_under(0xB1, own_shell(), salt);
     let mut viewer = member_minting_under(0xB2, showing(host, APP, tab), 1);
     let mut window = None;
     let named = Some((0xB1, "Framework"));
@@ -168,7 +168,7 @@ fn a_window_this_device_asks_for_is_awaited_until_something_of_it_arrives() {
         (tab, "awaited"),
         named,
     );
-    assert!(desk_says(&viewer, "Notes runs on Framework"));
+    assert!(shell_says(&viewer, "Notes runs on Framework"));
     assert!(
         viewer.session.handle().peer_surface_tabs().is_empty(),
         "nothing of the window arrived"

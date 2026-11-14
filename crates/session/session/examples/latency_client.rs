@@ -165,7 +165,7 @@ fn main() {
     let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
     window.set_title("latency client");
     window.set_app_id(app_id);
-    // Only the largest size, never a smallest: a desk reads a client that pins both to one value as
+    // Only the largest size, never a smallest: a shell reads a client that pins both to one value as
     // a dialog and floats it over its parent instead of giving it a tab, and a benchmark needs the
     // same tab on every session.
     window.set_max_size(Some((WINDOW_W, WINDOW_H)));

@@ -98,14 +98,14 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
         .set("XDG_STATE_HOME", home.path().join("state"));
 
     // Someone else is here: kept on screen with nobody to show, the roster waits away from the
-    // desk, and there is no panel of it whose Put back in the bar a pointer could press.
+    // shell, and there is no panel of it whose Put back in the bar a pointer could press.
     let here = WorkspaceId::new();
-    let mut desk = Workspace::new(here, "Desk");
-    desk.member_here(Member::keyed("ada", "Ada"));
-    let (_desk, handle) = DesktopSurface::new(
+    let mut session = Workspace::new(here, "Session");
+    session.member_here(Member::keyed("ada", "Ada"));
+    let (_shell, handle) = DesktopSurface::new(
         Layout {
-            active: desk.id(),
-            workspaces: vec![desk],
+            active: session.id(),
+            workspaces: vec![session],
             ..Layout::default()
         },
         7,
@@ -142,12 +142,12 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
     settle(&mut frame);
     assert!(
         people.borrow().shown.borrow().pinned.is_none(),
-        "the press on Put back in the bar, where it is said to stand, took it off the desk"
+        "the press on Put back in the bar, where it is said to stand, took it off the session"
     );
 }
 
 /// The roster lists whoever the bar's faces are drawn from: on a page, an agent's run the
-/// workspace's host speaks for is heard on a track of its own and is in the desk's member rows
+/// workspace's host speaks for is heard on a track of its own and is in the shell's member rows
 /// only as the page writes them in, and the roster lists it with its Follow.
 #[test]
 fn the_roster_lists_who_the_bar_shows() {
@@ -189,8 +189,8 @@ fn a_face_pressed_again_brings_everyone_here() {
     assert!(people.borrow().is_open());
 }
 
-/// Kept on screen on a phone, the roster stands centred across the desk with equal gutters, inside
-/// it, whichever side edge it was kept at; on a wide desk it keeps to its edge.
+/// Kept on screen on a phone, the roster stands centred across the shell with equal gutters, inside
+/// it, whichever side edge it was kept at; on a wide shell it keeps to its edge.
 #[test]
 fn the_pinned_roster_is_centred_on_a_phone() {
     let theme = Theme::light();
@@ -202,7 +202,7 @@ fn the_pinned_roster_is_centred_on_a_phone() {
         let (left, right) = (pin.panel.x0, 390.0 - pin.panel.x1);
         assert!(
             (left - right).abs() < 1.0 && left >= 0.0,
-            "kept at {edge:?} on a phone, the roster stands centred inside the desk: {:?}",
+            "kept at {edge:?} on a phone, the roster stands centred inside the session: {:?}",
             pin.panel
         );
     }
@@ -211,24 +211,24 @@ fn the_pinned_roster_is_centred_on_a_phone() {
     Panel::place_pinned(&mut pin, Rect::new(0.0, 0.0, 1280.0, 800.0), &theme, now);
     assert!(
         pin.panel.x1 > 1200.0,
-        "on a wide desk it keeps to its edge: {:?}",
+        "on a wide session it keeps to its edge: {:?}",
         pin.panel
     );
 }
 
-/// A desk whose page writes an agent in as here, as it does for the bar, and its roster's layer.
+/// A shell whose page writes an agent in as here, as it does for the bar, and its roster's layer.
 fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
     agent_here_at((1280, 800))
 }
 
-/// [`agent_here`] on a desk `size` large.
+/// [`agent_here`] on a shell `size` large.
 fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
     let here = WorkspaceId::new();
-    let desk = Workspace::new(here, "Desk");
-    let (_desk, handle) = DesktopSurface::new(
+    let session = Workspace::new(here, "Session");
+    let (_shell, handle) = DesktopSurface::new(
         Layout {
-            active: desk.id(),
-            workspaces: vec![desk],
+            active: session.id(),
+            workspaces: vec![session],
             ..Layout::default()
         },
         7,
@@ -280,10 +280,10 @@ fn labels(frame: &ui::headless::FrameHarness) -> Vec<String> {
 }
 
 /// Kept on screen, the roster answers only where it stands: a press or a move away from it is the
-/// desk's. A page draws the roster's layer over its whole desk, so a roster that claimed every
+/// shell's. A page draws the roster's layer over its whole shell, so a roster that claimed every
 /// press there took the window's own controls under it (its Maximize did nothing).
 #[test]
-fn the_kept_roster_leaves_the_desk_its_presses() {
+fn the_kept_roster_leaves_the_shell_its_presses() {
     let _settled = ui::motion::testing::settled();
     let home = tempfile::tempdir().expect("a directory for the settings");
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -312,11 +312,11 @@ fn the_kept_roster_leaves_the_desk_its_presses() {
 
     assert!(
         !frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(away.x, away.y)),
-        "the pointer moving over the desk is the desk's"
+        "the pointer moving over the session is the session's"
     );
     assert!(
         !frame.dispatch_to_root(&ui::synthetic_input::mouse_press()),
-        "a press on the desk is the desk's"
+        "a press on the session is the session's"
     );
     assert!(!frame.dispatch_to_root(&ui::synthetic_input::mouse_release()));
     settle(&mut frame);
@@ -332,7 +332,7 @@ fn the_kept_roster_leaves_the_desk_its_presses() {
     );
 }
 
-/// On a phone the roster is a sheet at the desk's foot, between equal gutters, that a press above
+/// On a phone the roster is a sheet at the shell's foot, between equal gutters, that a press above
 /// it puts away: it is never kept on screen, where it would cover the note or a card's runs.
 #[test]
 fn a_phones_roster_is_a_sheet_that_a_press_above_puts_away() {
@@ -361,7 +361,7 @@ fn a_phones_roster_is_a_sheet_that_a_press_above_puts_away() {
     );
     assert!(
         panel.y1 > 844.0 - 40.0 && panel.y0 > 400.0,
-        "the sheet stands at the desk's foot: {panel:?}"
+        "the sheet stands at the session's foot: {panel:?}"
     );
 
     frame.click_at(195.0, panel.y0 - 80.0);

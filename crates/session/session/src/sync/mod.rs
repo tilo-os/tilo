@@ -37,7 +37,7 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
 );
 
 /// A workspace this session is joining: the way this device comes into it (the workspace's door,
-/// or an invitation that admits it), and the workspace on the desk made for it, which is where what
+/// or an invitation that admits it), and the workspace on the shell made for it, which is where what
 /// the workspace holds arrives.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
@@ -69,7 +69,7 @@ pub struct Entering {
     pub name: String,
     /// Where the device hosting it is reached, as its host signed it.
     pub host: tilo_peer_state::join::TransportHint,
-    /// Already on this desk, held as the device this machine was copied
+    /// Already on this session, held as the device this machine was copied
     /// from: an entry that does not land leaves it where it is.
     pub held: bool,
 }

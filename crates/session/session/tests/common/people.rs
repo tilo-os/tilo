@@ -7,7 +7,7 @@
 //! under ([`Person`]); each of their devices is a key and a certificate the
 //! root signed ([`Person::device`]). Every device runs a session process of its
 //! own, with its own home, its own identity root and its own state, as a
-//! device on someone's desk does.
+//! device on someone's shell does.
 //!
 //! A workspace lives at a site ([`Site`]): a relay of this machine that
 //! governs it, hosts it for the people in it, admits people at the door it
@@ -20,7 +20,7 @@
 //! admission a workspace decides.
 //!
 //! What a session shows and does is read and driven through the control socket
-//! it opens ([`Device::ask`]): [`Device::state`] is the desk as it is now,
+//! it opens ([`Device::ask`]): [`Device::state`] is the shell as it is now,
 //! [`Device::held`] the workspaces it keeps, [`Device::open`] an app the
 //! device has installed, and [`Device::act`] any action the session
 //! publishes.
@@ -381,14 +381,14 @@ impl Site {
     }
 
     /// The workspace's shared desktop as the site keeps it now: its strips and windows, or nothing
-    /// while the workspace holds no desk of its own.
+    /// while the workspace holds no shell of its own.
     pub fn desktop(&self) -> Option<tilo_desktop_model::Layout> {
         let bytes = self.record(
             tilo_desktop_model::ownership::DESKTOP_APP,
             tilo_desktop_model::ownership::DESKTOP_RECORD,
         )?;
         let document = automerge::AutoCommit::load(&bytes).ok()?;
-        tilo_desktop_model::shared_record::read(&document, None).map(|desk| desk.tree)
+        tilo_desktop_model::shared_record::read(&document, None).map(|shell| shell.tree)
     }
 
     /// The verdicts the workspace holds on writes, as the site keeps them
@@ -433,7 +433,7 @@ impl std::fmt::Display for Held<'_> {
     }
 }
 
-/// How many windows the workspace's shared desk holds, as the site keeps it.
+/// How many windows the workspace's shared shell holds, as the site keeps it.
 pub fn windows(site: &Site) -> usize {
     titles_at(site).len()
 }
@@ -443,8 +443,8 @@ fn holds_workspace(device: &Device, site: &Site) -> bool {
     device.held().contains(&site.workspace)
 }
 
-/// Bring the workspace `site` serves to the front on `device`'s desk, so an app it opens is a
-/// window of that workspace's shared desk.
+/// Bring the workspace `site` serves to the front on `device`'s shell, so an app it opens is a
+/// window of that workspace's shared shell.
 pub fn show(device: &Device, site: &Site) {
     tilo_test_env::wait_until(format!("{} holds the workspace", device.label), || {
         holds_workspace(device, site)
@@ -463,13 +463,13 @@ pub fn show(device: &Device, site: &Site) {
     );
 }
 
-/// The window titles `device` shows on the workspace `site` serves: the shared desk it reads out of
+/// The window titles `device` shows on the workspace `site` serves: the shared shell it reads out of
 /// the workspace.
 pub fn titles_on(device: &Device, site: &Site) -> Vec<String> {
     let state = device.state();
     let tree: tilo_desktop_model::Layout =
         serde_json::from_value(state["state"]["workspace_tree"].clone()).unwrap_or_else(|error| {
-            panic!("{}'s desk does not read: {error}\n{state}", device.label)
+            panic!("{}'s shell does not read: {error}\n{state}", device.label)
         });
     let mut titles: Vec<String> = tree
         .workspaces
@@ -484,10 +484,10 @@ pub fn titles_on(device: &Device, site: &Site) -> Vec<String> {
     titles
 }
 
-/// The window titles the site keeps on the workspace's shared desk.
+/// The window titles the site keeps on the workspace's shared shell.
 pub fn titles_at(site: &Site) -> Vec<String> {
-    site.desktop().map_or_else(Vec::new, |desk| {
-        let mut titles: Vec<String> = desk
+    site.desktop().map_or_else(Vec::new, |shell| {
+        let mut titles: Vec<String> = shell
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
@@ -500,7 +500,7 @@ pub fn titles_at(site: &Site) -> Vec<String> {
     })
 }
 
-/// Wait until the site keeps a window titled `title` on the workspace's desk and every device in
+/// Wait until the site keeps a window titled `title` on the workspace's shell and every device in
 /// `devices` shows it: a record a device wrote, read where it has to arrive.
 pub fn wait_shown(site: &Site, devices: &[&Device], title: &str) {
     waited(
@@ -551,7 +551,7 @@ impl std::fmt::Display for Watched<'_> {
                 device.label,
                 titles_on(device, self.site),
                 device.showing(),
-                device.on_desk(),
+                device.on_shell(),
                 device.diagnostic()
             )?;
         }
@@ -560,7 +560,7 @@ impl std::fmt::Display for Watched<'_> {
 }
 
 /// Two people in one workspace Ada's site hosts, both editors, each at a device of their own: the
-/// site lets its desk author the workspace's records, as a workspace's host does before its people
+/// site lets its shell author the workspace's records, as a workspace's host does before its people
 /// open windows there.
 pub fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
     two_people_at_a_site_carrying(&[], |_| {})
@@ -604,10 +604,10 @@ fn site_carrying(_apps: &[&str], install: &impl Fn(&Device)) -> (Site, Person, P
     (site, ada, bob, ada_laptop)
 }
 
-/// The invitation `device`'s session hands out for the workspace it holds, made by the desk's own
+/// The invitation `device`'s session hands out for the workspace it holds, made by the shell's own
 /// action at `role` for `person`: what an app shares, and what only `person`'s devices redeem.
 pub fn shared_invitation(device: &Device, role: &str, person: [u8; 32]) -> Invitation {
-    let answer = desk_answer(
+    let answer = shell_answer(
         device,
         &json!({"role": role, "recipient": hex::encode(person)}),
     );
@@ -625,9 +625,9 @@ pub fn shared_invitation(device: &Device, role: &str, person: [u8; 32]) -> Invit
         .to_owned()
 }
 
-/// The answer `device`'s desk gives when asked to hand out an invitation into the workspace it
+/// The answer `device`'s shell gives when asked to hand out an invitation into the workspace it
 /// shows, as the app sharing what is on screen asks it.
-pub fn desk_answer(device: &Device, args: &serde_json::Value) -> serde_json::Value {
+pub fn shell_answer(device: &Device, args: &serde_json::Value) -> serde_json::Value {
     device.act_wait(
         tilo_actions::remote::session_actions::PROVIDER,
         &format!(
@@ -1121,7 +1121,7 @@ pub struct Device {
 }
 
 impl Device {
-    /// Start this device's session without joining anything: a session on someone's desk before
+    /// Start this device's session without joining anything: a session on someone's shell before
     /// they join a workspace.
     pub fn start(&mut self) {
         self.spawn(None);
@@ -1283,7 +1283,7 @@ impl Device {
             .args([
                 "--backend",
                 "headless",
-                // The person's desk, with the shell that shows it: what a device's session mounts
+                // The person's shell, with the shell that shows it: what a device's session mounts
                 // and what [`Device::open`] opens into.
                 "--shell",
                 "screen",
@@ -1305,7 +1305,7 @@ impl Device {
             // This device's files daemon serves beside the session in its own runtime directory,
             // where the session finds the daemon's link to the network (`fs::net`).
             .env("TILO_FS_BLOB_SOCKET", root.join("runtime/fs-blobs.sock"))
-            // The apps installed on this device: what its desk opens, and what it starts them from.
+            // The apps installed on this device: what its shell opens, and what it starts them from.
             .env("TILO_APPS_DATA_DIR", root.join("data/tilo-apps"))
             // This device keeps the channel keys of the workspaces it is in here, as a machine with
             // no keychain does: without them it holds a workspace it cannot read or reach its
@@ -1319,7 +1319,7 @@ impl Device {
                 "RUST_LOG",
                 SESSION_LOG.get().map_or(
                     "info,tilo_peer_state::direct=debug,tilo_peer_state::join_transport=debug,\
-                     tilo_session::shared_desktop=debug,tilo_network_actor::native_ingress=debug,\
+                     tilo_session::layout=debug,tilo_network_actor::native_ingress=debug,\
                      tilo_peer_state::owner::publication=debug,tilo_session_client::custody=debug",
                     String::as_str,
                 ),
@@ -1384,8 +1384,8 @@ impl Device {
     pub fn ask(&self, request: &Value) -> Value {
         let mut stream = UnixStream::connect(&self.control)
             .unwrap_or_else(|error| panic!("{}'s control socket: {error}", self.label));
-        // A request that asks the desk to hold its answer (`wait_ms`) is answered when what it
-        // waits for happens: the read outlives that wait by the suite's hang bound, so a desk still
+        // A request that asks the shell to hold its answer (`wait_ms`) is answered when what it
+        // waits for happens: the read outlives that wait by the suite's hang bound, so a shell still
         // waiting for a change is waited for rather than reported as one that did not answer.
         let held = request
             .get("wait_ms")
@@ -1414,7 +1414,7 @@ impl Device {
         })
     }
 
-    /// The desk as this device shows it now: the tree, the workspaces its engine holds, its agents
+    /// The shell as this device shows it now: the tree, the workspaces its engine holds, its agents
     /// and its chrome.
     pub fn state(&self) -> Value {
         self.ask(&json!({"op": "state_dump"}))
@@ -1459,7 +1459,7 @@ impl Device {
         }
     }
 
-    /// The workspace in front on this device's desk, by id: what the door opens an app into.
+    /// The workspace in front on this device, by id: what the door opens an app into.
     pub fn showing(&self) -> Option<String> {
         let tree = &self.state()["state"]["workspace_tree"];
         let active = tree["active"].as_str()?;
@@ -1470,9 +1470,9 @@ impl Device {
             .then(|| active.to_owned())
     }
 
-    /// The workspaces on this device's desk, by id, in the desk's order: the ones it made, the ones
+    /// The workspaces on this device, by id, in the shell's order: the ones it made, the ones
     /// it joined and the ones the person's list brought from their other devices.
-    pub fn on_desk(&self) -> Vec<String> {
+    pub fn on_shell(&self) -> Vec<String> {
         self.state()["state"]["workspace_tree"]["workspaces"]
             .as_array()
             .map(|workspaces| {
@@ -1485,7 +1485,7 @@ impl Device {
     }
 
     /// What this device's session logged of the workspaces it joined and entered, oldest first:
-    /// which of them arrived on its desk, and when.
+    /// which of them arrived on its shell, and when.
     pub fn join_flow(&self) -> String {
         self.log()
             .lines()
@@ -1560,8 +1560,8 @@ impl Device {
         });
     }
 
-    /// Wait until the desk shows the workspace `workspace` in front: a person who joins a workspace
-    /// lands in it, so the door opens apps into it rather than into the desk they were on.
+    /// Wait until the shell shows the workspace `workspace` in front: a person who joins a workspace
+    /// lands in it, so the door opens apps into it rather than into the shell they were on.
     pub fn wait_showing(&self, workspace: &str) {
         let deadline = Instant::now()
             .checked_add(joined_within())
@@ -1705,13 +1705,13 @@ impl Device {
         self.ask(&json!({"op": "actions_enumerate"}))
     }
 
-    /// Map a window of `app` called `title` on this device's desk, as an app starting its own
+    /// Map a window of `app` called `title` on this device, as an app starting its own
     /// window does: a window of the workspace it shows, kept up while the returned value lives.
     pub fn window(&self, app: &str, title: &str) -> super::window::Client {
         super::window::Client::open(self.directory(), app, title)
     }
 
-    /// Open the installed app `app` on this device's desk, as a person starting it does: what an
+    /// Open the installed app `app` on this device, as a person starting it does: what an
     /// installed desktop opens from its applications list.
     pub fn open(&self, app: &str) {
         let answer = self.act("applications", app, &json!({}));
@@ -1799,12 +1799,12 @@ impl Device {
         );
     }
 
-    /// Wait until a window of the app `app` is open on this device's desk.
+    /// Wait until a window of the app `app` is open on this device.
     ///
     /// An app that started and stopped before its window came is not one to wait longer for: the
     /// wait ends with what the session logged of it, which is where a sandbox that could not start
     /// (or a launcher that refused) says why. Waiting out the hang bound instead would report a
-    /// picture of the desk and nothing about the launch.
+    /// picture of the shell and nothing about the launch.
     pub fn wait_for_window(&self, app: &str) {
         let already_logged = self.log().lines().count();
         let ended = tilo_test_env::wait_for(NoWindow { device: self, app }, || {
@@ -1818,7 +1818,7 @@ impl Device {
         }
     }
 
-    /// Whether this device's desk shows a window of `app` .
+    /// Whether this device shows a window of `app` .
     fn shows_window(&self, app: &str) -> bool {
         self.ask(&json!({"op": "windows"}))["answer"]["windows"]
             .as_array()
@@ -1843,7 +1843,7 @@ impl Device {
     }
 }
 
-/// A device whose desk still shows no `app` window, named on the wait that found it short: what it
+/// A device whose shell still shows no `app` window, named on the wait that found it short: what it
 /// shows, and what its session and its apps said.
 struct NoWindow<'a> {
     device: &'a Device,

@@ -481,7 +481,7 @@ impl NearbyTransfer {
         Ok(Arc::new(Self { inner }))
     }
 
-    /// The workspaces' grants are read from the desk `authority` decides against.
+    /// The workspaces' grants are read from the session `authority` decides against.
     pub(crate) fn attach_authority(&self, authority: Arc<dyn WorkspaceAuthority>) {
         *self.inner.authority.lock_recover() = Some(authority);
     }
@@ -2304,22 +2304,22 @@ mod transfers_between_devices {
         continuity
     }
 
-    /// The desk this device decides against: one workspace, whose Files grant is `folder` .
-    struct Desk {
+    /// The session this device decides against: one workspace, whose Files grant is `folder` .
+    struct Session {
         tree: Layout,
     }
 
-    impl tilo_broker_core::services::WorkspaceAuthority for Desk {
+    impl tilo_broker_core::services::WorkspaceAuthority for Session {
         fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
             read(&self.tree);
             Ok(())
         }
     }
 
-    /// The desk of a device whose Files may read and write `folder` .
-    fn desk(folder: &Path) -> Desk {
+    /// The session of a device whose Files may read and write `folder` .
+    fn session(folder: &Path) -> Session {
         let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-        let mut workspace = Workspace::new(workspace_id, "Desk");
+        let mut workspace = Workspace::new(workspace_id, "Session");
         workspace.grant_app(
             "ada",
             FILES_APP_ID,
@@ -2329,7 +2329,7 @@ mod transfers_between_devices {
                 scope: GRANT_SESSION,
             },
         );
-        Desk {
+        Session {
             tree: Layout {
                 workspaces: vec![workspace],
                 active: workspace_id,
@@ -2380,7 +2380,7 @@ mod transfers_between_devices {
             Arc::new(|| {}),
         )
         .expect("a transfer engine");
-        nearby.attach_authority(Arc::new(desk(folder)));
+        nearby.attach_authority(Arc::new(session(folder)));
         client.attach_nearby(Arc::clone(&nearby));
         let app = NearbyTransferRequestContext::for_test(
             peer_id,
@@ -2434,9 +2434,9 @@ mod transfers_between_devices {
     fn files_sends_a_file_from_one_device_and_the_other_receives_it_whole() {
         let person = person();
         let laptop_folder = tempfile::tempdir().expect("the laptop's files");
-        let desk_folder = tempfile::tempdir().expect("the desk's files");
+        let shell_folder = tempfile::tempdir().expect("the session's files");
         let laptop_spool = tempfile::tempdir().expect("the laptop's spool");
-        let desk_spool = tempfile::tempdir().expect("the desk's spool");
+        let shell_spool = tempfile::tempdir().expect("the session's spool");
         // More than one chunk of the transport's, so the bytes really move.
         let bytes: Vec<u8> = (0..700_000_u32).map(|index| (index % 251) as u8).collect();
         let note = laptop_folder.path().join(NAME);
@@ -2449,36 +2449,36 @@ mod transfers_between_devices {
             laptop_spool.path(),
             11,
         );
-        let desk = device(
+        let session = device(
             &person,
             2,
-            "Desk",
-            desk_folder.path(),
-            desk_spool.path(),
+            "Session",
+            shell_folder.path(),
+            shell_spool.path(),
             12,
         );
-        laptop.client.connect(desk.client.endpoint_addr());
+        laptop.client.connect(session.client.endpoint_addr());
 
         assert!(
-            until(&[&laptop, &desk], || {
-                laptop.fabric().online_device_ids().contains(&desk.id)
-                    && desk.fabric().online_device_ids().contains(&laptop.id)
+            until(&[&laptop, &session], || {
+                laptop.fabric().online_device_ids().contains(&session.id)
+                    && session.fabric().online_device_ids().contains(&laptop.id)
             }),
             "the two devices' sessions came up"
         );
 
-        // Files on the laptop lists the desk, and the desk's own folder as where a file it receives
+        // Files on the laptop lists the session, and the session's own folder as where a file it receives
         // would land.
         let targets = laptop.snapshot().targets;
         let target = targets
             .iter()
-            .find(|target| target.label == "Desk")
-            .expect("the desk is a device Files may send to")
+            .find(|target| target.label == "Session")
+            .expect("the session is a device Files may send to")
             .handle;
-        let offered = desk.snapshot().destinations;
+        let offered = session.snapshot().destinations;
         let destination: NearbyTransferDestination = offered
             .first()
-            .expect("the desk's Files has a folder to receive into")
+            .expect("the session's Files has a folder to receive into")
             .clone();
 
         let reply = laptop.command(NearbyTransferCommand::Send {
@@ -2490,18 +2490,18 @@ mod transfers_between_devices {
             "the laptop takes the file to send: {reply:?}"
         );
 
-        // The desk's Files is asked, naming the file and nothing of its path.
-        let ask = until(&[&laptop, &desk], || {
-            listed(&desk.snapshot(), NAME).is_some_and(|status| {
+        // The session's Files is asked, naming the file and nothing of its path.
+        let ask = until(&[&laptop, &session], || {
+            listed(&session.snapshot(), NAME).is_some_and(|status| {
                 status.direction == runtime_collab::NearbyTransferDirection::Receiving
                     && status.phase == NearbyTransferPhase::AwaitingConsent
                     && status.total_bytes == bytes.len() as u64
             })
         });
-        assert!(ask, "the desk's Files is asked to take the file");
-        let asked = listed(&desk.snapshot(), NAME).expect("the offer the desk lists");
+        assert!(ask, "the session's Files is asked to take the file");
+        let asked = listed(&session.snapshot(), NAME).expect("the offer the session lists");
 
-        let reply = desk.command(NearbyTransferCommand::Decide {
+        let reply = session.command(NearbyTransferCommand::Decide {
             handle: asked.handle,
             accept: true,
             destination: Some(destination.handle),
@@ -2510,27 +2510,27 @@ mod transfers_between_devices {
         assert_eq!(
             reply,
             NearbyTransferReply::Accepted,
-            "the desk takes the file into its folder"
+            "the session takes the file into its folder"
         );
 
-        let landed = desk_folder.path().join(NAME);
+        let landed = shell_folder.path().join(NAME);
         assert!(
-            until(&[&laptop, &desk], || landed.is_file()),
-            "the file landed on the desk"
+            until(&[&laptop, &session], || landed.is_file()),
+            "the file landed on the session"
         );
         assert_eq!(
             std::fs::read(&landed).expect("the received file"),
             bytes,
-            "what the desk holds is what the laptop sent, byte for byte"
+            "what the session holds is what the laptop sent, byte for byte"
         );
 
         // Both Files lists say the transfer is done, each from its own side.
-        let done = until(&[&laptop, &desk], || {
+        let done = until(&[&laptop, &session], || {
             let sent = listed(&laptop.snapshot(), NAME).is_some_and(|status| {
                 status.direction == runtime_collab::NearbyTransferDirection::Sending
                     && status.phase == NearbyTransferPhase::Completed
             });
-            let received = listed(&desk.snapshot(), NAME).is_some_and(|status| {
+            let received = listed(&session.snapshot(), NAME).is_some_and(|status| {
                 status.direction == runtime_collab::NearbyTransferDirection::Receiving
                     && status.phase == NearbyTransferPhase::Completed
             });

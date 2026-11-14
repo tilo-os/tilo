@@ -23,7 +23,7 @@ use tilo_render_protocol::channel::Channel;
 use tilo_render_service::RENDER_NODE_ENV;
 use tilo_render_service::broker::{BROKER_FD_ENV, FromService, MODE, ToService};
 
-use crate::plane::DeskAuthority;
+use crate::plane::LayoutAuthority;
 
 /// The service name of the person's private workspaces.
 pub(crate) const PRIVATE: &str = "private";
@@ -98,7 +98,7 @@ struct Live {
 }
 
 struct Inner {
-    desk: Option<Arc<DeskAuthority>>,
+    shell: Option<Arc<LayoutAuthority>>,
     person: String,
     /// The render node of the GPU the compositor composites on, as the session reads it once the
     /// backend is up: what every service opens.
@@ -108,7 +108,7 @@ struct Inner {
     crashes: Mutex<HashMap<String, Crashes>>,
     live: Mutex<HashMap<u64, Live>>,
     next_connection: AtomicU64,
-    /// The desk generation the live channels' keys were last checked at.
+    /// The shell generation the live channels' keys were last checked at.
     checked: AtomicU64,
 }
 
@@ -133,7 +133,7 @@ impl Broker {
         reason = "session helper: the broker accepts and serves on its own threads"
     )]
     pub(crate) fn start(
-        desk: Option<Arc<DeskAuthority>>,
+        shell: Option<Arc<LayoutAuthority>>,
         person: String,
         node: Option<PathBuf>,
     ) -> Result<Self, String> {
@@ -148,9 +148,9 @@ impl Broker {
             .map_err(|error| format!("bind render broker {}: {error}", path.display()))?;
         let exe = std::env::current_exe()
             .map_err(|error| format!("render broker: the session's own binary: {error}"))?;
-        let generation = desk.as_ref().map_or(0, |desk| desk.generation());
+        let generation = shell.as_ref().map_or(0, |shell| shell.generation());
         let inner = Arc::new(Inner {
-            desk,
+            shell,
             person,
             node,
             exe,
@@ -203,13 +203,17 @@ impl Broker {
     }
 
     /// Move apps whose workspace changed hands between private and shared to the right service.
-    /// Cheap when the desk did not change: call every pass.
+    /// Cheap when the shell did not change: call every pass.
     pub(crate) fn sync_workspaces(&self) {
-        let generation = self.inner.desk.as_ref().map_or(0, |desk| desk.generation());
+        let generation = self
+            .inner
+            .shell
+            .as_ref()
+            .map_or(0, |shell| shell.generation());
         if self.inner.checked.swap(generation, Ordering::AcqRel) == generation {
             return;
         }
-        let Some(desk) = &self.inner.desk else {
+        let Some(shell) = &self.inner.shell else {
             return;
         };
         let mut moved = Vec::new();
@@ -220,7 +224,7 @@ impl Broker {
                 let mut read = |tree: &tilo_desktop_model::Layout| {
                     key = render_key(tree, &self.inner.person, channel.workspace.as_deref());
                 };
-                let _ = desk.with_tree(&mut read);
+                let _ = shell.with_tree(&mut read);
                 if key == channel.key {
                     return true;
                 }
@@ -290,11 +294,11 @@ impl Inner {
     /// A channel to the service of the app's workspace.
     fn connect(self: &Arc<Self>, handshake: &wire::Handshake) -> Result<(u64, Channel), String> {
         let mut key = PRIVATE.to_owned();
-        if let Some(desk) = &self.desk {
+        if let Some(shell) = &self.shell {
             let mut read = |tree: &tilo_desktop_model::Layout| {
                 key = render_key(tree, &self.person, handshake.workspace_id.as_deref());
             };
-            let _ = desk.with_tree(&mut read);
+            let _ = shell.with_tree(&mut read);
         }
         let service = self.service(&key)?;
         let (app, theirs) = Channel::pair().map_err(|error| error.to_string())?;

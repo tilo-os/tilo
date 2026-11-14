@@ -1,10 +1,10 @@
-//! The cards the desk's apps present over it: the place the desk gives each
+//! The cards the shell's apps present over it: the place the shell gives each
 //! one, and the input and reading that follow from that place.
 //!
-//! A host with a compositor hands an app's card a window of its own. The desk
+//! A host with a compositor hands an app's card a window of its own. The shell
 //! has one window, so it draws the card itself, at the place its floating
 //! column gives it, and hands the app the events and the reading that follow
-//! from there. The app draws the card either way: the desk only decides where
+//! from there. The app draws the card either way: the shell only decides where
 //! it stands and carries what the app paints there.
 
 use ui::floating_layer::{Card, Corner, Placement};
@@ -19,9 +19,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
 use winit::event::WindowEvent;
 
-use super::DeskLayer;
+use super::BackgroundLayer;
 
-/// One card an app presents over the desk.
+/// One card an app presents over the shell.
 struct Shown {
     /// The presentation's id, as the app names it.
     id: String,
@@ -30,29 +30,29 @@ struct Shown {
     /// The size the app asked the card's body to be.
     size: Size,
     /// Where the app's content stood in its own window when it asked: what
-    /// turns the app's pointer coordinates into the desk's.
+    /// turns the app's pointer coordinates into the shell's.
     local: Point,
     /// The frame around the body that the app does not draw: its shadow
     /// margin.
     margins: Size,
-    /// The card's body and its frame, in the desk's coordinates.
+    /// The card's body and its frame, in the shell's coordinates.
     body: Rect,
     window: Rect,
     /// The body the app was last told it stands at, so it is told once.
     told: Option<Rect>,
 }
 
-/// What the desk shows over its windows, and the asks it has not placed yet.
+/// What the shell shows over its windows, and the asks it has not placed yet.
 #[derive(Default)]
 pub struct Cards {
     shown: Vec<Shown>,
-    /// The requests that arrived before the desk knew its area: the frame
+    /// The requests that arrived before the shell knew its area: the frame
     /// after the first layout places them.
     asked: Vec<FloatingSurfaceRequest>,
 }
 
 impl Shown {
-    /// The card `request` asks the desk to stand.
+    /// The card `request` asks the shell to stand.
     fn of(request: &FloatingSurfaceRequest) -> Self {
         let (size, margins) = ask(request);
         let local = match &request.source {
@@ -98,9 +98,9 @@ fn ask(request: &FloatingSurfaceRequest) -> (Size, Size) {
     )
 }
 
-/// Stand each card `cards` holds at the place the desk's floating column
+/// Stand each card `cards` holds at the place the shell's floating column
 /// gives it, and tell the app that draws a card where it went. Says whether
-/// the desk told an app of a moved card.
+/// the shell told an app of a moved card.
 fn stand(cards: &mut Cards, surface: &mut dyn Widget, work: Rect, bar: Rect) -> bool {
     let mut told = false;
     let column: Vec<Card> = cards.shown.iter().map(Shown::card).collect();
@@ -141,18 +141,18 @@ fn stand(cards: &mut Cards, surface: &mut dyn Widget, work: Rect, bar: Rect) -> 
     told
 }
 
-impl DeskLayer {
-    /// The area the windows stand in, under the bar: a card the desk places
+impl BackgroundLayer {
+    /// The area the windows stand in, under the bar: a card the shell places
     /// stands inside it.
     #[must_use]
     pub fn area_rect(&self) -> Rect {
         self.area.get_rect()
     }
 
-    /// Stand each card where the desk's floating column puts it, tell the app
+    /// Stand each card where the shell's floating column puts it, tell the app
     /// what it did, and drop the cards the app no longer presents. Once a
     /// frame, after the surface updated and before it draws. Says whether the
-    /// desk's cards changed, so a frame that moved one is drawn.
+    /// shell's cards changed, so a frame that moved one is drawn.
     pub fn follow_cards(&mut self) -> bool {
         let work = self.area_rect();
         if work.width() <= 1.0 || work.height() <= 1.0 {
@@ -192,7 +192,7 @@ impl DeskLayer {
         stand(&mut self.cards, surface, work, bar) || moved
     }
 
-    /// Draw the cards the desk stands over its windows, by the apps that own
+    /// Draw the cards the shell stands over its windows, by the apps that own
     /// them, once the surface has drawn.
     pub fn draw_cards(
         &mut self,
@@ -210,7 +210,7 @@ impl DeskLayer {
         }
     }
 
-    /// The card under `at`, in the desk's coordinates: what takes the press
+    /// The card under `at`, in the shell's coordinates: what takes the press
     /// before the windows under it do.
     fn card_under(&self, at: Point) -> Option<String> {
         self.cards
@@ -221,12 +221,12 @@ impl DeskLayer {
             .map(|shown| shown.id.clone())
     }
 
-    /// Deliver one input event aimed at the card `id`, in the desk's
+    /// Deliver one input event aimed at the card `id`, in the shell's
     /// coordinates, to the app that draws it. Answers whether the card took
     /// it.
     pub fn card_event(&mut self, id: &str, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         let path = ctx.path.clone();
-        // The desk's third layer is the area, and the area's top layer is the
+        // The shell's third layer is the area, and the area's top layer is the
         // surface: the card's input is forwarded with the node it draws at.
         let Some(area) = ctx
             .taffy
@@ -258,7 +258,7 @@ impl DeskLayer {
     }
 
     /// The cards as assistive technology reads them: each the reading and the
-    /// controls its app draws, where the desk stands it.
+    /// controls its app draws, where the shell stands it.
     #[must_use]
     pub fn cards_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
         let Some(surface) = self.area.children().pop() else {
@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     use ui::widget::TaffyTreeExt;
 
-    /// A surface with one card up, which keeps what the desk told it.
+    /// A surface with one card up, which keeps what the shell told it.
     struct CardSurface {
         told: Rc<RefCell<Vec<FloatingSurfaceHostMessage>>>,
     }
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn the_desk_stands_a_card_in_its_column_and_tells_the_app_where_it_went() {
+    fn the_shell_stands_a_card_in_its_column_and_tells_the_app_where_it_went() {
         let told = Rc::new(RefCell::new(Vec::new()));
         let mut surface = CardSurface {
             told: Rc::clone(&told),
@@ -360,7 +360,7 @@ mod tests {
         };
         assert!(
             stand(&mut cards, &mut surface, work, bar),
-            "the desk tells the app its card moved"
+            "the shell tells the app its card moved"
         );
         let body = cards.shown[0].body;
         assert_eq!(
@@ -370,7 +370,7 @@ mod tests {
         );
         assert!(
             body.x1 <= work.x1 && body.y1 <= work.y1 && body.x0 >= work.x0 && body.y0 >= work.y0,
-            "the card stands inside the desk's area: {body:?} in {work:?}"
+            "the card stands inside the shell's area: {body:?} in {work:?}"
         );
         assert!(
             body.y1 <= work.y1 - 15.0 && body.y0 > bar.y1,
@@ -395,7 +395,7 @@ mod tests {
             "the app is told the card's body and where its own content stood: {messages:?}"
         );
         drop(messages);
-        // Told once: a desk that repeats the same rect every frame would
+        // Told once: a shell that repeats the same rect every frame would
         // repaint the card's window and, on a page, every frame.
         assert!(
             !stand(&mut cards, &mut surface, work, bar),

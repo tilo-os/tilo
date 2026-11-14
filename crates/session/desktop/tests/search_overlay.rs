@@ -10,7 +10,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::support::{desk_tree, window};
+use crate::support::{layout_tree, window};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
@@ -24,14 +24,14 @@ use ui::synthetic_input::{char_key, key_press, named_key};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-/// A desk and the chrome that stands over it, as the session runs the two.
+/// A shell and the chrome that stands over it, as the session runs the two.
 struct Session {
-    desk: FrameHarness,
+    shell: FrameHarness,
     chrome: FrameHarness,
     handle: DesktopHandle,
 }
 
-/// The desk and the chrome over it, with `host` answering for what lies beyond the desk, as the
+/// The shell and the chrome over it, with `host` answering for what lies beyond the shell, as the
 /// session's own search host does.
 fn session(tree: &Layout, size: (u32, u32), host: Option<Rc<dyn SearchHost>>) -> Session {
     session_parts(tree, size, host, false)
@@ -46,8 +46,8 @@ fn session_parts(
     track_parts: bool,
 ) -> Session {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
-    desk.relayout();
+    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
+    shell.relayout();
     if let Some(host) = host {
         handle.set_search_host(host);
     }
@@ -68,17 +68,17 @@ fn session_parts(
         chrome.relayout();
     }
     Session {
-        desk,
+        shell,
         chrome,
         handle,
     }
 }
 
 impl Session {
-    /// One frame of both surfaces, in the order the compositor draws them: the desk takes up what
+    /// One frame of both surfaces, in the order the compositor draws them: the shell takes up what
     /// happened, then the chrome draws over it.
     fn frame(&mut self) {
-        self.desk.relayout();
+        self.shell.relayout();
         self.chrome.relayout();
     }
 
@@ -97,7 +97,7 @@ impl Session {
     }
 
     /// Frames until every source of the open search has answered: a source answers on a worker, and
-    /// its answer wakes the desk, so a test pumps what the wake asks for and draws the frame it
+    /// its answer wakes the shell, so a test pumps what the wake asks for and draws the frame it
     /// brings.
     fn settle_search(&mut self) {
         let background = ui::background::Background::current();
@@ -139,7 +139,7 @@ impl Session {
 /// palette's too: it takes the row and leaves search.
 #[test]
 fn typing_and_enter_reach_the_palette_not_the_window() {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let mut session = session(&tree, (1280, 800), None);
     session.frame();
     assert!(!session.handle.search_open());
@@ -158,7 +158,7 @@ fn typing_and_enter_reach_the_palette_not_the_window() {
     session.settle_search();
     let (query, rows) = session.handle.search_rows();
     assert_eq!(query, "notes", "what was typed is the palette's query");
-    assert!(!rows.is_empty(), "the desk's own window is a row");
+    assert!(!rows.is_empty(), "the shell's own window is a row");
 
     session.press(NamedKey::Enter);
     session.frame();
@@ -172,7 +172,7 @@ fn typing_and_enter_reach_the_palette_not_the_window() {
 /// click on it does, and search closes.
 #[test]
 fn an_assistive_activation_takes_the_row_it_names() {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let mut session = session(&tree, (1280, 800), None);
     session.frame();
     session.search_chord();
@@ -184,7 +184,7 @@ fn an_assistive_activation_takes_the_row_it_names() {
     session.type_text("notes");
     session.settle_search();
     let (_, rows) = session.handle.search_rows();
-    assert!(!rows.is_empty(), "the desk's own window is a row");
+    assert!(!rows.is_empty(), "the shell's own window is a row");
 
     let row = session
         .chrome
@@ -207,13 +207,13 @@ fn an_assistive_activation_takes_the_row_it_names() {
 fn the_card_follows_the_display() {
     let mut heights = Vec::new();
     for (width, height) in [(1000, 700), (1280, 800), (2000, 1200)] {
-        let tree = desk_tree();
+        let tree = layout_tree();
         let mut session = session(&tree, (width, height), Some(Rc::new(Many)));
         session.frame();
         session
             .handle
             .open_search(ui::search::Scope::Workspace, None);
-        // The desk opens it, then the chrome lays the card out on the pace it has: the frame after
+        // The shell opens it, then the chrome lays the card out on the pace it has: the frame after
         // that draws it.
         session.frame();
         session.frame();
@@ -366,7 +366,7 @@ impl SearchHost for Everywhere {
 /// a row is in. The key is the palette's, routed there by the chrome over the window.
 #[test]
 fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let host = Rc::new(Everywhere::default());
     let mut session = session(&tree, (1280, 800), Some(host.clone()));
     session.frame();
@@ -440,7 +440,7 @@ impl Presented {
 #[test]
 fn closing_search_repaints_the_whole_scrim() {
     use ui::retained_raster::Repaint;
-    let tree = desk_tree();
+    let tree = layout_tree();
     let size = (1280, 800);
     let mut session = session_parts(&tree, size, None, true);
     let mut shown = Presented::new(&session, size);
@@ -479,7 +479,7 @@ fn closing_search_repaints_the_whole_scrim() {
 #[test]
 fn typing_in_the_palette_repaints_the_card_not_the_display() {
     use ui::retained_raster::Repaint;
-    let tree = desk_tree();
+    let tree = layout_tree();
     let mut session = session_parts(&tree, (1280, 800), Some(Rc::new(Many)), true);
     session.frame();
     session.handle.open_search(Scope::Workspace, None);
@@ -515,15 +515,15 @@ fn typing_in_the_palette_repaints_the_card_not_the_display() {
     }
 }
 
-/// A search the desk is still waiting on asks for the frames that finish it, from the chrome that
+/// A search the shell is still waiting on asks for the frames that finish it, from the chrome that
 /// draws it. The palette's own rows and an application's answer arrive off the frame (a worker's
-/// answer wakes the desk; a provider's answer comes on the host's clock), and a desk with nothing
-/// else to draw presents none — so the answer is looked for on a deadline, the same one the desk
+/// answer wakes the shell; a provider's answer comes on the host's clock), and a shell with nothing
+/// else to draw presents none — so the answer is looked for on a deadline, the same one the shell
 /// keeps for its own pass. Without it the palette shows the rows it had when the person stopped
 /// typing, and Enter on an app's row comes long after the person pressed it.
 #[test]
 fn a_search_still_filling_in_asks_for_frames_before_the_bar_ticks() {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let mut session = session_parts(&tree, (1280, 800), Some(Rc::new(Many)), true);
     session.frame();
     session.search_chord();
@@ -548,8 +548,8 @@ fn a_search_still_filling_in_asks_for_frames_before_the_bar_ticks() {
     );
 }
 
-/// A desk whose shown strip holds `n` windows, all at rest.
-fn desk_tree_with(n: u64) -> Layout {
+/// A shell whose shown strip holds `n` windows, all at rest.
+fn layout_tree_with(n: u64) -> Layout {
     let groups: Vec<WindowGroup> = (0..n)
         .map(|i| {
             let tab = window(
@@ -585,7 +585,7 @@ fn desk_tree_with(n: u64) -> Layout {
 }
 
 /// A keystroke in the open palette must not rebuild the page's composition, however many windows
-/// are open. The page is one composition — the desk with its windows under the chrome that draws
+/// are open. The page is one composition — the shell with its windows under the chrome that draws
 /// the card over them, as the browser's shell stands the two in one tree. The card a person types
 /// into is a leaf whose rows are painted, not widgets mounted into that tree: a row that came or
 /// went is the card's paint, and the card's own size is re-solved in place. A frame that discarded
@@ -601,7 +601,7 @@ fn a_keystroke_in_the_palette_does_not_rebuild_the_page_with_many_windows() {
     use ui::widget::Stack;
 
     for windows in [1u64, 6, 12, 24] {
-        let tree = desk_tree_with(windows);
+        let tree = layout_tree_with(windows);
         let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
         handle.set_search_host(Rc::new(Many));
         let chrome = DesktopChrome::new(
@@ -612,7 +612,7 @@ fn a_keystroke_in_the_palette_does_not_rebuild_the_page_with_many_windows() {
             AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
             false,
         );
-        // The page's own composition: the desk under the chrome over it, one tree, so a rebuild of
+        // The page's own composition: the shell under the chrome over it, one tree, so a rebuild of
         // either discards the whole.
         let root = Stack::new().push(Box::new(surface)).push(Box::new(chrome));
         let mut page = FrameHarness::for_root(

@@ -1,6 +1,6 @@
 //! The workspace's activity: the workspaces' layout records and the records its apps keep in the
 //! store, served to the Activity app and to presence.
-//! A record is read away from the loop ([`crate::platform::records::Reading`]) and a change asks the desk for
+//! A record is read away from the loop ([`crate::platform::records::Reading`]) and a change asks the session for
 //! the frame that lists it; what this device has seen of a workspace is its own ([`HistoryMaps`]) and
 //! never reaches a shared record.
 
@@ -51,7 +51,7 @@ const VIEW_FILE: &str = "activity-history.json";
 /// The package this device's view of the activity is kept under: the session's.
 const VIEW_PACKAGE: &str = "so.tilo.session.activity";
 
-/// Seconds since the epoch, as a change of the desk names its time.
+/// Seconds since the epoch, as a change of the session names its time.
 pub(crate) fn now_seconds() -> i64 {
     ui::time::SystemTime::now()
         .duration_since(ui::time::UNIX_EPOCH)
@@ -78,14 +78,14 @@ pub trait History {
         workspace_id: WorkspaceId,
         write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
     ) -> bool;
-    /// A number that moves whenever the desk's layout does.
+    /// A number that moves whenever the session's layout does.
     fn moved(&self) -> u64;
     /// Read and write the layouts through `engine`, once this session opened it.
     fn attach_engine(&self, _engine: &std::sync::Arc<crate::engine::Engine>) {}
 }
 
 pub struct Given {
-    /// Where the desk's own history is read from and written to.
+    /// Where the session's own history is read from and written to.
     pub layouts: Box<dyn History>,
     /// Who sits here.
     pub person: String,
@@ -96,7 +96,7 @@ pub struct Given {
     pub people: People,
     pub writers: Writers,
     pub pane: Rc<dyn Pane>,
-    /// The model the desk's changes are described by, while this host answers one.
+    /// The model the session's changes are described by, while this host answers one.
     pub models: Option<Arc<dyn crate::platform::Models>>,
     /// The one stream of record changes this host feeds.
     pub changes: crate::platform::records::Changes,
@@ -108,7 +108,7 @@ pub struct Given {
 pub struct Activity(Rc<Inner>);
 
 struct Inner {
-    /// Where the desk's own history is read from and written to.
+    /// Where the session's own history is read from and written to.
     layouts: Box<dyn History>,
     /// What this device shows: the workspace in front, and the displays' partition.
     shown: DeviceState,
@@ -126,7 +126,7 @@ struct Inner {
     writers: Writers,
     /// Where the activity model's code is.
     pane: Rc<dyn Pane>,
-    /// The model the desk's changes are described by, while this host answers one.
+    /// The model the session's changes are described by, while this host answers one.
     models: Option<Arc<dyn crate::platform::Models>>,
     /// The workspaces this device holds, once the session opened them.
     #[cfg(target_os = "linux")]
@@ -152,7 +152,7 @@ struct Inner {
     /// The stream's count and the reads that landed, as the last frame saw them: a change the
     /// person has not been shown asks for the frame that shows it.
     seen: Cell<(u64, u64)>,
-    /// The desk a change the model wrote back leaves, for the next pass.
+    /// The session a change the model wrote back leaves, for the next pass.
     restored: RefCell<Option<Layout>>,
     /// The resources the person opened from the history.
     openings: RefCell<Vec<(WorkspaceId, ui::HistoryResourceTarget)>>,
@@ -167,14 +167,14 @@ struct Inner {
     /// One notice per device and reason, never one per write or per pass.
     #[cfg(target_os = "linux")]
     told_refusals: RefCell<BTreeSet<ToldRefusal>>,
-    /// What the desk's history says its changes were, as a model answered it.
+    /// What the session's history says its changes were, as a model answered it.
     describer: RefCell<Describer>,
-    /// Answers the model gave, waiting for the desk's thread to write them, each with the workspace
+    /// Answers the model gave, waiting for the session's thread to write them, each with the workspace
     /// whose layout it was asked about.
     described: Arc<Mutex<Vec<(WorkspaceId, Job, String)>>>,
     /// One request at a time keeps a long history from spending the person's provider on a burst.
     describing: Arc<AtomicBool>,
-    /// The desk's changes the describer last read, so a pass with nothing new asks nothing.
+    /// The session's changes the describer last read, so a pass with nothing new asks nothing.
     described_heads: Cell<u64>,
     /// When a model was last looked for.
     looked_for_model: Cell<Option<Instant>>,
@@ -188,7 +188,7 @@ struct Inner {
 /// How often a session with nothing new looks again for a model the person may have configured.
 const LOOK_FOR_MODEL: Duration = Duration::from_secs(30);
 
-/// Something the history reads moved: the desk draws a frame, and the loop wakes.
+/// Something the history reads moved: the session draws a frame, and the loop wakes.
 fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
     woken.store(true, Ordering::Release);
     if let Some(wake) = wake {
@@ -197,7 +197,7 @@ fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
 }
 
 impl Activity {
-    /// This session's activity: the desk under `state` , the records, the person.
+    /// This session's activity: the session under `state` , the records, the person.
     #[cfg(target_os = "linux")]
     pub(crate) fn new(
         state: Option<&std::path::Path>,
@@ -448,12 +448,12 @@ impl Activity {
     }
 
     /// Keep what `tree` shows of this device: the workspace in front and the displays' partition.
-    /// Read at `revision` of the desk, so a desk that did not move is not read.
+    /// Read at `revision` of the session, so a session that did not move is not read.
     pub fn keep_shown(&self, revision: Option<u64>, tree: impl FnOnce() -> Layout) -> bool {
         self.0.shown.keep(revision, tree)
     }
 
-    /// The workspace a change the model wrote back leaves the desk at, if one is waiting.
+    /// The workspace a change the model wrote back leaves the session at, if one is waiting.
     pub fn take_restored(&self) -> Option<Layout> {
         self.0.restored.borrow_mut().take()
     }
@@ -478,7 +478,7 @@ impl Activity {
             .and_then(|at| at.checked_add(LOOK_FOR_MODEL))
     }
 
-    /// Say what the desk's changes were when the desk moved: one request at a time, off the desk's
+    /// Say what the session's changes were when the session moved: one request at a time, off the shell's
     /// thread. Whether a layout changed.
     pub fn describe(&self, tree: &Layout) -> bool {
         let mut wrote = false;
@@ -535,7 +535,7 @@ impl Activity {
             let answer = crate::activity_models::answer(models.as_deref(), &job).await;
             answers.lock_recover().push((workspace_id, job, answer));
             describing.store(false, Ordering::Release);
-            // The desk draws a frame to write the answer where it belongs.
+            // The session draws a frame to write the answer where it belongs.
             ask_for_frame(&woken, wake.as_ref());
         };
         // A page has one thread and nothing may block on it: the answer is a task of its own turn.
@@ -885,7 +885,7 @@ impl ActivityHost for Host {
         true
     }
 
-    /// The desk's own layout is this session's to write; a record's history is its app's.
+    /// The session's own layout is this session's to write; a record's history is its app's.
     fn writable(&self, origin: &HistoryOrigin) -> bool {
         matches!(origin, HistoryOrigin::Layout)
     }
@@ -1389,8 +1389,8 @@ impl HistoryMaps {
 
 #[cfg(test)]
 mod tests {
-    //! A native session's history, as the desk serves it: the activity a person opens from its
-    //! command is the workspace's own changes, and what they restore from it reaches the desk.
+    //! A native session's history, as the session serves it: the activity a person opens from its
+    //! command is the workspace's own changes, and what they restore from it reaches the session.
 
     use super::*;
     use automerge::transaction::Transactable as _;
@@ -1460,7 +1460,7 @@ mod tests {
     use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
     use ui::widget::TileHost;
 
-    /// What a test desk's tabs say. Nothing the session would start.
+    /// What a test session's tabs say. Nothing the session would start.
     struct Tiles;
 
     impl TileSource for Tiles {
@@ -1472,13 +1472,13 @@ mod tests {
         }
     }
 
-    /// The person at this desk.
+    /// The person at this session.
     fn person() -> Caller {
         Caller::local_person("ada").in_workspace("workspace")
     }
 
     /// The workspaces as a test session keeps them: each one's layout record and its own document,
-    /// written from the desk on each frame as the person here.
+    /// written from the session on each frame as the person here.
     #[derive(Clone, Default)]
     struct Records(std::rc::Rc<RefCell<HashMap<WorkspaceId, Kept>>>);
 
@@ -1490,7 +1490,7 @@ mod tests {
 
     impl Records {
         /// Write `workspace` of `tree` into its layout record and its name into its own document,
-        /// as a pass does. What founds either is the desk restored from an earlier session, nobody's
+        /// as a pass does. What founds either is the session restored from an earlier session, nobody's
         /// change.
         fn keep(&self, workspace: &tilo_desktop_model::Workspace) {
             use tilo_desktop_model::projection::{WORKSPACE_ID_KEY, WORKSPACE_NAME_KEY};
@@ -1530,10 +1530,10 @@ mod tests {
             });
             // What arranges nothing (the record's copy of the workspace's name) is no step either.
             let id = workspace.id();
-            let was = crate::shared_desktop::arranged(&kept.layout, id);
+            let was = crate::layout::arranged(&kept.layout, id);
             let founding = kept.layout.get_heads().is_empty();
             if shared_record::write(&mut kept.layout, &layout).unwrap_or(false) {
-                let step = !founding && crate::shared_desktop::arranged(&kept.layout, id) != was;
+                let step = !founding && crate::layout::arranged(&kept.layout, id) != was;
                 commit(&mut kept.layout, !step);
             }
             let governance = &mut kept.governance;
@@ -1608,8 +1608,8 @@ mod tests {
         }
     }
 
-    /// A desk of one workspace with Notes open, its activity served as this session serves it.
-    struct Desk {
+    /// A session of one workspace with Notes open, its activity served as this session serves it.
+    struct Session {
         surface: DesktopSurface,
         handle: DesktopHandle,
         activity: Activity,
@@ -1617,12 +1617,12 @@ mod tests {
         records: Records,
     }
 
-    impl Desk {
+    impl Session {
         fn new() -> Self {
             Self::seeded(|minter, notes| seed_tree(minter, "Studio", vec![notes]))
         }
 
-        /// A desk seeded by `seed` , given its minter and the Notes window it shows.
+        /// A session seeded by `seed` , given its minter and the Notes window it shows.
         fn seeded(seed: impl FnOnce(&mut IdMinter, Tab) -> Layout) -> Self {
             let mut minter = IdMinter::new(7);
             let notes = Tab {
@@ -1661,7 +1661,7 @@ mod tests {
             }
         }
 
-        /// One pass of the desk: the desk as it stood is written into the workspaces' layouts, then
+        /// One pass of the session: the session as it stood is written into the workspaces' layouts, then
         /// what the windows asked is answered.
         fn frame(&mut self) {
             let workspaces = self.handle.read(|tree| tree.workspaces.clone());
@@ -1783,9 +1783,22 @@ mod tests {
     /// the record it changed. Each time it writes again, the history reads what it added and
     /// lists that too.
     ///
-    /// The desk is seeded in the workspace as a page in it seeds its own, and what the host
-    /// delivers is kept by the workspace's id, as a page's replica keeps it: the desk's workspace
+    /// The session is seeded in the workspace as a page in it seeds its own, and what the host
+    /// delivers is kept by the workspace's id, as a page's replica keeps it: the session's workspace
     /// is that one, so its history finds the agent's writes.
+    /// A session whose one workspace is `workspace`'s, seeded with the notebook as a page seeds
+    /// its own.
+    fn seeded(workspace: &str) -> Session {
+        Session::seeded(|minter, notes| {
+            tilo_desktop_surface::seed_tree_in(
+                minter,
+                WorkspaceId::parse(workspace).expect("a workspace id"),
+                "Workspace",
+                vec![notes],
+            )
+        })
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn an_agents_run_in_an_apps_own_record_is_listed_with_its_changes() {
@@ -1793,14 +1806,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
         let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd3";
-        let mut desk = Desk::seeded(|minter, notes| {
-            tilo_desktop_surface::seed_tree_in(
-                minter,
-                WorkspaceId::parse(workspace).expect("a workspace id"),
-                "Workspace",
-                vec![notes],
-            )
-        });
+        let mut session = seeded(workspace);
         // The notebook as a host keeps it: what the agent wrote, for the person, in its run.
         let mut notebook = ui::automerge::AutoCommit::new();
         let body = notebook
@@ -1821,8 +1827,8 @@ mod tests {
         };
         write(&mut notebook, 2);
 
-        desk.activity = Activity::over(Given {
-            layouts: Box::new(desk.records.clone()),
+        session.activity = Activity::over(Given {
+            layouts: Box::new(session.records.clone()),
             person: "ada".into(),
             store: Some(Arc::clone(&store)),
             state: None,
@@ -1834,15 +1840,17 @@ mod tests {
             changes: changes.clone(),
             wake: None,
         });
-        desk.surface
-            .set_history_source(Box::new(desk.activity.clone()));
-        desk.surface.serve_activity(desk.activity.requests());
-        desk.open_history();
+        session
+            .surface
+            .set_history_source(Box::new(session.activity.clone()));
+        session.surface.serve_activity(session.activity.requests());
+        session.open_history();
         let invocation = InvocationId::new();
         let InvokeArgument::Json(query) = wire::argument(&wire::RunsQuery::default()) else {
             panic!("the runs take a query");
         };
-        desk.activity
+        session
+            .activity
             .requests()
             .follow(&person(), invocation, wire::RUNS, query)
             .expect("the runs are followed");
@@ -1850,9 +1858,10 @@ mod tests {
         // what that read found once it landed.
         let mut runs_until = |landed: &dyn Fn(&wire::AgentRun) -> bool| -> wire::Runs {
             for _ in 0..300 {
-                desk.frame();
+                session.frame();
                 let runs: wire::Runs = serde_json::from_value(
-                    desk.activity
+                    session
+                        .activity
                         .requests()
                         .served(&invocation)
                         .expect("the runs are served")
@@ -1907,7 +1916,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
         let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd3";
-        let desk = Desk::seeded(|minter, notes| {
+        let session = Session::seeded(|minter, notes| {
             tilo_desktop_surface::seed_tree_in(
                 minter,
                 WorkspaceId::parse(workspace).expect("a workspace id"),
@@ -1945,7 +1954,7 @@ mod tests {
             changes: changes.clone(),
             wake: None,
         });
-        let tree = desk.handle.read(Clone::clone);
+        let tree = session.handle.read(Clone::clone);
         let tick = || {
             activity.own_actions(&tree, tree.active, "ada", 0);
             activity.own_changes_read()
@@ -1976,19 +1985,19 @@ mod tests {
     /// The activity opens from its command and lists the workspace's real changes.
     #[test]
     fn the_activity_pane_opens_from_its_command_and_lists_a_real_edit() {
-        let mut desk = Desk::new();
-        desk.open_history();
-        let following = desk.follow();
-        desk.frame();
+        let mut session = Session::new();
+        session.open_history();
+        let following = session.follow();
+        session.frame();
         assert_eq!(
-            desk.feed(&following).entries.len(),
+            session.feed(&following).entries.len(),
             0,
-            "the desk as it was opened is not a change"
+            "the session as it was opened is not a change"
         );
 
-        desk.rename("Plans");
-        desk.frame();
-        let feed = desk.feed(&following);
+        session.rename("Plans");
+        session.frame();
+        let feed = session.feed(&following);
         let renamed: Vec<_> = feed
             .entries
             .iter()
@@ -2015,25 +2024,25 @@ mod tests {
         );
         assert!(
             feed.mutations,
-            "the desk's own layout is the person's to undo"
+            "the session's own layout is the person's to undo"
         );
     }
 
     /// Nothing moved, so no pass asks for a frame: a change says when the model is read again.
     #[test]
     fn a_pass_with_nothing_new_asks_for_no_frame() {
-        let mut desk = Desk::new();
-        desk.open_history();
-        let _following = desk.follow();
+        let mut session = Session::new();
+        session.open_history();
+        let _following = session.follow();
         assert!(
-            desk.activity.take_woken(),
+            session.activity.take_woken(),
             "the window asking for its history asks for the frame that serves it"
         );
         for _ in 0..3 {
-            desk.frame();
+            session.frame();
         }
         assert!(
-            !desk.activity.take_woken(),
+            !session.activity.take_woken(),
             "nothing moved, so nothing asks for a frame"
         );
     }
@@ -2051,7 +2060,7 @@ mod tests {
         let mut log = UndoLog::new(&mut doc);
         let before = doc.base_heads();
         // The person opens a window: one change of the workspace's layout.
-        let tree = Desk::new();
+        let tree = Session::new();
         let opened = tree.handle.read(Clone::clone);
         let layout = tilo_desktop_model::ownership::SharedDesktop {
             tree: opened,
@@ -2099,30 +2108,30 @@ mod tests {
             .sum()
     }
 
-    /// A version restored from the history reaches the desk, as a change of it.
+    /// A version restored from the history reaches the session, as a change of it.
     #[test]
-    fn a_restore_from_the_history_writes_the_desk_back() {
-        let mut desk = Desk::new();
-        desk.open_history();
-        let following = desk.follow();
-        desk.frame();
-        let strip = |desk: &Desk| {
-            desk.handle.read(|tree| {
+    fn a_restore_from_the_history_writes_the_shell_back() {
+        let mut session = Session::new();
+        session.open_history();
+        let following = session.follow();
+        session.frame();
+        let strip = |session: &Session| {
+            session.handle.read(|tree| {
                 tree.active_workspace()
                     .and_then(|workspace| workspace.strips.first())
                     .map(|strip| strip.name.clone())
                     .unwrap_or_default()
             })
         };
-        let before: Vec<String> = desk
+        let before: Vec<String> = session
             .feed(&following)
             .entries
             .into_iter()
             .map(|entry| entry.id)
             .collect();
-        desk.name_strip("Plans");
-        desk.frame();
-        let feed = desk.feed(&following);
+        session.name_strip("Plans");
+        session.frame();
+        let feed = session.feed(&following);
         let named: Vec<_> = feed
             .entries
             .iter()
@@ -2132,32 +2141,36 @@ mod tests {
             panic!("naming the strip is one change: {:?}", feed.entries);
         };
         let plans = plans.id.clone();
-        desk.name_strip("Lounge");
-        desk.frame();
-        assert_eq!(strip(&desk), "Lounge");
+        session.name_strip("Lounge");
+        session.frame();
+        assert_eq!(strip(&session), "Lounge");
 
-        let mut restored = desk.activity.requests().act(
+        let mut restored = session.activity.requests().act(
             wire::RESTORE,
             match serde_json::json!(wire::Range::one(&plans)).as_object() {
                 Some(range) => range.clone(),
                 None => panic!("a range"),
             },
         );
-        desk.frame();
+        session.frame();
         assert!(
             matches!(restored.poll_ready(), PendingPoll::Ready(Ok(()))),
             "the history takes the restore"
         );
-        let desk_restored = desk
+        let restored = session
             .activity
             .take_restored()
-            .expect("the model writes the desk back");
-        desk.handle.replace_tree(desk_restored);
-        assert_eq!(strip(&desk), "Plans", "the desk is at the version restored");
+            .expect("the model writes the session back");
+        session.handle.replace_tree(restored);
+        assert_eq!(
+            strip(&session),
+            "Plans",
+            "the session is at the version restored"
+        );
 
-        // The restored desk is recorded like any other change of it.
-        desk.frame();
-        let feed = desk.feed(&following);
+        // The restored session is recorded like any other change of it.
+        session.frame();
+        let feed = session.feed(&following);
         assert!(
             feed.entries.len() > 2,
             "the restore is a change on top: {:?}",

@@ -32,7 +32,7 @@ const KEY_ESCAPE: u32 = 1;
 const KEY_F10: u32 = 68;
 const KEY_LEFT_META: u32 = 125;
 
-/// The rows the desk offers a lone window, in order.
+/// The rows the shell offers a lone window, in order.
 const ROWS: [&str; 6] = [
     "Full screen",
     "Fill the strip",
@@ -68,8 +68,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// The desk the session starts on: one window, in front, on one strip.
-fn desk_tree() -> Layout {
+/// The shell the session starts on: one window, in front, on one strip.
+fn layout_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -96,7 +96,7 @@ fn desk_tree() -> Layout {
     tree
 }
 
-/// A headless session showing `tree` , with a turn taken so its desk has laid the windows out.
+/// A headless session showing `tree` , with a turn taken so its shell has laid the windows out.
 fn session_with(tree: Layout) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -176,7 +176,7 @@ fn menu_tab(reading: &Value) -> Option<String> {
     reading["tab"].as_str().map(str::to_owned)
 }
 
-/// Whether the desk still holds the window `tab` .
+/// Whether the shell still holds the window `tab` .
 fn holds(session: &Session, tab: u64) -> bool {
     session.handle().read(|tree| {
         tree.workspaces
@@ -190,7 +190,7 @@ fn holds(session: &Session, tab: u64) -> bool {
 
 #[test]
 fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     assert!(menu_tab(&menu(&session)).is_none(), "nothing is up yet");
 
     press_tab_menu(&mut session);
@@ -204,7 +204,7 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
     assert_eq!(
         labels(&reading),
         ROWS,
-        "with the desk's own rows, in its own order"
+        "with the shell's own rows, in its own order"
     );
     assert_eq!(
         under(&reading, "window-width"),
@@ -221,7 +221,7 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
         "every row says what choosing it does and whether it can be"
     );
 
-    // Where the menu stands is the desk's to say: the corner of the window it is for, drawn nothing
+    // Where the menu stands is the shell's to say: the corner of the window it is for, drawn nothing
     // else having an opinion, or the place the person named.
     let window = session
         .handle()
@@ -261,7 +261,7 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
             &args(&json!({ "row": "window-close-window" })),
         )
         .expect("the row is taken");
-    // The desk carries out what it was asked in its next turn.
+    // The shell carries out what it was asked in its next turn.
     session.step(REFRESH).expect("a turn of the session");
     assert!(!holds(&session, 20), "the window closed");
     assert!(
@@ -272,7 +272,7 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
 
 #[test]
 fn escape_and_the_shortcut_again_close_the_menu_without_choosing() {
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
 
     press_tab_menu(&mut session);
     assert_eq!(menu_tab(&menu(&session)).as_deref(), Some("20"));
@@ -297,7 +297,7 @@ fn escape_and_the_shortcut_again_close_the_menu_without_choosing() {
 
 #[test]
 fn the_menu_follows_the_window_in_front() {
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     let mut tree = session.handle().read(Clone::clone);
     if let Some(strip) = tree
         .workspaces
@@ -329,14 +329,14 @@ fn the_menu_follows_the_window_in_front() {
 
 #[test]
 fn a_menu_of_a_window_that_left_closes_and_offers_nothing() {
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     let mut tree = session.handle().read(Clone::clone);
     session
         .invoke(WINDOW_MENU, "open", &args(&json!({ "tab": "20" })))
         .expect("the menu opens for the window named");
     assert_eq!(menu_tab(&menu(&session)).as_deref(), Some("20"));
 
-    // The window goes, by the desk's own command, while its menu is up.
+    // The window goes, by the shell's own command, while its menu is up.
     tree.workspaces[0].strips[0].window_groups.clear();
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
@@ -355,7 +355,7 @@ fn a_menu_of_a_window_that_left_closes_and_offers_nothing() {
 
 #[test]
 fn the_menu_names_the_window_it_is_on_and_forgets_it_when_closed() {
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     assert!(
         menu(&session)["subject"].is_null(),
         "a closed menu is about nothing"
@@ -383,7 +383,7 @@ fn the_menu_names_the_window_it_is_on_and_forgets_it_when_closed() {
 
 #[test]
 fn the_menu_groups_what_it_offers_and_hides_places_there_are_none_of() {
-    let mut tree = desk_tree();
+    let mut tree = layout_tree();
     // The widest window cannot be widened: the row stays, and says why.
     tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
     let mut session = session_with(tree);
@@ -466,7 +466,7 @@ fn the_menus_view_stands_with_the_session_and_is_shown_while_a_menu_is_up() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("TILO_SURFACE_TILO_WINDOW_MENU", stand_in(root.path()));
 
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     assert!(
         session.surfaces().names().contains(&"window-menu"),
         "the menu's view stands before anything asks for a menu: {:?}",
@@ -475,7 +475,7 @@ fn the_menus_view_stands_with_the_session_and_is_shown_while_a_menu_is_up() {
     assert_eq!(
         session.compositor().layer_shown(NAMESPACE),
         Some(false),
-        "hidden while no menu is up, so it draws nothing over the desk"
+        "hidden while no menu is up, so it draws nothing over the shell"
     );
 
     press_tab_menu(&mut session);

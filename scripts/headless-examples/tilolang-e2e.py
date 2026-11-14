@@ -98,7 +98,7 @@ def app_id(name: str) -> str:
 
 
 BIN = BUILD / "bin"
-DESK_RESOURCE = "desktop:desk"
+SHELL_RESOURCE = "desktop:shell"
 APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
@@ -942,7 +942,7 @@ def doing(session: Session, name: str, declared: str) -> str:
 
 def focus(session: Session, window: dict) -> None:
     """Bring the tab of `window` to the front, as the desk's own verb does."""
-    session.invoke("so.tilo.session", f"{DESK_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
+    session.invoke("so.tilo.session", f"{SHELL_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
 
 
 def check_native(session: Session, out: Path) -> dict:

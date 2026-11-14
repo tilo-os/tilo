@@ -1,5 +1,5 @@
 //! The bars the session shows on its displays, as a harness reads them: one per display, the full
-//! bar on the display in use and a compact one on each other, and whether each stands in the desk's
+//! bar on the display in use and a compact one on each other, and whether each stands in the shell's
 //! column, is hidden, or is shown over a window covering its display.
 
 use tilo_desktop::desktop_host::DesktopChrome;
@@ -12,7 +12,7 @@ use crate::Session;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarShown {
     /// The display it stands on; `None` for the full bar, which stands on the display in use (and
-    /// on a desk of one display, where the desk needs no placing).
+    /// on a shell of one display, where the shell needs no placing).
     pub display: Option<u32>,
     /// Where it stands, in the chrome's coordinates.
     pub rect: Rect,
@@ -43,7 +43,7 @@ impl Session {
         .unwrap_or_default()
     }
 
-    /// Where the desk says the bars go: one place per display, the display in use full, and the
+    /// Where the shell says the bars go: one place per display, the display in use full, and the
     /// displays a fullscreen window owns.
     #[must_use]
     pub fn bar_placement(&self) -> Placement {
@@ -82,7 +82,7 @@ impl Session {
             .with_chrome_mut(|chrome| chrome.follow_reveals(hide, held, now))
             .unwrap_or(false);
         if changed {
-            // A bar docked in the desk's column takes its place there: docking it, hiding it or
+            // A bar docked in the shell's column takes its place there: docking it, hiding it or
             // showing it over a window lays the windows out again for what is left.
             self.shared
                 .desktop

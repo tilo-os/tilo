@@ -589,7 +589,7 @@ mod tests {
         );
     }
 
-    /// The desk shows the picture of the workspace in front, and moving to a workspace with another
+    /// The shell shows the picture of the workspace in front, and moving to a workspace with another
     /// picture asks for a frame.
     #[test]
     fn the_workspace_in_front_shows_its_own_picture() {

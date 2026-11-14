@@ -26,7 +26,7 @@ use tilo_session::{Options, Session};
 use tilo_test_env::ScopedEnv;
 
 const PERSON: &str = "Pat";
-/// The window the desk shows: what the lock must not tell the owner's door about.
+/// The window the shell shows: what the lock must not tell the owner's door about.
 const TITLE: &str = "Groceries";
 
 /// The ops only a development session's test-control socket answers: synthetic input, the hosted
@@ -80,8 +80,8 @@ fn ask(session: &mut Session, socket: &Path, request: &Value) -> Value {
     })
 }
 
-/// The desk the session starts on: one workspace with one window in front.
-fn desk_tree() -> Layout {
+/// The shell the session starts on: one workspace with one window in front.
+fn layout_tree() -> Layout {
     let tabs = vec![Tab {
         id: 20,
         title: TITLE.into(),
@@ -133,7 +133,7 @@ fn lock_environment() -> ScopedEnv {
     environment
 }
 
-/// The headless session: its desk with one window on it, both control sockets, and a lock screen
+/// The headless session: its shell with one window on it, both control sockets, and a lock screen
 /// that stays up.
 fn session(root: &Path) -> Session {
     let mut session = crate::common::headless(Options {
@@ -144,7 +144,7 @@ fn session(root: &Path) -> Session {
         admin_control: Some(root.join("admin-control.sock")),
         ..Options::default()
     });
-    session.handle().replace_tree(desk_tree());
+    session.handle().replace_tree(layout_tree());
     session.step(Duration::from_millis(1)).expect("a turn");
     session
 }
@@ -197,12 +197,12 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     assert_eq!(state["state"]["chrome"]["session_locked"], false, "{state}");
     assert!(
         state["state"]["workspace_tree"].is_object(),
-        "the desk is shown while it is unlocked: {state}"
+        "the shell is shown while it is unlocked: {state}"
     );
     let windows = ask(&mut session, &owner, &json!({"op": "windows"}));
     assert_eq!(
         windows["answer"]["windows"][0]["title"], TITLE,
-        "the windows are shown while the desk is unlocked: {windows}"
+        "the windows are shown while the shell is unlocked: {windows}"
     );
     assert_eq!(
         ask(&mut session, &owner, &json!({"op": "watch"})),
@@ -256,7 +256,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
 }
 
 /// A locked session invokes nothing through the owner's door, and shows nothing of what the lock
-/// covers — while the development socket, which drives the seat, still sees the desk.
+/// covers — while the development socket, which drives the seat, still sees the shell.
 #[test]
 fn a_locked_session_invokes_nothing_through_the_owner_door() {
     let _settled = ui::motion::testing::settled();
@@ -298,7 +298,7 @@ fn a_locked_session_invokes_nothing_through_the_owner_door() {
     assert_eq!(
         locked["state"]["workspace_tree"],
         Value::Null,
-        "nothing of the desk is shown while it is locked: {locked}"
+        "nothing of the shell is shown while it is locked: {locked}"
     );
     assert_eq!(locked["state"]["held_workspaces"], json!([]), "{locked}");
     assert!(
@@ -322,18 +322,18 @@ fn a_locked_session_invokes_nothing_through_the_owner_door() {
         json!({"ok": {}})
     );
 
-    // The development socket drives the seat it was started for: it sees the desk it drives.
+    // The development socket drives the seat it was started for: it sees the shell it drives.
     let driven = ask(&mut session, &dev, &json!({"op": "state_dump"}));
     assert!(
         driven["state"]["workspace_tree"].is_object(),
-        "a development socket sees the locked desk: {driven}"
+        "a development socket sees the locked shell: {driven}"
     );
 
     unlock_through_the_development_socket(&mut session, root.path(), &dev, &owner);
 }
 
 /// A tool that drives the display unlocks the session the one way it unlocks — and the picture it
-/// takes before that says it is of the lock, so it never reads a dark lock as the desk behind it.
+/// takes before that says it is of the lock, so it never reads a dark lock as the shell behind it.
 fn unlock_through_the_development_socket(
     session: &mut Session,
     root: &Path,
@@ -370,7 +370,7 @@ fn unlock_through_the_development_socket(
     let shown = ask(session, owner, &json!({"op": "state_dump"}));
     assert!(
         shown["state"]["workspace_tree"].is_object(),
-        "the desk is shown again once it is unlocked: {shown}"
+        "the shell is shown again once it is unlocked: {shown}"
     );
     let invoked = ask(
         session,
@@ -384,7 +384,7 @@ fn unlock_through_the_development_socket(
 }
 
 /// The chrome advertises its shortcuts by the table's own ids, and a person's door runs an
-/// advertised one: asking for a shortcut the desk publishes is never answered as an action that
+/// advertised one: asking for a shortcut the shell publishes is never answered as an action that
 /// does not exist.
 #[test]
 fn the_door_runs_an_advertised_desktop_shortcut() {
@@ -415,7 +415,7 @@ fn the_door_runs_an_advertised_desktop_shortcut() {
     let provider = advertised["provider"].as_str().expect("a provider");
     let id = advertised["id"].as_str().expect("an id");
 
-    // `tab_menu` is a shortcut of the table, and the desk runs it.
+    // `tab_menu` is a shortcut of the table, and the shell runs it.
     let invoked = ask(
         &mut session,
         &owner,
@@ -430,9 +430,9 @@ fn the_door_runs_an_advertised_desktop_shortcut() {
         !invoked.to_string().contains("unknown_action"),
         "an advertised shortcut is not answered as an unknown action: {invoked}"
     );
-    assert!(invoked.get("err").is_none(), "the desk runs it: {invoked}");
+    assert!(invoked.get("err").is_none(), "the shell runs it: {invoked}");
 
-    // A step the desk does not publish is told apart from one it would not run: a caller reads
+    // A step the shell does not publish is told apart from one it would not run: a caller reads
     // that no such action exists, rather than that its own authority was refused.
     let missing = ask(
         &mut session,
@@ -445,6 +445,6 @@ fn the_door_runs_an_advertised_desktop_shortcut() {
     );
     assert_eq!(
         missing["err"]["code"], "unknown_action",
-        "an address the desk publishes nothing at says so: {missing}"
+        "an address the shell publishes nothing at says so: {missing}"
     );
 }

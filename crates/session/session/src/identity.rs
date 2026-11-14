@@ -69,11 +69,11 @@ fn identity_directories() -> Vec<PathBuf> {
 pub(crate) struct Seat {
     /// The person, by the id the workspaces' governance names them by: their root key in hex, which
     /// this device's certificate carries — never the device's own key. A computer that has no
-    /// identity yet goes by the login account at it, whom its desk is theirs as until the person
+    /// identity yet goes by the login account at it, whom its session is theirs as until the person
     /// sets one up.
     pub(crate) person: String,
     /// The ids they went by before this device had an identity — the login account at it, and what
-    /// the caller named — under which a desk kept from then is still theirs.
+    /// the caller named — under which a session kept from then is still theirs.
     pub(crate) earlier: Vec<String>,
     /// The salt this device's ids are minted under, from its own key: what the workspace's
     /// governance derives to tell which device a window of the workspace runs on. `None` on a
@@ -82,7 +82,7 @@ pub(crate) struct Seat {
 }
 
 /// Who sits here, read from this device's own identity as the session starts,
-/// which setup settles before the desk opens.
+/// which setup settles before the session opens.
 pub(crate) fn seat(options: &crate::Options) -> Seat {
     let identity = crate::sync::device_identity();
     let person = match &identity {
@@ -169,7 +169,7 @@ pub(crate) fn rename_to(name: &str) -> Result<(), String> {
 /// it waits until they answer it or put it off; every other offer is a banner over the windows.
 /// This is the session's one door for such an offer, as a page's is `desktop_offer_host_action` in
 /// a browser. The session has no question of its own about the person to ask through it yet: what
-/// it knows of them is settled by setup before the desk opens ([`crate::setup`]), so an ask about
+/// it knows of them is settled by setup before the session opens ([`crate::setup`]), so an ask about
 /// them arrives from what the session hosts rather than from the session itself.
 pub fn offer(
     handle: &DesktopHandle,
@@ -190,7 +190,7 @@ pub fn offer(
 /// their devices): their identity work for it.
 ///
 /// Changing the person's identity record is setup's ([`crate::setup`]),
-/// which asks its own questions before the desk opens; so there is no work
+/// which asks its own questions before the session opens; so there is no work
 /// behind an answer here yet, and the ask has already left their avatar.
 /// The choice is named rather than dropped, so what the person answered is
 /// never lost without trace.

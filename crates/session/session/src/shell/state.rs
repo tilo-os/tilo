@@ -1,10 +1,10 @@
-//! The shell's own state, published: what the desk shows over its windows, as
+//! The shell's own state, published: what the shell shows over its windows, as
 //! readings and as the verbs that change it.
 //!
 //! The shell keeps no view of this. A window's menu is a reading — the
-//! window it is for, where it stands, and the rows the desk offers that
+//! window it is for, where it stands, and the rows the shell offers that
 //! window — and three verbs: open it (the window in front's, or one named),
-//! close it, and choose a row, which sends the same command the desk would
+//! close it, and choose a row, which sends the same command the shell would
 //! send from anywhere. Whoever draws the menu — this desktop's own view, a
 //! person's replacement, an agent — reads the same reading through the same
 //! door and invokes the same verbs, so the menu a person sees and the menu a
@@ -17,7 +17,7 @@
 //!
 //! What is kept here is only what a reading cannot derive: which window the
 //! menu is for and where the person put it. The rows themselves are the
-//! desk's, asked for on every read, so a menu left open while its window
+//! shell's, asked for on every read, so a menu left open while its window
 //! changes offers what that window offers now.
 
 use std::rc::Rc;
@@ -29,7 +29,7 @@ use tilo_desktop::overlays::{Anchor as Place, Overlay, Slot, SwitcherScope};
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
 
-use crate::desk_resource::Surfaces;
+use crate::device_lists::Surfaces;
 use tilo_desktop_surface::navigation::active_route;
 use tilo_desktop_surface::surface::WindowMenuRow;
 use tilo_desktop_surface::surface::window_menu;
@@ -139,7 +139,7 @@ pub struct ShellState {
 struct OpenMenu {
     /// The tab whose rows the menu shows.
     tab: TabId,
-    /// Where the person put it, as `x,y` in the desk's coordinates; the window's own corner when
+    /// Where the person put it, as `x,y` in the shell's coordinates; the window's own corner when
     /// the verb named none.
     anchor: Option<(f64, f64)>,
 }
@@ -165,7 +165,7 @@ pub enum ShellEffect {
         /// The window to open the menu for, by its tab's id.
         #[param("The window's tab, decimal; the window in front by default")]
         tab: Option<String>,
-        /// Where to put the menu, as `x,y` in the desk's coordinates.
+        /// Where to put the menu, as `x,y` in the shell's coordinates.
         #[param("Where to open it, as \"x,y\"; under the window's corner by default")]
         anchor: Option<String>,
     },
@@ -173,7 +173,7 @@ pub enum ShellEffect {
     #[effect(own_device, idempotent)]
     Close,
     /// Choose a row
-    /// Sends the command the row means, as the desk sends it from anywhere.
+    /// Sends the command the row means, as the shell sends it from anywhere.
     #[effect(own_device)]
     Choose {
         /// The row's id, as the reading lists it.
@@ -206,7 +206,7 @@ pub enum OverlayEffect {
         #[param("The surface to close, as the reading names it")]
         slot: String,
     },
-    /// Show the surface `surface` over the desk's windows, or close it when it is up.
+    /// Show the surface `surface` over the shell's windows, or close it when it is up.
     ShowSurface {
         #[param(
             "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
@@ -221,7 +221,7 @@ pub enum OverlayEffect {
         steps: Option<i64>,
         #[param(
             "Which windows the walk crosses: `workspace` for every window of the workspace, `app` for the ones the app in front shows",
-            choices = crate::desk_resource::SWITCHER_SCOPES
+            choices = crate::device_lists::SWITCHER_SCOPES
         )]
         scope: Option<String>,
     },
@@ -235,10 +235,10 @@ pub enum OverlayEffect {
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
     /// Answer the question waiting on the person's avatar
-    #[effect(row, label = "session-desk-answer-ask")]
+    #[effect(row, label = "session-answer-ask")]
     AnswerAsk,
     /// Put the question waiting on the person's avatar off for now
-    #[effect(row, label = "session-desk-ask-later")]
+    #[effect(row, label = "session-ask-later")]
     PutOffAsk,
 }
 
@@ -294,7 +294,7 @@ struct Subject {
     name: String,
 }
 
-/// Where a menu stands, in the desk's coordinates.
+/// Where a menu stands, in the shell's coordinates.
 #[derive(Debug, Serialize)]
 struct Anchor {
     x: f64,
@@ -387,11 +387,11 @@ fn named(text: &str) -> Result<Slot, DoorError> {
     })
 }
 
-/// The shell's resources, read from the desk and from the state the session keeps beside it.
+/// The shell's resources, read from the shell and from the state the session keeps beside it.
 pub struct ShellService {
     handle: DesktopHandle,
     state: ShellState,
-    /// The surfaces over the desk: what stands where, which holds the keyboard, what a press
+    /// The surfaces over the shell: what stands where, which holds the keyboard, what a press
     /// outside one closes, the shell's own surface and the switcher's walk.
     surfaces: Surfaces,
     /// What the stack's reading was last published from: the shell's surface, whether the
@@ -463,7 +463,7 @@ impl ShellService {
         })
     }
 
-    /// `text` as a point on the desk.
+    /// `text` as a point on the shell.
     fn point(text: &str) -> Option<(f64, f64)> {
         let (x, y) = text.split_once(',')?;
         Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
@@ -489,7 +489,7 @@ impl ShellService {
         let anchor = anchor.map(|text| {
             Self::point(text).ok_or_else(|| DoorError::Unavailable {
                 code: "unknown-anchor".into(),
-                reason: format!("{text} is not a place on the desk"),
+                reason: format!("{text} is not a place on the shell"),
             })
         });
         let anchor = match anchor {
@@ -572,7 +572,7 @@ impl ShellService {
         Ok(())
     }
 
-    /// Choose row `row` of the open menu, as the desk would send it.
+    /// Choose row `row` of the open menu, as the shell would send it.
     fn choose(&mut self, row: &str) -> Result<(), DoorError> {
         let Some(menu) = self.state.menu.clone() else {
             return Err(DoorError::Unavailable {
@@ -684,7 +684,7 @@ impl Service for ShellService {
                     OverlayEffect::CloseSurface { slot } => self.close_surface(&slot)?,
                     OverlayEffect::ShowSurface { surface } => self.surfaces.toggle(&surface),
                     OverlayEffect::WalkSwitcher { steps, scope } => {
-                        crate::desk_windows::walk_switcher(
+                        crate::windows::walk_switcher(
                             &self.handle,
                             &self.surfaces.overlays,
                             scope
@@ -695,14 +695,10 @@ impl Service for ShellService {
                         );
                     }
                     OverlayEffect::SelectSwitcher { at } => {
-                        crate::desk_windows::select_switcher(
-                            &self.handle,
-                            &self.surfaces.overlays,
-                            at,
-                        );
+                        crate::windows::select_switcher(&self.handle, &self.surfaces.overlays, at);
                     }
                     OverlayEffect::CommitSwitcher => {
-                        crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
+                        crate::windows::commit_switcher(&self.handle, &self.surfaces.overlays);
                     }
                     OverlayEffect::AnswerAsk => self.handle.answer_personal_ask(),
                     OverlayEffect::PutOffAsk => self.handle.put_off_personal_ask(),
@@ -754,7 +750,7 @@ impl ShellService {
         }
     }
 
-    /// The window menu as the desk offers it now.
+    /// The window menu as the shell offers it now.
     fn window_menu(&self) -> Reading {
         let Some(open) = &self.state.menu else {
             return Reading {
@@ -856,7 +852,7 @@ impl ShellService {
 }
 
 /// The chord the catalogue fixes for `id` , in the system's own spelling: its Super form where the
-/// catalogue binds one, so a row reads the key the desk advertises rather than every alternative at
+/// catalogue binds one, so a row reads the key the shell advertises rather than every alternative at
 /// once.
 fn fixed_chord(id: &str) -> Option<String> {
     let chords = ui::shortcut_table::fixed_shortcut(id)?.chords();

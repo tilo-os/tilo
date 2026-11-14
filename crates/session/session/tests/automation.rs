@@ -4,7 +4,7 @@
 //!
 //! A shortcut is one of its workspace's settings: every test saves it the way a person's save does
 //! — signed by this computer's own device and committed into the workspace's document — and what
-//! the desk shows of it is that document, as a desk this device kept shows the shortcuts of the
+//! the shell shows of it is that document, as a shell this device kept shows the shortcuts of the
 //! session before.
 
 #![cfg(target_os = "linux")]
@@ -41,7 +41,7 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
 use tilo_user_identity::DeviceCert;
 
-/// The workspace the desk shows, the id it has on every device, and the app whose records it holds.
+/// The workspace the shell shows, the id it has on every device, and the app whose records it holds.
 const WORKSPACE: &str = "5c07c075-0000-4000-8000-000000000042";
 const PACKAGE: &str = "so.tilo.chat";
 const KIND: &str = "so.tilo.chat.message";
@@ -198,7 +198,7 @@ fn commit(
 
 /// Save `shortcut` in the workspace, signed by `cert`'s device with `key`: one of the workspace's
 /// settings, which every device of it reads from its document. Answers the shortcut as the
-/// document holds it, which is also what a desk kept across a restart shows of it.
+/// document holds it, which is also what a shell kept across a restart shows of it.
 fn save(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
@@ -217,7 +217,7 @@ fn save(
     saved
 }
 
-/// [`WORKSPACE`] as `person` 's own, showing the `shortcuts` its document holds: what the desk this
+/// [`WORKSPACE`] as `person` 's own, showing the `shortcuts` its document holds: what the shell this
 /// device keeps shows of the workspace, as the session that kept it left it.
 fn room(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
     let mut workspace = Workspace::new(workspace_id(), "Chat");
@@ -226,7 +226,7 @@ fn room(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
     workspace
 }
 
-/// A session keeping this device's desk under `state` , with the action plane the shortcuts run on
+/// A session keeping this device's shell under `state` , with the action plane the shortcuts run on
 /// at `socket` , for `person` , showing the workspace its governance holds.
 fn session_keeping(state: &Path, socket: &Path, person: &str) -> Session {
     session_launching(state, socket, person, Arc::new(Launches::default()))
@@ -251,7 +251,7 @@ fn session_launching(
     })
 }
 
-/// Put `workspace` on the session's desk, in place of the one it showed for the same workspace.
+/// Put `workspace` on the session's shell, in place of the one it showed for the same workspace.
 fn show(session: &Session, workspace: Workspace) {
     let id = workspace.id();
     let mut tree: Layout = session.handle().read(Clone::clone);
@@ -261,7 +261,7 @@ fn show(session: &Session, workspace: Workspace) {
     session.handle().replace_tree(tree);
 }
 
-/// The session on the desk showing `workspace` : the desk a device kept, before the first pass
+/// The session on the shell showing `workspace` : the shell a device kept, before the first pass
 /// reads it, whose governance this device holds — and the passes in which that governance's
 /// shortcuts arm the triggers and the workspace's records are followed.
 fn showing(state: &Path, socket: &Path, person: &str, workspace: Workspace) -> Session {
@@ -431,7 +431,7 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
         room(&person, std::slice::from_ref(&tidy)),
     );
     // The pass that shows the shortcut catches up with the record: the first look at a record only
-    // learns its heads, so a message posted before the shortcut is on the desk is not one it fires
+    // learns its heads, so a message posted before the shortcut is on the shell is not one it fires
     // on.
     session.step(Duration::from_millis(1)).expect("a frame");
     post_a_message(&home);
@@ -760,7 +760,7 @@ fn a_shortcut_armed_on_a_shared_folder_runs_once_when_a_file_in_it_changes() {
     drop(owner);
 
     // The folder the shortcut watches is the one the workspace shares with this person, as the
-    // desk keeps it.
+    // shell keeps it.
     let mut workspace = room(&person, std::slice::from_ref(&tidy));
     workspace
         .sandbox

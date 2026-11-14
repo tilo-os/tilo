@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use tilo_accessibility_settings::OnScreenKeyboard;
-use tilo_desktop::desk_verbs::DESK_RESOURCE;
+use tilo_desktop::verbs::SHELL_RESOURCE;
 use tilo_session::ActionPlane;
 use tilo_session::keyboard;
 
@@ -90,7 +90,7 @@ fn finger(session: &mut Session, (x, y): (f64, f64)) {
 }
 
 /// Step the session until `displays` are not changing any more, and answer what they show then: the
-/// desk as it stands, or the keyboard as it stands.
+/// shell as it stands, or the keyboard as it stands.
 #[track_caller]
 fn still(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>> {
     let deadline = tilo_test_env::hang_deadline();
@@ -133,10 +133,10 @@ fn until_keyboard(session: &mut Session, display: &str, was: &[f64]) -> Vec<f64>
     }
 }
 
-/// Step the session until `display` shows the desk it showed before the keyboard was up again, and
+/// Step the session until `display` shows the shell it showed before the keyboard was up again, and
 /// is not changing any more.
 #[track_caller]
-fn until_desk(session: &mut Session, display: &str, was: &[f64]) -> Vec<f64> {
+fn until_shell(session: &mut Session, display: &str, was: &[f64]) -> Vec<f64> {
     let deadline = tilo_test_env::hang_deadline();
     let mut settled: Option<Vec<f64>> = None;
     loop {
@@ -151,7 +151,7 @@ fn until_desk(session: &mut Session, display: &str, was: &[f64]) -> Vec<f64> {
         }
         assert!(
             Instant::now() < deadline,
-            "the desk never came back on {display}"
+            "the shell never came back on {display}"
         );
         session.step(REFRESH).expect("a turn of the session");
     }
@@ -192,7 +192,7 @@ fn move_beside(session: &mut Session, app: &str) -> String {
     let (_, before) = window(session.compositor(), app).expect("the window");
     let was = display_of(session, before);
     let here = display_rect(session, &was);
-    // The desk steps rightwards, or leftwards from the rightmost display.
+    // The shell steps rightwards, or leftwards from the rightmost display.
     let another_rightwards = session
         .compositor()
         .outputs()
@@ -203,7 +203,7 @@ fn move_beside(session: &mut Session, app: &str) -> String {
     let steps = if another_rightwards { 1 } else { -1 };
     invoke_with(
         session,
-        DESK_RESOURCE,
+        SHELL_RESOURCE,
         "move-to-display",
         &serde_json::json!({ "steps": steps }),
     );
@@ -323,14 +323,14 @@ fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
         .find(|display| *display != typing_on)
         .expect("another display beside the one the person works on");
 
-    // Nothing has been touched yet: a desk typed on by a keyboard and a pointer needs no keyboard
+    // Nothing has been touched yet: a shell typed on by a keyboard and a pointer needs no keyboard
     // of its own.
     for _ in 0..8 {
         session.step(REFRESH).expect("a turn of the session");
     }
     assert!(
         !session.surfaces().running(keyboard::SURFACE),
-        "no keyboard starts for a desk that was not touched: {:?}",
+        "no keyboard starts for a shell that was not touched: {:?}",
         session.surfaces().names()
     );
 
@@ -345,8 +345,8 @@ fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
         "the keyboard's app runs once the glass is typed on: {:?}",
         session.surfaces().names()
     );
-    // It stands there with no field to serve: nothing is drawn over the desk.
-    let desk = still(&mut session, &[&typing_on, &left_alone]);
+    // It stands there with no field to serve: nothing is drawn over the shell.
+    let shell = still(&mut session, &[&typing_on, &left_alone]);
     assert_eq!(
         reading(&session)["visible"],
         false,
@@ -363,18 +363,18 @@ fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
         "the keyboard stands on the display the person types on: {}",
         reading(&session)
     );
-    let shown = until_keyboard(&mut session, &typing_on, &desk[0]);
-    let drawn = apart(&shown, &desk[0]);
+    let shown = until_keyboard(&mut session, &typing_on, &shell[0]);
+    let drawn = apart(&shown, &shell[0]);
     assert!(
         drawn > CLOSE,
-        "the keyboard draws over the display the person types on: {drawn:.0} of 255 from the desk \
+        "the keyboard draws over the display the person types on: {drawn:.0} of 255 from the shell \
          under it"
     );
     let elsewhere = pictures(&mut session, &[&left_alone]).remove(0);
-    let untouched = apart(&elsewhere, &desk[1]);
+    let untouched = apart(&elsewhere, &shell[1]);
     assert!(
         untouched < CLOSE,
-        "the display the person is not typing on keeps its desk: {untouched:.0} of 255"
+        "the display the person is not typing on keeps its shell: {untouched:.0} of 255"
     );
 }
 
@@ -388,9 +388,9 @@ fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
     let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Always);
     let displays = displays(&mut session);
     assert_eq!(displays.len(), 2, "two displays: {displays:?}");
-    // The desk as it stands with no keyboard drawn over it: starting the keyboard's app takes a
-    // whole app's launch, seconds after the desk.
-    let desk = still(&mut session, &[&displays[0], &displays[1]]);
+    // The shell as it stands with no keyboard drawn over it: starting the keyboard's app takes a
+    // whole app's launch, seconds after the shell.
+    let shell = still(&mut session, &[&displays[0], &displays[1]]);
 
     pump(&mut session, &mut [], |session, _| {
         session.surfaces().running(keyboard::SURFACE) && reading(session)["visible"] == true
@@ -403,15 +403,15 @@ fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
         .iter()
         .position(|display| *display == stands)
         .unwrap_or_else(|| panic!("the keyboard stands on one of {displays:?}: {stands}"));
-    let shown = until_keyboard(&mut session, &stands, &desk[at]);
-    let drawn = apart(&shown, &desk[at]);
+    let shown = until_keyboard(&mut session, &stands, &shell[at]);
+    let drawn = apart(&shown, &shell[at]);
     assert!(
         drawn > CLOSE,
-        "the keyboard draws with no field to serve: {drawn:.0} of 255 from the desk under it"
+        "the keyboard draws with no field to serve: {drawn:.0} of 255 from the shell under it"
     );
     let beside = usize::from(at == 0);
     let elsewhere = pictures(&mut session, &[&displays[beside]]).remove(0);
-    let untouched = apart(&elsewhere, &desk[beside]);
+    let untouched = apart(&elsewhere, &shell[beside]);
     assert!(
         untouched < CLOSE,
         "it stands on one display only: {untouched:.0} of 255 on {}",
@@ -454,7 +454,7 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
     pump(&mut session, &mut [&mut notes, &mut mail], |session, _| {
         session.surfaces().running(keyboard::SURFACE)
     });
-    let desk = still(&mut session, &[&working_on]);
+    let shell = still(&mut session, &[&working_on]);
     assert_eq!(
         reading(&session)["visible"],
         false,
@@ -465,16 +465,16 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
     // window stands beside it: the keyboard comes up.
     finger(&mut session, clear_of_the_next(notes_rect));
     type_until_the_keyboard_is_up(&mut session, &mut notes);
-    let shown = until_keyboard(&mut session, &working_on, &desk[0]);
-    let drawn = apart(&shown, &desk[0]);
+    let shown = until_keyboard(&mut session, &working_on, &shell[0]);
+    let drawn = apart(&shown, &shell[0]);
     assert!(
         drawn > CLOSE,
-        "the keyboard draws over the display: {drawn:.0} of 255 from the desk under it"
+        "the keyboard draws over the display: {drawn:.0} of 255 from the shell under it"
     );
 
     // The person turns to their other window: the field is left, and the keyboard goes away with
     // it.
-    let mail_tab = window_resource(&session, MAIL).expect("the desk publishes the window");
+    let mail_tab = window_resource(&session, MAIL).expect("the shell publishes the window");
     invoke_with(
         &mut session,
         mail_tab.id.as_str(),
@@ -493,12 +493,12 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
         Some(MAIL),
         "the other window has the focus now"
     );
-    let back = until_desk(&mut session, &working_on, &desk[0]);
-    let rest = apart(&back, &desk[0]);
+    let back = until_shell(&mut session, &working_on, &shell[0]);
+    let rest = apart(&back, &shell[0]);
     assert!(
         rest < CLOSE,
         "the keyboard is gone from the display the person left it on: {rest:.0} of 255 from the \
-         desk under it"
+         shell under it"
     );
     assert!(
         !session.compositor().text_entry().wants_typing,

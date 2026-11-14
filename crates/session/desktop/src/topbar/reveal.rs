@@ -254,7 +254,7 @@ impl BarReveal {
 }
 
 /// Every display's bar, and when each shows over the window that covers it. One instance for the
-/// session; the desk's band and the chrome read it.
+/// session; the shell's band and the chrome read it.
 #[derive(Debug, Default)]
 pub struct Reveals {
     /// The person's choice: the bar stays out of the way until reached for.
@@ -378,8 +378,8 @@ impl Reveals {
         }
     }
 
-    /// A finger at `p` . Returns whether the desk takes the contact, so nothing under it sees it:
-    /// the contact belongs to the desk when it begins in a display's top edge while the bar there
+    /// A finger at `p` . Returns whether the shell takes the contact, so nothing under it sees it:
+    /// the contact belongs to the shell when it begins in a display's top edge while the bar there
     /// hides, and shows the bar as it is swiped down.
     pub fn touch(&mut self, finger: Finger, p: Point, now: Instant) -> bool {
         if finger == Finger::Down {

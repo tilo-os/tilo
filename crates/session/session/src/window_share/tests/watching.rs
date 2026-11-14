@@ -50,11 +50,11 @@ fn page_objects() -> Vec<(bool, Vec<u8>)> {
         .collect()
 }
 
-/// The desk of the device `seed` : one window of the app, in a tab that device minted, which is
+/// The shell of the device `seed` : one window of the app, in a tab that device minted, which is
 /// the window its menu offers to share. With the salt its ids are minted under.
-fn desk_of(seed: u8) -> (Layout, u16) {
+fn shell_of(seed: u8) -> (Layout, u16) {
     let salt = tilo_desktop_model::ids::device_salt_of_key(device(seed).as_bytes());
-    let desk = desk(
+    let shell = shell(
         TileContent::LocalApp {
             app_id: APP.to_owned(),
             label: "Notes".to_owned(),
@@ -62,12 +62,12 @@ fn desk_of(seed: u8) -> (Layout, u16) {
         },
         tilo_desktop_model::ids::compose_id(salt, 1),
     );
-    (desk, salt)
+    (shell, salt)
 }
 
 /// One device of the workspace whose session is in no live plane of it: it holds the workspace
 /// and hears its members, and nothing of what it shares has a way out.
-fn member_outside_the_plane(seed: u8, desk: Layout, salt: u16) -> Member {
+fn member_outside_the_plane(seed: u8, shell: Layout, salt: u16) -> Member {
     let (sync, said) = Client::planeless(
         device(seed),
         OwnPresence {
@@ -87,7 +87,7 @@ fn member_outside_the_plane(seed: u8, desk: Layout, salt: u16) -> Member {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    session.handle().replace_tree(desk);
+    session.handle().replace_tree(shell);
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -164,7 +164,7 @@ fn bar_says(
     }
 }
 
-/// The title of `tab` on `member` 's desk, which is what the bar calls the window in it.
+/// The title of `tab` on `member` 's shell, which is what the bar calls the window in it.
 fn title_of(member: &Member, tab: u64) -> String {
     member
         .session
@@ -196,8 +196,8 @@ const SEEN: [&str; 3] = ["visible", "view only", "atching"];
 #[test]
 fn a_device_showing_a_page_that_has_not_gone_out_waits_and_watches_once_it_has() {
     tilo_window_share::flatpak_share::read_encoders();
-    let (desk, salt) = desk_of(0x91);
-    let mut host = member_minting_under(0x91, desk, salt);
+    let (shell, salt) = shell_of(0x91);
+    let mut host = member_minting_under(0x91, shell, salt);
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = tab_of(&host.session, APP);
     // The window's app runs a page engine, and said so when its window opened.
@@ -249,7 +249,7 @@ fn a_device_showing_a_page_that_has_not_gone_out_waits_and_watches_once_it_has()
         );
     }
 
-    // The app hands its page over, as it does while a desk asks for it.
+    // The app hands its page over, as it does while a shell asks for it.
     let page = page_objects();
     let deadline = Instant::now() + SAID;
     let mut handed_at: Option<Instant> = None;
@@ -283,7 +283,7 @@ fn a_device_showing_a_page_that_has_not_gone_out_waits_and_watches_once_it_has()
             && !said.contains("Nothing sent yet"),
         "a reader is told who sees the window: {said}"
     );
-    // What the desk's window menus read of the share, as the session hands it to them.
+    // What the shell's window menus read of the share, as the session hands it to them.
     let menus = crate::window_share::menu::reading_for_menus(
         &host.session.shared.window_shares,
         Some(&host.sync),
@@ -307,8 +307,8 @@ fn a_device_showing_a_page_that_has_not_gone_out_waits_and_watches_once_it_has()
 #[test]
 fn a_device_asking_for_a_window_whose_pictures_have_no_way_out_waits() {
     tilo_window_share::flatpak_share::read_encoders();
-    let (desk, salt) = desk_of(0x93);
-    let mut host = member_outside_the_plane(0x93, desk, salt);
+    let (shell, salt) = shell_of(0x93);
+    let mut host = member_outside_the_plane(0x93, shell, salt);
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = foreign_tab(&host.session);
     let mut viewer = member(0x94, showing(host.sync.publisher(), APP, tab));

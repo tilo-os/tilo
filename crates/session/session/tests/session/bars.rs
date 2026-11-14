@@ -1,4 +1,4 @@
-//! A bar on every display: the desk places one per display, the display in use full and the others
+//! A bar on every display: the shell places one per display, the display in use full and the others
 //! compact, follows the displays as they come and go, and takes a bar off its display for a
 //! fullscreen window there, back over that window when the person reaches for it.
 
@@ -21,8 +21,8 @@ fn two_displays() -> Session {
     )
 }
 
-/// Where each bar stands: the display it stands on, its ends across the desk, whether it is the
-/// full bar, and whether it left the desk for a window over it.
+/// Where each bar stands: the display it stands on, its ends across the shell, whether it is the
+/// full bar, and whether it left the shell for a window over it.
 fn bars_by_display(session: &Session) -> Vec<(Option<u32>, f64, f64, bool, bool)> {
     session
         .bars()
@@ -88,7 +88,7 @@ fn every_display_carries_a_bar_of_its_own() {
         "the compact bar is where its display is"
     );
 
-    // What the bar is told, in the desk's own terms.
+    // What the bar is told, in the shell's own terms.
     let placement = session.bar_placement();
     assert_eq!(placement.bars.len(), 2);
     assert_eq!(
@@ -172,7 +172,7 @@ fn set_fullscreen(client: &mut TestClient, on: bool) {
     client.exchange();
 }
 
-/// A fullscreen window on the second display owns it: that display's compact bar leaves the desk,
+/// A fullscreen window on the second display owns it: that display's compact bar leaves the shell,
 /// and the bar of the display the person works on stays.
 #[test]
 fn a_fullscreen_window_on_a_display_takes_that_displays_bar_away() {
@@ -536,7 +536,7 @@ fn the_bar_comes_back_over_a_window_covering_its_display() {
 }
 
 /// The person's own "hide the top bar", with no fullscreen window anywhere: the bar leaves the
-/// desk, the windows take its strip, and turning the setting off docks it again.
+/// shell, the windows take its strip, and turning the setting off docks it again.
 #[test]
 fn hiding_the_top_bar_in_settings_gives_its_strip_to_the_windows() {
     let _settled = ui::motion::testing::settled();
@@ -570,9 +570,9 @@ fn hiding_the_top_bar_in_settings_gives_its_strip_to_the_windows() {
     until(&mut session, &mut client, |session| {
         (session.bars().first()?.presence == TopBarPresence::Hidden).then_some(())
     })
-    .expect("hiding the bar in the settings takes it off the desk");
+    .expect("hiding the bar in the settings takes it off the shell");
 
-    // The desk gives the window the strip the bar took: it grows by the bar's height, and nothing
+    // The shell gives the window the strip the bar took: it grows by the bar's height, and nothing
     // else moves.
     let docked_size = (docked.2, docked.3);
     let mut taller = None;
@@ -580,7 +580,7 @@ fn hiding_the_top_bar_in_settings_gives_its_strip_to_the_windows() {
         taller = clients[0].seen.size.filter(|size| *size != docked_size);
         taller.is_some()
     });
-    let taller = taller.expect("the desk asks the window for the strip's size");
+    let taller = taller.expect("the shell asks the window for the strip's size");
     assert_eq!(taller.0, docked.2, "the window keeps its width");
     client.show(taller.0, taller.1, [200, 40, 40, 255]);
     within(&mut session, &mut client, |session| {

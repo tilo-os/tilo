@@ -188,34 +188,34 @@ pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<N
     Some(Notice::new(t("device-wake-app-name"), 1, title, body))
 }
 
-/// Tell the person the shell's own record this device kept could not be opened: the desk draws the
-/// shell's defaults this session, and their own desk choices stay on disk untouched, never written
+/// Tell the person the shell's own record this device kept could not be opened: the shell draws the
+/// shell's defaults this session, and their own shell choices stay on disk untouched, never written
 /// over.
 pub(crate) fn record_not_opened_notice(reason: &str) -> Notice {
     Notice::new(
-        t("desk-record-not-opened-app-name"),
+        t("shell-record-not-opened-app-name"),
         2,
-        t("desk-record-not-opened-title"),
+        t("shell-record-not-opened-title"),
         t_args(
-            "desk-record-not-opened-detail",
+            "shell-record-not-opened-detail",
             &[("reason", reason.into())],
         ),
     )
     .staying(Some(Duration::ZERO))
 }
 
-/// Tell the person the desk style they chose did not load or failed, as `shell.md` §6 has it: the
-/// desk draws the built-in strips while their choice stays as it was.
-pub(crate) fn desk_style_failed_notice(style: &str, reason: &str) -> Notice {
-    // What the style's own view said is for whoever fixes it: the person is told what the desk
+/// Tell the person the style they chose did not load or failed, as `shell.md` §6 has it: the
+/// shell draws the built-in strips while their choice stays as it was.
+pub(crate) fn style_failed_notice(style: &str, reason: &str) -> Notice {
+    // What the style's own view said is for whoever fixes it: the person is told what the shell
     // does instead, and that their choice is kept.
-    tracing::warn!(%style, %reason, "the desk style the person chose did not load");
+    tracing::warn!(%style, %reason, "the shell style the person chose did not load");
     Notice::new(
-        t("desk-style-failed-app-name"),
+        t("shell-style-failed-app-name"),
         2,
-        t("desk-style-failed-title"),
+        t("shell-style-failed-title"),
         t_args(
-            "desk-style-failed-body",
+            "shell-style-failed-body",
             &[("style", style.to_owned().into())],
         ),
     )
@@ -612,32 +612,32 @@ pub(crate) fn refused_write_notice(device: &str, reason: neighbour_wire::Refusal
     )
 }
 
-/// The notice that the workspace did not take what the person changed on its shared desk.
-/// `workspace` is the name the person reads for it. A desk stores no name for a workspace nobody
-/// named, and a workspace that left the desk since has no row to read one from (`None`): the title
+/// The notice that the workspace did not take what the person changed on its shared shell.
+/// `workspace` is the name the person reads for it. A shell stores no name for a workspace nobody
+/// named, and a workspace that left the shell since has no row to read one from (`None`): the title
 /// says which of the two it is, and never opens with a name nobody gave.
-pub(crate) fn desk_not_shared_notice(
+pub(crate) fn shell_not_shared_notice(
     workspace: Option<&str>,
     reason: neighbour_wire::RefusalReason,
 ) -> Notice {
     let title = match workspace.map(str::trim) {
-        Some("") => t("desk-not-shared-title-unnamed"),
-        Some(name) => t_args("desk-not-shared-title", &[("workspace", name.into())]),
-        None => t("desk-not-shared-title-gone"),
+        Some("") => t("shell-not-shared-title-unnamed"),
+        Some(name) => t_args("shell-not-shared-title", &[("workspace", name.into())]),
+        None => t("shell-not-shared-title-gone"),
     };
     Notice::new(
-        t("desk-not-shared-app"),
+        t("shell-not-shared-app"),
         2,
         title,
         t_args(
-            "desk-not-shared-body",
+            "shell-not-shared-body",
             &[("reason", reason_in_words(reason).into())],
         ),
     )
 }
 
-/// Tell the person what the workspace did not take of their shared desk, naming it and why.
-pub(crate) fn tell_desk_not_taken(
+/// Tell the person what the workspace did not take of their shared shell, naming it and why.
+pub(crate) fn tell_shell_not_taken(
     notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
     tree: &tilo_desktop_model::Layout,
     (room, why): (tilo_desktop_model::WorkspaceId, String),
@@ -650,7 +650,7 @@ pub(crate) fn tell_desk_not_taken(
     let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
         .borrow()
-        .tell(&desk_not_shared_notice(workspace, reason));
+        .tell(&shell_not_shared_notice(workspace, reason));
 }
 
 /// Tell the person what the crash records in `dir` say happened before this start.
@@ -1293,12 +1293,12 @@ mod tests {
     }
 
     /// The notice that a workspace did not take the window arrangement names the workspace by
-    /// the name the person gave it. One nobody named, and one that left the desk since, are said
+    /// the name the person gave it. One nobody named, and one that left the shell since, are said
     /// to be that: the title never opens with an empty name, or with a word standing in for one.
     #[test]
-    fn a_desk_the_workspace_did_not_take_names_the_workspace_or_says_it_has_no_name() {
+    fn a_shell_the_workspace_did_not_take_names_the_workspace_or_says_it_has_no_name() {
         let title = |workspace| {
-            desk_not_shared_notice(workspace, neighbour_wire::RefusalReason::Forbidden).title
+            shell_not_shared_notice(workspace, neighbour_wire::RefusalReason::Forbidden).title
         };
         let words = || [Some("Research"), Some(""), Some("  "), None].map(title);
         let english = words();

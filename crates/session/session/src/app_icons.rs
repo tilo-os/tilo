@@ -106,7 +106,7 @@ pub(crate) fn window_art(window: u64, icon: &tilo_compositor::WindowIcon) -> App
 }
 
 impl crate::Session {
-    /// Hand the desk each window's icon, which it paints on the window's tab and in the switcher:
+    /// Hand the shell each window's icon, which it paints on the window's tab and in the switcher:
     /// the icon the program set for that window, else its app's own as the launcher shows it (the
     /// icon its installed package signed, or the one its desktop entry names). A window of an app
     /// with neither shows its app's glyph. Lets go of the icons of windows that closed.

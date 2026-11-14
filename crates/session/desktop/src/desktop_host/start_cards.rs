@@ -1,5 +1,5 @@
-//! The start cards on a desk with no window: one pad per display that shows none, centred in that
-//! display, so a desk spanning several displays shows the cards on each empty display rather than
+//! The start cards on a shell with no window: one pad per display that shows none, centred in that
+//! display, so a shell spanning several displays shows the cards on each empty display rather than
 //! one grid across them.
 //! A pad asks for nothing of its own: what a person chooses on it leaves as the host action its
 //! card declares, the same door every other host action comes through.
@@ -19,19 +19,19 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use super::{DesktopAsk, desk_is_empty, fill};
+use super::{DesktopAsk, fill, shell_is_empty};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadPress};
 use ui::widget::DrawChild;
 
 /// Where one display shows the start cards: which display it belongs to,
-/// where that display stands in the desk, whether it shows no window, and
+/// where that display stands in the shell, whether it shows no window, and
 /// the launchpad itself.
 pub(super) struct DisplayPad {
-    /// The display it belongs to; `None` on a desk of one display, where the cards take the whole
-    /// desk.
+    /// The display it belongs to; `None` on a shell of one display, where the cards take the whole
+    /// shell.
     pub(super) display: Option<u32>,
-    /// The display's top-left corner in the desk's coordinates, and its extent: the part of the
-    /// desk its cards centre in.
+    /// The display's top-left corner in the shell's coordinates, and its extent: the part of the
+    /// shell its cards centre in.
     pub(super) place: Rect,
     /// Whether the display shows no window, and so shows its start cards.
     pub(super) shown: bool,
@@ -39,8 +39,8 @@ pub(super) struct DisplayPad {
 }
 
 impl DisplayPad {
-    /// Centre the cards across this display's part of the desk, so an empty display shows its own
-    /// cards rather than a grid spanning the desk.
+    /// Centre the cards across this display's part of the shell, so an empty display shows its own
+    /// cards rather than a grid spanning the shell.
     pub(super) fn present(&mut self) {
         let rect = self.launchpad.get_rect();
         let area = self.display.map(|_| {
@@ -62,34 +62,34 @@ pub(super) struct PadWant {
     pub(super) shown: bool,
 }
 
-/// The start cards of every display that shows no window. A desk spanning several displays shows
-/// them on each empty display, centred there; a desk of one display shows them once, over the whole
-/// desk, while it has no window. What a person chooses on any of them leaves as the host action its
+/// The start cards of every display that shows no window. A shell spanning several displays shows
+/// them on each empty display, centred there; a shell of one display shows them once, over the whole
+/// shell, while it has no window. What a person chooses on any of them leaves as the host action its
 /// card declares ([`LaunchpadAction::host_id`]), the same door every other host action comes
 /// through.
 pub(super) struct EmptyWorkspace {
     /// What each pad is made from: the words and scope the host gave it.
     pub(super) template: CollaborationLaunchpad,
-    /// The cards the desk offers now: the verbs whose apps this host has. Read every pass, so an
-    /// app installed or removed while the desk stands adds or takes away its card.
+    /// The cards the shell offers now: the verbs whose apps this host has. Read every pass, so an
+    /// app installed or removed while the shell stands adds or takes away its card.
     pub(super) cards: Rc<dyn Fn() -> Vec<LaunchpadAction>>,
     pub(super) pads: Vec<DisplayPad>,
-    /// Whether the pads were rebuilt, so the desk's layout has to follow.
+    /// Whether the pads were rebuilt, so the shell's layout has to follow.
     pub(super) rebuilt: bool,
     pub(super) handle: DesktopHandle,
     pub(super) asks: Rc<RefCell<Vec<DesktopAsk>>>,
 }
 
 impl EmptyWorkspace {
-    /// What each display's pad should show now: on a desk spanning several displays, one pad per
+    /// What each display's pad should show now: on a shell spanning several displays, one pad per
     /// display in reading order, shown while the strip that display shows has no window homed
-    /// there; on a desk of one display, one pad over the whole desk while it has no window.
+    /// there; on a shell of one display, one pad over the whole shell while it has no window.
     pub(super) fn wants(tree: &Layout) -> Vec<PadWant> {
         if !tree.is_partitioned() {
             return vec![PadWant {
                 display: None,
                 place: Rect::ZERO,
-                shown: desk_is_empty(tree),
+                shown: shell_is_empty(tree),
             }];
         }
         let Some(workspace) = tree.active_workspace() else {
@@ -133,7 +133,7 @@ impl EmptyWorkspace {
 impl Widget for EmptyWorkspace {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // The cards follow the apps the host has: an app installed or removed here changes what
-        // every display's desk offers.
+        // every display's shell offers.
         let cards = (self.cards)();
         let mut changed = cards != self.template.cards();
         if changed {
@@ -345,7 +345,7 @@ mod tests {
     }
 
     /// A workspace of two strips: Main holding one window, Games empty.
-    fn desk() -> Layout {
+    fn shell() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
         let mut main = Strip::new(StripId(10), "Main");
         main.window_groups = vec![group(1)];
@@ -365,9 +365,9 @@ mod tests {
 
         phase an_empty_display_shows_its_own_start_cards;
         // On two displays only the display showing no window shows the start cards, and its cards
-        // centre in that display rather than across the desk.
+        // centre in that display rather than across the shell.
         {
-            let mut tree = desk();
+            let mut tree = shell();
             let displays = vec![display(0, "panel", 0.0), display(1, "monitor", 1280.0)];
             tree.outputs.reconcile(&tree.workspaces, &displays);
             tree.outputs.set_focused(0);
@@ -382,11 +382,11 @@ mod tests {
             assert_eq!(wants[1].place, Rect::new(1280.0, 0.0, 2560.0, 800.0));
         }
 
-        phase a_desk_of_one_display_shows_the_cards_while_it_has_no_window;
-        // A desk of one display shows the start cards once, over the whole desk, while it has no
+        phase a_shell_of_one_display_shows_the_cards_while_it_has_no_window;
+        // A shell of one display shows the start cards once, over the whole shell, while it has no
         // window.
         {
-            let mut tree = desk();
+            let mut tree = shell();
             let wants = EmptyWorkspace::wants(&tree);
             assert_eq!(wants.len(), 1);
             assert_eq!(wants[0].display, None);
@@ -394,7 +394,7 @@ mod tests {
 
             tree.workspaces[0].strips[0].window_groups.clear();
             let wants = EmptyWorkspace::wants(&tree);
-            assert!(wants[0].shown, "nothing on the desk");
+            assert!(wants[0].shown, "nothing on the shell");
         }
     }
 }

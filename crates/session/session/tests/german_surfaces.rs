@@ -1,5 +1,5 @@
 //! A German desktop reads the surfaces that survive the one shell in German.
-//! The session publishes its resources — the desk's rows, the windows and the chrome's own actions
+//! The session publishes its resources — the shell's rows, the windows and the chrome's own actions
 //! — with the labels the action catalogue, the search and an agent read. Each label is resolved
 //! through the toolkit's catalogue when it is published, so a session on a German desktop publishes
 //! German: this walks what it publishes and reads it.
@@ -92,21 +92,21 @@ fn the_surviving_surfaces_speak_the_persons_language() {
     speak("en-US");
     let in_english = published(&session);
 
-    // The desk's own rows: what a person answers on their avatar, the tray item of a running
+    // The shell's own rows: what a person answers on their avatar, the tray item of a running
     // application, and stopping an agent. A row stands only while it applies, so this is what is up
     // now.
-    let desk: Vec<&str> = ["desktop:overlays/", "session:tray/", "session:agents/"]
+    let shell: Vec<&str> = ["desktop:overlays/", "session:tray/", "session:agents/"]
         .into_iter()
         .flat_map(|prefix| labelled(&labels, prefix))
         .collect();
     assert!(
-        desk.contains(&"Stoppen"),
-        "the desk stops an agent in German: {desk:?}"
+        shell.contains(&"Stoppen"),
+        "the shell stops an agent in German: {shell:?}"
     );
     for english in ["Answer", "Ask me later", "Open", "Stop"] {
         assert!(
-            !desk.contains(&english),
-            "a desk row reads `{english}`: {desk:?}"
+            !shell.contains(&english),
+            "a shell row reads `{english}`: {shell:?}"
         );
     }
 

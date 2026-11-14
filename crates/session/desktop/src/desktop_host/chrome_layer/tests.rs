@@ -12,7 +12,7 @@ use super::{DesktopAsk, DesktopChrome};
 use crate::about::{AboutLinks, AboutSheet, AboutVariant};
 use crate::desktop_host::{NoticeTiles, PermissiveRules};
 use crate::overview_panel::OverviewPick;
-use crate::overview_tilo::TiloDesk;
+use crate::overview_tilo::TiloOverview;
 use crate::topbar::TopBarChrome;
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -24,7 +24,7 @@ fn en() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-fn desk_tree() -> Layout {
+fn layout_tree() -> Layout {
     let tabs = vec![Tab {
         id: 20,
         title: "Notes".into(),
@@ -62,10 +62,10 @@ fn desk_tree() -> Layout {
     tree
 }
 
-/// The chrome over a desk, its overview open on a door that let an agent in
+/// The chrome over a shell, its overview open on a door that let an agent in
 /// and is working now.
 fn chrome_with_an_agent() -> DesktopChrome {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut chrome = DesktopChrome::new(
         handle.clone(),
@@ -75,7 +75,7 @@ fn chrome_with_an_agent() -> DesktopChrome {
         AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
-    chrome.set_tilo(TiloDesk {
+    chrome.set_tilo(TiloOverview {
         door: Some(Door {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: vec![Grant {
@@ -90,18 +90,18 @@ fn chrome_with_an_agent() -> DesktopChrome {
             }],
             ..Door::default()
         }),
-        ..TiloDesk::default()
+        ..TiloOverview::default()
     });
     chrome.toggle_overview();
     chrome
 }
 
-/// The chrome over a desk whose person is in its one workspace, and the desk's handle.
-fn chrome_over_a_desk() -> (DesktopChrome, DesktopHandle) {
-    chrome_over(&desk_tree())
+/// The chrome over a shell whose person is in its one workspace, and the shell's handle.
+fn chrome_over_a_shell() -> (DesktopChrome, DesktopHandle) {
+    chrome_over(&layout_tree())
 }
 
-/// [`chrome_over_a_desk`] over `tree` as the test hands it.
+/// [`chrome_over_a_shell`] over `tree` as the test hands it.
 fn chrome_over(tree: &Layout) -> (DesktopChrome, DesktopHandle) {
     let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let chrome = DesktopChrome::new(
@@ -115,7 +115,7 @@ fn chrome_over(tree: &Layout) -> (DesktopChrome, DesktopHandle) {
     (chrome, handle)
 }
 
-/// The workspace in front and every workspace on the desk, by id.
+/// The workspace in front and every workspace on the shell, by id.
 fn front_and_held(handle: &DesktopHandle) -> (WorkspaceId, Vec<WorkspaceId>) {
     handle.read(|tree| {
         (
@@ -125,14 +125,14 @@ fn front_and_held(handle: &DesktopHandle) -> (WorkspaceId, Vec<WorkspaceId>) {
     })
 }
 
-/// A workspace put on the desk in the background stands after the others and the person stays
+/// A workspace put on the shell in the background stands after the others and the person stays
 /// where they are: one their list brings from another of their devices arrives while they are in
 /// another, and a window they open then is that one's. Asked for again in the background it
 /// changes nothing; asked for without it, the person goes there, as when they join one.
 #[test]
-fn a_workspace_put_on_the_desk_in_the_background_leaves_the_person_where_they_are() {
+fn a_workspace_put_on_the_shell_in_the_background_leaves_the_person_where_they_are() {
     en();
-    let (mut chrome, handle) = chrome_over_a_desk();
+    let (mut chrome, handle) = chrome_over_a_shell();
     let arrived = WorkspaceId::new();
     let put = |background| ChromeEffect::NewWorkspace {
         workspace: Some(arrived.to_string()),
@@ -142,7 +142,7 @@ fn a_workspace_put_on_the_desk_in_the_background_leaves_the_person_where_they_ar
 
     assert_eq!(chrome.perform(&put(Some(true))), Ok(true));
     let (front, held) = front_and_held(&handle);
-    assert!(held.contains(&arrived), "it is on the desk: {held:?}");
+    assert!(held.contains(&arrived), "it is on the shell: {held:?}");
     assert_eq!(
         front,
         WorkspaceId::from_u128(1),
@@ -167,12 +167,12 @@ fn a_workspace_put_on_the_desk_in_the_background_leaves_the_person_where_they_ar
     assert_eq!(front, arrived, "a person who joins a workspace lands in it");
 }
 
-/// A workspace that arrives on a desk showing none is the one the desk shows, in the background or
+/// A workspace that arrives on a shell showing none is the one the shell shows, in the background or
 /// not: there is nowhere else for the person to be.
 #[test]
-fn a_workspace_arriving_on_a_desk_that_shows_none_is_shown() {
+fn a_workspace_arriving_on_a_shell_that_shows_none_is_shown() {
     en();
-    let (mut chrome, handle) = chrome_over_a_desk();
+    let (mut chrome, handle) = chrome_over_a_shell();
     handle.replace_tree(Layout::default());
     let arrived = WorkspaceId::new();
     assert_eq!(
@@ -239,14 +239,14 @@ fn an_agents_row_opens_the_agents_card() {
 #[test]
 fn the_overview_the_host_opens_shows_the_workspace_in_front() {
     en();
-    let (mut chrome, _handle) = chrome_over_a_desk();
+    let (mut chrome, _handle) = chrome_over_a_shell();
     let open = Rc::new(std::cell::Cell::new(false));
     chrome.set_overview(crate::window_flight::WindowFlight::new(), Rc::clone(&open));
 
     open.set(true);
     assert!(chrome.follow_overview());
     assert!(chrome.overview.is_open());
-    let cards = &chrome.overview.desk().cards;
+    let cards = &chrome.overview.shell().cards;
     let here = cards.iter().find(|card| card.is_current).unwrap();
     assert_eq!(here.id, WorkspaceId::from_u128(1));
     assert_eq!(here.strips[0].groups[0].tabs[0].title, "Notes");
@@ -261,11 +261,11 @@ fn the_overview_the_host_opens_shows_the_workspace_in_front() {
 }
 
 /// A strip nobody named is named by where it stands, as the bar's switch and the overview name
-/// it: the desk reaches it by that word, and by its id, and by no name it was never given.
+/// it: the shell reaches it by that word, and by its id, and by no name it was never given.
 #[test]
-fn a_strip_nobody_named_is_reached_by_the_word_the_desk_reads() {
+fn a_strip_nobody_named_is_reached_by_the_word_the_shell_reads() {
     en();
-    let mut tree = desk_tree();
+    let mut tree = layout_tree();
     tree.workspaces[0].strips[0].name = String::new();
     let (chrome, _handle) = chrome_over(&tree);
 
@@ -295,7 +295,7 @@ fn a_strip_nobody_named_is_reached_by_the_word_the_desk_reads() {
 #[test]
 fn a_confirmation_passes_over_the_windows_without_a_notification() {
     use ui::widget::Widget as _;
-    let (chrome, handle) = chrome_over_a_desk();
+    let (chrome, handle) = chrome_over_a_shell();
     let said = |chrome: &DesktopChrome| {
         chrome
             .children()
@@ -318,12 +318,12 @@ fn a_confirmation_passes_over_the_windows_without_a_notification() {
 }
 
 /// The About sheet is a surface of the stack: while it is up it holds the keyboard, so Escape
-/// reaches it and closes it, and search opening over the desk takes it down.
+/// reaches it and closes it, and search opening over the shell takes it down.
 #[test]
 fn the_about_sheet_holds_the_keys_and_goes_on_escape_or_search() {
     use crate::overlays::{Slot, Target};
     en();
-    let (chrome, _handle) = chrome_over_a_desk();
+    let (chrome, _handle) = chrome_over_a_shell();
     let overlays = chrome.overlays().clone();
     let mut harness = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
@@ -362,7 +362,7 @@ fn the_about_sheet_holds_the_keys_and_goes_on_escape_or_search() {
 #[test]
 fn the_about_sheets_updates_link_opens_settings() {
     en();
-    let (chrome, _handle) = chrome_over_a_desk();
+    let (chrome, _handle) = chrome_over_a_shell();
     let mut harness = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         chrome,

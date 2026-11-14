@@ -242,7 +242,7 @@ widget-without-html 1 crates/session/desktop-surface/src/surface/peer_view.rs
 widget-without-html 1 crates/session/desktop-surface/src/surface/window_menu_popup.rs
 widget-without-html 2 crates/session/desktop/src/about.rs
 widget-without-html 1 crates/session/desktop/src/backdrop.rs
-widget-without-html 1 crates/session/desktop/src/desk_widgets/widgets.rs
+widget-without-html 1 crates/session/desktop/src/widgets/layer.rs
 widget-without-html 1 crates/session/desktop/src/desktop_host.rs
 widget-without-html 1 crates/session/desktop/src/desktop_host/chrome_layer.rs
 widget-without-html 1 crates/session/desktop/src/desktop_host/start_cards.rs

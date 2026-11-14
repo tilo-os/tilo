@@ -1,7 +1,7 @@
 //! Who is here: the roster the bar's faces open, and every other person's pointer where they are
-//! working. The roster can also be kept on screen, waiting at an edge of the desk with a mirror of
+//! working. The roster can also be kept on screen, waiting at an edge of the shell with a mirror of
 //! each person's screen beside their row, pressed to follow them.
-//! The roster reads the desk's member rows and presence, which the collaboration plane writes each frame
+//! The roster reads the shell's member rows and presence, which the collaboration plane writes each frame
 //! ([`crate::sync`]): the one feed the bar's faces and the launcher's Happening now list read too.
 //! Everyone's pointer is the plane's tile pointer, drawn over the tile of the tab they are on, in
 //! their own colour.
@@ -13,7 +13,7 @@ use std::rc::Rc;
 use settings_store::desk_widgets::{PEOPLE_OVERLAY, PeopleOverlayPrefs};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desk_edges::{self, DockEdge, EdgeDrag, Item};
+use tilo_desktop::edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
 use tilo_desktop::people::{
@@ -114,7 +114,7 @@ pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String,
         .filter(|user| !user.is_empty())
         .unwrap_or(seated)
         .to_owned();
-    let name = crate::platform::person::desk_person_name(
+    let name = crate::platform::person::person_name(
         ui::local_identity::load().map(|identity| identity.display_name),
         &own.label,
     );
@@ -142,14 +142,14 @@ enum Rest {
     Here,
     /// The next frame shows it coming in.
     Arriving,
-    /// It keeps its pin but waits away from the desk: nobody else is here to show.
+    /// It keeps its pin but waits away from the shell: nobody else is here to show.
     Waiting,
     /// It is on its way back into the bar; once it has gone, the pin goes with it.
     Leaving,
 }
 
 /// The roster kept on screen: where it waits, how it arrived, and how it is dragged to another
-/// edge of the desk. What it shows is the roster's own painting, at an edge.
+/// edge of the shell. What it shows is the roster's own painting, at an edge.
 struct Pinned {
     /// The edge it waits at, as the person's settings keep it.
     edge: DockEdge,
@@ -164,7 +164,7 @@ struct Pinned {
     dropped: Option<Point>,
     /// How far from its slot the panel is drawn while it springs there.
     settle: MotionValue<Point>,
-    /// The pointer, in the desk's coordinates: where a drag of the panel is drawn under.
+    /// The pointer, in the shell's coordinates: where a drag of the panel is drawn under.
     pointer: Point,
     /// The screen's room, as the roster last laid it out: where a drop snaps.
     work: Rect,
@@ -232,15 +232,15 @@ struct Shown {
     card_open: Option<String>,
     /// Whom the wave they sent goes to, and since when.
     waved: Option<(String, ui::time::Instant)>,
-    /// Where the pointer was over the desk: the panel opens under it.
+    /// Where the pointer was over the shell: the panel opens under it.
     cursor: Option<Point>,
     /// Who else's pointer is over which tab, as the last frame drew them: their name and where they
     /// are.
     pointers: Vec<(String, String)>,
-    /// Where each other person's pointer was drawn on this desk, as the last frame drew it: their
+    /// Where each other person's pointer was drawn on this session, as the last frame drew it: their
     /// name and the point, in the surface's coordinates.
     cursors: Vec<(String, (f64, f64))>,
-    /// Where the desk is drawn, as the surface last laid out.
+    /// Where the shell is drawn, as the surface last laid out.
     area: Rect,
     /// The roster kept on screen at an edge, while the person keeps it there.
     pinned: Option<Pinned>,
@@ -256,7 +256,7 @@ impl Shown {
         self.card_open = None;
     }
 
-    /// Whether the roster stands kept at an edge of the desk, drawn and pressed where it waits: a
+    /// Whether the roster stands kept at an edge of the shell, drawn and pressed where it waits: a
     /// pin waiting away with nobody else here does not.
     fn standing(&self) -> bool {
         !self.sheet()
@@ -266,7 +266,7 @@ impl Shown {
                 .is_some_and(|pin| pin.rest != Rest::Waiting)
     }
 
-    /// Whether the desk is a phone's: the roster opens as a sheet at its foot and is never kept on
+    /// Whether the shell is a phone's: the roster opens as a sheet at its foot and is never kept on
     /// screen, where it would stand over the one window there is ([`tilo_desktop::people::is_sheet`]).
     fn sheet(&self) -> bool {
         tilo_desktop::people::is_sheet(self.area)
@@ -292,7 +292,7 @@ fn show_person_in(shown: &RefCell<Shown>, open: &Cell<bool>, person: &str) -> bo
     true
 }
 
-/// The People panel and the other people's pointers: one surface above the chrome, so the desk
+/// The People panel and the other people's pointers: one surface above the chrome, so the shell
 /// keeps its own drawing and the panel floats over it.
 pub struct People {
     /// The layer the roster and everyone else's pointers are drawn on, once the host placed it.
@@ -326,7 +326,7 @@ fn pin_roster(shown: &mut Shown, open: &Cell<bool>) {
     keep_pinned(true, edge);
 }
 
-/// Keep the pinned roster's edge in the person's settings, as the desk widgets keep theirs.
+/// Keep the pinned roster's edge in the person's settings, as the Desktop widgets keep theirs.
 fn keep_pinned(pinned: bool, edge: DockEdge) {
     let kept = PEOPLE_OVERLAY.update(|_| PeopleOverlayPrefs { pinned, edge });
     if let Err(error) = kept {
@@ -396,7 +396,7 @@ impl People {
         std::mem::take(&mut *self.asks.borrow_mut())
     }
 
-    /// Whether the roster stands over the desk now.
+    /// Whether the roster stands over the shell now.
     pub fn is_open(&self) -> bool {
         self.open.get()
     }
@@ -522,7 +522,7 @@ impl Published for People {
             labels.extend(node.description.clone());
             pending.extend(node.children);
         }
-        // Where everyone else is working: their pointer over a window of this desk says so, beside
+        // Where everyone else is working: their pointer over a window of this session says so, beside
         // their name. A pointer the roster cannot put a name to is drawn all the same, but says
         // nothing here: "is in Notes" names nobody.
         for (who, title) in &shown.pointers {
@@ -539,7 +539,7 @@ impl Published for People {
     }
 }
 
-/// What each window of the desk shows, by its tab: the app it runs, and the
+/// What each window of the shell shows, by its tab: the app it runs, and the
 /// record it holds (a window whose app keeps no single record names its kind).
 pub type WindowRecords = Rc<dyn Fn() -> Vec<(u64, Option<String>, String)>>;
 
@@ -549,16 +549,16 @@ pub struct Given {
     pub scale: f64,
     /// This device's person, as the panel names them before presence says otherwise.
     pub seated: String,
-    /// What each window of the desk shows, by its tab: the record it holds, as
+    /// What each window of the shell shows, by its tab: the record it holds, as
     /// the host that runs the windows reads them.
     pub notes: WindowRecords,
     /// The apps this host has, as a card offers to write to the person.
     pub apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
-    /// The desk the roster is drawn over.
+    /// The shell the roster is drawn over.
     pub handle: DesktopHandle,
     /// Who is here, when this session takes part in the collaboration plane.
     pub sync: Option<Rc<crate::sync::Client>>,
-    /// Who is here, written into a copy of the desk's tree as its members and their presence: what the bar's
+    /// Who is here, written into a copy of the layout as its members and their presence: what the bar's
     /// faces are drawn from, so the roster they open lists the same people. A host that hears
     /// some of them on a track of its own (the runs a workspace's host speaks for) writes them
     /// in here as it does for the bar.
@@ -645,16 +645,16 @@ struct Panel {
     open: Rc<Cell<bool>>,
     handle: DesktopHandle,
     /// The presence revision this panel last drew: another person's pointer moving, arriving or
-    /// leaving moves it, and a desk where nothing moved asks for no frame.
+    /// leaving moves it, and a shell where nothing moved asks for no frame.
     drawn: Cell<u64>,
     /// The id this device sits as, which the person's own face falls back to before their presence
     /// names the root key they are here by.
     seated: String,
     sync: Option<Rc<crate::sync::Client>>,
-    /// Who is here, written into the desk's member rows as the bar's faces read them
+    /// Who is here, written into the shell's member rows as the bar's faces read them
     /// ([`Given::here`]).
     here: Rc<dyn Fn(&mut Layout)>,
-    /// What each window of the desk shows, by its tab: where a person's record stands, so the
+    /// What each window of the shell shows, by its tab: where a person's record stands, so the
     /// roster places them in the window they work in.
     notes: WindowRecords,
     /// The apps this host has: whether Chat stands here decides whether a card offers to write to
@@ -681,7 +681,7 @@ struct Panel {
     motion_until: Cell<f64>,
     /// Whose view this device follows, as the last frame told the banner.
     followed: RefCell<Option<String>>,
-    /// The "Following Ada" banner, as the page draws it, round the desk this panel floats over.
+    /// The "Following Ada" banner, as the page draws it, round the shell this panel floats over.
     banner: tilo_desktop::follow_banner::FollowBanner,
     /// Where the banner stands to be pressed while following, `Rect::ZERO` otherwise: what the
     /// layer tells a host whose bar takes presses over its band ([`Heard::takes_bar_point`]).
@@ -725,7 +725,7 @@ impl Panel {
     }
 
     /// Open the card a face, a wave or the launcher asked for where the roster stands, or close the
-    /// one the roster came back in place of: the person's card, as the web desk shows it, from the
+    /// one the roster came back in place of: the person's card, as the web shell shows it, from the
     /// same model. The card is the roster's detail — the person, with their devices — not a second
     /// panel beside it.
     ///
@@ -819,7 +819,7 @@ impl Panel {
             .as_deref()
             .map(|key| here.linked_of(key).to_vec())
             .unwrap_or_default();
-        // A conversation is Chat's, on the root key both people know: a guest this desk knows no
+        // A conversation is Chat's, on the root key both people know: a guest this session knows no
         // key for, and a device without Chat, have none to open.
         let can_message = !row.is_agent && key.is_some() && self.chat_installed();
         // Their devices are the person's, whichever of them the roster lists.
@@ -1083,8 +1083,8 @@ impl Panel {
         }
     }
 
-    /// Read who is here, as the plane wrote them into the desk's member rows this frame: the
-    /// roster, each person's screen with its windows named by the records this desk shows, and the
+    /// Read who is here, as the plane wrote them into the shell's member rows this frame: the
+    /// roster, each person's screen with its windows named by the records this session shows, and the
     /// workspace it is of: the panel's title, kept on screen or opened from the bar.
     fn read_roster(&self, shown: &mut Shown) {
         let own = self
@@ -1111,7 +1111,7 @@ impl Panel {
                 (!title.trim().is_empty()).then_some((digest, title))
             })
             .collect();
-        // Each person's screen, its windows named with what they show where this desk holds that
+        // Each person's screen, its windows named with what they show where this session holds that
         // record, else with the app's name.
         let screens = match (self.sync.as_ref(), front) {
             (Some(sync), Some(workspace)) => sync
@@ -1220,7 +1220,7 @@ impl Panel {
             PeopleHit::Invite => {
                 self.intents.borrow_mut().push(ChromeIntent::Invite);
             }
-            // Keeping the roster on screen moves it out of the bar to an edge of the desk; pressed
+            // Keeping the roster on screen moves it out of the bar to an edge of the shell; pressed
             // where it stands, it goes back into the bar.
             PeopleHit::Pin => {
                 if shown.pinned.is_some() {
@@ -1242,7 +1242,7 @@ impl Panel {
         }
     }
 
-    /// How many times what the desk's people say of themselves changed.
+    /// How many times what the shell's people say of themselves changed.
     fn presence_revision(&self) -> u64 {
         self.sync
             .as_ref()
@@ -1452,7 +1452,7 @@ impl Panel {
                     }
                 }
                 // Kept at an edge with nobody else here, the roster has nothing to say but that:
-                // it waits away from the desk, its pin kept, and comes in when someone arrives.
+                // it waits away from the shell, its pin kept, and comes in when someone arrives.
                 _ if shown.rows.is_empty() => {
                     if pin.rest != Rest::Waiting {
                         pin.rest = Rest::Waiting;
@@ -1605,7 +1605,7 @@ impl Panel {
                 work.height() * 0.5,
             )
         };
-        let slot = desk_edges::place(
+        let slot = edges::place(
             work,
             &[Item {
                 id: (),
@@ -1621,8 +1621,8 @@ impl Panel {
             || Rect::from_origin_size(work.origin(), size),
             |slot| slot.glance,
         );
-        // On a desk too narrow to keep the roster beside the work (a phone), an edge's margin
-        // leaves it lopsided over the one window there is: it stands centred across the desk, its
+        // On a shell too narrow to keep the roster beside the work (a phone), an edge's margin
+        // leaves it lopsided over the one window there is: it stands centred across the shell, its
         // gutters equal, at the height its edge gives it.
         let rest = if work.width() < 2.0 * size.width {
             rest.with_origin(Point::new(work.center().x - size.width / 2.0, rest.y0))
@@ -1697,7 +1697,7 @@ impl Panel {
                     }
                 }
                 WindowEvent::CursorLeft { .. } => {
-                    // The pointer left the desk: a press in flight lets go where it was drawn.
+                    // The pointer left the shell: a press in flight lets go where it was drawn.
                     if let Some(drag) = pin.drag.take()
                         && drag.dragging
                     {
@@ -1966,8 +1966,8 @@ impl Widget for Panel {
             self.handle_pinned(event, ctx);
             return;
         }
-        // Kept on screen, it answers only where it stands: the pointer away from it is the desk's.
-        // The layer covers the whole desk where the host has one canvas (the page), so claiming a
+        // Kept on screen, it answers only where it stands: the pointer away from it is the shell's.
+        // The layer covers the whole shell where the host has one canvas (the page), so claiming a
         // press there would take it from the window under it, its Maximize among them.
         if !self.open.get() && self.away_from_kept(event) {
             self.handle_pinned(event, ctx);
@@ -2033,8 +2033,8 @@ impl Widget for Panel {
     }
 
     /// Whether the panel owes a frame: while it is open, because its rows move with the people on
-    /// the desk; closed, only once somebody else's pointer has moved or left since the last frame,
-    /// a bubble or a reaction is playing, or the banner is still on its way in or out. A desk where
+    /// the shell; closed, only once somebody else's pointer has moved or left since the last frame,
+    /// a bubble or a reaction is playing, or the banner is still on its way in or out. A shell where
     /// a remote pointer rests where it was drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
         let now = ui::time::now();
@@ -2068,7 +2068,7 @@ impl Widget for Panel {
     }
 }
 
-/// Where the roster stands on the desk: under the bar, at the desk's right edge. A card opened for
+/// Where the roster stands on the shell: under the bar, at the shell's right edge. A card opened for
 /// one of its rows stands exactly there, in its place.
 fn roster_place(area: Rect, theme: &Theme) -> Rect {
     let metrics = &theme.tokens.metrics;

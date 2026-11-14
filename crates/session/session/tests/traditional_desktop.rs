@@ -1,4 +1,4 @@
-//! The traditional desktop, and the two canvas and bar defects beside it: what the desk draws
+//! The traditional desktop, and the two canvas and bar defects beside it: what the shell draws
 //! as windows, a dock and a bar whose actions belong to the window in front (shell.md §4, §6,
 //! §8), and the two rules a placed frame and the bell keep (canvas.md §6, shell.md §6).
 //!
@@ -30,13 +30,13 @@ use crate::common::{CANVAS, on_screen, until};
 /// The bar's control that opens the notification centre, as assistive technology names it.
 const BELL: &str = "Notifications";
 /// What the notification centre draws when nothing waits in it: its own empty state, which no
-/// other surface of the desk shows.
+/// other surface of the shell shows.
 const NOTHING_TO_CATCH_UP_ON: &str = "Nothing to catch up on";
 
 /// The session with the shell as the whole screen and the seeded apps, its MCP server and
 /// test-control socket at `root`, admitting this test's program to act as the person — the same
 /// session the acceptance path drives, so what a test draws is what a person gets. The framed
-/// canvas is in front of it. Two of the notes the seed keeps stand on its desk, each a window of
+/// canvas is in front of it. Two of the notes the seed keeps stand on its shell, each a window of
 /// its own: they are the two frames a test places.
 fn session(root: &std::path::Path) -> (Session, Vec<String>) {
     let session = crate::common::seeded_session(root);
@@ -62,14 +62,14 @@ fn note_ids(session: &Session) -> Vec<String> {
 
 /// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") the way a person does. The traditional
 /// desktop is the shell's own layout, which the bar's preset switch and the settings page's card
-/// both reach: `apply(windows_desktop)` is the whole preset at once (`chrome.tl`), and the desk
-/// draws it as such (`desk.tl`'s `screen`). The three canvas presets are the switch's own rows.
+/// both reach: `apply(windows_desktop)` is the whole preset at once (`chrome.tl`), and the shell
+/// draws it as such (`shell.tl`'s `screen`). The three canvas presets are the switch's own rows.
 #[track_caller]
 fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
     if preset == "Desktop" {
         session
             .run_shell_action("apply", vec![Value::from("windows_desktop")])
-            .unwrap_or_else(|why| panic!("the desk shows {preset}: {why}"));
+            .unwrap_or_else(|why| panic!("the shell shows {preset}: {why}"));
     } else {
         let mut repl = crate::common::Repl::connect(&root.join("agent.sock"));
         repl.opened(session);
@@ -82,7 +82,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
         );
         assert!(
             !failed || answer.contains("shown that way already"),
-            "the desk shows {preset}: {answer}"
+            "the shell shows {preset}: {answer}"
         );
     }
     match preset {
@@ -96,7 +96,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
     }
 }
 
-/// Whether the desk shows the traditional desktop: its bar drops the preset switch (its own bar
+/// Whether the shell shows the traditional desktop: its bar drops the preset switch (its own bar
 /// carries the focused window's commands instead), and the dock rides its foot.
 fn preset_menu_gone(session: &Session) -> bool {
     crate::common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
@@ -162,7 +162,7 @@ fn overlap(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
 }
 
 /// In the desktop preset, every placed window shows a bar naming it: its title, and the shell's
-/// own close on it. A window with no bar draws its resource over the desk with nothing naming it,
+/// own close on it. A window with no bar draws its resource over the shell with nothing naming it,
 /// which is what a person sees as "no title bars".
 #[test]
 fn the_desktop_draws_every_window_with_a_bar_naming_it() {
@@ -193,7 +193,7 @@ fn the_desktop_draws_every_window_with_a_bar_naming_it() {
     }
 }
 
-/// A press on a dock item opens or focuses what it stands for: the app's window on the desk
+/// A press on a dock item opens or focuses what it stands for: the app's window on the shell
 /// comes to the front, and the dock says it runs.
 #[test]
 fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
@@ -203,7 +203,7 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
     });
-    // Another app's window beside the note: the desk is left on mail's window, so pressing the
+    // Another app's window beside the note: the shell is left on mail's window, so pressing the
     // dock's Notes has a window of its own to bring back to the front.
     place(&mut session, &notes[0], 100, 120, 480, 360);
     let mail = root_of(&session, ".Mail");
@@ -217,7 +217,7 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     assert_eq!(
         focused_app(&session).as_deref(),
         Some("so.tilo.lang.notes"),
-        "the desk was left on the note's window"
+        "the shell was left on the note's window"
     );
 
     // The press brings mail's window, which the dock stands for by its app, to the front there.
@@ -232,7 +232,7 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     );
 }
 
-/// The app of the window in front on the desk, as the session publishes it: `None` while no
+/// The app of the window in front on the shell, as the session publishes it: `None` while no
 /// window is.
 fn focused_app(session: &Session) -> Option<String> {
     let windows = session.read("session:windows")?;
@@ -410,7 +410,7 @@ fn press_key(session: &mut Session, code: u32) {
 /// The evdev code of the right arrow.
 const KEY_ARROW_RIGHT: u32 = 106;
 
-/// How far the desk's own bar reaches down the screen: a control standing below it is the desk's
+/// How far the shell's own bar reaches down the screen: a control standing below it is the shell's
 /// own content (a place's frame), never the bar naming the window in front.
 const BAR_FOOT: f64 = 40.0;
 
@@ -435,7 +435,7 @@ fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
     let inbox = root_of(&session, ".Mail");
     let titled = crate::common::window_name_of(&session, &notes[0]);
 
-    // Only the frame on the canvas counts: the desk's own bar also names the window in front at
+    // Only the frame on the canvas counts: the shell's own bar also names the window in front at
     // the top, and that one never pans.
     let on_canvas = |session: &mut Session, name: &str| {
         session
@@ -529,8 +529,8 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
 
     // The bar names the window in front on its own row, and pressing it lists the resource's
     // actions: the note's unpin and rename, and the group its tags are changed under, which no
-    // control of the desk's shows.
-    // The window in front is named twice: once by its frame on the desk, which stands where it
+    // control of the shell's shows.
+    // The window in front is named twice: once by its frame on the shell, which stands where it
     // was placed, and once by the menu the top bar carries it as. The bar's stands on the bar's
     // row, above every frame.
     session
@@ -613,7 +613,7 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
             |session| on_screen(session, NOTHING_TO_CATCH_UP_ON).is_some(),
         );
         assert_eq!(
-            crate::common::desk_here(&session),
+            crate::common::shell_here(&session),
             "centre",
             "the bell opens the notifications, not another surface, in the {preset} preset"
         );
@@ -621,8 +621,8 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
         crate::common::press(&mut session, BELL);
         until(
             &mut session,
-            &format!("the desk at rest again in the {preset} preset"),
-            |session| crate::common::desk_here(session) == "none",
+            &format!("the shell at rest again in the {preset} preset"),
+            |session| crate::common::shell_here(session) == "none",
         );
     }
 }

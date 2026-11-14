@@ -18,7 +18,7 @@ use std::time::Duration;
 use crate::common::window::{Client, KEY_A, KEY_ESCAPE, WINDOW, WINDOW_BYTES, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig, Screenshot};
-use tilo_desktop::desk_verbs::DISPLAY_KIND;
+use tilo_desktop::verbs::DISPLAY_KIND;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
@@ -87,7 +87,7 @@ fn rect(session: &mut Session, app: &str) -> (i32, i32, i32, i32) {
     window(session.compositor(), app).expect("mapped").1
 }
 
-/// The displays the desk publishes, in reading order.
+/// The displays the shell publishes, in reading order.
 fn displays(session: &Session) -> Vec<ResourceSpec> {
     fn find(resources: &[ResourceSpec], hit: &dyn Fn(&ResourceSpec) -> bool) -> Vec<ResourceSpec> {
         resources
@@ -154,7 +154,7 @@ fn right() -> (i32, i32, i32, i32) {
     (WIDTH, 0, WIDTH, HEIGHT)
 }
 
-/// The first row under the top bar: everything below is the desk the banners and cards float over.
+/// The first row under the top bar: everything below is the shell the banners and cards float over.
 fn under_bar() -> i32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -185,7 +185,7 @@ fn a_sheet_opens_on_the_display_in_focus() {
     let _settled = ui::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
-    assert_eq!(displays(&session).len(), 2, "the desk tells both apart");
+    assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
     focuses(&mut session, &mut client, 1);
 
     let before_left = shot(&mut session, "HEADLESS-1");
@@ -233,12 +233,12 @@ fn a_banner_and_an_activity_card_stand_on_the_display_in_focus() {
     let _settled = ui::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
-    assert_eq!(displays(&session).len(), 2, "the desk tells both apart");
+    assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
     focuses(&mut session, &mut client, 1);
     let left = shot(&mut session, "HEADLESS-1");
     let right = shot(&mut session, "HEADLESS-2");
 
-    // An app floats a card over the desk, and a notification puts a banner beside it.
+    // An app floats a card over the shell, and a notification puts a banner beside it.
     let mut card = Published::of(Summary::new(Kind::Timer, "Tea", "4:32").with_id("tea"));
     card.overlay = true;
     session.live_activities().show(
@@ -277,7 +277,7 @@ fn a_banner_and_an_activity_card_stand_on_the_display_in_focus() {
         "nothing of them reaches the other display"
     );
 
-    // The person moves to the other display: what stands over the desk moves with them.
+    // The person moves to the other display: what stands over the shell moves with them.
     focuses(&mut session, &mut client, 0);
     crate::common::wait_for(
         &mut session,

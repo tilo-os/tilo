@@ -33,7 +33,7 @@ use crate::guide::PageGuide;
 use crate::over_page::OverSheet as _;
 use tilo_desktop::about::{AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{ChromeIntent, DesktopChromeSource};
-use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk, DesktopChrome};
+use tilo_desktop::desktop_host::{BackgroundLayer, DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::profile_card::{
     LazyProfileCard, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
@@ -477,7 +477,7 @@ fn minute() -> i64 {
 /// empty), and what only the page shows over them.
 pub(crate) struct BrowserShell {
     /// Under the windows: backdrop, launchpad and the strip.
-    under: DeskLayer,
+    under: BackgroundLayer,
     /// Over them: the bar, the strip ribbon and rail, the overview and
     /// the bar's menus.
     top: DesktopChrome,
@@ -1288,10 +1288,11 @@ impl BrowserShell {
         {
             return false;
         }
-        self.top.set_tilo(tilo_desktop::overview_tilo::TiloDesk {
-            door: self.door.door().cloned(),
-            ..tilo_desktop::overview_tilo::TiloDesk::default()
-        });
+        self.top
+            .set_tilo(tilo_desktop::overview_tilo::TiloOverview {
+                door: self.door.door().cloned(),
+                ..tilo_desktop::overview_tilo::TiloOverview::default()
+            });
         true
     }
 
@@ -2233,9 +2234,9 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
 
 /// The page's shell: its one window hosts the cards itself, since no compositor gives an app's card
 /// a window of its own.
-fn page_layer(surface: DesktopSurface, handle: &DesktopHandle) -> DeskLayer {
+fn page_layer(surface: DesktopSurface, handle: &DesktopHandle) -> BackgroundLayer {
     let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
-    DeskLayer::new(
+    BackgroundLayer::new(
         Box::new(surface),
         handle.clone(),
         launchpad,

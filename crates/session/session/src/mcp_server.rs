@@ -55,7 +55,7 @@ use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
 use crate::app_names::app_name;
 use crate::launches::Launches;
-use crate::plane::DeskAuthority;
+use crate::plane::LayoutAuthority;
 use crate::platform::steps::SessionSteps as _;
 use crate::remote_door::Remote;
 use tilo_action_policy::AgentSessionId;
@@ -212,7 +212,7 @@ struct Waiting {
     /// The workspace as the person reads it.
     workspace_name: String,
     session: AgentSessionId,
-    /// The program the answer is remembered for (`claude-code`), and what the desk calls the
+    /// The program the answer is remembered for (`claude-code`), and what the shell calls the
     /// session (`Claude Code #2`).
     agent: String,
     shown: String,
@@ -338,7 +338,7 @@ pub(crate) struct Mounted {
 }
 
 /// The session's side of the door: it asks the person, admits the agent they answered, and serves
-/// what it listened for. It runs on the loop's own pass, the only place that may touch the desk.
+/// what it listened for. It runs on the loop's own pass, the only place that may touch the shell.
 pub(crate) struct Loop {
     questions: Option<Questions>,
     listener: UnixListener,
@@ -358,9 +358,9 @@ pub(crate) struct Loop {
     bindings_path: Option<PathBuf>,
     launches: Arc<Launches>,
     wake: Wake,
-    /// The desk the broker decides against, kept by the same loop: an admission made here reaches
+    /// The shell the broker decides against, kept by the same loop: an admission made here reaches
     /// the broker now, not on its next pass.
-    desk: Option<Arc<DeskAuthority>>,
+    shell: Option<Arc<LayoutAuthority>>,
     /// The places connections are served in: as many as the door serves at once.
     room: Room,
     /// Polls the questions: the loop looks for an answer on each of its own passes, so nothing else
@@ -424,15 +424,15 @@ impl Serving {
 }
 
 impl Mounted {
-    /// Serve what the door listened for from `broker` , whose decisions read `desk` : an admission
-    /// on `desk` is what lets the client act.
+    /// Serve what the door listened for from `broker` , whose decisions read `shell` : an admission
+    /// on `shell` is what lets the client act.
     pub(crate) fn serve(
         mut self,
         broker: Option<Arc<AppBrokerState>>,
-        desk: Option<Arc<DeskAuthority>>,
+        shell: Option<Arc<LayoutAuthority>>,
     ) -> Loop {
         self.door.broker = broker;
-        self.door.desk = desk;
+        self.door.shell = shell;
         self.door
     }
 }
@@ -545,7 +545,7 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         bindings_path,
         launches,
         wake,
-        desk: None,
+        shell: None,
         room: Room::default(),
         // The loop polls its questions itself, each pass, so an answer needs no wakeup.
         waker: Waker::noop().clone(),
@@ -802,7 +802,7 @@ impl Loop {
     }
 
     /// The agent of its own the client `facts` describes is admitted as, when the person admits it
-    /// as `agent`, and how their desk shows it: its instance among the clients of that agent at its
+    /// as `agent`, and how their shell shows it: its instance among the clients of that agent at its
     /// place (`claude-code@host#2`, `Claude Code #2`, `Claude Code in dev #2`). An agent from
     /// another device names its device already (`claude-code@laptop-3f2a`).
     fn agent_of(&mut self, agent: &str, facts: &Facts) -> (String, String) {
@@ -1035,7 +1035,7 @@ fn where_it_works(
 }
 
 /// The workspace a client works in, by id and as the person reads it: the one
-/// an agent from another device asked for (`asked`), when this desk holds it;
+/// an agent from another device asked for (`asked`), when this session holds it;
 /// else the one in front, as for any other client.
 fn workspace_for(handle: &DesktopHandle, asked: Option<&str>) -> Option<(String, String)> {
     handle.read(|tree| {
@@ -1351,7 +1351,7 @@ fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
 }
 
 /// What a control client that is not a program inside an app this session started is told: the
-/// pointer, the keys and the frames of the person's desk are theirs, and an agent acts through the
+/// pointer, the keys and the frames of the person's shell are theirs, and an agent acts through the
 /// actions a resource publishes.
 const CONTROL_IN_APP_ONLY: &str = "The control protocol is served here to a program running \
      inside an app this session started, as that app, and to nothing else: this program is \
@@ -1433,24 +1433,24 @@ pub(crate) struct SessionDoors {
     /// The session's own actions, which it hands to a connection's door as they are read on
     /// its pass: `None` on a session that serves no broker and lists them itself.
     actions: std::sync::OnceLock<Arc<crate::session_actions::SessionActions>>,
-    /// The workspace each of the desk's windows stands in, by its tab, as of the loop's last
-    /// pass: an agent works in one workspace, and the desk's windows of another are not its.
+    /// The workspace each of the shell's windows stands in, by its tab, as of the loop's last
+    /// pass: an agent works in one workspace, and the shell's windows of another are not its.
     tabs: std::sync::Mutex<HashMap<u64, String>>,
-    /// The desk's workspaces, as of the loop's last pass: each one's decimal id, name and the id it
+    /// The shell's workspaces, as of the loop's last pass: each one's decimal id, name and the id it
     /// is shared under, by which an action names a workspace.
     workspaces: std::sync::Mutex<Vec<[String; 2]>>,
     /// The apps whose records the session's services keep, the packages it runs itself: only
     /// their records are read and changed on the loop's pass. Every other app's are the
     /// workspace's, which a connection reads without waiting for a pass.
     kept: std::sync::Mutex<std::collections::BTreeSet<String>>,
-    /// Why the apps of each desk workspace this device holds but is not admitted to yet run
+    /// Why the apps of each shell workspace this device holds but is not admitted to yet run
     /// nothing, by the workspace's id, as of the loop's last pass ([`Self::keep_awaiting`]).
     awaiting: std::sync::Mutex<HashMap<String, String>>,
     /// When [`Self::awaiting`] was last read: once a second, not on every pass.
     awaited_at: std::sync::Mutex<Option<std::time::Instant>>,
     /// What changed in the records of the workspaces this device holds, for a watch of a whole
-    /// workspace ([`crate::desk_changes`]).
-    changes: Arc<crate::desk_changes::DeskChanges>,
+    /// workspace ([`crate::change_feed`]).
+    changes: Arc<crate::change_feed::Feeds>,
 }
 
 /// How often the loop reads again which workspaces wait for their host to admit this device: the
@@ -1532,7 +1532,7 @@ impl SessionDoors {
         self.changes.keep(engine);
     }
 
-    /// Keep which of the desk's workspaces this device holds but its host has not taken it in
+    /// Keep which of the shell's workspaces this device holds but its host has not taken it in
     /// yet, read from `engine` on the loop's pass: a machine copied from one of the person's
     /// devices is a device of its own, and only the workspace's host admits it, once it reaches
     /// that host. Until then the workspace's apps take part in nothing there, so what is asked of
@@ -1580,7 +1580,7 @@ impl SessionDoors {
         self.kept.lock_recover().insert(app.to_owned());
     }
 
-    /// Keep where the desk's windows stand now, read from `handle` on the loop's pass.
+    /// Keep where the shell's windows stand now, read from `handle` on the loop's pass.
     pub(crate) fn keep_tabs(&self, handle: &DesktopHandle) {
         let tabs = handle.read(|tree| {
             let mut tabs = HashMap::new();
@@ -1612,15 +1612,15 @@ impl SessionDoors {
         *self.workspaces.lock_recover() = workspaces;
     }
 
-    /// Whether `request` branches a workspace other than `workspace` , or one the desk does not
+    /// Whether `request` branches a workspace other than `workspace` , or one the shell does not
     /// know ([`crate::workspace_branch::branches_elsewhere`]).
     fn branches_elsewhere(&self, request: &InvokeRequest, workspace: &str) -> bool {
         let workspaces = self.workspaces.lock_recover().clone();
         crate::workspace_branch::branches_elsewhere(request, &workspaces, workspace)
     }
 
-    /// Whether the desk's window `resource` (`desktop:tab:<tab>`) stands in a workspace other than
-    /// `workspace`: a window the desk no longer knows is no one's.
+    /// Whether the shell's window `resource` (`desktop:tab:<tab>`) stands in a workspace other than
+    /// `workspace`: a window the shell no longer knows is no one's.
     fn window_elsewhere(&self, resource: &str, workspace: &str) -> bool {
         tilo_desktop_surface::window::resource_tab(resource).is_some_and(|tab| {
             self.tabs
@@ -2046,7 +2046,7 @@ impl Host {
         // person at this seat is nobody's delegate.
         let own = request.target.provider == wire_provider();
         let person = caller.acting().is_person();
-        // An agent works in one workspace: a desk window of another is not its to read or act on,
+        // An agent works in one workspace: a shell window of another is not its to read or act on,
         // whatever it names it by.
         if !person
             && let Some(workspace) = caller.workspace()
@@ -2192,7 +2192,7 @@ impl ActionHost for Host {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        // An agent works in one workspace: the desk's windows of another (each listed by the title
+        // An agent works in one workspace: the shell's windows of another (each listed by the title
         // of what it shows) are not its to read or act on. The person's own catalogue is theirs.
         let confined = if caller.acting().is_person() {
             None
@@ -2301,7 +2301,7 @@ impl ActionHost for Host {
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         // An admitted agent's step is its session's to ask about: its person answers on this
-        // desk's sheet ([`crate::run_questions`]).
+        // shell's sheet ([`crate::run_questions`]).
         if let Some(agent) = &self.agent
             && !caller.acting().is_person()
         {
@@ -2693,7 +2693,7 @@ fn wire_provider() -> &'static str {
     tilo_actions::remote::SESSION_ACTIONS_PROVIDER
 }
 
-/// The workspace an app's own provider names: `application:<workspace>:<app>…`, an app the desk
+/// The workspace an app's own provider names: `application:<workspace>:<app>…`, an app the shell
 /// opened there, or `launch:<workspace>:<app>…`, one it would start there.
 fn app_provider_workspace(provider: &str) -> Option<&str> {
     let rest = provider
@@ -2703,8 +2703,8 @@ fn app_provider_workspace(provider: &str) -> Option<&str> {
     (!workspace.is_empty()).then_some(workspace)
 }
 
-/// Why nothing of `workspace` (its id) runs here yet: the desk holds it, but `engine` has not been
-/// admitted to it by its host ([`awaited_sentence`]). `None` once admitted, for a workspace the desk
+/// Why nothing of `workspace` (its id) runs here yet: the shell holds it, but `engine` has not been
+/// admitted to it by its host ([`awaited_sentence`]). `None` once admitted, for a workspace the shell
 /// does not hold, or one that is no workspace's id.
 pub(crate) fn awaited_reason(
     engine: &tilo_session_client::engine::Engine,

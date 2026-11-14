@@ -99,10 +99,10 @@ fn principal(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(root: &[u8; 32]) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn shell(root: &[u8; 32]) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Shell");
     workspace.set_owner(principal(root));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -112,7 +112,7 @@ fn desk(root: &[u8; 32]) -> Layout {
 }
 
 /// A session of this computer taking part in the collaboration plane, keeping what it holds under
-/// `state` , on the desk showing the workspace.
+/// `state` , on the shell showing the workspace.
 fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -123,7 +123,7 @@ fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
             ..Options::default()
         },
     );
-    session.handle().replace_tree(desk(root));
+    session.handle().replace_tree(shell(root));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
@@ -157,7 +157,7 @@ fn capture(session: &mut Session, name: &str) {
     std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }
 
-/// The workspace shown on the desk, by id.
+/// The workspace shown on the shell, by id.
 fn front(session: &Session) -> String {
     session
         .handle()
@@ -183,7 +183,7 @@ fn delete_sheet_open(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// Whether the desk is asking the person anything on a banner.
+/// Whether the shell is asking the person anything on a banner.
 fn asking_on_a_banner(session: &Session) -> bool {
     let centre = session.notifications();
     let log = centre.log();
@@ -204,18 +204,18 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
     settle(&mut session);
     let shown = front(&session);
 
-    // An agent asks the desk to delete it without having answered anything: the person's own
+    // An agent asks the shell to delete it without having answered anything: the person's own
     // question stands instead, and nothing is deleted.
     session
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "delete-workspace",
             &serde_json::Map::new(),
         )
-        .expect("the desk is asked to delete the workspace");
+        .expect("the shell is asked to delete the workspace");
     settle(&mut session);
     assert_eq!(front(&session), shown, "the workspace stays");
-    assert_eq!(asked(&session), "Desk", "the question names the workspace");
+    assert_eq!(asked(&session), "Shell", "the question names the workspace");
     assert!(delete_sheet_open(&session), "the question stands");
     assert!(
         !asking_on_a_banner(&session),
@@ -250,11 +250,11 @@ fn the_persons_yes_deletes_the_workspace() {
 
     session
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "delete-workspace",
             &serde_json::Map::new(),
         )
-        .expect("the desk is asked to delete the workspace");
+        .expect("the shell is asked to delete the workspace");
     settle(&mut session);
     session
         .delete_workspace_sheet()
@@ -267,7 +267,7 @@ fn the_persons_yes_deletes_the_workspace() {
             .workspaces
             .iter()
             .all(|held| held.id().to_string() != shown)),
-        "the workspace is gone from the desk"
+        "the workspace is gone from the shell"
     );
     assert!(!delete_sheet_open(&session), "the question is answered");
     let centre = session.notifications();
@@ -276,7 +276,7 @@ fn the_persons_yes_deletes_the_workspace() {
         .history()
         .iter()
         .chain(log.active().iter())
-        .any(|notice| notice.title.contains("Desk"));
+        .any(|notice| notice.title.contains("Shell"));
     assert!(told, "the person is told the workspace is deleted");
 }
 
@@ -296,7 +296,7 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
 
     session
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "workspace-settings",
             &serde_json::Map::new(),
         )
@@ -344,7 +344,7 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
             .workspaces
             .iter()
             .all(|held| held.id().to_string() != shown)),
-        "the confirmed delete is the desk's, and it deleted the workspace"
+        "the confirmed delete is the shell's, and it deleted the workspace"
     );
 }
 
@@ -371,7 +371,7 @@ fn forgotten(device: &crate::common::people::Device, workspace: &str) {
     );
 }
 
-/// The owner deletes the workspace at its site: a member's device in it takes it off the desk and
+/// The owner deletes the workspace at its site: a member's device in it takes it off the shell and
 /// out of its record and tells the person, and a member's device that was off meanwhile does the
 /// same once it is back.
 #[test]

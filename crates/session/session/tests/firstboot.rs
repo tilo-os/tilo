@@ -1,6 +1,6 @@
 //! The machine's first boot: which binary the unit starts, what that binary does with the flag it
 //! is given, and what it settles about the identity the machine already holds before it opens a
-//! desk.
+//! shell.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -19,7 +19,7 @@ use tilo_onboarding_host::identity::IdentityProblem;
 use tilo_onboarding_host::identity_provisioning::IDENTITY_RECOVERY_ENV;
 use tilo_session::firstboot::{OneShot, one_shot};
 use tilo_session::startup::{self, Identity};
-use tilo_session::{BeforeDesk, Options, Session};
+use tilo_session::{BeforeShell, Options, Session};
 use tilo_user_identity::{DeviceCertError, IdentityPaths, persist};
 
 /// The unit the image ships for the machine's own first-boot setup.
@@ -82,7 +82,7 @@ impl Machine {
 }
 
 /// The record the session resolves for this account: what it reads before it decides whether the
-/// desk opens.
+/// shell opens.
 fn record() -> PathBuf {
     tilo_onboarding_host::identity_provisioning::DiskIdentityStore::from_env()
         .expect("the identity store")
@@ -138,9 +138,9 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
 }
 
 #[test]
-fn a_verified_identity_opens_the_desk() {
+fn a_verified_identity_opens_the_shell() {
     let _machine = machine();
-    assert_eq!(startup::identity(), Identity::Desk);
+    assert_eq!(startup::identity(), Identity::Shell);
 }
 
 /// Date this device's certificate `ahead` from now, signed by the person's own root as the
@@ -164,8 +164,8 @@ fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
 }
 
 /// A certificate the clock reads as not yet valid leaves the identity intact: startup answers at
-/// once and hands the session the wait for the clock, which opens in front of the desk instead of
-/// the desk.
+/// once and hands the session the wait for the clock, which opens in front of the shell instead of
+/// the shell.
 #[test]
 fn a_certificate_the_clock_reads_as_not_yet_valid_waits_for_the_clock() {
     let machine = machine();
@@ -180,10 +180,10 @@ fn a_certificate_the_clock_reads_as_not_yet_valid_waits_for_the_clock() {
     assert_eq!(refusal.valid_at_ns(), Some(issued_at_ns));
 }
 
-/// The waiting screen stands in front of the desk while the clock is behind the certificate, says
+/// The waiting screen stands in front of the shell while the clock is behind the certificate, says
 /// so, and goes away by itself once the clock passes.
 #[test]
-fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
+fn the_wait_for_the_clock_shows_until_the_shell_can_open() {
     let machine = machine();
     // Far enough ahead that the session is up and drawn before it passes.
     let issued_at_ns = certificate_dated_ahead(&machine, Duration::from_secs(3));
@@ -192,8 +192,8 @@ fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
     let before =
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
 
-    let setup = startup::before_desk(&identity, false).expect("the wait stands before the desk");
-    assert!(matches!(setup, BeforeDesk::WaitForClock(_)));
+    let setup = startup::before_shell(&identity, false).expect("the wait stands before the shell");
+    assert!(matches!(setup, BeforeShell::WaitForClock(_)));
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
@@ -205,7 +205,7 @@ fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
     session.step(Duration::from_millis(1)).expect("a frame");
     assert!(
         session.setup_up(),
-        "the desk stays off until the clock passes"
+        "the shell stays off until the clock passes"
     );
     let waiting = session.accessible_labels();
     assert!(
@@ -216,31 +216,31 @@ fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
     );
     assert!(
         publisher(&session, "overview").is_none(),
-        "the wait withholds the desk's actions"
+        "the wait withholds the shell's actions"
     );
 
     let deadline = tilo_test_env::hang_deadline();
     while session.setup_up() {
         assert!(
             std::time::Instant::now() < deadline,
-            "the desk never opened once the clock passed"
+            "the shell never opened once the clock passed"
         );
         session.step(Duration::from_millis(100)).expect("a frame");
     }
     assert!(
         tilo_clock::unix_now_ns() >= issued_at_ns,
-        "the desk opened before the clock reached the certificate"
+        "the shell opened before the clock reached the certificate"
     );
     let opened = session.accessible_labels();
     assert!(
         !opened
             .iter()
             .any(|label| label.contains("Waiting for the clock")),
-        "the wait left the desk: {opened:?}"
+        "the wait left the shell: {opened:?}"
     );
     assert!(
         publisher(&session, "overview").is_some(),
-        "the desk's actions are back"
+        "the shell's actions are back"
     );
     assert_eq!(
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate"),
@@ -304,7 +304,7 @@ fn a_record_that_does_not_even_parse_starts_setup_without_replacing_it() {
 
     assert_eq!(
         startup::identity(),
-        Identity::Desk,
+        Identity::Shell,
         "setup validates what is there and asks its person, and is not what starts a session"
     );
     assert_eq!(
@@ -354,8 +354,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
 
     assert_eq!(
         startup::identity(),
-        Identity::Desk,
-        "a login that holds its person's enrollment opens that person's desk"
+        Identity::Shell,
+        "a login that holds its person's enrollment opens that person's shell"
     );
 
     // The record the login took up is the person's, selected as the one this session acts as, and
@@ -381,7 +381,11 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         taken_up,
         "the session resolves the record it took up on the next login"
     );
-    assert_eq!(startup::identity(), Identity::Desk, "and it still verifies");
+    assert_eq!(
+        startup::identity(),
+        Identity::Shell,
+        "and it still verifies"
+    );
     assert_eq!(
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate"),
         cert,

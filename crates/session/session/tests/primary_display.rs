@@ -125,13 +125,13 @@ fn make_primary(session: &mut Session, primary: &str) {
     DisplayTransaction::request(set, candidate).expect("a display change staged");
 }
 
-/// The display on the right of the two, `HEADLESS-2` , as the desk numbers its displays: the one
+/// The display on the right of the two, `HEADLESS-2` , as the shell numbers its displays: the one
 /// the person makes primary here.
 fn right_display(session: &Session) -> Option<u32> {
     session.handle().displays().get(1).copied()
 }
 
-/// Whether the desk has been told that the right display is the primary one; until it has, the
+/// Whether the shell has been told that the right display is the primary one; until it has, the
 /// first display stands in and the primary it names is the left one.
 fn primary_reached(session: &Session) -> bool {
     let right = right_display(session);

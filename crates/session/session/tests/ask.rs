@@ -29,7 +29,7 @@ const HEIGHT: i32 = 800;
 const NARROW: i32 = 420;
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// A headless session `width` by `height` at its desk, drawn once.
+/// A headless session `width` by `height` at its shell, drawn once.
 fn session_on(width: i32, height: i32) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", width, height)],
@@ -42,12 +42,12 @@ fn session_on(width: i32, height: i32) -> Session {
     session
 }
 
-/// A headless session at its desk, drawn once.
+/// A headless session at its shell, drawn once.
 fn session() -> Session {
     session_on(WIDTH, HEIGHT)
 }
 
-/// The notices a test host shows, on the desk this session draws them on.
+/// The notices a test host shows, on the shell this session draws them on.
 struct Told(DesktopNotifications);
 
 impl Notices for Told {
@@ -204,7 +204,7 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
         "an ask about the person is not a banner too"
     );
 
-    // The person answers it on their avatar: the bar's answer asks the desk exactly this.
+    // The person answers it on their avatar: the bar's answer asks the shell exactly this.
     session.handle().answer_personal_ask();
     session.step(SETTLE).expect("a frame");
     session.step(SETTLE).expect("a frame");
@@ -231,7 +231,7 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
     );
     assert!(
         session.handle().take_host_choices().is_empty(),
-        "the session performed the answer rather than leaving it in the desk"
+        "the session performed the answer rather than leaving it in the shell"
     );
 }
 
@@ -273,7 +273,7 @@ fn an_ask_that_does_not_fit_the_bar_opens_across_its_band() {
     );
     assert!(
         session.handle().take_host_choices().is_empty(),
-        "the session performed the answer rather than leaving it in the desk"
+        "the session performed the answer rather than leaving it in the shell"
     );
     keep(&mut session, "ask-narrow-420-answered");
 }

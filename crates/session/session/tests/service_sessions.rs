@@ -40,7 +40,7 @@ const SETTINGS: &str = "so.tilo.settings";
 const MAIL: &str = "so.tilo.mail";
 /// Browser's record in the workspace: the route its app connection joins.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bf";
-/// The workspace the session holds, as the desk names it.
+/// The workspace the session holds, as the shell names it.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 /// The secret the person's email account is sealed with.
 const PASSWORD: &str = "an app password only custody is released";
@@ -250,10 +250,10 @@ fn principal(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(keys: &Keys) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn shell(keys: &Keys) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Shell");
     workspace.set_owner(principal(&keys.root));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -291,7 +291,7 @@ fn private_socket() -> (tempfile::TempDir, PathBuf) {
 }
 
 /// The session serving `app` on `socket` , holding the fixture's workspace from its state and
-/// showing its desk.
+/// showing its shell.
 fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process.
@@ -307,7 +307,7 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
         lists: Lists::default(),
         ..Options::default()
     });
-    session.handle().replace_tree(desk(&fixture.keys));
+    session.handle().replace_tree(shell(&fixture.keys));
     for _ in 0..4 {
         session
             .step(std::time::Duration::from_millis(1))

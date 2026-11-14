@@ -998,8 +998,8 @@ fn closing_the_chooser_leaves_the_file_question_unanswered() {
     );
 }
 
-/// What the agents the desk's workspace holds, as Settings lists them.
-fn desk_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)> {
+/// What the agents the shell's workspace holds, as Settings lists them.
+fn shell_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)> {
     session.handle().read(|tree| {
         tree.workspaces
             .first()
@@ -1014,7 +1014,7 @@ fn desk_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)> 
 fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
     use tilo_sheets::workspace_settings::{Tab, WorkspaceSettingsEffect};
     let sheet = publisher(session, "workspace-settings")
-        .expect("the desk publishes its workspace settings");
+        .expect("the shell publishes its workspace settings");
     session
         .invoke(&sheet, "workspace-settings", &Map::new())
         .expect("open the workspace settings");
@@ -1103,7 +1103,7 @@ fn door_answers(
         .expect("the program at the door is served")
 }
 
-/// The agents the desk shows as seated at the person's door: the ones whose work the bar carries as
+/// The agents the shell shows as seated at the person's door: the ones whose work the bar carries as
 /// a presence of its own.
 fn seated_agents(session: &Session) -> Vec<String> {
     session
@@ -1129,9 +1129,9 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         mcp_server: Some(socket.clone()),
         ..Options::default()
     });
-    // Nobody set this desk's owner up: the desk a device seeds is the person's own, and it is what
+    // Nobody set this session's owner up: the shell a device seeds is the person's own, and it is what
     // lets the MCP server's question be answered at all.
-    assert!(desk_agents(&session).is_empty(), "nobody works here yet");
+    assert!(shell_agents(&session).is_empty(), "nobody works here yet");
 
     let (answers, received) = std::sync::mpsc::channel();
     let (release, hold) = std::sync::mpsc::channel();
@@ -1161,7 +1161,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     assert_eq!(shown.confirm_label, "Allow");
     assert_eq!(shown.cancel_label, "Deny");
     assert!(
-        desk_agents(&session).is_empty(),
+        shell_agents(&session).is_empty(),
         "still nobody, before the answer"
     );
 
@@ -1188,13 +1188,13 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         "the bar shows the agent the person let in while it works here"
     );
     assert!(
-        desk_agents(&session).is_empty(),
-        "its membership is the agent member, not a delegation on the desk"
+        shell_agents(&session).is_empty(),
+        "its membership is the agent member, not a delegation on the shell"
     );
     assert_eq!(
         agents_tab(&mut session),
         (true, vec!["claude-code".to_owned()]),
-        "the person administers the desk they sit at, and the client is their agent member there"
+        "the person administers the shell they sit at, and the client is their agent member there"
     );
     let _ = release.send(());
     client.join().expect("the program's thread");
@@ -1227,5 +1227,5 @@ fn a_program_the_person_refuses_works_nowhere() {
         Some("You didn’t let this program work here as an agent."),
         "the program reads why: {read:?}"
     );
-    assert!(desk_agents(&session).is_empty(), "no agent joined");
+    assert!(shell_agents(&session).is_empty(), "no agent joined");
 }

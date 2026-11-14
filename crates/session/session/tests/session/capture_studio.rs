@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::desk::{capture, held_clock};
+use super::shell::{capture, held_clock};
 use super::*;
 
 use tilo_portal::{Capture as _, CaptureError, CaptureTarget};
@@ -136,19 +136,19 @@ fn print_key(session: &mut Session) -> u32 {
 #[test]
 fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the bar's arrival must change: with the clock held, a minute turning
+    // The shell is the frame the bar's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
     let print = print_key(&mut session);
-    let desk = quiet_desk(&mut session, "HEADLESS-1");
+    let shell = quiet_shell(&mut session, "HEADLESS-1");
 
     tap(&mut session, print);
-    // The studio comes up over the desk, and takes nothing on its own: the person picks the screen,
+    // The studio comes up over the shell, and takes nothing on its own: the person picks the screen,
     // a window or an area on it.
-    bar_up(&mut session, "HEADLESS-1", &desk);
+    bar_up(&mut session, "HEADLESS-1", &shell);
     assert!(
         kept(pictures.path(), "png").is_empty(),
         "the press alone keeps nothing"
@@ -158,7 +158,7 @@ fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
 #[test]
 fn shift_and_the_print_key_take_the_whole_display_at_once() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the card's arrival must change: with the clock held, a minute turning
+    // The shell is the frame the card's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
@@ -167,9 +167,9 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
     let print = print_key(&mut session);
     assert!(kept(pictures.path(), "png").is_empty(), "nothing yet");
 
-    // The desk as the press leaves it: with the bar down, anything the desk shows after the press
+    // The shell as the press leaves it: with the bar down, anything the shell shows after the press
     // is the shot's own card.
-    let desk = quiet_desk(&mut session, "HEADLESS-1");
+    let shell = quiet_shell(&mut session, "HEADLESS-1");
 
     // Shift takes the whole display without the studio coming up to ask.
     key(&mut session, super::keys::LEFT_SHIFT, true);
@@ -184,7 +184,7 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
         session
             .compositor()
             .screenshot("HEADLESS-1")
-            .is_ok_and(|frame| frame.rgba != desk)
+            .is_ok_and(|frame| frame.rgba != shell)
     });
     let kept = kept(pictures.path(), "png");
     assert_eq!(kept.len(), 1, "one press, one picture: {kept:?}");
@@ -202,22 +202,22 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
 #[test]
 fn a_shot_answers_after_the_studio_was_up_and_put_away() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the card's arrival must change: with the clock held, a minute turning
+    // The shell is the frame the card's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
     let print = print_key(&mut session);
-    let desk = quiet_desk(&mut session, "HEADLESS-1");
+    let shell = quiet_shell(&mut session, "HEADLESS-1");
 
     // Print brings the studio up, and Escape puts it away again.
     tap(&mut session, print);
-    bar_up(&mut session, "HEADLESS-1", &desk);
+    bar_up(&mut session, "HEADLESS-1", &shell);
     tap(&mut session, super::keys::ESCAPE);
-    bar_down(&mut session, "HEADLESS-1", &desk);
+    bar_down(&mut session, "HEADLESS-1", &shell);
 
-    // A shot from the desk afterwards still answers with its card: the studio having been up once
+    // A shot from the shell afterwards still answers with its card: the studio having been up once
     // leaves no bar behind to say it instead.
     key(&mut session, super::keys::LEFT_SHIFT, true);
     tap(&mut session, print);
@@ -229,7 +229,7 @@ fn a_shot_answers_after_the_studio_was_up_and_put_away() {
         session
             .compositor()
             .screenshot("HEADLESS-1")
-            .is_ok_and(|frame| frame.rgba != desk)
+            .is_ok_and(|frame| frame.rgba != shell)
     });
 }
 
@@ -259,7 +259,7 @@ fn the_studio_takes_a_screenshot_of_one_window_as_its_client_drew_it() {
     let picture = image::open(&path).expect("a picture").to_rgba8();
     let (width, height) = picture.dimensions();
     assert!(width > 0 && height > 0, "the window has a picture");
-    // The window alone: the colour its client drew, not the desk under it.
+    // The window alone: the colour its client drew, not the shell under it.
     #[allow(clippy::cast_possible_wrap, reason = "a window's pixels on a screen")]
     let (middle_x, middle_y) = ((width / 2) as i32, (height / 2) as i32);
     assert_eq!(pixel_at(&picture, middle_x, middle_y), [200, 40, 40, 255]);
@@ -360,18 +360,18 @@ fn the_studio_records_the_display_into_a_file_until_it_is_stopped() {
 #[test]
 fn the_studios_open_action_puts_the_bar_over_the_desktop() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the bar's arrival must change: with the clock held, a minute turning
+    // The shell is the frame the bar's arrival must change: with the clock held, a minute turning
     // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
-    let desk = quiet_desk(&mut session, "HEADLESS-1");
+    let shell = quiet_shell(&mut session, "HEADLESS-1");
 
     ask_studio(&mut session, "open", &serde_json::json!({}));
     pump(&mut session, &mut [], |session, _| {
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        frame.rgba != desk
+        frame.rgba != shell
     });
     capture(&mut session, "capture-studio");
 }
@@ -434,19 +434,19 @@ fn answered(
     asking.join().unwrap()
 }
 
-/// Frames of the desk's own clock to run past before the desk is read: chrome
-/// the desk shows on activity (its overlay scroll bars) stays fully up for
+/// Frames of the shell's own clock to run past before the shell is read: chrome
+/// the shell shows on activity (its overlay scroll bars) stays fully up for
 /// 0.9 s and fades over another 0.32 s, and `bar_down` runs the clock on past
-/// it, so the desk the bar is compared against has to be the one with that
+/// it, so the shell the bar is compared against has to be the one with that
 /// chrome gone.
 const QUIET_FRAMES: usize = 30;
 
-/// The desk on `display` with nothing of the studio on it and nothing of its own moving: the frame
+/// The shell on `display` with nothing of the studio on it and nothing of its own moving: the frame
 /// the bar arriving changes, and the one it must come back to.
 #[track_caller]
-fn quiet_desk(session: &mut Session, display: &str) -> Vec<u8> {
-    // Chrome the desk fades by itself fades on the clock, and the clock here is the test's: run it
-    // past that fade rather than catching the desk mid-activity, which a loaded machine would have
+fn quiet_shell(session: &mut Session, display: &str) -> Vec<u8> {
+    // Chrome the shell fades by itself fades on the clock, and the clock here is the test's: run it
+    // past that fade rather than catching the shell mid-activity, which a loaded machine would have
     // timed differently.
     let mut at = tilo_clock::now();
     for _ in 0..QUIET_FRAMES {
@@ -458,26 +458,26 @@ fn quiet_desk(session: &mut Session, display: &str) -> Vec<u8> {
     session
         .compositor()
         .screenshot(display)
-        .expect("a picture of the desk")
+        .expect("a picture of the shell")
         .rgba
 }
 
-/// Step `session` until the studio's bar shows on `display` : the frame there is no longer `desk` .
+/// Step `session` until the studio's bar shows on `display` : the frame there is no longer `shell` .
 #[track_caller]
-fn bar_up(session: &mut Session, display: &str, desk: &[u8]) {
+fn bar_up(session: &mut Session, display: &str, shell: &[u8]) {
     pump(session, &mut [], |session, _| {
         session
             .compositor()
             .screenshot(display)
-            .is_ok_and(|frame| frame.rgba != desk)
+            .is_ok_and(|frame| frame.rgba != shell)
     });
 }
 
-/// Step `session` until nothing of the studio is drawn on `display` any more: the desk shows again
+/// Step `session` until nothing of the studio is drawn on `display` any more: the shell shows again
 /// as it was before the bar. The test holds its clock, so the bar's own minute is not a change to
 /// wait out.
 #[track_caller]
-fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
+fn bar_down(session: &mut Session, display: &str, shell: &[u8]) {
     // What the studio says of the send stays up long enough to be read, and that time is the
     // clock's: every frame here is read a little later than the one before, so the wait is the same
     // number of frames on a quiet machine and on a loaded one.
@@ -492,7 +492,7 @@ fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
             .compositor()
             .screenshot(display)
             .expect("a picture of the display");
-        if frame.rgba == desk {
+        if frame.rgba == shell {
             return;
         }
         assert!(
@@ -502,7 +502,7 @@ fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
     }
 }
 
-/// The person draws from `from` to `to` with the pointer, as they do on the desk.
+/// The person draws from `from` to `to` with the pointer, as they do on the shell.
 fn draw(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
     for event in [
         InputEvent::PointerMotion {
@@ -548,9 +548,9 @@ fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
         .expect("the compositor shows the window");
     assert!(x >= WIDTH, "the window stands on the second display");
 
-    let desk = quiet_desk(&mut session, "HDMI-A-1");
+    let shell = quiet_shell(&mut session, "HDMI-A-1");
     let asking = ask_in_background(&capture, CaptureTarget::Area);
-    bar_up(&mut session, "HDMI-A-1", &desk);
+    bar_up(&mut session, "HDMI-A-1", &shell);
     // A press, a drag and its release: the rectangle the person draws, on the display they are
     // working on.
     draw(
@@ -582,7 +582,7 @@ fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
         "nothing landed in the person's Pictures"
     );
     // The studio goes away once the app has its picture.
-    bar_down(&mut session, "HDMI-A-1", &desk);
+    bar_down(&mut session, "HDMI-A-1", &shell);
 }
 
 #[test]
@@ -597,9 +597,9 @@ fn a_portal_window_request_is_the_window_the_person_picks() {
     let (_, (x, y, width, height)) = window(session.compositor(), "org.example.Terminal")
         .expect("the compositor shows the window");
 
-    let desk = quiet_desk(&mut session, "eDP-1");
+    let shell = quiet_shell(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Window);
-    bar_up(&mut session, "eDP-1", &desk);
+    bar_up(&mut session, "eDP-1", &shell);
     // The person picks the window with the pointer and takes it.
     let centre = (
         f64::from(x) + f64::from(width) / 2.0,
@@ -625,7 +625,7 @@ fn a_portal_window_request_is_the_window_the_person_picks() {
         "written for the app, not in the person's folders: {}",
         shown.display()
     );
-    bar_down(&mut session, "eDP-1", &desk);
+    bar_down(&mut session, "eDP-1", &shell);
 }
 
 #[test]
@@ -638,9 +638,9 @@ fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works()
     let _client = mapped(&mut session, "org.example.Terminal");
     settle(&mut session, 4);
 
-    let desk = quiet_desk(&mut session, "eDP-1");
+    let shell = quiet_shell(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Area);
-    bar_up(&mut session, "eDP-1", &desk);
+    bar_up(&mut session, "eDP-1", &shell);
     // The person closes the bar instead of drawing.
     tap(&mut session, super::keys::ESCAPE);
     assert_eq!(
@@ -648,11 +648,11 @@ fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works()
         Err(CaptureError::Cancelled),
         "a selection nobody made is a cancel, not a failure"
     );
-    // Nothing of the studio lingers over the desk.
-    bar_down(&mut session, "eDP-1", &desk);
+    // Nothing of the studio lingers over the shell.
+    bar_down(&mut session, "eDP-1", &shell);
 
     // The next request is answered as usual.
-    let quiet = quiet_desk(&mut session, "eDP-1");
+    let quiet = quiet_shell(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Window);
     bar_up(&mut session, "eDP-1", &quiet);
     tap(&mut session, super::keys::ENTER);
@@ -676,14 +676,14 @@ fn a_request_the_app_closes_takes_the_studio_down_and_leaves_nothing_behind() {
     settle(&mut session, 4);
 
     // The app asks, then stops waiting while the person is choosing.
-    let desk = quiet_desk(&mut session, "eDP-1");
+    let shell = quiet_shell(&mut session, "eDP-1");
     let asking = capture.screenshot(CaptureTarget::Area);
-    bar_up(&mut session, "eDP-1", &desk);
+    bar_up(&mut session, "eDP-1", &shell);
     drop(asking);
-    bar_down(&mut session, "eDP-1", &desk);
+    bar_down(&mut session, "eDP-1", &shell);
 
     // The next request has the selector to itself.
-    let quiet = quiet_desk(&mut session, "eDP-1");
+    let quiet = quiet_shell(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Window);
     bar_up(&mut session, "eDP-1", &quiet);
     tap(&mut session, super::keys::ENTER);

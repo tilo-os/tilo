@@ -516,7 +516,7 @@ required = true
 type = "bool"
 
 [[resources]]
-id = "desktop:desk"
+id = "desktop:shell"
 kind = "desktop"
 label = ""
 version = 0

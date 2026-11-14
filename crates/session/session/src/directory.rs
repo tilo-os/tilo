@@ -79,7 +79,7 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
                     name = %joined.name,
                     %error,
                     outcome = "not made",
-                    "join: the desk would not make the workspace, so nothing was joined"
+                    "join: the shell would not make the workspace, so nothing was joined"
                 );
                 store.failing(tilo_sheets::words(
                     "directory-join-failed",

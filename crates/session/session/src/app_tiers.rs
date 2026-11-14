@@ -1,9 +1,9 @@
 //! Apps nobody is looking at: the tier they run in, and the memory they give back first.
-//! The desk knows which windows it shows — the front tab of each group on the strip in front, and
+//! The shell knows which windows it shows — the front tab of each group on the strip in front, and
 //! the dialogs floating over them — and the compositor knows which process made each window, so the
 //! session knows every app the person can see. It hands those processes to the apps it runs
 //! ([`tilo_app_launch::Spawner::tier_by_visibility`]) once per pass: an app that is still opening
-//! is in the startup tier of its cgroup, an app with a window the desk shows is in the foreground
+//! is in the startup tier of its cgroup, an app with a window the shell shows is in the foreground
 //! tier, an app with none is in the background tier, written through the same tier files a launch
 //! is born with. The cgroup this session runs in carries the session's own tier, which the pass
 //! names so a launch that shares it is never demoted with it.
@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The cgroup this session runs in: where its desk is weighted and where a launch a host gave no
+/// The cgroup this session runs in: where its shell is weighted and where a launch a host gave no
 /// scope of its own runs. Read once: the pass asks every frame and it cannot change under a running
 /// session (the cgroup the session was started in is the one its manager made for it).
 fn own_cgroup() -> Option<&'static Path> {

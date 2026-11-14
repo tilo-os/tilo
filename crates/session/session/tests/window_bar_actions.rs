@@ -27,7 +27,7 @@ use crate::common::{Repl, on_screen, until};
 const WINDOW_MENU: &str = "This window";
 
 /// The session with the shell as the whole screen and the seeded apps: the framed canvas is in
-/// front of it, and the seeded notes stand on the desk as its windows.
+/// front of it, and the seeded notes stand on the shell as its windows.
 fn session(root: &std::path::Path) -> (Session, Vec<String>) {
     let session = crate::common::seeded_session(root);
     let notes = note_ids(&session);
@@ -50,14 +50,14 @@ fn note_ids(session: &Session) -> Vec<String> {
     out
 }
 
-/// Show the desk style `preset` the way a person does: the three canvas presets through the
+/// Show the style `preset` the way a person does: the three canvas presets through the
 /// bar's own style switch (the shell's `show_style`), the desktop through the preset it is
 /// applied as (`chrome.tl`'s `apply`).
 fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
     if preset == "Desktop" {
         session
             .run_shell_action("apply", vec![Value::from("windows_desktop")])
-            .unwrap_or_else(|why| panic!("the desk shows {preset}: {why}"));
+            .unwrap_or_else(|why| panic!("the shell shows {preset}: {why}"));
     } else {
         let mut repl = Repl::connect(&root.join("agent.sock"));
         repl.opened(session);
@@ -70,7 +70,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
         );
         assert!(
             !failed || answer.contains("shown that way already"),
-            "the desk shows {preset}: {answer}"
+            "the shell shows {preset}: {answer}"
         );
     }
     if preset == "Desktop" {
@@ -79,8 +79,8 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
         });
     } else {
         // The canvas's bar keeps no switch (`canvas.md` §7): the canvas standing under it says
-        // the Frames desk is shown.
-        until(session, &format!("the {preset} desk"), |session| {
+        // the Frames shell is shown.
+        until(session, &format!("the {preset} shell"), |session| {
             crate::common::preset_menu(session).as_deref() == Some(&format!("Showing {preset}"))
                 || (preset == "Frames" && crate::common::canvas_shown(session))
         });
@@ -131,7 +131,7 @@ fn note_pinned(session: &Session, record: &str) -> Option<bool> {
         .find_map(Value::as_bool)
 }
 
-/// Press the control named `name` as a person on the desk does: activate the accessibility node
+/// Press the control named `name` as a person on the shell does: activate the accessibility node
 /// a screen reader reaches, at the surface it stands on. A name the shell lays out more than once
 /// (the window's own menu row, and the placeholder a menu of another surface keeps at its own
 /// hidden corner) is taken at the one that stands with a size on screen.
@@ -158,7 +158,7 @@ fn press_shown(session: &mut Session, name: &str) {
     );
     assert!(
         session.a11y_perform(place, node, &ui::a11y::Action::Activate),
-        "the desk takes the press on {name:?}"
+        "the shell takes the press on {name:?}"
     );
     session
         .step(std::time::Duration::from_millis(16))
@@ -191,7 +191,7 @@ fn strip_of(session: &Session, record: &str) -> String {
         .into_iter()
         .find(|place| place.record == record)
         .map_or_else(
-            || panic!("the desk holds a place for {record}"),
+            || panic!("the shell holds a place for {record}"),
             |place| place.strip,
         )
 }
@@ -256,7 +256,7 @@ fn press_window_menu(session: &mut Session, window: &str) {
     );
     assert!(
         session.a11y_perform(place, node, &ui::a11y::Action::Activate),
-        "the desk takes the press on {window:?}'s window menu"
+        "the shell takes the press on {window:?}'s window menu"
     );
     until(
         session,
@@ -268,7 +268,7 @@ fn press_window_menu(session: &mut Session, window: &str) {
 /// In Strips only a window behind offers "Bring to front": the window in front's own menu never
 /// does, so a person reading it is offered nothing that would do nothing. `window_controls` takes
 /// `in_front` for that one row alone, and passing it `in_front and lists` offered the row on every
-/// window whenever the desk's bar listed no commands (`lists` false), which is Strips' way.
+/// window whenever the shell's bar listed no commands (`lists` false), which is Strips' way.
 #[test]
 fn only_a_window_behind_offers_bring_to_front_in_strips() {
     let _settled = ui::motion::testing::settled();
@@ -281,7 +281,7 @@ fn only_a_window_behind_offers_bring_to_front_in_strips() {
     });
     show(&mut session, root.path(), "Strips");
 
-    // Two notes placed, each into a strip of its own: two windows on the desk.
+    // Two notes placed, each into a strip of its own: two windows on the shell.
     place(&mut session, &one);
     place(&mut session, &other);
     let one_strip = strip_of(&session, &one);
@@ -291,7 +291,7 @@ fn only_a_window_behind_offers_bring_to_front_in_strips() {
     let other_name = crate::common::window_name_of(&session, &other);
     until(
         &mut session,
-        "both notes' windows on the Strips desk",
+        "both notes' windows on the Strips shell",
         |session| {
             on_screen(session, &one_name).is_some() && on_screen(session, &other_name).is_some()
         },
@@ -340,7 +340,7 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
 
     for preset in ["Frames", "Strips", "Desktop"] {
         // The note's own flag, read before the menu opens: running anything through the door may
-        // dismiss an open menu, so the record is read while the desk is at rest.
+        // dismiss an open menu, so the record is read while the shell is at rest.
         let before = note_pinned(&session, &note).unwrap_or_else(|| {
             panic!(
                 "the note {note} reads its pinned field: {:?}",
@@ -351,7 +351,7 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
 
         show(&mut session, root.path(), preset);
         // The canvas captions a place by the thing it shows (`canvas.md` §7): the note's title,
-        // where the other desks name its window.
+        // where the other sessions name its window.
         let shown = if preset == "Frames" {
             crate::common::places(&session)
                 .into_iter()
@@ -362,7 +362,7 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         };
         until(
             &mut session,
-            &format!("the note's window on the {preset} desk"),
+            &format!("the note's window on the {preset} shell"),
             |session| on_screen(session, &shown).is_some(),
         );
 
@@ -396,7 +396,7 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         );
         assert!(
             crate::common::place(&session, crate::common::number(&key)).is_some(),
-            "the note stays where it was placed in the {preset} desk"
+            "the note stays where it was placed in the {preset} shell"
         );
     }
 }

@@ -1,11 +1,11 @@
-//! The cards apps draw themselves, over the desk.
+//! The cards apps draw themselves, over the shell.
 //! A call or a route is not a picture the session can draw: it is live content its app keeps
 //! drawing while the person works elsewhere. The app presents such an activity as a card of its own
 //! ([`Present`]), and the floating layer decides where it stands: while the app's own window is on
 //! screen the card stands down and the app draws the activity there, and it comes back the moment
 //! that window goes out of view.
 //! This is the session's side of that: what each app presented, the place the layer gave it this
-//! pass, and the geometry the desk places its window at. The app's own geometry is a request; the
+//! pass, and the geometry the shell places its window at. The app's own geometry is a request; the
 //! layer's place is the answer.
 //!
 //! [`Present`]: ui::floating_surface::FloatingSurfaceClientMessage::Present
@@ -37,10 +37,10 @@ pub(crate) struct Presented {
     /// The soft frame the app draws around the body: left, top, right and bottom, as its own
     /// presentation asked for them.
     pub(crate) frame: [f64; 4],
-    /// Where the body stood in the app's own window: its pointer coordinates reach the desk through
+    /// Where the body stood in the app's own window: its pointer coordinates reach the shell through
     /// this.
     pub(crate) local: Point,
-    /// The body's place on the desk the app was last told to draw at;
+    /// The body's place on the shell the app was last told to draw at;
     /// `None` while it draws the activity inline.
     pub(crate) told: Option<Rect>,
     /// The app itself stood the card down: it draws the activity in its own window until it
@@ -80,9 +80,9 @@ impl Presented {
 struct Shared {
     /// What each app presented, by the activity it belongs to.
     cards: BTreeMap<Key, Presented>,
-    /// The place the floating layer gave each card this pass, in desk pixels.
+    /// The place the floating layer gave each card this pass, in shell pixels.
     slots: BTreeMap<Key, Rect>,
-    /// The cards whose app has its own window on the desk: the app draws them there, and they stand
+    /// The cards whose app has its own window on the shell: the app draws them there, and they stand
     /// down.
     in_view: BTreeSet<Key>,
 }
@@ -92,7 +92,7 @@ struct Shared {
 #[derive(Clone, Default)]
 pub(crate) struct Cards {
     shared: Rc<RefCell<Shared>>,
-    /// Where each card's window stands, as the desk lays it out.
+    /// Where each card's window stands, as the shell lays it out.
     placements: Placements,
 }
 
@@ -101,7 +101,7 @@ impl Cards {
         Self::default()
     }
 
-    /// Where the desk places the cards' windows.
+    /// Where the shell places the cards' windows.
     pub(crate) fn placements(&self) -> Placements {
         self.placements.clone()
     }
@@ -116,7 +116,7 @@ impl Cards {
             .map(Presented::window_size)
     }
 
-    /// Whether the app's own window is on the desk now: the activity is drawn there, and no card
+    /// Whether the app's own window is on the shell now: the activity is drawn there, and no card
     /// shows.
     pub(crate) fn in_view(&self, app: &str, activity: &str) -> bool {
         self.shared
@@ -173,7 +173,7 @@ impl Cards {
         self.shared.borrow_mut().slots.clear();
     }
 
-    /// The layer gave the activity's card this place on the desk.
+    /// The layer gave the activity's card this place on the shell.
     pub(crate) fn slot_at(&self, app: &str, activity: &str, at: Rect) {
         self.shared
             .borrow_mut()
@@ -181,7 +181,7 @@ impl Cards {
             .insert((app.to_owned(), activity.to_owned()), at);
     }
 
-    /// Note whether the app's own window is on the desk.
+    /// Note whether the app's own window is on the shell.
     pub(crate) fn see(&self, app: &str, activity: &str, in_view: bool) {
         let key = (app.to_owned(), activity.to_owned());
         let mut shared = self.shared.borrow_mut();

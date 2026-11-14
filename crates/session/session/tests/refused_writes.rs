@@ -1,10 +1,10 @@
 //! A refused write reaches its author, in a workspace of two people's at a site: the owner takes a
-//! member's write permission away, the member edits their desk, and the workspace's device refuses
+//! member's write permission away, the member edits their shell, and the workspace's device refuses
 //! the change. The member's own activity feed names the change, the device it is not on, and why;
 //! the owner's replica never holds it; and when the member may write again, the change lands and
 //! the verdict goes.
-//! The desk record the member writes is the one their own device founds: a device writes the shared
-//! desk it holds, and a record a workspace holds but has not sent to this device is not one it
+//! The shell record the member writes is the one their own device founds: a device writes the shared
+//! shell it holds, and a record a workspace holds but has not sent to this device is not one it
 //! writes over. What the site's device then refuses, clears and files is the same for a record any
 //! device founded. A member the site removes reads nothing more of the workspace, while the members
 //! it keeps go on writing and reading its record.
@@ -27,7 +27,7 @@ use crate::common::people::{
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::Role;
 
-/// The app whose window the people here open on their desks: a note, as a package's window is one.
+/// The app whose window the people here open on their sessions: a note, as a package's window is one.
 const NOTES: &str = "so.tilo.notes";
 
 /// The workspace's activity as `device` reads it now: its changes, each with the devices that
@@ -66,41 +66,41 @@ fn refusals(device: &Device) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// What a device opens is a change of the workspace's shared desk, and the workspace's device takes
+/// What a device opens is a change of the workspace's shared shell, and the workspace's device takes
 /// it: the first window founds the record, and the next change continues the one the device made
 /// instead of numbering it again. The record is the workspace's, sealed in a workspace a site
 /// hosts: the site keeps it and the other member's device reads it.
 #[test]
-fn the_workspace_keeps_the_desk_its_device_writes() {
+fn the_workspace_keeps_the_shell_its_device_writes() {
     let (site, _ada, _bob, ada_laptop, bob_laptop) = two_people_at_a_site();
     show(&ada_laptop, &site);
     let _first = ada_laptop.window(NOTES, "Notes");
     wait_shown(&site, &[&ada_laptop], "Notes");
     let _next = ada_laptop.window(NOTES, "Another");
     wait_shown(&site, &[&ada_laptop], "Another");
-    // What the workspace holds is the desk its device wrote, window by window.
+    // What the workspace holds is the shell its device wrote, window by window.
     assert_eq!(
         titles_at(&site),
         ["Another", "Notes"],
-        "the windows the desk was written with are the ones the site holds"
+        "the windows the shell was written with are the ones the site holds"
     );
-    // And the desk the site keeps is the other member's too: what one member opened on this
-    // workspace's desk, the other member's device reads and shows.
+    // And the shell the site keeps is the other member's too: what one member opened on this
+    // workspace's shell, the other member's device reads and shows.
     show(&bob_laptop, &site);
     waited(
-        "the other member's desk showing the workspace's windows",
+        "the other member's shell showing the workspace's windows",
         &site,
         &[&bob_laptop],
         || titles_on(&bob_laptop, &site) == ["Another", "Notes"],
     );
 }
 
-/// A window a member opens on a workspace's desk stays where they opened it while the workspace has
+/// A window a member opens on a workspace's shell stays where they opened it while the workspace has
 /// not taken it in yet: another member's change that reaches their device first is no close of it.
-/// The member's write lands as well, and both people's desks show both windows. A member who may
-/// not write keeps the window they opened on their own desk, however the record moves.
+/// The member's write lands as well, and both people's sessions show both windows. A member who may
+/// not write keeps the window they opened on their own shell, however the record moves.
 #[test]
-fn a_window_a_member_opens_stays_while_another_member_changes_the_desk() {
+fn a_window_a_member_opens_stays_while_another_member_changes_the_shell() {
     let (site, _ada, bob, ada_laptop, bob_laptop) = two_people_at_a_site();
     show(&ada_laptop, &site);
     show(&bob_laptop, &site);
@@ -114,7 +114,7 @@ fn a_window_a_member_opens_stays_while_another_member_changes_the_desk() {
     let both = ["Ada's notes", "Ada's plan", "Bob's notes"];
     let mut seen = false;
     waited(
-        "both people's windows on both desks",
+        "both people's windows on both sessions",
         &site,
         &[&ada_laptop, &bob_laptop],
         || {
@@ -122,13 +122,13 @@ fn a_window_a_member_opens_stays_while_another_member_changes_the_desk() {
             let holds = shown.contains(&"Bob's notes".to_owned());
             assert!(
                 holds || !seen,
-                "Bob's window left the workspace's desk on his device: {shown:?}"
+                "Bob's window left the workspace's shell on his device: {shown:?}"
             );
             seen |= holds;
             assert_eq!(
                 bob_laptop.showing().as_deref(),
                 Some(site.workspace.as_str()),
-                "Bob's desk left the workspace he opened the window in"
+                "Bob's shell left the workspace he opened the window in"
             );
             titles_at(&site) == both
                 && titles_on(&ada_laptop, &site) == both
@@ -140,22 +140,22 @@ fn a_window_a_member_opens_stays_while_another_member_changes_the_desk() {
     // reaches his device all the same.
     site.set_role(bob.public, Role::Viewer);
     let _bob_draft = bob_laptop.window(NOTES, "Bob's draft");
-    waited("Bob's draft on his desk", &site, &[&bob_laptop], || {
+    waited("Bob's draft on his shell", &site, &[&bob_laptop], || {
         titles_on(&bob_laptop, &site).contains(&"Bob's draft".to_owned())
     });
     let _ada_list = ada_laptop.window(NOTES, "Ada's list");
-    waited("Ada's list on Bob's desk", &site, &[&bob_laptop], || {
+    waited("Ada's list on Bob's shell", &site, &[&bob_laptop], || {
         titles_on(&bob_laptop, &site).contains(&"Ada's list".to_owned())
     });
     assert!(
         titles_on(&bob_laptop, &site).contains(&"Bob's draft".to_owned()),
-        "Bob's own window stays on his desk: {:?}",
+        "Bob's own window stays on his shell: {:?}",
         titles_on(&bob_laptop, &site)
     );
     assert_eq!(
         bob_laptop.showing().as_deref(),
         Some(site.workspace.as_str()),
-        "Bob's desk stays in the workspace"
+        "Bob's shell stays in the workspace"
     );
     assert!(
         !titles_at(&site).contains(&"Bob's draft".to_owned()),
@@ -171,26 +171,26 @@ fn a_window_a_member_opens_stays_while_another_member_changes_the_desk() {
 fn a_member_reads_where_their_refused_change_is_not() {
     // Ada's site governs her workspace, hosts it, and keeps what its people record while they are
     // away. Both are editors, who write, and the workspace shares its people's layout, so what
-    // either opens is on the workspace's desk.
+    // either opens is on the workspace's shell.
     let (site, _ada, bob, _ada_laptop, mut bob_laptop) = two_people_at_a_site();
-    // Bob's desk shows the workspace, whose shared desk is the record his apps' windows are written
+    // Bob's shell shows the workspace, whose shared shell is the record his apps' windows are written
     // into.
     show(&bob_laptop, &site);
 
-    // Bob opens an app on the shared desk, whose window is a change of the workspace's record.
+    // Bob opens an app on the shared shell, whose window is a change of the workspace's record.
     let _bob_note = bob_laptop.window(NOTES, "Notes");
     waited(
-        "Bob's window on the workspace's desk",
+        "Bob's window on the workspace's shell",
         &site,
         &[&bob_laptop],
         || windows(&site) >= 1,
     );
 
-    // And a second one, while he may write: what the site holds is his desk,
+    // And a second one, while he may write: what the site holds is his shell,
     // and what he writes next is refused against it.
     let _bob_other = bob_laptop.window(NOTES, "Another");
     waited(
-        "Bob's next window on the workspace's desk",
+        "Bob's next window on the workspace's shell",
         &site,
         &[&bob_laptop],
         || windows(&site) >= 2,
@@ -295,7 +295,7 @@ fn a_member_the_site_removes_stops_reading_what_the_workspace_records() {
     site.remove(bob.public);
     site.wait_for_removal(bob.public);
 
-    // Ada's device writes the workspace's desk after the removal and reads it back: the route is
+    // Ada's device writes the workspace's shell after the removal and reads it back: the route is
     // live for the member the workspace keeps.
     let _after = ada_laptop.window(NOTES, "After the removal");
     wait_shown(&site, &[&ada_laptop], "After the removal");

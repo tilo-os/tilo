@@ -367,7 +367,7 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
     });
     assert!(
         !overview_up(&laptop),
-        "the laptop's desk never saw the keys"
+        "the laptop's shell never saw the keys"
     );
     picture(&laptop, "2-laptop-driving-phone");
     picture(&phone, "2-phone-driven-by-laptop");
@@ -510,7 +510,7 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
     );
     // Over the bar of the phone's other window the button comes up: that window takes Chat as a
     // tab, and shows it, as a drop of one window's bar on another's does on one device. Both
-    // devices lay the workspace's desk out alike, so the laptop says where that bar stands.
+    // devices lay the workspace's shell out alike, so the laptop says where that bar stands.
     let onto = bar(&laptop, "Stays behind").expect("the other window's bar");
     let there = pointer(&phone);
     let parked = pointer(&laptop);

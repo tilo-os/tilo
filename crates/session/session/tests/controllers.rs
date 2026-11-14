@@ -321,7 +321,7 @@ fn the_guide_chord_moves_between_windows() {
         focused_app(session.compositor()).as_deref() == Some("org.example.Right")
     });
 
-    // Guide held, the D-pad walks the desk's windows rather than the app's focus.
+    // Guide held, the D-pad walks the shell's windows rather than the app's focus.
     fake.hold(GamepadButton::Guide);
     fake.dpad(NavDirection::Left);
     pump(&mut session, &mut [&mut left, &mut right], |session, _| {

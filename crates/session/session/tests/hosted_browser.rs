@@ -112,7 +112,7 @@ fn environment(
     (session, said)
 }
 
-/// Whether the desk holds `workspace`.
+/// Whether the shell holds `workspace`.
 fn holds(session: &Session, workspace: &str) -> bool {
     session.handle().read(|tree| {
         tree.workspaces
@@ -121,7 +121,7 @@ fn holds(session: &Session, workspace: &str) -> bool {
     })
 }
 
-/// The tab `app`'s window takes in `workspace`, once the desk holds one.
+/// The tab `app`'s window takes in `workspace`, once the shell holds one.
 fn tab_of(session: &Session, workspace: &str, app: &str) -> Option<u64> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -163,7 +163,7 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
     std::fs::create_dir_all(&identity_root).expect("the environment's identity root");
     home.env().set("TILO_IDENTITY_ROOT", &identity_root);
     home.env().set(FILE_SECRETS_ENV, "1");
-    let state = tempfile::tempdir().expect("a directory for the environment's desk");
+    let state = tempfile::tempdir().expect("a directory for the environment's shell");
 
     let (mut session, said) = environment(&home, state.path(), launcher.path(), &handed);
     session.step(Duration::from_millis(1)).expect("a frame");
@@ -173,7 +173,7 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
         "the identity it was handed is its own before anything else happens"
     );
 
-    // It asks the relay to enter it, redeems the invitation, and holds the workspace as the desk
+    // It asks the relay to enter it, redeems the invitation, and holds the workspace as the shell
     // holds any device's.
     crate::common::until(&mut session, "the workspace is held", |session| {
         holds(session, &site.workspace)
@@ -224,7 +224,7 @@ fn a_session_whose_workspace_the_relay_does_not_let_it_into_opens_nothing() {
     std::fs::create_dir_all(&identity_root).expect("the environment's identity root");
     home.env().set("TILO_IDENTITY_ROOT", &identity_root);
     home.env().set(FILE_SECRETS_ENV, "1");
-    let state = tempfile::tempdir().expect("a directory for the environment's desk");
+    let state = tempfile::tempdir().expect("a directory for the environment's shell");
 
     let (mut session, said) = environment(&home, state.path(), launcher.path(), &handed);
     let joined = crate::common::steps_within(&mut session, Duration::from_secs(15), |session| {

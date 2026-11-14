@@ -13,12 +13,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use test_http::{Reply, Responder};
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
 use super::{COMMUNITY_WORKSPACE, a_device, community_site, held, this_computer, wait_until};
 
-/// A computer's session, keeping the desk it is left with beside `state` : the same session that
+/// A computer's session, keeping the shell it is left with beside `state` : the same session that
 /// starts where the last one ended, beside what the person decided there.
 fn session_keeping(state: &std::path::Path) -> Session {
     crate::common::headless(Options {
@@ -38,7 +38,7 @@ fn run_turns(session: &mut Session, turns: u32) {
     }
 }
 
-/// The community's workspace on this computer's desk, under the name its site calls it, when it is
+/// The community's workspace on this computer's shell, under the name its site calls it, when it is
 /// there.
 fn community_here(session: &Session) -> Option<String> {
     held(session)
@@ -189,7 +189,7 @@ fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     let mut session = session_keeping(state.path());
     wait_until(
         &mut session,
-        "the community's workspace is on the desk",
+        "the community's workspace is on the session",
         |session| community_here(session).is_some(),
     );
     assert_eq!(
@@ -232,14 +232,14 @@ fn a_community_that_was_left_is_not_joined_again() {
     let mut session = session_keeping(state.path());
     wait_until(
         &mut session,
-        "the community's workspace is on the desk",
+        "the community's workspace is on the session",
         |session| community_here(session).is_some(),
     );
     // They leave it as they leave any workspace, from its own menu.
     let (slot, name, _) = held(&session)
         .into_iter()
         .find(|(_, _, workspace)| workspace == COMMUNITY_WORKSPACE)
-        .expect("the community's workspace is on the desk");
+        .expect("the community's workspace is on the session");
     assert_eq!(name, "tilo.sh");
     let arguments = serde_json::json!({ "workspace": slot })
         .as_object()
@@ -251,7 +251,7 @@ fn a_community_that_was_left_is_not_joined_again() {
     assert_eq!(
         community_here(&session),
         None,
-        "the community's workspace is off the desk"
+        "the community's workspace is off the session"
     );
     written();
     drop(session);
@@ -265,7 +265,7 @@ fn a_community_that_was_left_is_not_joined_again() {
     assert_eq!(
         community_here(&again),
         None,
-        "and the workspace they left stays off the desk"
+        "and the workspace they left stays off the session"
     );
 }
 
@@ -287,7 +287,7 @@ fn a_persons_other_computer_does_not_join_their_community_again() {
     let mut session = session_keeping(state.path());
     wait_until(
         &mut session,
-        "the community's workspace is on the desk",
+        "the community's workspace is on the session",
         |session| community_here(session).is_some(),
     );
     written();
@@ -378,7 +378,7 @@ fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_bac
     cable.plugged_in();
     wait_until(
         &mut session,
-        "the community's workspace is on the desk",
+        "the community's workspace is on the session",
         |session| community_here(session).is_some(),
     );
     run_turns(&mut session, 10);

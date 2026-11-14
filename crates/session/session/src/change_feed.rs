@@ -19,19 +19,19 @@ use ui::history_source::feed::{ChangeLog, RecordKey};
 
 /// The device's replica of its workspaces, once the session opened it, and each workspace's log.
 #[derive(Default)]
-pub(crate) struct DeskChanges {
+pub(crate) struct Feeds {
     engine: OnceLock<Arc<Engine>>,
     logs: Mutex<HashMap<String, ChangeLog>>,
 }
 
-impl DeskChanges {
+impl Feeds {
     /// Read the workspaces' records from `engine` from now on.
     pub(crate) fn keep(&self, engine: Arc<Engine>) {
         let _ = self.engine.set(engine);
     }
 }
 
-impl ChangeFeed for DeskChanges {
+impl ChangeFeed for Feeds {
     fn since(
         &self,
         caller: &Caller,
@@ -41,7 +41,7 @@ impl ChangeFeed for DeskChanges {
     }
 }
 
-impl DeskChanges {
+impl Feeds {
     fn page(&self, caller: &Caller, after: Option<&str>) -> Result<ChangePage, ActionHostError> {
         let Some(workspace) = caller.workspace() else {
             return Err(ActionHostError::Unavailable {

@@ -1,4 +1,4 @@
-//! Who the desk says is here: the roster's rows and the names it gives people.
+//! Who the shell says is here: the roster's rows and the names it gives people.
 //!
 //! A row is one member of the active workspace — a person, an agent or a bot — with the colour
 //! their member row wears, said beside where presence puts them and what they say they are doing.

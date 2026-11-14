@@ -1,14 +1,14 @@
-//! Where the windows of this desk are, as presence names them to the others: the app and record
+//! Where the windows of this session are, as presence names them to the others: the app and record
 //! each window shows, and the screen the person's windows are laid out on.
 
 use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
 use ui::record::RecordId;
 
-/// Who each window of this desk is, by tab, as presence names records: the app and record each
+/// Who each window of this session is, by tab, as presence names records: the app and record each
 /// window shows, and the digest presence names the record by. What places a person in the window
 /// they work in, and a follower's view bringing it forward. A window whose app named none is read
-/// from the desk's own tree; a page keeps no continuations, so it hands its own windows here and
+/// from the shell's own tree; a page keeps no continuations, so it hands its own windows here and
 /// names the people it reads by them the way a session does.
 #[must_use]
 pub fn bindings_of(
@@ -54,7 +54,7 @@ pub fn placed(
 /// record's wire spelling ([`wire_record`]), the spelling a receiver matches against its own
 /// records. `None` for a window that runs no app, or shows a record this session does not know yet.
 /// The app is said by whoever knows it: a window drawn by its app's own surface names no app in
-/// the desk's tree, and its app is what told the session what it shows.
+/// the layout, and its app is what told the session what it shows.
 pub(crate) fn live_record_as(
     tree: &tilo_desktop_model::Layout,
     tab: tilo_desktop_model::TabId,

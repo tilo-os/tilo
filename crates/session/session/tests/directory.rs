@@ -4,7 +4,7 @@
 //! cannot be read says so without hiding them.
 //! Joining one enters through the door its listing names, as the person at this computer and by
 //! their own name, on the session this computer opens with the door's host: the workspace admitting
-//! it is what puts the workspace on the desk, one it holds from then on, open rather than to join,
+//! it is what puts the workspace on the shell, one it holds from then on, open rather than to join,
 //! with everything the workspace held before this computer arrived. A door that refuses says why,
 //! where the person pressed, and leaves the workspace one to try again.
 //! A link or a code pasted into the sheet joins the same way: an invitation's text is redeemed
@@ -37,7 +37,7 @@ use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -66,7 +66,7 @@ const TWELVE_HOURS_NS: u64 = 43_200_000_000_000;
 /// A day and a half, in nanoseconds: how long ago the certificate a session starts with was issued.
 const A_DAY_AND_A_HALF_NS: u64 = 129_600_000_000_000;
 
-/// How long the test keeps stepping a removed computer's desk after the lounge writes past the
+/// How long the test keeps stepping a removed computer's shell after the lounge writes past the
 /// removal: an arrival the site fans out at once, so what has not arrived by then never would.
 const AFTER_THE_REMOVAL: Duration = Duration::from_secs(10);
 
@@ -91,7 +91,7 @@ fn community_site(env: &mut tilo_test_env::ScopedEnv, site: &str) -> tempfile::T
     dir
 }
 
-/// The workspaces this computer holds: the desk's id, the name shown and the workspace's id.
+/// The workspaces this computer holds: the shell's id, the name shown and the workspace's id.
 fn held(session: &Session) -> Vec<(String, String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -204,11 +204,11 @@ fn capture(session: &mut Session, name: &str) {
     std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }
 
-/// What the desk says to the person now, each notice's title and body, live or kept behind its
+/// What the shell says to the person now, each notice's title and body, live or kept behind its
 /// banner.
 fn said(session: &Session) -> Vec<String> {
-    let desk = session.notifications();
-    let log = desk.log();
+    let session = session.notifications();
+    let log = session.log();
     log.active()
         .iter()
         .chain(log.history())
@@ -435,12 +435,12 @@ fn wait_until_the_directory_is_done(session: &mut Session) {
 
 /// What the site lists: its own community workspace, a club, and the workspace this computer holds
 /// already.
-fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> String {
+fn page_listing_the_workspace_on_this_shell(held_name: &str, held_room: &str) -> String {
     let mut entries = vec![community_entry(34, now_ms()), club_entry(now_ms())];
     entries.push(DirectoryEntry {
         workspace: held_room.to_owned(),
         name: held_name.to_owned(),
-        description: "The one on this desk".to_owned(),
+        description: "The one on this session".to_owned(),
         default_role: Role::Commenter,
         door: door_path(held_room),
         here: Vec::new(),
@@ -523,9 +523,9 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
     let (_held_id, held_name, held_room) = held(&session)
         .into_iter()
         .next()
-        .expect("the desk holds one workspace");
+        .expect("the session holds one workspace");
     *page.lock().expect("the page") =
-        page_listing_the_workspace_on_this_desk(&held_name, &held_room);
+        page_listing_the_workspace_on_this_shell(&held_name, &held_room);
     open_directory(&mut session);
     let sheet = session
         .workspace_directory()
@@ -672,7 +672,7 @@ fn a_door_that_refuses_says_why_where_the_person_now_is() {
     // The site lists the lounge, but its host never made it public: its door lets nobody in.
     let lounge = Lounge::start_with(person, "Coffee's on", LoungeDoor::Private);
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
@@ -722,12 +722,12 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start_with(person, "Coffee's on", LoungeDoor::InvitationOnly);
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
     look_up_site(&mut session, &lounge.entry);
-    let desk_before: Vec<(String, String, String)> = held(&session);
+    let shell_before: Vec<(String, String, String)> = held(&session);
     let in_front_before = session.handle().read(|tree| {
         tree.active_workspace()
             .map(tilo_desktop_model::Workspace::id)
@@ -762,8 +762,8 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
     );
     assert_eq!(
         held(&session),
-        desk_before,
-        "and the desk holds exactly what it held before the join"
+        shell_before,
+        "and the session holds exactly what it held before the join"
     );
 }
 
@@ -791,7 +791,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     // The lounge is not this computer's community: the person types its address into the sheet, as
     // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     // The renewal is this session's own: it resolves the identity from the environment the test
     // set, so a certificate issued to the device that joins is renewed, never a sibling test's.
     let mut session = collaborative_session(state.path());
@@ -1341,9 +1341,9 @@ impl LoungeHost {
     }
 }
 
-/// The strips and windows a desk shows in `workspace` , in order: each strip by its name and the
+/// The strips and windows a shell shows in `workspace` , in order: each strip by its name and the
 /// titles of the windows in it.
-fn desk_layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)> {
+fn layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -1367,7 +1367,7 @@ fn desk_layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)>
     })
 }
 
-/// The strips and windows a shared desktop holds, as [`desk_layout`] gives a desk's: what every
+/// The strips and windows a shared desktop holds, as [`layout`] gives a shell's: what every
 /// device showing the workspace should see.
 fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
     let mut layout: Vec<(String, Vec<String>)> = desktop
@@ -1401,7 +1401,7 @@ type HeldStrip<'a> = (u64, &'a str, &'a [(u64, &'a str)]);
 
 /// A workspace's shared desktop, as the people in it left it: `strips` names each strip with the
 /// windows opened in it, all of them `person` 's.
-fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
+fn shared_layout(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
     let mut authors = std::collections::BTreeMap::new();
     for (strip_id, name, windows) in strips {
@@ -1526,8 +1526,8 @@ impl Lounge {
     }
 }
 
-/// Whose the workspace named `workspace` is, as the desk names them.
-fn owner_on_desk(session: &Session, workspace: &str) -> Option<String> {
+/// Whose the workspace named `workspace` is, as the shell names them.
+fn owner_on_shell(session: &Session, workspace: &str) -> Option<String> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -1545,7 +1545,7 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
     // The lounge is not this computer's community: the person types its address into the sheet, as
     // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
@@ -1571,8 +1571,8 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
     );
     assert!(!member.removed, "and the lounge has not removed them");
     // The slot is made once the host admits the device, and the person lands in it: wait for the
-    // desk to show it, as the person would see it.
-    wait_until(&mut session, "the lounge is on the desk", |session| {
+    // shell to show it, as the person would see it.
+    wait_until(&mut session, "the lounge is on the session", |session| {
         held(session)
             .iter()
             .any(|(_, _, workspace)| workspace == &lounge.workspace)
@@ -1580,23 +1580,23 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
     let joined = held(&session)
         .into_iter()
         .find(|(_, _, workspace)| workspace == &lounge.workspace)
-        .expect("the workspace is on the desk");
+        .expect("the workspace is on the session");
     assert_eq!(joined.1, "Lounge", "under the name the site listed it by");
     // Whose the workspace is stays its host's governance's to say: joining it never makes it this
     // person's.
     wait_until(
         &mut session,
         "the lounge's owner is named here",
-        |session| owner_on_desk(session, &lounge.workspace).is_some(),
+        |session| owner_on_shell(session, &lounge.workspace).is_some(),
     );
     let host = hex::encode(lounge.host_cert.user_public_key);
     assert_eq!(
-        owner_on_desk(&session, &lounge.workspace).as_deref(),
+        owner_on_shell(&session, &lounge.workspace).as_deref(),
         Some(host.as_str()),
         "the workspace joined keeps the owner its host's governance names"
     );
     assert_ne!(
-        owner_on_desk(&session, &lounge.workspace).as_deref(),
+        owner_on_shell(&session, &lounge.workspace).as_deref(),
         Some(hex::encode(person).as_str()),
         "and never the person who only joined it"
     );
@@ -1612,7 +1612,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     // The lounge is not this computer's community: the person types its address into the sheet, as
     // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
@@ -1655,10 +1655,10 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     );
     assert!(!member.removed, "and the workspace has not removed them");
     // The slot is made once the host admits the device, and the person lands in it: wait for the
-    // desk to show it, as the person would see it.
+    // shell to show it, as the person would see it.
     wait_until(
         &mut session,
-        "the linked workspace is on the desk",
+        "the linked workspace is on the session",
         |session| {
             held(session)
                 .iter()
@@ -1668,7 +1668,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     let joined = held(&session)
         .into_iter()
         .find(|(_, _, workspace)| workspace == &lounge.workspace)
-        .expect("the workspace is on the desk");
+        .expect("the workspace is on the session");
     assert_eq!(
         joined.1, "Lounge",
         "under the name the site's entry gives it"
@@ -1679,7 +1679,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
 /// The lounge's workspace as its people left it: two strips, and three windows written by another
 /// member. What a computer that joins sees.
 fn the_lounges_desktop(person: &str) -> SharedDesktop {
-    shared_desktop(
+    shared_layout(
         person,
         &[
             (0x41, "Talk", &[(0x42, "Chat"), (0x43, "Notes")]),
@@ -1707,16 +1707,16 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     // The lounge is not this computer's community: the person types its address into the sheet, as
     // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     join_the_lounge(&mut session, &lounge);
     // The window another member works in: the work strip's only window.
-    let sheets = shared_desktop_tab(&laid_out, "Sheets");
+    let sheets = layout_tab(&laid_out, "Sheets");
     assert!(sheets != 0, "the site opened a window in the work strip");
     // The workspace in front is the lounge, and it shows exactly what the site holds: the same
     // strips, with the same windows in them.
-    wait_until_desk(
+    wait_until_shell(
         &mut session,
         &lounge.workspace,
         &recorded_layout(&laid_out),
@@ -1732,17 +1732,17 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
         "the workspace in front is the one joined"
     );
     assert_eq!(
-        desk_layout(&session, &lounge.workspace),
+        layout(&session, &lounge.workspace),
         recorded_layout(&laid_out),
         "the same strips, with the same windows in them"
     );
 
-    // Another member opens a window beside one of theirs, and moves one of theirs: the desk here
+    // Another member opens a window beside one of theirs, and moves one of theirs: the shell here
     // follows without anyone touching it.
     let reopened = another_member_edits(laid_out, &member);
     lounge.page_writes_desktop(&reopened);
     lounge.wait_for_desktop(&reopened);
-    wait_until_desk(
+    wait_until_shell(
         &mut session,
         &lounge.workspace,
         &recorded_layout(&reopened),
@@ -1754,16 +1754,16 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     // The sheets window is the one the site opened first: it moved with the rest, and is not this
     // computer's to see twice.
     assert!(
-        desk_layout(&session, &lounge.workspace)
+        layout(&session, &lounge.workspace)
             .iter()
             .flat_map(|(_, windows)| windows.clone())
             .any(|title| title == "Sheets"),
         "the window the site opened is still there: {:?}",
-        desk_layout(&session, &lounge.workspace)
+        layout(&session, &lounge.workspace)
     );
 }
 
-/// Where the desk draws the tile of window `tab` , in the surface's coordinates, as of the last
+/// Where the shell draws the tile of window `tab` , in the surface's coordinates, as of the last
 /// layout: `None` while it is not shown.
 fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
     session
@@ -1774,22 +1774,22 @@ fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
         .map(|(_, rect)| rect)
 }
 
-/// [`wait_until`], for a desk that must come to show what the site holds: says what the desk shows
+/// [`wait_until`], for a shell that must come to show what the site holds: says what the shell shows
 /// instead when it never does.
 #[track_caller]
-fn wait_until_desk(
+fn wait_until_shell(
     session: &mut Session,
     workspace: &str,
     want: &[(String, Vec<String>)],
     what: &str,
 ) {
     let shown = crate::common::wait_maybe(session, |session| {
-        (desk_layout(session, workspace) == want).then_some(())
+        (layout(session, workspace) == want).then_some(())
     });
     assert!(
         shown.is_some(),
-        "{what}: the desk shows {:?}, the site holds {want:?}; the shell's refusals: {:?}",
-        desk_layout(session, workspace),
+        "{what}: the session shows {:?}, the site holds {want:?}; the shell's refusals: {:?}",
+        layout(session, workspace),
         session.shell_refusals()
     );
 }
@@ -1861,10 +1861,10 @@ fn window_in_front(session: &Session) -> Option<TabId> {
     })
 }
 
-/// The pointer of a person working in another member's window: the desk draws it there, wherever
+/// The pointer of a person working in another member's window: the shell draws it there, wherever
 /// the person here is looking, without the roster being opened, and follows where they move it.
 fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
-    // Their pointer, over a window they work in: the desk draws it there,
+    // Their pointer, over a window they work in: the shell draws it there,
     // wherever the person here is looking, without the roster being opened.
     // The window is on the strip in front, so its tile is where the pointer
     // lands.
@@ -1901,7 +1901,7 @@ fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
 }
 
 /// The id of the window titled `title` on `desktop` .
-fn shared_desktop_tab(desktop: &SharedDesktop, title: &str) -> u64 {
+fn layout_tab(desktop: &SharedDesktop, title: &str) -> u64 {
     desktop
         .tree
         .workspaces
@@ -1954,15 +1954,15 @@ fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     .expect("the other member's pointer moves");
 }
 
-/// How long the desk is stepped between one pointing and the next.
+/// How long the shell is stepped between one pointing and the next.
 const POINT_AGAIN: Duration = Duration::from_millis(200);
 
-/// Wait until the desk draws the other member's pointer at `(x, y)` over the tile of `tab` ,
+/// Wait until the shell draws the other member's pointer at `(x, y)` over the tile of `tab` ,
 /// pointing again as it waits.
 /// Their pointer is a live frame the host fans out and never keeps: a host whose queue for this
 /// device is full drops it (that is what ephemeral means), and a person's pointer keeps moving, so
 /// the test says where they are more than once rather than sampling a frame that may have been
-/// shed. What the wait is for is unchanged — the desk drawing their pointer where they put it — and
+/// shed. What the wait is for is unchanged — the shell drawing their pointer where they put it — and
 /// its only bound is the suite's hang bound.
 #[track_caller]
 fn wait_until_their_pointer(
@@ -2001,7 +2001,7 @@ fn wait_until_their_pointer(
     }
 }
 
-/// Whether the desk drew someone's pointer at `(x, y)` of the tile of `tab` .
+/// Whether the shell drew someone's pointer at `(x, y)` of the tile of `tab` .
 fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
     session
         .drawn_peer_pointers()
@@ -2152,7 +2152,7 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     // The lounge is not this computer's community: the person types its address into the sheet, as
     // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     join_the_lounge(&mut session, &lounge);
@@ -2215,7 +2215,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     // The lounge is not this computer's community: the person types its address into the sheet, as
     // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
-    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     join_the_lounge(&mut session, &lounge);

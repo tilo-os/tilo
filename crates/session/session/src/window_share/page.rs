@@ -9,7 +9,7 @@
 //! A stream's start says nothing of what is on the screen. The tile it makes shows an arriving
 //! card until a picture is decoded or a page's whole frame came, so whether a window is pictured
 //! is asked of its tile, every pass, and never read off the start. A picture is decoded off the
-//! loop and the desk takes it into the tile while it builds a frame, which is after that turn's
+//! loop and the shell takes it into the tile while it builds a frame, which is after that turn's
 //! pass of the shares, so the tiles are asked once more when the frame is drawn
 //! ([`WindowShares::follow_drawn`]): a turn never ends with the reading and the tile apart.
 
@@ -55,7 +55,7 @@ impl WindowShares {
     /// it: its payload goes to the tile that draws that window.
     pub(super) fn page_heard(
         &self,
-        desk: &DesktopHandle,
+        shell: &DesktopHandle,
         from: EndpointId,
         tab: TabId,
         body: &[u8],
@@ -73,7 +73,7 @@ impl WindowShares {
         ) else {
             return;
         };
-        desk.peer_surface_page(
+        shell.peer_surface_page(
             neighbour_wire::peer_handle(from.as_bytes()),
             stream.start.surface,
             &object.payload,
@@ -82,11 +82,11 @@ impl WindowShares {
 
     /// Ask the tile of each window this device shows whether it holds the window now, so the
     /// reading says a window is pictured only while its tile draws it.
-    pub(super) fn follow_pictured(&mut self, desk: &DesktopHandle) {
+    pub(super) fn follow_pictured(&mut self, shell: &DesktopHandle) {
         let mut changed = false;
         for ((peer, surface), stream) in &mut self.received {
             let pictured = stream.shown
-                && desk
+                && shell
                     .peer_stream_read(*peer, *surface)
                     .is_some_and(|tile| tile.standing == Standing::Pictured);
             changed |= pictured != stream.pictured;
@@ -97,14 +97,14 @@ impl WindowShares {
         }
     }
 
-    /// Ask the tiles again once the desk drew its frame. A tile's decoder never holds the loop:
-    /// the picture of a unit comes out later, and the desk takes it into the tile while it builds
+    /// Ask the tiles again once the shell drew its frame. A tile's decoder never holds the loop:
+    /// the picture of a unit comes out later, and the shell takes it into the tile while it builds
     /// the frame, after the pass of the shares that turn. Asked only in that pass, the reading
     /// went on saying the window waits for its first picture, under a tile that showed it, until
     /// something else brought the next pass. A device that shows no shared window asks nothing.
-    pub(crate) fn follow_drawn(&mut self, desk: &DesktopHandle) {
+    pub(crate) fn follow_drawn(&mut self, shell: &DesktopHandle) {
         if !self.received.is_empty() {
-            self.follow_pictured(desk);
+            self.follow_pictured(shell);
         }
     }
 

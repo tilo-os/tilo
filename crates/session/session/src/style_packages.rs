@@ -1,7 +1,7 @@
-//! A person's own desk styles as packages in their workspace (`docs/designs/app-language/
+//! A person's own styles as packages in their workspace (`docs/designs/app-language/
 //! shell.md` §6, "Make it mine" and "Agents make styles with the same commands a person types").
 //!
-//! A desk style is a tilolang package, and a person makes one the way they make any app: they
+//! A style is a tilolang package, and a person makes one the way they make any app: they
 //! write a package, install it, pick it. This is where that happens for a style: the session
 //! offers the same three commands a person types at `tilolang` — `check`, and an install that
 //! compiles and signs — as actions on its own door, so a shell view, the canvas chat's agent and
@@ -50,7 +50,7 @@ pub const COPY_ID: &str = "mine.shell";
 
 /// The words the copy's `app` header carries, so the switch and the store show it as the
 /// person's own.
-const COPY_TITLE: &str = "My desk";
+const COPY_TITLE: &str = "My shell";
 
 /// The developer override naming the person's workspace packages directory (tests and a
 /// development session). A shipped build ignores it, as it ignores every `TILO_*` override.
@@ -128,7 +128,7 @@ pub(crate) fn resource() -> ResourceSpec {
     let make = ActionSpec::typed_operation(
         "make-it-mine",
         "Make it mine",
-        "Copies a shipped desk style's source into your workspace as your own package, with the \
+        "Copies a shipped shell style's source into your workspace as your own package, with the \
          same parts, and installs it: the shipped style never overwrites it.",
         OperationKind::Effect,
         KIND,
@@ -176,7 +176,7 @@ pub(crate) fn resource() -> ResourceSpec {
             payload: b"install".to_vec(),
         },
     );
-    let mut spec = ResourceSpec::new(RESOURCE, KIND, t("session-desk-styles"));
+    let mut spec = ResourceSpec::new(RESOURCE, KIND, t("session-shell-styles"));
     for mut action in [make, check, install] {
         // Installing code is the person's decision: the broker holds an agent's step that
         // installs or copies a package for the person's answer on the system's sheet
@@ -299,7 +299,7 @@ fn make_it_mine(style: &str) -> Result<(String, String), String> {
     let own = format!("{installed}:{}", view.name);
     Ok((
         installed,
-        format!("{own} is yours: the switch offers it, and the desk draws it"),
+        format!("{own} is yours: the switch offers it, and the shell draws it"),
     ))
 }
 
@@ -319,7 +319,7 @@ fn shipped_view(named: &str) -> Result<ShippedView, String> {
 }
 
 /// The view `named` as one of the shipped shell's source files declares it: its doc line, and
-/// the body between its signature's braces, which draws the desk, with the shell's own names
+/// the body between its signature's braces, which draws the shell, with the shell's own names
 /// qualified (`shell.strips_view`) so the copy compiles as a package of its own.
 fn view_in(text: &str, named: &str) -> Option<ShippedView> {
     let lines: Vec<&str> = text.lines().collect();
@@ -443,7 +443,7 @@ struct ShippedView {
 
 /// Write the person's own style package into `dir`: a small package of its own that `use`s the
 /// shell and declares one view of `shell.Arrangement`, the shipped style `view` rebuilt through
-/// `shell.desk_style(...)` with the style's own places inside it.
+/// `shell.style_shell(...)` with the style's own places inside it.
 fn write_copy(dir: &Path, view: &ShippedView) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     // The ids lock is the compiler's to fill: a package of its own has ids of its own.
@@ -462,7 +462,7 @@ fn style_source(view: &ShippedView) -> String {
         "app {COPY_ID} \"{COPY_TITLE}\"\n\
          \n\
          // Make it mine: the shipped `{package}:{name}` as the person's own style. Edit it, then\n\
-         // install it: the desk draws what this file says.\n\
+         // install it: the shell draws what this file says.\n\
          use {package} as shell\n\
          use so.tilo.device as device\n\
          \n\
@@ -517,10 +517,10 @@ fn install(package: &str) -> Result<(String, String), String> {
 }
 
 /// Compile the package in `dir` against the shell this session runs and what this session
-/// publishes. A desk style names the arrangement as `shell.Arrangement` (`use so.tilo.shell as
+/// publishes. A style names the arrangement as `shell.Arrangement` (`use so.tilo.shell as
 /// shell`) and calls the shell's `template view`s, so the shell's own compiled package stands in
 /// `published`: only its metadata carries the package's templates, and it is read from the
-/// compiled shell itself, so it names the actions, types and templates the desk's own code calls.
+/// compiled shell itself, so it names the actions, types and templates the shell's own code calls.
 fn compile(dir: &Path) -> Result<Vec<tilolang_tilo::tilolang::source::BuiltPackage>, String> {
     let mut published = tilolang_tilo::catalogue::published_packages(
         &tilolang_tilo::tilolang::source::search_of(dir, &[]),
@@ -542,7 +542,7 @@ fn compile(dir: &Path) -> Result<Vec<tilolang_tilo::tilolang::source::BuiltPacka
 
 /// The shell's package as this build runs it: the store's installed `so.tilo.shell` when the
 /// person has one, else the built-in copy, each compiled against this session's description —
-/// the same packages `crate::shell::compile` runs, which is what the desk draws with.
+/// the same packages `crate::shell::compile` runs, which is what the shell draws with.
 fn shell_packages() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
     crate::shell::compile()
 }

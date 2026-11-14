@@ -2,7 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "tilo-session"
-description = "The native Tilo session: the compositor hosting the desktop every host shows (the desk under the windows, the top bar, overview and menus above them), the window policy of its strips, and the desktop's surface apps."
+description = "The native Tilo session: the compositor hosting the desktop every host shows (the shell under the windows, the top bar, overview and menus above them), the window policy of its strips, and the desktop's surface apps."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -77,10 +77,10 @@ tilo-desktop = { path = "../desktop" }
 # The participant's own client of the collaboration plane: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
 tilo-session-client = { path = "../client" }
-# The roles every host runs: the desk's document and the arrangement it holds.
+# The roles every host runs: the shell's document and the arrangement it holds.
 tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
-# The desk's window policy, whose tab calls an app's asks are answered with.
+# The shell's window policy, whose tab calls an app's asks are answered with.
 tilo-desktop-policy = { path = "../desktop-policy" }
 # This device's identity: the certificate it presents and the key it signs with, from the store its
 # host keeps them in.
@@ -112,7 +112,7 @@ url.workspace = true
 # broker's owner commits ask for it.
 ed25519-dalek.workspace = true
 # This device's workspaces: the state of every one it joined, held beside
-# the desk, the enrollment a join redeems its invitation with, and who saved
+# the shell, the enrollment a join redeems its invitation with, and who saved
 # a shortcut by the proof of a device of theirs.
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # What a message sent from a window's box carries beside its words: the
@@ -200,7 +200,7 @@ tilo-dictation = { path = "../dictation" }
 # What the session binary's search reads of the device: the installed apps,
 # the machine's own, the person's search choices.
 # The session's own app store, read as the launcher reads it: a development session seeds the
-# tilolang apps it installed (`crate::seeded_apps`), and a desk style a person owns is installed
+# tilolang apps it installed (`crate::seeded_apps`), and a style a person owns is installed
 # into it from their workspace (`crate::style_packages`), which needs the store's writer.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
@@ -287,7 +287,7 @@ image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
 tilo-surface-host = { path = "../surface-host" }
-# The shell's package (`apps/tl/shell`), compiled as the session starts, and the desk's
+# The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 # The outside origins the session's own services keep records in step with: the mail and
@@ -299,10 +299,10 @@ tilolang-youtube = { path = "../../platform/tilolang-youtube" }
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # `tilolang check` and build as the session's own commands over a package in the person's
-# workspace: a desk style is written, checked and installed as any app is (`shell.md` §6).
+# workspace: a style is written, checked and installed as any app is (`shell.md` §6).
 tilolang-cli = { path = "../../lang/tilolang-cli" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
-# The pictures the desk shows: the image's own, and the person's.
+# The pictures the shell shows: the image's own, and the person's.
 tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 # The registries' listing as this device last accepted it, for the apps a
 # person can get.
@@ -400,7 +400,7 @@ tilo-speaker-service = { path = "../speaker-service" }
 # device's traffic, decided here and carried out by the root helper.
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["session"] }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
-# The session's own surfaces (the desk, the bar, the switcher, the panels and
+# The session's own surfaces (the shell, the bar, the switcher, the panels and
 # the sheets) published over AT-SPI2: one AccessKit Unix adapter per surface,
 # carrying the semantic tree the toolkit already builds. The tokio feature
 # keeps its D-Bus executor on the workspace's single async runtime.
@@ -443,7 +443,7 @@ tube = { path = "../../../apps/tube", default-features = false, features = ["sam
 notes = { path = "../../../apps/notes" }
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
 # their own app store: the same packages `dist/dev/shell-run.sh` installs. `tilolang-cli` and
-# `package-store`'s writer are normal dependencies of the session (a person's own desk style is
+# `package-store`'s writer are normal dependencies of the session (a person's own style is
 # written, checked and installed the same way), so a test needs nothing extra here.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # The events the actor hands the session, which its own tests hand the sync

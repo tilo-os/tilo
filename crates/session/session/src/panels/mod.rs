@@ -42,7 +42,7 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
 }
 
 /// The output a panel without a place of its own stands on: the display the person works on, as
-/// the session read it from the desk each pass ([`Overlays`] holds it for every surface it places
+/// the session read it from the shell each pass ([`Overlays`] holds it for every surface it places
 /// there), else the first.
 fn in_use(
     outputs: &[tilo_session_core::surface::HostedOutput],
@@ -64,7 +64,7 @@ fn in_use(
         .or_else(|| outputs.first().copied())
 }
 
-/// A rect on the desk another surface holds while it is up (the banners' stack, the readout's
+/// A rect on the shell another surface holds while it is up (the banners' stack, the readout's
 /// band), shared with the panels that must keep clear of it and released once it no longer stands.
 #[derive(Clone, Default)]
 pub(crate) struct Reserved {
@@ -133,9 +133,9 @@ fn until(hold: ui::time::Duration) -> ui::time::Instant {
 pub(crate) struct Banners {
     host: AppHost,
     link: tilo_notification_banners::Link,
-    /// The desk whose windows the stack keeps clear of.
-    desk: tilo_desktop_surface::DesktopHandle,
-    /// Where the desk placed its surfaces: the display the person works on is the one the stack
+    /// The shell whose windows the stack keeps clear of.
+    shell: tilo_desktop_surface::DesktopHandle,
+    /// Where the shell placed its surfaces: the display the person works on is the one the stack
     /// stands on.
     overlays: Overlays,
     /// The outputs the compositor last said it has: the stack stands on the display in use, the
@@ -149,7 +149,7 @@ impl Banners {
     pub(crate) fn new(
         app: ui::App,
         link: tilo_notification_banners::Link,
-        desk: tilo_desktop_surface::DesktopHandle,
+        shell: tilo_desktop_surface::DesktopHandle,
         overlays: Overlays,
         scale: f64,
         stack: Reserved,
@@ -157,7 +157,7 @@ impl Banners {
         Self {
             host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Notifications"),
             link,
-            desk,
+            shell,
             overlays,
             outputs: Vec::new(),
             stack,
@@ -197,8 +197,8 @@ impl Banners {
             display
         };
         // Banners start where the windows' content does, below their bars,
-        // as the desk's own notification centre does.
-        let clear_top = (self.desk.content_top() - f64::from(y)).max(0.0);
+        // as the shell's own notification centre does.
+        let clear_top = (self.shell.content_top() - f64::from(y)).max(0.0);
         self.link.place(tilo_notification_banners::Placement {
             viewport: under_bar(display.rect),
             clear_top,
@@ -239,7 +239,7 @@ impl Published for Banners {
         self.host.accessible_labels()
     }
 
-    /// The controls a banner on screen shows by name, where they stand on the desk, and the press
+    /// The controls a banner on screen shows by name, where they stand on the shell, and the press
     /// of one: a banner's buttons answer the control socket as any window's do.
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         Published::controls(&mut self.host)
@@ -340,8 +340,8 @@ impl SurfaceHost for Banners {
     }
 }
 
-/// The column's name for the desk's windows floating as cards: no app's activity.
-const DOCKED_APP: &str = "desk";
+/// The column's name for the shell's windows floating as cards: no app's activity.
+const DOCKED_APP: &str = "shell";
 
 /// A docked window's card, by its window.
 fn docked_id(group: u64) -> String {
@@ -360,7 +360,7 @@ pub(crate) struct ActivityLayer {
     cards: crate::cards::Cards,
     /// The corner docked cards gather in, on this device.
     corner: ui::floating_layer::Corner,
-    /// Where the desk placed its surfaces: the display the person works on is the one the cards
+    /// Where the shell placed its surfaces: the display the person works on is the one the cards
     /// stand on.
     overlays: Overlays,
     /// The outputs the compositor last said it has.
@@ -370,9 +370,9 @@ pub(crate) struct ActivityLayer {
     banners: Reserved,
     readout: Reserved,
     typing: ReadoutPlaces,
-    /// The desk, whose windows floating as cards stand in the column with the activities'.
-    desk: tilo_desktop_surface::DesktopHandle,
-    /// Where the desk's docked windows stood last pass, in desk coordinates.
+    /// The shell, whose windows floating as cards stand in the column with the activities'.
+    shell: tilo_desktop_surface::DesktopHandle,
+    /// Where the shell's docked windows stood last pass, in shell coordinates.
     docked_at: Vec<Rect>,
     /// The feed published last, so an unchanged screen is not a frame.
     published: Option<tilo_activities::Feed>,
@@ -386,7 +386,7 @@ impl ActivityLayer {
         cards: crate::cards::Cards,
         (banners, readout): (Reserved, Reserved),
         typing: ReadoutPlaces,
-        (desk, overlays): (tilo_desktop_surface::DesktopHandle, Overlays),
+        (shell, overlays): (tilo_desktop_surface::DesktopHandle, Overlays),
         scale: f64,
     ) -> Self {
         Self {
@@ -400,7 +400,7 @@ impl ActivityLayer {
             banners,
             readout,
             typing,
-            desk,
+            shell,
             docked_at: Vec::new(),
             published: None,
         }
@@ -450,10 +450,10 @@ impl ActivityLayer {
                 .map(local),
         };
         let mut cards = self.reader.cards();
-        // The desk's windows floating as cards stand in the same column, each a card the window
+        // The shell's windows floating as cards stand in the same column, each a card the window
         // draws: a conversation the person is in, nearest the corner as a call is, with a song's
         // card above it.
-        let docked = self.desk.docked_cards();
+        let docked = self.shell.docked_cards();
         cards.extend(docked.iter().map(|docked| {
             let id = docked_id(docked.group);
             let mut card = ui::floating_layer::Card::new(
@@ -466,7 +466,7 @@ impl ActivityLayer {
         }));
         let expanded = self.reader.expanded();
         // Where the layer puts the cards their apps draw, this pass: the app's gesture is a
-        // request, and this is the sign the desk places its window by. The layer lays them out with
+        // request, and this is the sign the shell places its window by. The layer lays them out with
         // the same arithmetic it draws with.
         let layer = ui::floating_layer::place(&placement, self.corner, &cards, expanded);
         self.cards.begin_slots();
@@ -493,7 +493,7 @@ impl ActivityLayer {
             self.cards.slot_at(&placed.app, &placed.summary.id, at);
         }
         self.docked_at = dock.values().copied().collect();
-        self.desk.dock_at(dock);
+        self.shell.dock_at(dock);
         let feed = tilo_activities::Feed {
             placement,
             corner: self.corner,
@@ -552,7 +552,7 @@ impl Published for ActivityLayer {
         self.host.accessible_labels()
     }
 
-    /// The controls a card on screen shows by name, where they stand on the desk, and the press of
+    /// The controls a card on screen shows by name, where they stand on the shell, and the press of
     /// one: a card's buttons answer the control socket as any window's do.
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         Published::controls(&mut self.host)
@@ -593,7 +593,7 @@ impl SurfaceHost for ActivityLayer {
     }
 
     /// Only the cards take the pointer: a press beside one reaches the window under it, as it does
-    /// anywhere else on the desk.
+    /// anywhere else on the shell.
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         let (ox, oy) = self.host.placement().origin;
         let point = Point::new(x - f64::from(ox), y - f64::from(oy));
@@ -666,7 +666,7 @@ impl SurfaceHost for ActivityLayer {
 /// compositor: what the readout answers with when a key raises one.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ReadoutPlace {
-    /// The focused text field's caret, in desk coordinates.
+    /// The focused text field's caret, in shell coordinates.
     caret: Option<Rect>,
     /// Each display the compositor shows, where it stands and the scale it draws at.
     displays: Vec<crate::displays::Placed>,

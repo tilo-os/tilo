@@ -44,7 +44,7 @@ use tilo_sheets::portal::PortalEffect;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-/// The person at the desk, who owns its workspace.
+/// The person at the shell, who owns its workspace.
 const PERSON: &str = "ada";
 /// The workspace in front of the person, which every agent here works in.
 const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
@@ -258,7 +258,7 @@ async fn endpoint(key: &SigningKey) -> Endpoint {
         .unwrap()
 }
 
-/// The person: this box, where the desk is, and two more devices of theirs, where agents run.
+/// The person: this box, where the shell is, and two more devices of theirs, where agents run.
 /// And a device of somebody else's.
 struct Person {
     root: SigningKey,
@@ -305,7 +305,7 @@ struct Device {
     endpoint: Endpoint,
 }
 
-/// A desk with one workspace, the person's, in front.
+/// A shell with one workspace, the person's, in front.
 fn tree() -> Layout {
     let id = WorkspaceId::parse(STUDIO).expect("a workspace id");
     let mut studio = Workspace::new(id, "Studio");
@@ -319,7 +319,7 @@ fn tree() -> Layout {
 
 /// This box: its headless session with the agent door open, the questions it asks the person,
 /// and its endpoint answering the door toward the person's other devices.
-struct Desk {
+struct Shell {
     session: Session,
     questions: Questions,
     door: PathBuf,
@@ -331,7 +331,7 @@ struct Desk {
     _home: tilo_test_env::TestHome,
 }
 
-impl Desk {
+impl Shell {
     fn start(person: &Person) -> Self {
         let home = tilo_test_env::TestHome::new().expect("a home");
         let root = crate::common::private_home();
@@ -522,12 +522,12 @@ impl Desk {
         crate::common::press_sheet(&mut self.session, PortalEffect::CONFIRM.id, &json!({}));
     }
 
-    /// Wait until `seats` agents sit at the desk.
+    /// Wait until `seats` agents sit at the shell.
     #[track_caller]
     fn seated(&mut self, seats: usize) {
         crate::common::wait_for(
             &mut self.session,
-            format!("{seats} agents at the desk"),
+            format!("{seats} agents at the shell"),
             |session| {
                 let seated = session
                     .read("session:agents")
@@ -590,76 +590,80 @@ fn refusal(refused: &Value) -> String {
 fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_there_is_no_room() {
     let _settled = ui::motion::testing::settled();
     let person = Person::new();
-    let mut desk = Desk::start(&person);
-    desk.accept_own_devices();
-    let laptop = desk.device(&person.laptop);
-    let tablet = desk.device(&person.tablet);
-    let stranger = desk.device(&person.stranger);
-    let dev = desk.environment("dev");
+    let mut shell = Shell::start(&person);
+    shell.accept_own_devices();
+    let laptop = shell.device(&person.laptop);
+    let tablet = shell.device(&person.tablet);
+    let stranger = shell.device(&person.stranger);
+    let dev = shell.environment("dev");
 
     // Seven programs of this login. The person is asked about the first, and lets the program
     // in for the session.
     let mut programs = Vec::new();
-    let mut first = desk.program();
+    let mut first = shell.program();
     first.send(&initialize());
-    desk.allow_for_the_session();
-    let introduced = desk.answer(&mut first).expect("the door answers it");
+    shell.allow_for_the_session();
+    let introduced = shell.answer(&mut first).expect("the door answers it");
     assert!(
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
     );
     programs.push(first);
     for _ in 1..7 {
-        let mut program = desk.program();
-        desk.served(&mut program);
+        let mut program = shell.program();
+        shell.served(&mut program);
         programs.push(program);
     }
 
     // Three programs inside an environment, asked about once there.
     let mut inside = vec![Inside::start(dev.path(), false)];
-    desk.allow_for_the_session();
-    desk.served_inside(&inside[0]);
+    shell.allow_for_the_session();
+    shell.served_inside(&inside[0]);
     for _ in 1..3 {
         let program = Inside::start(dev.path(), false);
-        desk.served_inside(&program);
+        shell.served_inside(&program);
         inside.push(program);
     }
 
     // Six agents on two of the person's other devices, which this box lets in unasked.
     let mut agents = Vec::new();
     for device in [&laptop, &tablet, &laptop, &tablet, &laptop, &tablet] {
-        let mut agent = desk
+        let mut agent = shell
             .dial(device)
             .expect("the door opens for the person's device");
-        desk.served(&mut agent);
+        shell.served(&mut agent);
         agents.push(agent);
     }
     assert!(
-        desk.questions.pending().is_empty(),
+        shell.questions.pending().is_empty(),
         "nobody is waiting on the person"
     );
-    desk.seated(SERVED);
+    shell.seated(SERVED);
 
     // The seventeenth, at the session's own door: told before anything is read of it, and
     // closed.
-    let mut next = desk.program();
-    let refused = desk
+    let mut next = shell.program();
+    let refused = shell
         .answer(&mut next)
         .expect("one past the bound is told why it is not served");
     let told = refusal(&refused);
     says_no_room(&told);
-    assert_eq!(desk.answer(&mut next), None, "and its connection is closed");
+    assert_eq!(
+        shell.answer(&mut next),
+        None,
+        "and its connection is closed"
+    );
 
     // From another device: refused in place of the answer that the door opened, in the same
     // words.
-    let unopened = desk
+    let unopened = shell
         .dial(&laptop)
         .expect_err("one past the bound is not told the door opened");
     assert_eq!(unopened, told, "one refusal, whichever way it came");
 
     // Inside the environment: the same.
     let turned_away = Inside::start(dev.path(), false);
-    let (what, rest) = desk.said(&turned_away);
+    let (what, rest) = shell.said(&turned_away);
     assert_eq!(what, "ANSWER", "{rest}");
     let refused: Value = serde_json::from_str(&rest).unwrap();
     assert_eq!(
@@ -669,18 +673,18 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     );
     turned_away.end();
     assert!(
-        desk.questions.pending().is_empty(),
+        shell.questions.pending().is_empty(),
         "the person was asked about none of them"
     );
 
     // Who may connect is decided first: a full door tells a device of somebody else's, and a
     // program outside the environment, what it tells them when it has room.
-    let theirs = desk
+    let theirs = shell
         .dial(&stranger)
         .expect_err("somebody else's device is refused");
     assert!(theirs.contains("someone else"), "{theirs}");
     let mut outside = Client::connect(dev.path());
-    let refused = desk
+    let refused = shell
         .answer(&mut outside)
         .expect("a program outside the environment is told why");
     assert_eq!(
@@ -691,20 +695,20 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
 
     // The sixteen being served are not disturbed by any of it.
     programs[0].send(&json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
-    let still = desk.answer(&mut programs[0]).expect("it still answers");
+    let still = shell.answer(&mut programs[0]).expect("it still answers");
     assert!(still["result"].is_object(), "{still}");
     agents[0].send(&json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
-    let still = desk.answer(&mut agents[0]).expect("it still answers");
+    let still = shell.answer(&mut agents[0]).expect("it still answers");
     assert!(still["result"].is_object(), "{still}");
 
     // A program of this login leaves: an agent on another device that connects again is
     // served, and the door is as full as it was.
     drop(programs.pop());
-    let mut arrived = desk.once_there_is_room(|desk| desk.dial(&tablet));
-    desk.served(&mut arrived);
+    let mut arrived = shell.once_there_is_room(|shell| shell.dial(&tablet));
+    shell.served(&mut arrived);
     agents.push(arrived);
-    let mut next = desk.program();
-    let refused = desk
+    let mut next = shell.program();
+    let refused = shell
         .answer(&mut next)
         .expect("one past the bound is told why it is not served");
     assert_eq!(refusal(&refused), told);
@@ -712,18 +716,18 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     // A program inside the environment is turned away, and connects again as it was told to.
     // An agent on another device leaves: the program is served.
     let waiting = Inside::start(dev.path(), true);
-    assert_eq!(desk.said(&waiting), ("REFUSED".to_owned(), told));
+    assert_eq!(shell.said(&waiting), ("REFUSED".to_owned(), told));
     drop(agents.pop());
-    desk.served_inside(&waiting);
+    shell.served_inside(&waiting);
     inside.push(waiting);
 
     // A program inside the environment leaves: a program of this login that connects again is
     // served, without the person being asked again.
     inside.remove(0).end();
-    let program = desk.once_there_is_room(|desk| {
-        let mut program = desk.program();
+    let program = shell.once_there_is_room(|shell| {
+        let mut program = shell.program();
         program.send(&initialize());
-        let answer = desk
+        let answer = shell
             .answer(&mut program)
             .expect("the door answers before it closes");
         if answer.pointer("/result/serverInfo").is_some() {
@@ -733,8 +737,8 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
         }
     });
     programs.push(program);
-    assert!(desk.questions.pending().is_empty());
-    desk.seated(SERVED);
+    assert!(shell.questions.pending().is_empty());
+    shell.seated(SERVED);
 
     for program in inside {
         program.end();
@@ -752,42 +756,42 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
 fn connections_from_other_devices_wait_for_the_pass_in_the_doors_places_and_no_more() {
     let _settled = ui::motion::testing::settled();
     let person = Person::new();
-    let mut desk = Desk::start(&person);
-    desk.accept_own_devices();
-    let laptop = desk.device(&person.laptop);
-    let tablet = desk.device(&person.tablet);
+    let mut shell = Shell::start(&person);
+    shell.accept_own_devices();
+    let laptop = shell.device(&person.laptop);
+    let tablet = shell.device(&person.tablet);
 
     // The session's loop does not turn from here until the test reads an answer: nothing
     // that arrives is served yet.
     let mut waiting = Vec::new();
     for place in 0..SERVED {
         let device = if place % 2 == 0 { &laptop } else { &tablet };
-        let mut agent = desk
+        let mut agent = shell
             .dial(device)
             .unwrap_or_else(|reason| panic!("connection {place} has a place to wait in: {reason}"));
         // What it opens with waits with it.
         agent.send(&initialize());
         waiting.push(agent);
     }
-    let unopened = desk
+    let unopened = shell
         .dial(&laptop)
         .expect_err("one more than the door serves is not told the door opened");
     says_no_room(&unopened);
-    let mut program = desk.program();
+    let mut program = shell.program();
 
     // The loop turns. The places are taken, so the program of this login is told so.
-    let refused = desk
+    let refused = shell
         .answer(&mut program)
         .expect("one past the bound is told why it is not served");
     assert_eq!(refusal(&refused), unopened);
     for agent in &mut waiting {
-        desk.introduced(agent);
+        shell.introduced(agent);
     }
-    assert!(desk.questions.pending().is_empty(), "nobody was asked");
-    desk.seated(SERVED);
+    assert!(shell.questions.pending().is_empty(), "nobody was asked");
+    shell.seated(SERVED);
 
     // One of them leaves: a device that connects again is served.
     drop(waiting.pop());
-    let mut again = desk.once_there_is_room(|desk| desk.dial(&tablet));
-    desk.served(&mut again);
+    let mut again = shell.once_there_is_room(|shell| shell.dial(&tablet));
+    shell.served(&mut again);
 }

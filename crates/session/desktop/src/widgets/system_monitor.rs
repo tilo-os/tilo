@@ -1,4 +1,4 @@
-//! The system monitor desk widget's readings: how busy the processor is,
+//! The system monitor Desktop widget's readings: how busy the processor is,
 //! how full memory is, and how warm the machine runs.
 //!
 //! From the session's own source of system readings

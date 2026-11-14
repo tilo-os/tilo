@@ -1,4 +1,4 @@
-//! A folder is shared as the workspace it lives in: the invitation the desk makes admits the
+//! A folder is shared as the workspace it lives in: the invitation the shell makes admits the
 //! person it names at the part it grants, and what they hold and write is the workspace's own
 //! tree. Removing them removes both what the workspace writes afterwards and what they write.
 
@@ -22,10 +22,10 @@ use tilo_resource::Resource as _;
 
 type Mounted = Arc<Mutex<Namespace>>;
 
-/// The whole story: a folder shared through the desk, the other person's edit reaching the
+/// The whole story: a folder shared through the shell, the other person's edit reaching the
 /// holder, and the workspace's removal taking both away again.
 #[test]
-fn a_folder_shared_through_the_desk_is_edited_then_taken_back() {
+fn a_folder_shared_through_the_shell_is_edited_then_taken_back() {
     let (site, _ada, bob, ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
     let cluster = site.workspace.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()

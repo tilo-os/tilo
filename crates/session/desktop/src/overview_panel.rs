@@ -1,6 +1,6 @@
 //! The workspace overview as a widget, the one every desktop shows: the
 //! native shell hosts it as the overview app, the browser desktop draws it
-//! over its desk.
+//! over its shell.
 //!
 //! A panel names the workspace you are in (who has access, who is here,
 //! what is shared out of it) and offers every other workspace, a new one
@@ -48,7 +48,7 @@ pub use layout::{PANEL_RISE_PX, PANEL_START_SCALE, panel_curve};
 
 /// What the overview shows: every workspace, and what only the host knows about them.
 #[derive(Clone, Debug, Default)]
-pub struct OverviewDesk {
+pub struct OverviewCards {
     /// Every workspace, in order; the one you are in is marked current.
     pub cards: Vec<WorkspaceCard>,
     /// Each window group's size on its display; a group not given one is drawn at its share of the
@@ -74,10 +74,10 @@ pub struct OverviewDesk {
     pub hide_windows: bool,
     /// What the overview of the person's Tilo shows below the workspaces: their workspaces
     /// elsewhere, hosts and agents ([`crate::overview_tilo`]).
-    pub tilo: crate::overview_tilo::TiloDesk,
+    pub tilo: crate::overview_tilo::TiloOverview,
 }
 
-impl OverviewDesk {
+impl OverviewCards {
     /// `cards` , with nothing else known: a new workspace can be made.
     pub fn of(cards: Vec<WorkspaceCard>) -> Self {
         Self {
@@ -168,7 +168,7 @@ pub struct OverviewPanel {
     rect: Rect,
     /// The area last laid out for.
     laid_out: Rect,
-    desk: OverviewDesk,
+    shell: OverviewCards,
     flight: Option<WindowFlight>,
     metrics: Metrics,
     grid: GridMetrics,
@@ -187,7 +187,7 @@ pub struct OverviewPanel {
     naming: Option<Naming>,
     cursor: Option<Point>,
     picks: VecDeque<OverviewPick>,
-    /// The rows below the workspaces, as the desk's [`crate::overview_tilo::TiloDesk`] makes them.
+    /// The rows below the workspaces, as the shell's [`crate::overview_tilo::TiloOverview`] makes them.
     tilo_rows: Vec<crate::overview_tilo::TiloRow>,
     /// How wide the rows' trailing controls stand: their widest label, as last drawn.
     tilo_action_width: f64,
@@ -231,7 +231,7 @@ impl OverviewPanel {
             open: false,
             rect: Rect::ZERO,
             laid_out: Rect::ZERO,
-            desk: OverviewDesk::default(),
+            shell: OverviewCards::default(),
             tilo_rows: Vec::new(),
             tilo_action_width: 0.0,
             tilo_asking: None,
@@ -278,11 +278,11 @@ impl OverviewPanel {
         self.open
     }
 
-    /// Open over `desk` , or close. Each opening starts the keyboard on the workspace you are in.
-    pub fn open_on(&mut self, open: bool, desk: OverviewDesk) {
+    /// Open over `shell` , or close. Each opening starts the keyboard on the workspace you are in.
+    pub fn open_on(&mut self, open: bool, shell: OverviewCards) {
         if open {
-            self.tilo_rows = crate::overview_tilo::rows(&desk.tilo);
-            self.desk = desk;
+            self.tilo_rows = crate::overview_tilo::rows(&shell.tilo);
+            self.shell = shell;
         }
         if open != self.open {
             self.open = open;
@@ -299,17 +299,17 @@ impl OverviewPanel {
 
     /// Show `cards` while open, keeping the keyboard where it is.
     pub fn show(&mut self, cards: Vec<WorkspaceCard>) {
-        let desk = OverviewDesk {
+        let shell = OverviewCards {
             cards,
-            ..std::mem::take(&mut self.desk)
+            ..std::mem::take(&mut self.shell)
         };
-        self.set_desk(desk);
+        self.set_shell(shell);
     }
 
-    /// Show `desk` , keeping the keyboard where it is.
-    pub fn set_desk(&mut self, desk: OverviewDesk) {
-        self.tilo_rows = crate::overview_tilo::rows(&desk.tilo);
-        self.desk = desk;
+    /// Show `shell` , keeping the keyboard where it is.
+    pub fn set_shell(&mut self, shell: OverviewCards) {
+        self.tilo_rows = crate::overview_tilo::rows(&shell.tilo);
+        self.shell = shell;
         if self
             .selection
             .is_some_and(|index| index > self.max_selection())
@@ -324,7 +324,7 @@ impl OverviewPanel {
         {
             self.naming = None;
         }
-        // A question about a row the desk no longer shows goes with it: there is nothing left to
+        // A question about a row the shell no longer shows goes with it: there is nothing left to
         // decide about a grant the door already took back.
         if let Some(key) = self.tilo_asking.clone()
             && self.tilo_row(&key).is_none()
@@ -336,8 +336,8 @@ impl OverviewPanel {
         self.bump();
     }
 
-    pub fn desk(&self) -> &OverviewDesk {
-        &self.desk
+    pub fn shell(&self) -> &OverviewCards {
+        &self.shell
     }
 
     /// What the person chose since the host last asked, oldest first.
@@ -382,15 +382,15 @@ impl OverviewPanel {
     }
 
     fn can_add(&self) -> bool {
-        self.offer_add && self.desk.can_add
+        self.offer_add && self.shell.can_add
     }
 
     fn max_selection(&self) -> usize {
-        self.desk
+        self.shell
             .cards
             .len()
             .saturating_add(usize::from(self.can_add()))
-            .saturating_add(usize::from(self.desk.can_join))
+            .saturating_add(usize::from(self.shell.can_join))
             .saturating_sub(1)
     }
 
@@ -445,7 +445,7 @@ impl OverviewPanel {
         let rows = u8::from(self.add_hit_rect().is_some_and(|r| r.contains(p)))
             | (u8::from(self.join_hit_rect().is_some_and(|r| r.contains(p))) << 1)
             | (u8::from(
-                (0..self.desk.cards.len())
+                (0..self.shell.cards.len())
                     .any(|idx| self.leave_rect(idx).is_some_and(|r| r.contains(p))),
             ) << 2)
             | (control << 3)
@@ -536,7 +536,7 @@ impl OverviewPanel {
             self.choose(pick);
         } else if target == "overview-new-workspace" && self.can_add() {
             self.choose(OverviewPick::NewWorkspace);
-        } else if target == "overview-join-workspace" && self.desk.can_join {
+        } else if target == "overview-join-workspace" && self.shell.can_join {
             self.choose(OverviewPick::JoinWorkspace);
         } else if let Some(id) = workspace("overview-workspace:") {
             self.choose(OverviewPick::Workspace(id));
@@ -580,7 +580,7 @@ impl OverviewPanel {
                 .and_then(|n| n.parse::<u64>().ok())
         };
         let workspace = |prefix: &str| target.strip_prefix(prefix).and_then(WorkspaceId::parse);
-        let count = self.desk.cards.len();
+        let count = self.shell.cards.len();
         if let Some(tab) = number("overview-window:") {
             if !self.row_windows().iter().any(|w| w.address.tab == tab) {
                 return false;
@@ -592,7 +592,7 @@ impl OverviewPanel {
             self.focus_row(index);
         } else if target == "overview-new-workspace" && self.can_add() {
             self.focus_row(count);
-        } else if target == "overview-join-workspace" && self.desk.can_join {
+        } else if target == "overview-join-workspace" && self.shell.can_join {
             self.focus_row(count.saturating_add(usize::from(self.can_add())));
         } else {
             return false;
@@ -764,7 +764,7 @@ impl Widget for OverviewPanel {
         if !self.open {
             return None;
         }
-        let count = self.desk.cards.len();
+        let count = self.shell.cards.len();
         let keyboard_on =
             |index: usize| self.selection == Some(index) && self.window_selection.is_none();
         let mut overview = AccessNode::new(Role::Dialog)
@@ -773,7 +773,7 @@ impl Widget for OverviewPanel {
             .with_state(AccessState::new().modal(true));
         overview
             .children
-            .extend(self.desk.cards.iter().enumerate().map(|(index, card)| {
+            .extend(self.shell.cards.iter().enumerate().map(|(index, card)| {
                 AccessNode::new(Role::Button)
                     .with_action_target(format!("overview-workspace:{}", card.id))
                     .with_name(card.name.clone())
@@ -837,7 +837,7 @@ impl Widget for OverviewPanel {
                     .with_state(AccessState::new().focusable(true).focused(keyboard_on(at))),
             );
         }
-        for (idx, card) in self.desk.cards.iter().enumerate() {
+        for (idx, card) in self.shell.cards.iter().enumerate() {
             if let Some(leave) = self.leave_rect(idx) {
                 overview.children.push(
                     AccessNode::new(Role::Button)
@@ -882,7 +882,7 @@ impl Widget for OverviewPanel {
         }
         let mut rects = vec![("overview".to_owned(), self.panel_rect())];
         rects.extend(
-            (0..self.desk.cards.len()).map(|i| (format!("overview_card[{i}]"), self.row_rect(i))),
+            (0..self.shell.cards.len()).map(|i| (format!("overview_card[{i}]"), self.row_rect(i))),
         );
         if let Some(add) = self.add_hit_rect() {
             rects.push(("add_workspace".to_owned(), add));
@@ -890,7 +890,7 @@ impl Widget for OverviewPanel {
         if let Some(join) = self.join_hit_rect() {
             rects.push(("join_workspace".to_owned(), join));
         }
-        for (idx, card) in self.desk.cards.iter().enumerate() {
+        for (idx, card) in self.shell.cards.iter().enumerate() {
             if let Some(leave) = self.leave_rect(idx) {
                 rects.push((format!("overview-leave:{}", card.id), leave));
             }
@@ -943,7 +943,7 @@ mod tests {
     use crate::overview::{
         OverviewGroup, OverviewStrip, OverviewTab, WorkspaceCard, WorkspaceShare,
     };
-    use crate::overview_tilo::TiloDesk;
+    use crate::overview_tilo::TiloOverview;
     use crate::window_switcher::WindowApp;
     use ui::widget::AppKind;
     use ui::widget::DrawChild;
@@ -998,22 +998,22 @@ mod tests {
     /// A phone: the rows are narrow enough that a question wraps, and the columns still line up.
     const PHONE: Rect = Rect::new(0.0, 0.0, 390.0, 844.0);
 
-    fn opened_in(area: Rect, desk: OverviewDesk) -> OverviewPanel {
+    fn opened_in(area: Rect, shell: OverviewCards) -> OverviewPanel {
         let mut panel = OverviewPanel::new();
-        panel.open_on(true, desk);
+        panel.open_on(true, shell);
         panel.rect = area;
         panel.resolve_layout(&Theme::dark());
         panel
     }
 
-    fn desk() -> OverviewDesk {
-        let mut desk = OverviewDesk::of(vec![
+    fn shell() -> OverviewCards {
+        let mut shell = OverviewCards::of(vec![
             card(1, "Acme", true, &["Notes", "Writer"]),
             card(2, "Research", false, &[]),
             card(3, "Design", false, &["Canvas"]),
         ]);
-        desk.can_join = true;
-        desk
+        shell.can_join = true;
+        shell
     }
 
     fn press(panel: &mut OverviewPanel, key: NamedKey) -> bool {
@@ -1027,7 +1027,7 @@ mod tests {
     fn the_panel_keeps_the_toolkits_row_and_title_scale() {
         let theme = Theme::dark();
         let tokens = &theme.tokens;
-        let panel = opened_in(WIDE, desk());
+        let panel = opened_in(WIDE, shell());
         let title = f64::from(
             tokens
                 .typography
@@ -1060,11 +1060,11 @@ mod tests {
         );
     }
 
-    /// A desk whose Tilo let one agent in, working now, with what the overview measured of it.
-    fn desk_with_an_agent() -> OverviewDesk {
+    /// A shell whose Tilo let one agent in, working now, with what the overview measured of it.
+    fn shell_with_an_agent() -> OverviewCards {
         use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
-        let mut desk = desk();
-        desk.tilo.door = Some(Door {
+        let mut shell = shell();
+        shell.tilo.door = Some(Door {
             grants: vec![Grant {
                 id: "g1".into(),
                 agent: "Claude Code".into(),
@@ -1077,15 +1077,15 @@ mod tests {
             }],
             ..Door::default()
         });
-        desk
+        shell
     }
 
     /// The panel as a frame draws it: laid out and measured, so the rows stand where the person
     /// sees them.
-    fn drawn(area: Rect, desk: OverviewDesk) -> OverviewPanel {
+    fn drawn(area: Rect, shell: OverviewCards) -> OverviewPanel {
         ui::i18n::I18nManager::init("en-US");
         let mut panel = OverviewPanel::new();
-        panel.open_on(true, desk);
+        panel.open_on(true, shell);
         panel.rect = area;
         panel.resolve_layout(&Theme::dark());
         settle(&mut panel);
@@ -1106,7 +1106,7 @@ mod tests {
         // Revoking ends an agent's access and its runs: the control asks at the row, naming what the
         // agent loses, and nothing is taken back until the person answers there.
         {
-            let mut panel = drawn(TALL, desk_with_an_agent());
+            let mut panel = drawn(TALL, shell_with_an_agent());
             let control = panel
                 .test_rects()
                 .into_iter()
@@ -1164,7 +1164,7 @@ mod tests {
         // Anywhere but an answer keeps things as they are: the question is put away, the grant
         // stands, and the press does not also go where it landed.
         {
-            let mut panel = drawn(TALL, desk_with_an_agent());
+            let mut panel = drawn(TALL, shell_with_an_agent());
             let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
             panel.click_at(rects["overview-agent:g1:action"].center());
             assert_eq!(panel.take_pick(), None);
@@ -1189,7 +1189,7 @@ mod tests {
         phase an_agents_row_opens_its_card;
         // The agent's row is the agent: pressing it opens the card its face opens everywhere else.
         {
-            let mut panel = drawn(TALL, desk_with_an_agent());
+            let mut panel = drawn(TALL, shell_with_an_agent());
             let row = panel
                 .test_rects()
                 .into_iter()
@@ -1207,19 +1207,19 @@ mod tests {
         phase a_face_leads_its_row_in_the_column_every_other_row_keeps;
         // The faces and glyphs that lead these rows stand in one slot, so the rows below the
         // workspaces keep one text column: the agent's name starts where a host's does, on a
-        // desk and on a phone, and where the list row itself puts it.
+        // shell and on a phone, and where the list row itself puts it.
         {
             use tilo_actions::remote::host_account::{HostAccount, HostKind};
             ui::i18n::I18nManager::init("en-US");
             let theme = Theme::dark();
-            let mut desk = desk_with_an_agent();
-            desk.tilo.hosts = vec![HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted)];
+            let mut shell = shell_with_an_agent();
+            shell.tilo.hosts = vec![HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted)];
             for area in [TALL, PHONE] {
-                let panel = drawn(area, desk.clone());
+                let panel = drawn(area, shell.clone());
                 let index = |key: &str| {
                     (0..panel.tilo_rows.len())
                         .find(|&index| panel.tilo_item(index).is_some_and(|item| item.key == key))
-                        .expect("the row is on the desk")
+                        .expect("the row is on the shell")
                 };
                 let agent = index("overview-agent:g1");
                 let host = index("overview-host:0");
@@ -1251,7 +1251,7 @@ mod tests {
         {
             ui::i18n::I18nManager::init("en-US");
             for area in [TALL, PHONE] {
-                let mut panel = drawn(area, desk_with_an_agent());
+                let mut panel = drawn(area, shell_with_an_agent());
                 assert!(panel.activate("overview-agent:g1:action"));
                 settle(&mut panel);
                 let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
@@ -1282,7 +1282,7 @@ mod tests {
         {
             use tilo_actions::remote::agent_door::{Grant, Reach, Run};
             ui::i18n::I18nManager::init("en-US");
-            let row = crate::overview_tilo::rows(&TiloDesk {
+            let row = crate::overview_tilo::rows(&TiloOverview {
                 door: Some(tilo_actions::remote::agent_door::Door {
                     grants: vec![Grant {
                         id: "g1".into(),
@@ -1296,7 +1296,7 @@ mod tests {
                     }],
                     ..Default::default()
                 }),
-                ..TiloDesk::default()
+                ..TiloOverview::default()
             });
             let agent = row
                 .iter()
@@ -1329,7 +1329,7 @@ mod tests {
                 HostAccount, HostKind, PaymentMethod, PlanOffer, Standing,
             };
             ui::i18n::I18nManager::init("en-US");
-            let mut with_host = desk();
+            let mut with_host = shell();
             with_host.tilo.hosts = vec![HostAccount {
                 host: "Tilo Cloud".into(),
                 kind: HostKind::Provider,
@@ -1367,7 +1367,7 @@ mod tests {
     #[test]
     fn shift_does_not_skip_the_question_a_revocation_asks() {
         ui::widget::note_shift(true);
-        let mut panel = drawn(TALL, desk_with_an_agent());
+        let mut panel = drawn(TALL, shell_with_an_agent());
         assert!(panel.activate("overview-agent:g1:action"));
         assert_eq!(panel.take_pick(), None, "Shift or not, it asks first");
         assert!(panel.activate("overview-agent:g1:keep"));
@@ -1380,7 +1380,7 @@ mod tests {
 
         phase the_workspace_you_are_in_heads_the_panel_and_the_others_follow_in_order;
         {
-            let panel = opened_in(NARROW, desk());
+            let panel = opened_in(NARROW, shell());
             let here = panel.row_rect(0);
             let research = panel.row_rect(1);
             let design = panel.row_rect(2);
@@ -1400,7 +1400,7 @@ mod tests {
 
         phase a_small_display_shows_the_overview_as_a_page;
         {
-            let panel = opened_in(Rect::new(0.0, 0.0, 480.0, 400.0), desk());
+            let panel = opened_in(Rect::new(0.0, 0.0, 480.0, 400.0), shell());
             assert_eq!(panel.panel_rect(), panel.rect);
             assert!(panel.scrolls_whole_panel());
             assert!(panel.add_hit_rect().is_some() || panel.max_scroll_y() > 0.0);
@@ -1410,7 +1410,7 @@ mod tests {
         {
             let mut cards = vec![card(1, "Acme", true, &["Notes"])];
             cards.extend((2..30).map(|i| card(i, &format!("Design {i}"), false, &[])));
-            let mut panel = opened_in(NARROW, OverviewDesk::of(cards));
+            let mut panel = opened_in(NARROW, OverviewCards::of(cards));
             assert!(panel.panel_rect().height() <= NARROW.height());
             assert!(panel.max_scroll_y() > 0.0);
             assert!(press(&mut panel, NamedKey::End));
@@ -1420,7 +1420,7 @@ mod tests {
 
         phase keys_walk_the_workspaces_and_enter_goes_to_one;
         {
-            let mut panel = opened_in(NARROW, desk());
+            let mut panel = opened_in(NARROW, shell());
             assert_eq!(panel.selection(), Some(0), "the keyboard starts here");
             assert!(press(&mut panel, NamedKey::ArrowDown));
             assert!(press(&mut panel, NamedKey::ArrowDown));
@@ -1442,7 +1442,7 @@ mod tests {
 
         phase arrows_walk_the_pictured_windows_and_enter_goes_to_one;
         {
-            let mut panel = opened_in(WIDE, desk());
+            let mut panel = opened_in(WIDE, shell());
             assert!(press(&mut panel, NamedKey::ArrowRight));
             assert_eq!(panel.window_selection(), Some(1000));
             assert!(press(&mut panel, NamedKey::ArrowRight));
@@ -1455,11 +1455,11 @@ mod tests {
 
         phase a_window_selected_then_closed_elsewhere_does_not_take_the_next_enter;
         {
-            let mut panel = opened_in(WIDE, desk());
+            let mut panel = opened_in(WIDE, shell());
             assert!(press(&mut panel, NamedKey::ArrowRight));
-            let mut gone = desk();
+            let mut gone = shell();
             gone.cards[0].strips[0].groups.remove(0);
-            panel.set_desk(gone);
+            panel.set_shell(gone);
             assert_eq!(panel.window_selection(), None);
             assert!(press(&mut panel, NamedKey::Enter));
             assert_eq!(
@@ -1472,7 +1472,7 @@ mod tests {
 
     #[test]
     fn a_wide_display_puts_the_picture_beside_the_panel_and_a_narrow_one_inside() {
-        let wide = opened_in(WIDE, desk());
+        let wide = opened_in(WIDE, shell());
         assert!(wide.beside_picture());
         let picture = wide.picture();
         let notes = picture.tile(0, 0).unwrap();
@@ -1480,7 +1480,7 @@ mod tests {
             notes.x1 <= wide.panel_rect().x0,
             "the picture stands beside"
         );
-        let narrow = opened_in(NARROW, desk());
+        let narrow = opened_in(NARROW, shell());
         assert!(!narrow.beside_picture());
         let notes = narrow.picture().tile(0, 0).unwrap();
         assert!(
@@ -1498,9 +1498,9 @@ mod tests {
             let mut second = card(4, "x", false, &["Chat"]).strips.remove(0);
             second.name = "Games".into();
             here.strips.push(second);
-            let mut desk = OverviewDesk::of(vec![here]);
-            desk.renamable = [StripId(10), StripId(40)].into_iter().collect();
-            let mut panel = opened_in(WIDE, desk);
+            let mut shell = OverviewCards::of(vec![here]);
+            shell.renamable = [StripId(10), StripId(40)].into_iter().collect();
+            let mut panel = opened_in(WIDE, shell);
             assert!(press(&mut panel, NamedKey::ArrowRight));
             assert!(press(&mut panel, NamedKey::F2));
             assert!(panel.is_naming());
@@ -1542,9 +1542,9 @@ mod tests {
         phase the_host_draws_the_pictures_it_holds_and_flies_them_on_its_clock;
         {
             let flight = WindowFlight::new();
-            let mut desk = desk();
-            desk.pictured = [1000, 1001].into_iter().collect();
-            let mut panel = opened_in(WIDE, desk);
+            let mut shell = shell();
+            shell.pictured = [1000, 1001].into_iter().collect();
+            let mut panel = opened_in(WIDE, shell);
             panel.set_flight(flight.clone());
             flight.set_clock(1.0, HashMap::new());
             let mut scene = Scene::new();
@@ -1577,7 +1577,7 @@ mod tests {
             assert_eq!(rect, pictures[1].rect);
             assert!(alpha < 1.0);
             // Closed and settled back, nothing is pictured.
-            panel.open_on(false, OverviewDesk::default());
+            panel.open_on(false, OverviewCards::default());
             flight.set_clock(0.0, HashMap::new());
             panel.draw_child(
                 &mut Scene::new(),
@@ -1592,7 +1592,7 @@ mod tests {
         phase the_panel_is_recorded_once_while_it_shows_the_same_thing;
         {
             let flight = WindowFlight::new();
-            let mut panel = opened_in(WIDE, desk());
+            let mut panel = opened_in(WIDE, shell());
             panel.set_flight(flight.clone());
             let mut text = TextRenderer::new();
             for step in 1..=4 {
@@ -1614,26 +1614,26 @@ mod tests {
 
         phase the_share_list_collapses_rather_than_growing;
         {
-            let mut desk = desk();
-            desk.cards[0].shares = (0..9)
+            let mut shell = shell();
+            shell.cards[0].shares = (0..9)
                 .map(|i| WorkspaceShare {
                     what: format!("Folder {i}"),
                     with: vec!["Ada".into()],
                     writable: false,
                 })
                 .collect();
-            let panel = opened_in(NARROW, desk);
+            let panel = opened_in(NARROW, shell);
             assert_eq!(
-                OverviewPanel::share_rows(&panel.desk.cards[0]),
+                OverviewPanel::share_rows(&panel.shell.cards[0]),
                 layout::SHARES_MAX_ROWS + 1
             );
-            let none = opened_in(NARROW, super::tests::desk());
+            let none = opened_in(NARROW, super::tests::shell());
             assert_eq!(none.shares_height(), 0.0, "nothing shared, no section");
         }
 
         phase a_carried_window_moves_to_the_workspace_it_is_let_go_on;
         {
-            let mut panel = opened_in(NARROW, desk());
+            let mut panel = opened_in(NARROW, shell());
             let tile = panel.window_tile_rect(0);
             let research = panel.row_rect(1);
             panel.cursor = Some(tile.center());
@@ -1653,7 +1653,7 @@ mod tests {
 
         phase semantic_actions_reach_what_the_rows_do;
         {
-            let mut panel = opened_in(WIDE, desk());
+            let mut panel = opened_in(WIDE, shell());
             assert!(panel.activate(&format!("overview-workspace:{}", WorkspaceId::from_u128(2))));
             assert_eq!(
                 panel.take_pick(),
@@ -1682,7 +1682,7 @@ mod tests {
 
     #[test]
     fn a_strip_named_elsewhere_has_no_controls_and_no_field() {
-        let mut panel = opened_in(WIDE, desk());
+        let mut panel = opened_in(WIDE, shell());
         assert!(press(&mut panel, NamedKey::ArrowRight));
         assert!(press(&mut panel, NamedKey::F2));
         assert!(!panel.is_naming());

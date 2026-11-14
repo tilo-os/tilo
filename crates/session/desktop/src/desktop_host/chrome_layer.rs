@@ -17,7 +17,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-mod overview_desk;
+mod overview;
 mod shortcut_actions;
 #[cfg(test)]
 mod tests;
@@ -26,14 +26,14 @@ use super::{PlainOverview, close_tab, column, fill, grow, wake_deadline};
 use crate::about::AboutSheet;
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
-use crate::desk_verbs::chrome_resource;
+use crate::verbs::chrome_resource;
 use crate::display_identify::DisplayIdentify;
 use crate::emoji::EmojiLink;
 use crate::fullscreen_hint::FullscreenHint;
 use crate::host_contract::{DesktopAsk, DesktopRules, JOIN_WORKSPACE, WORKSPACE_SETTINGS};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::workspace_cards;
-use crate::overview_panel::{OverviewDesk, OverviewPanel, OverviewPick};
+use crate::overview_panel::{OverviewCards, OverviewPanel, OverviewPick};
 use crate::search_overlay::SearchOverlay;
 use crate::shortcuts::{app_window_fixed_action, page_fixed_action, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
@@ -61,7 +61,7 @@ pub struct DesktopChrome {
     /// The bars of the other displays, each on its own: a display besides the one in use carries
     /// the compact bar.
     compact: Vec<TopBarChrome>,
-    /// The desk's confirmations in passing ("Link copied"), over the windows on the display the
+    /// The shell's confirmations in passing ("Link copied"), over the windows on the display the
     /// person works on.
     acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
     /// Where the bars stood at the bar's source last reading, and the snapshot revision it was read
@@ -91,7 +91,7 @@ pub struct DesktopChrome {
     overview_revision: u64,
     /// What the overview of the person's Tilo shows below their workspaces, as the embedding
     /// hosts it ([`Self::set_tilo`]).
-    tilo: crate::overview_tilo::TiloDesk,
+    tilo: crate::overview_tilo::TiloOverview,
     /// Whether the overview is open, shared with the host whose clock flies its windows in and
     /// out and whose surfaces open and close it ([`Self::follow_overview`]).
     overview_open: Option<Rc<Cell<bool>>>,
@@ -102,7 +102,7 @@ pub struct DesktopChrome {
     handle: DesktopHandle,
     generation: String,
     rules: Rc<dyn DesktopRules>,
-    /// The desktop's shortcut table, shared with the session: the chords the desk answers and the
+    /// The shelltop's shortcut table, shared with the session: the chords the shell answers and the
     /// ones its rows show are one table.
     shortcuts: crate::shortcuts::Shared,
     /// Chords read the host's stand-in for Super as a Mac's.
@@ -124,7 +124,7 @@ pub struct DesktopChrome {
     /// Whether the reader's focus sits on the chrome, as the focus framework put it there; cleared
     /// as soon as no surface the chrome draws holds the keyboard, which the stack says.
     focused: bool,
-    /// When each display's bar shows over the window covering it: shared with the desk's band, so
+    /// When each display's bar shows over the window covering it: shared with the shell's band, so
     /// the bar's room and the bars it is in agree.
     reveals: Rc<RefCell<Reveals>>,
     /// The way out of the window that filled a display, said once over it.
@@ -132,17 +132,17 @@ pub struct DesktopChrome {
     /// Which screen is which, said on each display for a moment after Settings asks.
     identify: DisplayIdentify,
     /// Where the displays are the identify cards stand on, each by its monitor, as last read from
-    /// the desk.
+    /// the shell.
     identify_displays: Vec<(String, Rect)>,
     /// The Identify request answered, so one press shows the cards once.
     answered: Option<u64>,
-    /// The desk's search palette, over the windows the desk draws: it is the one surface here that
-    /// must cover a window in front, so the chrome draws it rather than the desk under them.
+    /// The shell's search palette, over the windows the shell draws: it is the one surface here that
+    /// must cover a window in front, so the chrome draws it rather than the shell under them.
     search: SearchOverlay,
-    /// The desk's notifications, over its windows for the same reason: the centre, and the banners
-    /// where the host shows none of its own. `None` on a desk without notifications.
+    /// The shell's notifications, over its windows for the same reason: the centre, and the banners
+    /// where the host shows none of its own. `None` on a shell without notifications.
     notices: Option<NotificationLayer>,
-    /// Alt+Tab's panel, as the desk's walk last said what it shows.
+    /// Alt+Tab's panel, as the shell's walk last said what it shows.
     switcher: Switcher,
     /// The keys a held Super reaches, as the session says them.
     peek: SuperPeek,
@@ -256,7 +256,7 @@ impl DesktopChrome {
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             overview_revision: 0,
-            tilo: crate::overview_tilo::TiloDesk::default(),
+            tilo: crate::overview_tilo::TiloOverview::default(),
             overview_open: None,
             overview_said: false,
             menu_shown: Cell::new(false),
@@ -291,7 +291,7 @@ impl DesktopChrome {
         }
     }
 
-    /// Follow the desk's walk with `switcher` : what Alt+Tab's panel shows, and the windows whose
+    /// Follow the shell's walk with `switcher` : what Alt+Tab's panel shows, and the windows whose
     /// pictures stand in its wells.
     pub fn set_switcher(&mut self, switcher: Switcher) {
         self.switcher = switcher;
@@ -302,7 +302,7 @@ impl DesktopChrome {
         self.peek = peek;
     }
 
-    /// Follow the bars' reveal with `reveals` , which the desk's band reads too: when each bar
+    /// Follow the bars' reveal with `reveals` , which the shell's band reads too: when each bar
     /// shows over the window covering its display.
     pub fn set_reveals(&mut self, reveals: Rc<RefCell<Reveals>>) {
         self.reveals = reveals;
@@ -389,7 +389,7 @@ impl DesktopChrome {
             .unwrap_or_default();
         let avatar = self.bar.own_avatar_rect();
         HintFrame {
-            // The overview covers the desk: none of its windows' bars or edges is on screen, so no
+            // The overview covers the shell: none of its windows' bars or edges is on screen, so no
             // hint anchored to them stands, and one showing leaves.
             row: if self.overview.is_open() {
                 ui::widget::HintPlaces::default()
@@ -457,7 +457,7 @@ impl DesktopChrome {
             .collect()
     }
 
-    /// Whether the overview is open over the desk.
+    /// Whether the overview is open over the shell.
     #[must_use]
     pub fn overview_open(&self) -> bool {
         self.overview.is_open()
@@ -475,7 +475,7 @@ impl DesktopChrome {
     /// press outside one closes — is what the chrome shows in the frame that pass draws.
     pub fn publish_overlays(&mut self) {
         // Where the chrome's own menus paint themselves, for the stack to judge a press that misses
-        // them: a press on the desk reaches the desk, not the chrome over it.
+        // them: a press on the shell reaches the shell, not the chrome over it.
         self.overlays
             .stands(Slot::WorkspaceMenu, self.workspace_menu.panel_rect());
         let centre = self.notices.as_ref().and_then(NotificationLayer::panel);
@@ -515,7 +515,7 @@ impl DesktopChrome {
     }
 
     /// Take down the widgets whose surface the stack took down.
-    /// The stack is the one ledger of what stands over the desk: when another surface comes up —
+    /// The stack is the one ledger of what stands over the shell: when another surface comes up —
     /// the person opened it, the session did, or Escape took one away — the slot closes there, and
     /// the widget that draws it closes here so the two never disagree about what the person sees.
     /// Each closing is reported back to the stack, which is how it hears the widget followed
@@ -598,7 +598,7 @@ impl DesktopChrome {
         }
     }
 
-    /// The chrome's own accessibility node: the group over the desk that
+    /// The chrome's own accessibility node: the group over the shell that
     /// carries what the chrome paints itself. The retained parts (the bars,
     /// the overview, the menus) are children widgets, which the host's walk
     /// exports on its own.
@@ -646,13 +646,13 @@ impl DesktopChrome {
         self.publish_overlays();
     }
 
-    /// The display the person is working on, while the desk spans several: where a card without a
+    /// The display the person is working on, while the shell spans several: where a card without a
     /// caret is centred.
     fn working_display(&self) -> Option<Rect> {
         tilo_desktop_surface::working_display(&self.rules.tree())
     }
 
-    /// Where the overview stands while the desk spans several displays: on the one the person works
+    /// Where the overview stands while the shell spans several displays: on the one the person works
     /// on, under its bar, never across the seam.
     fn overview_area(&self) -> Option<Rect> {
         self.working_display().map(|display| Rect {
@@ -734,7 +734,7 @@ impl DesktopChrome {
                 let ask = match self.cursor {
                     Some(cursor) => match self.switcher.card_at(cursor) {
                         Some(at) => Some(SwitcherAsk::Choose(at)),
-                        // The panel's own surface is no choice, and no press on the desk either.
+                        // The panel's own surface is no choice, and no press on the shell either.
                         None if self.switcher.on_panel(cursor) => None,
                         None => Some(SwitcherAsk::Dismiss),
                     },
@@ -774,7 +774,7 @@ impl DesktopChrome {
     }
 
     /// Whether a wheel at `point` steps strips (over the ribbon or its labels) rather than panning
-    /// the desk.
+    /// the shell.
     #[must_use]
     pub fn takes_wheel_at(&self, point: Point) -> bool {
         self.navigator.takes_wheel_at(&self.navigator_frame, point)
@@ -805,7 +805,7 @@ impl DesktopChrome {
     }
 
     /// Have the overview's windows drawn by the host through `flight` , their pictures resting
-    /// where the panel draws them — flying between the desk and the overview on the clock the host
+    /// where the panel draws them — flying between the shell and the overview on the clock the host
     /// keeps there; `open` is whether it is open, which the host's surfaces set to open or close
     /// it and the panel sets as it moves itself.
     pub fn set_overview(&mut self, flight: WindowFlight, open: Rc<Cell<bool>>) {
@@ -959,14 +959,14 @@ impl DesktopChrome {
 
     /// What the workspace menu offers now: this desktop's workspaces and the person's others the
     /// host knows, where it is hosted, the host's own workspace commands, and what this person may
-    /// change. Opened on the desk (`desk`), it holds the desk's own commands as well: the welcome
+    /// change. Opened on the shell (`shell`), it holds the shell's own commands as well: the welcome
     /// verbs its launchpad declares, which the same host actions run from the cards, search and an
     /// agent.
-    fn workspace_menu_model(&self, desk: bool) -> WorkspaceMenuModel {
+    fn workspace_menu_model(&self, shell: bool) -> WorkspaceMenuModel {
         let actions = self.handle.host_actions();
-        let mut desk_actions = Vec::new();
-        if desk {
-            desk_actions.extend(actions.iter().filter(|action| action.source.is_none()).map(
+        let mut shell_actions = Vec::new();
+        if shell {
+            shell_actions.extend(actions.iter().filter(|action| action.source.is_none()).map(
                 |action| WorkspaceAction {
                     id: action.id.clone(),
                     title: action.title.clone(),
@@ -976,12 +976,12 @@ impl DesktopChrome {
             ));
         }
         WorkspaceMenuModel {
-            place: if desk {
-                MenuPlace::Desk
+            place: if shell {
+                MenuPlace::Shell
             } else {
                 MenuPlace::Bar
             },
-            desk: desk_actions,
+            shell: shell_actions,
             host: self.rules.workspace_host(),
             actions: actions
                 .iter()
@@ -1005,7 +1005,7 @@ impl DesktopChrome {
         }
     }
 
-    /// Whether the person may add a desk (`add`) or rename the workspace.
+    /// Whether the person may add a shell (`add`) or rename the workspace.
     fn may_add_or_rename(&self, add: bool) -> bool {
         let command = if add {
             DesktopCommand::CreateStrip {
@@ -1089,7 +1089,7 @@ impl DesktopChrome {
     }
 
     /// Keep the panel and the host's flag on one answer: the host's surfaces open and close the
-    /// overview through the flag, and the panel opens over the desk as it stands then; what the
+    /// overview through the flag, and the panel opens over the shell as it stands then; what the
     /// panel does itself (its action, Escape, a pick) is told back. Whether the panel moved.
     pub(super) fn follow_overview(&mut self) -> bool {
         let Some(open) = self.overview_open.clone() else {
@@ -1118,14 +1118,14 @@ impl DesktopChrome {
             if let Some(area) = self.overview_area() {
                 self.overview.stand_in(area);
             }
-            let desk = self.overview_desk();
-            self.overview.open_on(true, desk);
+            let shell = self.overview();
+            self.overview.open_on(true, shell);
         } else {
-            self.overview.open_on(false, OverviewDesk::default());
+            self.overview.open_on(false, OverviewCards::default());
         }
     }
 
-    /// The switcher's desk as this host offers it: the workspaces it shows and what can be done to
+    /// The switcher's shell as this host offers it: the workspaces it shows and what can be done to
     /// them, including joining another workspace when the session published the action that opens
     /// the directory.
     fn cards(&self) -> Vec<crate::overview::WorkspaceCard> {
@@ -1138,9 +1138,9 @@ impl DesktopChrome {
 
     fn apply_pick(&mut self, pick: &OverviewPick) {
         if pick.closes() {
-            self.overview.open_on(false, OverviewDesk::default());
+            self.overview.open_on(false, OverviewCards::default());
         }
-        // The ones with a published verb are that verb; the rest are the desk's own.
+        // The ones with a published verb are that verb; the rest are the shell's own.
         let verb = match pick {
             OverviewPick::Window(tab) => {
                 self.handle.focus_tab(*tab);
@@ -1252,7 +1252,7 @@ impl DesktopChrome {
                     .iter()
                     .enumerate()
                     .find(|(at, strip)| {
-                        // The name a person reads: the strip's own, or the desk's word for a
+                        // The name a person reads: the strip's own, or the shell's word for a
                         // strip nobody named ("Strip 1", where it stands).
                         names::strip_named(&strip.name, *at).eq_ignore_ascii_case(key)
                     })
@@ -1319,12 +1319,12 @@ impl DesktopChrome {
             self.fresh_workspace();
         }
         // Whoever asked for it — the menu, the settings, an agent — the host hears of the deletion
-        // the same way, from the desk that made it.
+        // the same way, from the shell that made it.
         self.ask(DesktopAsk::DeletedWorkspace { workspace, name });
         Ok(())
     }
 
-    /// Take the workspace `id` (the one the person is in when absent) off this desk, the person
+    /// Take the workspace `id` (the one the person is in when absent) off this session, the person
     /// going to the next one along when it was the one they were in. Answers what it was called.
     fn take_workspace_off(&self, id: Option<WorkspaceId>) -> Result<String, String> {
         let mut tree = self.handle.read(Clone::clone);
@@ -1360,7 +1360,7 @@ impl DesktopChrome {
     }
 
     /// A new empty workspace after the others, with the strip its first window goes in: what stands
-    /// on the desk when the last one is deleted.
+    /// on the shell when the last one is deleted.
     fn fresh_workspace(&self) {
         let tree = self.handle.read(Clone::clone);
         let workspace = Workspace::new(
@@ -1372,7 +1372,7 @@ impl DesktopChrome {
 
     /// Put `workspace` after the others and, when `go` , go there, with a strip of its own made
     /// here when `fresh_strip` — a workspace a site lets this computer into comes with the strips
-    /// its site holds, and a strip made here would stand on this desk only. A desk that shows no
+    /// its site holds, and a strip made here would stand on this session only. A shell that shows no
     /// workspace goes to the one it gets whatever `go` says: there is nowhere else to stay.
     fn open_workspace(
         &self,
@@ -1399,7 +1399,7 @@ impl DesktopChrome {
     /// Make a workspace after the others and go there; with `join` , the workspace holding that id,
     /// joining it when this computer has none (a workspace that exists is a workspace that exists,
     /// so joining one is holding it, which needs no workspace of the person's own to make).
-    /// In the `background` the workspace is put on the desk and the person stays where they are:
+    /// In the `background` the workspace is put on the shell and the person stays where they are:
     /// one their list brings from another of their devices arrives while they are somewhere else,
     /// and what they open next belongs to the workspace they are in.
     fn new_workspace(&self, join: Option<&str>, name: Option<&str>, background: bool) {
@@ -1415,7 +1415,7 @@ impl DesktopChrome {
             if let Some(held) = tree.workspaces.iter().find(|held| held.id() == joined) {
                 // Already held, here or from another device: go there rather than make a second
                 // workspace of one workspace. In the background the person stays where they are,
-                // and the desk is replaced all the same, as it always was here: a replaced desk is
+                // and the shell is replaced all the same, as it always was here: a replaced shell is
                 // one the session reads and writes its workspaces' records for again, and this
                 // workspace has just taken this device in.
                 if !background {
@@ -1438,7 +1438,7 @@ impl DesktopChrome {
 
     /// Branch the workspace `source` names into a new one called `name` (the source's name with
     /// "branch" when none is given): the new workspace's id is made here, and the host
-    /// makes the workspace with what the source holds and puts it on the desk once it does
+    /// makes the workspace with what the source holds and puts it on the shell once it does
     /// ([`DesktopAsk::BranchWorkspace`]), so nothing opens in it before its records are there.
     /// Answers the new workspace's id.
     fn branch_workspace(&self, source: &str, name: Option<&str>) -> Result<WorkspaceId, String> {
@@ -1549,7 +1549,7 @@ impl DesktopChrome {
         }
         // The chords Settings cannot rebind come before any program's, as on the native desktop:
         // each runs the verb its menu row, its palette row and an agent's invocation name, and the
-        // ones the desk has no part in are asked of the page. The desk claims the press either way,
+        // ones the shell has no part in are asked of the page. The shell claims the press either way,
         // so the browser's own key for it is not run too.
         let app_window = (self.page_window == PageWindow::App)
             .then(|| app_window_fixed_action(event.physical_key, *modifiers, self.mac))
@@ -1752,11 +1752,11 @@ impl DesktopChrome {
 }
 
 impl DesktopChrome {
-    /// Put every display's bar where the desk's source says, when what it says moved: a display
+    /// Put every display's bar where the shell's source says, when what it says moved: a display
     /// arriving or going, the person moving to another display, or a window going fullscreen there.
     /// Returns whether anything moved.
-    /// A desk of one display carries no places: the full bar then stands where layout puts it,
-    /// across the whole desk.
+    /// A shell of one display carries no places: the full bar then stands where layout puts it,
+    /// across the whole shell.
     fn follow_bars(&mut self) -> bool {
         let Some(chrome) = self.bar.chrome().cloned() else {
             return false;
@@ -1822,7 +1822,7 @@ impl DesktopChrome {
             f64::from(TOPBAR_HEIGHT_PX)
         };
         let full = self.placement.bars.iter().find(|place| place.full);
-        // The display in use is the one the full bar stands on; a desk that needs no placing is one
+        // The display in use is the one the full bar stands on; a shell that needs no placing is one
         // display, which the window covers or not.
         let in_use_fullscreen = full.map_or(!self.placement.fullscreen.is_empty(), |place| {
             self.placement.fullscreen.contains(&Some(place.display))
@@ -1857,7 +1857,7 @@ impl DesktopChrome {
             self.bar.set_presence(full_presence);
             changed = true;
         }
-        // A bar shown over the desk tells the windows how much of its top edge it covers, so their
+        // A bar shown over the shell tells the windows how much of its top edge it covers, so their
         // own bars move down whole and none of their controls — a title, a Back, a clock of their
         // own — is left under the bar's, and the bar's clock never reads across them.
         changed |= self
@@ -1967,7 +1967,7 @@ impl DesktopChrome {
             // The workspace edit path of the strip switcher's own button,
             // so an agent or a page makes a strip the way the person does.
             ChromeEffect::NewStrip { name } => {
-                // A strip made here keeps no name until the person gives it one: the desk names it
+                // A strip made here keeps no name until the person gives it one: the shell names it
                 // by its place, in the language of whoever reads it.
                 let name = name.clone().unwrap_or_default();
                 if !self.add_strip(name) {
@@ -1998,7 +1998,7 @@ impl DesktopChrome {
                 ) else {
                     return Ok(false);
                 };
-                // The desk carries out its own and asks its host for the rest, once: the shortcut's
+                // The shell carries out its own and asks its host for the rest, once: the shortcut's
                 // own answer is the whole of it.
                 self.shortcut(action);
                 return Ok(true);
@@ -2007,7 +2007,7 @@ impl DesktopChrome {
                 let Some(action) = FixedAction::from_id(action) else {
                     return Ok(false);
                 };
-                // The same split as a configurable shortcut's: the desk's windows here, the device
+                // The same split as a configurable shortcut's: the shell's windows here, the device
                 // under them at its host.
                 self.fixed_shortcut(action);
                 return Ok(true);
@@ -2018,7 +2018,7 @@ impl DesktopChrome {
         Ok(true)
     }
 
-    /// Carry out a verb of the surface's, the ones a page's commands carry too: the desk admits
+    /// Carry out a verb of the surface's, the ones a page's commands carry too: the shell admits
     /// each against the tree it changes and applies it on its next pass, so nothing here decides
     /// twice.
     fn perform_surface_verb(&self, verb: &ChromeEffect) -> Option<Result<(), String>> {
@@ -2054,7 +2054,7 @@ impl DesktopChrome {
         surface.then(|| self.handle.dispatch(verb.clone()))
     }
 
-    /// What the desk itself does to offers of workspaces and strips, by address: `None` for an
+    /// What the shell itself does to offers of workspaces and strips, by address: `None` for an
     /// action of another kind.
     fn perform_workspace_action(&self, verb: &ChromeEffect) -> Option<bool> {
         match verb {
@@ -2200,8 +2200,8 @@ impl Widget for DesktopChrome {
         }
         if self.overview.is_open() && self.overview_revision != self.handle.revision() {
             self.overview_revision = self.handle.revision();
-            let desk = self.overview_desk();
-            self.overview.set_desk(desk);
+            let shell = self.overview();
+            self.overview.set_shell(shell);
             changed = true;
         }
         changed |= self.about.settle();
@@ -2221,7 +2221,7 @@ impl Widget for DesktopChrome {
         }
         changed |= self.bar.update(state, path);
         changed |= self.follow_bars();
-        // Each display's bar keeps its own copy of the desk's tree, and its own clock under it.
+        // Each display's bar keeps its own copy of the layout, and its own clock under it.
         for bar in &mut self.compact {
             changed |= bar.update(state, path);
         }
@@ -2275,7 +2275,7 @@ impl Widget for DesktopChrome {
             kids.push(notices.build_layout(taffy, theme, map));
         }
         // Every other display's bar stands over its own display's top
-        // edge, laid out across the desk: it takes no room in the column,
+        // edge, laid out across the shell: it takes no room in the column,
         // its place carrying it where its display is.
         for compact in &mut self.compact {
             let node = compact.build_layout(taffy, theme, map);
@@ -2546,7 +2546,7 @@ impl Widget for DesktopChrome {
         self.focused
     }
 
-    /// The desk's overlays a screen reader can reach: the labels and the card the chrome paints,
+    /// The shell's overlays a screen reader can reach: the labels and the card the chrome paints,
     /// plus the children widgets the walk adds below them.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let mut children: Vec<ui::a11y::AccessNode> = self

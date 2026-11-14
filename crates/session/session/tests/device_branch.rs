@@ -2,13 +2,13 @@
 //! hosts: the copy re-keys at boot through the production re-key
 //! (`tilo_user_identity::branch::settle`), its person certifies the new key,
 //! and both run as real sessions. What either opens on the workspace's shared
-//! desk — a record sealed under the workspace's channel keys — the other
+//! shell — a record sealed under the workspace's channel keys — the other
 //! shows, before and after both restart, and the source stays the member it
 //! was. Before any copy, the same record between two of a person's devices
 //! that were never the same machine.
 //!
-//! The desk's windows are the edits here rather than an app's records: a
-//! window is a change of the workspace's sealed desk record, and opening one
+//! The shell's windows are the edits here rather than an app's records: a
+//! window is a change of the workspace's sealed shell record, and opening one
 //! needs no app sandbox, which the machines these tests run on do not give.
 
 #![cfg(target_os = "linux")]
@@ -32,7 +32,7 @@ use crate::common::people::{
 use serde_json::json;
 use tilo_relay_protocol::workspaces::Role;
 
-/// The app whose window is opened on the desks here.
+/// The app whose window is opened on the sessions here.
 const NOTES: &str = "so.tilo.notes";
 
 fn start(device: &mut Device, site: &Site) {
@@ -42,12 +42,12 @@ fn start(device: &mut Device, site: &Site) {
 }
 
 /// Ada's laptop in a workspace her site hosts, with a window on its shared
-/// desk the site keeps; then its disk copied while it is off, the copy
+/// shell the site keeps; then its disk copied while it is off, the copy
 /// re-keyed at boot and certified by Ada, and both started.
 fn laptop_and_its_copy() -> (Site, Person, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    // The workspace's host lets its desk author its records.
+    // The workspace's host lets its shell author its records.
     let mut laptop = ada.device("Ada's laptop");
     let hers = site.invite(ada.public, Role::Editor);
     laptop.join(&hers);
@@ -79,7 +79,7 @@ fn laptop_and_its_copy() -> (Site, Person, Device, Device) {
     (site, ada, laptop, copy)
 }
 
-/// What either of a person's two devices writes to the workspace's desk the other reads: two
+/// What either of a person's two devices writes to the workspace's shell the other reads: two
 /// sessions of their own, on the route the network actor publishes a record on.
 #[test]
 fn an_edit_on_one_device_of_a_person_reaches_the_other() {
@@ -94,10 +94,10 @@ fn an_edit_on_one_device_of_a_person_reaches_the_other() {
     wait_shown(&site, &[&laptop, &phone], "From the phone");
 }
 
-/// A workspace the person makes on their phone arrives on their laptop's desk and leaves the
+/// A workspace the person makes on their phone arrives on their laptop's shell and leaves the
 /// laptop where it is: the person stays in the workspace they went to, and what they open next is a
 /// window of it. A workspace their own join brings is the one they land in; one their list brings
-/// from another device is on the desk for when they go there.
+/// from another device is on the shell for when they go there.
 #[test]
 fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
     let (site, _ada, laptop, phone) = two_devices_of_one_person();
@@ -106,7 +106,7 @@ fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
 
     // Made on the phone while the laptop shows the site's workspace: the phone hosts it, the
     // person's list names it, and the laptop enters it there as their further device.
-    let before = phone.on_desk();
+    let before = phone.on_shell();
     let made = phone.act_wait("actions", "workspace.create", &json!({}));
     assert_eq!(
         made["answer"]["receipt"]["update"]["state"],
@@ -115,26 +115,26 @@ fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
         phone.label,
         phone.diagnostic()
     );
-    tilo_test_env::wait_until("the phone's desk holds the workspace it made", || {
-        phone.on_desk().len() > before.len()
+    tilo_test_env::wait_until("the phone's session holds the workspace it made", || {
+        phone.on_shell().len() > before.len()
     });
     let made = phone
-        .on_desk()
+        .on_shell()
         .into_iter()
         .find(|workspace| !before.contains(workspace))
         .expect("the workspace the phone made");
 
     tilo_test_env::wait_until(
         format!("{} holds {made}, made on the phone", laptop.label),
-        || laptop.on_desk().contains(&made),
+        || laptop.on_shell().contains(&made),
     );
     assert_eq!(
         laptop.showing().as_deref(),
         Some(site.workspace.as_str()),
         "{} stays in the workspace its person went to when {made} arrives from their phone; \
-         its desk holds {:?}\n{}",
+         its session holds {:?}\n{}",
         laptop.label,
-        laptop.on_desk(),
+        laptop.on_shell(),
         laptop.join_flow()
     );
 
@@ -152,7 +152,7 @@ fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
 /// The copy takes the workspace up again as Ada's own further device: the
 /// group state it was copied with names its source, and is dropped once the
 /// copy is admitted; the site admits the copy as a device of Ada's without an
-/// invitation; the copy keeps the workspace on its desk throughout; and Ada
+/// invitation; the copy keeps the workspace on its shell throughout; and Ada
 /// stays the member she was, her laptop holding the workspace too.
 #[test]
 fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
@@ -197,13 +197,13 @@ fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
     assert!(!members.contains_key(&hex::encode(ada.public)) || members.len() == 1);
 }
 
-/// What either opens on the workspace's sealed desk the other shows, before
+/// What either opens on the workspace's sealed shell the other shows, before
 /// and after both restart.
 #[test]
 fn a_machine_copied_from_a_device_and_its_source_read_each_others_edits() {
     let (site, _ada, mut laptop, mut copy) = laptop_and_its_copy();
     // What the copy opens the source shows, and what the source opens the
-    // copy shows: each reads the other's writes to the sealed desk.
+    // copy shows: each reads the other's writes to the sealed shell.
     let from_copy = copy.window(NOTES, "From the copy");
     wait_shown(&site, &[&copy, &laptop], "From the copy");
     let from_laptop = laptop.window(NOTES, "From the laptop");
@@ -221,10 +221,10 @@ fn a_machine_copied_from_a_device_and_its_source_read_each_others_edits() {
     wait_shown(&site, &[&laptop, &copy], "The laptop again");
 }
 
-/// One device, no copy: what it opens on the workspace's desk after a
+/// One device, no copy: what it opens on the workspace's shell after a
 /// restart continues what it wrote before, and the site keeps it.
 #[test]
-fn a_device_restarted_keeps_writing_the_workspace_desk() {
+fn a_device_restarted_keeps_writing_the_workspace_shell() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
     let mut laptop = ada.device("Ada's laptop");
@@ -245,7 +245,7 @@ fn a_device_restarted_keeps_writing_the_workspace_desk() {
 /// A copy started while the workspace's host is away is not the workspace's member yet: only the
 /// host admits a device, and it is away. The copy's apps take part in nothing there until then, so
 /// an action asked of one is refused at once, saying why, rather than waiting on an app that never
-/// answers; and the desk tells the person the workspace waits for its host (`e2e-branch` S07-b,
+/// answers; and the shell tells the person the workspace waits for its host (`e2e-branch` S07-b,
 /// where the branch booted while its source, the host, was stopped).
 #[test]
 fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
@@ -296,7 +296,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
         "an open while the host is away is refused with the reason: {opened}"
     );
     assert!(asked.elapsed() < std::time::Duration::from_secs(10));
-    // What the copy's desk offers of Chat, whose window the laptop left open, is refused at once,
+    // What the copy's shell offers of Chat, whose window the laptop left open, is refused at once,
     // with the reason.
     let (provider, id) = chat_row(&copy);
     let started = std::time::Instant::now();
@@ -315,7 +315,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
         "refused at once, not after waiting on the app: {:?}",
         started.elapsed()
     );
-    // The desk tells the person, once, that the workspace waits for its host.
+    // The shell tells the person, once, that the workspace waits for its host.
     let told = "the person is told this device waits for the workspace's host to take it in";
     tilo_test_env::wait_until(
         format!(
@@ -329,7 +329,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
 /// The app whose actions the copy is asked to run.
 const CHAT: &str = "so.tilo.chat";
 
-/// A row the desk lists of Chat's `open-direct-conversation`, by its provider and id.
+/// A row the shell lists of Chat's `open-direct-conversation`, by its provider and id.
 fn chat_row(device: &Device) -> (String, String) {
     let mut found = None;
     tilo_test_env::wait_until(format!("{} listing Chat's actions", device.label), || {
@@ -529,7 +529,7 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
     );
 }
 
-/// Bring the workspace `workspace` (its id) to the front on `device`'s desk.
+/// Bring the workspace `workspace` (its id) to the front on `device`'s shell.
 fn show_held(device: &Device, workspace: &str) {
     let held = || device.held().iter().any(|held| held == workspace);
     tilo_test_env::wait_until(format!("{} holds {workspace}", device.label), held);
@@ -548,7 +548,7 @@ fn show_held(device: &Device, workspace: &str) {
     });
 }
 
-/// The window titles `device` 's desk shows in the workspace `workspace` (its id).
+/// The window titles `device` 's shell shows in the workspace `workspace` (its id).
 fn titles_in(device: &Device, workspace: &str) -> Vec<String> {
     let state = device.state();
     let tree: tilo_desktop_model::Layout =
@@ -637,7 +637,7 @@ fn start_both(laptop: &mut Device, copy: &mut Device, hosted: &str) {
 }
 
 /// Wait until `reader` shows the window `title` that `writer` opened in `workspace`, saying on a
-/// miss what each desk shows and what each session logged of syncing it.
+/// miss what each shell shows and what each session logged of syncing it.
 fn wait_reaches(writer: &Device, reader: &Device, workspace: &str, title: &str) {
     let until = tilo_test_env::hang_deadline();
     while !titles_in(reader, workspace)
@@ -678,18 +678,18 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
     let mut laptop = ada.device("Ada's laptop");
     laptop.start();
     // A workspace the laptop makes and hosts before it is copied, as box hosts "Branch e2e".
-    let before = laptop.on_desk();
+    let before = laptop.on_shell();
     let made = laptop.act_wait("actions", "workspace.create", &json!({}));
     assert_eq!(
         made["answer"]["receipt"]["update"]["state"],
         json!("succeeded"),
         "{made}"
     );
-    tilo_test_env::wait_until("the laptop's desk holds the workspace it made", || {
-        laptop.on_desk().len() > before.len()
+    tilo_test_env::wait_until("the laptop's session holds the workspace it made", || {
+        laptop.on_shell().len() > before.len()
     });
     let hosted = laptop
-        .on_desk()
+        .on_shell()
         .into_iter()
         .find(|workspace| !before.contains(workspace))
         .expect("the workspace the laptop made");
@@ -734,18 +734,18 @@ fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_custody_ho
     let ada = Person::new("Ada");
     let mut laptop = ada.device("Ada's laptop");
     laptop.start();
-    let before = laptop.on_desk();
+    let before = laptop.on_shell();
     let made = laptop.act_wait("actions", "workspace.create", &json!({}));
     assert_eq!(
         made["answer"]["receipt"]["update"]["state"],
         json!("succeeded"),
         "{made}"
     );
-    tilo_test_env::wait_until("the laptop's desk holds the workspace it made", || {
-        laptop.on_desk().len() > before.len()
+    tilo_test_env::wait_until("the laptop's session holds the workspace it made", || {
+        laptop.on_shell().len() > before.len()
     });
     let hosted = laptop
-        .on_desk()
+        .on_shell()
         .into_iter()
         .find(|workspace| !before.contains(workspace))
         .expect("the workspace the laptop made");

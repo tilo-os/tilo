@@ -10,7 +10,7 @@ use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
 use winit::event::Modifiers;
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
-/// The desktop's one shortcut table, shared: what the desk matches a press against, what it shows
+/// The desktop's one shortcut table, shared: what the shell matches a press against, what it shows
 /// beside its rows, and what a person's rebinding changes for both at once.
 pub type Shared = Rc<RefCell<ShortcutConfig>>;
 

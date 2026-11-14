@@ -633,7 +633,7 @@ fn spawn_step(step: impl FnOnce() + Send + 'static) -> Result<(), String> {
 /// The broker's door to pairing: how Settings pairs a device, as the person using it, without
 /// starting any process itself.
 pub(crate) struct BrokerDoor {
-    pub(crate) desk: std::sync::Arc<crate::plane::DeskAuthority>,
+    pub(crate) layout: std::sync::Arc<crate::plane::LayoutAuthority>,
     pub(crate) fabric: Option<SharedLink>,
     pub(crate) pairing: &'static Pairing,
 }
@@ -642,7 +642,7 @@ impl BrokerDoor {
     /// Refuse unless `person` administers `workspace` 's identity: they may grant in the workspace,
     /// and it has an identity selected.
     fn authorize(&self, workspace: &str, person: &str) -> Result<(), String> {
-        crate::identity_admin::authorize(&self.desk, workspace, person).map(drop)
+        crate::identity_admin::authorize(&self.layout, workspace, person).map(drop)
     }
 }
 

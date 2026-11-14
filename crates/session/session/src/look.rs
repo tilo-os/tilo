@@ -1,7 +1,7 @@
 //! `look`: what a window this session does not run shows, pictured for
-//! whoever reads the desk — an agent, a test, a script.
+//! whoever reads the shell — an agent, a test, a script.
 //!
-//! The desk publishes the two read actions of such a window
+//! The shell publishes the two read actions of such a window
 //! (`tilo_desktop_surface::window`); the picture itself is made here, where
 //! the compositor is, by the same read-back window sharing captures with,
 //! and kept in the workspace's content store under the address every caller
@@ -22,7 +22,7 @@ pub(crate) fn look<'a>(compositor: &'a mut Compositor, content: Option<&'a Plane
     Look::over(move |window: u64, workspace: &str| {
         let identifier = compositor
             .capture_identifier(window)
-            .ok_or("the window is not on the desk (any more)")?;
+            .ok_or("the window is not on the shell (any more)")?;
         let shot = compositor
             .read_back(&Target::window(identifier))
             .map_err(|error| error.to_string())?;

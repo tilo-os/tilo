@@ -4,7 +4,7 @@
 //! physical screens, so "2" on the canvas is the "2" the person is looking at. The card keeps out
 //! of the way of the arranging: it stands in a display's bottom-left corner, never over its centre,
 //! and it goes on its own after [`HOLD`], fading out on the standard confirmation's exit. Nothing
-//! counts down on a timer of its own: the card is up while the desk's clock says so, and asks for
+//! counts down on a timer of its own: the card is up while the shell's clock says so, and asks for
 //! the frame that takes it away ([`DisplayIdentify::next_wake_deadline`]).
 
 use ui::a11y::{AccessNode, Politeness, Role};
@@ -22,7 +22,7 @@ pub const HOLD: Duration = Duration::from_secs(3);
 
 pub use tilo_desktop_surface::host::chrome::{Ask, Label};
 
-/// One card as it stands on a display, in the desk's coordinates.
+/// One card as it stands on a display, in the shell's coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card {
     /// The whole display the card stands on.
@@ -146,7 +146,7 @@ impl DisplayIdentify {
     }
 
     /// Paint each display's number and name, if the cards are still up. `displays` are the displays
-    /// the desk shows, each with its rectangle in the desk's coordinates.
+    /// the shell shows, each with its rectangle in the shell's coordinates.
     pub fn draw(
         &mut self,
         displays: &[(String, Rect)],
@@ -434,7 +434,7 @@ mod tests {
             );
         }
 
-        phase a_display_the_desk_does_not_show_gets_no_card;
+        phase a_display_the_shell_does_not_show_gets_no_card;
         {
             let t0 = Instant::now();
             let mut identify = DisplayIdentify::default();

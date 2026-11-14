@@ -1,4 +1,4 @@
-//! The panels the session stands up beside the desk: the setup a person goes through once, and the
+//! The panels the session stands up beside the shell: the setup a person goes through once, and the
 //! keys' readout with the keys that answer wherever the keyboard is.
 
 use std::cell::{Cell, RefCell};
@@ -10,19 +10,19 @@ use tilo_desktop::overlays::Overlays;
 use crate::controls::ControlsReading;
 use tilo_sheets::shortcut_guide::State as GuideState;
 
-use crate::keys::{ControllerKeys, DeskKeys, Invocations, PressedChords, Presses, SessionKeys};
+use crate::keys::{ControllerKeys, ShellKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{ActivityLayer, Readout, ReadoutPlaces, Reserved};
 use crate::platform::keys::NativeKeys;
 use crate::setup::Setup;
-use crate::{BeforeDesk, SessionCommand};
+use crate::{BeforeShell, SessionCommand};
 use tilo_session_core::door::Doors;
 
-/// What stands before the desk, when it stands there at all: above everything, first to the
+/// What stands before the shell, when it stands there at all: above everything, first to the
 /// keyboard, and while it is up the only surface offering actions.
 pub(crate) fn mount_setup(
     compositor: &mut Compositor,
     doors: &mut Doors,
-    surface: Option<BeforeDesk>,
+    surface: Option<BeforeShell>,
     person: &str,
     scale: f64,
 ) -> Option<Rc<RefCell<Setup>>> {
@@ -38,14 +38,14 @@ pub(crate) fn mount_setup(
 
 /// What the session's keys answer with besides the shortcut table: the controller the person last
 /// drove the desktop with, whether the keys being routed are that controller's own, the display
-/// sheet Super+P puts up, and the surfaces over the desk.
+/// sheet Super+P puts up, and the surfaces over the shell.
 pub(crate) struct KeyContext {
     pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
     pub(crate) controller_keys: Rc<Cell<bool>>,
     pub(crate) sheets: crate::keys::SheetKeys,
-    /// Whether a desk widget has its card open, which Escape folds.
-    pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
-    /// What stands over the desk, which Escape closes from the top.
+    /// Whether a Desktop widget has its card open, which Escape folds.
+    pub(crate) fold: tilo_desktop::widgets::Fold,
+    /// What stands over the shell, which Escape closes from the top.
     pub(crate) overlays: Overlays,
     /// When each display's bar shows over the window covering it, which Super asks for.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
@@ -110,7 +110,7 @@ pub(crate) fn mount_controls(
                 triggered: Rc::clone(&triggered),
             },
             guide,
-            DeskKeys::new(fold, overlays).with_panel(panel),
+            ShellKeys::new(fold, overlays).with_panel(panel),
             sheets,
             ControllerKeys {
                 last: controller,
@@ -124,7 +124,7 @@ pub(crate) fn mount_controls(
     (commands, controls_reading, invocations, triggered, readout)
 }
 
-/// The floating layer over the desk: every app's activity as a card, which the session's own
+/// The floating layer over the shell: every app's activity as a card, which the session's own
 /// reading of the board fills and what the person does on it reaches the apps through.
 /// Under the shell nothing of it is mounted: the old shell draws the timer's own floating panel, so
 /// a layer of ours would draw a second card over it.
@@ -134,7 +134,7 @@ pub(crate) fn mount_activities(
     reader: &Rc<crate::chrome::Activities>,
     cards: &crate::cards::Cards,
     (banners, readout): (Reserved, Reserved),
-    (places, desk, overlays): (
+    (places, shell, overlays): (
         &ReadoutPlaces,
         &tilo_desktop_surface::DesktopHandle,
         &tilo_desktop::overlays::Overlays,
@@ -156,7 +156,7 @@ pub(crate) fn mount_activities(
                 cards.clone(),
                 (banners, readout),
                 Rc::clone(places),
-                (desk.clone(), overlays.clone()),
+                (shell.clone(), overlays.clone()),
                 options.scale,
             )));
             compositor.add_host(surface.clone());

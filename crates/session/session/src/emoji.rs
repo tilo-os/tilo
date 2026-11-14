@@ -55,7 +55,7 @@ impl Emoji {
     /// Carry the person's picks into the field they were typing in, and tell
     /// the chrome where that field's caret stands.
     ///
-    /// `origin` is where the desk's own coordinates begin on the desktop,
+    /// `origin` is where the shell's own coordinates begin on the desktop,
     /// which the chrome's are measured from.
     pub(crate) fn step(&self, compositor: &mut Compositor, origin: (i32, i32), now: Instant) {
         for text in self.link.take_picks() {

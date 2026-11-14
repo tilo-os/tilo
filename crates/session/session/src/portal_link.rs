@@ -79,7 +79,7 @@ struct Shared {
     selection: Mutex<(u64, Vec<String>)>,
     /// Wakes the desktop services' watcher when the selection changed.
     selection_changed: tokio::sync::Notify,
-    /// The workspace each app runs in, as the desk has it.
+    /// The workspace each app runs in, as the shell has it.
     workspaces: Mutex<BTreeMap<String, String>>,
     /// The apps this session started in one of the launcher's sandboxes.
     sandboxed: Mutex<BTreeSet<String>>,
@@ -128,7 +128,7 @@ impl PortalSide {
         })
     }
 
-    /// The workspace app `app_id` runs in, as the desk knows it.
+    /// The workspace app `app_id` runs in, as the shell knows it.
     #[must_use]
     pub fn workspace_of(&self, app_id: &str) -> Option<String> {
         self.shared.workspaces.lock_recover().get(app_id).cloned()
@@ -141,14 +141,14 @@ impl PortalSide {
         self.shared.sandboxed.lock_recover().contains(app_id)
     }
 
-    /// What the desk's workspaces grant standing in for the person's answer: a workspace already
+    /// What the shell's workspaces grant standing in for the person's answer: a workspace already
     /// granting an app what a portal asks of it needs no sheet.
     #[must_use]
     pub fn grants(&self) -> WorkspaceGrants {
         let shared = Arc::clone(&self.shared);
         Arc::new(
             move |caller: &tilo_portal::PortalCaller, capability: &str| {
-                let (Some(workspace), Some(scope)) = (&caller.workspace, desk_scope(capability))
+                let (Some(workspace), Some(scope)) = (&caller.workspace, shell_scope(capability))
                 else {
                     return false;
                 };
@@ -283,13 +283,13 @@ impl SessionLink {
     pub fn serve(
         &mut self,
         compositor: &mut Compositor,
-        desk: &DesktopHandle,
+        shell: &DesktopHandle,
         launched: &Launches,
         documents_served: bool,
     ) {
         self.shared.serving.store(true, Ordering::Release);
         self.publish_sources(compositor);
-        self.publish_desk(desk);
+        self.publish_layout(shell);
         self.publish_launches(launched, documents_served);
         self.feed_zones(compositor);
         let asks = std::mem::take(&mut *self.shared.asks.lock_recover());
@@ -355,13 +355,13 @@ impl SessionLink {
     }
 
     /// Tell the portal which workspace each app runs in, and what those workspaces grant their
-    /// apps: the desk's own answer stands for the person's where it already covers what a portal
+    /// apps: the shell's own answer stands for the person's where it already covers what a portal
     /// asks.
-    fn publish_desk(&self, desk: &DesktopHandle) {
+    fn publish_layout(&self, shell: &DesktopHandle) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
-        let (workspaces, grants) = desk.read(|tree| {
+        let (workspaces, grants) = shell.read(|tree| {
             let mut workspaces = BTreeMap::new();
             let mut grants = BTreeMap::new();
             for workspace in &tree.workspaces {
@@ -761,9 +761,9 @@ impl Clipboard for ClipboardLink {
     }
 }
 
-/// The desk's name for what a portal asks of an app: reading the screen and driving the seat are
+/// The shell's name for what a portal asks of an app: reading the screen and driving the seat are
 /// one grant each, however they are asked.
-fn desk_scope(capability: &str) -> Option<&'static str> {
+fn shell_scope(capability: &str) -> Option<&'static str> {
     match capability {
         "camera" => Some("camera"),
         "microphone" => Some("microphone"),

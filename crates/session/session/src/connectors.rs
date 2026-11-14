@@ -219,7 +219,7 @@ pub(crate) fn reap(child: Child) {
 /// of the app there: one workspace's connector writes that workspace's record and its media
 /// scope, so a record the record service keeps per workspace is kept in step in each workspace
 /// that shows it, never only in the one in front. `reconcile` runs every pass: it starts the
-/// connectors the desk's workspaces now need and stops the ones none does.
+/// connectors the shell's workspaces now need and stops the ones none does.
 pub(crate) fn reconcile(session: &crate::Session) {
     // An origin's own crate registers how the platform reaches its connector, so a session reaches
     // one without naming the crate that keeps the service.
@@ -236,7 +236,7 @@ pub(crate) fn reconcile(session: &crate::Session) {
     let Some(apps) = session.shared.launch.clone() else {
         return;
     };
-    // The app the record `resource` belongs to, when it is one the desk holds: `tl:<app>:<id>`
+    // The app the record `resource` belongs to, when it is one the shell holds: `tl:<app>:<id>`
     // names its app, and an app's own resources (`<app>.<Kind>`) name theirs in the catalogue.
     let app_of = |resource: &str| -> Option<String> {
         resource
@@ -254,7 +254,7 @@ pub(crate) fn reconcile(session: &crate::Session) {
                     .and_then(|spec| spec.app().map(str::to_owned))
             })
     };
-    // Every workspace the desk holds, by id, and the apps whose records stand in it: what needs a
+    // Every workspace the shell holds, by id, and the apps whose records stand in it: what needs a
     // connector there. A workspace with no place of an app's records needs none, however the
     // person moves between workspaces.
     let mut needed: std::collections::BTreeSet<Key> = std::collections::BTreeSet::new();
@@ -267,7 +267,7 @@ pub(crate) fn reconcile(session: &crate::Session) {
             }
         }
     }
-    // An app the session runs itself keeps its records here, with no place of it on the desk: the
+    // An app the session runs itself keeps its records here, with no place of it on the shell: the
     // person's actions on those records — a search, an agent's task — queue what the outside
     // service answers, so that app's origin runs in the workspace in front whether or not a place
     // shows it. Without it an app whose only surface is the record it holds could not reach its

@@ -95,27 +95,27 @@ tilo_test_env::scenario! {
     phase someone_with_one_device_that_sells_nothing_sees_no_hosting;
     {
         en();
-        let desk = TiloDesk {
+        let shell = TiloOverview {
             hosts: vec![HostAccount::sells_nothing("ada-laptop", HostKind::Device)],
-            ..TiloDesk::default()
+            ..TiloOverview::default()
         };
-        assert!(!hosting_relevant(&desk.hosts));
-        let rows = rows(&desk);
+        assert!(!hosting_relevant(&shell.hosts));
+        let rows = rows(&shell);
         assert!(captions(&rows).is_empty(), "nothing below the workspaces");
-        assert_eq!(usage_line(&desk.hosts, "ws-build"), None);
+        assert_eq!(usage_line(&shell.hosts, "ws-build"), None);
     }
 
     phase a_self_hosted_host_shows_and_offers_no_plans_or_billing;
     {
         en();
-        let desk = TiloDesk {
+        let shell = TiloOverview {
             hosts: vec![HostAccount::sells_nothing(
                 "Ada's server",
                 HostKind::SelfHosted,
             )],
-            ..TiloDesk::default()
+            ..TiloOverview::default()
         };
-        let rows = rows(&desk);
+        let rows = rows(&shell);
         assert_eq!(captions(&rows), ["Hosts & compute"]);
         let host = items(&rows)[0];
         assert_eq!(host.title, "Ada's server");
@@ -134,11 +134,11 @@ tilo_test_env::scenario! {
     // credit, with Manage billing. Invoices are Settings' Billing page's, not the overview's.
     {
         en();
-        let desk = TiloDesk {
+        let shell = TiloOverview {
             hosts: vec![tilo_cloud()],
-            ..TiloDesk::default()
+            ..TiloOverview::default()
         };
-        let rows = rows(&desk);
+        let rows = rows(&shell);
         let items = items(&rows);
         let host = items[0];
         assert_eq!(host.title, "Tilo Cloud");
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
             "no invoices in the overview"
         );
         assert_eq!(
-            usage_line(&desk.hosts, "ws-build").as_deref(),
+            usage_line(&shell.hosts, "ws-build").as_deref(),
             Some("Tilo Cloud, 1 hr this month")
         );
     }
@@ -170,9 +170,9 @@ tilo_test_env::scenario! {
             account: "acct-1".into(),
             ..Standing::default()
         });
-        let rows = rows(&TiloDesk {
+        let rows = rows(&TiloOverview {
             hosts: vec![host],
-            ..TiloDesk::default()
+            ..TiloOverview::default()
         });
         assert_eq!(
             facts(items(&rows)[0]),
@@ -185,7 +185,7 @@ tilo_test_env::scenario! {
     // doing now, the way to its card, and Revoke — which asks first, naming what revoking loses.
     {
         en();
-        let desk = TiloDesk {
+        let shell = TiloOverview {
             door: Some(Door {
                 grants: vec![Grant {
                     id: "g1".into(),
@@ -199,9 +199,9 @@ tilo_test_env::scenario! {
                 }],
                 ..Door::default()
             }),
-            ..TiloDesk::default()
+            ..TiloOverview::default()
         };
-        let rows = rows(&desk);
+        let rows = rows(&shell);
         assert_eq!(captions(&rows), ["Agents"]);
         let agent = items(&rows)[0];
         assert_eq!(agent.title, "Claude Code");
@@ -254,7 +254,7 @@ tilo_test_env::scenario! {
     // What a workspace's grant loses is that workspace, named in the question as the row names it.
     {
         en();
-        let desk = TiloDesk {
+        let shell = TiloOverview {
             door: Some(Door {
                 grants: vec![Grant {
                     id: "g2".into(),
@@ -267,9 +267,9 @@ tilo_test_env::scenario! {
                 }],
                 ..Door::default()
             }),
-            ..TiloDesk::default()
+            ..TiloOverview::default()
         };
-        let rows = rows(&desk);
+        let rows = rows(&shell);
         let agent = items(&rows)[0];
         assert_eq!(facts(agent), ["Build box"], "nothing of work, at rest");
         assert_eq!(
@@ -299,11 +299,11 @@ tilo_test_env::scenario! {
     // person's other workspaces.
     {
         en();
-        let desk = TiloDesk {
+        let shell = TiloOverview {
             elsewhere: vec![("host-ws-3".into(), "Garden".into())],
-            ..TiloDesk::default()
+            ..TiloOverview::default()
         };
-        let rows = rows(&desk);
+        let rows = rows(&shell);
         assert_eq!(captions(&rows), ["More workspaces"]);
         let picks: Vec<(&str, Option<&OverviewPick>)> = items(&rows)
             .iter()

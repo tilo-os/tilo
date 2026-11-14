@@ -10,7 +10,7 @@ use tilo_desktop_search::providers::places::Place;
 use tilo_session_core::arrangement::tab_app;
 
 impl Shared {
-    /// Hand search what the session publishes when it changed: read after a frame, as the desk
+    /// Hand search what the session publishes when it changed: read after a frame, as the shell
     /// cannot read its own tree while it opens search.
     pub(crate) fn observe(&self) {
         // Who is here changes faster than what is published: people and
@@ -37,10 +37,10 @@ impl Shared {
                 .map(|held| (held.id().to_string(), held.name.clone()))
                 .collect()
         }));
-        // A held pointer drags or resizes a window, and every frame of it moves the desk — a change
-        // of how the desk shows a window, not of what search offers, and the palette cannot open
+        // A held pointer drags or resizes a window, and every frame of it moves the shell — a change
+        // of how the shell shows a window, not of what search offers, and the palette cannot open
         // while the pointer is held. The revision this read last is left as it was, so the survey
-        // reads the desk once, in the first pass after the person lets go.
+        // reads the shell once, in the first pass after the person lets go.
         if self.underway.get().gesture {
             return;
         }

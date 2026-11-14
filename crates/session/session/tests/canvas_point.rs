@@ -438,7 +438,7 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
 }
 
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)` in canvas
-/// pixels, as the desk holds it.
+/// pixels, as the shell holds it.
 fn canvas_box(session: &Session, needle: &str) -> Option<(i64, i64, i64, i64)> {
     places(session).iter().find_map(|place| {
         let strip = crate::common::strip(session, crate::common::number(&place.strip))?;
@@ -1117,7 +1117,7 @@ fn canvas_says(session: &Session) -> Option<String> {
 }
 
 /// The canvas is the whole screen (`canvas.md` §7): no dock, and a bar that keeps only the time,
-/// the notices and the person. The desk style and the workspaces are in the person's own menu,
+/// the notices and the person. The style and the workspaces are in the person's own menu,
 /// never in a control that is always there, and choosing another style from it shows it.
 #[test]
 fn the_canvas_is_the_whole_screen() {

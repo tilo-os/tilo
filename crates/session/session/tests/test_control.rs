@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_compositor::KeyRepeat;
-use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
+use tilo_desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
@@ -49,8 +49,8 @@ fn click(session: &mut Session, socket: &Path, name: &str) {
     assert_eq!(clicked, json!({"ok": {}}), "the click on {name} is taken");
 }
 
-/// The desk's preset menu, once the shell stands on the output: the bar names the preset the
-/// desk shows, and which one that is depends on the desk the session starts from.
+/// The shell's preset menu, once the shell stands on the output: the bar names the preset the
+/// shell shows, and which one that is depends on the shell the session starts from.
 fn preset_menu(session: &mut Session) -> String {
     assert!(
         reached(session, |session| session
@@ -63,7 +63,7 @@ fn preset_menu(session: &mut Session) -> String {
         .accessible_labels()
         .into_iter()
         .find(|label| label.starts_with("Showing ") && session.shell_control(label).is_some())
-        .expect("the desk's preset menu")
+        .expect("the shell's preset menu")
 }
 
 /// A headless session with the shell as the whole screen writes a PNG of it through
@@ -611,7 +611,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         .iter()
         .find(|place| place.title == "Groceries")
         .map(|place| place.name.clone())
-        .expect("the desk holds the note's place");
+        .expect("the shell holds the note's place");
     let title = session.shell_control(&shown).expect("the frame's title");
 
     let png = root.path().join("shot.png");
@@ -632,7 +632,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     );
 }
 
-/// A window on the desk: one tab of an app, named by its title.
+/// A window on the shell: one tab of an app, named by its title.
 fn window(id: u64, title: &str, app: &str) -> Tab {
     Tab {
         id,
@@ -648,8 +648,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// A desk of one strip holding `windows`, each in a group of its own, the last in front.
-fn desk(windows: &[(u64, &str)]) -> Layout {
+/// A shell of one strip holding `windows`, each in a group of its own, the last in front.
+fn shell(windows: &[(u64, &str)]) -> Layout {
     let groups: Vec<WindowGroup> = windows
         .iter()
         .enumerate()
@@ -680,7 +680,7 @@ fn desk(windows: &[(u64, &str)]) -> Layout {
     tree
 }
 
-/// A desk of one window holding `tabs`, the last of them in front.
+/// A shell of one window holding `tabs`, the last of them in front.
 fn tabbed(tabs: &[(u64, &str)]) -> Layout {
     let front = tabs.last().map(|(id, _)| *id).expect("a tab");
     let group = WindowGroup {
@@ -739,7 +739,7 @@ fn session_showing(tree: Layout, socket: &Path) -> Session {
     session
 }
 
-/// Every group of the desk's first strip, with the tabs it holds, in order.
+/// Every group of the shell's first strip, with the tabs it holds, in order.
 fn groups(session: &Session) -> Vec<(u64, Vec<u64>)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -777,7 +777,7 @@ fn center((x, y, width, height): (f64, f64, f64, f64)) -> (f64, f64) {
     (x + width / 2.0, y + height / 2.0)
 }
 
-/// The open search, as the desk publishes it.
+/// The open search, as the shell publishes it.
 fn search(session: &Session) -> Option<tilo_actions::ResourceSpec> {
     fn find(
         resources: &[tilo_actions::ResourceSpec],
@@ -794,21 +794,21 @@ fn search(session: &Session) -> Option<tilo_actions::ResourceSpec> {
     find(&session.resources(), SEARCH_RESOURCE)
 }
 
-/// Letters typed through the socket land in the field the desk is listening through: the open
+/// Letters typed through the socket land in the field the shell is listening through: the open
 /// search's query, not the window behind it.
 #[test]
 fn text_typed_through_the_socket_reaches_the_open_search() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let mut session = session_showing(desk(&[(20, "Alpha")]), &socket);
+    let mut session = session_showing(shell(&[(20, "Alpha")]), &socket);
     // A step of a headless session can take longer than a repeat waits; the text is typed once.
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
         rate: 0,
     });
     session
-        .invoke(DESK_RESOURCE, "search", &serde_json::Map::new())
+        .invoke(SHELL_RESOURCE, "search", &serde_json::Map::new())
         .expect("the search opens");
     assert!(
         reached(&mut session, |session| search(session).is_some()),
@@ -833,7 +833,7 @@ fn a_drag_through_the_socket_moves_a_tab_into_another_group() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let mut session = session_showing(desk(&[(20, "Alpha"), (21, "Beta")]), &socket);
+    let mut session = session_showing(shell(&[(20, "Alpha"), (21, "Beta")]), &socket);
     let targets = ask(&mut session, &socket, &json!({"op": "list_targets"}));
     let beta = target_rect(&targets, "Beta")
         .unwrap_or_else(|| panic!("the Beta pill stands somewhere: {targets}"));
@@ -878,7 +878,7 @@ fn swipe_frame(session: &mut Session, socket: &Path, title: &str, png: &Path) ->
 
 /// Three fingers through the socket carry a strip wider than the screen while they are down, each
 /// held swipe going on with the same gesture, and lifted while moving the strip coasts on: the
-/// control door drives the desk's gestures the way a touchpad does.
+/// control door drives the shell's gestures the way a touchpad does.
 #[test]
 fn a_held_swipe_through_the_socket_carries_the_strip_with_the_fingers() {
     let _settled = ui::motion::testing::settled();
@@ -894,7 +894,7 @@ fn a_held_swipe_through_the_socket_carries_the_strip_with_the_fingers() {
         (24, "Epsilon"),
         (25, "Zeta"),
     ];
-    let mut session = session_showing(desk(&windows), &socket);
+    let mut session = session_showing(shell(&windows), &socket);
     let before = swipe_frame(
         &mut session,
         &socket,
@@ -954,7 +954,7 @@ fn a_secondary_click_through_the_socket_opens_the_window_menu() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let mut session = session_showing(desk(&[(20, "Alpha")]), &socket);
+    let mut session = session_showing(shell(&[(20, "Alpha")]), &socket);
     let targets = ask(&mut session, &socket, &json!({"op": "list_targets"}));
     let notes = target_rect(&targets, "Alpha")
         .unwrap_or_else(|| panic!("the Alpha pill stands somewhere: {targets}"));

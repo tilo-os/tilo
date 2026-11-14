@@ -118,7 +118,7 @@ pub fn place(output: (i32, i32, i32, i32), placement: Placement) -> (i32, i32, i
 /// is drawn, around the middle of the display.
 const READING_HALF_WIDTH: f64 = 240.0;
 
-/// Where a readout on `output` stands so the text caret `caret` (in the same desk coordinates)
+/// Where a readout on `output` stands so the text caret `caret` (in the same shell coordinates)
 /// keeps clear of it: the bottom, unless the caret is in the way there — typing at the bottom of
 /// the screen must not be covered by what the person just changed.
 #[must_use]
@@ -1599,7 +1599,7 @@ mod tests {
         let mut text = TextRenderer::new();
         for osd in [
             volume(0.65),
-            named("Studio monitoring headphones over there on the desk"),
+            named("Studio monitoring headphones over there on the shell"),
             named("Buds"),
             brightness(0.4),
         ] {

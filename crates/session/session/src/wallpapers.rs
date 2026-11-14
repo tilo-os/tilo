@@ -1,11 +1,11 @@
-//! The desk's wallpaper: the picture the person chose, on each workspace.
+//! The shell's wallpaper: the picture the person chose, on each workspace.
 //!
 //! The choice is the `appearance.wallpaper` setting: one of the pictures
 //! the image ships, or the person's own ([`tilo_wallpapers::CUSTOM`]),
 //! which the Wallpaper portal keeps in this device's private state.
 //! `appearance.wallpaper_scope` says whether a change covers the workspace
 //! the person is on or every workspace, and `appearance.wallpaper_target`
-//! whether it shows on the desk, the lock screen or both.
+//! whether it shows on the shell, the lock screen or both.
 //!
 //! Which picture a workspace shows is this device's own record, kept beside
 //! what it shows ([`crate::device_state`]): a change that covers one workspace
@@ -15,7 +15,7 @@
 //!
 //! The paint path only reads memory. A picture that is not decoded yet is
 //! asked for and the compositor woken when it arrives; only the first,
-//! which has nothing to replace, is decoded on the spot, so the desk never
+//! which has nothing to replace, is decoded on the spot, so the shell never
 //! shows its gradient before the person's picture.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -34,7 +34,7 @@ const FILE: &str = "wallpapers.json";
 const SCHEMA: u32 = 1;
 
 /// The largest edge a picture of the person's own is decoded to: a 4K panel's picture covers the
-/// widest desk without holding more pixels.
+/// widest shell without holding more pixels.
 const CUSTOM_EDGE: u32 = 3840;
 
 fn path(state: &Path) -> PathBuf {
@@ -62,7 +62,7 @@ impl Records {
 
     /// Apply the person's `value` the way `scope` and `target` say, with `active` the workspace
     /// they are on; whether that changed anything.
-    /// A picture for the lock screen alone leaves the desk as it is. "Every workspace" replaces the
+    /// A picture for the lock screen alone leaves the shell as it is. "Every workspace" replaces the
     /// default and forgets what workspaces had of their own; "this workspace" records the one the
     /// person is on and leaves the others.
     fn apply(
@@ -201,7 +201,7 @@ impl Wallpapers {
         if state.unreadable.contains(&value) || state.decoding.contains(&value) {
             return None;
         }
-        // The first picture is decoded here, where there is nothing to keep up, so the desk's first
+        // The first picture is decoded here, where there is nothing to keep up, so the shell's first
         // frame is the person's wallpaper. One that replaces a picture shown decodes off this
         // thread.
         if state.images.is_empty() && state.decoding.is_empty() {
@@ -288,7 +288,7 @@ impl Wallpapers {
     }
 
     /// Follow `document` , the person's settings: a changed picture, where it shows or which
-    /// workspaces it covers is applied to the desk. The first read only notes it, as the session's
+    /// workspaces it covers is applied to the shell. The first read only notes it, as the session's
     /// own start read does.
     pub(crate) fn follow(&self, document: &Map<String, Value>) {
         let value = settings_store::appearance::WALLPAPER.from_document(document);
@@ -386,12 +386,12 @@ mod tests {
     }
 
     #[test]
-    fn a_picture_for_the_lock_screen_leaves_the_desk_as_it_is() {
+    fn a_picture_for_the_lock_screen_leaves_the_shell_as_it_is() {
         let mut records = Records::default();
         assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
         assert!(!records.apply(Some("dunes"), "all", "lockscreen", Some("1")));
         assert_eq!(records.value_for("1"), Some("meadow"));
-        // Both places shows it on the desk too.
+        // Both places shows it on the shell too.
         assert!(records.apply(Some("dunes"), "all", "both", Some("1")));
         assert_eq!(records.value_for("2"), Some("dunes"));
     }

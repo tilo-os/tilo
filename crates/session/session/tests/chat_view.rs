@@ -505,7 +505,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
             session.accessible_labels()
         )
     });
-    // Bare canvas under the place: the map fills the desk below the entry, and the channel's
+    // Bare canvas under the place: the map fills the shell below the entry, and the channel's
     // window stands over it. A spot near the map's foot, left of the window's right edge and
     // below its bottom, is the map itself — not the window's own drop target (its composer).
     let (from_x, from_y) = (chip_x + chip_w / 2.0, chip_y + chip_h / 2.0);
@@ -606,7 +606,7 @@ fn a_conversation_in_a_520_px_place_keeps_its_composer_in_the_place() {
     crate::common::until(&mut session, "the newest message", |session| {
         session.shell_says(newest)
     });
-    // Where the place stands on the desk, as the shell lays it out: the frame's own box, the
+    // Where the place stands on the shell, as the shell lays it out: the frame's own box, the
     // largest node named for the channel (the frame's group holds the page's heading of the
     // same words inside it).
     let (_, frame_y, _, frame_h) = session
@@ -620,7 +620,7 @@ fn a_conversation_in_a_520_px_place_keeps_its_composer_in_the_place() {
         })
         .unwrap_or_else(|| {
             panic!(
-                "the place stands on the desk: {:?}",
+                "the place stands on the shell: {:?}",
                 session.accessible_labels()
             )
         });

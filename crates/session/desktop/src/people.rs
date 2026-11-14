@@ -226,11 +226,11 @@ fn paint_sheet_fade(scene: &mut Scene, transform: Affine, panel: Rect, theme: &T
     scene.fill(Fill::NonZero, transform, &gradient, None, &band);
 }
 
-/// The widest desk the roster opens on as a phone's sheet: at the desk's foot, put away by a press
+/// The widest shell the roster opens on as a phone's sheet: at the shell's foot, put away by a press
 /// above it, and never kept on screen, where it would stand over the one window there is.
 pub const SHEET_MAX_WIDTH: f64 = 600.0;
 
-/// Whether a desk `host` wide opens the roster as a phone's sheet ([`SHEET_MAX_WIDTH`]).
+/// Whether a shell `host` wide opens the roster as a phone's sheet ([`SHEET_MAX_WIDTH`]).
 #[must_use]
 pub fn is_sheet(host: Rect) -> bool {
     host.width() > 0.0 && host.width() <= SHEET_MAX_WIDTH
@@ -485,7 +485,7 @@ fn sharing(row: &RosterRow, screen: Option<&Screen>) -> bool {
     !row.is_agent && screen.is_some_and(|screen| !screen.windows.is_empty())
 }
 
-/// `row`'s screen as the desk holds it: `None` while they keep where they are to themselves.
+/// `row`'s screen as the shell holds it: `None` while they keep where they are to themselves.
 fn screen_of<'a>(model: &'a PeopleModel<'_>, row: &RosterRow) -> Option<&'a Screen> {
     model
         .screens
@@ -587,7 +587,7 @@ impl PeopleOverlay {
         let width = model.panel.map_or_else(
             || {
                 if is_sheet(model.host) {
-                    // A phone's sheet spans the desk between its gutters.
+                    // A phone's sheet spans the shell between its gutters.
                     (model.host.width() - 2.0 * f64::from(spacing.s3)).max(0.0)
                 } else {
                     f64::from(metrics.panel_width_list)
@@ -714,7 +714,7 @@ impl PeopleOverlay {
             || {
                 let right = model.host.x1 - f64::from(spacing.s3);
                 if is_sheet(model.host) {
-                    // A phone's sheet stands at the desk's foot, centred between equal gutters:
+                    // A phone's sheet stands at the shell's foot, centred between equal gutters:
                     // the work above it stays readable, and a press above it puts it away.
                     let bottom = model.host.y1 - f64::from(spacing.s3);
                     let left = model.host.center().x - width / 2.0;

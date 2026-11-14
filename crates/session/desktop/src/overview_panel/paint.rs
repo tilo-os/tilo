@@ -164,13 +164,13 @@ impl OverviewPanel {
         self.paint_list_row(
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             self.add_rect(),
-            self.desk.cards.len(),
+            self.shell.cards.len(),
             (&t("overview-new-workspace"), ui::icons::Icon::Plus),
         );
         self.paint_list_row(
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             self.join_rect(),
-            self.desk.cards.len().saturating_add(1),
+            self.shell.cards.len().saturating_add(1),
             (&t("overview-join-workspace"), ui::icons::Icon::Link),
         );
         self.paint_tilo_rows(
@@ -265,7 +265,7 @@ impl OverviewPanel {
     ) {
         let here = self
             .here_index()
-            .and_then(|hi| self.desk.cards.get(hi).map(|card| (hi, card)));
+            .and_then(|hi| self.shell.cards.get(hi).map(|card| (hi, card)));
         let Some((hi, card)) = here else {
             let theme = ctx.theme;
             ctx.text.draw_style(
@@ -356,7 +356,7 @@ impl OverviewPanel {
         .paint(scene, transform, text, theme);
 
         let access = self
-            .desk
+            .shell
             .sites
             .get(&card.id)
             .cloned()
@@ -482,7 +482,7 @@ impl OverviewPanel {
     fn paint_go_to_list(&self, ctx: &mut ui::paint::PaintCtx<'_>, band: Rect) {
         // A carried window shows the workspace it would land in as chosen.
         let drop_target = self.drop_target();
-        for (idx, card) in self.desk.cards.iter().enumerate() {
+        for (idx, card) in self.shell.cards.iter().enumerate() {
             if self.slot_of(idx).is_none() {
                 continue;
             }
@@ -567,7 +567,7 @@ impl OverviewPanel {
         let sub_style = tokens.typography.style(TextRole::Caption);
         // Who is in the workspace now outranks who could be; access is what the line says when it
         // is empty.
-        let mut sub = self.desk.sites.get(&card.id).cloned().unwrap_or_else(|| {
+        let mut sub = self.shell.sites.get(&card.id).cloned().unwrap_or_else(|| {
             crate::overview::workspace_presence_label(card)
                 .unwrap_or_else(|| crate::overview::workspace_access_label(card))
         });
@@ -727,7 +727,7 @@ impl OverviewPanel {
             }
         }
         if let Some(lifted) = self.carried_picture(&picture) {
-            if !self.desk.pictured.contains(&lifted.tab)
+            if !self.shell.pictured.contains(&lifted.tab)
                 && let Some((_, _, window)) = picture.find(lifted.tab)
             {
                 ui::surface::shadow(
@@ -853,7 +853,7 @@ impl OverviewPanel {
                 );
             }
         }
-        if !self.desk.pictured.contains(&tab) {
+        if !self.shell.pictured.contains(&tab) {
             let radius = if rect == tile.well {
                 g.radius
             } else {

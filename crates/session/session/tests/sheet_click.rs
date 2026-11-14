@@ -80,7 +80,7 @@ fn ask_a_turn(questions: &Questions) -> Asked {
     })
 }
 
-/// Where the session shows the control named `name`, in desk coordinates.
+/// Where the session shows the control named `name`, in shell coordinates.
 #[track_caller]
 fn where_shown(session: &Session, name: &str) -> (f64, f64, f64, f64) {
     session
@@ -220,12 +220,12 @@ fn a_press_beside_the_card_does_not_decline_the_step() {
 }
 
 /// The same, on a display drawing at 2 pixels per logical pixel: the pointer the compositor
-/// delivers is in logical desks pixels, and the sheet's card is laid out in the same ones, so a
+/// delivers is in logical sessions pixels, and the sheet's card is laid out in the same ones, so a
 /// press on the button answers with it at any scale.
 #[test]
 fn a_click_on_allow_once_answers_at_a_scaled_display() {
     let _settled = ui::motion::testing::settled();
-    // A 1440x900 display drawn at 2: the same logical desk, twice the pixels.
+    // A 1440x900 display drawn at 2: the same logical shell, twice the pixels.
     let (mut session, questions) = session_scaled(2880, 1800, 2.0);
     let mut asked = ask_a_turn(&questions);
     crate::common::wait_for(&mut session, "the ask's sheet", |session| {

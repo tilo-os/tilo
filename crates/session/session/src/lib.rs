@@ -2,17 +2,17 @@
 //!
 //! The compositor ([`tilo_compositor`]) shows buffers and routes input. The
 //! session gives it the desktop every host shows
-//! ([`tilo_desktop::desktop_host`]): the desk (backdrop, launchpad, the
+//! ([`tilo_desktop::desktop_host`]): the shell (backdrop, launchpad, the
 //! strips and window bars of the desktop surface) under the windows, and
 //! the chrome (top bar, strip ribbon and rail, overview, menus) above them;
-//! the window policy of the desk's strips ([`platform::surfaces::desktop`]),
+//! the window policy of the shell's strips ([`platform::surfaces::desktop`]),
 //! so each window is a tab of a strip; and the desktop's surface apps, each
 //! an ordinary app hosted on a layer of its own: the notification banners,
 //! quick settings, and setup over everything while a person first uses the
 //! device. What the chrome asks of its host comes back as [`DesktopAsk`]s,
 //! carried out by the ask loop in `asks`.
 //!
-//! Everything a person can do here is a published action: the desk's and
+//! Everything a person can do here is a published action: the shell's and
 //! the chrome's, and each surface app's through its door
 //! ([`ui::device_local_door::SharedDoor`]). [`Session::resources`] lists
 //! them and [`Session::invoke`] runs one, as any caller of the action
@@ -24,7 +24,7 @@
 //! actions as it reaches the desktop's, by address.
 
 // The session's state between frames, as every host runs it, and the roles
-// that keep it: the desk, the chrome, the records, the people and the
+// that keep it: the shell, the chrome, the records, the people and the
 // workspaces — what every host runs, the web page included.
 mod assembly;
 pub use assembly::Session;
@@ -98,6 +98,8 @@ mod audio_output;
 #[cfg(target_os = "linux")]
 mod automation;
 #[cfg(target_os = "linux")]
+mod background;
+#[cfg(target_os = "linux")]
 mod bars;
 #[cfg(target_os = "linux")]
 mod bluetooth_handoff;
@@ -121,6 +123,8 @@ mod cards;
 mod carets;
 #[cfg(target_os = "linux")]
 mod certification;
+#[cfg(target_os = "linux")]
+mod change_feed;
 #[cfg(target_os = "linux")]
 mod chrome;
 #[cfg(target_os = "linux")]
@@ -148,17 +152,6 @@ mod controls;
 #[cfg(target_os = "linux")]
 pub mod conversations;
 #[cfg(target_os = "linux")]
-mod desk;
-#[cfg(target_os = "linux")]
-mod desk_changes;
-#[cfg(target_os = "linux")]
-mod desk_resource;
-#[cfg(target_os = "linux")]
-mod desk_restore;
-#[cfg(target_os = "linux")]
-pub mod desk_styles;
-pub mod desk_windows;
-#[cfg(target_os = "linux")]
 pub mod desktop_services;
 #[cfg(target_os = "linux")]
 /// A Rust app's sample resources and views, in a development session only.
@@ -166,6 +159,8 @@ pub mod desktop_services;
 pub mod dev_rust_views;
 #[cfg(target_os = "linux")]
 mod device_actions;
+#[cfg(target_os = "linux")]
+mod device_lists;
 mod device_state;
 #[cfg(target_os = "linux")]
 mod devices;
@@ -255,6 +250,7 @@ mod keys;
 mod landing;
 #[cfg(target_os = "linux")]
 mod launches;
+mod layout;
 #[cfg(target_os = "linux")]
 mod lists;
 #[cfg(target_os = "linux")]
@@ -327,6 +323,8 @@ mod render;
 #[cfg(target_os = "linux")]
 mod renewal;
 #[cfg(target_os = "linux")]
+mod restore;
+#[cfg(target_os = "linux")]
 mod rotation;
 #[cfg(target_os = "linux")]
 pub mod run;
@@ -350,7 +348,6 @@ mod settings_sync;
 mod setup;
 #[cfg(target_os = "linux")]
 mod shared;
-mod shared_desktop;
 #[cfg(target_os = "linux")]
 mod shared_displays;
 #[cfg(target_os = "linux")]
@@ -376,6 +373,8 @@ pub mod startup;
 pub mod status;
 #[cfg(target_os = "linux")]
 pub mod style_packages;
+#[cfg(target_os = "linux")]
+pub mod styles;
 #[cfg(target_os = "linux")]
 pub mod surfaces;
 pub mod switcher;
@@ -421,6 +420,7 @@ mod window_share;
 mod window_transfer;
 #[cfg(target_os = "linux")]
 mod window_warmth;
+pub mod windows;
 #[cfg(target_os = "linux")]
 mod workspace_branch;
 #[cfg(target_os = "linux")]

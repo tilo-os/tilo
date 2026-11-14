@@ -1,4 +1,4 @@
-//! The page's top bar, pressed as a person presses it: the desk and the chrome over it, with the
+//! The page's top bar, pressed as a person presses it: the shell and the chrome over it, with the
 //! bar raising its requests into a queue the host carries out on its next pass, as the web page's
 //! shell does. The workspace's name opens its menu and the person's face opens their own card,
 //! whatever else stands up when they press: search over the windows, or the ask about keeping who
@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::support::desk_tree;
+use crate::support::layout_tree;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{ChromeIntent, OwnChip};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles};
@@ -29,7 +29,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const PERSON: &str = "ada";
 
-/// What the page knows of its desk: its person, and the queue the bar raises its requests into.
+/// What the page knows of its shell: its person, and the queue the bar raises its requests into.
 struct Page {
     handle: DesktopHandle,
     authors: RefCell<Authors>,
@@ -77,9 +77,9 @@ impl ChromeSource for Page {
     }
 }
 
-/// The desk, the chrome over it, and what the page did with the bar's requests.
+/// The shell, the chrome over it, and what the page did with the bar's requests.
 struct Shell {
-    desk: FrameHarness,
+    shell: FrameHarness,
     chrome: FrameHarness,
     page: Rc<Page>,
     /// The times the page was asked for the person's own card.
@@ -92,10 +92,10 @@ fn shell() -> Shell {
 
 /// The page at `viewport`, a phone's or a laptop's.
 fn shell_at(viewport: (u32, u32)) -> Shell {
-    let tree = desk_tree();
+    let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), viewport);
-    desk.relayout();
+    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), viewport);
+    shell.relayout();
     let page = Rc::new(Page {
         handle: handle.clone(),
         authors: RefCell::default(),
@@ -118,7 +118,7 @@ fn shell_at(viewport: (u32, u32)) -> Shell {
         ui::Theme::light(),
     );
     let mut shell = Shell {
-        desk,
+        shell,
         chrome,
         page,
         cards: 0,
@@ -129,7 +129,7 @@ fn shell_at(viewport: (u32, u32)) -> Shell {
 
 impl Shell {
     /// One pass of the page: what the bar asked for is carried out — the person's own card is the
-    /// page's to show, the rest the chrome's — then the desk takes up what happened and the chrome
+    /// page's to show, the rest the chrome's — then the shell takes up what happened and the chrome
     /// draws over it.
     fn frame(&mut self) {
         let intents = std::mem::take(&mut *self.page.intents.borrow_mut());
@@ -140,7 +140,7 @@ impl Shell {
                 self.chrome.root_mut::<DesktopChrome>().apply_intent(intent);
             }
         }
-        self.desk.relayout();
+        self.shell.relayout();
         self.chrome.relayout();
     }
 
@@ -236,7 +236,7 @@ impl Shell {
     }
 }
 
-/// The workspace's name opens its menu, and the person's face their own card, on a desk with
+/// The workspace's name opens its menu, and the person's face their own card, on a shell with
 /// nothing else up.
 #[test]
 fn the_bars_name_and_face_open_the_menu_and_the_card() {

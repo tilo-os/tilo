@@ -19,10 +19,10 @@ pub(crate) fn path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
 }
 
-/// What this device shows of the desk.
+/// What this device shows of the session.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Shown {
-    /// The workspaces the desk shows, in its order.
+    /// The workspaces the session shows, in its order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspaces: Vec<ShownWorkspace>,
     /// The workspace in front.
@@ -36,7 +36,7 @@ pub(crate) struct Shown {
     pub fullscreen: Option<GroupId>,
 }
 
-/// A workspace the desk shows, and the name it showed.
+/// A workspace the session shows, and the name it showed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ShownWorkspace {
     pub id: WorkspaceId,
@@ -62,8 +62,8 @@ impl Shown {
         }
     }
 
-    /// Show this in `tree`, a desk being opened, as the person left it: the workspaces it showed,
-    /// whose layouts their records hold, the one in front where the desk still holds it, and the
+    /// Show this in `tree`, a session being opened, as the person left it: the workspaces it showed,
+    /// whose layouts their records hold, the one in front where the session still holds it, and the
     /// display partition. Whether anything changed.
     pub(crate) fn applied(&self, tree: &mut Layout) -> bool {
         let mut changed = false;
@@ -115,13 +115,13 @@ pub(crate) struct DeviceState {
     at: Option<PathBuf>,
     /// What was last written, so a pass that changed nothing writes nothing.
     kept: RefCell<Shown>,
-    /// The desk revision the last look found, so a desk that did not move is not read.
+    /// The session revision the last look found, so a session that did not move is not read.
     seen: Cell<Option<u64>>,
 }
 
 impl DeviceState {
     /// The state kept under `state`, and what this build made of it: bytes it does not read are
-    /// left where they are, and the session starts on the desk it would show anyway.
+    /// left where they are, and the session starts on the shell it would show anyway.
     pub(crate) fn load(state: Option<&Path>) -> Self {
         let Some(at) = state.map(path) else {
             return Self::default();
@@ -139,7 +139,7 @@ impl DeviceState {
         self.kept.borrow().applied(tree)
     }
 
-    /// Keep what `tree` shows, read at `revision` of the desk: a pass that finds the desk where
+    /// Keep what `tree` shows, read at `revision` of the session: a pass that finds the session where
     /// the last one left it keeps nothing. `None` reads it now, whatever moved. Whether it changed
     /// since it was last kept.
     pub(crate) fn keep(&self, revision: Option<u64>, tree: impl FnOnce() -> Layout) -> bool {
@@ -204,7 +204,7 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{Strip, StripId};
 
-    fn desk(id: u128) -> Layout {
+    fn session(id: u128) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(id), "Garden");
         workspace.strips.push(Strip::new(StripId(2), "Main"));
         Layout {
@@ -214,27 +214,27 @@ mod tests {
         }
     }
 
-    /// The workspaces the desk showed and the one in front are kept, and a desk opened again shows
+    /// The workspaces the session showed and the one in front are kept, and a session opened again shows
     /// them in place of the one it was opened with.
     #[test]
     fn the_workspaces_and_the_one_in_front_are_kept_and_shown_again() {
         let state = DeviceState::default();
-        let first = desk(1);
+        let first = session(1);
         assert!(
             state.keep(Some(1), || first.clone()),
             "what was never kept is written"
         );
         assert!(
             !state.keep(Some(1), || first.clone()),
-            "a desk that did not move is not read"
+            "a session that did not move is not read"
         );
         assert!(
             !state.keep(Some(2), || first.clone()),
-            "an unchanged desk writes nothing"
+            "an unchanged session writes nothing"
         );
-        let second = desk(2);
+        let second = session(2);
         assert!(state.keep(Some(3), || second.clone()));
-        let mut reopened = desk(1);
+        let mut reopened = session(1);
         assert!(state.applied(&mut reopened));
         assert_eq!(reopened.active, WorkspaceId::from_u128(2));
         let shown: Vec<_> = reopened
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(
             shown,
             [(WorkspaceId::from_u128(2), kept.id(), "Garden".to_owned())],
-            "the desk shows the workspace it showed, not the one it was opened with"
+            "the session shows the workspace it showed, not the one it was opened with"
         );
     }
 }

@@ -39,12 +39,12 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::common::{HEIGHT, WIDTH};
 
-/// The person at the desk, who owns its workspaces.
+/// The person at the shell, who owns its workspaces.
 const PERSON: &str = "ada";
 /// The workspace an environment works in, and the one in front of the person.
 const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
 const GARDEN: &str = "2c9d7a61-0e3b-4c8f-a5d2-7b6e5f4a3c2d";
-/// A workspace on the desk the person is no member of.
+/// A workspace on the shell the person is no member of.
 const ELSEWHERE: &str = "f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b";
 
 /// One session at a time in this process: two headless sessions with MCP servers side by side in
@@ -299,9 +299,9 @@ impl Environment {
     }
 }
 
-/// A desk with three workspaces: the person's Studio and Garden, Garden in front, and one they
+/// A shell with three workspaces: the person's Studio and Garden, Garden in front, and one they
 /// are no member of.
-fn desk() -> Layout {
+fn shell() -> Layout {
     let workspace = |id: &str, name: &str, owner: &str| {
         let id = WorkspaceId::parse(id).expect("a workspace id");
         let mut workspace = Workspace::new(id, name);
@@ -320,7 +320,7 @@ fn desk() -> Layout {
     }
 }
 
-/// A headless session on [`desk`], its MCP server at `root`, its questions asked on its sheets.
+/// A headless session on [`shell`], its MCP server at `root`, its questions asked on its sheets.
 fn session(root: &Path) -> (Session, Questions, PathBuf) {
     let door = root.join("agent.sock");
     let questions = Questions::new();
@@ -337,7 +337,7 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    session.handle().replace_tree(desk());
+    session.handle().replace_tree(shell());
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
@@ -398,8 +398,8 @@ fn allow(session: &mut Session, choice: usize) {
     press(session, PortalEffect::CONFIRM.id, json!({}));
 }
 
-/// The agent sessions at the person's MCP servers, as their desk lists them: each one's id, how
-/// the desk names it, and the workspace it works in.
+/// The agent sessions at the person's MCP servers, as their shell lists them: each one's id, how
+/// the shell names it, and the workspace it works in.
 fn seated(session: &Session) -> Vec<(String, String, String)> {
     session
         .read("session:agents")
@@ -414,10 +414,10 @@ fn seated(session: &Session) -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Wait until a session the desk calls `name` is here, and say how.
+/// Wait until a session the shell calls `name` is here, and say how.
 #[track_caller]
 fn seated_as(session: &mut Session, name: &str) -> (String, String, String) {
-    crate::common::wait_for(session, format!("{name} at the desk"), |session| {
+    crate::common::wait_for(session, format!("{name} at the shell"), |session| {
         seated(session)
             .into_iter()
             .find(|(_, shown, _)| shown == name)
@@ -520,7 +520,7 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
     let (dev_session, _, doing) = seated_as(&mut session, "Claude Code in Env dev #1");
     assert_eq!(
         doing, "Studio",
-        "the desk shows the agent, from its environment, working in Studio"
+        "the shell shows the agent, from its environment, working in Studio"
     );
 
     // A program in an environment works in its environment's workspace only: asking for the
@@ -653,7 +653,7 @@ fn always_allow_is_remembered_per_environment() {
     first.end();
 }
 
-/// Two Claude Codes at once are two agents: each its own id, at the desk as its own, and the
+/// Two Claude Codes at once are two agents: each its own id, at the shell as its own, and the
 /// person's Stop ends the one they stop.
 #[test]
 fn two_programs_of_one_name_are_two_agents() {
@@ -692,7 +692,7 @@ fn two_programs_of_one_name_are_two_agents() {
 }
 
 /// A program of the login may ask for a workspace by id: it is asked about there, and refused
-/// one the person may not let an agent into, as one that is not on the desk at all.
+/// one the person may not let an agent into, as one that is not on the shell at all.
 #[test]
 fn a_program_asks_for_a_workspace_the_person_may_grant() {
     let _one = ONE_SESSION

@@ -1,6 +1,6 @@
 # Tilo session in a window
 
-Run the whole desktop — the compositor, the desk's strips, the top bar and every
+Run the whole desktop — the compositor, the shell's strips, the top bar and every
 surface around them — in a window of the desktop you are already in:
 
 ```sh

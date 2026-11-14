@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::support::desk_tree;
+use crate::support::layout_tree;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
@@ -38,16 +38,16 @@ impl RecentsStore for MemoryRecents {
     }
 }
 
-/// The chrome over a desk with one window, keeping the emoji card's recents in `recents` and
+/// The chrome over a shell with one window, keeping the emoji card's recents in `recents` and
 /// opening the card where the session says.
 fn chrome_with_picker(
     recents: Rc<RefCell<Vec<String>>>,
 ) -> (FrameHarness, DesktopHandle, EmojiLink) {
     emoji_catalogue::keep_recents_in(Box::new(MemoryRecents(recents)));
-    let tree = desk_tree();
+    let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
-    desk.relayout();
+    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    shell.relayout();
     let link = EmojiLink::default();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
@@ -112,7 +112,7 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
     let (mut frame, _handle, link) = chrome_with_picker(Rc::clone(&recents));
 
     // The caret of the field the person is typing into, as the session reads it from the
-    // compositor: a text caret on the desk, on the whole display.
+    // compositor: a text caret on the shell, on the whole display.
     let caret = Rect::new(320.0, 180.0, 322.0, 200.0);
     let display = Rect::new(0.0, 0.0, 1280.0, 800.0);
     link.place_at(EmojiPlace {
@@ -193,7 +193,7 @@ fn the_picker_opens_at_the_cursor_and_inserts_where_it_closed() {
     });
 }
 
-/// A field that reported no caret opens the card centred over the desk, and the picker's own chord
+/// A field that reported no caret opens the card centred over the shell, and the picker's own chord
 /// closes it again.
 #[test]
 fn the_picker_opens_centred_without_a_caret_and_its_shortcut_closes_it() {
@@ -207,11 +207,11 @@ fn the_picker_opens_centred_without_a_caret_and_its_shortcut_closes_it() {
     let card = with_chrome(&mut frame, |chrome| chrome.emoji().rect());
     assert!(
         card.x0 > 0.0 && card.x1 < 1280.0 && card.y0 > 0.0 && card.y1 < 800.0,
-        "the card is on the desk: {card:?}"
+        "the card is on the shell: {card:?}"
     );
     assert!(
         (card.center().x - 640.0).abs() < 1.0,
-        "centred over the desk: {card:?}"
+        "centred over the shell: {card:?}"
     );
 
     press_emoji_shortcut(&mut frame);

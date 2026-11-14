@@ -1,5 +1,5 @@
 //! What the machine says of itself, as one reading every surface shows (the bar's status cluster,
-//! the lock screen, the desk): its host reads it ([`crate::platform::readings`]) when it moved, and
+//! the lock screen, the shell): its host reads it ([`crate::platform::readings`]) when it moved, and
 //! a frame only copies what was read.
 
 use tilo_desktop::chrome::{LinkKind, LinkStatus, SystemStatus};
@@ -23,7 +23,7 @@ pub struct Readings {
     reading: Reading,
 }
 
-/// The machine as the bar, the lock screen and the desk read it, shared between the loop that reads
+/// The machine as the bar, the lock screen and the shell read it, shared between the loop that reads
 /// it and the surfaces that show it.
 pub(crate) type Shared = std::rc::Rc<std::cell::RefCell<Readings>>;
 
@@ -35,7 +35,7 @@ impl crate::Shared {
         let services = self.services.borrow();
         self.readings.borrow_mut().follow(&*services);
         drop(services);
-        // What plays reaches the desk from the same reading every other surface shows, so the
+        // What plays reaches the shell from the same reading every other surface shows, so the
         // widget and the panel never disagree and neither reads the players again.
         let playing = self.readings.borrow().playing();
         self.music.set(playing);
@@ -419,9 +419,9 @@ mod tests {
         assert!(now.can_toggle, "the middle control pauses what plays");
         assert!(now.can_next);
         assert!(!now.can_previous);
-        // The desk's widget holds the same reading, so the song, who plays it and where it stands
+        // The shell's widget holds the same reading, so the song, who plays it and where it stands
         // are the panel's, not a copy of them.
-        let widget = tilo_desktop::desk_widgets::music::DeskMusic::default();
+        let widget = tilo_desktop::widgets::music::Music::default();
         widget.set(playing.playing());
         assert_eq!(widget.get(), Some(now));
         let handover = playing.handover().expect("another device may continue it");

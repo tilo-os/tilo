@@ -49,7 +49,7 @@ impl crate::Shared {
 }
 
 impl BootJoin {
-    /// What this session was started to join, as [`Self::start`] takes it from the desk the login
+    /// What this session was started to join, as [`Self::start`] takes it from the shell the login
     /// opens on.
     pub(crate) fn at_boot(directory: &directory::Store, handle: &DesktopHandle) -> Self {
         Self::start(directory, Instant::now(), |workspace| {
@@ -61,7 +61,7 @@ impl BootJoin {
         })
     }
 
-    /// [`Self::follow`] against this session's desk: whether it may administer the workspace it
+    /// [`Self::follow`] against this session's shell: whether it may administer the workspace it
     /// joined.
     pub(crate) fn follow_session(&mut self, handle: &DesktopHandle, person: &str) {
         let now = tilo_clock::unix_now();
@@ -81,7 +81,7 @@ impl BootJoin {
 
     /// What this session was started to join: the invitation in [`INVITATION_ENV`], handed to
     /// `directory` to redeem as the person's own pasted code is, and whether [`ADMINISTRATOR_ENV`]
-    /// has it wait. `held` answers whether the desk already holds the workspace — a desktop that
+    /// has it wait. `held` answers whether the shell already holds the workspace — a desktop that
     /// restarts keeps its membership, so its invitation is not redeemed again.
     pub(crate) fn start(
         directory: &directory::Store,

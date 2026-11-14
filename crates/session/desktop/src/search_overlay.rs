@@ -1,10 +1,10 @@
-//! The desk's search palette over the windows.
-//! Search belongs to the desk: it knows what the windows hold, what a person chose and where the
-//! palette stands when it was opened from one window. But the desk is drawn under the windows, so a
+//! The shell's search palette over the windows.
+//! Search belongs to the shell: it knows what the windows hold, what a person chose and where the
+//! palette stands when it was opened from one window. But the shell is drawn under the windows, so a
 //! palette painted there is covered by any window in front. This draws it from the chrome, which
-//! stands over the windows: it takes the palette the desk keeps ([`DesktopHandle::
+//! stands over the windows: it takes the palette the shell keeps ([`DesktopHandle::
 //! search_palette`]) and paints it over the windows, dimmed with the theme's modal scrim, routes
-//! the person's input to it while it is up and closes it. The desk takes up what happened on its
+//! the person's input to it while it is up and closes it. The shell takes up what happened on its
 //! next pass ([`DesktopHandle:: note_search_activity`]), and lays nothing out while the palette is
 //! closed.
 
@@ -24,7 +24,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// Search's palette as the chrome draws it over the windows.
 pub struct SearchOverlay {
-    /// The desk whose search this draws and answers for.
+    /// The shell whose search this draws and answers for.
     handle: DesktopHandle,
     /// The keys the search chord is spelled with on this platform.
     platform: PlatformConventions,
@@ -32,12 +32,12 @@ pub struct SearchOverlay {
     rect: Rect,
     /// The pointer, in logical pixels.
     cursor: Option<Point>,
-    /// The desk's search revision this overlay last took up.
+    /// The shell's search revision this overlay last took up.
     seen: u64,
     /// What the layout in hand was built for: whether the palette was up, the area it stood over
-    /// and what the desk had published then.
+    /// and what the shell had published then.
     built: (bool, Option<Rect>, u64),
-    /// What the last drawn frame showed: whether the palette was up and what the desk had published
+    /// What the last drawn frame showed: whether the palette was up and what the shell had published
     /// then.
     shown: (bool, u64),
     /// The palette's own layout node, while it is built: the leaf the in-place resize gives its new
@@ -82,13 +82,13 @@ impl SearchOverlay {
         search.palette()?.accessibility()
     }
 
-    /// Close the palette: the desk takes the search down on its next pass.
+    /// Close the palette: the shell takes the search down on its next pass.
     pub fn close(&self) {
         self.handle.toggle_search();
         self.handle.note_search_activity();
     }
 
-    /// The card's left edge, inside the desk's edges even where it is barely
+    /// The card's left edge, inside the shell's edges even where it is barely
     /// wider than the card.
     fn card_left(&self, x: f64, width: f64) -> f64 {
         x.clamp(
@@ -98,10 +98,10 @@ impl SearchOverlay {
     }
 }
 
-/// A place on the desk, as layout measures it.
+/// A place on the shell, as layout measures it.
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "a desk is a few thousand pixels"
+    reason = "a shell is a few thousand pixels"
 )]
 fn place(value: f64) -> taffy::LengthPercentageAuto {
     taffy::LengthPercentageAuto::length(value as f32)
@@ -112,7 +112,7 @@ impl Widget for SearchOverlay {
         let revision = self.handle.search_revision();
         let changed = revision != self.seen;
         self.seen = revision;
-        // The desk's palette is the card's own tree: what it needs to do each frame, it does
+        // The shell's palette is the card's own tree: what it needs to do each frame, it does
         // through here.
         let search = self.handle.search_palette();
         let mut search = search.borrow_mut();
@@ -213,7 +213,7 @@ impl Widget for SearchOverlay {
         let mut kids = Vec::new();
         if self.is_open() && self.rect.width() > 0.0 {
             // What the search covers is what it stands over: the window it was opened from, or the
-            // whole desk when it reaches past it.
+            // whole shell when it reaches past it.
             let area = self.handle.search_area().unwrap_or(self.rect);
             let search = self.handle.search_palette();
             let mut search = search.borrow_mut();
@@ -287,7 +287,7 @@ impl Widget for SearchOverlay {
             self.shown = (false, self.handle.search_revision());
             return;
         }
-        // The desk's own dim, never a literal fill: the same scrim the shell lays under its
+        // The shell's own dim, never a literal fill: the same scrim the shell lays under its
         // palette, over everything the card stands above, the window in front included. Then the
         // card, where it was laid out.
         ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
@@ -333,9 +333,9 @@ impl Widget for SearchOverlay {
             self.cursor = None;
         }
         if !self.is_open() {
-            // Search's chord opens it, as it does from the desk: the desk opens the palette on its
+            // Search's chord opens it, as it does from the shell: the shell opens the palette on its
             // next pass. Opening is what the chord does while the palette is up, too, where the
-            // desk's own key already closed it.
+            // shell's own key already closed it.
             if is_search_chord(event, *ctx.modifiers, self.platform) {
                 self.handle.open_search(Scope::Workspace, None);
                 self.handle.note_search_activity();
@@ -344,7 +344,7 @@ impl Widget for SearchOverlay {
             return;
         }
         // The card's node, or the overlay's own before the first layout of it: the palette answers
-        // the event either way, as it did standing in the desk.
+        // the event either way, as it did standing in the shell.
         let palette = ctx
             .taffy
             .children(ctx.node_id)
@@ -370,7 +370,7 @@ impl Widget for SearchOverlay {
                 .is_some_and(|palette| palette.get_rect().contains(cursor))
         });
         if (pressed && !on_card) || is_search_chord(event, *ctx.modifiers, self.platform) {
-            // A press off the card, or the chord again, leaves search: the desk closes it on its
+            // A press off the card, or the chord again, leaves search: the shell closes it on its
             // next pass.
             self.close();
         } else if is_escape(event) {
@@ -386,7 +386,7 @@ impl Widget for SearchOverlay {
         } else {
             self.forward(event, ctx, palette);
         }
-        // Whatever the palette was asked, the desk takes it up on its next pass, and the card it
+        // Whatever the palette was asked, the shell takes it up on its next pass, and the card it
         // publishes is drawn from then on.
         self.handle.note_search_activity();
         *ctx.handled = true;
@@ -410,7 +410,7 @@ impl Widget for SearchOverlay {
                 .is_some_and(|palette| palette.perform_semantic_action(target, action, state, path))
         };
         if answered {
-            // The desk takes up what the card was asked on its next pass, as it does what the
+            // The shell takes up what the card was asked on its next pass, as it does what the
             // person typed or clicked there.
             self.handle.note_search_activity();
         }
@@ -418,7 +418,7 @@ impl Widget for SearchOverlay {
     }
 
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        // The card is the desk's palette: the node this overlay lays out is the palette's own,
+        // The card is the shell's palette: the node this overlay lays out is the palette's own,
         // while the palette itself is not routed here (the overlay routes the person's input to
         // it). Nothing of it is in the layout while it is closed.
         if !self.is_open() {
@@ -433,7 +433,7 @@ impl Widget for SearchOverlay {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        // The card is the desk's own palette, laid out and drawn through it;
+        // The card is the shell's own palette, laid out and drawn through it;
         // nothing is retained here.
         Vec::new()
     }
@@ -468,7 +468,7 @@ impl Widget for SearchOverlay {
 
     fn needs_redraw(&self) -> bool {
         // Search opened, closed, moved or found other rows since the last frame, or the card is
-        // still arriving: what stands on the screen no longer describes the desk, or is still
+        // still arriving: what stands on the screen no longer describes the shell, or is still
         // moving.
         self.shown != (self.is_open(), self.handle.search_revision())
             || self.needs_animation_frame()
@@ -492,8 +492,8 @@ impl Widget for SearchOverlay {
         let search = self.handle.search_palette();
         let search = search.borrow();
         // A search still filling in is looked for again shortly: its rows arrive off the frame (a
-        // worker's answer wakes the desk; an application's answer comes on the host's clock), and
-        // a desk with nothing else to draw presents none. The desk's own schedule is not the
+        // worker's answer wakes the shell; an application's answer comes on the host's clock), and
+        // a shell with nothing else to draw presents none. The shell's own schedule is not the
         // chrome's — the palette is drawn from here — so the deadline goes with the card's. A
         // search that never asked for it shows the rows it had when the person stopped typing,
         // and Enter on an app's row comes long after the person pressed it.
@@ -525,7 +525,7 @@ impl Widget for SearchOverlay {
 
 impl SearchOverlay {
     /// What this overlay stands for now: whether the palette is up, the area it stands over and
-    /// what the desk last published. Two equal paces mean the layout in hand still describes it.
+    /// what the shell last published. Two equal paces mean the layout in hand still describes it.
     fn pace(&self) -> (bool, Option<Rect>, u64) {
         (
             self.is_open(),

@@ -1,5 +1,5 @@
-//! The desk's windows as a reading takes them, in the order Alt+Tab walks them: every workspace's,
-//! the one in front first, with where each stands and what may be pictured of it. The desk's
+//! The layout's windows as a reading takes them, in the order Alt+Tab walks them: every workspace's,
+//! the one in front first, with where each stands and what may be pictured of it. The layout's
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
 use serde::{Deserialize, Serialize};
@@ -7,14 +7,14 @@ use tilo_desktop::overlays::{Overlay, Overlays, SwitcherScope};
 use tilo_desktop_model::{Layout, Strip, Tab, WindowGroup, Workspace};
 use tilo_desktop_surface::DesktopHandle;
 
-/// The desk's windows as `session:windows` publishes them.
+/// The layout's windows as `session:windows` publishes them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Windows {
     /// Every workspace's windows, in the order Alt+Tab walks them.
     pub all: Vec<Window>,
 }
 
-/// A window of the desk: a tab of a strip of one of its workspaces.
+/// A window of the layout: a tab of a strip of one of its workspaces.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Window {
     pub key: String,
@@ -59,13 +59,13 @@ fn untitled() -> String {
     tilo_desktop_surface::i18n::t("window-switcher-untitled")
 }
 
-/// Where a tab stands on the desk while its window is read.
+/// Where a tab stands on the shell while its window is read.
 #[derive(Clone, Copy)]
 struct Standing<'a> {
     workspace: &'a Workspace,
     strip: &'a Strip,
     /// What the workspace and the strip are called as a person reads them: the names they were
-    /// given, or the desk's words for what nobody named.
+    /// given, or the layout's words for what nobody named.
     workspace_name: &'a str,
     strip_name: &'a str,
     group: &'a WindowGroup,
@@ -116,7 +116,7 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> Window
         } else {
             title.to_owned()
         },
-        // The app as people know it is the device's to name, where the desk publishes the reading.
+        // The app as people know it is the device's to name, where the layout publishes the reading.
         origin_app: String::new(),
         app_key: app,
         icon,
@@ -143,7 +143,7 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> Window
     }
 }
 
-/// The windows the desk shows: every workspace's, the one in front first, each strip top to bottom
+/// The windows the layout shows: every workspace's, the one in front first, each strip top to bottom
 /// and each group leading to trailing, the tab in front of a group first and the tabs behind it in
 /// their order. Each window says where it stands (`place`), the workspace, strip and group it is
 /// in, its tab's place in the group and the share of the strip it keeps, so a picture can be drawn
@@ -182,8 +182,8 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
                 None
             };
             for group in &strip.window_groups {
-                // The width the window keeps on the desk: a strip's groups split its width between
-                // them, so the pictures of a strip keep the desk's proportions.
+                // The width the window keeps on the shell: a strip's groups split its width between
+                // them, so the pictures of a strip keep the layout's proportions.
                 let share = group.width.fraction();
                 let leading = group
                     .tabs
@@ -331,7 +331,7 @@ pub(crate) fn switcher_view(
         .iter()
         .filter_map(|at| windows.get(*at))
         .map(|window| {
-            // A window whose app holds secrets from the desk, or one this device does not run,
+            // A window whose app holds secrets from the layout, or one this device does not run,
             // has no picture: its card shows the app's own face. A key that is no tab is such
             // a window, and so is one whose host pictures nothing.
             let client = tilo_failure::ignored!(

@@ -1,5 +1,5 @@
 //! The shortcuts of the one table on a real session: the chords the session answers open the
-//! surface each names, and the chords the desk answers move its windows — pressed as a person
+//! surface each names, and the chords the shell answers move its windows — pressed as a person
 //! presses them, through the keyboard the compositor gives the session.
 
 #![cfg(target_os = "linux")]
@@ -19,9 +19,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tilo_compositor::{InputEvent, OutputConfig};
-/// The platform search the desk opens on its chord.
+/// The platform search the shell opens on its chord.
 const HOST_SEARCH: &str = "tilo.host:search";
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
+use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
     AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
@@ -77,8 +77,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// The desk the session starts on: one strip of two windows, the first with two tabs.
-fn desk_tree() -> Layout {
+/// The shell the session starts on: one strip of two windows, the first with two tabs.
+fn layout_tree() -> Layout {
     let first = WindowGroup {
         id: 3,
         active_tab: 20,
@@ -236,7 +236,7 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -
     panic!("{what} never happened");
 }
 
-/// Whether the desk publishes the resource `id` now: the open search, say.
+/// Whether the shell publishes the resource `id` now: the open search, say.
 fn published(session: &Session, id: &str) -> bool {
     fn find(resources: &[tilo_actions::ResourceSpec], id: &str) -> bool {
         resources
@@ -251,7 +251,7 @@ fn searching(session: &Session) -> bool {
     published(session, HOST_SEARCH)
 }
 
-/// Whether the desk's own search is open: it publishes it while it is, and the host search door
+/// Whether the shell's own search is open: it publishes it while it is, and the host search door
 /// (`tilo.host:search`) is published whenever the search app is there at all.
 fn search_open(session: &Session) -> bool {
     published(session, SEARCH_RESOURCE)
@@ -309,7 +309,7 @@ fn guide_up(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// Every app the desk shows a window of, or holds a window for while its app arrives.
+/// Every app the shell shows a window of, or holds a window for while its app arrives.
 fn apps(session: &Session) -> Vec<String> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -342,7 +342,7 @@ fn the_session_answers_every_shortcut_of_its_side() {
         // this run has none of (the power menu needs the power service, the
         // lock screen a lock surface, dictation a voice, the next input
         // source a second keyboard layout) are those services' to prove;
-        // each was handed on whole, which the desk's own test does.
+        // each was handed on whole, which the shell's own test does.
         if matches!(
             action,
             ShortcutAction::PowerMenu
@@ -354,7 +354,7 @@ fn the_session_answers_every_shortcut_of_its_side() {
         ) {
             continue;
         }
-        let mut session = session_with(desk_tree());
+        let mut session = session_with(layout_tree());
         // Zooming out from the magnifier's off has nothing to zoom out of: the chord that turned it
         // on gives it something.
         if action == ShortcutAction::MagnifierZoomOut {
@@ -377,7 +377,7 @@ fn the_session_answers_every_shortcut_of_its_side() {
                     session.quick_settings_open()
                 });
             }
-            // The bell opens the one list of notifications: the centre over the desk, not a page of
+            // The bell opens the one list of notifications: the centre over the shell, not a page of
             // quick settings.
             ShortcutAction::Notifications => {
                 until(&mut session, "the notification centre", |session| {
@@ -388,7 +388,7 @@ fn the_session_answers_every_shortcut_of_its_side() {
                 });
             }
             // Asking an agent, saying something to the people here and reporting a problem all
-            // send from the window in front; a desk with none leaves the gesture to Chat, which a
+            // send from the window in front; a shell with none leaves the gesture to Chat, which a
             // send with nothing to be about has always opened (`session/send_key.rs` asks a window
             // in front for its box).
             ShortcutAction::AskAgent
@@ -423,7 +423,7 @@ fn the_session_answers_every_shortcut_of_its_side() {
 #[test]
 fn super_v_puts_the_clipboard_panel_up_in_the_pass_it_is_pressed_in() {
     let _panel = panel_environment();
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     key(&mut session, KEY_LEFT_META, true);
     session
         .compositor()
@@ -445,13 +445,13 @@ fn super_v_puts_the_clipboard_panel_up_in_the_pass_it_is_pressed_in() {
 #[test]
 fn a_tap_of_super_alone_opens_search_and_a_chord_does_not() {
     let _panel = panel_environment();
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     key(&mut session, KEY_LEFT_META, true);
     key(&mut session, KEY_LEFT_META, false);
     until(&mut session, "the search", |session| search_open(session));
 
     // Super+W: the chord of the second key, not a tap of Super.
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     key(&mut session, KEY_LEFT_META, true);
     key(&mut session, KEY_W, true);
     key(&mut session, KEY_W, false);
@@ -476,7 +476,7 @@ fn a_tap_of_super_alone_opens_search_and_a_chord_does_not() {
 #[test]
 fn holding_super_shows_the_keys_and_letting_go_takes_them_away() {
     let _panel = panel_environment();
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     let focused = session
         .compositor()
         .focused_window()
@@ -540,7 +540,7 @@ fn holding_super_shows_the_keys_and_letting_go_takes_them_away() {
 #[test]
 fn a_pointer_action_between_supers_press_and_release_opens_no_search() {
     let _panel = panel_environment();
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     key(&mut session, KEY_LEFT_META, true);
     session
         .compositor()
@@ -609,7 +609,7 @@ fn resource(session: &Session, id: &str) -> Option<tilo_actions::ResourceSpec> {
     find(&session.resources(), id)
 }
 
-/// The chord the desk's chrome publishes beside the action `verb` : the text the search paints at
+/// The chord the shell's chrome publishes beside the action `verb` : the text the search paints at
 /// the row's end.
 fn search_chord(session: &Session, verb: &str) -> Option<String> {
     resource(session, CHROME_RESOURCE)?
@@ -655,7 +655,7 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         .shortcuts
         .set(ShortcutAction::ToggleFullscreen, mine.clone())
         .expect("no other shortcut holds it");
-    let mut session = session_with_config(desk_tree(), config);
+    let mut session = session_with_config(layout_tree(), config);
 
     press(&mut session, ShortcutAction::TabMenu);
     until(&mut session, "the window menu", |session| {
@@ -704,7 +704,7 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
 
     // A window of one tab is its tab: closing either is the same command, so its Close row reads
     // the chord that closes a tab.
-    let mut single = desk_tree();
+    let mut single = layout_tree();
     single.workspaces[0].strips[0].window_groups.truncate(1);
     single.workspaces[0].strips[0].window_groups[0]
         .tabs
@@ -727,12 +727,12 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
 }
 
 /// A window's menu belongs to its window: one still up when the window in front closes goes with
-/// it, rather than standing over the desk with nothing to say and holding what the person presses,
+/// it, rather than standing over the shell with nothing to say and holding what the person presses,
 /// and the next window's menu opens as it always does.
 #[test]
 fn the_window_menu_closes_with_the_window_it_belongs_to() {
     let _panel = panel_environment();
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     press(&mut session, ShortcutAction::TabMenu);
     until(&mut session, "the window menu", |session| {
         menu_tab(session).as_deref() == Some("20")
@@ -773,13 +773,13 @@ fn the_window_menu_closes_with_the_window_it_belongs_to() {
 
 /// The search a person opens lists the actions a shortcut runs with the chord the one table binds
 /// it to, which the row paints in the keyboard's legends.
-/// The desk publishes that chord beside each action it offers a search, and the context menu and
+/// The shell publishes that chord beside each action it offers a search, and the context menu and
 /// the search paint the text it publishes: rebinding reaches it as it reaches the menus, which the
-/// desk's own test follows.
+/// shell's own test follows.
 #[test]
 fn the_search_shows_the_chord_beside_the_action() {
     let _panel = panel_environment();
-    let mut session = session_with(desk_tree());
+    let mut session = session_with(layout_tree());
     let chord = ShortcutConfig::default()
         .bindings
         .get(&ShortcutAction::ReopenClosedTab)
@@ -797,11 +797,11 @@ fn the_search_shows_the_chord_beside_the_action() {
     capture(&mut session, "search");
 }
 
-/// The chords of the desk's side reach the desk of a real session: the tab in front moves, a tab
+/// The chords of the shell's side reach the shell of a real session: the tab in front moves, a tab
 /// leaves its window for one of its own, and an app opens where the person is.
 #[test]
-fn the_desk_answers_its_shortcuts_inside_the_session() {
-    let mut session = session_with(desk_tree());
+fn the_shell_answers_its_shortcuts_inside_the_session() {
+    let mut session = session_with(layout_tree());
     let in_front = |session: &Session| {
         session
             .handle()

@@ -1,9 +1,9 @@
-//! Window warmth: what the desk tells every app window about the workspace
+//! Window warmth: what the shell tells every app window about the workspace
 //! it stands in.
 //!
 //! A window takes the temperature of the workspace it is shown in, the
-//! colour of the person at this machine, the desk's theme, and where its
-//! workspace stands with its peers. The desk works that out
+//! colour of the person at this machine, the shell's theme, and where its
+//! workspace stands with its peers. The shell works that out
 //! ([`tilo_desktop_surface::warmth::WindowWarmth`]), this follows the
 //! settings it comes from, and [`AppTabs::publish_window_warmth`] sends it
 //! to each open window when it differs from what that window was told.
@@ -30,11 +30,11 @@ use ui::workspace_sync::WorkspaceSync;
 use crate::app_tabs::AppTabs;
 use crate::wallpapers::Wallpapers;
 
-/// What every window is told of the desk it stands on, and the settings that decide it as last
+/// What every window is told of the shell it stands on, and the settings that decide it as last
 /// read.
 pub(crate) struct Windows {
     warmth: WindowWarmth,
-    /// The theme windows are told: the desk's theme as the settings last made it.
+    /// The theme windows are told: the shell's theme as the settings last made it.
     theme: Theme,
     /// The person's settings as last read: the workspace temperatures and their own colour come
     /// from it.
@@ -44,7 +44,7 @@ pub(crate) struct Windows {
 }
 
 impl Windows {
-    /// The windows of a desk wearing `theme` , with `person` sitting at this machine.
+    /// The windows of a shell wearing `theme` , with `person` sitting at this machine.
     pub(crate) fn new(theme: Theme, person: &str) -> Self {
         let document = settings_store::load();
         let your_colour = PresenceHue::worn_in(&Value::Object(document.clone()), person);
@@ -57,11 +57,11 @@ impl Windows {
     }
 
     /// Read the person's settings again when they changed, with `person` sitting at this machine:
-    /// the desk's theme as the changed settings make it (dark mode in the quick settings, a theme
+    /// the shell's theme as the changed settings make it (dark mode in the quick settings, a theme
     /// chosen in Settings), for everything the session draws to wear. Nothing reads the document on
     /// a pass where it did not change.
     pub(crate) fn follow_settings(&mut self, person: &str) -> Option<Theme> {
-        // The document was read when the desk started (`new`), so only a stamp that moved since
+        // The document was read when the shell started (`new`), so only a stamp that moved since
         // says it changed.
         let stamp = settings_store::stamp();
         if !settings_store::document_changed(true, self.stamp, stamp) {
@@ -73,7 +73,7 @@ impl Windows {
             &Value::Object(self.document.clone()),
             person,
         ));
-        self.theme = desk_theme(&self.document);
+        self.theme = shell_theme(&self.document);
         Some(self.theme.clone())
     }
 
@@ -141,9 +141,9 @@ fn workspace_sync(
     )
 }
 
-/// The theme the desk and its windows wear: the settings document's, with the host's accessibility
-/// overrides on top, built as the desk's own theme was when the session started.
-fn desk_theme(document: &Map<String, Value>) -> Theme {
+/// The theme the shell and its windows wear: the settings document's, with the host's accessibility
+/// overrides on top, built as the shell's own theme was when the session started.
+fn shell_theme(document: &Map<String, Value>) -> Theme {
     let accessibility = ui::host::environment().accessibility;
     Theme::configured_from(document).with_a11y(
         &ui::a11y::A11ySettings {
@@ -176,7 +176,7 @@ impl crate::Session {
     /// when it moves to another workspace, when that workspace's picture or temperature changes,
     /// and when the person chooses another colour.
     pub(crate) fn follow_window_warmth(&mut self) {
-        // A theme the person's settings changed to is what the desk, the chrome above the windows
+        // A theme the person's settings changed to is what the shell, the chrome above the windows
         // (the search palette among it) and the shell draw in from this frame, as every window is
         // told it below.
         if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {

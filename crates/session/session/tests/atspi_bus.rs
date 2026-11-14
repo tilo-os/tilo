@@ -4,8 +4,8 @@
 //! own loop, so no application window carries them; the session publishes each
 //! one itself. This walks the tree the way Orca does — the accessibility bus's
 //! registry, the session's connection on it, the root accessible, its children
-//! and their names — finds the bar and the desk by the names their windows
-//! carry, and presses the desk's "Open an app" button through
+//! and their names — finds the bar and the shell by the names their windows
+//! carry, and presses the shell's "Open an app" button through
 //! `org.a11y.atspi.Action`. The press must open the palette, and the assistive
 //! bus must report the focus that follows.
 //!
@@ -41,7 +41,7 @@ use tilo_test_env::{PrivateBus, SpawnUnderEnvLock as _};
 const REFRESH: Duration = Duration::from_millis(16);
 /// The session's AT-SPI application root: every window it publishes hangs under it.
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
-/// What the empty desk calls the way into the app palette, as the installed image's external AT-SPI
+/// What the empty shell calls the way into the app palette, as the installed image's external AT-SPI
 /// client looks for it.
 const OPEN_APP: &str = "Open an app";
 /// `AtspiRole::Frame` : a top level window with a title, which is what the accessibility stack
@@ -266,7 +266,7 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
     }
     assert!(
         walked,
-        "the bar, the desk and the desk's way into the palette reach AT-SPI"
+        "the bar, the shell and the shell's way into the palette reach AT-SPI"
     );
     let windowed = |label: &str| {
         let path = tree_now
@@ -291,7 +291,7 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
         .iter()
         .find(|(_, name)| name.contains(&format!("'{OPEN_APP}'")))
         .map(|(path, _)| path.clone())
-        .expect("the desk says where to open an app");
+        .expect("the shell says where to open an app");
     let actions = call(
         &bus,
         &dest,

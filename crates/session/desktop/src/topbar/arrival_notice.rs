@@ -228,7 +228,7 @@ mod tests {
     use crate::chrome::ArrivalNotice;
     use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 
-    fn desk() -> Layout {
+    fn shell() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
         workspace.members_here(vec![
             Member::keyed("ada", "Ada Lovelace"),
@@ -249,7 +249,7 @@ mod tests {
         // surface of its own; then it lets go.
         {
             ui::i18n::I18nManager::init("en-US");
-            let tree = desk();
+            let tree = shell();
             let chrome = FixtureChrome::new(tree.clone());
             let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
             bar.sync_from_tree(&tree);
@@ -274,7 +274,7 @@ mod tests {
         // not all of it.
         {
             ui::i18n::I18nManager::init("en-US");
-            let tree = desk();
+            let tree = shell();
             let chrome = FixtureChrome::new(tree.clone());
             let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
             bar.sync_from_tree(&tree);
@@ -317,7 +317,7 @@ mod tests {
         // and a press opens the person's own menu to choose otherwise.
         {
             ui::i18n::I18nManager::init("en-US");
-            let tree = desk();
+            let tree = shell();
             let chrome = FixtureChrome::new(tree.clone());
             let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
             bar.sync_from_tree(&tree);

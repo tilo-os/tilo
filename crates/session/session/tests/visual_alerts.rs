@@ -26,7 +26,7 @@ const DISPLAY: &str = "HEADLESS-1";
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
-/// A headless session at its desk on this device's own desktop services,
+/// A headless session at its shell on this device's own desktop services,
 /// drawn once, with the person's visual alerts set as `visual_alerts` says.
 fn session(visual_alerts: bool) -> (Session, Rc<DesktopServices>) {
     let wake = tilo_service::LoopWake::default();
@@ -186,7 +186,7 @@ fn nothing_lights_when_visual_alerts_are_off() {
     );
     assert!(
         (centre_brightness(&told) - middle).abs() < 5.0,
-        "and the desk is unchanged by it: {middle} then {}",
+        "and the shell is unchanged by it: {middle} then {}",
         centre_brightness(&told)
     );
 }

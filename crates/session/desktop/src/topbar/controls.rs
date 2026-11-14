@@ -274,7 +274,7 @@ impl TopBarChrome {
     }
 
     /// A secondary press on the bar that no control of its own took: the workspace menu, standing
-    /// where the person pressed — the same menu the workspace name opens, offering the desk's own
+    /// where the person pressed — the same menu the workspace name opens, offering the shell's own
     /// commands there.
     pub(super) fn handle_secondary_press(&self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::MouseInput {

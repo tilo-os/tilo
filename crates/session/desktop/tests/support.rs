@@ -1,4 +1,4 @@
-//! The desk the chrome's tests stand on.
+//! The shell the chrome's tests stand on.
 
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -21,7 +21,7 @@ pub fn window(id: u64, title: &str, app: &str) -> Tab {
 }
 
 /// One workspace with one strip, and Notes in front in it.
-pub fn desk_tree() -> Layout {
+pub fn layout_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,

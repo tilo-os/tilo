@@ -1342,7 +1342,7 @@ pub(crate) fn screen_share() -> &'static Arc<ScreenShare> {
     SHARE.get_or_init(|| Arc::new(ScreenShare::new()))
 }
 
-/// When the screen a call shares next needs a frame of the desk; `None` while nothing is shared, or
+/// When the screen a call shares next needs a frame of the shell; `None` while nothing is shared, or
 /// a locked desktop withholds it.
 pub(crate) fn next_screen_frame() -> Option<Instant> {
     screen_share().next_frame(Instant::now())

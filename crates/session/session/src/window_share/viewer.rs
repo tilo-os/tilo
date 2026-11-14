@@ -22,8 +22,8 @@ use crate::sync::Client;
 
 impl WindowShares {
     /// Whether anything of the window of `tab` goes out to the devices showing it now: its
-    /// pictures while a member's desk asks the workspace's plane for them, its page once its app
-    /// handed a whole one over for a desk that asks. Both are noted in one place, once a pass
+    /// pictures while a member's shell asks the workspace's plane for them, its page once its app
+    /// handed a whole one over for a shell that asks. Both are noted in one place, once a pass
     /// ([`Self::follow_streams`]), and this is the one answer the share's reading, the window's
     /// menu and the bar give.
     pub(super) fn goes_out(&self, tab: TabId) -> bool {

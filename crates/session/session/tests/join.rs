@@ -30,7 +30,7 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 const APP: &str = "so.tilo.notes";
 /// The record of `APP` the apps change.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
-/// The workspace the desk shows and the channel is in.
+/// The workspace the shell shows and the channel is in.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
 /// The person's keys: the identity store's device, and a second device of theirs the store enrolled
@@ -134,10 +134,10 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
     .expect("a presentation encodes")
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(person: &Keys) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn layout(person: &Keys) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Session");
     workspace.set_owner(principal(&person.root));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -146,7 +146,7 @@ fn desk(person: &Keys) -> Layout {
     }
 }
 
-/// A session serving the apps it starts on `socket` , with the person's desk and this device's
+/// A session serving the apps it starts on `socket` , with the person's shell and this device's
 /// identity.
 fn session(socket: &Path, person: &Keys) -> Session {
     session_of(socket, person, &[APP], None)
@@ -183,7 +183,7 @@ fn serving(
         lists,
         ..Options::default()
     });
-    session.handle().replace_tree(desk(person));
+    session.handle().replace_tree(layout(person));
     for _ in 0..4 {
         session
             .step(std::time::Duration::from_millis(1))

@@ -436,7 +436,7 @@ impl TopBarChrome {
                 tree.workspaces
                     .iter()
                     .find_map(|workspace| {
-                        // A shared window is told by the tab it stands in on this desk.
+                        // A shared window is told by the tab it stands in on this session.
                         workspace
                             .strips
                             .iter()

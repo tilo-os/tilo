@@ -14,7 +14,7 @@ impl Session {
     /// installed, or another one bound in its place: the menu is a reading
     /// either way, and this only puts it on the screen.
     ///
-    /// The view runs for the session's life, standing hidden over the desk
+    /// The view runs for the session's life, standing hidden over the shell
     /// between openings: an app takes a moment to start and connect, and a
     /// menu that waits for that is a menu the person pressed for and did not
     /// see. Showing the surface it already stands on costs no start.
@@ -42,7 +42,7 @@ impl Session {
             .is_some_and(|rows| !rows.is_empty());
         // A menu belongs to its window: one the reading holds for a window that is gone — closed
         // under it, or offering nothing any more — closes, as it does when its row is chosen,
-        // rather than standing over the desk with nothing to say and holding the keyboard.
+        // rather than standing over the shell with nothing to say and holding the keyboard.
         if for_a_window && !has_rows {
             self.close_window_menu();
         }
@@ -80,7 +80,7 @@ impl Session {
         if self.slot_views.running(VIEW) {
             self.slot_views.publish(VIEW, &reading);
         }
-        // The view stands over the desk only while the reading says a menu is up: hidden, its
+        // The view stands over the shell only while the reading says a menu is up: hidden, its
         // surface draws nothing, takes no input and keeps no room, and the opening that shows it
         // costs nothing.
         let namespace = surfaces::namespace(VIEW);

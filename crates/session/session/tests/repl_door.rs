@@ -76,15 +76,15 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         apps.lines().any(|line| line.starts_with("session")),
         "the session's own resources are listed: {apps}"
     );
-    let (desk, failed) = repl.call(session, "tilo_ls", &json!({"path": "session"}));
-    assert!(!failed, "{desk}");
+    let (shell, failed) = repl.call(session, "tilo_ls", &json!({"path": "session"}));
+    assert!(!failed, "{shell}");
     assert!(
-        desk.lines().any(|line| line.starts_with("Layout/")),
-        "the arrangement is among the session's resources: {desk}"
+        shell.lines().any(|line| line.starts_with("Layout/")),
+        "the arrangement is among the session's resources: {shell}"
     );
 
     // `ls` lists each action as a program calls it, what it may go without included. The chrome by
-    // its key: a window's control reads under the window's name, and the desk's window is another
+    // its key: a window's control reads under the window's name, and the shell's window is another
     // `Desktop` .
     let (chrome, failed) = repl.call(
         session,
@@ -197,7 +197,7 @@ fn the_person_admits_the_repl_on_the_sheet_and_it_works_as_them() {
         .portal()
         .and_then(tilo_sheets::portal::PortalSeat::dialog)
         .expect("the question stands on the portal's sheet");
-    // The desk keeps no name for a workspace nobody named: the question says the word for one.
+    // The shell keeps no name for a workspace nobody named: the question says the word for one.
     assert_eq!(shown.title, "Act as you in “Workspace”", "what it asks");
     assert!(
         shown.heading.starts_with("tilolang repl ("),
@@ -417,7 +417,7 @@ fn everything(session: &Session) -> Vec<tilo_actions::ResourceSpec> {
     found
 }
 
-/// A seeded app's catalogue is the app's words on the desk: with the interface in German, the
+/// A seeded app's catalogue is the app's words on the shell: with the interface in German, the
 /// session names the notes app's notebook and its actions in German, and its search matches the
 /// German word for what it holds.
 #[test]
@@ -473,8 +473,8 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         "the notes app's actions say what they do in German: {offered:?}"
     );
 
-    // Search matches the reader's words: the German plural finds the notebook on the desk, and the
-    // English one finds nothing, because the desk's words are German.
+    // Search matches the reader's words: the German plural finds the notebook on the shell, and the
+    // English one finds nothing, because the shell's words are German.
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
     let (answer, failed) = repl.call(
@@ -493,7 +493,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         },
     );
     let placed_by_german = noted(&session);
-    // The English word finds nothing, because the desk's words are German: it is a sentence to the
+    // The English word finds nothing, because the shell's words are German: it is a sentence to the
     // agent rather than a found resource, so it places no second notebook — it asks (shell.md §8.1,
     // "Asking from the canvas").
     let (answer, failed) = repl.call(
@@ -505,7 +505,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     assert_eq!(
         noted(&session),
         placed_by_german,
-        "the English word finds no notebook on a German desk"
+        "the English word finds no notebook on a German shell"
     );
     let sent = crate::common::last_sent(&mut session);
     assert_eq!(
@@ -1138,7 +1138,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     then_the_overview_opens_and_closes(&mut session, &mut repl);
 }
 
-/// The overview opens over the desk and closes again, through the door as an agent asks it.
+/// The overview opens over the shell and closes again, through the door as an agent asks it.
 fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Repl) {
     let (answer, failed) = repl.call(
         session,
@@ -1219,7 +1219,7 @@ fn the_repl_finds_what_place_found_places() {
         );
 
         // And `find` names the same rows the one search ranks, each by a path `tilo_ls` reads: the
-        // row of the place the desk just made leads where the search puts it, and a row of the kind
+        // row of the place the shell just made leads where the search puts it, and a row of the kind
         // the search sought stands among them. `find` walks the containers it can read, so a record
         // placed out of a notebook is reached through its notebook.
         let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": text}));

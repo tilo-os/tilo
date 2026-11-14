@@ -13,7 +13,7 @@
 //! filled by a workspace's own devices: the relay's tests hold sixteen of them in admission
 //! through its served endpoint, and the session's own tests read the standing and the words of a
 //! plane whose relay was busy. Sixteen further sessions of one workspace are sixteen processes
-//! with a desk each, more than a suite's machine starts for one test.
+//! with a shell each, more than a suite's machine starts for one test.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -111,7 +111,7 @@ fn eventually(
 /// A workspace `maker` makes and hosts, which `other`, a further device of the same person, takes
 /// from the person's list and holds: its id.
 fn made_on(maker: &Device, other: &Device) -> String {
-    let before = maker.on_desk();
+    let before = maker.on_shell();
     let made = maker.act_wait("actions", "workspace.create", &json!({}));
     assert_eq!(
         made["answer"]["receipt"]["update"]["state"],
@@ -121,13 +121,13 @@ fn made_on(maker: &Device, other: &Device) -> String {
         maker.diagnostic()
     );
     let made_here = || {
-        maker.on_desk().into_iter().find(|workspace| {
+        maker.on_shell().into_iter().find(|workspace| {
             !before.contains(workspace)
                 && hosting_of(maker, workspace)["hosted_here"] == json!(true)
         })
     };
     tilo_test_env::wait_until(
-        format!("{}'s desk holds the workspace it made", maker.label),
+        format!("{}'s shell holds the workspace it made", maker.label),
         || made_here().is_some(),
     );
     let made = made_here().expect("the workspace the device made");

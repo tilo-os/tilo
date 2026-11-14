@@ -1,7 +1,7 @@
-//! What a keystroke costs a desk with six apps open: the CPU time it takes the
+//! What a keystroke costs a shell with six apps open: the CPU time it takes the
 //! thread that runs it, and how many of the open apps worked on it.
 //!
-//! The desk is the browser's launch demo — Notes, Sheets, Writer, Calendar,
+//! The shell is the browser's launch demo — Notes, Sheets, Writer, Calendar,
 //! Calculator and Slides, one window each — with the keyboard in the note, so
 //! the frame a key asks for is the one a person typing beside five other open
 //! windows waits on. Everything runs through the production frame path
@@ -21,7 +21,7 @@
 #[path = "../tests/typing_desktop/mod.rs"]
 mod typing_desktop;
 
-use typing_desktop::DemoDesk;
+use typing_desktop::Demo;
 
 fn main() {
     let keys: usize = std::env::args()
@@ -29,16 +29,16 @@ fn main() {
         .nth(1)
         .and_then(|count| count.parse().ok())
         .unwrap_or(40);
-    let mut desk = DemoDesk::open();
-    desk.focus_the_note();
+    let mut shell = Demo::open();
+    shell.focus_the_note();
     // Unmeasured: the first keys find the caches a typist's do.
     for _ in 0..8 {
-        desk.type_key("l");
+        shell.type_key("l");
     }
     let mut costs = Vec::with_capacity(keys);
     for index in 0..keys {
         let key = if index % 10 == 9 { " " } else { "l" };
-        costs.push(desk.measure_key(key));
+        costs.push(shell.measure_key(key));
     }
     let mut cpu: Vec<u64> = costs.iter().map(|cost| cost.cpu_us).collect();
     cpu.sort_unstable();

@@ -44,8 +44,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// A desk of two strips: "Main" holds a window, "Reading" is empty.
-fn desk_tree() -> Layout {
+/// A shell of two strips: "Main" holds a window, "Reading" is empty.
+fn layout_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -79,17 +79,17 @@ fn desk_tree() -> Layout {
     tree
 }
 
-/// The desk and the chrome a window shows over it, before either is mounted.
-struct Desk {
+/// The shell and the chrome a window shows over it, before either is mounted.
+struct Shell {
     surface: DesktopSurface,
     handle: DesktopHandle,
     chrome: DesktopChrome,
     link: EmojiLink,
 }
 
-/// A desk of two strips and the chrome over it, and the link the host keeps the picker through.
-fn desk() -> Desk {
-    let tree = desk_tree();
+/// A shell of two strips and the chrome over it, and the link the host keeps the picker through.
+fn shell() -> Shell {
+    let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let link = EmojiLink::default();
     let mut chrome = DesktopChrome::new(
@@ -101,7 +101,7 @@ fn desk() -> Desk {
         false,
     );
     chrome.set_emoji(link.clone());
-    Desk {
+    Shell {
         surface,
         handle,
         chrome,
@@ -109,17 +109,17 @@ fn desk() -> Desk {
     }
 }
 
-/// The chrome over a test desk: the frame that mounts it, the frame that mounts the desk under it,
+/// The chrome over a test shell: the frame that mounts it, the frame that mounts the shell under it,
 /// and the link the host keeps the picker through.
 fn chrome() -> (FrameHarness, FrameHarness, DesktopHandle, EmojiLink) {
-    let Desk {
+    let Shell {
         surface,
         handle,
         chrome,
         link,
-    } = desk();
-    let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
-    desk.relayout();
+    } = shell();
+    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    shell.relayout();
     let mut frame = FrameHarness::for_root(
         ui::state::State::new(),
         chrome,
@@ -127,7 +127,7 @@ fn chrome() -> (FrameHarness, FrameHarness, DesktopHandle, EmojiLink) {
         ui::Theme::dark(),
     );
     frame.relayout();
-    (frame, desk, handle, link)
+    (frame, shell, handle, link)
 }
 
 fn hold(frame: &mut FrameHarness, mods: ModifiersState) {
@@ -215,7 +215,7 @@ fn highlighted_in(app: &mut ui::App) -> String {
         .root_widget_mut()
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<DesktopChrome>())
-        .expect("the window mounts the desk's chrome");
+        .expect("the window mounts the shell's chrome");
     let text = chrome
         .emoji()
         .selected()
@@ -259,7 +259,7 @@ impl tts::Speaker for Heard {
     }
 }
 
-/// The desk's window, as its host shows it: events and frames in, pixels out.
+/// The shell's window, as its host shows it: events and frames in, pixels out.
 struct Screen;
 
 impl ui::app::AppSurface for Screen {
@@ -295,12 +295,12 @@ impl Screen {
 /// follows the arrows.
 #[test]
 fn the_built_in_reader_hears_the_cards_footer() {
-    let Desk {
+    let Shell {
         surface: _surface,
         handle: _handle,
         chrome,
         link,
-    } = desk();
+    } = shell();
     let screen = Screen;
     let mut app = ui::App::new(ui::state::State::new(), Box::new(chrome));
     app.init_layout();
@@ -348,7 +348,7 @@ fn the_built_in_reader_hears_the_cards_footer() {
 /// is on, which follows the arrows.
 #[test]
 fn the_emoji_card_is_the_readers_and_it_says_the_emoji_the_person_is_on() {
-    let (mut frame, _desk, _handle, link) = chrome();
+    let (mut frame, _shell, _handle, link) = chrome();
     let caret = Rect::new(320.0, 180.0, 322.0, 200.0);
     let display = Rect::new(0.0, 0.0, 1280.0, 800.0);
     link.place_at(EmojiPlace {
@@ -372,7 +372,7 @@ fn the_emoji_card_is_the_readers_and_it_says_the_emoji_the_person_is_on() {
     let (focus, _) = frame.a11y_focus().expect("the reader sits somewhere");
     assert!(
         within(&frame, card, focus),
-        "the reader landed in the card, not back on the desk"
+        "the reader landed in the card, not back on the shell"
     );
 
     // And the card says the emoji the person is on.
@@ -399,7 +399,7 @@ fn the_emoji_card_is_the_readers_and_it_says_the_emoji_the_person_is_on() {
 /// as pressing it does.
 #[test]
 fn the_strip_labels_are_the_readers_and_choosing_one_goes_there() {
-    let (mut frame, mut desk, handle, _link) = chrome();
+    let (mut frame, mut shell, handle, _link) = chrome();
     super_chord(&mut frame, "s");
     frame.relayout();
     draw_chrome(&mut frame);
@@ -414,12 +414,12 @@ fn the_strip_labels_are_the_readers_and_choosing_one_goes_there() {
     frame
         .perform_a11y_action(reading, &Action::Activate)
         .expect("the reader picks the strip");
-    desk.relayout();
+    shell.relayout();
 
     assert_eq!(
         handle.read(|tree| tree.active_strip.get(&WorkspaceId::from_u128(1)).copied()),
         Some(StripId(4)),
-        "the desk moved to the strip the reader chose"
+        "the shell moved to the strip the reader chose"
     );
 }
 
@@ -441,7 +441,7 @@ fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
 /// and the overview zooms back in to it.
 #[test]
 fn the_tilo_mark_zooms_out_to_the_overview_a_reader_picks_from() {
-    let (mut frame, _desk, _handle, _link) = chrome();
+    let (mut frame, _shell, _handle, _link) = chrome();
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(ChromeIntent::ToggleOverview);
     });
@@ -464,12 +464,12 @@ fn the_tilo_mark_zooms_out_to_the_overview_a_reader_picks_from() {
     );
 }
 
-/// The About sheet is the chrome's own action, read over the desk: what this Tilo is, where it
+/// The About sheet is the chrome's own action, read over the shell: what this Tilo is, where it
 /// runs and which version.
 #[test]
 fn the_about_sheet_is_the_chromes_own_action() {
     ui::i18n::I18nManager::init("en-US");
-    let (mut frame, _desk, _handle, _link) = chrome();
+    let (mut frame, _shell, _handle, _link) = chrome();
     frame.relayout();
     frame
         .invoke_action(
@@ -489,7 +489,7 @@ fn the_about_sheet_is_the_chromes_own_action() {
 /// opens the directory, and choosing it asks for that action.
 #[test]
 fn the_switcher_offers_joining_a_workspace_when_the_session_does() {
-    let (mut frame, _desk, handle, _link) = chrome();
+    let (mut frame, _shell, handle, _link) = chrome();
     with_chrome(&mut frame, |chrome| {
         chrome.apply_intent(ChromeIntent::ToggleOverview);
     });

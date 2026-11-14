@@ -1,4 +1,4 @@
-//! Desk widgets: the things the person keeps around their work (the people in
+//! Desktop widgets: the things the person keeps around their work (the people in
 //! this workspace, the date), and when each shows itself.
 //!
 //! A widget is in one of three forms:
@@ -17,7 +17,7 @@
 //!   collapse control, folds it back to its glance. Nothing folds it on a
 //!   timer.
 //! - **Hidden by what the person is visibly doing.** Another surface over the
-//!   desk hides them while it is up. A widget that would appear under a
+//!   shell hides them while it is up. A widget that would appear under a
 //!   pointer resting there waits for it to leave, so it never takes a click
 //!   aimed at what is beneath.
 //! - **Never under the hand.** While the pointer is on a widget, or a press on
@@ -27,23 +27,23 @@
 //! Each widget's [`ShowMode`] narrows when it comes back: "only when I ask"
 //! stays away, "always show on this strip" stays in its glance form.
 //!
-//! [`DeskBoard`] is pure: every method takes the instant it reasons about, so
-//! pointer paths are tested against a synthetic timeline. [`DeskWidgets`] is
-//! the layer the desk draws: it feeds the board and paints its decisions
+//! [`WidgetBoard`] is pure: every method takes the instant it reasons about, so
+//! pointer paths are tested against a synthetic timeline. [`WidgetLayer`] is
+//! the layer the shell draws: it feeds the board and paints its decisions
 //! ([`paint`]); where each widget rests is [`placement`], what it shows
 //! [`calendar`] and [`team`].
 
 pub mod calendar;
+mod layer;
 pub mod music;
 pub mod paint;
 pub mod placement;
 pub mod sizing;
 pub mod system_monitor;
 pub mod team;
-mod widgets;
 
-pub use music::DeskMusic;
-pub use widgets::DeskWidgets;
+pub use layer::WidgetLayer;
+pub use music::Music;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,44 +53,44 @@ use ui::desk_widgets::{DeskWidgetPrefs, ShowMode, WidgetId};
 use ui::time::{Duration, Instant};
 use vello::kurbo::{Point, Rect};
 
-/// Whether a desk card is open, and the keys asking it to fold.
+/// Whether a shell card is open, and the keys asking it to fold.
 ///
-/// The desk is under the windows, so it is the session's key surface that
+/// The shell is under the windows, so it is the session's key surface that
 /// hears a press before the focused window does; this is what it and the
 /// widget layer share. The layer says whether a card is open ([`Self::is_open`],
 /// written every frame); the keys ask for a fold ([`Self::ask`]) and the
-/// layer folds its card on its next pass, as a press on the desk beside the
+/// layer folds its card on its next pass, as a press on the shell beside the
 /// card does.
 #[derive(Clone, Default)]
-pub struct DeskFold {
+pub struct Fold {
     open: Rc<Cell<bool>>,
     asked: Rc<Cell<bool>>,
 }
 
-impl DeskFold {
-    /// Tell the keys whether a card is open on the desk now.
+impl Fold {
+    /// Tell the keys whether a card is open on the shell now.
     pub fn set_open(&self, open: bool) {
         self.open.set(open);
     }
 
-    /// Whether a card is open on the desk now.
+    /// Whether a card is open on the shell now.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.open.get()
     }
 
-    /// Ask the desk to fold the card it has open.
+    /// Ask the shell to fold the card it has open.
     pub fn ask(&self) {
         self.asked.set(true);
     }
 
-    /// Whether a fold was asked and the desk has not taken it yet.
+    /// Whether a fold was asked and the shell has not taken it yet.
     #[must_use]
     pub fn asked(&self) -> bool {
         self.asked.get()
     }
 
-    /// Whether the desk was asked to fold since the last call.
+    /// Whether the shell was asked to fold since the last call.
     pub fn take_asked(&self) -> bool {
         self.asked.replace(false)
     }
@@ -109,7 +109,7 @@ pub const REACH_HOLD: Duration = Duration::from_millis(600);
 
 // How a widget comes and goes is the standard ambient motion
 // (`ui::motion::Ambient`): it leaves at once (the person started typing,
-// covered the desk or let go of Super, and something leaving has nothing to
+// covered the shell or let go of Super, and something leaving has nothing to
 // say), arrives unasked slowly and opacity only, and arrives asked for
 // (reaching for it, Super, a tap) quickly.
 
@@ -147,7 +147,7 @@ pub struct Context<'a> {
     /// The Super surface's quiet first stage (Super held, not yet grown): every widget with content
     /// in its glance form, whatever the person was doing.
     pub super_glance: bool,
-    /// Another surface owns the desk (Quick Settings, the overview, plain search, a sheet): widgets
+    /// Another surface owns the shell (Quick Settings, the overview, plain search, a sheet): widgets
     /// stay away under it.
     pub covered: bool,
     /// The widget under the hand: the pointer is on it, or a press on it is held. It keeps its
@@ -158,7 +158,7 @@ pub struct Context<'a> {
 
 /// Typing, pointer intent and the forms they decide.
 #[derive(Clone, Debug, Default)]
-pub struct DeskBoard {
+pub struct WidgetBoard {
     aim: ui::widget::EdgeAim,
     pointer: Option<Point>,
     last_typed: Option<Instant>,
@@ -173,7 +173,7 @@ pub struct DeskBoard {
     held: BTreeSet<WidgetId>,
 }
 
-impl DeskBoard {
+impl WidgetBoard {
     /// The form `id` was last decided in.
     #[must_use]
     pub fn form(&self, id: WidgetId) -> Form {
@@ -443,7 +443,7 @@ mod tests {
     }
 
     struct Rig {
-        board: DeskBoard,
+        board: WidgetBoard,
         prefs: DeskWidgetPrefs,
         slots: Vec<Slot>,
         engaged: Option<WidgetId>,
@@ -455,7 +455,7 @@ mod tests {
     impl Rig {
         fn new() -> Self {
             Self {
-                board: DeskBoard::default(),
+                board: WidgetBoard::default(),
                 prefs: DeskWidgetPrefs::default(),
                 slots: slots(),
                 engaged: None,
@@ -493,7 +493,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn desk_widgets_glance_show_and_leave_by_what_the_person_does;
+        fn shell_widgets_glance_show_and_leave_by_what_the_person_does;
 
         phase typing_sends_widgets_away_and_a_pause_brings_their_glance_back;
         {
@@ -502,7 +502,7 @@ mod tests {
             assert_eq!(
                 rig.at(t0),
                 (Form::Glance, Form::Glance),
-                "idle desk glances"
+                "idle shell glances"
             );
             // A burst of typing with sub-second gaps: away the whole time.
             for k in 0..20 {

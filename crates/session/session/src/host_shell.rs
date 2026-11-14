@@ -7,7 +7,7 @@
 //! ([`FloatingSurfaceHostMessage::HostShellAllowed`]).
 //! The question is answered between two of the session's passes, and the supervisor writes the
 //! allow to disk before it answers: both run off the session's own pass, so a slow disk never holds
-//! up the desk.
+//! up the shell.
 
 use std::io::{BufRead as _, Write as _};
 use std::os::unix::net::UnixStream;

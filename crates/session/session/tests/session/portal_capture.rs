@@ -110,12 +110,12 @@ fn channels(pixel: [u8; 4]) -> (f64, f64, f64) {
     )
 }
 
-/// Make the display at `index` , in reading order, the one the person works on, through the desk's
+/// Make the display at `index` , in reading order, the one the person works on, through the shell's
 /// own action for it: a window opened then opens there.
 fn focus_display(session: &mut Session, index: usize) {
     fn collect(resources: &[tilo_actions::ResourceSpec], displays: &mut Vec<String>) {
         for resource in resources {
-            if resource.kind == tilo_desktop::desk_verbs::DISPLAY_KIND {
+            if resource.kind == tilo_desktop::verbs::DISPLAY_KIND {
                 displays.push(resource.id.as_str().to_owned());
             }
             collect(&resource.children, displays);
@@ -152,7 +152,7 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
 }
 
 /// A screenshot of the window with focus is that window's own frame: what its client drew, not the
-/// desk around it.
+/// shell around it.
 #[test]
 fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
     let _settled = ui::motion::testing::settled();

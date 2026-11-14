@@ -49,7 +49,7 @@ view shell_view(a: Arrangement) {
     }
 }
 
-/// Whether the style `chosen` loads, as the session publishes it (`DeskStyle.loads`): a style
+/// Whether the style `chosen` loads, as the session publishes it (`Style.loads`): a style
 /// the session has not listed yet is one it has said nothing against, so it is drawn and, if it
 /// cannot be, the failed state the runtime draws stands in for it.
 fn loads_style(chosen: Text) -> Bool {

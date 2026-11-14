@@ -450,7 +450,7 @@ impl Conversations {
     /// what it delivers when that changes, not on a clock, so a new turn — the
     /// person typing an ask into a conversation Chat had no message in — is
     /// only handed to its agent because this says it exists. Nothing is
-    /// announced while the turns are the ones already read, so a quiet desk
+    /// announced while the turns are the ones already read, so a quiet shell
     /// costs the broker no re-read.
     pub(crate) fn feed(&self, person: &str, workspaces: Vec<WorkspaceFacts>) {
         let read: Vec<Facts> = workspaces
@@ -672,7 +672,7 @@ impl Conversations {
             let rows = chat.message_rows(&messages, channel);
             let me = opened.records.author().key();
             let names = chat::views::Names {
-                me: crate::platform::person::desk_person_name(
+                me: crate::platform::person::person_name(
                     ui::local_identity::load().map(|identity| identity.display_name),
                     &me,
                 ),
@@ -793,7 +793,7 @@ pub(crate) struct TurnSummonses {
     turns_at: Vec<(u64, u64, u64)>,
     /// The one send: what a conversation's composer sends goes through it to Chat.
     sends: crate::send_to::Sends,
-    /// The desk's arrangement: where a turn's whole conversation is opened beside it.
+    /// The shell's arrangement: where a turn's whole conversation is opened beside it.
     arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
 }
 
@@ -1188,7 +1188,7 @@ fn turns(
             let Some(starter) = person_of(&message.author.0) else {
                 continue;
             };
-            // The conversation's address in the workspace, as the desk and the apps name it, and
+            // The conversation's address in the workspace, as the shell and the apps name it, and
             // the message's own beneath it.
             let address = format!("{}/channels/{id}", chat::Chat::KIND);
             let (instruction, subject) = request(message);

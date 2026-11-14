@@ -3,7 +3,7 @@
 //! that changes how it looks and nothing of where it stands.
 //!
 //! Every step drives the production seams only: the session's own loop, its MCP server, the
-//! arrangement and desk it publishes, and the tree the shell lays out for assistive technology
+//! arrangement and session it publishes, and the tree the shell lays out for assistive technology
 //! (never pixels, but where a step is about looks, the frame the compositor drew).
 //!
 //! A step whose behaviour is not built yet keeps its real test and is marked `#[ignore]` with the
@@ -61,9 +61,9 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
         "the shell covers the display"
     );
 
-    // The preset switch: the bar's own menu, saying the preset the desk shows, offering the ways of
+    // The preset switch: the bar's own menu, saying the preset the session shows, offering the ways of
     // showing the same places.
-    let menu = preset_menu(&session).expect("the desk's preset menu");
+    let menu = preset_menu(&session).expect("the listing's preset menu");
     press(&mut session, &menu);
     for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
         assert!(
@@ -113,22 +113,22 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
         "the session's own resources are listed: {apps}"
     );
 
-    // The session's own: the arrangement it arranges, the desk it shows.
-    let (desk, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": "session"}));
-    assert!(!failed, "{desk}");
+    // The session's own: the arrangement it arranges, the session it shows.
+    let (listing, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": "session"}));
+    assert!(!failed, "{listing}");
     assert!(
-        desk.contains("shell:arrangement") || desk.contains("arrangement"),
-        "the arrangement is among them: {desk}"
+        listing.contains("shell:arrangement") || listing.contains("arrangement"),
+        "the arrangement is among them: {listing}"
     );
-    // A listing names the roots of what the session publishes: the desk is a row of its own,
+    // A listing names the roots of what the session publishes: the session is a row of its own,
     // by the kind its resource is, and what it holds is read a level down.
     assert!(
-        desk.lines().any(|line| line.contains("  desktop  ")),
-        "the desk is: {desk}"
+        listing.lines().any(|line| line.contains("  desktop  ")),
+        "the listing is: {listing}"
     );
 
     // Each action as a program calls it, what it may go without included. The chrome by its key: a
-    // window's control reads under the window's name, and the desk's window is another `Desktop` .
+    // window's control reads under the window's name, and the session's window is another `Desktop` .
     let (chrome, failed) = repl.call(
         &mut session,
         "tilo_ls",
@@ -328,8 +328,8 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
 }
 
 /// Step 8: traditional desktop — a press on a dock item opens it, and the top bar shows the focused
-/// window's actions. (A dock press already opens its item on the strips desk; what is missing is
-/// the traditional desk itself, which this test drives the same way.)
+/// window's actions. (A dock press already opens its item on the strips session; what is missing is
+/// the traditional session itself, which this test drives the same way.)
 #[test]
 fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     fn offered(resources: &[tilo_actions::ResourceSpec], id: &str, label: &str) -> Option<String> {
@@ -356,7 +356,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
         &mut session,
         "shell.apply(shell.shell, layout: shell.Layout.windows_desktop)",
     );
-    assert!(!failed, "the desk is the traditional one: {answer}");
+    assert!(!failed, "the listing is the traditional one: {answer}");
     until(&mut session, "the traditional desktop", |session| {
         preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
     });
@@ -366,7 +366,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     until(&mut session, "the launcher the dock opened", |session| {
         session
             .read(OVERLAYS)
-            .is_some_and(|desk| desk["here"] == json!("launcher"))
+            .is_some_and(|listing| listing["here"] == json!("launcher"))
     });
 
     // The top bar shows the focused window's own commands. The seed pins this note, so its pin
@@ -414,7 +414,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     });
 }
 
-/// Step 9: a theme switch changes how the desk looks and nothing of its layout.
+/// Step 9: a theme switch changes how the session looks and nothing of its layout.
 #[test]
 fn step_9_a_theme_switch_changes_looks_only() {
     let _settled = ui::motion::testing::settled();
@@ -434,10 +434,10 @@ fn step_9_a_theme_switch_changes_looks_only() {
         session.step(Duration::from_millis(1)).expect("step");
     }
 
-    // Where the desk's own parts stand, and what the screen looks like.
+    // Where the session's own parts stand, and what the screen looks like.
     // The canvas is the whole screen: its bar keeps the notices and the person's own menu, and it
     // has no dock (`canvas.md` §7).
-    let menu = preset_menu(&session).expect("the desk's preset menu");
+    let menu = preset_menu(&session).expect("the listing's preset menu");
     let controls = [menu.as_str(), "Notifications"];
     let before: Vec<(String, (f64, f64, f64, f64))> = controls
         .iter()
@@ -447,15 +447,15 @@ fn step_9_a_theme_switch_changes_looks_only() {
                 .map(|rect| ((*name).to_owned(), rect))
         })
         .collect();
-    assert_eq!(before.len(), controls.len(), "the desk's parts stand");
+    assert_eq!(before.len(), controls.len(), "the listing's parts stand");
     let places = placed_resources(&session);
     let shot_before = session
         .compositor()
         .screenshot("HEADLESS-1")
-        .expect("the frame the desk drew");
+        .expect("the frame the listing drew");
 
     // The person picks another theme, as Settings does, one after another (glass, then liquid
-    // glass): each draws the desk anew, and neither moves anything.
+    // glass): each draws the session anew, and neither moves anything.
     let mut shot = shot_before;
     for theme in ["glass", "liquid-glass"] {
         settings_store::update_section(
@@ -468,7 +468,7 @@ fn step_9_a_theme_switch_changes_looks_only() {
         .expect("the theme is kept");
         let drawn = crate::common::wait_for(
             &mut session,
-            format!("the desk to draw in {theme}"),
+            format!("the listing to draw in {theme}"),
             |session: &mut Session| {
                 session.step(Duration::from_millis(1)).expect("step");
                 let frame = session

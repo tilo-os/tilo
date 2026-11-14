@@ -1,7 +1,7 @@
 //! What the session publishes, read as a package: `apps/tl/session/surface.toml` .
 //! A shell, the agent and the REPL call the session's actions as an app's:
 //! `use so.tilo.session as session` , then `session.overview()` or `session.focus(window: w)` . The
-//! device's resources and the desk are `so.tilo.device` 's ([`crate::shell::device_surfaces`]),
+//! device's resources and the shell are `so.tilo.device` 's ([`crate::shell::device_surfaces`]),
 //! never described here too. The description is the native apps' (`surface.toml`, read by
 //! `tilolang_tilo::catalogue` ), generated here from the very resources the session's door
 //! publishes, and a test holds the committed file to it, so it never drifts from what the door
@@ -27,13 +27,13 @@ pub const PATH: &str = "apps/tl/session/surface.toml";
 
 /// The actions of a resource the package leaves out, each because another resource's action
 /// of the same name is the one a call of that name means. Focus and close are a window's own actions,
-/// declared once by the window: the desk's `focus` and `close-tab`, which name the window by
+/// declared once by the window: the shell's `focus` and `close-tab`, which name the window by
 /// its tab, are left out, so `session.focus(window: w)` and a window's close mean the window's.
 const LEFT_OUT: &[(&str, &str)] = &[
-    (tilo_desktop::desk_verbs::DESK_RESOURCE, "focus"),
-    (tilo_desktop::desk_verbs::DESK_RESOURCE, "close-tab"),
-    (tilo_desktop::desk_verbs::DESK_RESOURCE, "wait-window"),
-    (tilo_desktop::desk_verbs::DESK_RESOURCE, "force-quit-app"),
+    (tilo_desktop::verbs::SHELL_RESOURCE, "focus"),
+    (tilo_desktop::verbs::SHELL_RESOURCE, "close-tab"),
+    (tilo_desktop::verbs::SHELL_RESOURCE, "wait-window"),
+    (tilo_desktop::verbs::SHELL_RESOURCE, "force-quit-app"),
 ];
 
 /// The declaration of a resource's action, by its id: where the type of a parameter its wire type
@@ -55,27 +55,25 @@ struct File {
     resources: Vec<Entry>,
 }
 
-/// The resources the session publishes under one address each, but the device's: the desk,
+/// The resources the session publishes under one address each, but the device's: the shell,
 /// the sound, the network and Bluetooth are `so.tilo.device`'s
 /// ([`crate::shell::device_surfaces`]), so each action is described once, by its owner.
 fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
     let words: tilo_session_core::arrangement::Words = std::rc::Rc::new(crate::i18n::word);
     vec![
         (
-            tilo_desktop::desk_verbs::chrome_resource(
-                &ui::shortcut_table::ShortcutConfig::default(),
-            ),
+            tilo_desktop::verbs::chrome_resource(&ui::shortcut_table::ShortcutConfig::default()),
             Some(<ChromeEffect as Effect>::declaration),
         ),
         (
-            tilo_desktop::desk_verbs::desk_resource(&[], &[], &[], None),
+            tilo_desktop::verbs::shell_resource(&[], &[], &[], None),
             Some(<LayoutEffect as Effect>::declaration),
         ),
         (
             tilo_session_core::arrangement::resources(&words).swap_remove(0),
             None,
         ),
-        // The person's own desk styles as packages in their workspace: "make it mine", `check`
+        // The person's own styles as packages in their workspace: "make it mine", `check`
         // and `install` (`shell.md` §6, "Agents make styles with the same commands a person
         // types"), so a shell view and the canvas chat's agent call them as an app's.
         (crate::style_packages::resource(), None),
@@ -85,10 +83,10 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
 /// The kinds the session publishes one resource of per thing, each as one of them.
 fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     let mut out: Vec<(ResourceSpec, Option<Declared>)> = Vec::new();
-    // The desk describes each window as a resource of its own; a desk that names none leaves the
+    // The shell describes each window as a resource of its own; a shell that names none leaves the
     // kind out rather than failing the description.
-    if let Some(window) = tilo_desktop::desk_verbs::desk_resource(
-        &[tilo_desktop::desk_verbs::Shown {
+    if let Some(window) = tilo_desktop::verbs::shell_resource(
+        &[tilo_desktop::verbs::Shown {
             tab: 0,
             title: String::new(),
             foreign: None,
@@ -99,7 +97,7 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     )
     .children
     .into_iter()
-    .find(|child| child.kind == tilo_desktop::desk_verbs::WINDOW_KIND)
+    .find(|child| child.kind == tilo_desktop::verbs::WINDOW_KIND)
     {
         out.push((window, Some(<LayoutEffect as Effect>::declaration)));
     }

@@ -152,7 +152,7 @@ pub struct PackageMeta {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateMeta {
-    /// The name a caller writes after the package's alias (`shell.desk_style`).
+    /// The name a caller writes after the package's alias (`shell.style_shell`).
     pub name: String,
     /// The file it is declared in, for a diagnostic that names it.
     pub file: String,

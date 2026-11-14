@@ -33,7 +33,7 @@ const OFFSTAGE: i32 = -(1 << 20);
 /// What a touchpad gesture the desktop took asks of it, once the gesture
 /// has said what it means: the same steps the desktop's chords take.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DeskGesture {
+pub enum ShellGesture {
     /// Three fingers carrying the shown strip: `travel` is their total
     /// signed travel since they landed, positive toward later windows.
     StripDrag { travel: f64, began: bool },
@@ -57,7 +57,7 @@ pub(crate) enum Reading {
     /// The desktop took it; the fingers say nothing yet.
     Taken,
     /// The desktop took it and it asks this.
-    Asked(DeskGesture),
+    Asked(ShellGesture),
 }
 
 /// The desktop's reading of the touchpad's gestures: the three- and four-finger
@@ -79,7 +79,7 @@ impl GestureReader {
         &mut self,
         gesture: &GestureEvent,
         config: Option<GestureConfig>,
-        asked: impl FnOnce(DeskGesture),
+        asked: impl FnOnce(ShellGesture),
     ) -> bool {
         match self.read(gesture, config) {
             Reading::Clients => false,
@@ -136,19 +136,19 @@ impl GestureReader {
             }
             Some(GestureAction::StripPanUpdate { travel, began }) => {
                 self.travel = travel;
-                Some(DeskGesture::StripDrag { travel, began })
+                Some(ShellGesture::StripDrag { travel, began })
             }
             Some(GestureAction::StripPanEnd { cancelled }) => {
-                Some(DeskGesture::StripDragEnd { cancelled })
+                Some(ShellGesture::StripDragEnd { cancelled })
             }
             Some(GestureAction::StripDeckEnd { cancelled: false }) => {
-                step(self.travel).map(DeskGesture::StepStrip)
+                step(self.travel).map(ShellGesture::StepStrip)
             }
             Some(GestureAction::SwitchWorkspace(delta)) => {
-                Some(DeskGesture::SwitchWorkspace(delta))
+                Some(ShellGesture::SwitchWorkspace(delta))
             }
-            Some(GestureAction::ShowOverview) => Some(DeskGesture::Overview(true)),
-            Some(GestureAction::HideOverview) => Some(DeskGesture::Overview(false)),
+            Some(GestureAction::ShowOverview) => Some(ShellGesture::Overview(true)),
+            Some(GestureAction::HideOverview) => Some(ShellGesture::Overview(false)),
             // A cancelled deck drag is the hand coming back: nothing moves.
             Some(GestureAction::StripDeckEnd { cancelled: true }) | None => None,
         };
@@ -164,7 +164,7 @@ struct Desktop {
     policy: DesktopPolicy,
     host: WidgetHost,
     /// What the gestures the desktop took asked, for its host to carry out.
-    gestures: Vec<DeskGesture>,
+    gestures: Vec<ShellGesture>,
     /// How the desktop reads touchpad gestures; `None` leaves every one to
     /// the clients.
     gesture_config: Option<GestureConfig>,
@@ -535,7 +535,7 @@ impl DesktopHost {
 
     /// What the touchpad gestures the desktop took asked since the last
     /// call, oldest first.
-    pub fn take_gestures(&self) -> Vec<DeskGesture> {
+    pub fn take_gestures(&self) -> Vec<ShellGesture> {
         std::mem::take(&mut self.desktop.borrow_mut().gestures)
     }
 
@@ -584,7 +584,7 @@ impl crate::well_policy::WindowModel for DesktopHost {
         self.desktop.borrow().gesture_config
     }
 
-    fn took_gesture(&self, gesture: DeskGesture) {
+    fn took_gesture(&self, gesture: ShellGesture) {
         self.desktop.borrow_mut().gestures.push(gesture);
     }
 }
@@ -1281,7 +1281,7 @@ mod tests {
         );
         assert_eq!(
             reader.read(&GestureEvent::SwipeUpdate { dx: -20.0, dy: 0.0 }, config),
-            Reading::Asked(DeskGesture::StripDrag {
+            Reading::Asked(ShellGesture::StripDrag {
                 travel: 20.0,
                 began: true,
             }),
@@ -1289,7 +1289,7 @@ mod tests {
         );
         assert_eq!(
             reader.read(&GestureEvent::SwipeUpdate { dx: -10.0, dy: 0.0 }, config),
-            Reading::Asked(DeskGesture::StripDrag {
+            Reading::Asked(ShellGesture::StripDrag {
                 travel: 30.0,
                 began: false,
             }),
@@ -1297,7 +1297,7 @@ mod tests {
         );
         assert_eq!(
             reader.read(&GestureEvent::SwipeEnd { cancelled: false }, config),
-            Reading::Asked(DeskGesture::StripDragEnd { cancelled: false })
+            Reading::Asked(ShellGesture::StripDragEnd { cancelled: false })
         );
     }
 

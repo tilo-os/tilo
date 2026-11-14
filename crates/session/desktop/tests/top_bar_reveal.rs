@@ -28,8 +28,8 @@ fn ms(t: Instant, n: u64) -> Instant {
         .expect("test instants stay in range")
 }
 
-/// A desk of one display with its bar docked on the display's top edge.
-fn desk() -> (Reveals, Instant) {
+/// A shell of one display with its bar docked on the display's top edge.
+fn shell() -> (Reveals, Instant) {
     let t0 = Instant::now();
     let mut reveals = Reveals::default();
     reveals.set_height(BAR_HEIGHT);
@@ -37,16 +37,16 @@ fn desk() -> (Reveals, Instant) {
     (reveals, t0)
 }
 
-/// A desk whose bar shows only when reached for, as the person's "hide the top bar" asks.
-fn hidden_desk() -> (Reveals, Instant) {
-    let (mut reveals, t0) = desk();
+/// A shell whose bar shows only when reached for, as the person's "hide the top bar" asks.
+fn hidden_shell() -> (Reveals, Instant) {
+    let (mut reveals, t0) = shell();
     reveals.set_hide(true);
     (reveals, t0)
 }
 
-/// A desk whose display a window just took full screen.
-fn fullscreen_desk() -> (Reveals, Instant) {
-    let (mut reveals, t0) = desk();
+/// A shell whose display a window just took full screen.
+fn fullscreen_shell() -> (Reveals, Instant) {
+    let (mut reveals, t0) = shell();
     reveals.follow(&[(None, DISPLAY, true)], t0);
     (reveals, t0)
 }
@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
 
     phase docked_unless_the_person_hides_it;
     {
-        let (mut reveals, t0) = desk();
+        let (mut reveals, t0) = shell();
         path(
             &mut reveals,
             Point::new(600.0, 500.0),
@@ -109,7 +109,7 @@ tilo_test_env::scenario! {
 
     phase a_push_to_the_top_edge_shows_it_and_leaving_hides_it;
     {
-        let (mut reveals, t0) = hidden_desk();
+        let (mut reveals, t0) = hidden_shell();
         let t = path(
             &mut reveals,
             Point::new(600.0, 500.0),
@@ -154,7 +154,7 @@ tilo_test_env::scenario! {
     // Crossing the top edge on the way somewhere else is not reaching for the bar, however fast it
     // goes.
     {
-        let (mut reveals, t0) = hidden_desk();
+        let (mut reveals, t0) = hidden_shell();
         let t = path(
             &mut reveals,
             Point::new(80.0, 400.0),
@@ -185,7 +185,7 @@ tilo_test_env::scenario! {
 
     phase slowing_onto_a_window_near_the_top_is_not_reaching_for_the_bar;
     {
-        let (mut reveals, t0) = hidden_desk();
+        let (mut reveals, t0) = hidden_shell();
         // A flick up that settles on a tab row 14 px down, below the band.
         let t = path(
             &mut reveals,
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
 
     phase a_fullscreen_window_shows_the_bar_on_entering_and_it_collapses_when_idle;
     {
-        let (mut reveals, t0) = fullscreen_desk();
+        let (mut reveals, t0) = fullscreen_shell();
         assert_eq!(
             reveals.presence(None, false),
             TopBarPresence::Shown,
@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
 
     phase a_key_or_a_swipe_brings_it_back_for_the_idle_time;
     {
-        let (mut reveals, t0) = fullscreen_desk();
+        let (mut reveals, t0) = fullscreen_shell();
         reveals.settle(t0 + FULLSCREEN_BAR_IDLE, idle);
         assert_eq!(reveals.presence(None, false), TopBarPresence::Hidden);
 
@@ -263,12 +263,12 @@ tilo_test_env::scenario! {
         reveals.settle(again + FULLSCREEN_BAR_IDLE, idle);
         assert_eq!(reveals.presence(None, false), TopBarPresence::Hidden);
 
-        // A finger coming down from the top edge shows it too, and the desk takes the contact so
+        // A finger coming down from the top edge shows it too, and the shell takes the contact so
         // nothing under it sees it.
         let edge = Point::new(600.0, 1.0);
         assert!(
             reveals.touch(Finger::Down, edge, ms(t0, 9000)),
-            "a finger on the top edge is the desk's"
+            "a finger on the top edge is the shell's"
         );
         reveals.touch(Finger::Move, Point::new(600.0, 40.0), ms(t0, 9050));
         assert_eq!(reveals.presence(None, false), TopBarPresence::Shown);
@@ -284,7 +284,7 @@ tilo_test_env::scenario! {
 
     phase the_pointer_on_it_or_using_it_keeps_it;
     {
-        let (mut reveals, t0) = fullscreen_desk();
+        let (mut reveals, t0) = fullscreen_shell();
         // In use (its calendar, say), it stays past the idle time.
         let due = t0 + FULLSCREEN_BAR_IDLE;
         reveals.settle(due, |_| true);

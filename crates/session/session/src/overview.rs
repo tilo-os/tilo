@@ -1,4 +1,4 @@
-//! The overview's pictures of the desk's windows, and the clock they fly on.
+//! The overview's pictures of the shell's windows, and the clock they fly on.
 //! The chrome draws the overview, but the windows it shows belong to other clients: only the
 //! compositor holds their buffers. The chrome's panel names each window it pictures and where its
 //! picture rests ([`WindowFlight::show`]); the compositor draws every named window's latest buffer
@@ -42,7 +42,7 @@ struct Inner {
     shown: RefCell<Shown>,
     /// The surface that draws the overview, which its flight asks frames of.
     surface: Cell<Option<ui::motion::MotionSurface>>,
-    /// The motion the desk moves with, and whether it flies at all.
+    /// The motion the shell moves with, and whether it flies at all.
     motion: EffectiveMotion,
     reduce_motion: bool,
 }
@@ -90,13 +90,13 @@ impl Overview {
     }
 
     /// A frame is about to be drawn: move the zoom by the clock, and tell the panel where the
-    /// windows it pictures stand on the desk now.
-    /// The desk says where they stand, in its own coordinates, and where those begin on the
+    /// windows it pictures stand on the shell now.
+    /// The shell says where they stand, in its own coordinates, and where those begin on the
     /// desktop, which the chrome shares.
     pub(crate) fn step(
         &self,
         handle: &tilo_desktop_surface::DesktopHandle,
-        desk: &dyn crate::platform::surfaces::Desk,
+        shell: &dyn crate::platform::surfaces::Shell,
         now: Instant,
     ) {
         let inner = &*self.inner;
@@ -118,10 +118,10 @@ impl Overview {
             }
         }
         let progress = inner.zoom.borrow().progress(now);
-        let shown = desk.shown();
-        let origin = desk.origin();
+        let shown = shell.shown();
+        let origin = shell.origin();
         let windows: HashMap<u64, TabId> = handle
-            .read(crate::desk_windows::window_surfaces)
+            .read(crate::windows::window_surfaces)
             .into_iter()
             .map(|(tab, window)| (window, tab))
             .collect();

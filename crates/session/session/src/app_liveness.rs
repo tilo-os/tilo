@@ -1,12 +1,12 @@
-//! Apps that stop answering: the desk says which windows they are, and the
+//! Apps that stop answering: the shell says which windows they are, and the
 //! person's Wait or Force quit reaches the compositor.
 //!
 //! The compositor pings every app it shows and expects an answer
 //! (`tilo_compositor`'s app liveness): one that misses its answer past the
 //! timeout has stopped listening, and the window it left behind is what the
 //! person presses at in vain. The compositor knows which windows those are;
-//! the desk is where a person, a script and an agent read them, so this pass
-//! hands the set to the desk ([`DesktopHandle::set_unresponsive_windows`]) and
+//! the shell is where a person, a script and an agent read them, so this pass
+//! hands the set to the shell ([`DesktopHandle::set_unresponsive_windows`]) and
 //! carries out what the person chose there
 //! ([`DesktopHandle::take_liveness_choices`]). Both choices go to the
 //! compositor: Wait gives the app another period to answer, Force quit ends
@@ -17,7 +17,7 @@ use tilo_desktop_model::TabId;
 use tilo_desktop_surface::LivenessChoice;
 
 impl crate::Session {
-    /// Tell the desk which apps stopped answering, and carry out what the person chose on their
+    /// Tell the shell which apps stopped answering, and carry out what the person chose on their
     /// windows.
     pub(crate) fn follow_app_liveness(&mut self) {
         self.publish_app_liveness();

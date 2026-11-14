@@ -13,7 +13,7 @@
 //! ([`hosting_relevant`]). Someone with one device that sells nothing sees no
 //! hosting at all.
 //!
-//! [`rows`] turns what the host knows ([`TiloDesk`]) into the rows the
+//! [`rows`] turns what the host knows ([`TiloOverview`]) into the rows the
 //! overview shows; a press on one is an [`OverviewPick`] the host carries
 //! out, as every pick of the overview is.
 //!
@@ -41,8 +41,8 @@ use crate::overview_panel::OverviewPick;
 
 /// What the overview shows below the workspaces, as the host knows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TiloDesk {
-    /// The person's workspaces the host knows that this desk does not hold, as `(id, name)`:
+pub struct TiloOverview {
+    /// The person's workspaces the host knows that this session does not hold, as `(id, name)`:
     /// going to one is the host's action `id`.
     pub elsewhere: Vec<(String, String)>,
     /// Each host's answer for the person's account
@@ -59,7 +59,7 @@ pub struct TiloDesk {
     expect(
         clippy::large_enum_variant,
         reason = "a section's name and a row stand in one list; the rows are built with the \
-                  desk's read and read until they change, so boxing an item would put a pointer \
+                  shell's read and read until they change, so boxing an item would put a pointer \
                   in the way of every row for nothing"
     )
 )]
@@ -314,11 +314,11 @@ fn agent_row(grant: &agent_door::Grant) -> TiloItem {
 /// The rows below the workspaces: the person's workspaces elsewhere, Hosts & compute once it is
 /// relevant, and the agents let in when any are.
 #[must_use]
-pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
+pub fn rows(shell: &TiloOverview) -> Vec<TiloRow> {
     let mut rows = Vec::new();
-    if !desk.elsewhere.is_empty() {
+    if !shell.elsewhere.is_empty() {
         rows.push(TiloRow::Caption(t("overview-tilo-more-workspaces")));
-        rows.extend(desk.elsewhere.iter().map(|(id, name)| {
+        rows.extend(shell.elsewhere.iter().map(|(id, name)| {
             TiloRow::Item(TiloItem {
                 key: format!("overview-elsewhere:{id}"),
                 mark: None,
@@ -330,13 +330,13 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
             })
         }));
     }
-    if hosting_relevant(&desk.hosts) {
+    if hosting_relevant(&shell.hosts) {
         rows.push(TiloRow::Caption(t("overview-tilo-hosts")));
-        for (index, host) in desk.hosts.iter().enumerate() {
+        for (index, host) in shell.hosts.iter().enumerate() {
             rows.push(TiloRow::Item(host_row(index, host)));
         }
     }
-    if let Some(door) = desk.door.as_ref().filter(|door| !door.grants.is_empty()) {
+    if let Some(door) = shell.door.as_ref().filter(|door| !door.grants.is_empty()) {
         rows.push(TiloRow::Caption(t("overview-tilo-agents")));
         rows.extend(
             door.grants

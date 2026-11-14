@@ -367,7 +367,7 @@ pub struct Sealed {
 
 /// What this session hands the broker besides the link and the launcher: the
 /// board every app's live activity shows on, the index its publications land
-/// in, the desk it decides a workspace against, the shortcuts it saves and
+/// in, the session it decides a workspace against, the shortcuts it saves and
 /// runs, the workspace's activity it serves, and the runs of what people ask
 /// its agents.
 pub struct Hosted {
@@ -379,7 +379,7 @@ pub struct Hosted {
     /// The records' content in that index, read from the records themselves:
     /// what search finds of an app that never opened them here.
     pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
-    pub desk: std::sync::Arc<DeskAuthority>,
+    pub layout: std::sync::Arc<LayoutAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// The turns this session's agents answer, which the broker delivers
@@ -463,7 +463,7 @@ pub fn journal_root(state: &std::path::Path) -> PathBuf {
 /// broker admits each connection by the launch `launches` recorded, asks
 /// `link` for what the services publish, hands Settings the speaker groups
 /// of `fabric` when this session runs on one, and decides what an app may do
-/// in a workspace against `desk`. What apps publish of their own content lands
+/// in a workspace against `session`. What apps publish of their own content lands
 /// in `content`, the index search reads.
 ///
 /// `sealed` is the broker's side of the workspaces' sealed records: the
@@ -482,7 +482,7 @@ pub fn serve(
     hosted: Hosted,
 ) -> std::io::Result<BrokerHandle> {
     let _ = link.launches.set(std::sync::Arc::clone(&launches));
-    let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
+    let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.layout) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
     let fanout = std::sync::Arc::clone(&hosted.fanout);
     // The identity store's device-certificate checks, on this session's one
@@ -651,17 +651,17 @@ impl ShortcutLibraryServices for ShortcutLibrary {
     }
 }
 
-/// The desk the broker's thread decides against: the workspaces it shows and
+/// The session the broker's thread decides against: the workspaces it shows and
 /// their shortcuts, as the session's loop last published them.
 ///
-/// The desk itself belongs to the loop ([`tilo_desktop_surface::DesktopHandle`]
+/// The session itself belongs to the loop ([`tilo_desktop_surface::DesktopHandle`]
 /// hands it out on this thread only), while the broker asks about a workspace
-/// from its own thread. The loop publishes a copy when the desk it shows
+/// from its own thread. The loop publishes a copy when the session it shows
 /// moved, and the broker reads the copy.
-pub struct DeskAuthority {
+pub struct LayoutAuthority {
     tree: Mutex<tilo_desktop_model::Layout>,
-    /// Counts the desk's publications, so a reader that only cares whether
-    /// the desk changed since it last looked asks one number, and one that
+    /// Counts the session's publications, so a reader that only cares whether
+    /// the session changed since it last looked asks one number, and one that
     /// waits for a change hears it ([`Self::until`]).
     generation: tokio::sync::watch::Sender<u64>,
     revocations: crate::engine::Revocations,
@@ -682,7 +682,7 @@ pub struct Names {
     pub earlier: Vec<String>,
 }
 
-impl DeskAuthority {
+impl LayoutAuthority {
     /// The authority over `tree`, as the loop sees it now, deciding what each
     /// of its workspaces revokes from `revocations`, and journalling what the
     /// broker admits on the person's behalf under `journal` (`None` for a
@@ -734,14 +734,14 @@ impl DeskAuthority {
         }
     }
 
-    /// Tell the broker the desk it decides against moved.
+    /// Tell the broker the session it decides against moved.
     fn announce(&self) {
         self.generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
         tilo_identity_host::policy_change::announce();
     }
 
-    /// The desk as the loop shows it now, for the broker's next decision, which re-checks what
+    /// The session as the loop shows it now, for the broker's next decision, which re-checks what
     /// it holds on the announcement rather than on a clock.
     pub fn publish(&self, mut tree: tilo_desktop_model::Layout) {
         claim_earlier_owners(&mut tree, &self.names);
@@ -750,7 +750,7 @@ impl DeskAuthority {
         self.announce();
     }
 
-    /// Wait until the desk, as the loop publishes it, satisfies `held`: a
+    /// Wait until the session, as the loop publishes it, satisfies `held`: a
     /// change written where the loop takes it from, such as a workspace's
     /// governance, is in force for the broker from then on.
     pub async fn until(&self, held: impl Fn(&tilo_desktop_model::Layout) -> bool) {
@@ -766,7 +766,7 @@ impl DeskAuthority {
         held(&self.tree.lock_recover())
     }
 
-    /// How many times the desk was published; equal values mean the desk
+    /// How many times the session was published; equal values mean the session
     /// did not change between the two reads.
     pub fn generation(&self) -> u64 {
         *self.generation.borrow()
@@ -774,7 +774,7 @@ impl DeskAuthority {
 }
 
 /// A workspace whose governance names the person by an id they went by before this device had an
-/// identity is theirs as the person they are now: the desk claims it ([`crate::Shared`]'s
+/// identity is theirs as the person they are now: the session claims it ([`crate::Shared`]'s
 /// `own_workspaces`) and so does the copy the broker decides against, in the same moment, so their
 /// own action in it is never refused for the id their own workspace was founded under.
 fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
@@ -791,10 +791,10 @@ fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
     }
 }
 
-/// The desk as the identity service reads it: an app signs in the person's
-/// workspace through the desk this session shows, so the workspace the
+/// The session as the identity service reads it: an app signs in the person's
+/// workspace through the session this session shows, so the workspace the
 /// request names is the one the person sees it in.
-impl tilo_identity_host::broker::WorkspaceMembership for DeskAuthority {
+impl tilo_identity_host::broker::WorkspaceMembership for LayoutAuthority {
     fn with_workspace(
         &self,
         workspace: &tilo_desktop_model::WorkspaceId,
@@ -807,15 +807,15 @@ impl tilo_identity_host::broker::WorkspaceMembership for DeskAuthority {
     }
 }
 
-impl WorkspaceAuthority for DeskAuthority {
+impl WorkspaceAuthority for LayoutAuthority {
     fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         read(&self.tree.lock_recover());
         Ok(())
     }
 
-    /// A workspace this desk shows is one this device was let into, so its
+    /// A workspace this session shows is one this device was let into, so its
     /// shortcuts are proven against the revocations its workspace records. A
-    /// workspace whose document this device does not hold — a desk kept from
+    /// workspace whose document this device does not hold — a session kept from
     /// before it joined, or one it left — revokes nothing here: the shortcuts
     /// it shows are proven by what it does hold, and a call it can no longer
     /// make is refused elsewhere.
@@ -835,7 +835,7 @@ impl WorkspaceAuthority for DeskAuthority {
         self.journal.clone()
     }
 
-    /// Every write the broker's checks read here is announced: the desk on [`Self::publish`],
+    /// Every write the broker's checks read here is announced: the session on [`Self::publish`],
     /// the workspaces' governance by their owner, the device fleet and identity registry by
     /// their stores, and an agent's run ending by its door.
     fn announces_policy_changes(&self) -> bool {
@@ -892,19 +892,19 @@ impl WorkspaceMemberships for SessionMemberships {
 /// The grants a person gives an app for another app's action, written into
 /// the workspace's governance by this session's engine, as every other change
 /// of its people is: signed with this device's key and admitted by every
-/// device of the workspace. A grant is in force once the desk the broker
+/// device of the workspace. A grant is in force once the session the broker
 /// decides against carries it.
 pub(crate) struct SessionGrants {
     engine: std::sync::Arc<crate::engine::Engine>,
-    desk: std::sync::Arc<DeskAuthority>,
+    layout: std::sync::Arc<LayoutAuthority>,
 }
 
 impl SessionGrants {
     pub(crate) const fn new(
         engine: std::sync::Arc<crate::engine::Engine>,
-        desk: std::sync::Arc<DeskAuthority>,
+        layout: std::sync::Arc<LayoutAuthority>,
     ) -> Self {
-        Self { engine, desk }
+        Self { engine, layout }
     }
 
     /// Write `change` into `workspace`'s governance as this device.
@@ -939,7 +939,7 @@ impl SessionGrants {
         })
     }
 
-    /// Whether the desk the broker decides against shows `grant` in
+    /// Whether the layout the broker decides against shows `grant` in
     /// `workspace`.
     fn shown(
         tree: &tilo_desktop_model::Layout,
@@ -955,7 +955,7 @@ impl tilo_action_broker::services::WorkspaceGrants for SessionGrants {
     /// The person at this device records where its engine holds the
     /// workspace's governance and the workspace lets this device administer it.
     fn may_record(&self, workspace: &str, person: &str) -> bool {
-        let names = &self.desk.names;
+        let names = &self.layout.names;
         (names.person == person || names.earlier.iter().any(|earlier| earlier == person))
             && tilo_desktop_model::WorkspaceId::parse(workspace)
                 .is_some_and(|id| self.engine.holds(id))
@@ -971,10 +971,12 @@ impl tilo_action_broker::services::WorkspaceGrants for SessionGrants {
         let workspace = request.workspace.clone();
         let id = grant.id.clone();
         let committed = self.commit(&workspace, tilo_action_policy::Change::Grant(grant));
-        let desk = std::sync::Arc::clone(&self.desk);
+        let layout = std::sync::Arc::clone(&self.layout);
         Box::pin(async move {
             committed.await?;
-            desk.until(|tree| Self::shown(tree, &workspace, &id)).await;
+            layout
+                .until(|tree| Self::shown(tree, &workspace, &id))
+                .await;
             Ok(id.as_str().to_owned())
         })
     }
@@ -1040,7 +1042,7 @@ fn seams(
         native_media,
         content,
         records,
-        desk,
+        layout,
         shortcuts,
         activity,
         turns,
@@ -1067,10 +1069,10 @@ fn seams(
     // What each window this session runs shows, kept with its launches: read
     // by the seam a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
-    // The desk decides who may administer a workspace's identity, and the
+    // The session decides who may administer a workspace's identity, and the
     // fabric is where pairing reaches the person's other devices.
-    let desk_authority = std::sync::Arc::clone(&desk);
-    let grants_desk = std::sync::Arc::clone(&desk);
+    let layout_authority = std::sync::Arc::clone(&layout);
+    let grants_layout = std::sync::Arc::clone(&layout);
     let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
@@ -1085,7 +1087,7 @@ fn seams(
         settings.as_ref().map(|source| {
             std::sync::Arc::new(crate::display_control::DisplayControl::native(
                 std::sync::Arc::clone(source),
-                &desk,
+                &layout,
             )) as std::sync::Arc<dyn DisplayControlServices>
         });
     // The answers the person gave for one app using another app's action,
@@ -1176,23 +1178,23 @@ fn seams(
             "an agent's change to a record goes through the record's own app, not through \
              a record origin this session keeps",
         ),
-        // The desk's own migration is the one reader of what an older
+        // The session's own migration is the one reader of what an older
         // session journaled, and it imports it once into this session's
         // workspaces.
         legacy_workspace: Seam::unserved(
-            "older workspaces are imported once by the desk's migration, and no app feeds \
+            "older workspaces are imported once by the session's migration, and no app feeds \
              their journal through this session",
         ),
         launcher: Seam::served(launches),
         // The resources this session's services publish, which the apps it
         // admits read, watch and invoke.
         published: Seam::served(link),
-        // A workspace's grants are the desk's: the person gives them on its
-        // sheets, and the broker decides against the desk it was started with.
+        // A workspace's grants are the session's: the person gives them on its
+        // sheets, and the broker decides against the session it was started with.
         workspace_governance: Seam::unserved(
-            "workspace grants are given in the desk's own sheets, not by an app",
+            "workspace grants are given in the session's own sheets, not by an app",
         ),
-        // A shortcut a person saves lands on the desk, and a shortcut's run
+        // A shortcut a person saves lands on the shell, and a shortcut's run
         // executes on the session's runtime.
         shortcut_library: Seam::served(shortcut_library),
         // The device's shortcut catalogue, as the shortcut guide and
@@ -1222,7 +1224,7 @@ fn seams(
                 .map(|content| content.puts() as std::sync::Arc<dyn ContentStoreServices>),
         ),
         workspace_control: Seam::unserved(
-            "the person creates and joins workspaces from the desk, not on an app's behalf",
+            "the person creates and joins workspaces from the session, not on an app's behalf",
         ),
         realtime: Seam::unserved("this session serves no realtime continuity"),
         // The speaker groups of the fabric this session runs on.
@@ -1280,7 +1282,7 @@ fn seams(
         workspace_grants: Seam::when(engine.clone().map(|engine| {
             std::sync::Arc::new(SessionGrants::new(
                 engine,
-                std::sync::Arc::clone(&grants_desk),
+                std::sync::Arc::clone(&grants_layout),
             )) as std::sync::Arc<dyn tilo_action_broker::services::WorkspaceGrants>
         })),
         launchable_catalogue: Seam::when(launchable_catalogue),
@@ -1323,12 +1325,12 @@ fn seams(
                 vec![
                     activity as std::sync::Arc<dyn HostStepServices>,
                     std::sync::Arc::new(crate::pairing::BrokerDoor {
-                        desk: std::sync::Arc::clone(&desk_authority),
+                        layout: std::sync::Arc::clone(&layout_authority),
                         fabric: steps_fabric,
                         pairing: crate::pairing::Pairing::session(),
                     }),
                     std::sync::Arc::new(crate::identity_admin::BrokerDoor {
-                        desk: desk_authority,
+                        layout: layout_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
                         hosting,
                         engine: engine.clone(),
@@ -1438,9 +1440,9 @@ pub(crate) struct Plane {
     /// The socket the broker answers on: what the launcher hands an app, and
     /// what a surface app connects for itself.
     pub(crate) path: std::path::PathBuf,
-    /// The desk the apps' broker decides against, which the loop keeps level
-    /// with the desk it shows.
-    pub(crate) desk: std::sync::Arc<DeskAuthority>,
+    /// The session the apps' broker decides against, which the loop keeps level
+    /// with the session it shows.
+    pub(crate) layout: std::sync::Arc<LayoutAuthority>,
     /// Held so the broker's thread ends and its socket is unlinked with the
     /// session.
     pub(crate) broker: tilo_action_broker::collab_broker::BrokerHandle,
@@ -1673,8 +1675,8 @@ mod tests {
         )
     }
 
-    /// What a session with no index and no desk of its own hands the broker:
-    /// the services under test, and the empty desk it decides against.
+    /// What a session with no index and no session of its own hands the broker:
+    /// the services under test, and the empty session it decides against.
     fn hosted(content: Option<std::sync::Arc<AppContentIndex>>) -> Hosted {
         hosted_with(content, Lists::default())
     }
@@ -1686,7 +1688,7 @@ mod tests {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
             content,
             records: None,
-            desk: std::sync::Arc::new(DeskAuthority::new(
+            layout: std::sync::Arc::new(LayoutAuthority::new(
                 tilo_desktop_model::Layout::default(),
                 crate::engine::revocations_of(None),
                 None,
@@ -1977,7 +1979,7 @@ mod tests {
                 held_identity(),
                 Some(state.path()),
                 std::iter::empty(),
-                crate::platform::custody::of_this_desk(),
+                crate::platform::custody::of_this_session(),
             )
             .expect("this device's engine opens"),
         );

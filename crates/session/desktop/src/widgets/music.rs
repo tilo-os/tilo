@@ -1,4 +1,4 @@
-//! The music desk widget's content: what plays now, as the session reads it.
+//! The music Desktop widget's content: what plays now, as the session reads it.
 //! The reading is not made here. The session takes it from the one now-playing reading the panel
 //! and the lock screen also show ([`NowPlaying`], made from the audio service's reading of the
 //! players) and keeps it here every frame, so the widget is a view of that one reading and never a
@@ -17,11 +17,11 @@ pub use tilo_desktop_surface::host::contract::MusicAction;
 /// The reading the widget draws: the session writes it every frame, and the layer reads it as it
 /// paints.
 #[derive(Clone, Default)]
-pub struct DeskMusic {
+pub struct Music {
     playing: Rc<RefCell<Option<NowPlaying>>>,
 }
 
-impl DeskMusic {
+impl Music {
     /// Show `playing` now, or nothing.
     pub fn set(&self, playing: Option<NowPlaying>) {
         replace(&self.playing, playing);

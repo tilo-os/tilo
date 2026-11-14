@@ -66,24 +66,24 @@ workspaces-app-name = Workspaces
 workspaces-unreadable-title = Your workspaces could not be read
 workspaces-unreadable-body = The list of your own workspaces that this computer kept could not be read, so it starts the list again. Nothing was removed: your workspaces are still on this computer and on your other devices.
 
-## The desk this device saved could not be opened: the person's own desk is
+## The shell this device saved could not be opened: the person's own shell is
 ## still on disk and this session starts empty, so it is never written over.
 
 ## The shell's own record this device kept could not be opened: the person's
-## desk choices are still on disk and this session starts from the shell's
+## shell choices are still on disk and this session starts from the shell's
 ## defaults, so their own record is never written over.
-desk-record-not-opened-app-name = Desktop
-desk-record-not-opened-title = Your desk settings were not opened
-desk-record-not-opened-detail = They could not be read this time ({ $reason }). They have not been changed: this session starts from the shell's defaults and keeps nothing of them, so your own settings cannot be written over.
+shell-record-not-opened-app-name = Desktop
+shell-record-not-opened-title = Your shell settings were not opened
+shell-record-not-opened-detail = They could not be read this time ({ $reason }). They have not been changed: this session starts from the shell's defaults and keeps nothing of them, so your own settings cannot be written over.
 
-## The desk from the version before this one, which was not brought over: it
-## is still on disk, untouched, and this session has its own desk instead.
+## The shell from the version before this one, which was not brought over: it
+## is still on disk, untouched, and this session has its own shell instead.
 
 ## A window this device left open whose app did not come back.
-desk-window-not-installed = { $app } is not installed on this machine
-desk-window-would-not-start = { $app } could not be started
-desk-window-did-not-open = { $app } started but did not open a window
-desk-window-waits-for-host = { $app } is waiting for { $host } to take this device in
+shell-window-not-installed = { $app } is not installed on this machine
+shell-window-would-not-start = { $app } could not be started
+shell-window-did-not-open = { $app } started but did not open a window
+shell-window-waits-for-host = { $app } is waiting for { $host } to take this device in
 
 ## A window the person's record kept whose saved state this version cannot
 ## read: its tab says why the window is not here instead of the place being
@@ -116,15 +116,15 @@ refusal-reason-conflict = another change holds its place
 refusal-reason-full = there is no room left there
 refusal-reason-other = the reason is not known
 
-# What a person changed on a workspace's shared desk did not arrive there: the
+# What a person changed on a workspace's shared shell did not arrive there: the
 # change stays on this device.
-desk-not-shared-app = Shared desk
-desk-not-shared-title = { $workspace } did not take your window arrangement
+shell-not-shared-app = Shared shell
+shell-not-shared-title = { $workspace } did not take your window arrangement
 # The same of a workspace nobody named, and of one this device left before the notice came: there
 # is no name to say.
-desk-not-shared-title-unnamed = A workspace with no name did not take your window arrangement
-desk-not-shared-title-gone = A workspace this device is no longer in did not take your window arrangement
-desk-not-shared-body = It stays on this device: { $reason }.
+shell-not-shared-title-unnamed = A workspace with no name did not take your window arrangement
+shell-not-shared-title-gone = A workspace this device is no longer in did not take your window arrangement
+shell-not-shared-body = It stays on this device: { $reason }.
 
 # A collaborator's device speaks another Tilo protocol version: the two work
 # together again once one of them updates.
@@ -195,7 +195,7 @@ session-display-builtin = Built-in display
 session-display-external = External display
 session-clipboard = Clipboard
 session-quick-settings = Quick Settings
-session-desk-styles = Desk styles
+session-shell-styles = Shell styles
 session-devices = Devices
 session-devices-press = Press one of your devices
 session-bluetooth-app = Bluetooth
@@ -298,9 +298,9 @@ status-wifi-named = Wi-Fi: { $name }
 status-wired = Wired
 status-wired-named = Wired: { $name }
 
-## The desk waits while this device's certificate is outside its validity at
+## The shell waits while this device's certificate is outside its validity at
 ## the clock's reading: the identity on disk is intact, and the screen says
-## what the clock must reach before the desk opens by itself.
+## what the clock must reach before the shell opens by itself.
 identity-clock-wait-title = Waiting for the clock
 identity-clock-wait-body = Your Tilo identity is safe. The desktop opens once this computer's date and time are right.
 identity-clock-wait-not-yet-valid = Your Tilo identity is safe. Its certificate starts at { $valid }, and this computer's clock reads { $now }. The desktop opens by itself once the clock passes that, or you set the date and time.
@@ -321,10 +321,10 @@ paste-undone-title = The last paste did not finish
 paste-undone-body = { $landed } of { $total } were already pasted. Those are kept; the rest is where it was.
 paste-undone-trouble = { $landed } of { $total } were already pasted. Those are kept; the rest could not be put back yet: { $reason }
 
-## What the desk's own rows say: the question on the person's avatar, a running
+## What the shell's own rows say: the question on the person's avatar, a running
 ## application's tray item, and what the roster is called to assistive technology.
-session-desk-answer-ask = Answer
-session-desk-ask-later = Ask me later
+session-answer-ask = Answer
+session-ask-later = Ask me later
 session-tray-open = Open
 session-agents-stop = Stop
 session-people = People
@@ -400,9 +400,9 @@ capture-target-region = An area of the desktop
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistant
 
-desk-style-failed-app-name = Desk
-desk-style-failed-title = Your desk style could not be shown
-desk-style-failed-body = { $style } could not be shown, so the desk shows Strips. Your choice is kept.
+style-failed-app-name = Shell
+style-failed-title = Your style could not be shown
+style-failed-body = { $style } could not be shown, so the shell shows Strips. Your choice is kept.
 
 ## A step an agent takes inside a conversation, asking the person before it
 ## runs. The sheet shows the step's draft; confirming allows this one step.
@@ -498,7 +498,7 @@ session-action-retry = Look for it again
 
 ## Actions
 
-so-tilo-session-desk-switch-workspace = Switch to workspace
+so-tilo-session-switch-workspace = Switch to workspace
 so-tilo-session-invite-invitations = List invitations
 so-tilo-session-invite-issue-invitation = Make an invitation link
 so-tilo-session-invite-show-invite = Invite people

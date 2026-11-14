@@ -23,7 +23,7 @@ type Administrator = dyn Fn(&str, &str) -> Result<bool, String> + Send + Sync;
 /// The displays' state as the compositor published it.
 type Observed = dyn Fn() -> Option<DisplayHardwareSnapshot> + Send + Sync;
 
-/// The session's display service over its own settings document, its identity store and the desk it
+/// The session's display service over its own settings document, its identity store and the shell it
 /// shows.
 pub(crate) struct DisplayControl {
     source: Arc<dyn SettingsSource>,
@@ -33,13 +33,13 @@ pub(crate) struct DisplayControl {
 }
 
 impl DisplayControl {
-    /// The session's own answers: what the identity store says this device is, and what the desk
+    /// The session's own answers: what the identity store says this device is, and what the shell
     /// says the person may do in the workspace.
     pub(crate) fn native(
         source: Arc<dyn SettingsSource>,
-        desk: &Arc<crate::plane::DeskAuthority>,
+        shell: &Arc<crate::plane::LayoutAuthority>,
     ) -> Self {
-        let governing = Arc::clone(desk);
+        let governing = Arc::clone(shell);
         Self {
             source,
             certificate: Arc::new(tilo_identity_authority::device_certificate),

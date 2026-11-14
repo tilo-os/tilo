@@ -1,7 +1,7 @@
 //! A window whose app draws its own page, shared with the workspace. Nothing of such a window is
 //! captured: its app hands the session the page as a display list, the workspace's live plane
 //! carries it on a track of its own, and the device showing the window draws it in the tab its
-//! desk lists the window in. The test plays the app: it says its window runs a page engine, and
+//! shell lists the window in. The test plays the app: it says its window runs a page engine, and
 //! hands over what a page engine captured of a page. Where a test is about what the session and
 //! the app say to each other, the app speaks on a connection of its own, made as the launcher
 //! makes an app's first window's ([`App`]).
@@ -28,7 +28,7 @@ const TOP: &str =
 /// How long one link of the page's way may take on a machine busy with the rest of the suite.
 const LINK: Duration = Duration::from_secs(120);
 
-/// How long the app may wait to be asked for its page once a desk asks the plane for it. The ask
+/// How long the app may wait to be asked for its page once a shell asks the plane for it. The ask
 /// is one pass of the session; this is what a machine busy with the rest of the suite may take.
 const ASKED: Duration = Duration::from_secs(30);
 
@@ -73,7 +73,7 @@ fn page_objects_of(snapshot: &str) -> Vec<(bool, Vec<u8>)> {
 
 /// The app of the shared window on its own connection to the session, made before the app started
 /// as the launcher makes every app's first window's: the connection names no tab, and the session
-/// finds the window it speaks for on the desk.
+/// finds the window it speaks for on the shell.
 struct App {
     stream: UnixStream,
     /// What arrived and is not a whole frame yet.
@@ -220,7 +220,7 @@ struct Two {
     /// The client whose window the host shares.
     window: Option<TestClient>,
     viewer: Box<Member>,
-    /// The tab the window stands in, on both desks.
+    /// The tab the window stands in, on both sessions.
     tab: u64,
     /// What the app hands over of its page.
     page: Vec<(bool, Vec<u8>)>,
@@ -249,7 +249,7 @@ impl Two {
         let salt = tilo_desktop_model::ids::device_salt_of_key(device(seeds[0]).as_bytes());
         let mut host = Box::new(member_minting_under(
             seeds[0],
-            desk(
+            shell(
                 TileContent::LocalApp {
                     app_id: APP.to_owned(),
                     label: "Notes".to_owned(),
@@ -419,7 +419,7 @@ impl Two {
             .cloned()
     }
 
-    /// What the tile of the window publishes on the watching desk, once the tab holds one.
+    /// What the tile of the window publishes on the watching shell, once the tab holds one.
     fn tile(&self) -> Option<PeerRead> {
         self.viewer.session.handle().peer_surface_read(self.tab)
     }
@@ -462,13 +462,13 @@ impl Two {
     }
 }
 
-/// The page of a shared window is drawn on the device watching it, in the tab its desk lists the
+/// The page of a shared window is drawn on the device watching it, in the tab its shell lists the
 /// window in. Every link of its way is checked in order: the sharing device announces the page,
-/// the watching desk mounts its tile and asks the plane for the page's track, the app is asked for
+/// the watching shell mounts its tile and asks the plane for the page's track, the app is asked for
 /// the page and hands it over, the plane carries it, and the tile leaves its arriving card for the
 /// page it now holds.
 #[test]
-fn a_shared_page_is_drawn_in_the_tab_the_watching_desk_lists_its_window_in() {
+fn a_shared_page_is_drawn_in_the_tab_the_watching_shell_lists_its_window_in() {
     let mut two = Two::sharing([0xc1, 0xc2]);
     let tab = two.tab;
     let host_key = hex::encode(device(0xc1).as_bytes());
@@ -487,7 +487,7 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_desk_lists_its_window_in() {
     assert_eq!(
         two.viewer.session.handle().peer_surface_tabs(),
         vec![tab],
-        "the tile stands in the tab the desk lists the window in"
+        "the tile stands in the tab the shell lists the window in"
     );
     let arriving = two.tile().expect("the tab holds the window's tile");
     assert!(arriving.page, "the tile draws the window's page");
@@ -497,7 +497,7 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_desk_lists_its_window_in() {
         "nothing of the page was handed over yet"
     );
 
-    // Asked for: the watching desk asks the workspace's live plane for the page's track, and the
+    // Asked for: the watching shell asks the workspace's live plane for the page's track, and the
     // sharing session reads that the page is wanted, which is when it asks the app for it.
     assert!(
         two.within(LINK, false, |two| {
@@ -511,7 +511,7 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_desk_lists_its_window_in() {
     );
 
     // Sent, received, handed to the tile and drawn: the app hands its page over, and the tile on
-    // the watching desk holds it.
+    // the watching shell holds it.
     let before = two.opened();
     let drawn = two.within(LINK, true, |two| {
         two.tile()
@@ -532,15 +532,15 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_desk_lists_its_window_in() {
     assert_eq!(
         two.viewer.session.handle().peer_surface_tabs(),
         vec![tab],
-        "the page is drawn in the tab the desk lists the window in"
+        "the page is drawn in the tab the shell lists the window in"
     );
     assert_eq!(
         hosted(&two.viewer.session, tab).as_deref(),
         Some(host_key.as_str()),
-        "which the desk still lists as a window that runs on its host"
+        "which the shell still lists as a window that runs on its host"
     );
 
-    // What the person at the watching desk is shown, as anything that reads a desk by the names
+    // What the person at the watching shell is shown, as anything that reads a shell by the names
     // on it reads it: the text of the page, in the tab that draws it.
     let named = |two: &Two| -> Vec<String> {
         two.viewer
@@ -557,7 +557,7 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_desk_lists_its_window_in() {
                 .iter()
                 .all(|shown| named.iter().any(|name| name.contains(shown)))
         }),
-        "the watching desk does not name the text of the page it draws: {:?}",
+        "the watching shell does not name the text of the page it draws: {:?}",
         named(&two)
     );
 }
@@ -665,15 +665,15 @@ fn a_page_that_only_started_is_not_said_to_be_pictured_or_sent() {
 }
 
 /// The app of a shared window is asked for its page where it listens: on the connection its
-/// launcher made for its window, which names no tab. When a desk asks the plane for the page, the
+/// launcher made for its window, which names no tab. When a shell asks the plane for the page, the
 /// session writes the ask for a whole frame to that connection; what the app answers there is
-/// published, and the watching desk draws it. Nothing here hands the session a page behind the
+/// published, and the watching shell draws it. Nothing here hands the session a page behind the
 /// app's back.
 #[test]
 fn the_app_of_a_shared_page_is_asked_for_it_on_its_own_connection() {
     let mut two = Two::sharing_from_its_app([0xc5, 0xc6]);
 
-    // Announced and asked for: the watching desk asks the plane for the page's track, and the
+    // Announced and asked for: the watching shell asks the plane for the page's track, and the
     // sharing session reads that the page is wanted.
     assert!(
         two.within(LINK, false, |two| {
@@ -687,20 +687,20 @@ fn the_app_of_a_shared_page_is_asked_for_it_on_its_own_connection() {
     let asked = two.within(ASKED, false, Two::app_asked);
     assert!(
         asked,
-        "a desk asks the plane for the window's page, and the session never asked the window's \
+        "a shell asks the plane for the window's page, and the session never asked the window's \
          app for it on the app's connection, which heard {:?}:{}",
         two.app.as_ref().map(App::told),
         two.said()
     );
 
-    // It answers there, and the watching desk draws what it handed over.
+    // It answers there, and the watching shell draws what it handed over.
     two.app_hands_over();
     assert!(
         two.within(LINK, false, |two| {
             two.tile()
                 .is_some_and(|tile| tile.standing == Standing::Pictured)
         }),
-        "the app handed its page over on its connection, and the watching desk's tile still \
+        "the app handed its page over on its connection, and the watching shell's tile still \
          shows the arriving card:{}",
         two.said()
     );
@@ -740,7 +740,7 @@ fn a_shared_page_is_said_to_be_pictured_in_the_pass_its_tile_takes_it() {
     );
     assert!(
         drawn,
-        "the page never reached the watching desk's tile:{}",
+        "the page never reached the watching shell's tile:{}",
         two.said()
     );
 }
@@ -889,10 +889,10 @@ fn large_whole_frame() -> Vec<u8> {
 
 /// A page whose whole frame is larger than one message of the app's connection carries arrives:
 /// the app hands it over in parts on its connection, the session joins them and publishes the
-/// page as one object, and the watching desk draws it. Parts that do not follow each other are
+/// page as one object, and the watching shell draws it. Parts that do not follow each other are
 /// published as nothing, and the app is asked for the page again.
 #[test]
-fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_desk() {
+fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_shell() {
     let mut two = Two::sharing_from_its_app([0xd1, 0xd2]);
     let large = large_whole_frame();
     assert!(
@@ -942,7 +942,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_desk() {
     assert_eq!(
         two.tile().map(|tile| tile.standing),
         Some(Standing::Started),
-        "and the watching desk draws nothing of them"
+        "and the watching shell draws nothing of them"
     );
 
     // The whole payload, in its parts, and the images its page names.
@@ -962,7 +962,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_desk() {
             two.tile()
                 .is_some_and(|tile| tile.standing == Standing::Pictured)
         }),
-        "a page of {} bytes was handed over in parts, and the watching desk's tile still shows \
+        "a page of {} bytes was handed over in parts, and the watching shell's tile still shows \
          the arriving card; the app was asked {} times:{}",
         large.len(),
         asks(&two),
@@ -976,7 +976,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_desk() {
         "the sharing device never said it sends the window:{}",
         two.said()
     );
-    // The desk builds the tile again around the page it now holds, and names its text.
+    // The shell builds the tile again around the page it now holds, and names its text.
     let named = |two: &Two| -> Vec<String> {
         two.viewer
             .session
@@ -989,7 +989,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_desk() {
         two.within(LINK, false, |two| {
             named(two).iter().any(|name| name.contains("Paint stream"))
         }),
-        "the watching desk does not name the text of the page it draws: {:?}",
+        "the watching shell does not name the text of the page it draws: {:?}",
         named(&two)
     );
 }
@@ -1110,7 +1110,7 @@ fn texts(receiver: &Receiver) -> Vec<String> {
 
 /// A device of the workspace that only watches: its plane, asked for the pages of some of the
 /// sharing device's windows, and the page it holds of each, joined from what the plane brought
-/// on that window's track. What a desk watching a window is shown is what its track carries.
+/// on that window's track. What a shell watching a window is shown is what its track carries.
 struct Watcher {
     plane: Arc<Plane>,
     host: [u8; 32],
@@ -1183,7 +1183,7 @@ impl TwoWindows {
         let salt = tilo_desktop_model::ids::device_salt_of_key(device(seeds[0]).as_bytes());
         let mut host = Box::new(member_minting_under(
             seeds[0],
-            desk(
+            shell(
                 TileContent::LocalApp {
                     app_id: APP.to_owned(),
                     label: "Notes".to_owned(),
@@ -1207,7 +1207,7 @@ impl TwoWindows {
             .unwrap_or((300, 200));
         second.show(w, h, [40, 40, 200, 255]);
         clients.push(second);
-        // The desk gives each window of the app a tab of its own.
+        // The shell gives each window of the app a tab of its own.
         let deadline = Instant::now() + Duration::from_secs(60);
         let tabs = loop {
             for client in &mut clients {
@@ -1220,7 +1220,7 @@ impl TwoWindows {
             }
             assert!(
                 Instant::now() < deadline,
-                "two windows of the app are open, and the desk shows them in the tabs {tabs:?}"
+                "two windows of the app are open, and the shell shows them in the tabs {tabs:?}"
             );
         };
         let tree = host.session.handle().read(Clone::clone);
@@ -1319,7 +1319,7 @@ impl TwoWindows {
     }
 }
 
-/// The tabs of the desk in which a window of `app` stands, in order.
+/// The tabs of the shell in which a window of `app` stands, in order.
 fn windows_of(session: &mut Session, app: &str) -> Vec<u64> {
     let tree = session.handle().read(Clone::clone);
     let listed: Vec<u64> = tree
@@ -1356,7 +1356,7 @@ fn each_window_of_an_app_is_asked_for_its_own_page_and_published_as_itself() {
     let other = page_objects_of(&TOP.replace("Alpha", "Omega"));
 
     // The first window's app says it draws a page, on a connection that names no tab, while two
-    // windows of the app stand on the desk: which of them speaks is not known, so the page is
+    // windows of the app stand on the shell: which of them speaks is not known, so the page is
     // offered as neither's. Before, it was offered as the page of the window in front.
     let mut first = App::launched(&two.host.session);
     first.say(&FloatingSurfaceClientMessage::PaintCapable);
@@ -1484,7 +1484,7 @@ fn the_page_of_a_window_nobody_shared_reaches_nobody_who_asks_for_it() {
     let salt = tilo_desktop_model::ids::device_salt_of_key(device(0xd8).as_bytes());
     let mut host = Box::new(member_minting_under(
         0xd8,
-        desk(
+        shell(
             TileContent::LocalApp {
                 app_id: APP.to_owned(),
                 label: "Notes".to_owned(),
@@ -1554,7 +1554,7 @@ fn the_page_of_a_window_nobody_shared_reaches_nobody_who_asks_for_it() {
     );
 }
 
-/// Whether `session`'s desk names the share of the window in `tab` in its workspace's governance.
+/// Whether `session`'s shell names the share of the window in `tab` in its workspace's governance.
 fn names_the_share(session: &Session, tab: u64) -> bool {
     session.handle().read(|tree| {
         tree.workspaces[0]
@@ -1565,10 +1565,10 @@ fn names_the_share(session: &Session, tab: u64) -> bool {
     })
 }
 
-/// A window's page shared a second time is drawn on the watching desk again. The order is the one
+/// A window's page shared a second time is drawn on the watching shell again. The order is the one
 /// two machines took: the window is shared and drawn there, its share is stopped, the tab that
 /// lists the window says it is not shared, and the window is shared again. The second share is
-/// announced in the very bytes of the first, and the watching desk takes that announcement as it
+/// announced in the very bytes of the first, and the watching shell takes that announcement as it
 /// took the first: it asks the plane for the page again and draws it. Between two machines the
 /// second announcement was dropped on its way as a copy of the first, which is the network's to
 /// carry and is tested there; here the test carries what the devices say to each other, so this is
@@ -1589,7 +1589,7 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
                 .shared()
                 .is_some_and(|shared| shared["streaming"] == true)
     };
-    // How the watching desk's reading says the window stands while nothing of it is shown.
+    // How the watching shell's reading says the window stands while nothing of it is shown.
     let stands = |two: &Two| -> Option<String> {
         let wanted = two.tab.to_string();
         rows(&shares(&two.viewer.session), "hosted")
@@ -1601,12 +1601,12 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
     // Shared, shown and drawn.
     assert!(
         two.within(LINK, true, drawn),
-        "the page was not drawn on the watching desk the first time it was shared:{}",
+        "the page was not drawn on the watching shell the first time it was shared:{}",
         two.said()
     );
     let first = two.received().expect("the first share's announcement");
 
-    // Stopped: the sharing device names no share, and the watching desk, once the workspace's
+    // Stopped: the sharing device names no share, and the watching shell, once the workspace's
     // governance says so there too, holds nothing of the window, asks the plane for nothing and
     // says in the window's tab that it is not shared.
     two.host
@@ -1633,7 +1633,7 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
                 && two.asked().is_empty()
                 && stands(two).as_deref() == Some("not-shared")
         }),
-        "the watching desk does not say the window is not shared once its share ended: it reads \
+        "the watching shell does not say the window is not shared once its share ended: it reads \
          {:?} and asks the plane for {:?}:{}",
         stands(&two),
         two.asked(),
@@ -1641,12 +1641,12 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
     );
     assert!(
         two.viewer.session.handle().peer_surface_tabs().is_empty(),
-        "no tile of the share that ended is left on the watching desk"
+        "no tile of the share that ended is left on the watching shell"
     );
     assert_eq!(
         hosted(&two.viewer.session, tab).as_deref(),
         Some(host_key.as_str()),
-        "the watching desk still lists the window as one that runs on its host"
+        "the watching shell still lists the window as one that runs on its host"
     );
 
     // Shared again: announced as it was the first time, asked for as its page, and drawn.
@@ -1680,12 +1680,12 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
     }
     assert!(
         two.within(LINK, true, drawn),
-        "the page shared a second time was not drawn on the watching desk:{}",
+        "the page shared a second time was not drawn on the watching shell:{}",
         two.said()
     );
     assert_eq!(
         two.viewer.session.handle().peer_surface_tabs(),
         vec![tab],
-        "the page is drawn in the tab the desk lists the window in"
+        "the page is drawn in the tab the shell lists the window in"
     );
 }

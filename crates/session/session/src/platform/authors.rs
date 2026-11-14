@@ -1,7 +1,7 @@
 //! Who wrote what a host shows: the name and colour presence shows a principal by, and the actors
 //! the host's own mounts write records as.
 //!
-//! A change of a desk or a record names its author by the principal it writes as, never something
+//! A change of a shell or a record names its author by the principal it writes as, never something
 //! to show. A host that knows who that is — its presence roster, the mounts of its own page — names
 //! them; one that does not leaves the change to the history's own naming.
 

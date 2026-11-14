@@ -116,7 +116,7 @@ fn options() -> Options {
     }
 }
 
-/// A session on a device that holds its workspaces, as a person's own device does: the desk it
+/// A session on a device that holds its workspaces, as a person's own device does: the layout it
 /// shows is a workspace's, and what the arrangement does to it is that workspace's layout.
 fn session() -> Session {
     crate::common::headless_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options())
@@ -148,7 +148,7 @@ fn placed(session: &mut Session, key: u64) -> arrangement::PlaceReading {
     )
 }
 
-/// The arrangement the session's desk holds now, as a shell reads it.
+/// The arrangement the session's layout holds now, as a shell reads it.
 fn arrangement(session: &Session) -> arrangement::Reading {
     session.arrangement().borrow().reading()
 }
@@ -472,7 +472,7 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
     let mut session = session();
     step(&mut session);
     let (app, _) = with_mailbox(&mut session);
-    // The workspace in front as a join leaves it: on the desk, holding no row, and with no row in
+    // The workspace in front as a join leaves it: on the shell, holding no row, and with no row in
     // front of it either.
     let workspace = {
         let mut tree = session.handle().read(Clone::clone);
@@ -489,7 +489,7 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
                 .iter()
                 .find(|held| held.id() == workspace_id)
                 .map(tilo_desktop_model::Workspace::id)
-                .expect("the workspace is on the desk")
+                .expect("the workspace is on the layout")
         })
     };
     step(&mut session);
@@ -795,7 +795,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
                 .any(|held| held.record == opened)
         });
     }
-    // Every place's canvas rectangle, as the desk holds it.
+    // Every place's canvas rectangle, as the layout holds it.
     let boxes: Vec<(String, i64, i64, i64, i64)> = arrangement(&session)
         .places
         .iter()

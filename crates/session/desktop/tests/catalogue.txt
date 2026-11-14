@@ -42,7 +42,7 @@ desktop:chrome desktop (Desktop)
   toggle-people Who is here
   workspace-menu Workspace menu
   workspace-settings Workspace settings
-desktop:desk desktop (Windows)
+desktop:shell desktop (Windows)
   choose-search-row Choose a search result
   close-tab Close a window
   focus Focus a window

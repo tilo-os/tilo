@@ -1,4 +1,4 @@
-//! The toolkit's clipboard for the session's own surfaces (the desk's search, its fields, a search
+//! The toolkit's clipboard for the session's own surfaces (the shell's search, its fields, a search
 //! row's Copy): what they copy is the person's copy, as an app's is, and they paste what an app
 //! would. They run on the loop that serves the selection, so a paste never waits on a read: the
 //! loop keeps the selection's text as the history reads it, and a paste asked for during that read
@@ -11,11 +11,11 @@ use tilo_lock::MutexRecover as _;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
 
 #[derive(Clone)]
-pub(crate) struct DeskClipboard {
+pub(crate) struct SurfaceClipboard {
     mirror: Arc<Mutex<Mirror>>,
     /// Wakes the loop to put a copy on the clipboard.
     wake: tilo_service::Wake,
-    /// The desk pastes no primary selection into apps: its own stays in the desk.
+    /// The shell pastes no primary selection into apps: its own stays in the shell.
     primary: Arc<InProcessClipboard>,
 }
 
@@ -26,11 +26,11 @@ struct Mirror {
     reading: bool,
     text: Option<String>,
     waiting: Vec<Sender<Option<String>>>,
-    /// What the desk copied since the loop last took it.
+    /// What the shell copied since the loop last took it.
     copies: Vec<String>,
 }
 
-impl DeskClipboard {
+impl SurfaceClipboard {
     pub(crate) fn new(wake: tilo_service::Wake) -> Self {
         Self {
             mirror: Arc::default(),
@@ -70,7 +70,7 @@ impl DeskClipboard {
     }
 }
 
-impl ClipboardBackend for DeskClipboard {
+impl ClipboardBackend for SurfaceClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         if target == ClipboardTarget::Primary {
             return self.primary.set_text(target, text);
@@ -103,7 +103,7 @@ impl ClipboardBackend for DeskClipboard {
     }
 
     fn name(&self) -> &'static str {
-        "desk"
+        "shell"
     }
 }
 
@@ -113,28 +113,28 @@ mod tests {
 
     #[test]
     fn a_paste_takes_the_selection_once_read_and_a_copy_waits_for_the_loop() {
-        let desk = DeskClipboard::new(Arc::new(|| {}));
-        desk.read(1, Some("first".into()));
+        let shell = SurfaceClipboard::new(Arc::new(|| {}));
+        shell.read(1, Some("first".into()));
         assert_eq!(
-            desk.text(ClipboardTarget::Clipboard).as_deref(),
+            shell.text(ClipboardTarget::Clipboard).as_deref(),
             Some("first")
         );
-        desk.moved(2);
-        assert_eq!(desk.text(ClipboardTarget::Clipboard), None);
-        let pasted = desk.request_text(ClipboardTarget::Clipboard);
-        desk.read(1, Some("first".into()));
+        shell.moved(2);
+        assert_eq!(shell.text(ClipboardTarget::Clipboard), None);
+        let pasted = shell.request_text(ClipboardTarget::Clipboard);
+        shell.read(1, Some("first".into()));
         assert!(
             pasted.try_recv().is_err(),
             "an older selection's read is not this one's"
         );
-        desk.read(2, Some("second".into()));
+        shell.read(2, Some("second".into()));
         assert_eq!(pasted.try_recv().ok().flatten().as_deref(), Some("second"));
 
-        assert!(desk.set_text(ClipboardTarget::Clipboard, "line"));
-        assert!(desk.set_text(ClipboardTarget::Primary, "picked"));
-        assert_eq!(desk.take_copies(), ["line"]);
+        assert!(shell.set_text(ClipboardTarget::Clipboard, "line"));
+        assert!(shell.set_text(ClipboardTarget::Primary, "picked"));
+        assert_eq!(shell.take_copies(), ["line"]);
         assert_eq!(
-            desk.text(ClipboardTarget::Primary).as_deref(),
+            shell.text(ClipboardTarget::Primary).as_deref(),
             Some("picked")
         );
     }

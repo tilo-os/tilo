@@ -507,7 +507,7 @@ fn a_notice_is_told_as_its_producer_wrote_it_wherever_it_came_from() {
     assert_eq!(news.severity, NotificationSeverity::Error);
     assert!(news.machine_wide, "the whole machine's news");
 
-    // A notice says what it is about, and the desk leads with that glyph.
+    // A notice says what it is about, and the shell leads with that glyph.
     role.show(
         &Notice::new("", 1, "You joined Book club", "").about(NotificationIconKind::Workspace),
     );
@@ -689,7 +689,7 @@ fn the_centre_opens_with_what_the_last_session_kept() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// The centre's own resource is what the desk reads and invokes: how many it keeps, and the verbs
+/// The centre's own resource is what the shell reads and invokes: how many it keeps, and the verbs
 /// that dismiss, run, clear and bring back. What people said to this person is personal, so only a
 /// caller the workspace grants reads it.
 #[test]
@@ -824,7 +824,7 @@ fn the_do_not_disturb_switch_is_a_verb_of_the_centre() {
     assert!(rig.bridge.borrow().quiet_status().is_none());
 }
 
-/// While an app presents it holds the machine from going idle, which is how the desk knows the
+/// While an app presents it holds the machine from going idle, which is how the shell knows the
 /// screen is being watched by others: a notification arriving then makes no sound, its banner is
 /// held, and the bar and the centre say why without the person's own Do Not Disturb switch moving.
 #[test]
@@ -1091,8 +1091,8 @@ struct FakeFabric {
 impl FakeFabric {
     /// This desktop, with `laptop` as the person's other device online.
     fn new(permitted: bool) -> Arc<Self> {
-        let Ok(local) = DeviceId::new("desk".to_owned()) else {
-            panic!("desk is a device id");
+        let Ok(local) = DeviceId::new("session".to_owned()) else {
+            panic!("session is a device id");
         };
         let Ok(laptop) = DeviceId::new("laptop".to_owned()) else {
             panic!("laptop is a device id");
@@ -1134,7 +1134,7 @@ impl crate::platform::fabric::FabricLink for FakeFabric {
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
-        Some((self.local.clone(), "Desk".to_owned()))
+        Some((self.local.clone(), "Session".to_owned()))
     }
 
     fn try_send_personal_fabric_action(
@@ -1507,10 +1507,10 @@ fn an_expired_projection_is_never_shown() {
     assert!(rig.desktop.log().active().is_empty());
 }
 
-/// A collaborator's device at another protocol version reaches the desk as an ordinary banner
+/// A collaborator's device at another protocol version reaches the shell as an ordinary banner
 /// naming it: the person reads what to update, not an operator's log line.
 #[test]
-fn a_device_on_another_version_is_named_on_the_desk() {
+fn a_device_on_another_version_is_named_on_the_shell() {
     let rig = rig();
     let mismatch = crate::network::VersionMismatch {
         endpoint: "zpeerexample".into(),
@@ -1525,7 +1525,7 @@ fn a_device_on_another_version_is_named_on_the_desk() {
         ));
     rig.step();
     let feed = rig.feed();
-    assert_eq!(feed.banners.len(), 1, "it is a banner over the desk");
+    assert_eq!(feed.banners.len(), 1, "it is a banner over the session");
     let banner = &feed.banners[0].notification;
     assert!(
         banner.title.contains("Framework 16") && banner.title.contains("newer Tilo"),

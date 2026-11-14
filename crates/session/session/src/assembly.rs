@@ -1,4 +1,4 @@
-//! The session's state between frames, as every host runs it: what its roles keep — the desk and
+//! The session's state between frames, as every host runs it: what its roles keep — the session and
 //! the arrangement it holds, the records, the people, what search reads, the notices and the
 //! workspaces' handles — beside the effects a host provides, which only its own host names: the
 //! compositor and the services of a Linux login (`platform::session`), the page's own on the web.
@@ -50,11 +50,11 @@ pub(crate) struct Shared {
     pub(crate) handle: DesktopHandle,
     #[cfg(target_os = "linux")]
     pub(crate) desktop: crate::platform::surfaces::DesktopHost,
-    /// The workspace's activity: the desk's changes, and the records its
+    /// The workspace's activity: the session's changes, and the records its
     /// apps keep.
     #[cfg(target_os = "linux")]
     pub(crate) activity: crate::activity::Activity,
-    /// Who sits here, as the desk's rules and the workspaces' governance
+    /// Who sits here, as the session's rules and the workspaces' governance
     /// name them.
     pub(crate) person: String,
     /// The ids they went by before this device had an identity, which their
@@ -65,23 +65,23 @@ pub(crate) struct Shared {
     /// The apps the person opens, when this session starts them.
     #[cfg(target_os = "linux")]
     pub(crate) launch: Option<Rc<crate::apps::Apps>>,
-    /// This device's app lists, as last read: what the desk offers a card for, and what opening
+    /// This device's app lists, as last read: what the session offers a card for, and what opening
     /// one of its verbs finds.
     #[cfg(target_os = "linux")]
     pub(crate) lists: crate::lists::Lists,
     /// The windows this device left open, asked for again one at a time into
     /// the tabs they were in.
     #[cfg(target_os = "linux")]
-    pub(crate) restore: RefCell<crate::desk_restore::Restore>,
+    pub(crate) restore: RefCell<crate::restore::Restore>,
     /// The drives the person plugs in, when this session watches them.
     #[cfg(target_os = "linux")]
     pub(crate) drives: Option<Rc<crate::drives::Drives>>,
-    /// What the desk and the chrome asked of the session.
+    /// What the session and the chrome asked of the session.
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// What the shell's send keys asked for, waiting for the pass that asks
-    /// the window in front to open its box. A key can arrive while the desk is
+    /// the window in front to open its box. A key can arrive while the session is
     /// between two of its own frames, so the window it was over is named then,
-    /// by the desk, and never at the keypress.
+    /// by the session, and never at the keypress.
     #[cfg(target_os = "linux")]
     pub(crate) box_ask: Cell<Option<BoxAsk>>,
     #[cfg(target_os = "linux")]
@@ -106,11 +106,11 @@ pub(crate) struct Shared {
     /// and the rest, and which of them holds the keyboard.
     pub(crate) overlays: Overlays,
     /// The two stacks the surfaces stand in, as one: what the shell's views
-    /// and the desk's own popovers open through, so one of them closes the
+    /// and the session's own popovers open through, so one of them closes the
     /// others.
     #[cfg(target_os = "linux")]
-    pub(crate) surfaces: crate::desk_resource::Surfaces,
-    /// Alt+Tab's panel, shared by the desk's walk (which sets it), the chrome
+    pub(crate) surfaces: crate::device_lists::Surfaces,
+    /// Alt+Tab's panel, shared by the session's walk (which sets it), the chrome
     /// (which draws it) and the compositor (which pictures its windows).
     pub(crate) switcher: tilo_desktop::window_switcher::Switcher,
     /// Every hosted surface's and service's published side: the session's
@@ -124,7 +124,7 @@ pub(crate) struct Shared {
     /// Super alone, as the compositor reads it: the search a tap opens and
     /// the keys a hold shows, which the pass answers.
     pub(crate) super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>,
-    /// The keys a hold shows, which the chrome draws over the desk.
+    /// The keys a hold shows, which the chrome draws over the shell.
     pub(crate) super_peek: tilo_desktop::super_peek::SuperPeek,
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
@@ -138,7 +138,7 @@ pub(crate) struct Shared {
     pub(crate) waiting: RefCell<Vec<crate::platform::keys::PendingReadout>>,
     /// What the services last published of the machine: its connection, its
     /// sound and capture uses, its charge and what plays. The bar's status
-    /// cluster, the lock screen and the desk read it.
+    /// cluster, the lock screen and the session read it.
     pub(crate) readings: crate::status::Shared,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
@@ -170,7 +170,7 @@ pub(crate) struct Shared {
     /// conversations — as the workspace holds them: replicated with the engine as either moves.
     #[cfg(target_os = "linux")]
     pub(crate) records: crate::engine_records::EngineRecords,
-    /// The agents the person admitted at its MCP server, as the desk and the bar show them.
+    /// The agents the person admitted at its MCP server, as the session and the bar show them.
     #[cfg(target_os = "linux")]
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
     /// It runs in a window of a desktop it did not start (see
@@ -204,8 +204,8 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) keyboard_and_pointer: Option<std::sync::Arc<crate::shared_input::SharedInput>>,
     pub(crate) wake_handle: tilo_service::Wake,
-    /// What plays, as the desk's music widget shows it.
-    pub(crate) music: tilo_desktop::desk_widgets::DeskMusic,
+    /// What plays, as the session's music widget shows it.
+    pub(crate) music: tilo_desktop::widgets::Music,
     /// The power menu, workspace settings, the questions the session asks
     /// for apps and services, and the one deleting a workspace asks, by
     /// their seats.
@@ -213,11 +213,11 @@ pub(crate) struct Shared {
     pub(crate) power: Option<tilo_sheets::power::PowerSeat>,
     #[cfg(target_os = "linux")]
     pub(crate) workspace_settings: Option<tilo_sheets::workspace_settings::WorkspaceSettingsSeat>,
-    /// The desk revision workspace settings was last fed at: its panes are
-    /// rebuilt when the desk changed under it.
+    /// The session revision workspace settings was last fed at: its panes are
+    /// rebuilt when the session changed under it.
     pub(crate) ws_settings_fed: Cell<Option<u64>>,
-    /// The desk revision the file access list and what apps may capture were
-    /// last worked out at: both follow every change of the desk, so a
+    /// The session revision the file access list and what apps may capture were
+    /// last worked out at: both follow every change of the session, so a
     /// revocation reaches the running app at once.
     pub(crate) capabilities_fed: Cell<Option<u64>>,
     /// What publishes the person's file access list to the Files daemon
@@ -285,7 +285,7 @@ pub(crate) struct Shared {
     /// The windows carried to another workspace, asked about first.
     #[cfg(target_os = "linux")]
     pub(crate) moves: crate::window_move::Moves,
-    /// The workspaces being branched, put on the desk once what they hold is copied.
+    /// The workspaces being branched, put on the shell once what they hold is copied.
     #[cfg(target_os = "linux")]
     pub(crate) branches: crate::workspace_branch::Branches,
     /// The apps' live activities on the bar, which the pill names and the
@@ -296,7 +296,7 @@ pub(crate) struct Shared {
     /// clicks the session hands back to the applications.
     #[cfg(target_os = "linux")]
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
-    /// The pictures the desk shows, by workspace.
+    /// The pictures the session shows, by workspace.
     #[cfg(target_os = "linux")]
     pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
     /// The keyboard layouts the person switches between, and which one is
@@ -332,20 +332,20 @@ pub(crate) struct Shared {
     /// Who is here: this session's membership of each workspace, when it
     /// takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    /// This device's workspaces: what the desk shows of them, and what a join takes in.
+    /// This device's workspaces: what the session shows of them, and what a join takes in.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// The workspaces' shared desktops, as their records hold them: what each
-    /// device that shows a workspace puts on its own desk, and what this one
+    /// device that shows a workspace puts on its own session, and what this one
     /// writes back.
     #[cfg(target_os = "linux")]
-    pub(crate) desktops: Rc<crate::shared_desktop::SharedDesktops>,
+    pub(crate) desktops: Rc<crate::layout::Layouts>,
     /// What each window this session runs shows, read from the broker every
-    /// pass: the desk's reading of it, and the record noted beside the window
+    /// pass: the session's reading of it, and the record noted beside the window
     /// in its workspace's layout.
     pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
-    /// The engine revision, and the workspaces the desk showed, the desk's
+    /// The engine revision, and the workspaces the session showed, the session's
     /// copy of each workspace's people was last taken from: what nothing new
-    /// of a workspace's governance, and no workspace the desk did not show
+    /// of a workspace's governance, and no workspace the session did not show
     /// before, has passed since.
     pub(crate) membership_fed:
         std::cell::RefCell<Option<(u64, Vec<tilo_desktop_model::WorkspaceId>)>>,
@@ -363,7 +363,7 @@ pub(crate) struct Shared {
     /// The copies the person can paste again.
     #[cfg(target_os = "linux")]
     pub(crate) clipboard: Rc<crate::clipboard::Clipboard>,
-    /// The person's arrangement: the desk this session holds, with history and
+    /// The person's arrangement: the session this session holds, with history and
     /// undo (shell.md §2), and the app places its windows from it.
     pub(crate) arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
     /// Whether the person is mid-gesture or typing, as the compositor last
@@ -481,9 +481,9 @@ pub struct Session {
     /// hands the settings the session's service published.
     #[cfg(target_os = "linux")]
     pub(crate) settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
-    /// When the desk's own bookkeeping last read it.
+    /// When the session's own bookkeeping last read it.
     pub(crate) kept_at: Instant,
-    /// What the desk's input a tool handed the loop cost this pass, read with
+    /// What the session's input a tool handed the loop cost this pass, read with
     /// the control socket's own time in the frame's timings.
     pub(crate) tool_input: std::time::Duration,
     /// The magnifier's zoom level and the one its toggle turns on at.
@@ -637,7 +637,7 @@ pub struct Session {
     /// The app a process runs, for the windows it shows.
     #[cfg(target_os = "linux")]
     pub(crate) pids: std::collections::BTreeMap<u32, String>,
-    /// The key of the artwork the desk was last handed for each window, and
+    /// The key of the artwork the session was last handed for each window, and
     /// which windows it was told of at all, so a window that sets another
     /// icon is handed the new one and a window that closed lets go of its own.
     #[cfg(target_os = "linux")]
@@ -706,7 +706,7 @@ pub struct Session {
     #[cfg(target_os = "linux")]
     pub(crate) shell: Option<crate::shell::Shell>,
     /// What assistive technology reads of the session's own surfaces: the
-    /// desk, the bar, the switcher, the panels and the sheets, each a window
+    /// session, the bar, the switcher, the panels and the sheets, each a window
     /// of the session's AT-SPI application.
     #[cfg(target_os = "linux")]
     pub(crate) a11y: crate::a11y::Accessibility,

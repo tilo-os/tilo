@@ -39,7 +39,7 @@ fn drive() {
     use std::time::Duration;
 
     use tilo_compositor::OutputConfig;
-    use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
+    use tilo_desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
     use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
     use tilo_session::{Lists, Options, Session};
 
@@ -99,9 +99,14 @@ fn drive() {
         session.step(Duration::from_millis(1)).expect("a turn");
     }
 
-    // Search opens over the desk and takes a query, its rows found in the lists a worker keeps
+    // Search opens over the shell and takes a query, its rows found in the lists a worker keeps
     // current.
-    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
+    invoke(
+        &mut session,
+        SHELL_RESOURCE,
+        "search",
+        serde_json::json!({}),
+    );
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a turn");
     }

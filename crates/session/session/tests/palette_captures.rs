@@ -29,7 +29,7 @@ use ed25519_dalek::Signer as _;
 use runtime_collab::{CollabClient, Invocation};
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
-use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
+use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
@@ -40,7 +40,7 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 /// The app whose capture this is.
 const TASKS: &str = "so.tilo.lang.tasks";
-/// The workspace the session holds, as the desk names it.
+/// The workspace the session holds, as the shell names it.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 /// The line a person writes into the palette.
 const LINE: &str = "Call the landlord fri 10am";
@@ -125,10 +125,10 @@ fn principal(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(fixture: &Fixture) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn shell(fixture: &Fixture) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Shell");
     workspace.set_owner(principal(&fixture.cert.user_public_key));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -175,7 +175,7 @@ fn channel() -> String {
 }
 
 /// The session serving the apps it starts on `socket` , holding the fixture's workspace from its
-/// state and showing its desk: the session an installed session is, with the apps it launches
+/// state and showing its shell: the session an installed session is, with the apps it launches
 /// started through.
 fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
     // The app speaks from this test's own process, so the launch the session would have recorded
@@ -196,7 +196,7 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
         launch: Some(Rc::clone(&apps)),
         ..Options::default()
     });
-    session.handle().replace_tree(desk(fixture));
+    session.handle().replace_tree(shell(fixture));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -273,7 +273,7 @@ fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
     })
 }
 
-/// The open search's rows, as the desk publishes them.
+/// The open search's rows, as the shell publishes them.
 fn rows(session: &Session) -> Vec<ResourceSpec> {
     find(&session.resources(), SEARCH_RESOURCE)
         .map(|search| search.children)
@@ -313,7 +313,7 @@ fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
 
     invoke(
         &mut session,
-        DESK_RESOURCE,
+        SHELL_RESOURCE,
         "search",
         serde_json::json!({ "query": LINE }),
     );

@@ -1,7 +1,7 @@
 //! The sockets this session serves, and the loop's wait on them.
-//! Every listener the session serves is drained on its own pass: nothing of the desk is read from
+//! Every listener the session serves is drained on its own pass: nothing of the shell is read from
 //! another thread. What arrives must therefore end the loop's wait, or a client that connects to an
-//! idle desk — every app window's first ask — would sit in the socket's backlog until something
+//! idle shell — every app window's first ask — would sit in the socket's backlog until something
 //! else happened.
 
 use std::io;

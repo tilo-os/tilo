@@ -300,7 +300,7 @@ impl TopBarChrome {
     /// asks.
     pub fn begin_workspace_rename(&mut self) {
         // The field starts from the name the workspace holds: a workspace nobody named has none, so
-        // typing a name does not first erase the desk's word for it.
+        // typing a name does not first erase the shell's word for it.
         let text = if self.workspace_name == names::workspace("") {
             String::new()
         } else {

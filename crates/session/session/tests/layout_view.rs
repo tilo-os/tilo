@@ -15,7 +15,7 @@ use crate::common::people::{Site, show, titles_at, titles_on, two_people_at_a_si
 use tilo_desktop_model::ownership::DESKTOP_APP;
 use tilo_desktop_model::person_view::PersonView;
 
-/// The app whose window the people here open on their desks.
+/// The app whose window the people here open on their sessions.
 const NOTES: &str = "so.tilo.notes";
 
 /// Every view of the workspace's layout the site holds, each as the person whose it is and the
@@ -41,7 +41,7 @@ fn fronts(views: &[(String, PersonView)]) -> Vec<Vec<u64>> {
 }
 
 /// The workspace's windows and strips are the workspace's, and where each person is looking is
-/// theirs: both desks show the one layout, and each person's view of it is a record of the
+/// theirs: both sessions show the one layout, and each person's view of it is a record of the
 /// workspace of their own.
 #[test]
 fn each_person_keeps_their_own_view_of_the_workspace_layout() {
@@ -52,7 +52,7 @@ fn each_person_keeps_their_own_view_of_the_workspace_layout() {
     let _his = bob_laptop.window(NOTES, "Bob's notes");
     let both = ["Ada's notes", "Bob's notes"];
     waited(
-        "both people's windows on both desks",
+        "both people's windows on both sessions",
         &site,
         &[&ada_laptop, &bob_laptop],
         || {
@@ -82,7 +82,7 @@ fn each_person_keeps_their_own_view_of_the_workspace_layout() {
 }
 
 /// A window one person moves into another strip is where the other person sees it: the strips are
-/// the workspace's, whichever desk arranged them.
+/// the workspace's, whichever layout arranged them.
 #[test]
 fn a_window_one_person_moves_is_where_the_other_sees_it() {
     let (site, _ada, _bob, ada_laptop, bob_laptop) = two_people_at_a_site();
@@ -90,15 +90,15 @@ fn a_window_one_person_moves_is_where_the_other_sees_it() {
     show(&bob_laptop, &site);
     let _first = ada_laptop.window(NOTES, "Notes");
     waited(
-        "Ada's window on both desks",
+        "Ada's window on both sessions",
         &site,
         &[&ada_laptop, &bob_laptop],
         || titles_on(&ada_laptop, &site) == ["Notes"] && titles_on(&bob_laptop, &site) == ["Notes"],
     );
-    // Bob moves his window beside Ada's: one strip now holds both, as both desks show it.
+    // Bob moves his window beside Ada's: one strip now holds both, as both sessions show it.
     let _second = bob_laptop.window(NOTES, "Plan");
     waited(
-        "both windows on both desks",
+        "both windows on both sessions",
         &site,
         &[&ada_laptop, &bob_laptop],
         || {
@@ -108,9 +108,10 @@ fn a_window_one_person_moves_is_where_the_other_sees_it() {
                 && titles_on(&bob_laptop, &site) == both
         },
     );
-    let desk = site.desktop().expect("the workspace holds the layout");
+    let layout = site.desktop().expect("the workspace holds the layout");
     assert_eq!(
-        desk.workspaces
+        layout
+            .workspaces
             .first()
             .map(|workspace| workspace.strips.len()),
         Some(1),
@@ -119,7 +120,7 @@ fn a_window_one_person_moves_is_where_the_other_sees_it() {
 }
 
 /// A change of the layout is one step of the person who made it: their undo takes back their own
-/// change and never another person's, and a desk reopened reads the layout the workspace keeps.
+/// change and never another person's, and a layout reopened reads the layout the workspace keeps.
 #[test]
 fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
     let (site, _ada, _bob, mut ada_laptop, bob_laptop) = two_people_at_a_site();
@@ -127,7 +128,7 @@ fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
     show(&bob_laptop, &site);
     let _hers = ada_laptop.window(NOTES, "Ada's notes");
     waited(
-        "Ada's window on the site and both desks",
+        "Ada's window on the site and both sessions",
         &site,
         &[&ada_laptop, &bob_laptop],
         || {
@@ -139,7 +140,7 @@ fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
     let _his = bob_laptop.window(NOTES, "Bob's notes");
     let both = ["Ada's notes", "Bob's notes"];
     waited(
-        "both windows on the site and both desks",
+        "both windows on the site and both sessions",
         &site,
         &[&ada_laptop, &bob_laptop],
         || {
@@ -162,7 +163,7 @@ fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
         ada_laptop.log()
     );
     waited(
-        "Ada's window gone from the site and both desks, Bob's still there",
+        "Ada's window gone from the site and both sessions, Bob's still there",
         &site,
         &[&ada_laptop, &bob_laptop],
         || {
@@ -172,12 +173,12 @@ fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
         },
     );
 
-    // Reopened, her desk is the layout the workspace keeps.
+    // Reopened, her layout is the layout the workspace keeps.
     ada_laptop.stop();
     ada_laptop.start();
     show(&ada_laptop, &site);
     waited(
-        "a reopened desk shows the layout the workspace keeps",
+        "a reopened layout shows the layout the workspace keeps",
         &site,
         &[&ada_laptop],
         || titles_on(&ada_laptop, &site) == ["Bob's notes"],

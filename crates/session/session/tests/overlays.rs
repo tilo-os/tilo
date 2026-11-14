@@ -1,4 +1,4 @@
-//! The surfaces over the desk as the session publishes them: what stands where, which of them holds
+//! The surfaces over the shell as the session publishes them: what stands where, which of them holds
 //! the keyboard, what Escape closes and what a press outside one closes.
 //! The stack is the one answer every overlay used to give for itself; these tests hold the session
 //! to it — the window menu and quick settings, the two surfaces the session puts up itself, close
@@ -79,8 +79,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// The desk the session starts on: one window, in front, on one strip.
-fn desk_tree() -> Layout {
+/// The shell the session starts on: one window, in front, on one strip.
+fn layout_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -107,7 +107,7 @@ fn desk_tree() -> Layout {
     tree
 }
 
-/// A headless session showing `tree` , with a turn taken so its desk has laid the windows out.
+/// A headless session showing `tree` , with a turn taken so its shell has laid the windows out.
 fn session_with(tree: Layout, panel: Option<Surface>) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -124,7 +124,7 @@ fn session_with(tree: Layout, panel: Option<Surface>) -> Session {
 
 /// The session with no quick settings app installed.
 fn session() -> Session {
-    session_with(desk_tree(), None)
+    session_with(layout_tree(), None)
 }
 
 /// The panel's app for this package's tests: the surface probe the session package ships, standing
@@ -146,7 +146,7 @@ fn panel_environment() -> ScopedEnv {
 fn session_with_quick_settings() -> (Session, ScopedEnv) {
     let environment = panel_environment();
     let session = session_with(
-        desk_tree(),
+        layout_tree(),
         Some(quick_settings::surface_of(panel_binary())),
     );
     (session, environment)
@@ -170,7 +170,7 @@ fn open(session: &mut Session, slot: &str, anchor: Option<&str>) {
     session.step(REFRESH).expect("a turn of the session");
 }
 
-/// The surfaces over the desk now, topmost first.
+/// The surfaces over the shell now, topmost first.
 fn stack(session: &Session) -> Vec<Value> {
     session
         .read(OVERLAYS)
@@ -248,7 +248,7 @@ fn quick_click(session: &mut Session, x: f64, y: f64) {
     }
 }
 
-/// A press at `(x, y)` on the desk, wherever that lands.
+/// A press at `(x, y)` on the shell, wherever that lands.
 fn press(session: &mut Session, x: f64, y: f64) {
     session
         .compositor()
@@ -271,7 +271,7 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     let mut session = session();
     assert!(
         slots(&session).is_empty(),
-        "nothing stands over the desk yet"
+        "nothing stands over the shell yet"
     );
     assert_eq!(
         focus(&session),
@@ -399,7 +399,7 @@ fn front(session: &Session) -> String {
 /// the one up, and Alt+Tab's walk holds the keys until Alt comes up.
 #[test]
 fn the_shells_surface_and_the_popovers_stand_one_at_a_time() {
-    let mut tree = desk_tree();
+    let mut tree = layout_tree();
     tree.workspaces[0].strips[0]
         .window_groups
         .push(WindowGroup {
@@ -500,8 +500,8 @@ fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
 }
 
 #[test]
-fn a_press_on_the_desk_closes_the_workspace_menu_the_chrome_hangs_off_its_chip() {
-    // The chrome draws the menu and says where it stands; a press on the desk never reaches the
+fn a_press_on_the_shell_closes_the_workspace_menu_the_chrome_hangs_off_its_chip() {
+    // The chrome draws the menu and says where it stands; a press on the shell never reaches the
     // chrome drawn over it, so the session's reader of presses outside is what closes the menu.
     let mut session = session();
     let chip = (86.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
@@ -512,7 +512,7 @@ fn a_press_on_the_desk_closes_the_workspace_menu_the_chrome_hangs_off_its_chip()
     session.step(REFRESH).expect("a turn of the session");
     assert!(
         slots(&session).is_empty(),
-        "the press on the desk closed it"
+        "the press on the shell closed it"
     );
     // And the menu it draws followed the stack: the chip opens it again rather than closing the one
     // still standing under the person's finger.
@@ -545,7 +545,7 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     );
     assert!(
         y + h < f64::from(HEIGHT) - MARGIN,
-        "with the desk it does not cover left below it"
+        "with the shell it does not cover left below it"
     );
     assert_eq!(
         surface(&session, "quick-settings")["size"],
@@ -637,7 +637,7 @@ fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing(
     // starting it.
     session
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "quick-settings",
             &args(&json!({})),
         )
@@ -685,7 +685,7 @@ fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
         "a press in the panel is the panel's"
     );
 
-    // Anywhere else on the desk: it closes, and what the press landed on still gets it.
+    // Anywhere else on the shell: it closes, and what the press landed on still gets it.
     press(&mut session, 100.0, 400.0);
     assert!(
         !session.quick_settings_open(),
@@ -719,7 +719,7 @@ fn a_dismissing_press_does_not_reopen_what_it_closed() {
     );
     session
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "quick-settings",
             &args(&json!({})),
         )
@@ -741,7 +741,7 @@ fn a_dismissing_press_does_not_reopen_what_it_closed() {
     session.step(REFRESH).expect("a turn of the session");
     session
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "quick-settings",
             &args(&json!({})),
         )

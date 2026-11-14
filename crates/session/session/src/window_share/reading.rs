@@ -19,7 +19,7 @@
 //! An open plane and a stream's start still put nothing on a screen, so the rows say what crossed.
 //! A window this device shows is `pictured` once its tile holds a decoded picture or its page's
 //! whole frame, and until then its row waits for the first one. A window this device shares is
-//! `streaming` while a member's desk asks for it and it goes out: a captured window as soon as it
+//! `streaming` while a member's shell asks for it and it goes out: a captured window as soon as it
 //! is asked for, a window whose app draws its page once the app handed a whole page over. One that
 //! a member shows and nothing of which went out says so (`waiting_for`), and says which link it
 //! waits on: the page's way out, or, once its app was asked for a whole page and let
@@ -27,7 +27,7 @@
 //! showing the window says the same from its side: it waits for the page's first frame, and once
 //! that is overdue, that the device running the window was asked for it and sent none.
 //!
-//! A window that runs only on its device stands on every other desk whether or not it is shared,
+//! A window that runs only on its device stands on every other shell whether or not it is shared,
 //! and its tab there says why it holds no picture. The reading says the same of each (`hosted`):
 //! `shown` while a share of it stands in the tab, and until then `not-shared`, `awaited` with what
 //! it waits for, `away` for a device nothing is heard of, or `left` for one the workspace no
@@ -69,9 +69,9 @@ impl WindowShares {
         self.changed();
     }
 
-    /// Note which shared windows go out to a member's desk now: the ones captured for a desk that
+    /// Note which shared windows go out to a member's shell now: the ones captured for a shell that
     /// asks for them, and of the ones whose app draws its page (`pages`) those whose page was
-    /// published since a desk asked for it. A page whose app was asked for a whole frame and has
+    /// published since a shell asked for it. A page whose app was asked for a whole frame and has
     /// not handed one over in time goes out to nobody new, and is noted as withheld by its app.
     pub(super) fn follow_streams(
         &mut self,
@@ -175,7 +175,7 @@ impl WindowShares {
                         viewer["can_control"].as_bool().unwrap_or(false)
                     }),
                     "viewers": viewers,
-                    // Whether a member's desk asks the plane for the window now, so it is
+                    // Whether a member's shell asks the plane for the window now, so it is
                     // captured and sent.
                     "streaming": self.goes_out(*tab),
                     "waiting_for": self.waiting_for(&hosted.workspace),
@@ -196,7 +196,7 @@ impl WindowShares {
                     })
                     .collect();
                 // An announcement is no page: the window goes out once its app handed a whole
-                // page over for a desk that asks for it. One a member shows and nothing of which
+                // page over for a shell that asks for it. One a member shows and nothing of which
                 // went out waits for that, one whose app was asked and did not answer in time
                 // waits for its app, and one whose page is larger than the plane carries says so.
                 let streaming = self.streaming.contains(tab);
@@ -249,8 +249,8 @@ impl WindowShares {
                     "tab": tab.to_string(),
                     "room": workspace,
                     "host": watched.host.to_string(),
-                    // The tab of this desk that pictures it, which is the sharer's own where this
-                    // desk holds no view of its own of the window.
+                    // The tab of this session that pictures it, which is the sharer's own where this
+                    // shell holds no view of its own of the window.
                     "shown_in": self.pictured_in(*tab).to_string(),
                     "waiting_for": self.watching_waits_for(workspace),
                 })

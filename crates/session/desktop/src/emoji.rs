@@ -1,4 +1,4 @@
-//! The desk's emoji card: what the session and the chrome say to each other
+//! The shell's emoji card: what the session and the chrome say to each other
 //! about it.
 //!
 //! The card itself is the toolkit's own emoji picker ([`ui::widget::EmojiPicker`]),
@@ -38,7 +38,7 @@ impl EmojiLink {
         self.place.set(Some(place));
     }
 
-    /// Where the card opens now, as the session last said; `None` opens it centred over the desk.
+    /// Where the card opens now, as the session last said; `None` opens it centred over the shell.
     #[must_use]
     pub fn place(&self) -> Option<EmojiPlace> {
         self.place.get()

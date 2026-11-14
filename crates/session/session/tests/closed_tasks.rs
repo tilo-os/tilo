@@ -6,7 +6,7 @@
 //! Nothing opens Tasks first. The step is the agent's own: the workspace's `start` of the closed
 //! app runs it without a window and names the instance (`run_windowless`), and the tracker's
 //! `create` is then delivered to that instance's own published action. The claims are read back
-//! off the workspace's record, off the desk, and off the controls the app's window exposes, never
+//! off the workspace's record, off the shell, and off the controls the app's window exposes, never
 //! off the step's answer alone.
 
 #![cfg(target_os = "linux")]
@@ -157,7 +157,7 @@ fn step(device: &Device, (provider, id): &(String, String), args: &Value) -> Val
     }
 }
 
-/// Whether `device`'s desk shows a window of `app`.
+/// Whether `device`'s shell shows a window of `app`.
 fn shows_window(device: &Device, app: &str) -> bool {
     device.ask(&json!({"op": "windows"}))["answer"]["windows"]
         .as_array()
@@ -177,11 +177,11 @@ fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_
         device.install_tasks();
         device.join(&site.admit(ada.public));
         device.wait_holding(&site.workspace);
-        // The desk shows the workspace: what the door acts in.
+        // The shell shows the workspace: what the door acts in.
         device.wait_showing(&site.workspace);
     }
 
-    // Nothing opened Tasks: the desk shows no window of it, and the tracker holds no issue.
+    // Nothing opened Tasks: the shell shows no window of it, and the tracker holds no issue.
     assert!(
         !shows_window(&laptop, APP),
         "the laptop shows no window of Tasks before the step"

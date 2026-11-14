@@ -156,7 +156,7 @@ fn show_tab(
     settle(session, app);
 }
 
-/// The desk's search, as it publishes it while it is open.
+/// The shell's search, as it publishes it while it is open.
 fn search_open(session: &Session) -> Option<ResourceSpec> {
     fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
         resources.iter().find_map(|resource| {
@@ -167,10 +167,7 @@ fn search_open(session: &Session) -> Option<ResourceSpec> {
             }
         })
     }
-    find(
-        &session.resources(),
-        tilo_desktop::desk_verbs::SEARCH_RESOURCE,
-    )
+    find(&session.resources(), tilo_desktop::verbs::SEARCH_RESOURCE)
 }
 
 /// The People tab gives each member another role, and the workspace holds both afterwards, with the
@@ -906,7 +903,7 @@ fn workspace_settings_general_says_what_the_workspace_is() {
     );
 }
 
-/// Leaving from the General tab takes the workspace off this device's desk,
+/// Leaving from the General tab takes the workspace off this device's shell,
 /// as the same choice in the workspace menu does.
 #[test]
 fn workspace_settings_general_leaves_the_workspace() {
@@ -931,7 +928,7 @@ fn workspace_settings_general_leaves_the_workspace() {
     assert_eq!(
         session.handle().read(|tree| tree.workspaces.len()),
         1,
-        "the workspace left this device's desk"
+        "the workspace left this device's shell"
     );
 }
 
@@ -1181,7 +1178,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     assert_eq!(limit.summary, "$5 a day", "the limit is the record's now");
     assert_eq!(limit.today, "$0 today");
     // The field takes the room, Set keeps its own at the row's right end, and the two share one
-    // line on the desk as they do in the sheet.
+    // line on the shell as they do in the sheet.
     let drawn = app.harness().targets();
     let field = drawn["ws-agent-limit-field"];
     let button = drawn["ws-agent-limit-set"];

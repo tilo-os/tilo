@@ -23,7 +23,7 @@ const WAIT: &[u8] = b"tilo-import-wait--v1\n";
 /// And once it is over.
 const READY: &[u8] = b"tilo-import-ready-v1\n";
 
-/// How many importers one pass answers before the desk draws.
+/// How many importers one pass answers before the shell draws.
 const PER_PASS: usize = 8;
 
 /// The desktop entry of the installed folder importer, which the login opens when the person left a

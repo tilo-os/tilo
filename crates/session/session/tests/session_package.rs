@@ -85,7 +85,7 @@ fn the_description_reads_as_the_session_package() {
     );
 }
 
-/// Each action is described once, by its owner: the desk and the device's resources are
+/// Each action is described once, by its owner: the shell and the device's resources are
 /// `so.tilo.device`'s, so the session's package describes none of them.
 #[test]
 fn the_session_package_describes_none_of_the_devices_resources() {

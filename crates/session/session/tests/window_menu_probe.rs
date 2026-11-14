@@ -46,8 +46,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// The desk the session starts on: one window, in front.
-fn desk_tree() -> Layout {
+/// The shell the session starts on: one window, in front.
+fn layout_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -117,7 +117,7 @@ fn reading(report: &str, prefix: &str) -> Value {
     serde_json::from_str(line).expect("a reading is JSON")
 }
 
-/// Whether the desk still holds the window `tab` .
+/// Whether the shell still holds the window `tab` .
 fn holds(session: &Session, tab: u64) -> bool {
     session.handle().read(|tree| {
         tree.workspaces
@@ -144,9 +144,9 @@ fn a_window_the_session_starts_reads_the_menu_and_chooses_a_row() {
         "SURFACE_PROBE_ARGUMENTS",
         json!({ "row": "window-close-window" }).to_string(),
     );
-    let mut session = session_with(&socket, desk_tree());
+    let mut session = session_with(&socket, layout_tree());
     // The menu is up before the probe starts, so what it reads is the menu a person sees and not an
-    // empty desk.
+    // empty shell.
     session
         .invoke(
             WINDOW_MENU,
@@ -176,7 +176,7 @@ fn a_window_the_session_starts_reads_the_menu_and_chooses_a_row() {
             .iter()
             .filter_map(|row| row["label"].as_str())
             .any(|label| label == "Close this window"),
-        "with the rows the desk offers that window: {report}"
+        "with the rows the shell offers that window: {report}"
     );
     assert!(
         report.lines().any(|line| line == "taken"),

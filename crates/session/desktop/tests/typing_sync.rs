@@ -1,4 +1,4 @@
-//! What a keystroke costs a desk with six apps open.
+//! What a keystroke costs a shell with six apps open.
 //!
 //! Five of those windows have nothing of their own going on while a person
 //! types in the sixth. The frame the key asks for reaches every one of them,
@@ -15,7 +15,7 @@
               are said in the units a person reads"
 )]
 
-use crate::typing_desktop::DemoDesk;
+use crate::typing_desktop::Demo;
 
 /// Keys typed before anything is counted: the first ones find the caches a
 /// typist's second key does, and a window's first frames are its arrival.
@@ -25,20 +25,20 @@ const WARMUP: usize = 8;
 const KEYS: usize = 20;
 
 #[test]
-fn a_key_on_a_desk_of_six_builds_what_each_window_binds_once() {
-    let mut desk = DemoDesk::open();
-    assert_eq!(desk.apps_open(), 6, "the demo's six apps are open");
-    desk.rest();
-    desk.focus_the_note();
-    let before = desk.note_heads();
+fn a_key_on_a_shell_of_six_builds_what_each_window_binds_once() {
+    let mut shell = Demo::open();
+    assert_eq!(shell.apps_open(), 6, "the demo's six apps are open");
+    shell.rest();
+    shell.focus_the_note();
+    let before = shell.note_heads();
     for _ in 0..WARMUP {
-        desk.type_key("l");
+        shell.type_key("l");
     }
     let costs: Vec<crate::typing_desktop::KeyCost> = (0..KEYS)
-        .map(|index| desk.measure_key(if index % 10 == 9 { " " } else { "l" }))
+        .map(|index| shell.measure_key(if index % 10 == 9 { " " } else { "l" }))
         .collect();
     assert_ne!(
-        desk.note_heads(),
+        shell.note_heads(),
         before,
         "the keys went into the note: it holds what was typed"
     );
@@ -79,19 +79,19 @@ fn a_key_on_a_desk_of_six_builds_what_each_window_binds_once() {
 }
 
 #[test]
-fn an_idle_desk_syncs_no_window_and_a_change_from_elsewhere_syncs_the_one_it_reached() {
-    let mut desk = DemoDesk::open();
-    desk.rest();
+fn an_idle_shell_syncs_no_window_and_a_change_from_elsewhere_syncs_the_one_it_reached() {
+    let mut shell = Demo::open();
+    shell.rest();
     assert_eq!(
-        desk.syncs_during(DemoDesk::idle),
+        shell.syncs_during(Demo::idle),
         0,
         "nothing reached any window: none syncs"
     );
     // Another participant's edit reaches the calendar's record.
-    desk.change_elsewhere("calendar");
-    let reached = desk.syncs_during(|desk| {
-        desk.idle();
-        desk.idle();
+    shell.change_elsewhere("calendar");
+    let reached = shell.syncs_during(|shell| {
+        shell.idle();
+        shell.idle();
     });
     assert!(
         (1..=2).contains(&reached),
@@ -99,7 +99,7 @@ fn an_idle_desk_syncs_no_window_and_a_change_from_elsewhere_syncs_the_one_it_rea
          ({reached} syncs)"
     );
     assert_eq!(
-        desk.syncs_during(DemoDesk::idle),
+        shell.syncs_during(Demo::idle),
         0,
         "once it showed the change, the calendar rests again"
     );

@@ -1,7 +1,7 @@
-//! Where this person's own agents work, for the desk to show it: the person sees what their agent
+//! Where this person's own agents work, for the shell to show it: the person sees what their agent
 //! does. Each time one of their agents moves to another record, or acts again where it is, the
 //! window it works in is brought into view. The page does that without taking the keyboard
-//! (the desk's `reveal_tab`); someone else's agent is only pointed at.
+//! (the shell's `reveal_tab`); someone else's agent is only pointed at.
 
 use std::collections::HashMap;
 
@@ -9,7 +9,7 @@ use tilo_desktop_model::TabId;
 
 use super::{HereState, Person};
 
-/// Where an agent works, as this desk can show it.
+/// Where an agent works, as this session can show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkPlace {
     /// The window showing the record it works in.
@@ -47,7 +47,7 @@ impl HereState {
 
     /// Where this person's own agents work now, among `people`, when that is news: an agent seen
     /// working somewhere it was not shown at before, or one that acted again since the last look.
-    /// The newest such place, for the desk to bring into view; `None` when nothing moved. Someone
+    /// The newest such place, for the shell to bring into view; `None` when nothing moved. Someone
     /// else's agent is theirs to watch.
     pub fn take_own_agent_work(&mut self, people: &[Person]) -> Option<WorkPlace> {
         let acted = std::mem::take(&mut self.agent_work.acted);

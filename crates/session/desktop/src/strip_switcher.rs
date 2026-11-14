@@ -911,7 +911,7 @@ impl StripSwitcher {
             Row::NewStrip => {
                 self.name_when_listed = true;
                 self.selected = Some(Row::NewStrip);
-                // The strip is made unnamed: the desk reads it by the place it stands, in each
+                // The strip is made unnamed: the shell reads it by the place it stands, in each
                 // reader's own language, until the person gives it a name.
                 Press::Command(Command::Create(String::new()))
             }

@@ -24,18 +24,18 @@ fn first_ask() -> Vec<u8> {
     frames
 }
 
-/// A window that connects to the session's shell-ui socket on a desk nobody touches is taken off it
+/// A window that connects to the session's shell-ui socket on a shell nobody touches is taken off it
 /// as the connection arrives, not after a poll: its connection is what ends the loop's wait.
 #[test]
-fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
+fn a_window_connecting_on_an_idle_shell_is_taken_at_once() {
     let _settled = ui::motion::testing::settled();
     let runtime = tempfile::tempdir().expect("a runtime directory");
     let mut environment = ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", runtime.path());
     let mut session = session();
 
-    // Nothing of the desk's own is due for a second at least, so a connection that waited for the
-    // loop's next look would wait that long. The desk gets there as its own timer passes, which a
+    // Nothing of the shell's own is due for a second at least, so a connection that waited for the
+    // loop's next look would wait that long. The shell gets there as its own timer passes, which a
     // loaded machine takes longer over: the test waits for that rather than counting the frames it
     // takes.
     pump(&mut session, &mut [], |session, _| {
@@ -44,7 +44,7 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
     let idle = wait_for(&mut session);
     assert!(
         idle.is_none_or(|idle| idle >= Duration::from_secs(1)),
-        "an idle desk waits for the person, not for a look: {idle:?}"
+        "an idle shell waits for the person, not for a look: {idle:?}"
     );
 
     let path = launcher::services::socket_for(launcher::services::SHELL_UI_SERVICE);
@@ -78,7 +78,7 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
             waited < tilo_test_env::hang_bound(),
             "the session never took the window's connection after {waited:?}"
         );
-        let wait = wait_for(&mut session).expect("an idle desk has a wait to give");
+        let wait = wait_for(&mut session).expect("an idle shell has a wait to give");
         let started = Instant::now();
         session.step(wait).expect("step");
         let step = started.elapsed();
@@ -100,5 +100,5 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
     };
     asking.join().expect("the asking thread");
     assert!(takes.try_recv().is_err(), "one ask, one taking");
-    eprintln!("a window's first ask on an idle desk: {latency:?}");
+    eprintln!("a window's first ask on an idle shell: {latency:?}");
 }

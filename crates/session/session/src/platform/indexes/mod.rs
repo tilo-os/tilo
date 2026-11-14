@@ -15,7 +15,7 @@ mod disk;
 #[cfg(target_os = "linux")]
 pub use disk::SessionIndexes;
 
-/// The indexes this host offers search beyond the desk.
+/// The indexes this host offers search beyond the shell.
 pub trait Indexes: Send + Sync {
     /// The indexes as `person` reads them: rows about what apps hold say who wrote them.
     fn of(&self, person: &str) -> Arc<dyn Index>;

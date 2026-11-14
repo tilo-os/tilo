@@ -65,7 +65,7 @@ impl Rotation {
 
     /// The built-in output and the turn the panel shows, `None` when no output of this session
     /// turns with the device.
-    /// Only a built-in panel turns: a monitor on the desk stands still while the machine in the
+    /// Only a built-in panel turns: a monitor on the shell stands still while the machine in the
     /// person's hands is turned around.
     pub(crate) fn follow(&mut self, outputs: &[OutputInfo]) -> Option<(&str, Transform)> {
         let device = self.device.as_deref()?;
@@ -110,7 +110,7 @@ impl Rotation {
 }
 
 /// The output of `outputs` that turns with the device: the built-in panel and nothing else, because
-/// a monitor on the desk stands still while the machine in the person's hands is turned around.
+/// a monitor on the shell stands still while the machine in the person's hands is turned around.
 fn panel(outputs: &[OutputInfo]) -> Option<&OutputInfo> {
     outputs
         .iter()

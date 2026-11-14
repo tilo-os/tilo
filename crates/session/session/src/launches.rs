@@ -77,7 +77,7 @@ pub(crate) struct LaunchRequest {
     /// The workspace it belongs to, as the asker named it; empty for a launch into no workspace.
     pub workspace: String,
     /// Where the window this launch starts stands, when it starts one: beside the view the asker
-    /// works in, or beside the person's without taking their focus. An app the desk already shows
+    /// works in, or beside the person's without taking their focus. An app the shell already shows
     /// has its window raised instead, whatever place the asker named.
     pub place: LaunchPlace,
     /// What a tool was asked to show, for the tool the launch opens (`TILO_TOOL_CONTEXT`): a
@@ -114,14 +114,14 @@ pub struct Launches {
     /// launcher is told of every app it could open.
     applications: Mutex<Option<crate::lists::Lists>>,
     /// The launches asked for since the last pass of the session's loop: the one path everything
-    /// that is not the desk itself starts apps through.
+    /// that is not the shell itself starts apps through.
     waiting: Mutex<Vec<LaunchRequest>>,
     /// What wakes that loop when a launch is waiting for it.
     wake: Mutex<Option<tilo_service::Wake>>,
 }
 
 impl Launches {
-    /// What the windows this session runs show, kept with its launches: one store for the desk, the
+    /// What the windows this session runs show, kept with its launches: one store for the shell, the
     /// layout record and the arrangement.
     pub(crate) fn notes(&self) -> std::sync::Arc<crate::continuations::Continuations> {
         std::sync::Arc::clone(&self.notes)
@@ -135,9 +135,9 @@ impl Launches {
 
     /// Ask the session's loop to make `launch` in `workspace` at `place`,
     /// opening the tool `context` names when the launch opens one, and wait
-    /// for it: the answer is the same one the desk's own launches get. The
+    /// for it: the answer is the same one the shell's own launches get. The
     /// place says where the window this launch starts stands; a launch of an
-    /// app the desk already shows brings that window forward instead of
+    /// app the shell already shows brings that window forward instead of
     /// starting one, and the place has nothing to say about it.
     ///
     /// # Errors
@@ -462,7 +462,7 @@ impl LauncherServices for Launches {
 
     /// Start `app` in `workspace` at `place`, opening `record` of it when the
     /// broker named one: the launch is made by the session's loop, on the
-    /// same path the desk's own launches take, and the answer here is that
+    /// same path the shell's own launches take, and the answer here is that
     /// pass's.
     ///
     /// # Errors
@@ -748,7 +748,7 @@ mod tests {
         launches.started(
             std::process::id(),
             "so.tilo.terminal",
-            "workspace-desk",
+            "workspace-shell",
             false,
         );
         assert_eq!(

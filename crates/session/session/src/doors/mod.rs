@@ -39,7 +39,7 @@ use tilo_system_stats::protocol::Handoff;
 use tilo_system_stats::server::{Prompter, Server};
 use tilo_workspace_keys::KeyProvider;
 
-use crate::plane::DeskAuthority;
+use crate::plane::LayoutAuthority;
 
 use crate::render;
 use crate::tools;
@@ -210,10 +210,10 @@ pub(crate) struct Doors {
 
 /// What a session serves its services with.
 pub(crate) struct Serving {
-    /// The desk the session's apps act on, and the workspace their identity is signed in: a session
+    /// The shell the session's apps act on, and the workspace their identity is signed in: a session
     /// that serves no action plane serves no identity either. Its apps still render, all in the
     /// private service.
-    pub desk: Option<Arc<DeskAuthority>>,
+    pub shell: Option<Arc<LayoutAuthority>>,
     /// The person at this device: whose workspaces are theirs alone, so their apps share one render
     /// service.
     pub person: String,
@@ -256,14 +256,14 @@ pub(crate) fn start(mut serving: Serving) -> Doors {
         match service {
             Service::Identity => {
                 doors.identity = identity(
-                    serving.desk.as_ref().map(Arc::clone),
+                    serving.shell.as_ref().map(Arc::clone),
                     std::mem::take(&mut serving.keys),
                 );
             }
             Service::Render => {
-                let desk = serving.desk.as_ref().map(Arc::clone);
+                let shell = serving.shell.as_ref().map(Arc::clone);
                 match render::Broker::start(
-                    desk,
+                    shell,
                     serving.person.clone(),
                     serving.render_node.take(),
                 ) {
@@ -311,17 +311,20 @@ impl Doors {
     }
 }
 
-/// The identity service at the launcher's socket for it, signing in the workspace the desk shows.
-fn identity(desk: Option<Arc<DeskAuthority>>, keys: KeyProvider) -> Option<IdentityBrokerHandle> {
+/// The identity service at the launcher's socket for it, signing in the workspace the shell shows.
+fn identity(
+    shell: Option<Arc<LayoutAuthority>>,
+    keys: KeyProvider,
+) -> Option<IdentityBrokerHandle> {
     // An app reaches its identity the way it reaches its actions: over the plane this session
     // serves it. A session that serves none has nothing to sign in.
-    let desk = desk?;
+    let shell = shell?;
     if let Err(error) = launcher::services::ensure_services_root() {
         tracing::warn!(%error, "the identity service is unavailable");
         return None;
     }
     let path = launcher::services::socket_for(launcher::services::IDENTITY_SERVICE);
-    let membership = desk as Arc<dyn WorkspaceMembership>;
+    let membership = shell as Arc<dyn WorkspaceMembership>;
     let keys = Arc::new(keys) as Arc<dyn GroupKeySource>;
     match tilo_identity_host::broker::spawn(path, membership, keys, Arc::new(InstalledApps::read()))
     {
@@ -372,7 +375,7 @@ impl PersonRecordKinds for InstalledApps {
 }
 
 /// The machine's readings at the launcher's socket for them, from this session's one hub: what the
-/// desk's monitor shows and what an app reads are the same readings, and a grant the app does not
+/// shell's monitor shows and what an app reads are the same readings, and a grant the app does not
 /// carry is asked of the person as any other capability is.
 fn system_info(
     questions: Option<Questions>,

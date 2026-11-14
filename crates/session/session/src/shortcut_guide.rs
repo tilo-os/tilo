@@ -74,12 +74,12 @@ impl ShortcutGuide {
         }
     }
 
-    /// The chords a held Super reaches on `desk` , from the table the guide explains.
+    /// The chords a held Super reaches on `shell` , from the table the guide explains.
     pub(crate) fn peek(
         &self,
-        desk: tilo_sheets::shortcut_guide::PeekDesk,
+        shell: tilo_sheets::shortcut_guide::PeekDesk,
     ) -> Vec<tilo_desktop::super_peek::PeekGroup> {
-        tilo_sheets::shortcut_guide::peek(&self.state.table().borrow(), desk)
+        tilo_sheets::shortcut_guide::peek(&self.state.table().borrow(), shell)
     }
 
     /// The keys that open search, as this keyboard spells the person's chord for it.

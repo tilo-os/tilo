@@ -1,5 +1,5 @@
 //! The native session on the headless backend with a real Wayland client: its window becomes a tab
-//! of the desk's strip, shown where the strip lays that tab out; the chrome above the windows draws
+//! of the shell's strip, shown where the strip lays that tab out; the chrome above the windows draws
 //! the top bar; closing the tab asks the client to close.
 
 #![cfg(target_os = "linux")]
@@ -24,9 +24,7 @@ use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{Compositor, InputEvent, KeyRepeat, OutputConfig, Selection};
-use tilo_desktop::desk_verbs::{
-    CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id,
-};
+use tilo_desktop::verbs::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id};
 use tilo_onboarding::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
@@ -251,7 +249,7 @@ fn session() -> Session {
     })
 }
 
-/// A session whose app lists are `lists` : what the desk offers to open.
+/// A session whose app lists are `lists` : what the shell offers to open.
 fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     crate::common::headless(Options {
         collab: false,
@@ -260,7 +258,7 @@ fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     })
 }
 
-/// A session that keeps this device's desk under `state` , the way one with a state directory does.
+/// A session that keeps this device's shell under `state` , the way one with a state directory does.
 fn session_keeping(state: &std::path::Path) -> Session {
     crate::common::headless(Options {
         state: Some(state.to_path_buf()),
@@ -301,8 +299,8 @@ fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i3
         .map(|(info, rect)| (info.id, rect))
 }
 
-/// The resource the desk publishes for the window of `app` , its tab. The client's window is titled
-/// by its own app id, so the desk names it as it names any window: its title and the app it shows.
+/// The resource the shell publishes for the window of `app` , its tab. The client's window is titled
+/// by its own app id, so the shell names it as it names any window: its title and the app it shows.
 fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
     fn find(resources: &[ResourceSpec], label: &str) -> Option<ResourceSpec> {
         resources.iter().find_map(|resource| {
@@ -342,7 +340,7 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
     let _client = mapped(&mut session, "org.example.Terminal");
     let (id, rect) = window(session.compositor(), "org.example.Terminal").unwrap();
     let tab = window_resource(&session, "org.example.Terminal")
-        .expect("the desk publishes the window's tab");
+        .expect("the shell publishes the window's tab");
     assert!(
         tab.actions.iter().any(|action| action.id == "close-tab"),
         "a window's tab can be closed by its address"
@@ -370,7 +368,7 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
 }
 
 #[test]
-fn the_top_bar_draws_above_the_desk_and_opens_the_overview_by_its_action() {
+fn the_top_bar_draws_above_the_shell_and_opens_the_overview_by_its_action() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
@@ -387,7 +385,7 @@ fn the_top_bar_draws_above_the_desk_and_opens_the_overview_by_its_action() {
     invoke(&mut session, CHROME_RESOURCE, "overview");
     session.step(Duration::from_millis(1)).unwrap();
     let open = session.accessible_labels();
-    assert_ne!(open, names, "the overview shows over the desk");
+    assert_ne!(open, names, "the overview shows over the shell");
     let shot = session.compositor().screenshot("HEADLESS-1").unwrap();
     assert_ne!(
         shot.rgba, frame.rgba,
@@ -407,7 +405,7 @@ fn closing_a_windows_tab_asks_its_client_to_close() {
     });
     assert!(
         window_resource(&session, "org.example.Editor").is_none(),
-        "the tab is gone from the desk"
+        "the tab is gone from the shell"
     );
 }
 
@@ -504,7 +502,7 @@ fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
         session
             .desktop()
             .with_policy(|policy| policy.set_fullscreen(id, true)),
-        "the desk holds the window"
+        "the shell holds the window"
     );
     take_size(&mut session, &mut client, APP, (WIDTH, HEIGHT));
     assert_eq!(
@@ -1346,7 +1344,7 @@ fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
     invoke(&mut session, CHROME_RESOURCE, "quick-settings");
     assert!(session.quick_settings_open());
     session.step(Duration::from_millis(1)).unwrap();
-    // On the desk, far from the panel at the right.
+    // On the shell, far from the panel at the right.
     for event in [
         InputEvent::PointerMotion { x: 100.0, y: 400.0 },
         InputEvent::PointerButton {
@@ -1380,9 +1378,9 @@ fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
 }
 
 #[test]
-fn the_empty_desks_launchpad_is_published_until_a_window_opens() {
+fn the_empty_shells_launchpad_is_published_until_a_window_opens() {
     let _settled = ui::motion::testing::settled();
-    // A device with the apps the empty desk's cards open: what its launchpad offers is drawn from
+    // A device with the apps the empty shell's cards open: what its launchpad offers is drawn from
     // the apps installed here.
     let mut session = session_with_lists(tilo_session::AppLists {
         applications: [
@@ -1412,7 +1410,7 @@ fn the_empty_desks_launchpad_is_published_until_a_window_opens() {
     let _client = mapped(&mut session, "org.example.Terminal");
     assert!(
         find_resource(&session.resources(), LAUNCHPAD_RESOURCE).is_none(),
-        "a desk with a window shows no launchpad"
+        "a shell with a window shows no launchpad"
     );
 }
 
@@ -1671,7 +1669,7 @@ fn the_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
 fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done() {
     let _settled = ui::motion::testing::settled();
     let mut session = crate::common::headless(Options {
-        setup: Some(tilo_session::BeforeDesk::Ceremony(Box::new(
+        setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(
             tilo_session::OnboardingView::new_tour(),
         ))),
         collab: false,
@@ -1716,7 +1714,7 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
 fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
     let _settled = ui::motion::testing::settled();
     let mut session = crate::common::headless(Options {
-        setup: Some(tilo_session::BeforeDesk::Ceremony(Box::new(
+        setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(
             tilo_session::OnboardingView::new_tour(),
         ))),
         collab: false,
@@ -2209,9 +2207,9 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
 // Every frame here has an old-shell counterpart rendered by
 // `shots --mode offscreen` at the same 1280x800; the two are paired and
 // diffed outside the tree. The set is the states a person meets first: the
-// empty desk, a window, two windows, the overview over them, quick settings,
+// empty shell, a window, two windows, the overview over them, quick settings,
 // search, a notification banner, a dialog over a window and the lock screen,
-// in the dark theme the captures are taken in (and the empty desk in light).
+// in the dark theme the captures are taken in (and the empty shell in light).
 //
 // Frames are written to `$PIXEL_PARITY_OUT` (default
 // `~/.cache/pixel-parity/new`) and named after the old shell's scenes.
@@ -2237,10 +2235,10 @@ fn wait_for(session: &mut Session) -> Option<Duration> {
 #[path = "session/activities.rs"]
 mod activities;
 
-#[path = "session/desk.rs"]
-mod desk;
 #[path = "session/hung.rs"]
 mod hung;
+#[path = "session/shell.rs"]
+mod shell;
 
 #[path = "session/now_playing.rs"]
 mod now_playing;
@@ -2248,10 +2246,10 @@ mod now_playing;
 #[path = "session/readout.rs"]
 mod readout;
 
-/// The id of the tab the desk holds for `app` .
+/// The id of the tab the shell holds for `app` .
 fn tab_of(session: &Session, app: &str) -> u64 {
     let id = window_resource(session, app)
-        .expect("the desk publishes the window's tab")
+        .expect("the shell publishes the window's tab")
         .id;
     id.as_str()
         .strip_prefix("desktop:tab:")
@@ -2285,7 +2283,7 @@ fn strip_id(session: &Session, name: &str) -> String {
 }
 
 /// The names of the workspaces, in order, and the strips of each, as a person reads them: a strip
-/// nobody named reads as the desk's own word for its place ("Strip 1").
+/// nobody named reads as the shell's own word for its place ("Strip 1").
 fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -2417,13 +2415,13 @@ fn leaving_another_workspace_keeps_the_person_where_they_are() {
     );
 }
 
-/// The next session comes up on the desk this one left: the workspaces,
+/// The next session comes up on the shell this one left: the workspaces,
 /// their strips and which one was in front, without the windows.
 #[test]
 fn the_next_session_comes_up_where_this_one_was() {
     let _settled = ui::motion::testing::settled();
     // A workspace's layout is the workspace's own record, which a device holds once it has an
-    // identity: this desk is on a device seated as one is at its first login.
+    // identity: this session is on a device seated as one is at its first login.
     let mut device = tilo_test_env::TestHome::new().expect("a home");
     let state = crate::common::seat_in(&mut device);
     let home = {
@@ -2450,7 +2448,7 @@ fn the_next_session_comes_up_where_this_one_was() {
 
     let mut second = session_keeping(&state);
     // The workspaces' layouts are the workspaces' own records, which reach this session after
-    // its first pass: the desk it shows is the one they hold once they arrive.
+    // its first pass: the shell it shows is the one they hold once they arrive.
     let came_back = crate::common::wait_maybe(&mut second, |session| {
         (workspaces(session) == home).then_some(())
     });
@@ -2469,7 +2467,7 @@ fn the_next_session_comes_up_where_this_one_was() {
 }
 
 /// What the overview offers as a window's own doings — sending it elsewhere, closing it — changes
-/// the desk, reachable by address as an agent or the palette does.
+/// the shell, reachable by address as an agent or the palette does.
 #[test]
 fn the_desktop_sends_a_window_where_the_overview_offers_to() {
     let _settled = ui::motion::testing::settled();
@@ -2591,9 +2589,9 @@ fn the_desktop_names_and_moves_the_strips_the_overview_offers() {
     assert_eq!(strips, ["Strip 1", "Later"], "and to the bottom");
 }
 
-/// The picture the person chose is the desk's, kept beside the desk for this device.
+/// The picture the person chose is the shell's, kept beside the session for this device.
 #[test]
-fn the_desk_starts_on_the_picture_the_person_chose() {
+fn the_shell_starts_on_the_picture_the_person_chose() {
     let _settled = ui::motion::testing::settled();
     let state = tempfile::tempdir().expect("a state directory");
     settings_store::appearance::WALLPAPER
@@ -2602,7 +2600,7 @@ fn the_desk_starts_on_the_picture_the_person_chose() {
     let mut session = session_keeping(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     let kept = std::fs::read_to_string(state.path().join("tilo").join("wallpapers.json"))
-        .expect("the choice is kept beside the desk");
+        .expect("the choice is kept beside the session");
     let kept: serde_json::Value = serde_json::from_str(&kept).expect("a record");
     assert_eq!(
         kept["default"], "dunes",
@@ -2688,7 +2686,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     assert_eq!(
         workspaces(&session).len(),
         held.len() + 1,
-        "a new workspace joins the desk"
+        "a new workspace joins the shell"
     );
 }
 

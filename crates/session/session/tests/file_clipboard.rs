@@ -41,7 +41,7 @@ use ui::dnd::COPIED_FILES_MIME;
 
 /// The app whose clipboard this is.
 const FILES: &str = "so.tilo.file-explorer";
-/// The workspace the session holds, as the desk names it.
+/// The workspace the session holds, as the shell names it.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 /// The file the person selects in Files.
 const NAME: &str = "notes.txt";
@@ -128,10 +128,10 @@ fn principal(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(fixture: &Fixture) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn shell(fixture: &Fixture) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Shell");
     workspace.set_owner(principal(&fixture.cert.user_public_key));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -158,7 +158,7 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
 }
 
 /// The session serving the apps it starts on `socket` , holding the fixture's workspace from its
-/// state and showing its desk.
+/// state and showing its shell.
 fn session(socket: &Path, fixture: &Fixture) -> Session {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process.
@@ -174,7 +174,7 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
         lists: Lists::default(),
         ..Options::default()
     });
-    session.handle().replace_tree(desk(fixture));
+    session.handle().replace_tree(shell(fixture));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }

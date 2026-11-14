@@ -54,7 +54,7 @@ pub struct StripFrame {
     /// where a mark would stand on the content's edge with nothing to choose.
     pub ribbon_offered: bool,
     /// The labels may open here, from the top bar, a key or the workspace menu: off wherever they
-    /// would cover a panel that replaces the desk.
+    /// would cover a panel that replaces the shell.
     pub switcher_offered: bool,
     /// The rail shows and takes input: off under an overview or a fullscreen window.
     pub rail_offered: bool,

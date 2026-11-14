@@ -1104,7 +1104,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
     assert_eq!(
         link.asked.borrow().front().cloned(),
         Some(Ask {
-            resource: "desktop:desk".to_owned(),
+            resource: "desktop:shell".to_owned(),
             action: "search".to_owned(),
             arguments: BTreeMap::from([("query".to_owned(), "quarterly".into())]),
             from: None,

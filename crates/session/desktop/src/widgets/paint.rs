@@ -1,4 +1,4 @@
-//! How each desk widget looks: its glance form, its open card at each width
+//! How each Desktop widget looks: its glance form, its open card at each width
 //! stage ([`Stage`]), and the controls on and around it (collapse, pin,
 //! remove). Geometry the layer also hit-tests (the controls, the team rows)
 //! is computed here once and shared, so what is drawn is exactly what takes
@@ -201,7 +201,7 @@ pub(super) fn grip_edge(card: Rect, (right, _): (bool, bool)) -> Rect {
     }
 }
 
-/// The ground every desk card stands on: the one floating card
+/// The ground every shell card stands on: the one floating card
 /// ([`ui::widget::floating_surface::paint_card`]), as banners and the palette.
 pub(super) fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
     ui::widget::floating_surface::paint_card(scene, transform, rect, theme);
@@ -925,7 +925,7 @@ pub(super) fn paint_grip(
 }
 
 /// A widget's name, for the controls that open, fold, pin or remove it.
-pub(super) fn desk_widget_title(id: WidgetId) -> String {
+pub(super) fn widget_title(id: WidgetId) -> String {
     t(match id {
         WidgetId::Music => "shell-widget-music",
         WidgetId::Team => "shell-widget-team",

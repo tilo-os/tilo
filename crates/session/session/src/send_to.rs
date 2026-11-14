@@ -654,7 +654,7 @@ fn report_target(
 /// message goes to, what it carries and its words. Everything else a send
 /// does — making an agent, opening where the message landed — is Chat's part
 /// of that same action, never a second invocation, and where the window that
-/// sent it stands is this desk's own: the session opens the conversation
+/// sent it stands is this session's own: the session opens the conversation
 /// there, from what the action answers.
 fn send_target(
     workspace: &str,
@@ -788,7 +788,7 @@ mod tests {
         assert_eq!(
             target.arguments.get("bounds"),
             None,
-            "where the box stood is the desk's to place the conversation by, not the chat's"
+            "where the box stood is the shell's to place the conversation by, not the chat's"
         );
     }
     /// A new agent nobody named is called by a short label of what it is sent, else the default

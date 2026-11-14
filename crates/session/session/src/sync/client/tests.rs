@@ -22,9 +22,9 @@ fn topic(workspace: &str) -> WorkspaceId {
 }
 
 /// A desktop showing one workspace, in `workspace` .
-fn desk(workspace: &str) -> Layout {
+fn shell(workspace: &str) -> Layout {
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
-    let workspace = Workspace::new(workspace, "Desk");
+    let workspace = Workspace::new(workspace, "Session");
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
@@ -62,7 +62,7 @@ fn list_of(
     );
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     directory
-        .add_workspace(workspace, "Desk")
+        .add_workspace(workspace, "Session")
         .expect("a listed workspace");
     let update = directory
         .signed_snapshot(signing, tilo_clock::unix_now_ns())
@@ -79,7 +79,7 @@ fn session(label: &str, user: Option<u8>) -> (Client, tokio::sync::mpsc::Unbound
         ..OwnPresence::default()
     };
     let (sync, said) = Client::offline(device(0xf0), own);
-    sync.follow_desktop(&desk(WORKSPACE));
+    sync.follow_desktop(&shell(WORKSPACE));
     (sync, said)
 }
 
@@ -251,13 +251,13 @@ fn a_transport_another_host_brings_carries_the_same_words() {
             ..OwnPresence::default()
         },
     );
-    sync.follow_desktop(&desk(WORKSPACE));
+    sync.follow_desktop(&shell(WORKSPACE));
     let commands = sent(&mut said);
     assert!(
         commands
             .iter()
             .any(|command| matches!(command, Cmd::Join(ws) if *ws == topic(WORKSPACE))),
-        "the client takes part in the workspace its desk shows"
+        "the client takes part in the workspace its session shows"
     );
     heard
         .send(hello(2, 0x04, "Phone"))
@@ -278,7 +278,7 @@ fn a_transport_another_host_brings_carries_the_same_words() {
 
 #[test]
 fn a_device_of_the_person_coming_up_owes_it_the_list() {
-    let (sync, _said) = session("Desk", Some(0x04));
+    let (sync, _said) = session("Session", Some(0x04));
     assert!(
         !sync.sibling_arrived(),
         "no device of the person said anything yet"
@@ -321,7 +321,7 @@ fn a_peer_here_is_a_member_of_the_active_workspace() {
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
 
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people.len(), 1);
     assert_eq!(people[0].label, "Framework 16");
@@ -379,7 +379,7 @@ fn what_a_peer_says_they_are_doing_is_the_roster_line() {
         },
     );
 
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(
         people[0].status.as_ref().map(|line| line.text.as_str()),
@@ -448,7 +448,7 @@ fn a_peer_away_is_away_on_the_roster() {
     };
     heard(&sync, 1, WORKSPACE, away("away"));
 
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people[0].availability, ui::Availability::Away);
     assert!(people[0].availability.dims());
@@ -458,7 +458,7 @@ fn a_peer_away_is_away_on_the_roster() {
 
     // Back at their machine, and heads down: the face lightens, and says what they chose.
     heard(&sync, 1, WORKSPACE, away("focusing"));
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     sync.show(&mut tree, &no_records(), &|_| None);
     let rows = tilo_desktop::people::roster_rows(&tree, "me");
     assert_eq!(rows[0].availability, ui::Availability::Focusing);
@@ -487,7 +487,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
         ..OwnPresence::default()
     };
     let (theirs, _theirs_said) = Client::offline(device(0xe0), own);
-    theirs.follow_desktop(&desk(WORKSPACE));
+    theirs.follow_desktop(&shell(WORKSPACE));
     let mut said_the_call = false;
     for frame in mine.take_said() {
         if matches!(
@@ -505,7 +505,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
     }
     assert!(said_the_call, "this device said which channel it is in");
 
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     let people = theirs.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people.len(), 1);
     assert_eq!(
@@ -533,7 +533,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
     for frame in mine.take_said() {
         theirs.heard_presence(WORKSPACE, mine.publisher(), &frame);
     }
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     let people = theirs.show(&mut tree, &no_records(), &|_| None);
     assert!(people[0].call.is_none());
 }
@@ -544,20 +544,20 @@ fn a_peer_who_leaves_leaves_the_roster() {
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
     assert_eq!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .len(),
         1
     );
 
     heard(&sync, 1, WORKSPACE, PeerPresencePayload::Left);
     assert!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .is_empty()
     );
 
     here(&sync, 1);
     assert_eq!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .len(),
         1
     );
@@ -566,11 +566,11 @@ fn a_peer_who_leaves_leaves_the_roster() {
         peer: device(1),
     });
     assert!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .is_empty()
     );
 
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     sync.show(&mut tree, &no_records(), &|_| None);
     assert!(tree.workspaces[0].members.is_empty());
 }
@@ -617,7 +617,7 @@ fn the_relays_wait_until_a_workspace_with_someone_else_is_shown() {
     };
     let (sync, _said) = Client::offline(device(0xf0), own);
     sync.hold_relays_with(reachability.clone());
-    sync.follow_desktop(&desk(WORKSPACE));
+    sync.follow_desktop(&shell(WORKSPACE));
 
     // Nobody else in the workspace this desktop shows: it names no relay,
     // and number 0's directory is told nothing of this device.
@@ -652,7 +652,7 @@ fn only_the_workspace_in_front_lists_people() {
     let elsewhere = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     heard(&sync, 2, elsewhere, PeerPresencePayload::Arrived);
     assert_eq!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .len(),
         1
     );
@@ -670,7 +670,7 @@ fn only_the_workspace_in_front_lists_people() {
     };
     sync.heard_presence(WORKSPACE, device(3), &foreign);
     assert_eq!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .len(),
         1
     );
@@ -690,7 +690,7 @@ fn another_apps_presence_is_not_the_desktops() {
     };
     sync.heard_presence(WORKSPACE, device(1), &notes);
     assert!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .is_empty()
     );
 }
@@ -703,7 +703,7 @@ fn two_devices_of_one_peer_are_one_face() {
     sync.hear(hello(2, 0xaa, "Phone"));
     here(&sync, 2);
 
-    let people = sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None);
+    let people = sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None);
     assert_eq!(people.len(), 1);
     assert_eq!(people[0].label, "Framework 16");
 }
@@ -714,30 +714,30 @@ fn another_device_of_this_person_is_this_person() {
     sync.hear(hello(1, 0x04, "Studio"));
     here(&sync, 1);
     assert!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .is_empty()
     );
 
     sync.hear(hello(2, 0xbb, "Framework 16"));
     here(&sync, 2);
     assert_eq!(
-        sync.show(&mut desk(WORKSPACE), &no_records(), &|_| None)
+        sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None)
             .len(),
         1
     );
 }
 
-/// No window of the desk shows a record.
+/// No window of the shell shows a record.
 fn no_records() -> crate::continuations::Continuations {
     crate::continuations::Continuations::default()
 }
 
-/// The tile `tab` stands at on the desk of these tests.
+/// The tile `tab` stands at on the shell of these tests.
 fn tile(tab: u64) -> tilo_live::presence::Tile {
     tilo_live::presence::Tile::new(tab, 100.0, 50.0, 400.0, 300.0)
 }
 
-/// Everyone's pointer as the desk draws it, over `tiles`: who, the tab they are over, and where it
+/// Everyone's pointer as the shell draws it, over `tiles`: who, the tab they are over, and where it
 /// stands on the surface.
 fn drawn_on(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
     let mut chats = ui::presence::CursorChats::default();
@@ -775,7 +775,7 @@ fn pointers_are_followed_on_the_room_tile() {
     assert!(drawn_on(&sync, &[tile(4)]).is_empty(), "another tab");
 
     // A pointer resting where it is, and the peer saying it is here again,
-    // are no change: the desk draws no frame.
+    // are no change: the shell draws no frame.
     let drawn = sync.presence_revision();
     pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
     here(&sync, 1);
@@ -796,11 +796,11 @@ fn pointers_are_followed_on_the_room_tile() {
     );
 }
 
-/// An agent is on the desk the way a person's device is: its shell frame on the workspace's
+/// An agent is on the shell the way a person's device is: its shell frame on the workspace's
 /// presence track says its face, that it works here, and what it is doing, and the People panel
 /// draws that.
 #[test]
-fn an_agents_shell_frame_puts_its_face_on_the_desk() {
+fn an_agents_shell_frame_puts_its_face_on_the_shell() {
     let (sync, _said) = session("Quinten", Some(0x04));
     let said = collab_types::presence::ShellPresence {
         seq: 1,
@@ -819,7 +819,7 @@ fn an_agents_shell_frame_puts_its_face_on_the_desk() {
     let frame = Presence::desktop(WORKSPACE, PeerPresencePayload::Shell(Box::new(said)));
     sync.heard_presence(WORKSPACE, device(1), &frame);
 
-    let mut tree = desk(WORKSPACE);
+    let mut tree = shell(WORKSPACE);
     let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people.len(), 1, "the agent is a member here");
     assert_eq!(people[0].label, "Writer helper");
@@ -947,7 +947,7 @@ fn a_host_is_dialled_before_the_workspaces_it_carries() {
         OwnPresence::default(),
         vec![EndpointAddr::new(host)],
     );
-    sync.follow_desktop(&desk(WORKSPACE));
+    sync.follow_desktop(&shell(WORKSPACE));
     let commands = sent(&mut said);
     let connect = commands
         .iter()
@@ -1029,7 +1029,7 @@ fn payloads(sync: &Client) -> Vec<Payload> {
 
 #[test]
 fn a_device_of_the_person_says_where_its_workspaces_are_reached() {
-    let (sync, _said) = session("Desk", Some(0x04));
+    let (sync, _said) = session("Session", Some(0x04));
     let sync = sync.taking_part_as(&person(0x04));
     assert!(
         sync.host_hint(WORKSPACE).is_none(),
@@ -1058,7 +1058,7 @@ fn a_device_of_the_person_says_where_its_workspaces_are_reached() {
 
 #[test]
 fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
-    let (sync, _said) = session("Desk", Some(0x04));
+    let (sync, _said) = session("Session", Some(0x04));
     let sync = sync.taking_part_as(&person(0x04));
     let (_, hint) = host_hint(0x05, 0x22, "someone else's address");
     sync.hear(Event::SiblingMsg {
@@ -1077,8 +1077,8 @@ fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
     );
 }
 
-/// Where this person is on their desk — the tile they point at and their shell — is said with the
-/// rest of their word, and only what moved is said again: a desk at rest publishes nothing.
+/// Where this person is on their shell — the tile they point at and their shell — is said with the
+/// rest of their word, and only what moved is said again: a shell at rest publishes nothing.
 #[test]
 fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
     let (sync, _said) = session("Quinten", Some(0x04));
@@ -1258,22 +1258,22 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
     );
 }
 
-/// A page and a native desk in one workspace, with an MCP agent of the desk's person acting there:
+/// A page and a native shell in one workspace, with an MCP agent of the shell's person acting there:
 /// each publishes its own presence on the workspace's live plane and reads everyone else's from
 /// it, and both list the agent as the same one row, in its colour, with what it is doing, and
 /// each other's lines as their devices said them.
 #[test]
-fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
+fn a_page_and_a_shell_see_the_same_rows_and_lines_of_everyone_here() {
     use tilo_desktop::people::LineSource::{Observed, Written};
 
-    let (page_device, desk_device, agent_device) = (0xa0, 0xd0, 0xc0);
+    let (page_device, native_device, agent_device) = (0xa0, 0xd0, 0xc0);
     let (page, _page_said) = Client::offline(device(page_device), saying("Ada", 2, None));
-    let (native, _desk_said) = Client::offline(device(desk_device), saying("Quinten", 1, None));
+    let (native, _shell_said) = Client::offline(device(native_device), saying("Quinten", 1, None));
     for client in [&page, &native] {
-        client.follow_desktop(&desk(WORKSPACE));
+        client.follow_desktop(&shell(WORKSPACE));
         client.take_said();
     }
-    // Ada says what she is doing in her own words; Quinten's desk reads his line off his steps.
+    // Ada says what she is doing in her own words; Quinten's shell reads his line off his steps.
     page.set_own(saying("Ada", 2, Some(("Reviewing the launch plan", false))));
     native.set_own(saying(
         "Quinten",
@@ -1282,7 +1282,7 @@ fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
     ));
 
     // Every device's certificate, then every frame, reaches the others over the plane.
-    page.hear(hello(desk_device, 1, "Framework"));
+    page.hear(hello(native_device, 1, "Framework"));
     page.hear(hello(agent_device, 1, "build-box"));
     native.hear(hello(page_device, 2, "Browser"));
     native.hear(hello(agent_device, 1, "build-box"));
@@ -1290,14 +1290,14 @@ fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
         native.heard_presence(WORKSPACE, device(page_device), &frame);
     }
     for frame in native.take_said() {
-        page.heard_presence(WORKSPACE, device(desk_device), &frame);
+        page.heard_presence(WORKSPACE, device(native_device), &frame);
     }
     for frame in &mcp_agent_frames(agent_device) {
         page.heard_presence(WORKSPACE, device(agent_device), frame);
         native.heard_presence(WORKSPACE, device(agent_device), frame);
     }
 
-    let (on_page, on_desk) = (roster_rows(&page), roster_rows(&native));
+    let (on_page, on_shell) = (roster_rows(&page), roster_rows(&native));
     let agents = |rows: &[RosterRow]| -> Vec<RosterRow> {
         rows.iter().filter(|row| row.1).cloned().collect()
     };
@@ -1313,19 +1313,19 @@ fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
     );
     assert_eq!(
         agents(&on_page),
-        agents(&on_desk),
+        agents(&on_shell),
         "the same row everywhere"
     );
     let line_of = |rows: &[RosterRow], name: &str| rows.iter().find(|row| row.0 == name)?.2.clone();
     assert_eq!(
         line_of(&on_page, "Quinten"),
         Some(("Editing ‘Plan’ in Notes".to_owned(), Observed)),
-        "the page reads the desk's line as read off his steps: {on_page:?}"
+        "the page reads the session's line as read off his steps: {on_page:?}"
     );
     assert_eq!(
-        line_of(&on_desk, "Ada"),
+        line_of(&on_shell, "Ada"),
         Some(("Reviewing the launch plan".to_owned(), Written)),
-        "the desk reads the page's line as her own words: {on_desk:?}"
+        "the session reads the page's line as her own words: {on_shell:?}"
     );
     assert_eq!(
         on_page.len(),
@@ -1333,13 +1333,13 @@ fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
         "Quinten and his agent, never Ada: {on_page:?}"
     );
     assert_eq!(
-        on_desk.len(),
+        on_shell.len(),
         2,
-        "Ada and Quinten's agent, its own row and never one of his devices: {on_desk:?}"
+        "Ada and Quinten's agent, its own row and never one of his devices: {on_shell:?}"
     );
 }
 
-/// A browser joins a workspace a desk and another page are in, then closes without a word, as a
+/// A browser joins a workspace a shell and another page are in, then closes without a word, as a
 /// tab killed with its browser does: the others stop listing it within a few seconds, on their own
 /// clocks, while everyone still connected stays.
 #[test]
@@ -1360,11 +1360,11 @@ fn a_browser_that_closes_without_a_word_leaves_who_is_here_within_seconds() {
         ),
     ];
     for (own, client) in &clients {
-        client.follow_desktop(&desk(WORKSPACE));
+        client.follow_desktop(&shell(WORKSPACE));
         for (seed, user, label) in [
             (gone, 2, "Browser"),
             (other, 3, "Laptop"),
-            (native, 1, "Desk"),
+            (native, 1, "Session"),
         ] {
             if seed != *own {
                 client.hear(hello(seed, user, label));
@@ -1405,7 +1405,7 @@ fn a_browser_that_closes_without_a_word_leaves_who_is_here_within_seconds() {
         }
         assert!(
             closed.elapsed() < bound,
-            "the closed browser is still listed after {:?}: desk {:?}, page {:?}",
+            "the closed browser is still listed after {:?}: session {:?}, page {:?}",
             closed.elapsed(),
             names(quinten),
             names(grace),
@@ -1440,7 +1440,7 @@ type RosterRow = (
 /// Who is here, as `client`'s roster lists them.
 fn roster_rows(client: &Client) -> Vec<RosterRow> {
     client
-        .people(&desk(WORKSPACE), &no_records(), &|_: &str| None)
+        .people(&shell(WORKSPACE), &no_records(), &|_: &str| None)
         .into_iter()
         .map(|person| {
             let line = person.status.map(|line| (line.text, line.source));

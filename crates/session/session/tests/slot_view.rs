@@ -95,8 +95,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// The desk the session starts on: one window, in front.
-fn desk_tree() -> Layout {
+/// The shell the session starts on: one window, in front.
+fn layout_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -318,7 +318,7 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     // The probe is the view that draws the slot here: it stays up while the menu is, as a view
     // does, so the session keeps it as the slot's.
     environment.set("SURFACE_PROBE_STAY", "1");
-    let mut session = session_with(&socket, desk_tree());
+    let mut session = session_with(&socket, layout_tree());
     session
         .invoke(
             WINDOW_MENU,
@@ -373,7 +373,7 @@ fn a_part_the_system_draws_refuses_a_binding() {
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
-    let mut session = session_with(&socket, desk_tree());
+    let mut session = session_with(&socket, layout_tree());
     for slot in ["lock", "consent", "portal", "auth", "display-confirm"] {
         let mut arguments = Map::new();
         arguments.insert("slot".into(), json!(slot));
@@ -408,7 +408,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
     installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
-    let mut session = session_with(&socket, desk_tree());
+    let mut session = session_with(&socket, layout_tree());
     session
         .invoke(
             WINDOW_MENU,
@@ -507,7 +507,7 @@ fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_
     installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
-    let mut session = session_with(&socket, desk_tree());
+    let mut session = session_with(&socket, layout_tree());
     session
         .invoke(
             WINDOW_MENU,
@@ -557,7 +557,7 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
     installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
-    let mut session = session_with(&socket, desk_tree());
+    let mut session = session_with(&socket, layout_tree());
     session
         .invoke(
             WINDOW_MENU,
@@ -574,7 +574,7 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
 
     // The view the person bound shows every row the menu offers, each labelled as the menu labels
     // it, the rows of its submenus with them: the rows of another app's reading read as the records
-    // the desk declares, and a submenu is a row of it rather than a second reading to walk.
+    // the shell declares, and a submenu is a row of it rather than a second reading to walk.
     let offered = rows(&session);
     bind(&mut session, "so.tilo.slotrows", "menu");
     until(&mut session, "shows the rows the menu offers", |session| {

@@ -3,7 +3,7 @@
 //! tilolang package this machine installed: then the view is the package's, and the session runs it
 //! in an instance of its own ([`SlotView`]), over the reading it
 //! publishes for the slot. The pointer and the keys reach it while the overlay stack says its
-//! surface is the one over the desk; what it asks goes through the session's door, as any caller's
+//! surface is the one over the shell; what it asks goes through the session's door, as any caller's
 //! does.
 //! A package that does not start is no view for the slot: the slot keeps the view the session ships
 //! with, as a missing program does.
@@ -20,7 +20,7 @@ use tilo_desktop_surface::DesktopHandle;
 
 /// The tilolang views the session runs for the shell's slots.
 pub(crate) struct SlotViews {
-    /// The desk whose own state, the search it opens, takes the keyboard before the chrome has
+    /// The shell whose own state, the search it opens, takes the keyboard before the chrome has
     /// published its surface.
     handle: DesktopHandle,
     /// The overlay stack that says which surface holds the pointer and the keys.
@@ -35,7 +35,7 @@ pub(crate) struct SlotViews {
 
 impl SlotViews {
     /// The views the session runs itself, feeding the keyboard's target from `overlays` and the
-    /// desk `handle` , drawing at `scale` .
+    /// shell `handle` , drawing at `scale` .
     pub(crate) const fn new(handle: DesktopHandle, overlays: Overlays, scale: f64) -> Self {
         Self {
             handle,

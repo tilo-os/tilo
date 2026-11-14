@@ -10,7 +10,7 @@ use tilo_session_core::door::{Doors, Published};
 use tilo_surface_host::{DesktopHost, WidgetHost};
 use ui::widget::Widget;
 
-use super::{Desk, Heard, Layer, Placement, Surfaces};
+use super::{Heard, Layer, Placement, Shell, Surfaces};
 
 /// What a Linux session places layers on: its compositor, and the door its surfaces publish
 /// through.
@@ -89,7 +89,7 @@ impl Layer for RefCell<WidgetHost> {
     }
 }
 
-impl Desk for DesktopHost {
+impl Shell for DesktopHost {
     fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)> {
         self.with_policy(|policy| policy.placement().shown)
     }

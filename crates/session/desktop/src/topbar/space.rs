@@ -186,7 +186,7 @@ mod tests {
             space.build_layout(&mut taffy, &Theme::default(), &mut nodes);
             assert!(
                 !(space.needs_redraw() || space.needs_animation_frame()),
-                "it draws nothing, so a settled desk has nothing to draw here"
+                "it draws nothing, so a settled shell has nothing to draw here"
             );
         }
     }

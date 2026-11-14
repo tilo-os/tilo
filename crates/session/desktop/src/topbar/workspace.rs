@@ -39,7 +39,7 @@ impl TopBarChrome {
 
     /// Where the workspace name was last drawn, for anchoring its menu
     /// ([`ChromeIntent::ToggleWorkspaceMenu`]: the workspaces, where it is hosted, joining and
-    /// leaving, renaming, the overview, a new desk).
+    /// leaving, renaming, the overview, a new shell).
     pub fn workspace_menu_rect(&self) -> Rect {
         self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS)
     }

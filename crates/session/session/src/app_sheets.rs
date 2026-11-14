@@ -429,8 +429,8 @@ mod tests {
     }
 
     /// The session's side of the app sheets: the registry of the person's downloaded programs, the
-    /// two sheets' seats, and the desk's notices.
-    struct Desk {
+    /// two sheets' seats, and the session's notices.
+    struct Session {
         sheets: AppSheets,
         services: Rc<RefCell<Services>>,
         notices: crate::notifications::told::Told,
@@ -441,7 +441,7 @@ mod tests {
 
     /// A session whose person has `files` in their home (path, contents) and is running `running`
     /// programs (the window's app id, the file in their home it runs).
-    fn desk(files: &[(&str, &[u8])], running: &[(&str, &str)]) -> Desk {
+    fn session(files: &[(&str, &[u8])], running: &[(&str, &str)]) -> Session {
         let home = TestHome::new().expect("a home");
         for (path, contents) in files {
             write(&home.home().join(path), contents);
@@ -476,7 +476,7 @@ mod tests {
             Rc::clone(&services),
             Rc::new(notices.clone()) as Rc<dyn Notices>,
         );
-        Desk {
+        Session {
             sheets,
             services,
             notices,
@@ -534,7 +534,7 @@ mod tests {
         desktop_id
     }
 
-    impl Desk {
+    impl Session {
         /// Frames of the session's loop: what the registry's worker found lands, is read, and the
         /// sheets follow it.
         fn settle(&self) {
@@ -584,7 +584,7 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        /// The titles and bodies of the notices the desk shows now.
+        /// The titles and bodies of the notices the session shows now.
         fn notices(&self) -> Vec<(String, String)> {
             self.notices.told()
         }
@@ -592,45 +592,49 @@ mod tests {
 
     #[test]
     fn a_program_running_with_no_entry_is_asked_about_and_adding_it_puts_it_in_apps() {
-        let desk = desk(
+        let session = session(
             &[("Downloads/Krita.AppImage", &appimage())],
             &[("org.example.Krita", "Downloads/Krita.AppImage")],
         );
-        desk.until("the question about the program", || {
-            desk.add.offer().is_some()
+        session.until("the question about the program", || {
+            session.add.offer().is_some()
         });
 
         // The question names the program and the file it runs from, and offers to move it, since an
         // AppImage is one self-contained file.
-        let asked = desk.add.offer().expect("the question");
+        let asked = session.add.offer().expect("the question");
         assert_eq!(asked.name, "Krita");
         assert_eq!(
             asked.file,
-            desk.home.home().join("Downloads/Krita.AppImage")
+            session.home.home().join("Downloads/Krita.AppImage")
         );
         assert!(asked.appimage);
-        assert!(desk.add.offers_move());
+        assert!(session.add.offers_move());
 
         // Answered with the move, the program becomes an app in Applications.
-        desk.add.answer(AddAppEffect::Add {
+        session.add.answer(AddAppEffect::Add {
             move_to_applications: Some(true),
         });
-        desk.until("the app", || !desk.apps().is_empty());
-        let moved = desk.home.home().join("Applications/Krita.AppImage");
+        session.until("the app", || !session.apps().is_empty());
+        let moved = session.home.home().join("Applications/Krita.AppImage");
         assert!(moved.is_file(), "the AppImage is in Applications");
         assert!(
-            !desk.home.home().join("Downloads/Krita.AppImage").exists(),
+            !session
+                .home
+                .home()
+                .join("Downloads/Krita.AppImage")
+                .exists(),
             "and no longer in Downloads"
         );
-        let app = desk.apps().pop().expect("the app");
+        let app = session.apps().pop().expect("the app");
         assert_eq!(app.name, "Krita");
         assert_eq!(PathBuf::from(&app.file), moved);
         assert!(
-            desk.offers().is_empty(),
+            session.offers().is_empty(),
             "the question was answered, so there is no offer left"
         );
         assert_eq!(
-            desk.add.presentation().phase(),
+            session.add.presentation().phase(),
             tilo_sheets::Phase::Leaving,
             "the question's card leaves the screen; a shell reports it gone"
         );
@@ -638,21 +642,21 @@ mod tests {
 
     #[test]
     fn adding_where_the_file_is_leaves_it_where_the_person_downloaded_it() {
-        let desk = desk(
+        let session = session(
             &[("Downloads/Krita.AppImage", &appimage())],
             &[("org.example.Krita", "Downloads/Krita.AppImage")],
         );
-        desk.until("the question about the program", || {
-            desk.add.offer().is_some()
+        session.until("the question about the program", || {
+            session.add.offer().is_some()
         });
-        desk.add.answer(AddAppEffect::Add {
+        session.add.answer(AddAppEffect::Add {
             move_to_applications: None,
         });
-        desk.until("the app", || !desk.apps().is_empty());
-        let downloaded = desk.home.home().join("Downloads/Krita.AppImage");
+        session.until("the app", || !session.apps().is_empty());
+        let downloaded = session.home.home().join("Downloads/Krita.AppImage");
         assert!(downloaded.is_file(), "the file stays where it was");
         assert_eq!(
-            PathBuf::from(&desk.apps()[0].file),
+            PathBuf::from(&session.apps()[0].file),
             downloaded,
             "the app starts the file the person downloaded"
         );
@@ -660,37 +664,43 @@ mod tests {
 
     #[test]
     fn not_adding_it_keeps_it_off_the_apps_and_is_not_asked_again() {
-        let desk = desk(
+        let session = session(
             &[("Downloads/Krita.AppImage", &appimage())],
             &[("org.example.Krita", "Downloads/Krita.AppImage")],
         );
-        desk.until("the question about the program", || {
-            desk.add.offer().is_some()
+        session.until("the question about the program", || {
+            session.add.offer().is_some()
         });
-        desk.add.answer(AddAppEffect::Decline);
-        desk.until("the answer", || {
-            desk.offers().first().is_some_and(|offer| offer.declined)
+        session.add.answer(AddAppEffect::Decline);
+        session.until("the answer", || {
+            session.offers().first().is_some_and(|offer| offer.declined)
         });
 
         // It is no app, its file stays, and the offer stays marked so search can still add it.
-        assert!(desk.apps().is_empty(), "nothing was added");
-        assert!(desk.home.home().join("Downloads/Krita.AppImage").is_file());
+        assert!(session.apps().is_empty(), "nothing was added");
+        assert!(
+            session
+                .home
+                .home()
+                .join("Downloads/Krita.AppImage")
+                .is_file()
+        );
         assert_eq!(
-            desk.add.presentation().phase(),
+            session.add.presentation().phase(),
             tilo_sheets::Phase::Leaving,
             "the question's card leaves the screen; a shell reports it gone"
         );
 
         // It keeps running, and it is not asked about again.
         for _ in 0..4 {
-            desk.settle();
+            session.settle();
         }
-        assert!(!desk.add.presentation().is_open(), "asked only once");
+        assert!(!session.add.presentation().is_open(), "asked only once");
     }
 
     #[test]
     fn one_question_stands_at_a_time_and_the_next_program_follows_it() {
-        let desk = desk(
+        let session = session(
             &[
                 ("Downloads/Krita.AppImage", &appimage()),
                 ("Downloads/Inkscape.AppImage", &appimage()),
@@ -700,69 +710,79 @@ mod tests {
                 ("org.example.Inkscape", "Downloads/Inkscape.AppImage"),
             ],
         );
-        desk.until("both programs offered", || desk.offers().len() == 2);
-        desk.settle();
-        let first = desk.add.offer().expect("one of them is asked about");
+        session.until("both programs offered", || session.offers().len() == 2);
+        session.settle();
+        let first = session.add.offer().expect("one of them is asked about");
         assert!(
-            desk.offers().iter().any(|offer| offer.name == first.name),
+            session
+                .offers()
+                .iter()
+                .any(|offer| offer.name == first.name),
             "the question is about one of the programs offered"
         );
 
         // Answering it, the other program is asked about; never both at once.
-        desk.add.answer(AddAppEffect::Decline);
-        desk.until("the other program", || {
-            desk.add.offer().map(|offer| offer.name) != Some(first.name.clone())
+        session.add.answer(AddAppEffect::Decline);
+        session.until("the other program", || {
+            session.add.offer().map(|offer| offer.name) != Some(first.name.clone())
         });
-        let second = desk.add.offer().expect("the other program");
+        let second = session.add.offer().expect("the other program");
         assert_ne!(second.name, first.name, "the question moved on");
-        assert!(desk.add.presentation().is_open(), "and it is shown");
+        assert!(session.add.presentation().is_open(), "and it is shown");
     }
 
     #[test]
     fn an_app_the_person_uninstalls_goes_with_every_copy_and_the_notice_says_so() {
-        let desk = desk(&[], &[]);
-        let applications = desk.home.home().join("Applications/Tilo Imager.AppImage");
-        let downloads = desk.home.home().join("Downloads/tilo-imager.AppImage");
+        let session = session(&[], &[]);
+        let applications = session
+            .home
+            .home()
+            .join("Applications/Tilo Imager.AppImage");
+        let downloads = session.home.home().join("Downloads/tilo-imager.AppImage");
         let desktop_id = app_at(
-            &desk.home,
+            &session.home,
             "tilo-imager",
             "Tilo Imager",
             &[applications.clone(), downloads.clone()],
         );
         // The entry is written once per copy; the registry reads both, and the question is built
         // from the reading that lists every copy.
-        desk.until("the app, with every copy of it", || {
-            desk.apps().first().is_some_and(|app| app.copies.len() == 2)
+        session.until("the app, with every copy of it", || {
+            session
+                .apps()
+                .first()
+                .is_some_and(|app| app.copies.len() == 2)
         });
 
         // The question lists every copy that goes, and where they are.
-        let reading = desk.reading();
-        desk.sheets.ask_uninstall(&desktop_id, reading.as_ref());
-        desk.until("the question about the app", || {
-            desk.uninstall.app().is_some()
+        let reading = session.reading();
+        session.sheets.ask_uninstall(&desktop_id, reading.as_ref());
+        session.until("the question about the app", || {
+            session.uninstall.app().is_some()
         });
-        let asked = desk.uninstall.app().expect("the question");
+        let asked = session.uninstall.app().expect("the question");
         assert_eq!(asked.name, "Tilo Imager");
         assert_eq!(asked.removal, Removal::Uninstall);
         let Going::Files { copies, home } = &asked.going else {
             panic!("a downloaded program goes with its files");
         };
         assert_eq!(*copies, vec![downloads.clone(), applications.clone()]);
-        assert_eq!(home.as_deref(), Some(desk.home.home()));
+        assert_eq!(home.as_deref(), Some(session.home.home()));
 
         // Answered, both copies are in the Trash, the app is off their apps,
         // and the notice names both.
-        desk.uninstall
+        session
+            .uninstall
             .answer(UninstallEffect::Confirm { remove_data: None });
-        desk.until("every copy to go", || {
+        session.until("every copy to go", || {
             !applications.exists() && !downloads.exists()
         });
-        desk.until("the app to go", || desk.apps().is_empty());
-        let trashed = desk.home.data().join("Trash/files");
+        session.until("the app to go", || session.apps().is_empty());
+        let trashed = session.home.data().join("Trash/files");
         assert!(trashed.join("Tilo Imager.AppImage").is_file(), "the app");
         assert!(trashed.join("tilo-imager.AppImage").is_file(), "its copy");
         assert_eq!(
-            desk.notices(),
+            session.notices(),
             [(
                 "Uninstalled Tilo Imager".to_owned(),
                 "All its copies are in the Trash.".to_owned()
@@ -772,46 +792,50 @@ mod tests {
 
     #[test]
     fn keeping_an_app_leaves_it_and_its_file_where_they_are() {
-        let desk = desk(&[], &[]);
-        let file = desk.home.home().join("Applications/Tilo Imager.AppImage");
+        let session = session(&[], &[]);
+        let file = session
+            .home
+            .home()
+            .join("Applications/Tilo Imager.AppImage");
         let desktop_id = app_at(
-            &desk.home,
+            &session.home,
             "tilo-imager",
             "Tilo Imager",
             std::slice::from_ref(&file),
         );
-        desk.until("the app", || !desk.apps().is_empty());
-        let reading = desk.reading();
-        desk.sheets.ask_uninstall(&desktop_id, reading.as_ref());
-        desk.until("the question about the app", || {
-            desk.uninstall.app().is_some()
+        session.until("the app", || !session.apps().is_empty());
+        let reading = session.reading();
+        session.sheets.ask_uninstall(&desktop_id, reading.as_ref());
+        session.until("the question about the app", || {
+            session.uninstall.app().is_some()
         });
-        desk.uninstall.answer(UninstallEffect::Cancel);
-        desk.settle();
+        session.uninstall.answer(UninstallEffect::Cancel);
+        session.settle();
         assert_eq!(
-            desk.uninstall.presentation().phase(),
+            session.uninstall.presentation().phase(),
             tilo_sheets::Phase::Leaving,
             "the question's card leaves the screen; a shell reports it gone"
         );
         assert!(file.is_file(), "the app's file stays");
-        assert_eq!(desk.apps().len(), 1, "and so does the app");
-        assert!(desk.notices().is_empty(), "nothing to report");
+        assert_eq!(session.apps().len(), 1, "and so does the app");
+        assert!(session.notices().is_empty(), "nothing to report");
     }
 
     #[test]
     fn asking_about_an_app_the_person_has_not_got_says_so() {
-        let desk = desk(&[], &[]);
-        desk.settle();
-        let reading = desk.reading();
-        desk.sheets
+        let session = session(&[], &[]);
+        session.settle();
+        let reading = session.reading();
+        session
+            .sheets
             .ask_uninstall("tilo-downloaded-not-here", reading.as_ref());
-        desk.until("the notice", || !desk.notices().is_empty());
+        session.until("the notice", || !session.notices().is_empty());
         assert!(
-            !desk.uninstall.presentation().is_drawn(),
+            !session.uninstall.presentation().is_drawn(),
             "nothing is asked"
         );
         assert_eq!(
-            desk.notices(),
+            session.notices(),
             [(
                 "App not found".to_owned(),
                 "It's no longer in your apps.".to_owned()

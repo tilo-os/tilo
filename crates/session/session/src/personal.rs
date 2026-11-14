@@ -71,7 +71,7 @@ impl Personal {
     /// no link to, hand what they write to this session's apps through `channels` and `fanout` ,
     /// and keep the store beside this session's state as it changes.
     /// `dials` opens the other lane to the same devices: the session between two of the person's
-    /// desks is where they tell each other what they hold — their workspaces and their hosts — so
+    /// sessions is where they tell each other what they hold — their workspaces and their hosts — so
     /// one adopts what the other keeps. Without it a device keeps only what it was there to make.
     /// The session must answer [`Self::protocol`] on `endpoint` for as long as the door: it is what
     /// a sibling dials.
@@ -175,7 +175,7 @@ mod tests {
 
     /// The person's other devices are dialled as this session's siblings from the devices their
     /// store holds, at the relay the person's settings name, and this device is not dialled at all:
-    /// that session is where the two desks tell each other the workspaces they hold, so one adopts
+    /// that session is where the two sessions tell each other the workspaces they hold, so one adopts
     /// what the other keeps.
     #[test]
     fn the_persons_other_devices_are_dialled_as_siblings() {

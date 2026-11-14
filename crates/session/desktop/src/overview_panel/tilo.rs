@@ -62,16 +62,16 @@ impl OverviewPanel {
     /// New workspace and Join.
     pub(super) fn go_to_slots(&self) -> usize {
         let workspaces = self
-            .desk
+            .shell
             .cards
             .len()
             .saturating_sub(usize::from(self.here_index().is_some()));
         workspaces
             .saturating_add(usize::from(self.can_add()))
-            .saturating_add(usize::from(self.desk.can_join))
+            .saturating_add(usize::from(self.shell.can_join))
     }
 
-    /// The row with `key`, when the desk shows one.
+    /// The row with `key`, when the shell shows one.
     pub(super) fn tilo_row(&self, key: &str) -> Option<&TiloItem> {
         self.tilo_rows.iter().find_map(|row| match row {
             TiloRow::Item(item) if item.key == key => Some(item),

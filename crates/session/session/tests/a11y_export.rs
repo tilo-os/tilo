@@ -1,5 +1,5 @@
 //! What assistive technology reads of the session's own surfaces.
-//! The desk, the bar and every sheet and panel the session hosts are painted by the session's own
+//! The shell, the bar and every sheet and panel the session hosts are painted by the session's own
 //! loop, so no application window carries them: the session exports each one itself, over the
 //! semantic tree the toolkit already builds. These tests read that export the way a screen reader
 //! gets it — a named window per surface, a node per control, an action that acts — and drive a
@@ -72,14 +72,14 @@ fn labelled(tree: &TreeUpdate, label: &str) -> (NodeId, Node) {
 }
 
 #[test]
-fn the_bar_and_the_desk_are_windows_a_screen_reader_reads() {
+fn the_bar_and_the_shell_are_windows_a_screen_reader_reads() {
     let _settled = ui::motion::testing::settled();
     let (_home, session) = session();
     let windows = session.a11y_windows();
 
     let (_, bar) = window(&windows, "Top bar");
-    let (_, desk) = window(&windows, "Desktop");
-    for (what, tree) in [("Top bar", &bar), ("Desktop", &desk)] {
+    let (_, shell) = window(&windows, "Desktop");
+    for (what, tree) in [("Top bar", &bar), ("Desktop", &shell)] {
         let root = tree.tree.as_ref().expect("a window names its root").root;
         let (_, node) = tree
             .nodes
@@ -98,12 +98,12 @@ fn the_bar_and_the_desk_are_windows_a_screen_reader_reads() {
         );
     }
     assert!(
-        desk.nodes.iter().any(|(_, node)| node.label().is_some()),
-        "the desk's controls are named"
+        shell.nodes.iter().any(|(_, node)| node.label().is_some()),
+        "the shell's controls are named"
     );
-    // The empty desk offers the way into the app palette, named as the external AT-SPI client of
+    // The empty shell offers the way into the app palette, named as the external AT-SPI client of
     // the installed image looks for it.
-    let (_, node) = labelled(&desk, "Open an app");
+    let (_, node) = labelled(&shell, "Open an app");
     assert_eq!(node.role(), Role::Button);
     assert!(
         node.supports_action(ui::accesskit::Action::Click),
@@ -115,14 +115,14 @@ fn the_bar_and_the_desk_are_windows_a_screen_reader_reads() {
 fn activating_a_button_through_the_export_performs_its_action() {
     let _settled = ui::motion::testing::settled();
     let (_home, mut session) = session();
-    let (place, desk) = window(&session.a11y_windows(), "Desktop");
-    let (opener, _) = labelled(&desk, "Open an app");
+    let (place, shell) = window(&session.a11y_windows(), "Desktop");
+    let (opener, _) = labelled(&shell, "Open an app");
     session.step(REFRESH).expect("a turn of the session");
     let (_, again) = window(&session.a11y_windows(), "Desktop");
     let (opener_now, _) = labelled(&again, "Open an app");
     assert_eq!(
         opener, opener_now,
-        "the id a client holds of the desk's button survives a frame"
+        "the id a client holds of the shell's button survives a frame"
     );
     assert!(
         !session.handle().search_open(),
@@ -131,7 +131,7 @@ fn activating_a_button_through_the_export_performs_its_action() {
 
     assert!(
         session.a11y_perform(place, opener, &Action::Activate),
-        "the desk took the press its window offers"
+        "the shell took the press its window offers"
     );
     crate::common::wait_for(
         &mut session,

@@ -246,7 +246,7 @@ impl ThisBox {
         crate::common::press_sheet(&mut self.session, effect, args);
     }
 
-    /// The agents the desk seats now, by the key its presence names each.
+    /// The agents the shell seats now, by the key its presence names each.
     fn seated(&self) -> Vec<String> {
         self.session
             .read("session:agents")
@@ -356,7 +356,7 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
     assert_eq!(who, "Claude Code, from your device Studio laptop");
     // Each connection the person admits is an agent of its own: the device's agent, first of it.
     let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
-    // The desk keeps no name for a workspace nobody named: the question says the word for one.
+    // The shell keeps no name for a workspace nobody named: the question says the word for one.
     assert_eq!(what, format!("Work in “Workspace” as the agent {named}"));
 
     // Nobody is at this box: nothing is answered, and nothing is admitted.
@@ -488,7 +488,7 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
 
 /// This computer's own identity, as a desktop has one: a root in the person's record, the device
 /// key and the certificate that root certified kept in a private directory of the test's, the
-/// device enrolled in its identity's fleet, and the workspace its desk holds — the personal
+/// device enrolled in its identity's fleet, and the workspace its shell holds — the personal
 /// cluster of that identity, which needs no other name to be found.
 struct ThisComputer {
     /// The key this device signs its workspace with.
@@ -586,10 +586,10 @@ fn workspace_held_here(
     }
 }
 
-/// A desk showing the workspace `workspace`, known by its id, owned by `person`.
-fn desk(workspace: &str, person: &str) -> Layout {
+/// A shell showing the workspace `workspace`, known by its id, owned by `person`.
+fn layout(workspace: &str, person: &str) -> Layout {
     let id = WorkspaceId::parse(workspace).expect("a workspace id");
-    let mut held = Workspace::new(id, "Desk");
+    let mut held = Workspace::new(id, "Shell");
     held.set_owner(person);
     Layout {
         workspaces: vec![held.clone()],
@@ -793,10 +793,10 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
         services: vec![Box::new(notebook)],
         ..Options::default()
     });
-    // The desk shows the workspace this computer holds, as its own desktop does.
+    // The shell shows the workspace this computer holds, as its own desktop does.
     session
         .handle()
-        .replace_tree(desk(&computer.workspace, &seated));
+        .replace_tree(layout(&computer.workspace, &seated));
     crate::common::until(
         &mut session,
         "the workspace this computer holds",
@@ -980,7 +980,7 @@ fn laptop_of(computer: &ThisComputer) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// This computer's desk with Notes running in the workspace it holds, and the door toward the
+/// This computer's shell with Notes running in the workspace it holds, and the door toward the
 /// person's other devices answered on its endpoint: the session, the questions it puts to the
 /// person, what the app took, and the laptop the agent runs on.
 struct DeskWithNotes {
@@ -1028,7 +1028,7 @@ impl DeskWithNotes {
         });
         session
             .handle()
-            .replace_tree(desk(&computer.workspace, &seated));
+            .replace_tree(layout(&computer.workspace, &seated));
         crate::common::until(
             &mut session,
             "the workspace this computer holds",
@@ -1127,7 +1127,7 @@ impl DeskWithNotes {
             .collect()
     }
 
-    /// The run the agent seated as `seated` works in, in this desk's workspace.
+    /// The run the agent seated as `seated` works in, in this session's workspace.
     fn run_of(&self, seated: &str) -> tilo_broker_core::services::TrackerRun {
         let runs = self
             .session
@@ -1342,53 +1342,53 @@ fn open_action() -> runtime_collab::ExportedAction {
 #[test]
 fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person() {
     let _settled = ui::motion::testing::settled();
-    let mut desk = DeskWithNotes::start();
-    desk.set(
+    let mut shell = DeskWithNotes::start();
+    shell.set(
         "set-accept-own-devices",
         settings_store::agent_door::accepts_own_devices,
     );
-    let agent = desk
-        .dial(&desk.laptop)
+    let agent = shell
+        .dial(&shell.laptop)
         .expect("the door opens for the laptop");
     agent.send(initialize());
-    let introduced = answer(&mut desk.session, &agent);
+    let introduced = answer(&mut shell.session, &agent);
     assert!(
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
     );
-    assert!(desk.asked().is_empty(), "let in without a question");
+    assert!(shell.asked().is_empty(), "let in without a question");
 
     agent.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
-    crate::common::until(&mut desk.session, "the person asked about the step", |_| {
-        !desk.questions.pending().is_empty()
+    crate::common::until(&mut shell.session, "the person asked about the step", |_| {
+        !shell.questions.pending().is_empty()
     });
-    assert_eq!(desk.asked(), [RUN_QUESTION], "the run's question is up");
+    assert_eq!(shell.asked(), [RUN_QUESTION], "the run's question is up");
     for _ in 0..200 {
-        desk.session.step(Duration::from_millis(2)).expect("step");
+        shell.session.step(Duration::from_millis(2)).expect("step");
     }
     assert!(
         agent.answers.try_recv().is_err(),
         "the agent waits while the person is asked"
     );
-    assert!(desk.taken.try_recv().is_err(), "nothing was opened yet");
+    assert!(shell.taken.try_recv().is_err(), "nothing was opened yet");
 
     // Allow once.
-    crate::common::press_sheet(&mut desk.session, PortalEffect::CONFIRM.id, &json!({}));
-    let opened = answer(&mut desk.session, &agent);
+    crate::common::press_sheet(&mut shell.session, PortalEffect::CONFIRM.id, &json!({}));
+    let opened = answer(&mut shell.session, &agent);
     assert_eq!(opened["result"]["isError"], false, "{opened}");
-    let taken = desk
+    let taken = shell
         .taken
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("Notes took the step");
     assert_eq!(taken.action, "open");
-    let run = desk.run_of("Claude Code #1");
+    let run = shell.run_of("Claude Code #1");
     assert!(
         a_step_of(&taken, &run),
         "the step is the run's: {} in {}",
         taken.context_json,
         run.issue
     );
-    assert!(desk.asked().is_empty());
+    assert!(shell.asked().is_empty());
     agent.leave();
 }
 
@@ -1399,35 +1399,35 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
 #[test]
 fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_question() {
     let _settled = ui::motion::testing::settled();
-    let mut desk = DeskWithNotes::start();
-    desk.set(
+    let mut shell = DeskWithNotes::start();
+    shell.set(
         "set-accept-own-devices",
         settings_store::agent_door::accepts_own_devices,
     );
-    desk.set(
+    shell.set(
         "set-act-without-asking",
         settings_store::agent_door::acts_without_asking,
     );
-    let agent = desk
-        .dial(&desk.laptop)
+    let agent = shell
+        .dial(&shell.laptop)
         .expect("the door opens for the laptop");
     agent.send(initialize());
-    let introduced = answer(&mut desk.session, &agent);
+    let introduced = answer(&mut shell.session, &agent);
     assert!(
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
     );
 
     agent.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
-    let opened = answer(&mut desk.session, &agent);
+    let opened = answer(&mut shell.session, &agent);
     assert_eq!(opened["result"]["isError"], false, "{opened}");
-    assert!(desk.asked().is_empty(), "nobody was asked");
-    let taken = desk
+    assert!(shell.asked().is_empty(), "nobody was asked");
+    let taken = shell
         .taken
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("Notes took the step");
     assert_eq!(taken.action, "open");
-    let run = desk.run_of("Claude Code #1");
+    let run = shell.run_of("Claude Code #1");
     assert!(
         a_step_of(&taken, &run),
         "the step is the run's, as one the person allowed is: {} in {}",
@@ -1436,45 +1436,45 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
     );
 
     // A program of this login is asked about, at the door and for its step.
-    let local = Agent::over(UnixStream::connect(&desk.socket).unwrap(), None);
+    let local = Agent::over(UnixStream::connect(&shell.socket).unwrap(), None);
     local.send(initialize());
     crate::common::until(
-        &mut desk.session,
+        &mut shell.session,
         "the person asked about the program",
-        |_| desk.questions.pending().len() == 1,
+        |_| shell.questions.pending().len() == 1,
     );
     // Allow for this session.
     crate::common::press_sheet(
-        &mut desk.session,
+        &mut shell.session,
         PortalEffect::SELECT.id,
         &json!({"index": 1}),
     );
-    crate::common::press_sheet(&mut desk.session, PortalEffect::CONFIRM.id, &json!({}));
-    let introduced = answer(&mut desk.session, &local);
+    crate::common::press_sheet(&mut shell.session, PortalEffect::CONFIRM.id, &json!({}));
+    let introduced = answer(&mut shell.session, &local);
     assert!(
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
     );
     local.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
-    crate::common::until(&mut desk.session, "the person asked about its step", |_| {
-        !desk.questions.pending().is_empty()
+    crate::common::until(&mut shell.session, "the person asked about its step", |_| {
+        !shell.questions.pending().is_empty()
     });
-    assert_eq!(desk.asked(), [RUN_QUESTION], "its step is asked about");
+    assert_eq!(shell.asked(), [RUN_QUESTION], "its step is asked about");
     assert!(
         local.answers.try_recv().is_err(),
         "the program waits for the person"
     );
     // Deny.
-    crate::common::press_sheet(&mut desk.session, PortalEffect::CANCEL.id, &json!({}));
-    let denied = answer(&mut desk.session, &local);
+    crate::common::press_sheet(&mut shell.session, PortalEffect::CANCEL.id, &json!({}));
+    let denied = answer(&mut shell.session, &local);
     assert_eq!(denied["result"]["isError"], true, "{denied}");
-    assert!(desk.asked().is_empty());
+    assert!(shell.asked().is_empty());
     local.leave();
 
     // A device of someone else's is refused at the door, the settings notwithstanding.
     let stranger = SigningKey::from_bytes(&[0x22; 32]);
     let theirs = device(&stranger, 4, "Their laptop");
-    let refused = desk.dial(&theirs).map(|_| ()).unwrap_err();
+    let refused = shell.dial(&theirs).map(|_| ()).unwrap_err();
     assert!(refused.contains("someone else"), "{refused}");
     agent.leave();
 }

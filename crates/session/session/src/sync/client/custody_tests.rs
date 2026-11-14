@@ -45,7 +45,7 @@ impl Device {
                 identity.clone(),
                 Some(state.path()),
                 std::iter::empty(),
-                crate::platform::custody::of_this_desk(),
+                crate::platform::custody::of_this_session(),
             )
             .expect("the session's engine opens"),
         );

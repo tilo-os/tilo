@@ -1,6 +1,6 @@
 //! Pictures of the card a window shows when its app stops answering.
 //!
-//! One desk with two windows, the first one's app silent: the card stands
+//! One shell with two windows, the first one's app silent: the card stands
 //! over that window, the other stays as it was. Captured in both themes at
 //! the wide and the compact viewport, through the production frame path
 //! ([`ui::headless::FrameHarness`]).
@@ -47,7 +47,10 @@ impl TileSource for Windows {
     }
 }
 
-fn desk(theme: Theme, viewport: (u32, u32)) -> (FrameHarness, tilo_desktop_surface::DesktopHandle) {
+fn shell(
+    theme: Theme,
+    viewport: (u32, u32),
+) -> (FrameHarness, tilo_desktop_surface::DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let window = |minter: &mut IdMinter, title: &str, app: &str, surface_id: u64| Tab {
         id: minter.mint(),
@@ -62,11 +65,11 @@ fn desk(theme: Theme, viewport: (u32, u32)) -> (FrameHarness, tilo_desktop_surfa
     };
     let notes = window(&mut minter, "Notes", "so.tilo.notes", 41);
     let mail = window(&mut minter, "Mail", "so.tilo.mail", 42);
-    let tree = seed_tree(&mut minter, "Desk", vec![notes, mail]);
+    let tree = seed_tree(&mut minter, "Shell", vec![notes, mail]);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Windows));
     let mut frame = FrameHarness::for_root(State::new(), surface, viewport, theme);
     frame.relayout();
-    frame.poll_frame().expect("a frame draws the desk");
+    frame.poll_frame().expect("a frame draws the shell");
     (frame, handle)
 }
 
@@ -77,8 +80,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&output)?;
     for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         for (size, viewport) in [("wide", (1280, 800)), ("compact", (420, 800))] {
-            let (mut frame, handle) = desk(theme.clone(), viewport);
-            // The first window's app stopped answering; the desk's host says
+            let (mut frame, handle) = shell(theme.clone(), viewport);
+            // The first window's app stopped answering; the shell's host says
             // so, and the card is drawn in the frame this asks for.
             handle.set_unresponsive_windows(vec![41]);
             frame.request_layout();

@@ -1,8 +1,8 @@
-//! The desk's own layer: the workspace's desk, the widgets on it, and the choices those widgets
+//! The shell's own layer: the workspace's shell, the widgets on it, and the choices those widgets
 //! draw from.
 //! The widgets sit on the wallpaper under the windows: the windows keep the pointer, and whatever
-//! they do not take the desk still sees. What the widgets show is the session's own: who is here,
-//! read from the desk's tree, and today's date, read from the clock.
+//! they do not take the shell still sees. What the widgets show is the session's own: who is here,
+//! read from the layout, and today's date, read from the clock.
 //! Their preferences are the person's setting. The session reads them once and keeps them current
 //! from the settings watch, so a frame draws from memory and never reads the settings file.
 
@@ -12,17 +12,17 @@ use std::sync::{Arc, Mutex};
 
 use crate::platform::surfaces::{DesktopHost, StripPolicy, desktop_with};
 use serde_json::{Map, Value};
-use tilo_desktop::desk_widgets::music::MusicAction as Action;
-use tilo_desktop::desk_widgets::{DeskFold, DeskMusic};
-use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
+use tilo_desktop::desktop_host::{BackgroundLayer, DesktopAsk};
 use tilo_desktop::launchpad::CollaborationLaunchpad;
+use tilo_desktop::widgets::music::MusicAction as Action;
+use tilo_desktop::widgets::{Fold, Music};
 use tilo_lock::MutexRecover as _;
 use ui::desk_widgets::DeskWidgetPrefs;
 
 use crate::Options;
 use crate::wallpapers::Wallpapers;
 
-/// The desk widgets' choices as the session keeps them.
+/// The Desktop widgets' choices as the session keeps them.
 pub(crate) type Prefs = Arc<Mutex<DeskWidgetPrefs>>;
 
 /// The person's widget choices as the settings document has them now.
@@ -48,7 +48,7 @@ impl crate::Shared {
             &serde_json::Map::new(),
             &mut tilo_session_core::door::Look::none(),
         ) {
-            tracing::warn!(%error, ?action, "the desk's music control did not reach the player");
+            tracing::warn!(%error, ?action, "the shell's music control did not reach the player");
         }
     }
 }
@@ -83,32 +83,32 @@ pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
     *prefs.lock_recover() = DeskWidgetPrefs::from_document(document);
 }
 
-/// What the desk's layer reads of the session: the person's desk widgets,
+/// What the shell's layer reads of the session: the person's Desktop widgets,
 /// the fold the session's keys share, the overview's open flag, what plays,
-/// and the bars' reveal the desk's band and policy follow.
-pub(crate) struct DeskLook {
+/// and the bars' reveal the shell's band and policy follow.
+pub(crate) struct Background {
     pub(crate) widgets: Prefs,
     /// Shared with the session's keys, which fold an open card on Escape.
-    pub(crate) fold: DeskFold,
-    /// Whether the overview is over the desk, which folds it.
+    pub(crate) fold: Fold,
+    /// Whether the overview is over the shell, which folds it.
     pub(crate) overview: Rc<Cell<bool>>,
     /// What plays, as the session reads it from the player Quick Settings shows.
-    pub(crate) music: DeskMusic,
+    pub(crate) music: Music,
     /// When each display's bar shows over the window covering it.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
 }
 
-/// The desk of this session's workspace and the policy placing its windows,
+/// The shell of this session's workspace and the policy placing its windows,
 /// with what its tree asks of the session. The chrome above it asks through
 /// the same list.
-pub(crate) fn desk(
+pub(crate) fn background(
     options: &Options,
     activity: &crate::activity::Activity,
     notices: tilo_desktop_surface::DesktopNotifications,
     pictures: Arc<Wallpapers>,
-    looked: DeskLook,
+    looked: Background,
 ) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
-    let DeskLook {
+    let Background {
         widgets,
         fold,
         overview,
@@ -118,12 +118,12 @@ pub(crate) fn desk(
     let asks = Rc::new(RefCell::new(Vec::new()));
     let band_reveals = Rc::clone(&reveals);
     let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
-        // The desk's windows ask it for the workspace's activity, and the apps running beside it
+        // The shell's windows ask it for the workspace's activity, and the apps running beside it
         // ask the same model through the broker.
         surface.set_history_source(Box::new(activity.clone()));
         surface.serve_activity(activity.requests());
         surface.set_notifications(notices.clone());
-        let layer = tilo_desktop::desk_widgets::DeskWidgets::new(
+        let layer = tilo_desktop::widgets::WidgetLayer::new(
             handle.clone(),
             options.person.clone(),
             Rc::clone(&asks),
@@ -135,7 +135,7 @@ pub(crate) fn desk(
         .with_music(music);
         let beneath = vec![Box::new(layer) as Box<dyn ui::widget::Widget>];
         Box::new(
-            DeskLayer::new(
+            BackgroundLayer::new(
                 Box::new(surface),
                 handle.clone(),
                 CollaborationLaunchpad::new(),
@@ -157,14 +157,14 @@ pub(crate) fn desk(
     (desktop, policy, asks)
 }
 
-/// The policy placing the desk's windows: the desktop's strips, or the wells of the shell drawing
+/// The policy placing the shell's windows: the desktop's strips, or the wells of the shell drawing
 /// the whole screen.
-pub(crate) enum DeskPolicy {
+pub(crate) enum WindowPlacement {
     Strips(StripPolicy),
     Wells(crate::platform::surfaces::WellPolicy),
 }
 
-impl DeskPolicy {
+impl WindowPlacement {
     /// The shell drawing the whole screen places the windows in its wells; otherwise the desktop's
     /// strips do.
     pub(crate) fn for_shell(shell: bool, desktop: &DesktopHost, strips: StripPolicy) -> Self {
@@ -211,7 +211,7 @@ impl DeskPolicy {
     }
 }
 
-/// What the desk's policy sends the bars' reveal: the pointer wherever it goes, presses, and
+/// What the shell's policy sends the bars' reveal: the pointer wherever it goes, presses, and
 /// fingers on the screen, which the chrome follows beyond where it draws.
 struct BarSamples {
     reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,

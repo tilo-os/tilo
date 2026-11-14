@@ -1,6 +1,6 @@
-//! The keys a held Super reaches, said at a glance over the desk.
+//! The keys a held Super reaches, said at a glance over the shell.
 //!
-//! Holding Super alone is reaching for a chord, or looking for one: the desk answers with a quiet
+//! Holding Super alone is reaching for a chord, or looking for one: the shell answers with a quiet
 //! card at the bottom of the display the person works on, naming what each key does while Super is
 //! down. It grows in two steps, as a hold lasts:
 //! - the glance, as the hold begins: one row from each group (the windows, the tabs, the apps,

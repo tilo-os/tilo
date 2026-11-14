@@ -30,7 +30,7 @@ pub(crate) mod keys;
 /// The clipboard a role hands the person something on.
 pub mod clipboard;
 
-/// The workspace in front, as this desk makes invitations into it.
+/// The workspace in front, as this session makes invitations into it.
 #[cfg(target_os = "linux")]
 pub mod invite;
 

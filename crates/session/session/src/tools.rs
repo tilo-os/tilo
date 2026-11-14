@@ -414,7 +414,7 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
         ToolIntent::WorkspaceSettings { route } => workspace_settings(inner, caller, *route),
         ToolIntent::IdentityBackup => refused(
             "a portable identity backup is written by setup, on the screens that ask for \
-             one; a desk that is already open offers none",
+             one; a shell that is already open offers none",
         ),
         // Every other intent opens a package at the typed context it carries.
         _ => open_tool(inner, caller, request),

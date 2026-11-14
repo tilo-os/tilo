@@ -245,7 +245,7 @@ impl crate::Session {
                 unlock::Verdict::Unavailable => lock.refuse(tilo_sheets::lock::unavailable()),
             }
         }
-        // The screen leaves before the desk comes back: the lock ends once it
+        // The screen leaves before the shell comes back: the lock ends once it
         // has dissolved, or once it has had long enough to, and the screen
         // goes with the lock. A screen that is not up has nothing to leave,
         // and the lock lifts at once rather than waiting on an animation
@@ -296,7 +296,7 @@ impl crate::Session {
         }
         // What shows a lock is chosen where the person asked for the lock and again when the
         // compositor says it locked, and a later lock may find the same: told under one tag, the
-        // notice stands on the desk once, however often that is.
+        // notice stands on the shell once, however often that is.
         self.shared.telling().show(
             &crate::platform::notice::Notice::new(
                 String::new(),

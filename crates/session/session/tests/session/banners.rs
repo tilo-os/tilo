@@ -1,31 +1,31 @@
-//! The banners over the desk: a notification raised shows a banner in the
+//! The banners over the shell: a notification raised shows a banner in the
 //! corner of the screen, and it leaves when its time is up.
 
 use super::*;
 
-use super::desk::held_clock;
+use super::shell::held_clock;
 use tilo_desktop::notifications::CORNER_INSET;
 
-/// The frame the desk shows now, as RGBA pixels.
+/// The frame the shell shows now, as RGBA pixels.
 fn screen(session: &mut Session) -> image::RgbaImage {
     let shot = session
         .compositor()
         .screenshot("HEADLESS-1")
-        .expect("a picture of the desk");
+        .expect("a picture of the shell");
     image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba).expect("a whole frame")
 }
 
-/// How many pixels of `frame` differ from `desk` inside `rect`, whole pixels
+/// How many pixels of `frame` differ from `shell` inside `rect`, whole pixels
 /// as `(x0, y0, x1, y1)`.
 fn changed_pixels(
     frame: &image::RgbaImage,
-    desk: &image::RgbaImage,
+    shell: &image::RgbaImage,
     rect: (i32, i32, i32, i32),
 ) -> usize {
     let mut changed = 0;
     for y in rect.1..rect.3 {
         for x in rect.0..rect.2 {
-            if pixel_at(frame, x, y) != pixel_at(desk, x, y) {
+            if pixel_at(frame, x, y) != pixel_at(shell, x, y) {
                 changed += 1;
             }
         }
@@ -87,7 +87,7 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         ..Options::default()
     });
     settle(&mut session, 8);
-    let desk = screen(&mut session);
+    let shell = screen(&mut session);
 
     // The app's notification waits four seconds on screen for the person.
     let runtime = desktop.runtime();
@@ -121,24 +121,24 @@ fn a_raised_notification_shows_a_banner_that_expires() {
     let raised = screen(&mut session);
     let rect = pixels(stack);
     let area = usize::try_from((rect.2 - rect.0) * (rect.3 - rect.1)).unwrap_or(0);
-    let changed = changed_pixels(&raised, &desk, rect);
+    let changed = changed_pixels(&raised, &shell, rect);
     assert!(
         changed > area / 5,
-        "the banner is painted on the desk: {changed} of {area} pixels changed"
+        "the banner is painted on the shell: {changed} of {area} pixels changed"
     );
     // What the banner offers answers the person like any window's buttons
-    // do: each is a control of the desk, standing on the banner.
+    // do: each is a control of the shell, standing on the banner.
     assert!(
         session.controls().into_iter().any(|control| {
             let (x, y, w, h) = control.rect;
             stack.contains((x + w / 2.0, y + h / 2.0))
         }),
-        "the banner's buttons are the desk's controls: {:?}",
+        "the banner's buttons are the shell's controls: {:?}",
         session.controls()
     );
 
     // Four seconds on screen are its whole life: the clock runs on and the
-    // banner leaves, leaving the desk as it was.
+    // banner leaves, leaving the shell as it was.
     let mut at = ui::time::now();
     let mut left = false;
     for _ in 0..80 {
@@ -152,9 +152,9 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         }
     }
     assert!(left, "the banner leaves when its time is up");
-    let gone = changed_pixels(&screen(&mut session), &desk, rect);
+    let gone = changed_pixels(&screen(&mut session), &shell, rect);
     assert!(
         gone == 0,
-        "nothing of the banner is left on the desk: {gone} pixels still differ"
+        "nothing of the banner is left on the shell: {gone} pixels still differ"
     );
 }

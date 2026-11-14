@@ -24,14 +24,14 @@ use tilo_desktop_surface::notifications::{
     ContinuityNotificationId, Notification, NotificationSeverity, RemoteNotificationRoute,
 };
 
-/// The most projections one session keeps bookkeeping for: what fits on the other devices' desks
+/// The most projections one session keeps bookkeeping for: what fits on the other devices' sessions
 /// and centres anyway.
 const MAX_PROJECTED: usize = 128;
 
 /// One notification this device projected to the person's other devices.
 struct Projected {
     id: ContinuityNotificationId,
-    /// The desk's id for the notification here.
+    /// The shell's id for the notification here.
     log_id: u64,
     /// The actions the app offered, which only those may be invoked on.
     action_keys: Vec<String>,
@@ -48,7 +48,7 @@ struct State {
     out: HashMap<u32, Projected>,
     /// The daemon notification each projection came from.
     by_id: HashMap<ContinuityNotificationId, u32>,
-    /// What another of the person's devices projected here, by the desk's id,
+    /// What another of the person's devices projected here, by the shell's id,
     /// so a choice on it is answered where it came from.
     shown: HashMap<u64, RemoteNotificationRoute>,
 }
@@ -85,7 +85,7 @@ impl Mirroring {
     }
 
     /// Show the notification app `app` sent here on the person's other devices, `notification`
-    /// being the one the desk shows: its id, what its actions are, and when its banner goes.
+    /// being the one the shell shows: its id, what its actions are, and when its banner goes.
     /// `previews` is whether this person lets a notification's text leave this device.
     /// Returns the projection's id; `None` when this session reaches no other device of theirs.
     pub(crate) fn project(
@@ -165,7 +165,7 @@ impl Mirroring {
 
     /// Everything this device projected that is no longer shown here: the other devices take those
     /// copies away. Projections whose window ran out are forgotten without a word, and the rows of
-    /// theirs the desk no longer shows are forgotten too.
+    /// theirs the shell no longer shows are forgotten too.
     pub(crate) fn prune(&self, shown_log_ids: &BTreeSet<u64>, now_unix_ms: u64) {
         let mut state = self.state.borrow_mut();
         state
@@ -240,24 +240,24 @@ impl Mirroring {
         }
     }
 
-    /// The device a projection that the desk shows as `log_id` came from, if it did: what a choice
+    /// The device a projection that the shell shows as `log_id` came from, if it did: what a choice
     /// on it is answered to.
     pub(crate) fn route_of(&self, log_id: u64) -> Option<RemoteNotificationRoute> {
         self.state.borrow().shown.get(&log_id).cloned()
     }
 
-    /// Remember that the desk's notification `log_id` is another device's `route` .
+    /// Remember that the shell's notification `log_id` is another device's `route` .
     pub(crate) fn shown(&self, log_id: u64, route: RemoteNotificationRoute) {
         self.state.borrow_mut().shown.insert(log_id, route);
     }
 
-    /// Forget the desk's notification `log_id` : it left the desk, so nothing more is answered to
+    /// Forget the shell's notification `log_id` : it left the shell, so nothing more is answered to
     /// it.
     pub(crate) fn gone(&self, log_id: u64) {
         self.state.borrow_mut().shown.remove(&log_id);
     }
 
-    /// Answer the device the desk's notification `log_id` came from with `command` , then forget
+    /// Answer the device the shell's notification `log_id` came from with `command` , then forget
     /// it: the person is done with it here.
     pub(crate) fn answer(
         &self,
@@ -293,7 +293,7 @@ impl Mirroring {
         self.deliver(&source, action);
     }
 
-    /// A retirement arrived from `source` : the desk forgets every copy of the projection it names.
+    /// A retirement arrived from `source` : the shell forgets every copy of the projection it names.
     pub(crate) fn retire_shown(&self, source: &DeviceId, id: ContinuityNotificationId) {
         let source = source.as_str();
         self.state
@@ -302,7 +302,7 @@ impl Mirroring {
             .retain(|_, route| !(route.source_device == source && route.notification_id == id));
     }
 
-    /// Forget the desk's notification `route` shows here.
+    /// Forget the shell's notification `route` shows here.
     fn gone_route(&self, route: &RemoteNotificationRoute) {
         self.state
             .borrow_mut()

@@ -1,8 +1,8 @@
-//! The desktop's search in a session: the shared desktop search ([`tilo_desktop_search`]) the desk
+//! The shelltop's search in a session: the shared desktop search ([`tilo_desktop_search`]) the shell
 //! opens, over what is published and what the session's services answer, each row run by its
 //! address. A native desktop and the page both host this one role.
-//! The desk lists the windows, the people and the desktop's own commands. The search adds what a
-//! session offers beyond the desk: Settings' pages, the apps this host lists and the machine's own
+//! The shell lists the windows, the people and the shelltop's own commands. The search adds what a
+//! session offers beyond the shell: Settings' pages, the apps this host lists and the machine's own
 //! (with the person's switch), the store's catalogue, what apps hold (the content index), the
 //! person's files, where their windows were, the actions open apps publish through the action host
 //! and the jobs it runs, and the session's own published actions. A chosen row the session carries
@@ -69,13 +69,13 @@ pub trait AppActions {
     fn jobs(&self) -> Vec<JobEntry> {
         Vec::new()
     }
-    /// Whether this host carries out `target` itself rather than leaving it to the desk.
+    /// Whether this host carries out `target` itself rather than leaving it to the shell.
     ///
     /// A host that starts windows carries out every row: it reaches an app's window whether the
     /// app is open or closed, and opens a launch where the person asked it. A host that arranges
     /// its own windows answers only the rows that reach an app's own window
     /// ([`Target::Invoke`]) — a page opens the app for those — and leaves the launches, the
-    /// addresses and the stopped runs to the desk, which arranges them.
+    /// addresses and the stopped runs to the shell, which arranges them.
     fn performs(&self, _target: &Target) -> bool {
         true
     }
@@ -248,7 +248,7 @@ pub fn why_in_words(error: &DoorError) -> String {
     }
 }
 
-/// The session's part in the desk's search, mounted by every host that runs a desk: the sources
+/// The session's part in the shell's search, mounted by every host that runs a shell: the sources
 /// only a session has, and the rows a host carries out ([`tilo_desktop_surface::SearchHost`]).
 pub struct SessionSearch {
     /// The apps this host lists, where it lists any.
@@ -275,7 +275,7 @@ pub struct SessionSearch {
     host_search: Option<Held>,
     /// Sources a test mounts beside the session's own, asked as the host's are ([`SearchOptions::extra_sources`]).
     extra_sources: Vec<Held>,
-    /// What the session itself publishes, as of the last frame: the desk cannot read its own tree
+    /// What the session itself publishes, as of the last frame: the shell cannot read its own tree
     /// while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
     /// What the resources the session publishes are, by id, as of the last frame: what a query
@@ -285,10 +285,10 @@ pub struct SessionSearch {
     open_tabs: RefCell<Vec<u64>>,
     /// The live notifications the session publishes, as of the last frame.
     notifications: RefCell<Vec<tilo_actions::ResourceSpec>>,
-    /// The workspaces the desk shows, by id and the name it gives them: what a row of another
+    /// The workspaces the shell shows, by id and the name it gives them: what a row of another
     /// workspace says.
     workspaces: RefCell<Vec<(String, String)>>,
-    /// Who is in each workspace and the calls in progress, as the desk and the presence it holds
+    /// Who is in each workspace and the calls in progress, as the shell and the presence it holds
     /// say: what the empty palette's first group lists.
     here: RefCell<Vec<WorkspaceHere>>,
     /// The downloaded programs, as of the last reading of the registry.
@@ -472,8 +472,8 @@ impl SessionSearch {
             let address = &action.address;
             let searching = address
                 .resource
-                .starts_with(tilo_desktop::desk_verbs::SEARCH_RESOURCE);
-            let opening = address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE
+                .starts_with(tilo_desktop::verbs::SEARCH_RESOURCE);
+            let opening = address.resource == tilo_desktop::verbs::SHELL_RESOURCE
                 && address.action == "search";
             !searching && !opening
         });
@@ -503,7 +503,7 @@ impl SessionSearch {
         }
     }
 
-    /// Who is in the person's workspaces now, as their presence and the desk's collaborators say
+    /// Who is in the person's workspaces now, as their presence and the shell's collaborators say
     /// it: the empty palette's first group.
     pub fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
         if *self.here.borrow() == workspaces {
@@ -536,7 +536,7 @@ impl SessionSearch {
         self.moved_recipients();
     }
 
-    /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
+    /// The workspaces this device shows, by id and the name the shell gives it: what a row says of a
     /// record the workspace in front does not hold.
     pub fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         if let Some(records) = &self.records {
@@ -574,7 +574,7 @@ impl SessionSearch {
     /// there: one list, so a tool's search finds what the palette finds.
     fn sources(&self, workspace: &str, scope: &Scope) -> (Vec<Held>, Vec<PublishedActions>) {
         // A window's search is about that window: what its app published into this session's
-        // index, and the actions the app publishes, and none of the desk's own rows (its other
+        // index, and the actions the app publishes, and none of the shell's own rows (its other
         // windows, the places it was, the apps it can start).
         if let Scope::InApp(app) = scope {
             return self.window_sources(workspace, app);
@@ -692,7 +692,7 @@ impl SessionSearch {
     }
 
     /// [`Self::find`] for a caller confined to `workspace` (an agent): what that workspace's apps
-    /// publish and its records hold, and none of the desk's own rows, whose windows and places
+    /// publish and its records hold, and none of the shell's own rows, whose windows and places
     /// are the person's across every workspace (a window's title names what another workspace
     /// holds). `None` is the person's search, over everything they see.
     ///
@@ -1284,7 +1284,7 @@ impl SessionSearch {
             } => self.with_apps(|apps| apps.cancel(&app, &workspace, &invocation)),
             Target::Open { uri, .. } => self.with_apps(|apps| apps.open_uri(workspace, &uri)),
             other => {
-                tracing::debug!(?other, "search row the desk carries out");
+                tracing::debug!(?other, "search row the shell carries out");
                 Ok(())
             }
         }
@@ -1374,7 +1374,7 @@ impl SessionSearch {
 
 impl SessionSearch {
     /// The apps this session offers: the host's installed and machine apps, each by the launch its
-    /// own row starts. A window group's new tab and the empty desk's launchpad search the
+    /// own row starts. A window group's new tab and the empty shell's launchpad search the
     /// applications alone, and the session's tile source lists none — the session is what starts
     /// them — so this is what those searches offer.
     fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
@@ -1434,7 +1434,7 @@ impl SearchHost for SessionSearch {
 
     fn performs(&self, target: &Target) -> bool {
         match target {
-            // The desk's own actions are the session's to run, by address.
+            // The shell's own actions are the session's to run, by address.
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => true,
             Target::Invoke(_)
             | Target::Content { .. }
@@ -1933,7 +1933,7 @@ mod tests {
         );
     }
 
-    /// The windows a page's desk opens on records: each record launch opens its app on that
+    /// The windows a page's shell opens on records: each record launch opens its app on that
     /// record, as the page does.
     struct RecordWindows(Rc<std::cell::RefCell<Vec<(String, String)>>>);
 
@@ -1976,7 +1976,7 @@ mod tests {
     }
 
     /// The page's search: the session's search mounted with no action host — a page opens an app
-    /// on its own desk — over the records its store holds, as the page's replication took them in.
+    /// on its own shell — over the records its store holds, as the page's replication took them in.
     /// A PDF its workspace's index names `application.pdf` is offered for "application", and
     /// choosing it opens PDF Viewer on that record, as a link to the record opens it on the page.
     #[test]
@@ -1989,7 +1989,7 @@ mod tests {
         let workspace = tree
             .active_workspace()
             .map(|held| held.id().to_string())
-            .expect("the desk shows a workspace");
+            .expect("the shell shows a workspace");
 
         // The workspace's index of PDF Viewer's records, as it reached the page's store.
         let home = tilo_test_env::TestHome::new().expect("a home");
@@ -2061,7 +2061,7 @@ mod tests {
         }
         assert!(
             search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
-            "the page's desk opens the record itself"
+            "the page's shell opens the record itself"
         );
         assert_eq!(
             opened.borrow().as_slice(),
@@ -2174,7 +2174,7 @@ mod tests {
         let workspace = tree
             .active_workspace()
             .map(|held| held.id().to_string())
-            .expect("the desk shows a workspace");
+            .expect("the shell shows a workspace");
         let home = tilo_test_env::TestHome::new().expect("a home");
         let (store, hello, handbook) = a_page_s_notebook(&home, &workspace);
 
@@ -2364,10 +2364,10 @@ mod tests {
         }
     }
 
-    /// The desk's own rows (a window, by the title of what it shows) span every workspace: the
+    /// The shell's own rows (a window, by the title of what it shows) span every workspace: the
     /// person's search finds them, and an agent's, confined to one workspace, never does.
     #[test]
-    fn an_agents_search_finds_nothing_of_the_desks_own_rows() {
+    fn an_agents_search_finds_nothing_of_the_shells_own_rows() {
         let search = SessionSearch::new(SearchOptions::default(), None, "", None, None, None);
         let window =
             tilo_actions::ResourceSpec::new("window:7", "desktop.window", "Quarterly plan — Notes")
@@ -2392,7 +2392,7 @@ mod tests {
         let agent = titles(search.find_in("Quarterly plan", Some("garden")));
         assert!(
             !agent.iter().any(|title| title.contains("Quarterly plan")),
-            "an agent in one workspace finds no window of the desk: {agent:?}"
+            "an agent in one workspace finds no window of the shell: {agent:?}"
         );
     }
 
@@ -2525,13 +2525,13 @@ mod tests {
             None,
         );
 
-        let (in_window, desk_actions) = search.sources(
+        let (in_window, shell_actions) = search.sources(
             "workspace",
             &Scope::InApp(ui::search::AppScope::of("so.tilo.chat")),
         );
         assert!(
-            desk_actions.is_empty(),
-            "the desk's own actions are not the window's"
+            shell_actions.is_empty(),
+            "the shell's own actions are not the window's"
         );
         let titles = |needle: &str| -> Vec<String> {
             in_window

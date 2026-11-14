@@ -14,9 +14,9 @@
 //! before it leaves a device, so a pointer resting against the edge stays where it is.
 //!
 //! A held button keeps the pointer on its device, unless it carries something: a window lifted by
-//! its bar or an item the desk drags, or a drag of words, a picture or a file out of an app. Then
+//! its bar or an item the shell drags, or a drag of words, a picture or a file out of an app. Then
 //! the drag crosses with the pointer, ends here dropped nowhere, and goes on there until the button
-//! comes up. The desk's drags name a resource of the workspace, which is on both devices already,
+//! comes up. The shell's drags name a resource of the workspace, which is on both devices already,
 //! so its address is what crosses, and what it is let go on there takes it as a drop from here
 //! would. An app's drag is content: each format's bytes are kept in the workspace's content,
 //! sealed under its keys, and the other device reads them from there by their references. Nothing
@@ -49,9 +49,9 @@ const ASK_AGAIN: Duration = Duration::from_secs(2);
 /// without it.
 const CONTENT_WAIT: Duration = Duration::from_secs(10);
 
-/// What a pass hands the keyboard and pointer of the desk: the workspace in front, and the content
+/// What a pass hands the keyboard and pointer of the shell: the workspace in front, and the content
 /// of a workspace, sealed under its keys, by workspace.
-pub(crate) struct Desk<'a> {
+pub(crate) struct Shell<'a> {
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) content: &'a dyn Fn(&str) -> Option<tilo_content::ContentStore>,
 }
@@ -59,7 +59,7 @@ pub(crate) struct Desk<'a> {
 /// What this desktop's pointer carries in a drag, as the last pass saw it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Carrying {
-    /// A resource the desk carries, as its drag names it: a window's record lifted by its bar, an
+    /// A resource the shell carries, as its drag names it: a window's record lifted by its bar, an
     /// item of a list.
     Resource {
         kind: String,
@@ -95,10 +95,10 @@ enum Arrived {
     Carried(CarriedDrag),
 }
 
-/// What the desk's drag bus names a drag carried here by.
+/// What the shell's drag bus names a drag carried here by.
 const CARRIED_HERE: &str = "carried-here";
 
-/// What a drag carried here does as the input behind it reaches the desk.
+/// What a drag carried here does as the input behind it reaches the shell.
 enum Step {
     Input(InputEvent),
     /// The button came up: the resource lands where the pointer is.
@@ -183,7 +183,7 @@ struct State {
     carried: Option<Carried>,
     /// A drag that crossed here, waiting for its content.
     landing: Option<Landing>,
-    /// A resource carried here, in flight on the desk's drag bus until the button comes up.
+    /// A resource carried here, in flight on the shell's drag bus until the button comes up.
     on_bus: Option<ui::dnd::DragPayload>,
     /// The keys and buttons each device driving this one holds down here.
     held: BTreeMap<DeviceId, (BTreeSet<u32>, BTreeSet<u32>)>,
@@ -771,7 +771,7 @@ impl SharedInput {
     /// it drives another device and bring it back where it returned, and hand the compositor what
     /// the devices driving this one sent. Says where the keyboard and pointer moved since the last
     /// pass, for the clipboard to follow them.
-    pub(crate) fn follow(&self, compositor: &mut Compositor, desk: &Desk<'_>) -> Handover {
+    pub(crate) fn follow(&self, compositor: &mut Compositor, shell: &Shell<'_>) -> Handover {
         let mut state = self.state.lock_recover();
         self.know_local(&mut state);
         state.carrying = compositor
@@ -780,7 +780,7 @@ impl SharedInput {
             .filter(|formats| !formats.is_empty())
             .map(Carrying::Content)
             .or_else(on_the_bus);
-        let released = self.hand_over(&mut state, compositor, desk);
+        let released = self.hand_over(&mut state, compositor, shell);
         let generation = (
             PersonDisplays::published_generation(),
             self.arranged.generation(),
@@ -846,7 +846,7 @@ impl SharedInput {
                 tracing::warn!(%error, "a button that carried a drag away did not come up here");
             }
         }
-        self.inject(compositor, Some(desk));
+        self.inject(compositor, Some(shell));
         handover
     }
 
@@ -857,7 +857,7 @@ impl SharedInput {
         &self,
         state: &mut State,
         compositor: &mut Compositor,
-        desk: &Desk<'_>,
+        shell: &Shell<'_>,
     ) -> Vec<u32> {
         let Some(carried) = state.carried.as_mut() else {
             return Vec::new();
@@ -896,7 +896,7 @@ impl SharedInput {
             if carried.reads.is_empty() {
                 carried.told = true;
                 let read = std::mem::take(&mut carried.read);
-                let told = keep_carried(desk, read).is_some_and(|(workspace, offers)| {
+                let told = keep_carried(shell, read).is_some_and(|(workspace, offers)| {
                     self.fabric
                         .try_send_personal_fabric_action(
                             &carried.device,
@@ -923,10 +923,10 @@ impl SharedInput {
 
     /// Hand the compositor what the devices driving this one sent since the last look, the way
     /// every remote input reaches it: as soon as it is here, not on the next pass. A drag carried
-    /// here goes on from where the pointer is with `desk` ; without it, or while its content is
+    /// here goes on from where the pointer is with `shell` ; without it, or while its content is
     /// on its way, what was sent after it waits. The drag moves with the compositor's pointer, in
     /// the desktop's pixels, as the drag bus keeps it: each display's tree sees it in its own.
-    pub(crate) fn inject(&self, compositor: &mut Compositor, desk: Option<&Desk<'_>>) {
+    pub(crate) fn inject(&self, compositor: &mut Compositor, shell: Option<&Shell<'_>>) {
         loop {
             for step in self.take_input() {
                 let event = match step {
@@ -945,7 +945,7 @@ impl SharedInput {
                     tracing::warn!(%error, "input from another of the person's devices was not taken");
                 }
             }
-            // A resource carried here follows the pointer over the desk.
+            // A resource carried here follows the pointer over the shell.
             if ui::widget::drag_bus::current().is_some_and(|flight| flight.source == CARRIED_HERE) {
                 let (x, y) = compositor.pointer_location();
                 ui::widget::drag_bus::moved(
@@ -953,10 +953,10 @@ impl SharedInput {
                     (CARRIED_HERE.to_owned(), ui::kurbo::Rect::default()),
                 );
             }
-            let Some(desk) = desk else {
+            let Some(shell) = shell else {
                 return;
             };
-            if !self.land(compositor, desk) {
+            if !self.land(compositor, shell) {
                 return;
             }
         }
@@ -1018,9 +1018,9 @@ impl SharedInput {
         steps
     }
 
-    /// Land the drag carried here that is next in what was sent: a resource goes on over the desk
+    /// Land the drag carried here that is next in what was sent: a resource goes on over the shell
     /// from where the pointer is, content once it is here. Whether one landed, or was given up on.
-    fn land(&self, compositor: &mut Compositor, desk: &Desk<'_>) -> bool {
+    fn land(&self, compositor: &mut Compositor, shell: &Shell<'_>) -> bool {
         let mut state = self.state.lock_recover();
         let content = match state.incoming.front() {
             Some((
@@ -1050,7 +1050,7 @@ impl SharedInput {
                 return true;
             }
             Some((_, Arrived::Carried(CarriedDrag::Content { workspace, offers }), _)) => {
-                (desk.content)(workspace).and_then(|store| {
+                (shell.content)(workspace).and_then(|store| {
                     offers
                         .iter()
                         .map(|offer| Some((offer.mime.clone(), store.read(&offer.reference)?)))
@@ -1199,7 +1199,7 @@ fn outward(display: &ResolvedDisplay, from: (f64, f64), delta: (f64, f64)) -> f6
     delta.0.abs().max(delta.1.abs())
 }
 
-/// The resource the desk's drag bus carries now, when the desk itself carries one: a drag carried
+/// The resource the shell's drag bus carries now, when the shell itself carries one: a drag carried
 /// here from another device crosses on only once it landed.
 fn on_the_bus() -> Option<Carrying> {
     let flight = ui::widget::drag_bus::current()?;
@@ -1237,13 +1237,13 @@ fn carried_formats(formats: &[String]) -> Vec<String> {
 /// Keep what a drag carries in the content of the workspace in front, sealed under its keys:
 /// the workspace and each format's reference. `None` when nothing could be kept.
 fn keep_carried(
-    desk: &Desk<'_>,
+    shell: &Shell<'_>,
     read: Vec<(String, Vec<u8>)>,
 ) -> Option<(String, Vec<CarriedOffer>)> {
-    let workspace = desk
+    let workspace = shell
         .handle
         .read(|tree| tree.active_workspace().map(|space| space.id().to_string()))?;
-    let store = (desk.content)(&workspace)?;
+    let store = (shell.content)(&workspace)?;
     let offers: Vec<CarriedOffer> = read
         .into_iter()
         .filter_map(|(mime, bytes)| match store.put(&bytes) {
@@ -1468,7 +1468,7 @@ mod tests {
         assert!(!push_right(&shared), "a press that carries nothing stays");
         assert!(shared.state.lock_recover().active.is_none());
 
-        // The desk lifts a window by its bar: its record crosses with the pointer.
+        // The shell lifts a window by its bar: its record crosses with the pointer.
         shared.state.lock_recover().carrying = Some(Carrying::Resource {
             kind: "resource".to_owned(),
             address: "notes.page:one".to_owned(),
@@ -1500,7 +1500,7 @@ mod tests {
             "the pointer arrives there before the window: {sent:?}"
         );
 
-        // Let go before the desk here let go of it: the release waits here, and drops it there.
+        // Let go before the shell here let go of it: the release waits here, and drops it there.
         assert!(
             press(&shared, false),
             "the release here waits for the drag to end here"

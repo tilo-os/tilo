@@ -224,7 +224,7 @@ impl Service for RustApps {
     }
 }
 
-/// Chat's own `send`: what its window, its agents and the desk's send-to box run.
+/// Chat's own `send`: what its window, its agents and the shell's send-to box run.
 const SEND: &str = "send";
 
 #[cfg(test)]

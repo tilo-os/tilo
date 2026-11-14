@@ -2,9 +2,9 @@
 //! source holds and goes on apart from it (`docs/architecture/workspace.md`, "Branching a
 //! workspace").
 //!
-//! The desk names the branch and its id the moment it is asked (`branch-workspace`,
+//! The session names the branch and its id the moment it is asked (`branch-workspace`,
 //! [`tilo_desktop::desktop_host::DesktopAsk::BranchWorkspace`]); the session does the rest
-//! without holding its loop, so the desk never waits for a copy:
+//! without holding its loop, so the session never waits for a copy:
 //!
 //! 1. The branch is founded in this device's engine as any workspace made here is
 //!    ([`Engine::found`]): its governance is new, its only member the person, as its owner, and
@@ -20,12 +20,12 @@
 //! 5. Its Terminal environments are branched by the runtime that keeps them
 //!    (`ush`'s `branch-workspace`).
 //!
-//! Only then does the branch go on the desk, with the source's strips and a window for each of the
+//! Only then does the branch go on the shell, with the source's strips and a window for each of the
 //! source's windows of this device, which open again in the branch. Nothing opens in it before its
 //! records are there, so no app founds an empty record a copy would then collide with.
 //!
 //! What stays behind is what is tied to other people: every conversation in Chat ([`stays`]), each
-//! person's own place in the workspace's tilolang apps, the desk's record (the branch's desk is
+//! person's own place in the workspace's tilolang apps, the session's record (the branch's session is
 //! written from its own windows), other people's windows, who is here, the membership and its
 //! invitations. A record this device cannot read is not branched; the person who branches is
 //! someone who reads the whole workspace ([`Engine::reads_whole`]).
@@ -73,15 +73,15 @@ pub(crate) fn stays(app: &str, record: &str) -> bool {
     }
 }
 
-/// Whether `request` is a branch of a workspace other than `workspace` , or of one the desk does
-/// not know: `workspaces` are the desk's, each by its id and its name. An agent reads only the workspace it works in, so it branches that one or none.
+/// Whether `request` is a branch of a workspace other than `workspace` , or of one the session does
+/// not know: `workspaces` are the session's, each by its id and its name. An agent reads only the workspace it works in, so it branches that one or none.
 pub(crate) fn branches_elsewhere(
     request: &tilo_actions::remote::InvokeRequest,
     workspaces: &[[String; 2]],
     workspace: &str,
 ) -> bool {
     let address = &request.target.address;
-    if address.resource != tilo_desktop::desk_verbs::CHROME_RESOURCE
+    if address.resource != tilo_desktop::verbs::CHROME_RESOURCE
         || address.action != tilo_desktop::desktop_host::BRANCH_WORKSPACE
     {
         return false;
@@ -96,7 +96,7 @@ pub(crate) fn branches_elsewhere(
     let Some(source) = source else {
         return true;
     };
-    // As the desk resolves it: by name first, then by id.
+    // As the session resolves it: by name first, then by id.
     workspaces
         .iter()
         .find(|[_, name]| name.eq_ignore_ascii_case(source))
@@ -104,7 +104,7 @@ pub(crate) fn branches_elsewhere(
         .is_none_or(|[id, _]| id != workspace)
 }
 
-/// A branch being made: what the desk asked, and the copy under way.
+/// A branch being made: what the session asked, and the copy under way.
 pub(crate) struct Branching {
     source: WorkspaceId,
     source_name: String,
@@ -234,7 +234,7 @@ async fn moved(events: &mut [tokio::sync::watch::Receiver<u64>], until: Instant)
     }
 }
 
-/// Make the branch `to` of `from`: everything but the desk, which the loop makes when this is done.
+/// Make the branch `to` of `from`: everything but the session, which the loop makes when this is done.
 /// What it reads and founds it awaits on the loop, waiting until `until` for what is not here yet;
 /// its copies run off the loop.
 pub(crate) async fn copy(
@@ -411,7 +411,7 @@ async fn seal_keys(
 }
 
 /// The relative path `path` (of the source's app directory) takes in the branch's, or `None` for
-/// what stays behind or is written apart: Chat's and the desk's directories, the runtime's
+/// what stays behind or is written apart: Chat's and the session's directories, the runtime's
 /// environment records, and the documents themselves with what their store keeps beside them.
 fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
     let parts: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
@@ -661,11 +661,11 @@ fn ask_runtime(socket: &Path, from: WorkspaceId, to: WorkspaceId) -> Result<u64,
     }
 }
 
-/// The branch's own desk: `source`'s strips, and a window for each of the windows this device
+/// The branch's own session: `source`'s strips, and a window for each of the windows this device
 /// shows in it — opened again in the branch by its app — with ids of its own (`mint`). Other
 /// people's windows stay theirs. What the workspace grants its apps comes along, its own files
 /// named as the branch's.
-pub(crate) fn desk_of(
+pub(crate) fn shell_of(
     source: &Workspace,
     workspace: WorkspaceId,
     name: &str,
@@ -743,7 +743,7 @@ pub(crate) fn desk_of(
 }
 
 impl crate::Shared {
-    /// The desk branched the workspace `source` into `workspace` , called `name` : found it here and copy what the source holds into it, without holding the loop.
+    /// The session branched the workspace `source` into `workspace` , called `name` : found it here and copy what the source holds into it, without holding the loop.
     pub(crate) fn branch_workspace(
         &self,
         source: WorkspaceId,
@@ -804,7 +804,7 @@ impl crate::Shared {
         });
     }
 
-    /// Put each branch whose copy is done on the desk, with the source's strips and windows, and go
+    /// Put each branch whose copy is done on the shell, with the source's strips and windows, and go
     /// there when the person is still where they asked for it; say what did not come along.
     pub(crate) fn follow_branches(&self) {
         let mut landed = Vec::new();
@@ -842,7 +842,7 @@ impl crate::Shared {
             .iter()
             .find(|held| held.id() == source)
             .map(|held| {
-                desk_of(held, workspace, name, files.as_deref(), &mut || {
+                shell_of(held, workspace, name, files.as_deref(), &mut || {
                     self.handle.mint_id()
                 })
             });
@@ -1086,10 +1086,10 @@ mod tests {
         );
     }
 
-    /// The branch's desk has the source's strips and a window for each of this device's, made
+    /// The branch's session has the source's strips and a window for each of this device's, made
     /// again by their apps; another person's window stays theirs.
     #[test]
-    fn the_branchs_desk_has_the_sources_strips_and_this_devices_windows() {
+    fn the_branchs_shell_has_the_sources_strips_and_this_devices_windows() {
         let (from, to) = ids();
         let mut source = Workspace::new(from, "Research");
         let tab = |id, tile| Tab {
@@ -1129,7 +1129,7 @@ mod tests {
         source.strips.push(strip);
         source.strips.push(Strip::new(StripId(6), "Writing"));
         let mut next = 100;
-        let branch = desk_of(&source, to, "Research branch", None, &mut || {
+        let branch = shell_of(&source, to, "Research branch", None, &mut || {
             next += 1;
             next
         });
@@ -1175,7 +1175,7 @@ mod tests {
             identity.clone(),
             Some(state.path()),
             Vec::new(),
-            crate::platform::custody::of_this_desk(),
+            crate::platform::custody::of_this_session(),
         )
         .expect("this device's engine opens")
     }
@@ -1403,7 +1403,7 @@ mod tests {
     }
 
     /// One workspace branched three times back to back, as the e2e box does (two through the
-    /// desk's action, the third through the CLI): each branch holds all the source holds, its
+    /// session's action, the third through the CLI): each branch holds all the source holds, its
     /// records, what its apps keep and its tree of files with a large file and many small ones,
     /// and none is reported not complete. The first branch leaves nothing in the source that the
     /// next ones cannot read.
@@ -1589,7 +1589,7 @@ mod tests {
         assert_eq!(engine.owner_of(TO), Ok(person));
         assert_eq!(engine.records(TO).unwrap().len(), 2);
     }
-    /// An agent branches the workspace it works in, by any name the desk knows it by, and no
+    /// An agent branches the workspace it works in, by any name the session knows it by, and no
     /// other: what it would copy of another is not its to read.
     #[test]
     fn an_agent_branches_its_own_workspace_and_no_other() {
@@ -1602,7 +1602,7 @@ mod tests {
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
                 address: tilo_actions::ActionAddress::new(
-                    tilo_desktop::desk_verbs::CHROME_RESOURCE,
+                    tilo_desktop::verbs::CHROME_RESOURCE,
                     tilo_desktop::desktop_host::BRANCH_WORKSPACE,
                 ),
             },

@@ -74,19 +74,19 @@ workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die diese
 ## geöffnet werden: die Einstellungen deines Schreibtischs liegen weiterhin
 ## auf der Platte, und diese Sitzung startet mit den Vorgaben der Shell, damit
 ## dein eigener Datensatz nie überschrieben wird.
-desk-record-not-opened-app-name = Schreibtisch
-desk-record-not-opened-title = Deine Schreibtisch-Einstellungen wurden nicht geöffnet
-desk-record-not-opened-detail = Sie konnten diesmal nicht gelesen werden ({ $reason }). Sie wurden nicht verändert: diese Sitzung startet mit den Vorgaben der Shell und speichert nichts davon, kann deine eigenen Einstellungen also nicht überschreiben.
+shell-record-not-opened-app-name = Schreibtisch
+shell-record-not-opened-title = Deine Schreibtisch-Einstellungen wurden nicht geöffnet
+shell-record-not-opened-detail = Sie konnten diesmal nicht gelesen werden ({ $reason }). Sie wurden nicht verändert: diese Sitzung startet mit den Vorgaben der Shell und speichert nichts davon, kann deine eigenen Einstellungen also nicht überschreiben.
 
 ## Der Schreibtisch, den Tilo vor dieser Version führte, der nicht übernommen
 ## wurde: er liegt unverändert auf der Platte, und diese Sitzung behält ihren
 ## eigenen.
 
 ## Ein Fenster, das dieses Gerät offen ließ und dessen App nicht zurückkam.
-desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
-desk-window-would-not-start = { $app } konnte nicht gestartet werden
-desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
-desk-window-waits-for-host = { $app } wartet darauf, dass { $host } dieses Gerät aufnimmt
+shell-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
+shell-window-would-not-start = { $app } konnte nicht gestartet werden
+shell-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
+shell-window-waits-for-host = { $app } wartet darauf, dass { $host } dieses Gerät aufnimmt
 
 ## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
 ## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab
@@ -122,13 +122,13 @@ refusal-reason-other = der Grund ist nicht bekannt
 
 # Was eine Person am geteilten Schreibtisch eines Arbeitsbereichs geändert hat,
 # ist dort nicht angekommen: die Änderung bleibt auf diesem Gerät.
-desk-not-shared-app = Geteilter Schreibtisch
-desk-not-shared-title = { $workspace } hat deine Fensteranordnung nicht übernommen
+shell-not-shared-app = Geteiltes Layout
+shell-not-shared-title = { $workspace } hat dein Layout nicht übernommen
 # Dasselbe für einen Arbeitsbereich, den niemand benannt hat, und für einen, den dieses Gerät vor
 # dem Hinweis verlassen hat: Einen Namen gibt es dann nicht.
-desk-not-shared-title-unnamed = Ein Arbeitsbereich ohne Namen hat deine Fensteranordnung nicht übernommen
-desk-not-shared-title-gone = Ein Arbeitsbereich, in dem dieses Gerät nicht mehr ist, hat deine Fensteranordnung nicht übernommen
-desk-not-shared-body = Sie bleibt auf diesem Gerät: { $reason }.
+shell-not-shared-title-unnamed = Ein Arbeitsbereich ohne Namen hat dein Layout nicht übernommen
+shell-not-shared-title-gone = Ein Arbeitsbereich, in dem dieses Gerät nicht mehr ist, hat dein Layout nicht übernommen
+shell-not-shared-body = Es bleibt auf diesem Gerät: { $reason }.
 
 # Das Gerät einer mitarbeitenden Person spricht eine andere Tilo-Protokollversion:
 # die beiden arbeiten wieder zusammen, sobald eines von ihnen aktualisiert.
@@ -200,7 +200,7 @@ session-display-builtin = Eingebauter Bildschirm
 session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
 session-quick-settings = Schnelleinstellungen
-session-desk-styles = Schreibtischstile
+session-shell-styles = Schreibtischstile
 session-devices = Geräte
 session-devices-press = Eines deiner Geräte drücken
 session-bluetooth-app = Bluetooth
@@ -329,8 +329,8 @@ paste-undone-trouble = { $landed } von { $total } waren schon eingefügt. Die bl
 
 ## Was die eigenen Zeilen des Schreibtischs sagen: die Frage auf dem Avatar der
 ## Person, der Tray-Eintrag einer laufenden Anwendung und wie die Personenliste heißt.
-session-desk-answer-ask = Antworten
-session-desk-ask-later = Später fragen
+session-answer-ask = Antworten
+session-ask-later = Später fragen
 session-tray-open = Öffnen
 session-agents-stop = Stoppen
 session-people = Personen
@@ -405,9 +405,9 @@ capture-target-region = Ein Bereich des Schreibtischs
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistent
 
-desk-style-failed-app-name = Schreibtisch
-desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden
-desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt der Schreibtisch Streifen. Deine Wahl bleibt erhalten.
+style-failed-app-name = Shell
+style-failed-title = Dein Stil konnte nicht angezeigt werden
+style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt die Shell Streifen. Deine Wahl bleibt erhalten.
 
 ## A step an agent takes inside a conversation, asking the person before it
 ## runs. The sheet shows the step's draft; confirming allows this one step.
@@ -503,7 +503,7 @@ session-action-retry = Erneut danach suchen
 
 ## Actions
 
-so-tilo-session-desk-switch-workspace = Zum Arbeitsbereich wechseln
+so-tilo-session-switch-workspace = Zum Arbeitsbereich wechseln
 so-tilo-session-invite-invitations = Einladungen auflisten
 so-tilo-session-invite-issue-invitation = Einladungslink erstellen
 so-tilo-session-invite-show-invite = Personen einladen

@@ -192,7 +192,7 @@ pub(super) fn pictures(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>
 /// Step the session until the lock screen's own frame is on `displays` and is not changing any
 /// more: the screen itself — the app's own, once the session runs one — not the session's view
 /// that stands in while the app starts.
-/// The lock screen is an app of its own, drawing on its own clock: the frame it covers the desk
+/// The lock screen is an app of its own, drawing on its own clock: the frame it covers the shell
 /// with is not yet what it drew, and how many turns of the session pass before it rests is the
 /// app's to decide. What settles it is the rule [`until_still`] reads — a screen that stopped
 /// changing — never a count of turns of the session.
@@ -260,8 +260,8 @@ fn told(session: &Session, centre: &str) -> Vec<(u64, String)> {
     notices
 }
 
-/// The session drew the lock itself, and says so: the person comes back to a desk holding the one
-/// notice that tells them why. It is critical, so no time on screen takes it away, and the desk is
+/// The session drew the lock itself, and says so: the person comes back to a shell holding the one
+/// notice that tells them why. It is critical, so no time on screen takes it away, and the shell is
 /// the one they left only once they have taken it back — as the centre's Dismiss does.
 #[track_caller]
 pub(super) fn take_back_the_notice_of_the_locks_own_view(session: &mut Session) {
@@ -289,7 +289,7 @@ pub(super) fn take_back_the_notice_of_the_locks_own_view(session: &mut Session) 
     });
 }
 
-/// Step the session until `displays` show what `was` showed again, settled: the desk, back.
+/// Step the session until `displays` show what `was` showed again, settled: the shell, back.
 #[track_caller]
 pub(super) fn until_back(
     session: &mut Session,
@@ -307,7 +307,7 @@ pub(super) fn until_back(
         settled = Some(now);
         assert!(
             Instant::now() < deadline,
-            "{displays:?} never showed the desk again"
+            "{displays:?} never showed the shots again"
         );
         session.step(REFRESH).expect("a turn of the session");
     }
@@ -325,13 +325,13 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
         std::sync::Arc::clone(&held) as std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
     );
     let _client = mapped(&mut session, "org.example.Terminal");
-    let desk = pictures(&mut session, &[DISPLAY]);
+    let shots = pictures(&mut session, &[DISPLAY]);
 
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
     pump(&mut session, &mut [], |session, _| {
         session.compositor().locked()
     });
-    let locked = until_drawn(&mut session, &[DISPLAY], &desk);
+    let locked = until_drawn(&mut session, &[DISPLAY], &shots);
     assert!(
         session.surfaces().running("lock"),
         "the session locked with its lock screen: {:?}",
@@ -401,7 +401,7 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
         "a wrong password keeps the session locked"
     );
 
-    // The right one unlocks it, and the desk comes back.
+    // The right one unlocks it, and the shell comes back.
     type_and_enter(&mut session, "sesame");
     held.answer(tilo_session::unlock::Verdict::Unlocks);
     pump(&mut session, &mut [], |session, _| {
@@ -410,13 +410,13 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     pump(&mut session, &mut [], |session, _| {
         !session.surfaces().running("lock")
     });
-    let after = until_back(&mut session, &[DISPLAY], &desk);
-    let back = apart(&after[0], &desk[0]);
+    let after = until_back(&mut session, &[DISPLAY], &shots);
+    let back = apart(&after[0], &shots[0]);
     let was = apart(&after[0], &locked[0]);
     assert!(
         back * 4.0 < was && back < 24.0,
         "unlocking clears the lock screen: what the display shows is {back:.0} of 255 from the \
-         desk it showed before the lock, and {was:.0} from the lock screen"
+         shots it showed before the lock, and {was:.0} from the lock screen"
     );
     assert!(
         publisher(&session, "overview").is_some(),
@@ -496,9 +496,9 @@ fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> 
 /// The lock the session holds is what the displays show, and a check reads it
 /// there: the door's snapshot draws the lock screen the app put on the display,
 /// while a copy of the display that leaves the session is the one placeholder.
-/// Unlocking puts the desk back in both.
+/// Unlocking puts the shell back in both.
 #[test]
-fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_back() {
+fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_back() {
     const DISPLAY: &str = "HEADLESS-1";
     let _settled = ui::motion::testing::settled();
     let home = private_home();
@@ -514,9 +514,9 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
     .expect("session");
     session.step(Duration::from_millis(1)).expect("a turn");
 
-    // The desk, as the door draws it before anything locks.
-    let desk = door_picture(&mut session, &door, home.path(), "desk");
-    assert!(colours(&desk).len() > 8, "the desk, not a flat frame");
+    // The shell, as the door draws it before anything locks.
+    let shots = door_picture(&mut session, &door, home.path(), "shots");
+    assert!(colours(&shots).len() > 8, "the shots, not a flat frame");
 
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
     pump(&mut session, &mut [], |session, _| {
@@ -541,8 +541,8 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
     );
     assert_ne!(
         colours(&locked),
-        colours(&desk),
-        "the display shows the lock screen, not the desk it covered"
+        colours(&shots),
+        "the display shows the lock screen, not the shots it covered"
     );
     let copy: std::collections::BTreeSet<[u8; 4]> = session
         .compositor()
@@ -559,16 +559,16 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
         "the door draws the display, not the copy's placeholder"
     );
 
-    // The right password unlocks it, and the desk comes back to the door and to a copy of the
+    // The right password unlocks it, and the shell comes back to the door and to a copy of the
     // display alike.
     type_and_enter(&mut session, "sesame");
     pump(&mut session, &mut [], |session, _| {
         !session.compositor().locked()
     });
-    let back = door_picture(&mut session, &door, home.path(), "desk-again");
+    let back = door_picture(&mut session, &door, home.path(), "shots-again");
     assert!(
         colours(&back).len() > 8,
-        "the desk is back on the display, not the lock screen"
+        "the shots is back on the display, not the lock screen"
     );
     let copy: std::collections::BTreeSet<[u8; 4]> = session
         .compositor()
@@ -578,7 +578,7 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
         .chunks_exact(4)
         .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
         .collect();
-    assert!(copy.len() > 8, "a copy is the desk again");
+    assert!(copy.len() > 8, "a copy is the shots again");
 }
 
 /// A session whose lock screen's app is not installed still locks, and its own view of the lock is
@@ -601,7 +601,7 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
         },
     );
     let _client = mapped(&mut session, "org.example.Terminal");
-    let desk = pictures(&mut session, &[DISPLAY]);
+    let shots = pictures(&mut session, &[DISPLAY]);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
     pump(&mut session, &mut [], |session, _| {
         session.compositor().locked()
@@ -615,8 +615,8 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
         publisher(&session, "overview").is_none(),
         "the locked session withholds the desktop's actions"
     );
-    // What shows the lock is the session's own view of it, over the desk.
-    until_drawn(&mut session, &[DISPLAY], &desk);
+    // What shows the lock is the session's own view of it, over the shell.
+    until_drawn(&mut session, &[DISPLAY], &shots);
     assert!(
         session.compositor().locked(),
         "the lock holds while the session's own view shows it"
@@ -640,13 +640,13 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
     pump(&mut session, &mut [], |session, _| {
         !session.compositor().locked()
     });
-    // The lock the person saw was the session's own drawing, and the desk they come back to says
-    // so until they take that back; then it is the desk they left.
+    // The lock the person saw was the session's own drawing, and the shell they come back to says
+    // so until they take that back; then it is the shell they left.
     take_back_the_notice_of_the_locks_own_view(&mut session);
-    let after = until_back(&mut session, &[DISPLAY], &desk);
+    let after = until_back(&mut session, &[DISPLAY], &shots);
     assert!(
-        apart(&after[0], &desk[0]) < 24.0,
-        "unlocking clears the lock and shows the desk again"
+        apart(&after[0], &shots[0]) < 24.0,
+        "unlocking clears the lock and shows the shots again"
     );
     assert!(
         publisher(&session, "overview").is_some(),
@@ -661,7 +661,7 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
 fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
     let _settled = ui::motion::testing::settled();
-    // What the desk shows before the lock and after it is the same desk: the bar's own minute
+    // What the shell shows before the lock and after it is the same shell: the bar's own minute
     // turning over in between is not a difference.
     let _clock = tilo_test_env::held_wall_clock();
     let external = OutputConfig::new("HEADLESS-2", 1024, 768).at(WIDTH, 0);
@@ -672,13 +672,13 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
         std::sync::Arc::new(Sesame),
     );
     let _client = mapped(&mut session, "org.example.Terminal");
-    let desk = pictures(&mut session, &DISPLAYS);
+    let shots = pictures(&mut session, &DISPLAYS);
 
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
     pump(&mut session, &mut [], |session, _| {
         session.compositor().locked()
     });
-    let locked = until_drawn(&mut session, &DISPLAYS, &desk);
+    let locked = until_drawn(&mut session, &DISPLAYS, &shots);
     // The prompt stands once, on the display in use (the first, as nothing moved focus off it);
     // the other display shows the artwork without it.
     let shown = apart(&locked[0], &locked[1]);
@@ -720,7 +720,7 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     pump(&mut session, &mut [], |session, _| {
         !session.surfaces().running("lock")
     });
-    until_back(&mut session, &DISPLAYS, &desk);
+    until_back(&mut session, &DISPLAYS, &shots);
 }
 
 /// The lock the power menu offers is the session's own: choosing it starts the lock screen, as the
@@ -1093,8 +1093,8 @@ const DISPLAY: &str = "HEADLESS-1";
 /// A locked session whose lock screen is the app, with a player the session hosts: what it
 /// publishes of what plays, and what the player was asked.
 pub(super) struct Locked {
-    /// The window on the desk the lock came over, which keeps the session's compositor showing a
-    /// desk under it.
+    /// The window on the shell the lock came over, which keeps the session's compositor showing a
+    /// shell under it.
     _client: TestClient,
     pub(super) session: Session,
     asked: Rc<RefCell<Vec<String>>>,
@@ -1112,7 +1112,7 @@ impl Locked {
         Self::themed(ui::headless::fixture_runner_inputs)
     }
 
-    /// The same, drawn by a desk presenting itself through `presentation` .
+    /// The same, drawn by a shell presenting itself through `presentation` .
     pub(super) fn themed(presentation: fn() -> ui::application::ComponentRunnerInputs) -> Self {
         let home = private_home();
         let asked = Rc::new(RefCell::new(Vec::new()));
@@ -1135,12 +1135,12 @@ impl Locked {
         )
         .expect("session");
         let client = mapped(&mut session, "org.example.Terminal");
-        let desk = pictures(&mut session, &[DISPLAY]);
+        let shots = pictures(&mut session, &[DISPLAY]);
         invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
         pump(&mut session, &mut [], |session, _| {
             session.compositor().locked()
         });
-        until_drawn(&mut session, &[DISPLAY], &desk);
+        until_drawn(&mut session, &[DISPLAY], &shots);
         let quiet = until_still(&mut session, DISPLAY);
         Self {
             _client: client,
@@ -1383,12 +1383,12 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
         },
     );
     let _client = mapped(&mut session, "org.example.Terminal");
-    let desk = pictures(&mut session, &[DISPLAY]);
+    let shots = pictures(&mut session, &[DISPLAY]);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
     pump(&mut session, &mut [], |session, _| {
         session.compositor().locked()
     });
-    let locked = until_drawn(&mut session, &[DISPLAY], &desk);
+    let locked = until_drawn(&mut session, &[DISPLAY], &shots);
     let before = session
         .compositor()
         .screenshot(DISPLAY)

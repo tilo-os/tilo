@@ -80,7 +80,7 @@ impl Landings {
     }
 
     /// Run what waits on answers that land while the session ends, for up to `patience`: a
-    /// workspace made on this desk is founded off the loop, and the writes that end the session
+    /// workspace made on this session is founded off the loop, and the writes that end the session
     /// need it held.
     pub(crate) fn settle(&self, patience: std::time::Duration) {
         #[cfg(target_family = "wasm")]

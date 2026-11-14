@@ -2,7 +2,7 @@
 //! workspace — a new one where they keep none — through the session's one send
 //! (`session:send-to#send`), the send a window's box, text typed on the canvas and an agent run
 //! (docs/designs/app-language/shell.md §8.1). It lands in their chat with it, and Chat opens that
-//! chat on the desk.
+//! chat on the shell.
 //!
 //! The row answers every query and stands after everything the query names, so it crowds nothing
 //! out; it takes text nothing matched, as the canvas does, so text that names nothing is a

@@ -84,13 +84,13 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
         "one person joined the workspace, not their two devices: {members:?}"
     );
 
-    // Each of the four sessions keeps the workspace, shows it on its desk,
+    // Each of the four sessions keeps the workspace, shows it on its shell,
     // and has it in front: a person who joins a workspace lands in it, so
-    // the desk shows that workspace rather than the one it started on.
+    // the shell shows that workspace rather than the one it started on.
     for device in [&ada_laptop, &ada_phone, &bob_laptop, &bob_phone] {
         assert!(
             device.held().iter().any(|held| held == &site.workspace),
-            "{} holds the workspace it joined, beside the one its own desk made: {:?}",
+            "{} holds the workspace it joined, beside the one its own shell made: {:?}",
             device.label,
             device.held()
         );
@@ -154,12 +154,12 @@ fn two_peoples_own_desktops_see_each_other_come_and_go_without_a_site() {
     let mut ada_desktop = ada.device("Ada's desktop");
     let mut bob_desktop = bob.device("Bob's desktop");
     ada_desktop.start();
-    tilo_test_env::wait_until("Ada's desk shows the workspace it made", || {
+    tilo_test_env::wait_until("Ada's shell shows the workspace it made", || {
         ada_desktop.showing().is_some()
     });
     let workspace = ada_desktop
         .showing()
-        .expect("the workspace Ada's desk made");
+        .expect("the workspace Ada's shell made");
     let invitation = crate::common::people::shared_invitation(&ada_desktop, "editor", bob.public);
     bob_desktop.join(&invitation);
     bob_desktop.wait_holding(&workspace);

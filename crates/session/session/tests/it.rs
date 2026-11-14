@@ -51,6 +51,8 @@ mod app_records;
 mod app_sheets;
 #[path = "app_side_records.rs"]
 mod app_side_records;
+#[path = "arrangement.rs"]
+mod arrangement;
 #[path = "arrangement_placing.rs"]
 mod arrangement_placing;
 #[path = "arrangement_record.rs"]
@@ -85,14 +87,6 @@ mod collab;
 mod controllers;
 #[path = "delete_workspace.rs"]
 mod delete_workspace;
-#[path = "desk_arrangement.rs"]
-mod desk_arrangement;
-#[path = "desk_invitations.rs"]
-mod desk_invitations;
-#[path = "desk_layout.rs"]
-mod desk_layout;
-#[path = "desk_styles.rs"]
-mod desk_styles;
 #[path = "desktop_services.rs"]
 mod desktop_services;
 #[path = "dev_session_apps.rs"]
@@ -135,12 +129,16 @@ mod hosted_windows;
 mod import_readiness;
 #[path = "input_method.rs"]
 mod input_method;
+#[path = "invitations.rs"]
+mod invitations;
 #[path = "invite.rs"]
 mod invite;
 #[path = "join.rs"]
 mod join;
 #[path = "launch.rs"]
 mod launch;
+#[path = "layout.rs"]
+mod layout;
 #[path = "layout_view.rs"]
 mod layout_view;
 #[path = "live_relay_bound.rs"]
@@ -251,6 +249,8 @@ mod slot_view;
 mod strips_tabs;
 #[path = "style_packages.rs"]
 mod style_packages;
+#[path = "styles.rs"]
+mod styles;
 #[path = "test_control.rs"]
 mod test_control;
 #[path = "tools.rs"]

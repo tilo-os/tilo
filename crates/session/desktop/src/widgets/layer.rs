@@ -1,7 +1,7 @@
-//! The desk's widgets as one layer: it lays them out where the person keeps them, decides the form
-//! each is in ([`DeskBoard`]) and paints it there.
+//! The shell's widgets as one layer: it lays them out where the person keeps them, decides the form
+//! each is in ([`WidgetBoard`]) and paints it there.
 //! Widget content is what the session already holds: the people in this workspace come from the
-//! tree the desk shows, the date from the clock. Nothing is polled: the layer reads the tree it is
+//! tree the shell shows, the date from the clock. Nothing is polled: the layer reads the tree it is
 //! mounted over, and the person's choices ([`DeskWidgetPrefs`]) arrive from the settings document
 //! the session watches.
 
@@ -32,13 +32,13 @@ use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::calendar::Month;
-use super::music::{DeskMusic, MusicAction, NowPlaying};
+use super::music::{Music, MusicAction, NowPlaying};
 use super::paint::{self, BAND};
 use super::placement::{self, MARGIN};
 use super::sizing;
 use super::system_monitor::{self, Monitor, Reading, Service, Source};
 use super::team::{self, TeamMember};
-use super::{Context, DeskBoard, Form, Slot};
+use super::{Context, WidgetBoard, Form, Slot};
 use crate::chrome::ChromeIntent;
 use crate::desktop_host::DesktopAsk;
 
@@ -52,11 +52,11 @@ const SHOWN: [WidgetId; 4] = [
     WidgetId::SystemMonitor,
 ];
 
-/// What the desk's controls are named to assistive technology: the widget's own control, then
+/// What the shell's controls are named to assistive technology: the widget's own control, then
 /// `.pin` or `.remove` for its card's.
-const DESK_TARGET: &str = "desk.widget:";
+const SHELL_TARGET: &str = "shell.widget:";
 
-/// One of the desk's controls, as a screen reader reads it.
+/// One of the shell's controls, as a screen reader reads it.
 fn control(target: String, name: String, bounds: Rect) -> ui::a11y::AccessNode {
     ui::a11y::AccessNode::new(ui::a11y::Role::Button)
         .with_name(name)
@@ -103,12 +103,12 @@ const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 /// How much larger a widget is drawn while lifted under the hand.
 const LIFT_SCALE: f64 = 0.03;
 
-/// The desk's widgets, drawn over the desk and under the windows.
-pub struct DeskWidgets {
+/// The shell's widgets, drawn over the shell and under the windows.
+pub struct WidgetLayer {
     handle: DesktopHandle,
     /// This person, as the roster names them.
     user: String,
-    /// What the desk asks of the host (a person's row opens who they are).
+    /// What the shell asks of the host (a person's row opens who they are).
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// The person's choices as this layer has them.
     prefs: DeskWidgetPrefs,
@@ -119,7 +119,7 @@ pub struct DeskWidgets {
     laid_from: DeskWidgetPrefs,
     /// Write a choice back to the settings document. A test keeps its own.
     persist: bool,
-    board: DeskBoard,
+    board: WidgetBoard,
     slots: Vec<Slot>,
     /// Each widget coming and going, and its card expanding from its glance.
     shown: BTreeMap<WidgetId, Presence>,
@@ -147,10 +147,10 @@ pub struct DeskWidgets {
     dirty: bool,
     rect: Rect,
     /// Whether a card is open, for the keys that fold it, and their ask.
-    fold: super::DeskFold,
-    /// Whether the overview is up over the desk: a card the person opened goes with it.
+    fold: super::Fold,
+    /// Whether the overview is up over the shell: a card the person opened goes with it.
     overview: Rc<Cell<bool>>,
-    /// The desk's notifications: a widget taken off the desk offers Undo there for a while.
+    /// The shell's notifications: a widget taken off the shell offers Undo there for a while.
     notices: DesktopNotifications,
     /// The Undo toasts on offer, by notification: each puts its widget back.
     undo: Rc<RefCell<BTreeMap<u64, WidgetId>>>,
@@ -158,7 +158,7 @@ pub struct DeskWidgets {
     restores: Rc<RefCell<Vec<WidgetId>>>,
     /// What plays, as the session reads it: the music widget shows it and its controls ask for the
     /// transport.
-    music: DeskMusic,
+    music: Music,
 }
 
 /// One widget as laid out: where it is, and which display that is.
@@ -181,7 +181,7 @@ struct Content<'a> {
     cursor: Option<Point>,
 }
 
-/// What the desk showed in a frame.
+/// What the shell showed in a frame.
 #[derive(Clone, Debug, PartialEq)]
 struct Painted {
     forms: Vec<(WidgetId, Form)>,
@@ -192,14 +192,14 @@ struct Painted {
     prefs: DeskWidgetPrefs,
 }
 
-impl DeskWidgets {
+impl WidgetLayer {
     /// Queue `ask` for the host, and ask it for the pass that answers it
     /// ([`crate::desktop_host::ask`]).
     fn ask(&self, asked: DesktopAsk) {
         crate::desktop_host::ask(&self.handle, &self.asks, asked);
     }
 
-    /// The desk's widgets, showing what `prefs` says.
+    /// The shell's widgets, showing what `prefs` says.
     #[must_use]
     pub fn new(
         handle: DesktopHandle,
@@ -216,7 +216,7 @@ impl DeskWidgets {
             prefs,
             changes,
             persist: true,
-            board: DeskBoard::default(),
+            board: WidgetBoard::default(),
             slots: Vec::new(),
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
@@ -232,23 +232,23 @@ impl DeskWidgets {
             painted: None,
             dirty: true,
             rect: Rect::ZERO,
-            fold: super::DeskFold::default(),
+            fold: super::Fold::default(),
             overview: Rc::default(),
             notices: DesktopNotifications::default(),
             undo: Rc::default(),
             restores: Rc::default(),
-            music: DeskMusic::default(),
+            music: Music::default(),
         }
     }
 
     /// The same layer sharing `fold` with the session's keys, which fold its open card on Escape.
     #[must_use]
-    pub fn with_fold(mut self, fold: super::DeskFold) -> Self {
+    pub fn with_fold(mut self, fold: super::Fold) -> Self {
         self.fold = fold;
         self
     }
 
-    /// The same layer folding what is open while the overview `up` is over the desk.
+    /// The same layer folding what is open while the overview `up` is over the shell.
     #[must_use]
     pub fn with_overview(mut self, up: Rc<Cell<bool>>) -> Self {
         self.overview = up;
@@ -258,20 +258,20 @@ impl DeskWidgets {
     /// The same layer showing what plays from `music` , the reading the session keeps in step with
     /// the player Quick Settings shows.
     #[must_use]
-    pub fn with_music(mut self, music: DeskMusic) -> Self {
+    pub fn with_music(mut self, music: Music) -> Self {
         self.music = music;
         self.dirty = true;
         self
     }
 
-    /// The same layer posting to `notices` , the desk's own: what it takes off the desk offers Undo
+    /// The same layer posting to `notices` , the shell's own: what it takes off the shell offers Undo
     /// there.
     #[must_use]
     pub fn with_notices(mut self, notices: DesktopNotifications) -> Self {
         let undo = Rc::clone(&self.undo);
         let restores = Rc::clone(&self.restores);
         // The person's answer comes from wherever the toast was shown, not from this layer: the
-        // desk takes it up on its next pass.
+        // shell takes it up on its next pass.
         notices.on_outcome(move |outcome| match outcome {
             NotificationOutcome::Activated { notification, .. } => {
                 if let Some(widget) = undo.borrow_mut().remove(&notification.id) {
@@ -286,7 +286,7 @@ impl DeskWidgets {
         self
     }
 
-    /// The same layer showing `prefs` , keeping what it is asked in memory: for a desk that stands
+    /// The same layer showing `prefs` , keeping what it is asked in memory: for a shell that stands
     /// on its own.
     #[must_use]
     pub fn with_prefs(mut self, prefs: DeskWidgetPrefs) -> Self {
@@ -297,7 +297,7 @@ impl DeskWidgets {
         self
     }
 
-    /// The same layer reading the machine through `source` : for a desk whose readings are known.
+    /// The same layer reading the machine through `source` : for a shell whose readings are known.
     #[cfg(test)]
     #[must_use]
     pub fn with_source(mut self, source: Box<dyn Source>) -> Self {
@@ -363,8 +363,8 @@ impl DeskWidgets {
             .read(|tree| team::members(tree, user, user, presence, ui::time::wall()))
     }
 
-    /// The displays the desk covers, each by its monitor's stable identity and its rect in the
-    /// desk's own coordinates.
+    /// The displays the shell covers, each by its monitor's stable identity and its rect in the
+    /// shell's own coordinates.
     fn displays(&self) -> Vec<(String, Rect)> {
         let displays = self.handle.read(|tree| tree.outputs.displays.clone());
         let Some(x0) = displays.iter().map(|display| display.x).reduce(f64::min) else {
@@ -526,7 +526,7 @@ impl DeskWidgets {
 
     /// Whether a window of the shown strip covers the open card: the widgets rest under the
     /// windows, so a card a window covers is out of sight and folds, as it does when the person
-    /// clicks the desk beside it.
+    /// clicks the shell beside it.
     fn window_covers_card(&self) -> bool {
         let Some(opened) = self.board.opened() else {
             return false;
@@ -548,8 +548,8 @@ impl DeskWidgets {
         self.hit_in(&drawn, p)
     }
 
-    /// The widget form under `p` in the desk `drawn` stands at: where the pointer was is asked
-    /// against the desk as it stood before the move.
+    /// The widget form under `p` in the shell `drawn` stands at: where the pointer was is asked
+    /// against the shell as it stood before the move.
     fn hit_in(&self, drawn: &[Slot], p: Point) -> Option<(WidgetId, Form, Rect)> {
         drawn.iter().rev().find_map(|slot| {
             let form = self.board.form(slot.id);
@@ -563,7 +563,7 @@ impl DeskWidgets {
         })
     }
 
-    /// Which way `id` 's card grows from its glance: toward the middle of the desk.
+    /// Which way `id` 's card grows from its glance: toward the middle of the shell.
     fn anchor(&self, id: WidgetId) -> (bool, bool) {
         self.slot(id).map_or((true, true), |slot| {
             placement::anchor(placement::fractions(self.rect, slot.glance))
@@ -682,7 +682,7 @@ impl DeskWidgets {
             self.relayout();
         } else if !grab.dragging && (p - grab.at).hypot() > DRAG_SLOP {
             grab.dragging = true;
-            // Under the hand it comes up off the desk: bigger, and its shadow further away.
+            // Under the hand it comes up off the shell: bigger, and its shadow further away.
             self.set_lift(grab.id, true);
             self.dirty = true;
         }
@@ -797,7 +797,7 @@ impl DeskWidgets {
         self.dirty = true;
     }
 
-    /// Take `id` off the desk: its remove control, or thrown off the screen.
+    /// Take `id` off the shell: its remove control, or thrown off the screen.
     /// Its place and size are kept, switched off, and a toast offers Undo,
     /// which puts it back where it was.
     fn remove(&mut self, id: WidgetId) {
@@ -822,10 +822,10 @@ impl DeskWidgets {
         self.offer_undo(id);
     }
 
-    /// Offer Undo for `id` , just taken off the desk: the toast names it, and choosing it before it
+    /// Offer Undo for `id` , just taken off the shell: the toast names it, and choosing it before it
     /// lapses puts the widget back.
     fn offer_undo(&self, id: WidgetId) {
-        let name = paint::desk_widget_title(id);
+        let name = paint::widget_title(id);
         let mut toast = Notification::new(
             crate::i18n::t_args("shell-widget-removed", &[("widget", name.as_str().into())]),
             String::new(),
@@ -839,7 +839,7 @@ impl DeskWidgets {
         self.undo.borrow_mut().insert(posted, id);
     }
 
-    /// Keep `id` on this desk even while the person works, or stop.
+    /// Keep `id` on this session even while the person works, or stop.
     fn toggle_pin(&mut self, id: WidgetId) {
         let mut prefs = self.prefs.get(id).clone();
         if prefs.always_on(None) {
@@ -857,7 +857,7 @@ impl DeskWidgets {
         if self.persist
             && let Err(error) = ui::desk_widgets::prefs_key(id).set(prefs.clone())
         {
-            tracing::warn!(target: "tilo::desk", %error, "desk widget choice not saved");
+            tracing::warn!(target: "tilo::shell", %error, "shell widget choice not saved");
         }
         *self.prefs.get_mut(id) = prefs;
         *shared(&self.changes) = self.prefs.clone();
@@ -887,8 +887,8 @@ impl DeskWidgets {
             changed = true;
         }
         changed |= self.relayout();
-        // An open card folds under whatever takes the desk from the person: the overview over it, a
-        // window covering it, or Escape, which the session's keys send here because the desk is
+        // An open card folds under whatever takes the shell from the person: the overview over it, a
+        // window covering it, or Escape, which the session's keys send here because the shell is
         // under the windows. An ask that finds no card open is spent here too, so it cannot fold
         // the next card opened.
         let asked = self.fold.take_asked();
@@ -951,7 +951,7 @@ impl DeskWidgets {
                     now,
                 );
         }
-        // Escape is the desk's while a card is open, and not a moment before or after.
+        // Escape is the shell's while a card is open, and not a moment before or after.
         self.fold.set_open(self.board.opened().is_some());
         if changed {
             self.dirty = true;
@@ -1045,7 +1045,7 @@ impl DeskWidgets {
         let card = paint::card_rect(open);
         paint::paint_card_ground(scene, transform, theme, open);
         let pinned = self.prefs.get(slot.id).always_on(None);
-        let title = paint::desk_widget_title(slot.id);
+        let title = paint::widget_title(slot.id);
         let collapse_label = crate::i18n::t_args(
             "shell-widget-collapse",
             &[("widget", title.as_str().into())],
@@ -1160,7 +1160,7 @@ impl DeskWidgets {
     }
 }
 
-impl Widget for DeskWidgets {
+impl Widget for WidgetLayer {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Who is here can change with the tree alone: lay the widget out again for it.
         let people = self.team_rows();
@@ -1260,7 +1260,7 @@ impl Widget for DeskWidgets {
             let ground = lerp_rect(slot.glance, slot.open, morph);
             let bounds = slot.glance.union(slot.open).inflate(40.0, 48.0);
             let hovered = self.hovered(slot.id);
-            // A widget carried by the hand comes up off the desk: it grows a little and its shadow
+            // A widget carried by the hand comes up off the shell: it grows a little and its shadow
             // falls further, both from the middle it would grow from.
             let lift = self
                 .lifts
@@ -1316,8 +1316,8 @@ impl Widget for DeskWidgets {
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = ctx.logical(position);
             let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
-            // Where the pointer was, against the desk as it stood: a card it was on dims when the
-            // pointer leaves it, and the move that leaves lands on the bare desk, so nothing else
+            // Where the pointer was, against the shell as it stood: a card it was on dims when the
+            // pointer leaves it, and the move that leaves lands on the bare shell, so nothing else
             // would repaint.
             let was_on = self
                 .pointer
@@ -1334,7 +1334,7 @@ impl Widget for DeskWidgets {
             self.tick(now);
             let on_card = self.hit_at(p).is_some();
             // A card lights up under the pointer and dims when it leaves, so moving on, within or
-            // off one is a frame the desk owes; a move across the bare desk changes nothing it
+            // off one is a frame the shell owes; a move across the bare shell changes nothing it
             // paints.
             if was_on || on_card {
                 self.dirty = true;
@@ -1421,10 +1421,10 @@ impl Widget for DeskWidgets {
             // it up.
             || *shared(&self.changes) != self.prefs
             // So does Escape, and the overview coming over an open card: both arrive without the
-            // desk being told anything itself.
+            // shell being told anything itself.
             || self.fold.asked()
             || (self.overview.get() && self.board.opened().is_some())
-            // Undo, answered on the toast, reaches the desk this way.
+            // Undo, answered on the toast, reaches the shell this way.
             || !self.restores.borrow().is_empty()
             // So does what plays: the session writes the reading every frame it pumps, and the next
             // frame draws it.
@@ -1435,11 +1435,11 @@ impl Widget for DeskWidgets {
         false
     }
 
-    /// The widgets on the desk as a screen reader reads them: each showing one is a control that
+    /// The widgets on the shell as a screen reader reads them: each showing one is a control that
     /// opens or folds it, and its card's own controls beside it — the pin, and the remove off the
-    /// desk. Each keeps its identity as the others come and go.
+    /// shell. Each keeps its identity as the others come and go.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        // The overview is over the desk: the widgets are behind it.
+        // The overview is over the shell: the widgets are behind it.
         if self.overview.get() {
             return None;
         }
@@ -1449,8 +1449,8 @@ impl Widget for DeskWidgets {
             if form == Form::Away || !slot.has_content {
                 continue;
             }
-            let title = paint::desk_widget_title(slot.id);
-            let target = format!("{DESK_TARGET}{}", slot.id.key());
+            let title = paint::widget_title(slot.id);
+            let target = format!("{SHELL_TARGET}{}", slot.id.key());
             let (bounds, name) = if form == Form::Open {
                 (
                     slot.open,
@@ -1509,7 +1509,7 @@ impl Widget for DeskWidgets {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
-        let Some(rest) = target.strip_prefix(DESK_TARGET) else {
+        let Some(rest) = target.strip_prefix(SHELL_TARGET) else {
             return false;
         };
         let (key, control) = match rest.rsplit_once('.') {
@@ -1602,7 +1602,7 @@ impl Widget for DeskWidgets {
     }
 
     fn name(&self) -> &'static str {
-        "DeskWidgets"
+        "WidgetLayer"
     }
 
     fn get_rect(&self) -> Rect {
@@ -1633,7 +1633,7 @@ fn lerp_rect(a: Rect, b: Rect, t: f64) -> Rect {
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
-    reason = "test desks add margins to logical pixels and lay out in f32"
+    reason = "test sessions add margins to logical pixels and lay out in f32"
 )]
 mod tests {
     use super::*;
@@ -1648,7 +1648,7 @@ mod tests {
     use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
     use ui::widget::{TileContent, TileHost};
 
-    /// The desk of the tests: no window is placed, so what a tab stands for is never asked.
+    /// The shell of the tests: no window is placed, so what a tab stands for is never asked.
     struct Tiles;
 
     impl TileSource for Tiles {
@@ -1661,24 +1661,24 @@ mod tests {
     }
 
     const AREA: Size = Size::new(1600.0, 900.0);
-    /// A point on the desk no widget rests on.
+    /// A point on the shell no widget rests on.
     const BARE: Point = Point::new(800.0, 450.0);
 
     struct Rig {
-        widgets: DeskWidgets,
+        widgets: WidgetLayer,
         asks: Rc<RefCell<Vec<DesktopAsk>>>,
         changes: std::sync::Arc<std::sync::Mutex<DeskWidgetPrefs>>,
-        /// The desk's open card as the session's keys see it, which asks it to fold.
-        fold: super::super::DeskFold,
-        /// Whether the overview is over the desk.
+        /// The shell's open card as the session's keys see it, which asks it to fold.
+        fold: super::super::Fold,
+        /// Whether the overview is over the shell.
         overview: Rc<Cell<bool>>,
-        /// The desk's notifications, where a removed widget's Undo is offered.
+        /// The shell's notifications, where a removed widget's Undo is offered.
         notices: tilo_desktop_surface::DesktopNotifications,
         /// What plays, as the session keeps it beside its Quick Settings reading.
-        music: DeskMusic,
+        music: Music,
     }
 
-    /// A desk with `people` in its workspace, the calendar added, and the layer laid out over a
+    /// A shell with `people` in its workspace, the calendar added, and the layer laid out over a
     /// 1600×900 display.
     fn rig(people: &[(&str, &str)]) -> Rig {
         let mut prefs = DeskWidgetPrefs::default();
@@ -1686,10 +1686,10 @@ mod tests {
         rig_with(people, prefs, Box::new(Service::default()))
     }
 
-    /// A desk as `rig` with the choices `prefs` hold, the monitor's readings coming from `source` .
+    /// A shell as `rig` with the choices `prefs` hold, the monitor's readings coming from `source` .
     fn rig_with(people: &[(&str, &str)], prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
         let mut minter = IdMinter::new(7);
-        let mut tree = seed_tree(&mut minter, "Desk", Vec::new());
+        let mut tree = seed_tree(&mut minter, "Shell", Vec::new());
         if let Some(workspace) = tree.workspaces.first_mut() {
             workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
         }
@@ -1698,16 +1698,16 @@ mod tests {
         rig_over(handle, prefs, source)
     }
 
-    /// The layer of the tests over `handle` , with the desk's choices `prefs` and the monitor's
+    /// The layer of the tests over `handle` , with the shell's choices `prefs` and the monitor's
     /// readings from `source` .
     fn rig_over(handle: DesktopHandle, prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
         let asks = Rc::new(RefCell::new(Vec::new()));
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
-        let fold = super::super::DeskFold::default();
+        let fold = super::super::Fold::default();
         let overview: Rc<Cell<bool>> = Rc::default();
         let notices = tilo_desktop_surface::DesktopNotifications::default();
-        let music = DeskMusic::default();
-        let mut widgets = DeskWidgets::new(handle, "me".into(), Rc::clone(&asks), changes.clone())
+        let music = Music::default();
+        let mut widgets = WidgetLayer::new(handle, "me".into(), Rc::clone(&asks), changes.clone())
             .with_fold(fold.clone())
             .with_overview(Rc::clone(&overview))
             .with_notices(notices.clone())
@@ -1725,11 +1725,11 @@ mod tests {
         }
     }
 
-    /// The desk with no window on it yet, the layer laid out over it, and the frame laying the
-    /// desk's windows out: what the desk is before the person opens a window.
+    /// The shell with no window on it yet, the layer laid out over it, and the frame laying the
+    /// shell's windows out: what the shell is before the person opens a window.
     fn rig_before_a_window_arrives() -> (Rig, ui::headless::FrameHarness) {
         let mut minter = IdMinter::new(7);
-        let tree = seed_tree(&mut minter, "Desk", Vec::new());
+        let tree = seed_tree(&mut minter, "Shell", Vec::new());
         let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
         handle.set_viewport_width(AREA.width);
         let mut frame = ui::headless::FrameHarness::new(
@@ -1744,7 +1744,7 @@ mod tests {
         (rig, frame)
     }
 
-    /// A window spanning the whole strip showing on the desk `handle` draws,
+    /// A window spanning the whole strip showing on the shell `handle` draws,
     /// laid out by `frame`. Returns the window's rect.
     fn show_a_window(handle: &DesktopHandle, frame: &mut ui::headless::FrameHarness) -> Rect {
         let tree = handle.read(|tree| {
@@ -1752,7 +1752,7 @@ mod tests {
             let strip = tree
                 .active_workspace_mut()
                 .and_then(|workspace| workspace.strips.first_mut())
-                .expect("the desk has a strip");
+                .expect("the shell has a strip");
             strip.window_groups.push(tilo_desktop_model::WindowGroup {
                 id: 4242,
                 active_tab: 4343,
@@ -1783,8 +1783,8 @@ mod tests {
             .1
     }
 
-    /// Lay the layer out over `area` , as the desk around it does.
-    fn lay_out(widgets: &mut DeskWidgets, area: Size) {
+    /// Lay the layer out over `area` , as the shell around it does.
+    fn lay_out(widgets: &mut WidgetLayer, area: Size) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = widgets.build_layout(&mut taffy, &Theme::default(), &mut map);
@@ -1807,7 +1807,7 @@ mod tests {
         }
 
         /// The person clicks at `at` : the pointer is there, the button goes down and comes up
-        /// again. Returns whether the desk took the press.
+        /// again. Returns whether the shell took the press.
         fn click(&mut self, at: Point) -> bool {
             self.send(&cursor_moved(at.x, at.y));
             let pressed = self.send(&mouse_press());
@@ -1832,7 +1832,7 @@ mod tests {
             self.send(&cursor_moved(at.x, at.y));
         }
 
-        /// The newest toast on the desk's notifications.
+        /// The newest toast on the shell's notifications.
         fn toast(&self) -> tilo_desktop_surface::notifications::Notification {
             self.notices
                 .feed()
@@ -1848,7 +1848,7 @@ mod tests {
     }
 
     #[test]
-    fn the_desk_shows_who_is_here_and_today_and_a_tap_opens_the_card() {
+    fn the_shell_shows_who_is_here_and_today_and_a_tap_opens_the_card() {
         let mut rig = rig(&[("ada", "Ada"), ("bo", "Bo")]);
         rig.point_at(BARE);
         assert_eq!(
@@ -1876,7 +1876,7 @@ mod tests {
             "the card is bigger than the form it grew from: {open:?}"
         );
 
-        // The card folds from its own control, and from a click on the desk beside it.
+        // The card folds from its own control, and from a click on the shell beside it.
         let collapse = centre(paint::collapse_rect(open));
         assert!(rig.click(collapse));
         assert_eq!(rig.form(WidgetId::Calendar), Form::Glance, "folded");
@@ -1886,7 +1886,7 @@ mod tests {
         assert_eq!(
             rig.form(WidgetId::Calendar),
             Form::Glance,
-            "a click on the desk folds the card"
+            "a click on the shell folds the card"
         );
     }
 
@@ -1910,7 +1910,7 @@ mod tests {
         rig.widgets.tick(Instant::now());
         assert_eq!(rig.form(WidgetId::Team), Form::Open);
 
-        // The overview comes over the desk: the card folds under it.
+        // The overview comes over the shell: the card folds under it.
         rig.overview.set(true);
         rig.widgets.tick(Instant::now());
         assert_eq!(
@@ -1921,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn a_widget_taken_off_the_desk_offers_undo_which_puts_it_back() {
+    fn a_widget_taken_off_the_shell_offers_undo_which_puts_it_back() {
         let mut rig = rig(&[("ada", "Ada")]);
         rig.point_at(BARE);
         let glance = rig.slot(WidgetId::Calendar).glance;
@@ -1933,7 +1933,7 @@ mod tests {
         assert_eq!(
             rig.form(WidgetId::Calendar),
             Form::Away,
-            "taken off the desk"
+            "taken off the shell"
         );
         let toast = rig.toast();
         assert_eq!(toast.title, "Calendar removed from the desktop");
@@ -1952,7 +1952,7 @@ mod tests {
         assert_eq!(
             rig.form(WidgetId::Calendar),
             Form::Glance,
-            "back on the desk"
+            "back on the shell"
         );
         assert!(
             rig.prefs(WidgetId::Calendar).enabled,
@@ -1977,7 +1977,7 @@ mod tests {
         assert_eq!(
             rig.form(WidgetId::Calendar),
             Form::Away,
-            "thrown off the desk"
+            "thrown off the shell"
         );
         let toast = rig.toast();
         assert_eq!(toast.title, "Calendar removed from the desktop");
@@ -1994,7 +1994,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_coming_over_the_desk_folds_the_open_card() {
+    fn a_window_coming_over_the_shell_folds_the_open_card() {
         let (mut rig, mut frame) = rig_before_a_window_arrives();
         rig.point_at(BARE);
         let glance = rig.slot(WidgetId::Calendar).glance;
@@ -2002,7 +2002,7 @@ mod tests {
         assert_eq!(rig.form(WidgetId::Calendar), Form::Open);
         assert!(
             rig.widgets.handle.shown_tabs().is_empty(),
-            "nothing is over the desk yet"
+            "nothing is over the shell yet"
         );
 
         let window = show_a_window(&rig.widgets.handle, &mut frame);
@@ -2014,12 +2014,12 @@ mod tests {
         assert_eq!(
             rig.form(WidgetId::Calendar),
             Form::Glance,
-            "a window over the desk folds the open card"
+            "a window over the shell folds the open card"
         );
     }
 
     #[test]
-    fn a_desk_with_nobody_else_on_it_shows_no_team() {
+    fn a_shell_with_nobody_else_on_it_shows_no_team() {
         let mut rig = rig(&[]);
         rig.point_at(BARE);
         assert_eq!(
@@ -2035,7 +2035,7 @@ mod tests {
     }
 
     #[test]
-    fn pinning_keeps_the_widget_on_the_desk_and_remove_puts_it_away() {
+    fn pinning_keeps_the_widget_on_the_shell_and_remove_puts_it_away() {
         let mut rig = rig(&[("ada", "Ada")]);
         rig.point_at(BARE);
         let glance = rig.slot(WidgetId::Calendar).glance;
@@ -2055,12 +2055,12 @@ mod tests {
         assert!(rig.click(centre(paint::pin_rect(open))));
         assert_eq!(rig.prefs(WidgetId::Calendar).show, ShowMode::Pause);
 
-        // Removing it from the card takes it off the desk.
+        // Removing it from the card takes it off the shell.
         assert!(rig.click(centre(paint::remove_rect(open))));
         assert_eq!(rig.form(WidgetId::Calendar), Form::Away);
         assert!(!rig.prefs(WidgetId::Calendar).enabled);
 
-        // A widget away keeps its resting form's badge: the person takes it off the desk from
+        // A widget away keeps its resting form's badge: the person takes it off the shell from
         // there.
         assert_eq!(rig.form(WidgetId::Team), Form::Glance);
         let team = rig.slot(WidgetId::Team);
@@ -2122,7 +2122,7 @@ mod tests {
         assert_eq!(
             rig.form(WidgetId::Music),
             Form::Glance,
-            "the song is on the desk"
+            "the song is on the shell"
         );
         let glance = rig.slot(WidgetId::Music).glance;
 
@@ -2160,7 +2160,7 @@ mod tests {
 
     #[test]
     fn a_reader_finds_the_widgets_and_can_open_and_pin_one() {
-        // What a screen reader hears on the desk, in order.
+        // What a screen reader hears on the shell, in order.
         fn heard(rig: &Rig) -> Vec<(String, String, Rect)> {
             rig.widgets
                 .accessibility()
@@ -2193,7 +2193,7 @@ mod tests {
         // Activating the calendar's control opens it, as a press does.
         let calendar = resting
             .iter()
-            .find(|(target, ..)| target == "desk.widget:calendar")
+            .find(|(target, ..)| target == "shell.widget:calendar")
             .map(|(target, ..)| target.clone())
             .expect("the calendar is a control");
         let mut doc = automerge::AutoCommit::new();
@@ -2236,10 +2236,10 @@ mod tests {
             "folding is the card itself: {card:?}"
         );
 
-        // Its pin keeps the widget on the desk, as pressing it does.
+        // Its pin keeps the widget on the shell, as pressing it does.
         let pin = card
             .iter()
-            .find(|(target, ..)| target == "desk.widget:calendar.pin")
+            .find(|(target, ..)| target == "shell.widget:calendar.pin")
             .map(|(target, ..)| target.clone())
             .expect("the open card offers its pin");
         assert!(rig.widgets.perform_semantic_action(
@@ -2254,16 +2254,16 @@ mod tests {
             "activating the pin pins it"
         );
 
-        // With the overview over the desk, the widgets are behind it.
+        // With the overview over the shell, the widgets are behind it.
         rig.overview.set(true);
         assert!(
             rig.widgets.accessibility().is_none(),
-            "the reader meets the overview, not the desk behind it"
+            "the reader meets the overview, not the shell behind it"
         );
     }
 
     #[test]
-    fn a_change_in_settings_reaches_the_desk_without_a_restart() {
+    fn a_change_in_settings_reaches_the_shell_without_a_restart() {
         let mut rig = rig(&[("ada", "Ada")]);
         rig.point_at(BARE);
         assert_eq!(rig.form(WidgetId::Team), Form::Glance);
@@ -2273,7 +2273,7 @@ mod tests {
         prefs.get_mut(WidgetId::Calendar).width = Some(420.0);
         *shared(&rig.changes) = prefs;
         rig.point_at(BARE);
-        assert_eq!(rig.form(WidgetId::Team), Form::Away, "taken off the desk");
+        assert_eq!(rig.form(WidgetId::Team), Form::Away, "taken off the shell");
         let open = rig.slot(WidgetId::Calendar).open;
         assert!(
             (open.width() - 420.0).abs() < 0.5,
@@ -2282,10 +2282,10 @@ mod tests {
     }
 
     #[test]
-    fn the_desk_keeps_the_clicks_beside_the_widgets() {
+    fn the_shell_keeps_the_clicks_beside_the_widgets() {
         let mut rig = rig(&[("ada", "Ada")]);
-        assert!(!rig.send(&cursor_moved(BARE.x, BARE.y)), "the desk's own");
-        assert!(!rig.send(&mouse_press()), "the desk's own");
+        assert!(!rig.send(&cursor_moved(BARE.x, BARE.y)), "the shell's own");
+        assert!(!rig.send(&mouse_press()), "the shell's own");
         assert!(
             !rig.send(&mouse_release()),
             "a release it never pressed for"
@@ -2297,7 +2297,7 @@ mod tests {
     }
 
     #[test]
-    fn a_widget_carried_by_the_hand_comes_up_off_the_desk() {
+    fn a_widget_carried_by_the_hand_comes_up_off_the_shell() {
         let mut rig = rig(&[("ada", "Ada")]);
         rig.point_at(BARE);
         let glance = rig.slot(WidgetId::Calendar).glance;
@@ -2309,12 +2309,12 @@ mod tests {
         });
         assert!(
             rig.widgets.lift(WidgetId::Calendar) <= f64::EPSILON,
-            "resting on the desk while the press is still a press"
+            "resting on the shell while the press is still a press"
         );
         ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(40), || {
             rig.send(&cursor_moved(from.x + 30.0, from.y));
         });
-        // The hand carries it: under it the widget has come up, its shadow further from the desk
+        // The hand carries it: under it the widget has come up, its shadow further from the shell
         // than any resting one.
         let lifted =
             ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(160), || {
@@ -2322,7 +2322,7 @@ mod tests {
             });
         assert!(lifted > 0.5, "carried by the hand: lifted {lifted}");
 
-        // Let go: it settles back onto the desk.
+        // Let go: it settles back onto the shell.
         ui::time::testing::with_monotonic_time(t0 + Duration::from_millis(200), || {
             rig.send(&mouse_release());
         });
@@ -2410,7 +2410,7 @@ mod tests {
         assert_eq!(
             rig.form(WidgetId::SystemMonitor),
             Form::Glance,
-            "pinned: it is on the desk"
+            "pinned: it is on the shell"
         );
         assert_eq!(probes.started(), 1, "showing asks the machine");
         probes.send(stats(None));
@@ -2433,7 +2433,7 @@ mod tests {
         );
         assert_eq!(probes.started(), 1, "one subscription while it shows");
 
-        // Taken off the desk, it stops reading the machine.
+        // Taken off the shell, it stops reading the machine.
         let mut prefs = rig.widgets.prefs();
         prefs.get_mut(WidgetId::SystemMonitor).enabled = false;
         *shared(&rig.changes) = prefs;
@@ -2452,7 +2452,7 @@ mod tests {
 
         // The hand's clock is pinned. Its speed at release is read from when each sample came, and
         // on the machine's own clock a slow run let go while the travel was still within the
-        // window that speed is read over: a throw off the desk, and no place kept.
+        // window that speed is read over: a throw off the shell, and no place kept.
         let t0 = Instant::now();
         ui::time::testing::with_monotonic_time(t0, || {
             rig.send(&cursor_moved(from.x, from.y));
@@ -2476,7 +2476,7 @@ mod tests {
             "it rests where it was let go: {dropped:?} from {let_go:?}"
         );
 
-        // The place is the person's, not this desk's: the next desk with the same choices puts it
+        // The place is the person's, not this session's: the next shell with the same choices puts it
         // there.
         let prefs = rig.widgets.prefs();
         let mut again = rig_with(&[("ada", "Ada")], prefs, Box::new(Service::default()));
@@ -2514,7 +2514,7 @@ mod tests {
             open.width()
         );
 
-        // The width is the person's: the next desk with the same choices opens the card just as
+        // The width is the person's: the next shell with the same choices opens the card just as
         // wide.
         let prefs = rig.widgets.prefs();
         let mut again = rig_with(&[("ada", "Ada")], prefs, Box::new(Service::default()));
@@ -2564,21 +2564,21 @@ mod tests {
     }
 
     #[test]
-    fn the_desk_lays_the_widgets_under_its_windows_and_hands_them_the_pointer() {
+    fn the_shell_lays_the_widgets_under_its_windows_and_hands_them_the_pointer() {
         let mut minter = IdMinter::new(7);
-        let tree = seed_tree(&mut minter, "Desk", Vec::new());
+        let tree = seed_tree(&mut minter, "Shell", Vec::new());
         let handle = DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
         let mut prefs = DeskWidgetPrefs::default();
         prefs.get_mut(WidgetId::Calendar).enabled = true;
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
-        let widgets = DeskWidgets::new(
+        let widgets = WidgetLayer::new(
             handle.clone(),
             "me".into(),
             Rc::new(RefCell::new(Vec::new())),
             std::sync::Arc::clone(&changes),
         )
         .with_prefs(prefs);
-        let mut layer = crate::desktop_host::DeskLayer::new(
+        let mut layer = crate::desktop_host::BackgroundLayer::new(
             Box::new(StubSurface),
             handle,
             crate::launchpad::CollaborationLaunchpad::new(),
@@ -2598,29 +2598,29 @@ mod tests {
             .expect("a layout");
         layer.apply_layout(&taffy, node, Point::ZERO);
 
-        // The calendar rests down the right edge of the desk's area, which starts under the bar.
+        // The calendar rests down the right edge of the shell's area, which starts under the bar.
         let area = layer.area().get_rect();
         let glance = placement::rect_at(area, paint::CALENDAR_GLANCE, (1.0, 0.25));
         let badge = centre(paint::badge_rect(glance, placement::anchor((1.0, 0.25))));
         let mut dispatch = ui::testing::Dispatch::new().layout(&taffy, node);
-        // The pointer comes to the widget from the desk beside it.
+        // The pointer comes to the widget from the shell beside it.
         dispatch.send(&mut layer, &cursor_moved(800.0, 600.0));
         assert!(
             dispatch
                 .send(&mut layer, &cursor_moved(badge.x, badge.y))
                 .handled,
-            "the widget takes the pointer over the desk"
+            "the widget takes the pointer over the shell"
         );
         assert!(dispatch.send(&mut layer, &mouse_press()).handled);
         dispatch.send(&mut layer, &mouse_release());
         assert!(
             !shared(&changes).get(WidgetId::Calendar).enabled,
-            "the badge took the widget off the desk"
+            "the badge took the widget off the shell"
         );
     }
 
-    /// Draw the desk once, as the frame does, at the clock the caller holds.
-    fn paint(widgets: &mut DeskWidgets) {
+    /// Draw the shell once, as the frame does, at the clock the caller holds.
+    fn paint(widgets: &mut WidgetLayer) {
         widgets.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
@@ -2631,10 +2631,10 @@ mod tests {
     }
 
     /// A card lights up under the pointer and dims again as soon as the pointer leaves it: the move
-    /// off lands on the bare desk, which takes nothing, so the frame that shows the card dim has to
+    /// off lands on the bare shell, which takes nothing, so the frame that shows the card dim has to
     /// come from the card it left.
     #[test]
-    fn a_card_dims_when_the_pointer_leaves_it_for_the_desk() {
+    fn a_card_dims_when_the_pointer_leaves_it_for_the_shell() {
         let mut rig = rig(&[("ada", "Ada")]);
         let on_card = centre(rig.slot(WidgetId::Calendar).glance);
         let t0 = Instant::now();
@@ -2644,13 +2644,13 @@ mod tests {
             rig.widgets.tick(rest);
             paint(&mut rig.widgets);
         });
-        // `dirty` is the desk's own answer: what wakes it from elsewhere — Settings, what plays —
+        // `dirty` is the shell's own answer: what wakes it from elsewhere — Settings, what plays —
         // is asked for beside it.
-        assert!(!rig.widgets.dirty, "a desk at rest owes no frame");
+        assert!(!rig.widgets.dirty, "a shell at rest owes no frame");
         let taken = ui::time::testing::with_monotonic_time(rest, || {
             rig.send(&cursor_moved(BARE.x, BARE.y))
         });
-        assert!(!taken, "the bare desk takes nothing");
+        assert!(!taken, "the bare shell takes nothing");
         assert!(rig.widgets.dirty, "and the card it left dims");
     }
 
@@ -2661,7 +2661,7 @@ mod tests {
         assert!(wake > Instant::now(), "a deadline in the future");
         assert!(
             rig.widgets.needs_redraw() || rig.widgets.needs_animation_frame(),
-            "a desk just laid out paints once"
+            "a shell just laid out paints once"
         );
     }
 }

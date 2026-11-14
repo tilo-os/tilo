@@ -3,8 +3,8 @@
 //!
 //! The bar keeps one fixed place for the time. Everything else a person
 //! chooses to keep around (a calendar, the system monitor, music, the
-//! people here) is a desk widget, chosen in one place (Settings → Desk
-//! widgets) and shown by the shell's desk, never a second widget system in
+//! people here) is a Desktop widget, chosen in one place (Settings → Shell
+//! widgets) and shown by the shell's shell, never a second widget system in
 //! the bar.
 //!
 //! [`TopBarChrome`] implements [`ui::widget::Widget`] and paints onto the

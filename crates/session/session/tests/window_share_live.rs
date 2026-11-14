@@ -101,9 +101,9 @@ fn hosting_of(device: &Device, workspace: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// What `device`'s desk holds of `workspace`: its tabs, each with what it shows, and the window
+/// What `device`'s shell holds of `workspace`: its tabs, each with what it shows, and the window
 /// shares its copy of the workspace's governance names.
-fn desk_of(device: &Device, workspace: &str) -> String {
+fn shell_of(device: &Device, workspace: &str) -> String {
     let state = device.state();
     let Some(held) = state["state"]["workspace_tree"]["workspaces"]
         .as_array()
@@ -112,7 +112,7 @@ fn desk_of(device: &Device, workspace: &str) -> String {
                 .find(|held| held["id"].as_str() == Some(workspace))
         })
     else {
-        return "its desk holds no such workspace".to_owned();
+        return "its shell holds no such workspace".to_owned();
     };
     let tabs: Vec<String> = held["strips"]
         .as_array()
@@ -208,7 +208,7 @@ fn in_order(log: &str, keep: impl Fn(&str) -> bool) -> String {
 }
 
 /// How far a share came on each of `devices`, for a step that never happened: what each session
-/// says of its shares, of who hosts `workspace` and of who is present there, what its desk holds
+/// says of its shares, of who hosts `workspace` and of who is present there, what its shell holds
 /// of the workspace, and what it logged of the live plane, of the workspace's channels, of the
 /// shares, of the windows' control messages and of its link to the workspace's host, which is
 /// what the workspace's governance and records travel.
@@ -219,7 +219,7 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
         let _ = writeln!(
             out,
             "== {} (device {}) ==\nshares: {}\nhosts: {}\npresent in {workspace}: {:?}\n\
-             desk in {workspace}: {}\n\
+             shell in {workspace}: {}\n\
              -- the live plane --\n{}\n-- the workspace's channels --\n{}\n-- the shares --\n{}\n\
              -- the windows' messages --\n{}\n-- warnings --\n{}\n\
              -- the plane's keys and standings, in order --\n{}\n\
@@ -230,7 +230,7 @@ fn report(workspace: &str, devices: &[&Device]) -> String {
             shares(device),
             hosting_of(device, workspace),
             device.present(workspace),
-            desk_of(device, workspace),
+            shell_of(device, workspace),
             lines_of(&log, |line| line.contains("tilo_session::live")),
             lines_of(&log, |line| {
                 line.contains("tilo_workspace_keys") && line.contains(workspace)
@@ -298,7 +298,7 @@ fn eventually(
     }
 }
 
-/// Bring `workspace` to the front of `device`'s desk, so the window it opens next is a window of
+/// Bring `workspace` to the front of `device`'s shell, so the window it opens next is a window of
 /// that workspace.
 fn bring_to_front(device: &Device, workspace: &str) {
     tilo_test_env::wait_until(format!("{} holds {workspace}", device.label), || {
@@ -317,7 +317,7 @@ fn bring_to_front(device: &Device, workspace: &str) {
     device.wait_showing(workspace);
 }
 
-/// The tab `device`'s desk holds the window titled `title` in, in `workspace`: its id, as the
+/// The tab `device`'s shell holds the window titled `title` in, in `workspace`: its id, as the
 /// share's action takes it, and the tile it shows.
 fn tab_titled(device: &Device, workspace: &str, title: &str) -> Option<(String, String)> {
     let state = device.state();
@@ -338,18 +338,18 @@ fn tab_titled(device: &Device, workspace: &str, title: &str) -> Option<(String, 
         })
 }
 
-/// What a desk shows in one of its tabs.
+/// What a shell shows in one of its tabs.
 #[derive(Debug, PartialEq, Eq)]
 enum Shows {
     /// A window that runs on another device, by the key of the device that hosts it.
     Hosted(String),
     /// Anything else, this device's own view of a window among them.
     Own,
-    /// The desk does not hold the tab.
+    /// The shell does not hold the tab.
     Nothing,
 }
 
-/// What `device`'s desk shows in its tab `tab` of `workspace`.
+/// What `device`'s shell shows in its tab `tab` of `workspace`.
 fn tab_shows(device: &Device, workspace: &str, tab: &str) -> Shows {
     let state = device.state();
     let Ok(tree) = serde_json::from_value::<tilo_desktop_model::Layout>(
@@ -373,7 +373,7 @@ fn tab_shows(device: &Device, workspace: &str, tab: &str) -> Shows {
 }
 
 /// Whether `device`'s copy of `workspace`'s governance names the window of the tab `tab` as shared:
-/// a grant on the window's own node, as its desk took it from the governance its engine admitted.
+/// a grant on the window's own node, as its shell took it from the governance its engine admitted.
 fn governance_shares(device: &Device, workspace: &str, tab: &str) -> bool {
     let state = device.state();
     let Ok(tree) = serde_json::from_value::<tilo_desktop_model::Layout>(
@@ -389,7 +389,7 @@ fn governance_shares(device: &Device, workspace: &str, tab: &str) -> bool {
         .any(|(_, window)| window.to_string() == tab)
 }
 
-/// The tab `viewer`'s desk pictures the shared window of the tab `tab` in, as its share's reading
+/// The tab `viewer`'s shell pictures the shared window of the tab `tab` in, as its share's reading
 /// names it: empty while it names none.
 fn shown_in(viewer: &Device, tab: &str) -> String {
     row_of(&shares(viewer), "watching", tab)
@@ -464,7 +464,7 @@ fn keys_at_rest(workspace: &str, one: &Device, other: &Device) {
 /// A workspace `maker` makes and hosts, which `other`, a further device of the same person, takes
 /// from the person's list and holds: its id.
 fn made_on(maker: &Device, other: &Device) -> String {
-    let before = maker.on_desk();
+    let before = maker.on_shell();
     let made = maker.act_wait("actions", "workspace.create", &json!({}));
     assert_eq!(
         made["answer"]["receipt"]["update"]["state"],
@@ -473,17 +473,17 @@ fn made_on(maker: &Device, other: &Device) -> String {
         maker.label,
         maker.diagnostic()
     );
-    // The desk takes in the person's other workspaces too, as their list brings them from their
+    // The shell takes in the person's other workspaces too, as their list brings them from their
     // other devices, and one of those may land beside the one just made: the one made here is the
     // new one this device hosts.
     let made_here = || {
-        maker.on_desk().into_iter().find(|workspace| {
+        maker.on_shell().into_iter().find(|workspace| {
             !before.contains(workspace)
                 && hosting_of(maker, workspace)["hosted_here"] == json!(true)
         })
     };
     tilo_test_env::wait_until(
-        format!("{}'s desk holds the workspace it made", maker.label),
+        format!("{}'s shell holds the workspace it made", maker.label),
         || made_here().is_some(),
     );
     let made = made_here().expect("the workspace the device made");
@@ -505,7 +505,7 @@ fn the_shared_window_arrives(workspace: &str, sharer: &Device, viewer: &Device, 
 }
 
 /// [`the_shared_window_arrives`], handing back the window, which is up and shared for as long as
-/// it lives, and its tab on `sharer`'s desk.
+/// it lives, and its tab on `sharer`'s shell.
 fn the_window_shared(
     workspace: &str,
     sharer: &Device,
@@ -540,14 +540,14 @@ fn the_window_shared(
     );
     let window = sharer.window(NOTES, title);
     eventually(
-        &format!("{}'s desk holds the window's tab", sharer.label),
+        &format!("{}'s shell holds the window's tab", sharer.label),
         Duration::from_secs(30),
         workspace,
         &both,
         || tab_titled(sharer, workspace, title).is_some(),
     );
     let (tab, shows) = tab_titled(sharer, workspace, title).expect("the window's tab");
-    // The desk's record carries the window to the other device, which lists it under the same id
+    // The shell's record carries the window to the other device, which lists it under the same id
     // as its own view of it: a window it opens itself, and no picture of the one that runs on the
     // sharing device. The share is asked for whether that view is there yet or not, and the steps
     // below say which of the two they found.
@@ -568,7 +568,7 @@ fn the_window_shared(
     (window, tab)
 }
 
-/// `sharer` shares the window its desk holds in `tab`, which shows `shows`.
+/// `sharer` shares the window its shell holds in `tab`, which shows `shows`.
 fn share_tab(sharer: &Device, tab: &str, shows: &str) {
     let asked = sharer.act(
         SESSION,
@@ -583,7 +583,7 @@ fn share_tab(sharer: &Device, tab: &str, shows: &str) {
 }
 
 /// The share of `tab` that `sharer` asked for reaches `viewer`: the steps after the asking, in the
-/// order a share takes them. `listed_before` is whether `viewer`'s desk listed the tab as its own
+/// order a share takes them. `listed_before` is whether `viewer`'s shell listed the tab as its own
 /// view of the window before the share was asked for, where the caller looked.
 fn the_share_arrives(
     workspace: &str,
@@ -649,7 +649,7 @@ fn the_share_arrives(
     );
     // Its tile decodes it, and the sharing device names who views it.
     eventually(
-        &format!("{}'s desk pictures tab {tab}", viewer.label),
+        &format!("{}'s shell pictures tab {tab}", viewer.label),
         Duration::from_secs(20),
         workspace,
         &both,
@@ -659,7 +659,7 @@ fn the_share_arrives(
         },
     );
     // What it pictures is the window that runs on the sharing device, in a tab that names that
-    // device: a tab of its own, beside the desk's own view of the window where it lists one.
+    // device: a tab of its own, beside the shell's own view of the window where it lists one.
     let pictured_in = || {
         row_of(&shares(viewer), "watching", tab)
             .and_then(|row| row["shown_in"].as_str().map(str::to_owned))
@@ -668,7 +668,7 @@ fn the_share_arrives(
     let sharing_device = hex::encode(sharer.cert.device_public_key);
     eventually(
         &format!(
-            "{}'s desk holds the window of tab {tab} in a tab that names {} as the device it \
+            "{}'s shell holds the window of tab {tab} in a tab that names {} as the device it \
              runs on",
             viewer.label, sharer.label
         ),
@@ -693,7 +693,7 @@ fn the_share_arrives(
         assert_ne!(
             place,
             tab,
-            "the shared window stands in a tab of its own beside the desk's own view of it\n{}",
+            "the shared window stands in a tab of its own beside the shell's own view of it\n{}",
             report(workspace, &both)
         );
     }
@@ -773,17 +773,17 @@ fn a_window_shared_after_the_host_came_back_last_is_pictured() {
     the_shared_window_arrives(&made, &laptop, &phone, "Shared before the host was back");
 }
 
-/// A desktop that hosts the workspace its desk made, and a machine copied from it while it was
+/// A desktop that hosts the workspace its shell made, and a machine copied from it while it was
 /// off, re-keyed at boot and certified by their person: the copy holds the workspace from the
 /// copied disk and its host takes it in as the person's further device. The workspace's id.
 fn a_desktop_and_its_copy() -> (Person, Device, Device, String) {
     let ada = Person::new("Ada");
     let mut desktop = ada.device("Ada's desktop");
     desktop.start();
-    tilo_test_env::wait_until("the desktop shows the workspace its desk made", || {
+    tilo_test_env::wait_until("the desktop shows the workspace its shell made", || {
         desktop.showing().is_some()
     });
-    let workspace = desktop.showing().expect("the workspace the desk made");
+    let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
     let (mut copy, _) = ada.branch(&desktop);
     share_the_fleet(&ada, &[&desktop, &copy]);
@@ -1029,13 +1029,13 @@ fn the_share_is_gone_from(share: &Running<'_>, viewer: &Device) {
     );
 }
 
-/// `viewer`'s desk shows no window of another device in its tab `place` any more, where it
+/// `viewer`'s shell shows no window of another device in its tab `place` any more, where it
 /// pictured the window of the share `share` while that ran: the shared window's tab went with the
-/// share, and what the desk lists there now, if anything, is its own view of the window.
+/// share, and what the shell lists there now, if anything, is its own view of the window.
 fn the_shared_windows_tab_is_gone_from(share: &Running<'_>, viewer: &Device, place: &str) {
     eventually(
         &format!(
-            "{}'s desk no longer shows the window {} shared in its tab {place}",
+            "{}'s shell no longer shows the window {} shared in its tab {place}",
             viewer.label, share.sharer.label
         ),
         Duration::from_secs(20),
@@ -1192,10 +1192,10 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     let ada = Person::new("Ada");
     let mut desktop = ada.device("Ada's desktop");
     desktop.start();
-    tilo_test_env::wait_until("the desktop shows the workspace its desk made", || {
+    tilo_test_env::wait_until("the desktop shows the workspace its shell made", || {
         desktop.showing().is_some()
     });
-    let workspace = desktop.showing().expect("the workspace the desk made");
+    let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
     let (mut copy, _) = ada.branch(&desktop);
     let (mut later, _) = ada.branch(&desktop);
@@ -1290,10 +1290,10 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     let ada = Person::new("Ada");
     let mut desktop = ada.device("Ada's desktop");
     desktop.start();
-    tilo_test_env::wait_until("the desktop shows the workspace its desk made", || {
+    tilo_test_env::wait_until("the desktop shows the workspace its shell made", || {
         desktop.showing().is_some()
     });
-    let workspace = desktop.showing().expect("the workspace the desk made");
+    let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
     let (mut copy, _) = ada.branch(&desktop);
     share_the_fleet(&ada, &[&desktop, &copy]);
@@ -1520,7 +1520,7 @@ fn a_window_the_hosting_device_shares_after_it_came_back_last_is_pictured() {
 /// The hosting device stops sharing a window two other devices picture, one of which came into the
 /// workspace while the share ran and read it in the governance it caught up on: the share leaves
 /// the workspace's governance on each of them as it came, neither holds anything of the window any
-/// more, and the tab each pictured it in is gone from its desk.
+/// more, and the tab each pictured it in is gone from its shell.
 #[test]
 fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
     log_sessions_at(LOGGED);

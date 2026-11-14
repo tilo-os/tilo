@@ -1,4 +1,4 @@
-//! Opening an app hands it to the launcher, which starts its window process: the desk holds a
+//! Opening an app hands it to the launcher, which starts its window process: the shell holds a
 //! window of it, never a place of the session's own drawing.
 //!
 //! The launcher is a stand-in here, so the line it writes is what proves the start: a session
@@ -51,7 +51,7 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: PathBuf) -> Rc<Apps> {
     Rc::new(Apps::with_launcher(environment, None, Some(launcher)))
 }
 
-/// A session showing the desk style `style` (`so.tilo.shell:strips`), its apps started through
+/// A session showing the style `style` (`so.tilo.shell:strips`), its apps started through
 /// `launcher`.
 fn session(style: &str, apps: &Rc<Apps>) -> Session {
     let mut session = Session::headless(

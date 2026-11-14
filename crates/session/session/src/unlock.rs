@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(silent.verify("bob", "s3cr3t"), Verdict::Unavailable);
     }
 
-    /// A session started outside a login shell knows who is at the desk from the login database, so
+    /// A session started outside a login shell knows who is at the shell from the login database, so
     /// its lock still checks that person's password.
     #[test]
     fn the_login_the_session_runs_as_is_always_named() {

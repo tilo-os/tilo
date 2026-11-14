@@ -29,7 +29,7 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 const SETTINGS: &str = "so.tilo.settings";
 /// The record of Settings the apps change.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bb";
-/// The workspace the desk shows and the app is launched in.
+/// The workspace the shell shows and the app is launched in.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
 const SSID: &str = "Home";
@@ -81,10 +81,10 @@ fn principal(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(person: &Person) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn shell(person: &Person) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Shell");
     workspace.set_owner(principal(&person.cert.user_public_key));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -122,7 +122,7 @@ fn private_socket() -> (tempfile::TempDir, PathBuf) {
 }
 
 /// A session serving Settings on `socket` , on this computer's certified device, with the person's
-/// desk.
+/// shell.
 fn session(socket: &Path, person: &Person) -> Session {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process.
@@ -136,7 +136,7 @@ fn session(socket: &Path, person: &Person) -> Session {
         launches,
         ..Options::default()
     });
-    session.handle().replace_tree(desk(person));
+    session.handle().replace_tree(shell(person));
     for _ in 0..4 {
         session
             .step(std::time::Duration::from_millis(1))

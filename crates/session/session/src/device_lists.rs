@@ -1,5 +1,5 @@
 //! This device's lists as resources of the session's: its windows, the tray, the agents at the
-//! person's door and the desk styles, and inviting into a workspace. A shell's views read them, and
+//! person's door and the styles, and inviting into a workspace. A shell's views read them, and
 //! so does a script or an agent, through the door, by the same addresses: one reading for every
 //! reader.
 
@@ -19,26 +19,26 @@ use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 
-use crate::desk_windows::{reaching, windows};
+use crate::windows::{reaching, windows};
 
-/// What the device's lists are made from ([`Desk::lists_key`]), one entry per resource: the
+/// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ListsKey([(u64, u64, u64, bool); 4]);
 
-/// The desk's windows, every workspace's: what the switcher, the dock and the launcher list.
+/// The shell's windows, every workspace's: what the switcher, the dock and the launcher list.
 pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
 /// The running applications' tray items.
 pub(crate) const TRAY_RESOURCE: &str = "session:tray";
 /// The agents the person admitted at their MCP server.
 pub(crate) const AGENTS_RESOURCE: &str = "session:agents";
-/// The desk styles every installed package offers.
+/// The styles every installed package offers.
 pub(crate) const STYLES_RESOURCE: &str = "session:styles";
 
 /// The windows as a view of another language reads them (`device.windows`).
 #[must_use]
 pub fn windows_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<crate::desk_windows::Windows, tilo_resource::NoEffect>(
+    tilo_resource::surface::reading_surface::<crate::windows::Windows, tilo_resource::NoEffect>(
         "windows", "Windows",
     )
 }
@@ -57,7 +57,7 @@ pub fn agents_surface() -> tilo_resource::surface::Surface {
     )
 }
 
-/// The desk styles as a view of another language reads them (`device.styles`).
+/// The styles as a view of another language reads them (`device.styles`).
 #[must_use]
 pub fn styles_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<OfferedStyles, tilo_resource::NoEffect>(
@@ -100,7 +100,7 @@ pub(crate) struct TrayItem {
     pub menu: bool,
 }
 
-/// The desk styles every installed package offers (shell.md §6).
+/// The styles every installed package offers (shell.md §6).
 #[derive(
     Clone,
     Debug,
@@ -112,7 +112,7 @@ pub(crate) struct TrayItem {
     tilo_resource::JsonSchema,
 )]
 pub(crate) struct OfferedStyles {
-    pub offered: Vec<crate::desk_styles::DeskStyle>,
+    pub offered: Vec<crate::styles::Style>,
 }
 
 /// What the tray offers.
@@ -205,48 +205,48 @@ pub(crate) enum InviteEffect {
     },
 }
 
-/// The surfaces the desk shows over its windows, and where each stands: the shell's own views,
+/// The surfaces the shell shows over its windows, and where each stands: the shell's own views,
 /// except the quick settings, which stand in the panel's own app where the device has one and
-/// no shell covers the desk that app stands in.
+/// no shell covers the shell that app stands in.
 /// What `show-surface` and `close-surface` open and close, whether the person asks on the
-/// desk's door or on the chrome's above it, so both open the one surface.
+/// shell's door or on the chrome's above it, so both open the one surface.
 #[derive(Clone)]
 pub(crate) struct Surfaces {
     /// Whether the device has the quick settings' app; without, the status opens the shell's own
     /// view of them.
     pub(crate) status_panel: bool,
-    /// Whether the shell draws the whole screen over the desk: the desk draws none of the panel's
+    /// Whether the shell draws the whole screen over the shell: the shell draws none of the panel's
     /// app there, so the quick settings are the shell's own view, as every other surface is.
     pub(crate) shell: bool,
     /// The stack the panel's own app is placed in, with the shell's surface up.
     pub(crate) overlays: Overlays,
-    /// The notifications the desk's own chrome counts and draws: where the one centre opens
-    /// when the desk draws it, as the bar's bell opens it.
+    /// The notifications the shell's own chrome counts and draws: where the one centre opens
+    /// when the shell draws it, as the bar's bell opens it.
     pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
-    /// Whether the overview is the surface up, as the desk's own widgets fold behind it and as
-    /// whoever asks for the desk's state reads it. It turns with the surface itself, so a person's
+    /// Whether the overview is the surface up, as the shell's own widgets fold behind it and as
+    /// whoever asks for the shell's state reads it. It turns with the surface itself, so a person's
     /// press answers at once rather than a frame later.
     pub(crate) overview: Rc<std::cell::Cell<bool>>,
 }
 
 impl Surfaces {
-    /// Whether the quick settings stand in the panel's own app: the device has it, and the desk
+    /// Whether the quick settings stand in the panel's own app: the device has it, and the shell
     /// draws the app it stands in.
     pub(crate) fn panel_shows(&self, surface: &str) -> bool {
         surface == crate::quick_settings::SURFACE && self.status_panel && !self.shell
     }
 
-    /// Whether the desk's own chrome draws the centre, rather than the shell's view of it: the
-    /// desk draws it whenever it draws the screen, and the bell counts the same one.
-    fn desk_centre(&self, surface: &str) -> bool {
+    /// Whether the shell's own chrome draws the centre, rather than the shell's view of it: the
+    /// shell draws it whenever it draws the screen, and the bell counts the same one.
+    fn shell_centre(&self, surface: &str) -> bool {
         surface == Overlay::Centre.name() && !self.shell
     }
 
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
     pub(crate) fn toggle(&self, surface: &str) {
         self.caught_up();
-        if self.desk_centre(surface) {
-            // One centre: the desk's chrome draws the one the bar's bell counts, and it is asked
+        if self.shell_centre(surface) {
+            // One centre: the shell's chrome draws the one the bar's bell counts, and it is asked
             // to open or shut as the bell asks it.
             self.notices.ask_centre(!self.notices.centre_open());
             self.panel_closes();
@@ -280,7 +280,7 @@ impl Surfaces {
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
         self.caught_up();
-        if self.desk_centre(name) {
+        if self.shell_centre(name) {
             self.notices.ask_centre(true);
             self.panel_closes();
             self.settled();
@@ -299,7 +299,7 @@ impl Surfaces {
         self.settled();
     }
 
-    /// One surface at a time: the desk's own popovers go down under the shell's view of the surface
+    /// One surface at a time: the shell's own popovers go down under the shell's view of the surface
     /// just opened.
     fn clear_beside(&self) {
         if self.overlays.here() == Overlay::Rest {
@@ -308,7 +308,7 @@ impl Surfaces {
         self.clear_panel();
     }
 
-    /// Take every popover of the desk's own down: a surface outside its stack is coming up instead.
+    /// Take every popover of the shell's own down: a surface outside its stack is coming up instead.
     pub(crate) fn clear_panel(&self) {
         for slot in Slot::ALL {
             if slot.stands_beside() {
@@ -317,7 +317,7 @@ impl Surfaces {
         }
     }
 
-    /// One surface at a time: the shell's view goes down under the desk's own popover or the
+    /// One surface at a time: the shell's view goes down under the shell's own popover or the
     /// panel's app.
     pub(crate) fn clear_shell(&self) {
         self.caught_up();
@@ -328,7 +328,7 @@ impl Surfaces {
         self.settled();
     }
 
-    /// Whether any of the desk's own popovers stands over the windows now.
+    /// Whether any of the shell's own popovers stands over the windows now.
     pub(crate) fn beside_up(&self) -> bool {
         Slot::ALL
             .into_iter()
@@ -336,7 +336,7 @@ impl Surfaces {
             .any(|slot| slot.stands_beside() && self.overlays.is_open(slot))
     }
 
-    /// Whether the shell's own view draws `slot` instead of the desk, so what the desk keeps in
+    /// Whether the shell's own view draws `slot` instead of the shell, so what the shell keeps in
     /// that slot stands over nothing: the shell's launcher is the search under the shell's screen,
     /// as the quick settings are the shell's view of them. A popover nobody draws is not a surface
     /// the person is looking at, so it neither takes the shell's surface down nor keeps its keys.
@@ -347,7 +347,7 @@ impl Surfaces {
     /// Close `surface` (`close-surface`), when it is the one up.
     pub(crate) fn close(&self, surface: &str) {
         self.caught_up();
-        if self.desk_centre(surface) {
+        if self.shell_centre(surface) {
             self.notices.ask_centre(false);
             return;
         }
@@ -369,7 +369,7 @@ impl Surfaces {
         }
     }
 
-    /// Read the overview as the flag has it before a surface turns: the desk's own chrome opens and
+    /// Read the overview as the flag has it before a surface turns: the shell's own chrome opens and
     /// closes it too (its action, its keys, Escape), and a press answers what the person sees.
     fn caught_up(&self) {
         let here = self.overlays.here() == Overlay::Overview;
@@ -380,7 +380,7 @@ impl Surfaces {
         }
     }
 
-    /// Keep the desk's reading of the overview in step with the surface just changed: the desk
+    /// Keep the shell's reading of the overview in step with the surface just changed: the shell
     /// folds behind it and its state names it as up the moment the person's press opens it,
     /// instead of after the shell's next frame.
     fn settled(&self) {
@@ -388,22 +388,22 @@ impl Surfaces {
     }
 }
 
-/// The desk styles every installed package offers, with the revision that moves when the
-/// session re-reads its store: a package installed or taken away moves the desk's reading.
+/// The styles every installed package offers, with the revision that moves when the
+/// session re-reads its store: a package installed or taken away moves the shell's reading.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Styles {
     pub(crate) revision: u64,
-    pub(crate) list: Vec<crate::desk_styles::DeskStyle>,
+    pub(crate) list: Vec<crate::styles::Style>,
     /// The store's registry the list was read at: a store that reads the same is not read again,
     /// and what the log says of it is said only when it changes.
-    pub(crate) registry: Option<crate::desk_styles::Registry>,
+    pub(crate) registry: Option<crate::styles::Registry>,
 }
 
-/// The desk as the session reads it. See the module docs.
-pub(crate) struct Desk {
+/// The shell as the session reads it. See the module docs.
+pub(crate) struct DeviceLists {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
-    /// The surfaces the desk shows over its windows, and where they stand.
+    /// The surfaces the shell shows over its windows, and where they stand.
     pub(crate) surfaces: Surfaces,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
@@ -419,10 +419,10 @@ pub(crate) struct Desk {
     /// This device's workspaces' record, when the session holds one: the invitations a workspace's
     /// people made are kept there, by the device that made them.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
-    /// What the desk asks the session for while it runs: opening the invite sheet, which is the
-    /// session's own surface and not a layer the desk draws.
+    /// What the shell asks the session for while it runs: opening the invite sheet, which is the
+    /// session's own surface and not a layer the shell draws.
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
-    /// The desk styles every installed package offers, as `device.styles` reads them
+    /// The styles every installed package offers, as `device.styles` reads them
     /// (shell.md §6): what the person's switch offers. The session fills it from its package
     /// store, and moves it when a package is installed or taken away.
     pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
@@ -430,8 +430,8 @@ pub(crate) struct Desk {
     pub(crate) lists: Option<ListsKey>,
 }
 
-/// The pieces a session's desk is made of, once: the same agent sessions, surfaces and records
-/// reach the desk's reading and every part of the shell.
+/// The pieces a session's shell is made of, once: the same agent sessions, surfaces and records
+/// reach the shell's reading and every part of the shell.
 pub(crate) struct Shared {
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
     pub(crate) handle: DesktopHandle,
@@ -444,12 +444,12 @@ pub(crate) struct Shared {
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
 }
 
-/// A factory making the session's desk, its styles read from the person's store as they move
-/// (shell.md §6): called once for the desk's own service and once for the shell, each a view of
+/// A factory making the session's shell, its styles read from the person's store as they move
+/// (shell.md §6): called once for the shell's own service and once for the shell, each a view of
 /// the same agent sessions, surfaces and records.
-pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
+pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
     let styles = Rc::new(std::cell::RefCell::new(Styles::default()));
-    move || Desk {
+    move || DeviceLists {
         agent_sessions: std::sync::Arc::clone(&shared.agent_sessions),
         handle: shared.handle.clone(),
         person: shared.person.clone(),
@@ -464,7 +464,7 @@ pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
     }
 }
 
-impl Desk {
+impl DeviceLists {
     /// What the lists are made from, without making them.
     fn lists_key(&self) -> ListsKey {
         ListsKey([
@@ -489,7 +489,7 @@ impl Desk {
     /// The reading of one of the lists, by its resource.
     fn list(&self, resource: &str) -> Option<Value> {
         match resource {
-            WINDOWS_RESOURCE => Some(reading(&crate::desk_windows::Windows {
+            WINDOWS_RESOURCE => Some(reading(&crate::windows::Windows {
                 all: self
                     .handle
                     .read(|tree| self.windows_reaching(tree, tilo_clock::now())),
@@ -507,20 +507,20 @@ impl Desk {
         }
     }
 
-    /// When the desk has something to draw that it has not drawn yet, without a frame in between:
+    /// When the shell has something to draw that it has not drawn yet, without a frame in between:
     /// the instant the switcher's panel comes up while Alt is held on it.
     pub(crate) fn next_deadline(&self) -> Option<tilo_clock::time::Instant> {
         self.surfaces.overlays.deadline(tilo_clock::now())
     }
 
-    /// The desk's windows, with the one the switcher's walk has reached marked focused while its
+    /// The shell's windows, with the one the switcher's walk has reached marked focused while its
     /// panel shows: the tile its walk chose is the one lifted. A quick flick shows no panel, so it
     /// lifts nothing either.
     fn windows_reaching(
         &self,
         tree: &Layout,
         now: tilo_clock::time::Instant,
-    ) -> Vec<crate::desk_windows::Window> {
+    ) -> Vec<crate::windows::Window> {
         let mut windows = windows(tree, &self.handle);
         // The app as people know it, never the id: a window is named by what it shows, and its
         // `app_title` is a person's own name for the window, not its app's name.
@@ -577,8 +577,8 @@ impl Desk {
     }
 }
 
-impl Desk {
-    /// The id of the desk's workspace `key`, or of the workspace in front when the caller names
+impl DeviceLists {
+    /// The id of the shell's workspace `key`, or of the workspace in front when the caller names
     /// none.
     fn workspace_id(&self, workspace: Option<&str>) -> Result<WorkspaceId, DoorError> {
         let workspace_id = self.handle.read(|tree| {
@@ -636,7 +636,7 @@ impl Desk {
         }))
     }
 
-    /// Hand out a link into a workspace, made by this device's own person: the invitation the desk
+    /// Hand out a link into a workspace, made by this device's own person: the invitation the shell
     /// lists from now on, in the text another device joins with.
     fn issue_invitation(
         &self,
@@ -757,7 +757,7 @@ impl Desk {
     }
 }
 
-impl Desk {
+impl DeviceLists {
     /// Open the invite sheet on a workspace: the workspace comes to the front, and the sheet the
     /// bar's button opens is shown on it, through the session, which holds the surface.
     fn show_invite(&self, workspace: Option<&str>) -> Result<Started, DoorError> {
@@ -812,11 +812,11 @@ fn invitation_json(invitation: &PendingInvitation) -> Value {
     })
 }
 
-/// How long an invitation the desk hands out without being told otherwise works for: an hour, as a
+/// How long an invitation the shell hands out without being told otherwise works for: an hour, as a
 /// person's invitation does.
 const DEFAULT_INVITE_SECONDS: u64 = 3_600;
 
-impl Desk {
+impl DeviceLists {
     /// Open or close the running application's tray item `key`, as a press on its icon does: its
     /// window, or its menu when the item is one.
     fn open_tray_item(&self, key: &str) -> Result<Started, DoorError> {
@@ -841,7 +841,7 @@ impl Desk {
     }
 }
 
-impl Desk {
+impl DeviceLists {
     /// Carry out `effect` of the inviting resource.
     fn invite(&self, effect: &InviteEffect) -> Result<Started, DoorError> {
         if let Some(answer) = self.invitation(effect) {
@@ -864,7 +864,7 @@ impl Desk {
     }
 }
 
-impl Service for Desk {
+impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
         let kind = tilo_action_policy::roles::SESSION_KIND;
         vec![
@@ -947,7 +947,7 @@ impl Service for Desk {
 mod tests {
     use super::*;
 
-    /// A window whose app stopped answering says so in the reading every view of the desk reads,
+    /// A window whose app stopped answering says so in the reading every view of the shell reads,
     /// and only for that window.
     #[test]
     fn a_window_whose_app_stopped_answering_says_so_in_the_reading() {
@@ -978,7 +978,7 @@ mod tests {
             view: String::new(),
             pinned: false,
         };
-        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![tab]);
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "Shell", vec![tab]);
         let (_surface, handle) =
             tilo_desktop_surface::DesktopSurface::new(tree.clone(), 5, Box::new(Blank));
         assert!(!windows(&tree, &handle)[0].not_responding);
@@ -1000,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn the_overview_turns_the_desks_reading_with_the_surface() {
+    fn the_overview_turns_the_shells_reading_with_the_surface() {
         let surfaces = surfaces(false, true);
         assert!(!surfaces.overview.get());
         surfaces.toggle(Overlay::Overview.name());
@@ -1018,7 +1018,7 @@ mod tests {
         assert!(!surfaces.overview.get());
     }
 
-    /// The desk's chrome opens and closes the overview itself as well: a press then reads the
+    /// The shell's chrome opens and closes the overview itself as well: a press then reads the
     /// overview as it is, and closing another surface leaves it up.
     #[test]
     fn the_surfaces_read_the_overview_the_chrome_opened() {
@@ -1045,10 +1045,10 @@ mod tests {
         assert_eq!(surfaces.overlays.here(), Overlay::Centre);
     }
 
-    /// The desk draws the one centre the bar's bell counts: a press on it asks the desk's own
+    /// The shell draws the one centre the bar's bell counts: a press on it asks the shell's own
     /// chrome, as the bell asks it, and puts the panel that asked away.
     #[test]
-    fn the_desks_own_centre_is_opened_where_the_desk_draws_it() {
+    fn the_shells_own_centre_is_opened_where_the_shell_draws_it() {
         let surfaces = surfaces(true, false);
         surfaces.open(crate::quick_settings::SURFACE);
         assert!(surfaces.overlays.is_open(Slot::QuickSettings));
@@ -1056,12 +1056,12 @@ mod tests {
         assert_eq!(
             surfaces.notices.take_centre_ask(),
             Some(true),
-            "the desk's chrome is asked to open the centre"
+            "the shell's chrome is asked to open the centre"
         );
         assert_eq!(
             surfaces.overlays.here(),
             Overlay::Rest,
-            "the shell draws no centre of its own over a desk that draws one"
+            "the shell draws no centre of its own over a shell that draws one"
         );
         assert!(
             !surfaces.overlays.is_open(Slot::QuickSettings),
@@ -1093,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn the_desk_leaves_the_quick_settings_to_the_panels_app_it_has() {
+    fn the_shell_leaves_the_quick_settings_to_the_panels_app_it_has() {
         let surfaces = surfaces(true, false);
         surfaces.toggle(crate::quick_settings::SURFACE);
         assert!(surfaces.overlays.is_open(Slot::QuickSettings));
@@ -1103,7 +1103,7 @@ mod tests {
     }
 
     #[test]
-    fn without_the_panels_app_the_desk_shows_the_shells_quick_settings() {
+    fn without_the_panels_app_the_shell_shows_the_shells_quick_settings() {
         let surfaces = surfaces(false, false);
         surfaces.open(crate::quick_settings::SURFACE);
         assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings);

@@ -206,7 +206,7 @@ fn an_admitted_client_is_an_agent_member_people_find() {
 }
 
 /// A box that sends a message lists the workspace's agents and the people here: the client the
-/// person admitted is an agent they can message, and the person at this desk is a recipient of
+/// person admitted is an agent they can message, and the person at this session is a recipient of
 /// their own workspace.
 #[test]
 fn a_send_lists_the_workspaces_agents_and_people() {
@@ -270,7 +270,7 @@ fn refused_control(session: &mut Session, socket: &std::path::Path, when: &str) 
     }
 }
 
-/// What the desk says to the person now: the titles and bodies of its notices.
+/// What the shell says to the person now: the titles and bodies of its notices.
 fn said(session: &Session) -> Vec<(String, String)> {
     session
         .notifications()

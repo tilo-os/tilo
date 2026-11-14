@@ -28,17 +28,17 @@ struct Deciding {
 }
 
 impl Deciding {
-    /// Read what decides an open in `workspace`: its own record when the desk shows it, the
+    /// Read what decides an open in `workspace`: its own record when the shell shows it, the
     /// person's defaults as their settings hold them, and the machine's default applications.
-    fn read(desk: Option<&DesktopHandle>, workspace: &str) -> Self {
+    fn read(shell: Option<&DesktopHandle>, workspace: &str) -> Self {
         Self {
             // The lists search reads, kept current by their own worker: the same apps a row, a
             // card and this answer name.
             lists: crate::app_icons::app_lists().unwrap_or_default(),
             personal: desktop_policy::PersonalDefaults::load(),
             host: desktop_policy::mimeapps::session_chain(),
-            workspace: desk.and_then(|desk| {
-                desk.read(|tree| {
+            workspace: shell.and_then(|shell| {
+                shell.read(|tree| {
                     tree.workspaces
                         .iter()
                         .find(|shown| shown.id().to_string() == workspace)
@@ -62,12 +62,12 @@ impl Deciding {
 /// Every app that opens the document at `path` in `workspace`, the one it opens with today first:
 /// what Files' "Open with" lists, and what opening the file starts.
 pub(crate) fn openers(
-    desk: Option<&DesktopHandle>,
+    shell: Option<&DesktopHandle>,
     workspace: &str,
     person: &str,
     path: &Path,
 ) -> Vec<Launch> {
-    let deciding = Deciding::read(desk, workspace);
+    let deciding = Deciding::read(shell, workspace);
     tracing::debug!(
         path = %path.display(),
         candidates = deciding.lists.candidates.len(),
@@ -80,12 +80,12 @@ pub(crate) fn openers(
 
 /// The app that opens `uri` in `workspace`; `None` when nothing here takes it.
 pub(crate) fn opener(
-    desk: Option<&DesktopHandle>,
+    shell: Option<&DesktopHandle>,
     workspace: &str,
     person: &str,
     uri: &str,
 ) -> Option<Launch> {
-    let deciding = Deciding::read(desk, workspace);
+    let deciding = Deciding::read(shell, workspace);
     routing::link(uri, &deciding.lists.candidates, &deciding.defaults(person))
 }
 

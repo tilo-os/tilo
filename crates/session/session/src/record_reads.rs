@@ -1,7 +1,7 @@
 //! The records this device reads outside their apps, as the broker's `NativeDocumentReads`: an
 //! app's Open of a record the workspace holds, and an agent's task reading its workspace's records.
 //!
-//! The read is the engine's ([`Engine::read_record`]), the one path the desk, search and a branch
+//! The read is the engine's ([`Engine::read_record`]), the one path the shell, search and a branch
 //! also read a record with, for a workspace that commits its records and one that seals them. A
 //! record this device holds nothing of is the app's own channel: an Open only waits for what the
 //! workspace's host sends of it — its replay, or the record itself where the host sends records
@@ -354,7 +354,7 @@ mod tests {
                 tilo_identity_host::custody::HostIdentity::kept(cert.clone(), key.clone()),
                 Some(state),
                 std::iter::empty(),
-                crate::platform::custody::of_this_desk(),
+                crate::platform::custody::of_this_session(),
             )
             .expect("this device's engine opens"),
         );
@@ -364,8 +364,11 @@ mod tests {
     /// A workspace this device founded, holding one record of `APP` written under `key`.
     fn workspace_with_record(engine: &Engine, key: &SigningKey) -> WorkspaceId {
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Desk", None));
-        assert!(engine.holds(workspace), "the desk's workspace is held here");
+        pollster::block_on(engine.found(workspace, "Shell", None));
+        assert!(
+            engine.holds(workspace),
+            "the shell's workspace is held here"
+        );
         testing::start_record(engine.owner(), workspace, APP, RECORD, key, testing::now());
         workspace
     }
@@ -568,7 +571,7 @@ mod tests {
                 ),
                 Some(state.path()),
                 std::iter::empty(),
-                crate::platform::custody::of_this_desk(),
+                crate::platform::custody::of_this_session(),
             )
             .expect("the host's engine opens"),
         );

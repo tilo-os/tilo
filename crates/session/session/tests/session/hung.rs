@@ -1,10 +1,10 @@
-//! An app that stops answering: its window says so over the desk, the desk offers to wait for it or
+//! An app that stops answering: its window says so over the shell, the shell offers to wait for it or
 //! to quit it, and the person's choice reaches the compositor. The client that stops answering is a
-//! real one, and the desk is the session's own.
+//! real one, and the shell is the session's own.
 
 use super::*;
 use serde_json::json;
-use tilo_desktop::desk_verbs::DESK_RESOURCE;
+use tilo_desktop::verbs::SHELL_RESOURCE;
 
 /// The app that stops answering, and one that keeps working.
 const STUCK: &str = "org.example.Stuck";
@@ -39,7 +39,7 @@ fn click(session: &mut Session, rect: (i32, i32, i32, i32)) {
     }
 }
 
-/// The desk's windows, as the overview and the bar read them.
+/// The shell's windows, as the overview and the bar read them.
 fn windows_reading(session: &Session) -> Vec<serde_json::Value> {
     session
         .read(WINDOWS)
@@ -50,10 +50,10 @@ fn windows_reading(session: &Session) -> Vec<serde_json::Value> {
         .expect("the windows read as a list")
 }
 
-/// The resource the session publishes the desk's windows on.
+/// The resource the session publishes the shell's windows on.
 const WINDOWS: &str = "session:windows";
 
-/// The windows the desk says stopped answering.
+/// The windows the shell says stopped answering.
 fn not_responding(session: &Session) -> Vec<String> {
     windows_reading(session)
         .into_iter()
@@ -78,10 +78,10 @@ fn until_answered(
             return;
         }
         let refusing = session.compositor().not_responding_windows().to_vec();
-        let desk = session.handle().unresponsive_tabs();
+        let shell = session.handle().unresponsive_tabs();
         assert!(
             Instant::now() < deadline,
-            "condition not reached: {what}; the compositor says {refusing:?}, the desk says {desk:?}"
+            "condition not reached: {what}; the compositor says {refusing:?}, the shell says {shell:?}"
         );
     }
 }
@@ -101,7 +101,7 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
     until_answered(
         &mut session,
         &mut other,
-        "the desk says a window stopped answering",
+        "the shell says a window stopped answering",
         |session| !session.handle().unresponsive_tabs().is_empty(),
     );
 
@@ -116,14 +116,14 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
     assert_eq!(
         not_responding(&session).len(),
         1,
-        "the reading every view of the desk reads says so: {:?}",
+        "the reading every view of the shell reads says so: {:?}",
         session.read(WINDOWS)
     );
 
     // Wait: the app is given another period, and the card goes.
     invoke_with(
         &mut session,
-        DESK_RESOURCE,
+        SHELL_RESOURCE,
         "wait-window",
         &json!({ "tab": tab.to_string() }),
     );
@@ -146,11 +146,11 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
     // Force quit ends that app alone.
     invoke_with(
         &mut session,
-        DESK_RESOURCE,
+        SHELL_RESOURCE,
         "force-quit-app",
         &json!({ "tab": tab.to_string() }),
     );
-    // The compositor ends that app's connection alone, and the desk says nothing more of it. The
+    // The compositor ends that app's connection alone, and the shell says nothing more of it. The
     // app reads the error and its window goes, as a real app's event loop would.
     assert!(session.compositor().not_responding_windows().is_empty());
     stuck.exchange();
@@ -177,6 +177,6 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
                     .window_groups
                     .iter()
                     .any(|group| group.tabs.iter().any(|shown| shown.id == tab))))),
-        "the window it quit is gone from the desk"
+        "the window it quit is gone from the shell"
     );
 }

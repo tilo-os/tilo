@@ -383,7 +383,7 @@ impl Backlights for Screens {
 pub struct Reading {
     /// Every display the session shows, the built-in one first.
     pub displays: Vec<Display>,
-    /// The connector of the display the person works on, when the desk names one of the displays
+    /// The connector of the display the person works on, when the shell names one of the displays
     /// shown.
     pub focused: Option<String>,
     /// How bright the display a brightness key and `set-brightness` are about is
@@ -462,7 +462,7 @@ struct Inner {
     commands: Rc<RefCell<Vec<SessionCommand>>>,
     /// The displays the compositor shows, as its outputs say now.
     shown: Vec<Shown>,
-    /// The connector the person works on, when the desk names one.
+    /// The connector the person works on, when the shell names one.
     focused: Option<String>,
     /// The connectors the brightness controls were last told of.
     told: Vec<String>,
@@ -479,7 +479,7 @@ struct Inner {
 /// One display the compositor shows.
 struct Shown {
     connector: String,
-    /// The monitor on it, as the desk follows it between ports.
+    /// The monitor on it, as the shell follows it between ports.
     monitor: String,
     name: String,
     colour: DisplayCapabilities,
@@ -641,7 +641,7 @@ impl Displays {
     }
 
     /// The colour of the display on `monitor` : what a picture shown there is prepared for. A tile
-    /// the desk gives no display of its own — one picture on every output — is shown on all of
+    /// the shell gives no display of its own — one picture on every output — is shown on all of
     /// them, so it is only prepared for HDR while every one of them is driven with it, and no
     /// brighter than the dimmest.
     #[must_use]

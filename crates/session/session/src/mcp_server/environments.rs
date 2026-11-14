@@ -128,14 +128,14 @@ impl Environment {
     }
 }
 
-/// The workspace `asked` names on the person's desk, when the person may let
+/// The workspace `asked` names on the person's shell, when the person may let
 /// an agent of theirs work there: they are one of its people, and not blocked
 /// in it. `None` asks for the workspace in front of them. Its id and its name.
 ///
 /// # Errors
 /// The reason, as the client is told: no workspace is in front, or the one
 /// asked for is not one the person may let an agent into (or not on this
-/// desk, which is told the same, so a client learns nothing of the desk).
+/// shell, which is told the same, so a client learns nothing of the shell).
 pub(super) fn workspace(
     handle: &DesktopHandle,
     person: &str,
@@ -187,7 +187,7 @@ pub(super) fn workspace_for(
             if asked.is_some_and(|asked| asked != environment.workspace) {
                 return Err(word("mcp-server-environment-workspace"));
             }
-            // Still on the desk, and still one the person may let it into.
+            // Still on the shell, and still one the person may let it into.
             workspace(handle, person, Some(&environment.workspace))
                 .map_err(|_| word("mcp-server-workspace-gone"))
         }

@@ -59,7 +59,7 @@ fn tracks_asked(member: &Member, host: &Member) -> Vec<tilo_live::live::Track> {
         .unwrap_or_default()
 }
 
-/// Three devices of one workspace: one shares a window of its desk, and the two others show it.
+/// Three devices of one workspace: one shares a window of its shell, and the two others show it.
 /// Their live planes meet on the test's relay, which carries the window's pictures; no transport
 /// runs between the three state planes either, so every pass carries what each of them said to the
 /// device it was for. Each member is kept on the heap: three sessions side by side are more than a
@@ -72,17 +72,17 @@ struct Three {
     host: Box<Member>,
     /// How often the host told each viewer the window's share ended, in their order.
     ends: [usize; 2],
-    /// The tab the shared window stands in, on all three desks.
+    /// The tab the shared window stands in, on all three sessions.
     tab: u64,
 }
 
 impl Three {
-    /// The device of the first seed shares the window of its desk, and the devices of the two
+    /// The device of the first seed shares the window of its shell, and the devices of the two
     /// others ask to view it at the same time: both have asked before any of the three takes
     /// another pass.
     fn sharing(seeds: [u8; 3]) -> Self {
         tilo_window_share::flatpak_share::read_encoders();
-        let mut host = Box::new(member(seeds[0], own_desk()));
+        let mut host = Box::new(member(seeds[0], own_shell()));
         let window = Some(mapped(&mut host.session, APP));
         let tab = tab_of(&host.session, APP);
         share(&mut host, APP, tab);
@@ -272,7 +272,7 @@ fn unwatch(member: &mut Member, tab: u64) {
         .expect("the window is no longer asked for");
 }
 
-/// One session shares a window of its desk and two others ask to view it at the same time: each
+/// One session shares a window of its shell and two others ask to view it at the same time: each
 /// asks the workspace's live plane for the window's track and is carried its pictures as a viewer
 /// of its own, each tab holds the picture decoded from them, and the sharing device's account and
 /// its bar name both.
@@ -338,7 +338,7 @@ fn a_shared_window_reaches_both_members_showing_it() {
         );
 
         // The tile of the tab the window stands in decodes what its sender streams, on each of the
-        // two desks.
+        // two sessions.
         let read = viewer
             .session
             .handle()
@@ -731,7 +731,7 @@ fn the_persons_own_other_device_viewing_a_window_goes_by_its_device_name() {
     let salt = Options::default().salt;
     let mut host = member_as(
         0x58,
-        governed(own_desk(), &own, &[]),
+        governed(own_shell(), &own, &[]),
         salt,
         Some(own.clone()),
     );

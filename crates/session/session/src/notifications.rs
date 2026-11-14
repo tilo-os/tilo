@@ -1,5 +1,5 @@
 //! The person's notifications on the desktop: what apps sent the notifications service, and what
-//! the session's own roles tell, shown by the banners app and kept in the desk's centre. Every
+//! the session's own roles tell, shown by the banners app and kept in the shell's centre. Every
 //! notification passes through one log, and what an app sent also continues on the person's other
 //! devices ([`mirror`]).
 
@@ -69,14 +69,14 @@ pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32
     id
 }
 
-/// Mount the banners app on the desk with the `banners` link it asks back on. Under the shell none
-/// is mounted: the shell draws the banner itself from the desk it reads (`Desk.banner`), so a stack
+/// Mount the banners app on the shell with the `banners` link it asks back on. Under the shell none
+/// is mounted: the shell draws the banner itself from the shell it reads (`Shell.banner`), so a stack
 /// of its own would draw a second one and take its presses.
 pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
     doors: &mut tilo_session_core::door::Doors,
     notices: &DesktopNotifications,
-    (desk, overlays): (
+    (shell, overlays): (
         &tilo_desktop_surface::DesktopHandle,
         &tilo_desktop::overlays::Overlays,
     ),
@@ -95,7 +95,7 @@ pub(crate) fn mount_banners(
             let surface = Rc::new(RefCell::new(crate::panels::Banners::new(
                 app,
                 banners,
-                desk.clone(),
+                shell.clone(),
                 overlays.clone(),
                 options.scale,
                 stack,
@@ -321,7 +321,7 @@ impl NoticeSignals {
 pub(crate) struct AppCallers {
     /// The apps the session sees run, by process.
     running: Arc<Mutex<BTreeMap<u32, String>>>,
-    /// The desk: which workspace an app runs in.
+    /// The shell: which workspace an app runs in.
     side: PortalSide,
     /// Where a process with no window of its own is named from.
     requesters: tilo_portal::Requesters,
@@ -369,7 +369,7 @@ type Opened = Rc<RefCell<Vec<(String, String)>>>;
 /// The senders whose notification the person chose, as `(sender, action)` .
 type Chosen = Rc<RefCell<Vec<(u32, Option<String>)>>>;
 
-/// Where each notice a role told opens, by the desk's notification showing it.
+/// Where each notice a role told opens, by the shell's notification showing it.
 type Noted = Rc<RefCell<BTreeMap<u64, (String, Option<Place>)>>>;
 
 /// The places the person chose from a role's notices since the last look.
@@ -400,7 +400,7 @@ pub(crate) struct SessionNotifications {
     chosen: Chosen,
     by_sender: BTreeMap<u32, u64>,
     up: BTreeSet<u32>,
-    /// The desk's banners up at the last look: a new one is news since then.
+    /// The shell's banners up at the last look: a new one is news since then.
     banners_up: BTreeSet<u64>,
     /// Desktop notifications kept out of the centre once their banner left.
     transient: BTreeSet<u64>,
@@ -422,7 +422,7 @@ pub(crate) struct SessionNotifications {
     /// The notification showing each notice a role told, by its tag.
     showing: RefCell<BTreeMap<String, u32>>,
     closed: ClosedTags,
-    /// The notice each notification the session told carries, until the desk shows it.
+    /// The notice each notification the session told carries, until the shell shows it.
     told: RefCell<BTreeMap<u32, Notice>>,
 }
 
@@ -607,7 +607,7 @@ impl SessionNotifications {
         self.quiet_changed.take()
     }
 
-    /// The desk's log of what it shows: the live banners and the centre kept behind them.
+    /// The shell's log of what it shows: the live banners and the centre kept behind them.
     pub(crate) fn desktop(&self) -> DesktopNotifications {
         self.desktop.clone()
     }
@@ -712,7 +712,7 @@ impl SessionNotifications {
         true
     }
 
-    /// The notifications the desk shows now, live or kept.
+    /// The notifications the shell shows now, live or kept.
     fn shown_ids(&self) -> BTreeSet<u64> {
         let log = self.desktop.log();
         log.active()
@@ -839,7 +839,7 @@ impl SessionNotifications {
     }
 
     /// Tell the person `notice`, replacing one showing under its tag. The notifications service
-    /// carries it as it carries an app's, and the desk shows it from there.
+    /// carries it as it carries an app's, and the shell shows it from there.
     pub(crate) fn tell(&self, notice: &Notice) {
         // The session raises the notice, so it plays its sound here: a sender's category never
         // reaches the events only the session may claim, and the notification carries none for the
@@ -865,7 +865,7 @@ impl SessionNotifications {
             .push((tag.to_owned(), Closed::Withdrawn));
     }
 
-    /// When the desk's banners next change with no one asking: one running out, or a Clear all's
+    /// When the shell's banners next change with no one asking: one running out, or a Clear all's
     /// undo closing.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.desktop.next_deadline()
@@ -908,18 +908,18 @@ impl SessionNotifications {
         }
         self.answer_chosen(token);
         self.settle(CloseReason::Dismissed);
-        // What the desk no longer shows of this device's notifications leaves the person's other
+        // What the shell no longer shows of this device's notifications leaves the person's other
         // devices with it.
         let shown = self.shown_ids();
         self.mirror.prune(&shown, tilo_clock::unix_now_ms());
-        // A notice the service no longer holds and the desk no longer shows is done with: nothing
+        // A notice the service no longer holds and the shell no longer shows is done with: nothing
         // is taken back under its tag again, so it is not kept for that.
         self.showing
             .borrow_mut()
             .retain(|_, id| self.daemon.notification(*id).is_some());
-        // A notice whose row left the desk keeps nothing of it.
+        // A notice whose row left the shell keeps nothing of it.
         self.noted.borrow_mut().retain(|id, _| shown.contains(id));
-        // Every banner the desk puts up passes through its log, whether an app sent it or the
+        // Every banner the shell puts up passes through its log, whether an app sent it or the
         // session raised it: a new one there is what the person was just told.
         let banners: BTreeSet<u64> = self
             .desktop
@@ -993,7 +993,7 @@ impl SessionNotifications {
                     self.desktop.post_quiet(notification)
                 };
                 self.by_sender.insert(sender, id);
-                // A notice the session told is the desk's notification `id` now: that is what
+                // A notice the session told is the shell's notification `id` now: that is what
                 // choosing it names.
                 if let Some(told) = told {
                     self.noted.borrow_mut().insert(id, (told.tag, told.place));

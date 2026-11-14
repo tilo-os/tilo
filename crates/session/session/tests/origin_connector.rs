@@ -410,7 +410,7 @@ fn query_shown(
         .and_then(|place| arrangement.query_of(place.key.parse().ok()?))
 }
 
-/// Type `text` on the canvas at the desk, as the canvas entry's own `place-found` receives it.
+/// Type `text` on the canvas at the shell, as the canvas entry's own `place-found` receives it.
 fn type_on_canvas(session: &mut Session, text: &str) {
     session
         .invoke(

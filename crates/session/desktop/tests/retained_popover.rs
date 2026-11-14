@@ -1,5 +1,5 @@
 //! The page keeps the frame it presented and repaints only where the next one changed: a menu the
-//! bar opens over the bare desk of a person's own workspace, arriving, hovered and gone, must leave
+//! bar opens over the bare shell of a person's own workspace, arriving, hovered and gone, must leave
 //! the kept frame exactly what a full render of each frame draws, at a laptop's 2x density.
 
 use std::cell::RefCell;
@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{ChromeIntent, OwnChip};
-use tilo_desktop::desktop_host::{DeskLayer, DesktopChrome, NoticeTiles};
+use tilo_desktop::desktop_host::{BackgroundLayer, DesktopChrome, NoticeTiles};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::Standing;
@@ -77,8 +77,8 @@ impl ChromeSource for Page {
     }
 }
 
-/// A person's own workspace, one strip and no window: the bare desk.
-fn own_desk() -> Layout {
+/// A person's own workspace, one strip and no window: the bare shell.
+fn own_shell() -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
     workspace.strips = vec![Strip::new(StripId(2), "Main")];
     let mut tree = Layout {
@@ -91,10 +91,10 @@ fn own_desk() -> Layout {
     tree
 }
 
-/// The page: the desk under the windows and the chrome over it, in one frame as the page draws
+/// The page: the shell under the windows and the chrome over it, in one frame as the page draws
 /// them.
 fn page() -> (FrameHarness, Rc<Page>) {
-    let tree = own_desk();
+    let tree = own_shell();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     handle.set_viewport_width(f64::from(VIEW.0));
     let page = Rc::new(Page {
@@ -102,7 +102,7 @@ fn page() -> (FrameHarness, Rc<Page>) {
         authors: RefCell::default(),
         intents: RefCell::default(),
     });
-    let desk = DeskLayer::new(
+    let shell = BackgroundLayer::new(
         Box::new(surface),
         handle.clone(),
         CollaborationLaunchpad::new(),
@@ -120,7 +120,7 @@ fn page() -> (FrameHarness, Rc<Page>) {
         AboutSheet::new(AboutVariant::Browser, &AboutLinks::default()),
         false,
     );
-    let root = Stack::new().push(Box::new(desk)).push(Box::new(chrome));
+    let root = Stack::new().push(Box::new(shell)).push(Box::new(chrome));
     let mut frame = FrameHarness::for_root(ui::state::State::new(), root, VIEW, ui::Theme::light());
     frame.track_scene_parts(true);
     frame.set_coalesce_input_frames(true);
@@ -427,16 +427,16 @@ impl Kept {
 }
 
 #[test]
-fn the_workspace_menu_over_a_bare_desk_leaves_the_kept_frame_whole() {
-    menu_over_bare_desk(Kept::new());
+fn the_workspace_menu_over_a_bare_shell_leaves_the_kept_frame_whole() {
+    menu_over_bare_shell(Kept::new());
 }
 
 #[test]
-fn the_workspace_menu_over_a_bare_desk_leaves_the_kept_frame_whole_on_the_cpu() {
-    menu_over_bare_desk(Kept::on_cpu());
+fn the_workspace_menu_over_a_bare_shell_leaves_the_kept_frame_whole_on_the_cpu() {
+    menu_over_bare_shell(Kept::on_cpu());
 }
 
-fn menu_over_bare_desk(mut kept: Kept) {
+fn menu_over_bare_shell(mut kept: Kept) {
     ui::i18n::I18nManager::init("en-US");
     let (mut frame, page) = page();
     kept.step(&mut frame, &page, "the first frame");

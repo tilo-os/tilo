@@ -1,10 +1,10 @@
 //! A workspace's activity, served to the apps this session runs.
-//! The desk serves the activity model to its own windows in process
+//! The shell serves the activity model to its own windows in process
 //! ([`tilo_desktop_surface::session::activity`]); an app runs in a process of its own and reaches
 //! the same model through the action broker, under [`wire::PROVIDER`]. Both ask the same door
 //! ([`ActivityRequests`]): this is the broker's end of it. Its reads are live views, re-read
-//! whenever the desk's model has served something new; its writes run on the desk's thread when the
-//! desk takes them, so a write and a read of the same change cannot cross.
+//! whenever the shell's model has served something new; its writes run on the shell's thread when the
+//! shell takes them, so a write and a read of the same change cannot cross.
 //! What this device has seen is the person's own: an agent asking for it is refused here, before
 //! anything reaches the model.
 #![cfg_attr(
@@ -28,7 +28,7 @@ use tilo_desktop_surface::activity::{is_read, refused_to_agent};
 use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::session::ActivityRequests;
 
-/// The broker's door to the activity the desk's model serves.
+/// The broker's door to the activity the shell's model serves.
 pub(crate) struct ActivityWire {
     requests: ActivityRequests,
     /// Moves whenever what an app follows may read differently.
@@ -44,7 +44,7 @@ impl ActivityWire {
         }
     }
 
-    /// The desk's model served its reads again: what an app follows may read differently now.
+    /// The shell's model served its reads again: what an app follows may read differently now.
     pub(crate) fn changed(&self) {
         self.changes
             .send_modify(|revision| *revision = revision.wrapping_add(1));
@@ -223,7 +223,7 @@ impl HostStepServices for ActivityWire {
                 let _followed = &followed;
                 let read = followed.requests.served(&followed.invocation);
                 Pending::ready(match read {
-                    // Not served yet: the desk reads it on its next pass.
+                    // Not served yet: the shell reads it on its next pass.
                     None => Ok(serde_json::json!({ "pending": true })),
                     Some(Ok(value)) => Ok(value),
                     Some(Err(message)) => Err(failure("activity_unreadable", message)),
@@ -248,7 +248,7 @@ impl Drop for Followed {
     }
 }
 
-/// The broker's end of the activity the desk's model serves.
+/// The broker's end of the activity the shell's model serves.
 pub(crate) fn wire(requests: ActivityRequests) -> Arc<ActivityWire> {
     Arc::new(ActivityWire::new(requests))
 }

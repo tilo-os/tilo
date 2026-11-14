@@ -4,7 +4,7 @@
 //! checks again that the shortcut still exists and that its saver may still run it, so a run
 //! started here is the same run a person's press starts. Its triggers come from where the session
 //! already reads them: a record change from the record documents of its workspaces, read on a
-//! worker a tree watch wakes; time, a workspace joined and an application started from the desk and
+//! worker a tree watch wakes; time, a workspace joined and an application started from the shell and
 //! the launches it made; focus modes from the notification policy; a shared folder's change from
 //! the session's file watch; a chord from the automation host; and revoked devices from the
 //! workspace's governance. Only the person this device acts for has armed shortcuts
@@ -90,12 +90,12 @@ pub struct Automation {
     /// The person at this device, as the session's own identity names them: a shortcut saved by
     /// anyone else is never armed.
     person: String,
-    /// The shortcuts armed now, as the last look at the desk found them: the chords the keys answer
+    /// The shortcuts armed now, as the last look at the shell found them: the chords the keys answer
     /// are theirs.
     armed_now: Vec<Armed>,
-    /// The desk revision the broker's copy was last brought level with.
+    /// The shell revision the broker's copy was last brought level with.
     published: Option<u64>,
-    /// The desk revision whose shortcuts were last armed: a desk that moved arms again on the next
+    /// The shell revision whose shortcuts were last armed: a shell that moved arms again on the next
     /// pass, so a shortcut a person just saved follows its workspace's records from the moment it
     /// is shown rather than from the next tick.
     armed_at: Option<u64>,
@@ -108,7 +108,7 @@ pub struct Automation {
     waiting: RefCell<Vec<Firing>>,
 }
 
-/// What the session shows the trigger host besides its desk: the apps it starts, the person's
+/// What the session shows the trigger host besides its shell: the apps it starts, the person's
 /// notification policy, what each of its workspaces revokes, and which of the person's devices are
 /// online to run a schedule.
 pub struct Feeds {
@@ -119,7 +119,7 @@ pub struct Feeds {
 }
 
 impl Automation {
-    /// The trigger host of a session whose desk is `handle` , keeping its schedule ledger under
+    /// The trigger host of a session whose shell is `handle` , keeping its schedule ledger under
     /// `state` in the file the shell kept it in.
     #[must_use]
     pub fn new(
@@ -172,29 +172,29 @@ impl Automation {
         self.broker.is_none()
     }
 
-    /// The broker's copy of the desk has to follow the desk the loop shows: the workspace an app's
+    /// The broker's copy of the shell has to follow the shell the loop shows: the workspace an app's
     /// connection joins is one the broker finds on it, and a firing starts on the broker's thread,
     /// which cannot read this one.
-    /// The desk belongs to the loop ([`DesktopHandle`] hands it out here only) and `desk` reads it
-    /// on the broker's thread, so the loop hands over a copy when the desk moved.
-    pub(crate) fn publish_desk(&mut self, desk: Option<&crate::plane::DeskAuthority>) {
-        let Some(desk) = desk else {
+    /// The shell belongs to the loop ([`DesktopHandle`] hands it out here only) and `shell` reads it
+    /// on the broker's thread, so the loop hands over a copy when the shell moved.
+    pub(crate) fn publish_layout(&mut self, shell: Option<&crate::plane::LayoutAuthority>) {
+        let Some(shell) = shell else {
             return;
         };
         let revision = self.handle.revision();
         if self.published == Some(revision) {
             return;
         }
-        desk.publish(self.handle.read(Clone::clone));
+        shell.publish(self.handle.read(Clone::clone));
         self.published = Some(revision);
     }
 
     /// Take what the broker finished, show the schedules the passing of time, and start whatever
     /// fired. Once per pass.
-    pub fn settle(&mut self, desk: Option<&crate::plane::DeskAuthority>) {
+    pub fn settle(&mut self, shell: Option<&crate::plane::LayoutAuthority>) {
         self.keep_finished();
         // What fired while the broker was starting starts now that it serves. What it fired was
-        // decided against a desk this loop had already published, so the broker knows the workspace
+        // decided against a shell this loop had already published, so the broker knows the workspace
         // the run belongs to.
         if self.broker.is_some() {
             let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
@@ -211,17 +211,17 @@ impl Automation {
             .last_tick
             .borrow()
             .is_none_or(|last| now.duration_since(last) >= TICK_INTERVAL);
-        // The desk can change on any pass: a shortcut shown now follows its records from this pass
+        // The shell can change on any pass: a shortcut shown now follows its records from this pass
         // on, so a change made right after it appears is one it fires on.
         if !tick && self.armed_at == Some(self.handle.revision()) {
-            // The broker reads the desk only when a shortcut is armed, and then only when it moved.
-            self.publish_desk(desk);
+            // The broker reads the shell only when a shortcut is armed, and then only when it moved.
+            self.publish_layout(shell);
             return;
         }
         if tick {
             *self.last_tick.borrow_mut() = Some(now);
         }
-        self.observe(tick, desk);
+        self.observe(tick, shell);
     }
 
     /// When this session next has time to show the schedules or report a file that settled: the
@@ -290,9 +290,9 @@ impl Automation {
             .collect()
     }
 
-    /// Arm the shortcuts the desk shows, show every source what this device sees now, and start
+    /// Arm the shortcuts the shell shows, show every source what this device sees now, and start
     /// what fired. `tick` says the passing of time came round, which the schedules alone are shown.
-    fn observe(&mut self, tick: bool, desk: Option<&crate::plane::DeskAuthority>) {
+    fn observe(&mut self, tick: bool, shell: Option<&crate::plane::LayoutAuthority>) {
         self.devices.set(devices_of(self.fabric.as_ref()));
         let now_ns = unix_ns(self.triggers.clock().now());
         let armed = self.armed(now_ns);
@@ -300,11 +300,11 @@ impl Automation {
         self.follow_records(&armed);
         self.armed_at = Some(self.handle.revision());
         // A firing is started on the broker's thread, which decides it
-        // against the desk this loop published: it has to see the workspace
+        // against the shell this loop published: it has to see the workspace
         // a shortcut was armed from before the run it starts is asked for,
         // or a fire time would be spent on a run the broker cannot find a
         // room for.
-        self.publish_desk(desk);
+        self.publish_layout(shell);
         let mut firings = if tick {
             let mut firings = self.triggers.observe(TriggerEvent::Tick, &armed);
             let running = self.launches.running_apps();
@@ -384,7 +384,7 @@ impl Automation {
                 &tree.workspaces,
                 |workspace| self.person_in(&workspace.id().to_string()),
                 // A workspace this device holds arms against what its governance revokes. One it
-                // does not hold is a workspace on the desk whose records live elsewhere: nothing of
+                // does not hold is a workspace on the shell whose records live elsewhere: nothing of
                 // it is known here, and the run it starts is refused by the broker unless the
                 // workspace it holds says otherwise.
                 |workspace| {

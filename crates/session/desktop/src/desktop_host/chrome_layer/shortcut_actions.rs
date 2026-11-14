@@ -1,4 +1,4 @@
-//! What a shortcut chord does: the desk's part of the shortcut table, each action carried out
+//! What a shortcut chord does: the shell's part of the shortcut table, each action carried out
 //! through the verb its menu row, its palette row and an agent's invocation name, and the rest
 //! handed to the session.
 
@@ -13,7 +13,7 @@ use crate::chrome::ChromeIntent;
 use crate::host_contract::DesktopAsk;
 
 impl DesktopChrome {
-    /// Perform a desktop shortcut: false for one the desk has no part in (locking the device, the
+    /// Perform a shelltop shortcut: false for one the shell has no part in (locking the device, the
     /// magnifier, dictation, …), which the session then answers ([`crate::asks`]).
     /// Every shortcut of the table is named here or handed on: a shortcut the table gains without a
     /// handler does not build. Each names the verb its menu row, its palette row and an agent's
@@ -38,7 +38,7 @@ impl DesktopChrome {
             ShortcutAction::RestoreWindow => {
                 self.choose_row(&[window_menu::RESTORE]);
             }
-            // The window the person closed last comes back where it was; the desk answers the chord
+            // The window the person closed last comes back where it was; the shell answers the chord
             // either way, as the shell it replaces did.
             ShortcutAction::ReopenClosedTab => self.dispatch(ChromeEffect::ReopenClosed),
             ShortcutAction::ToggleMaximize => {
@@ -92,7 +92,7 @@ impl DesktopChrome {
             ShortcutAction::FocusStrip7 => self.focus_strip(6),
             ShortcutAction::FocusStrip8 => self.focus_strip(7),
             ShortcutAction::FocusStrip9 => self.focus_strip(8),
-            // The rest belong to the session under the desk: the device, the surfaces over it and
+            // The rest belong to the session under the shell: the device, the surfaces over it and
             // the people and agents here.
             ShortcutAction::Search
             | ShortcutAction::Lock
@@ -119,7 +119,7 @@ impl DesktopChrome {
     }
 
     /// Perform a fixed desktop shortcut: a chord Settings cannot rebind.
-    /// False for one the desk has no part in (a capture, the shortcut guide,
+    /// False for one the shell has no part in (a capture, the shortcut guide,
     /// cutting a remote control), which the session then answers.
     pub fn fixed_shortcut(&mut self, action: FixedAction) -> bool {
         match action {
@@ -134,7 +134,7 @@ impl DesktopChrome {
                     self.open_the_app_picker();
                 }
             }
-            // A new window is the app picker: the rule for where it stands is the desk's, and the
+            // A new window is the app picker: the rule for where it stands is the shell's, and the
             // person chooses the app.
             FixedAction::NewWindow => self.open_the_app_picker(),
             FixedAction::OpenTerminal => self.open_app("so.tilo.terminal"),
@@ -169,15 +169,15 @@ impl DesktopChrome {
         true
     }
 
-    /// Open the app picker, as an empty desk's own button does: search over the apps, for a new
-    /// window of the one the person chooses, placed by the desk's rule. The desk carries this out
+    /// Open the app picker, as an empty shell's own button does: search over the apps, for a new
+    /// window of the one the person chooses, placed by the shell's rule. The shell carries this out
     /// itself; the surface's verb door refuses it.
     fn open_the_app_picker(&self) {
         self.handle
             .open_search(ui::search::Scope::WindowGroup(None), None);
     }
 
-    /// The workspace shown, as the desk addresses it.
+    /// The workspace shown, as the shell addresses it.
     fn active_workspace(&self) -> Option<String> {
         self.handle.read(|tree| {
             tree.active_workspace()
@@ -245,7 +245,7 @@ impl DesktopChrome {
     }
 
     /// Detach the tab in front into a window of its own, right after the one it is in. A window of
-    /// one tab has nothing to split: the desk says why rather than the chord doing nothing.
+    /// one tab has nothing to split: the shell says why rather than the chord doing nothing.
     fn split_focused_tab(&self) {
         let Some(route) = self.focused_route() else {
             return;
@@ -351,7 +351,7 @@ impl DesktopChrome {
         });
     }
 
-    /// The window in front, as the desk addresses it now.
+    /// The window in front, as the shell addresses it now.
     fn focused_route(&self) -> Option<Route> {
         self.handle.snapshot(&self.generation, Vec::new()).active
     }

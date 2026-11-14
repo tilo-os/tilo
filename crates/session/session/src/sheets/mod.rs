@@ -58,7 +58,7 @@ impl<S: Seat> Themed for Sheet<S> {
 }
 
 /// Draw every mounted sheet in `theme`: the person changed their appearance, and a sheet comes up
-/// in it as the desk around it does.
+/// in it as the shell around it does.
 pub(crate) fn set_theme(theme: &ui::Theme) {
     MOUNTED.with_borrow_mut(|mounted| {
         mounted.retain(|sheet| {
@@ -446,7 +446,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 impl Session {
     /// Tell every sheet which display it covers: the one the person is working on, so a question
     /// appears in front of what it is about and the power menu where they are looking. `None`
-    /// while the desk knows no such display (it spans one) leaves a sheet on the first display.
+    /// while the shell knows no such display (it spans one) leaves a sheet on the first display.
     pub(crate) fn place_sheets(&self) {
         let place = self.working_output().and_then(|output| output.rect);
         for presentation in self.sheet_presentations() {

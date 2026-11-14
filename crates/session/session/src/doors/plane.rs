@@ -13,7 +13,7 @@ use ui::host_operation::ResourceOperationStart;
 use tilo_action_broker::collab_broker::FanoutState;
 
 use crate::plane::Plane;
-use crate::plane::{DeskAuthority, Sealed, ShortcutLibrary};
+use crate::plane::{LayoutAuthority, Sealed, ShortcutLibrary};
 use crate::{
     ActionPlane, Options, Service, Services, activity, activity_provider, plane, surfaces,
 };
@@ -279,8 +279,8 @@ pub(crate) fn start_action_plane(
         return Ok(None);
     };
     let link = plane::Link::new(options.wake.handle());
-    let desk = desk_authority(options, handle, revocations)?;
-    // The workspace's activity, as the apps this session runs read it: the same model the desk
+    let layout = layout_authority(options, handle, revocations)?;
+    // The workspace's activity, as the apps this session runs read it: the same model the shell
     // serves its own windows.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
@@ -325,7 +325,7 @@ pub(crate) fn start_action_plane(
             // from here on.
             content: Some(std::sync::Arc::clone(&options.content)),
             records,
-            desk: std::sync::Arc::clone(&desk),
+            layout: std::sync::Arc::clone(&layout),
             shortcuts,
             activity: activity_wire,
             // The turns the broker delivers to the agents admitted here, and hears back what they
@@ -364,7 +364,7 @@ pub(crate) fn start_action_plane(
     let personal = match (sync, sync.and_then(crate::sync::Client::endpoint)) {
         (Some(sync), Some(endpoint)) => sync.personal().map(|personal| {
             // The person's other devices are dialled as this session's siblings too: the session
-            // between two of their desks tells each the workspaces the other holds.
+            // between two of their sessions tells each the workspaces the other holds.
             personal.serve(
                 tilo_rt::app().handle(),
                 endpoint,
@@ -384,7 +384,7 @@ pub(crate) fn start_action_plane(
     Ok(Some(Plane {
         link,
         path,
-        desk,
+        layout,
         broker,
         calls,
         calls_service,
@@ -394,16 +394,16 @@ pub(crate) fn start_action_plane(
     }))
 }
 
-/// What the broker decides against, from this pass on: the desk as it is
-/// before the person touches anything, and every desk it shows after. It
-/// journals what it admits on the person's behalf beside this device's desk,
+/// What the broker decides against, from this pass on: the shell as it is
+/// before the person touches anything, and every shell it shows after. It
+/// journals what it admits on the person's behalf beside this device's shell,
 /// so a shortcut a trigger starts survives the session stopping mid-run —
 /// once, as it would have run.
-fn desk_authority(
+fn layout_authority(
     options: &Options,
     handle: &DesktopHandle,
     revocations: crate::engine::Revocations,
-) -> Result<std::sync::Arc<DeskAuthority>, Error> {
+) -> Result<std::sync::Arc<LayoutAuthority>, Error> {
     let journal = match options.state.as_deref() {
         Some(state) => {
             let path = state.join("tilo").join("invocations.json");
@@ -414,7 +414,7 @@ fn desk_authority(
         }
         None => None,
     };
-    Ok(std::sync::Arc::new(DeskAuthority::new(
+    Ok(std::sync::Arc::new(LayoutAuthority::new(
         handle.read(Clone::clone),
         revocations,
         journal,

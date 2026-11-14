@@ -1,10 +1,10 @@
 //! Settings' Identify: "which screen is which?" answered on the screens themselves.
 //! Settings writes an [`IdentifyRequest`](settings_store::display_identify::IdentifyRequest) when
-//! the person presses Identify. The session answers it once per press by handing the desk each
+//! the person presses Identify. The session answers it once per press by handing the shell each
 //! display's number and name — the same number its tile on Settings' canvas carries, and the same
 //! name ([`display_names`](settings_store::display_identify::display_names)), read off the
-//! compositor's own display snapshot — and the desk says each on the display it names for a few
-//! seconds ([`tilo_desktop::display_identify`]). Nothing here counts down: the desk holds the cards
+//! compositor's own display snapshot — and the shell says each on the display it names for a few
+//! seconds ([`tilo_desktop::display_identify`]). Nothing here counts down: the shell holds the cards
 //! for their moment and asks for the frame that takes them away.
 
 use std::cell::RefCell;
@@ -15,24 +15,24 @@ use settings_store::hardware::DisplayHardwareSnapshot;
 use tilo_compositor::OutputInfo;
 use tilo_desktop::display_identify::{Ask, Label};
 
-/// The Identify answers this session has given, and the desk's end of them: what the bar reads each
+/// The Identify answers this session has given, and the shell's end of them: what the bar reads each
 /// pass.
 #[derive(Default)]
 pub(crate) struct Numbers {
-    /// The cards the desk shows now, as the bar reads them.
+    /// The cards the shell shows now, as the bar reads them.
     ask: Rc<RefCell<Option<Ask>>>,
     /// The request answered last, so one press of Identify shows the cards once.
     answered: Option<u64>,
 }
 
 impl Numbers {
-    /// What the bar reads: the cards the desk shows, if any.
+    /// What the bar reads: the cards the shell shows, if any.
     pub(crate) fn ask(&self) -> Rc<RefCell<Option<Ask>>> {
         Rc::clone(&self.ask)
     }
 
     /// Answer Settings' Identify request, if one came since the last pass: each display's number
-    /// and name, keyed by the monitor the desk follows it by. A request older than the shell
+    /// and name, keyed by the monitor the shell follows it by. A request older than the shell
     /// answers — a restarted session seeing one written minutes ago — is left alone.
     pub(crate) fn follow(
         &mut self,
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn settings_number_and_name_reach_the_display_that_carries_them() {
         let hardware = snapshot(vec![hardware("DP-2", false), hardware("eDP-1", true)]);
-        // The desk follows a display by its monitor, not its connector.
+        // The shell follows a display by its monitor, not its connector.
         let outputs = vec![
             shown("eDP-1", "edp-monitor", true),
             shown("DP-2", "dp-monitor", true),
@@ -185,12 +185,12 @@ mod tests {
         );
         assert!(
             !labels.iter().any(|label| label.monitor == "hdmi-monitor"),
-            "a monitor only the desk knows gets no card"
+            "a monitor only the shell knows gets no card"
         );
     }
 
     #[test]
-    fn a_display_the_desk_shows_nothing_on_gets_no_card() {
+    fn a_display_the_shell_shows_nothing_on_gets_no_card() {
         let hardware = snapshot(vec![hardware("eDP-1", true), hardware("DP-2", false)]);
         let outputs = vec![
             shown("eDP-1", "edp-monitor", true),

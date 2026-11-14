@@ -1,7 +1,7 @@
-//! The wait for the clock to admit this device's certificate, in front of the desk: the identity on
+//! The wait for the clock to admit this device's certificate, in front of the shell: the identity on
 //! disk is intact and its certificate is outside its validity at the clock's reading, so the screen
 //! says what the clock must reach and goes away by itself once it does. This is never first-use
-//! setup or a restore: nothing here replaces an identity, and the desk takes the wait's place as
+//! setup or a restore: nothing here replaces an identity, and the shell takes the wait's place as
 //! soon as the clock admits the certificate.
 //! Nothing here polls. The wait is the identity host's policy clock
 //! (`tilo_identity_host::policy_change`): an absolute `CLOCK_REALTIME` timerfd armed at the instant
@@ -44,7 +44,7 @@ pub(crate) enum ClockWaitStep {
     /// Still waiting for the clock, or for a check to finish.
     Waiting,
     /// The identity verifies: `Some` is the setup this device still needs,
-    /// `None` opens the desk.
+    /// `None` opens the shell.
     Verified(Option<OnboardingView>),
     /// The identity stopped verifying: its owner restores it.
     Recovery(OnboardingView),
@@ -68,7 +68,7 @@ pub struct ClockWait {
     checked: u64,
     /// Where [`Self::pump`] learns that a check finished.
     check: Option<Receiver<Check>>,
-    /// The desk takes over: the identity verified and no setup is due.
+    /// The shell takes over: the identity verified and no setup is due.
     done: bool,
 }
 
@@ -111,7 +111,7 @@ impl ClockWait {
         self
     }
 
-    /// Whether the desk takes the wait's place.
+    /// Whether the shell takes the wait's place.
     pub(crate) fn done(&self) -> bool {
         self.done
     }
@@ -193,13 +193,13 @@ impl ClockWait {
         }
     }
 
-    /// Show the desk in the wait's place.
+    /// Show the shell in the wait's place.
     pub(crate) fn finish(&mut self) {
         self.done = true;
     }
 
     /// What the wait shows: what the clock reads, what the certificate needs instead, and that the
-    /// desk opens by itself.
+    /// shell opens by itself.
     pub(crate) fn screen(&self) -> Container {
         let now = ui::format::timestamp(&UnixSecs(secs(self.refusal.clock_ns)));
         let body = match self.refusal.reason {
@@ -276,20 +276,20 @@ mod tests {
         }
     }
 
-    /// A wait with nothing to listen to still shows why the desk is off, and does not end on its
+    /// A wait with nothing to listen to still shows why the shell is off, and does not end on its
     /// own.
     #[test]
-    fn the_wait_holds_the_desk_until_the_clock_is_admitted() {
+    fn the_wait_holds_the_shell_until_the_clock_is_admitted() {
         let mut wait = ClockWait::new(
             PathBuf::from("/nonexistent"),
             false,
             refusal(DeviceCertError::NotYetValid),
         );
-        assert!(!wait.done(), "the desk waits for the clock");
+        assert!(!wait.done(), "the shell waits for the clock");
         assert!(matches!(wait.pump(), ClockWaitStep::Waiting));
         assert!(!wait.done(), "nothing verified the identity");
         wait.finish();
-        assert!(wait.done(), "the desk takes the wait's place");
+        assert!(wait.done(), "the shell takes the wait's place");
     }
 
     /// A certificate the clock reads as not yet valid becomes valid when the clock reaches its

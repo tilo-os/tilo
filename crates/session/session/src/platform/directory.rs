@@ -1,6 +1,6 @@
-//! The Linux desk's side of the workspace directory: the community site the administrator's or the
+//! The Linux shell's side of the workspace directory: the community site the administrator's or the
 //! vendor's `community.toml` names, the person this computer's identity joins as, and the
-//! workspaces the desk holds.
+//! workspaces the shell holds.
 
 use std::path::{Path, PathBuf};
 
@@ -133,17 +133,17 @@ pub(crate) fn person() -> Result<Person, String> {
     Ok(Person {
         user: identity.device_cert.user_public_key,
         // A workspace, a public one above all, learns nothing of this person's devices.
-        name: crate::platform::person::desk_person_name(
+        name: crate::platform::person::person_name(
             ui::local_identity::load().map(|identity| identity.display_name),
             "",
         ),
     })
 }
 
-/// The desk the directory runs over: the workspaces it holds, switched to through the desk itself.
-pub(crate) struct DeskDirectory<'a>(pub(crate) &'a crate::Shared);
+/// The shell the directory runs over: the workspaces it holds, switched to through the shell itself.
+pub(crate) struct SessionDirectory<'a>(pub(crate) &'a crate::Shared);
 
-impl Host for DeskDirectory<'_> {
+impl Host for SessionDirectory<'_> {
     fn site(&self) -> Option<url::Url> {
         community_site()
     }
@@ -168,7 +168,7 @@ impl Host for DeskDirectory<'_> {
     }
 }
 
-/// The workspaces the desk holds, each by its slot.
+/// The workspaces the shell holds, each by its slot.
 pub(crate) fn held(handle: &DesktopHandle) -> Vec<Held> {
     handle.read(|tree| {
         tree.workspaces
@@ -185,7 +185,7 @@ pub(crate) fn held(handle: &DesktopHandle) -> Vec<Held> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::person::desk_person_name;
+    use crate::platform::person::person_name;
 
     /// A site named is a community to join; an empty one is none, and a file that is not there or
     /// does not parse leaves the next one to answer.
@@ -266,25 +266,25 @@ mod tests {
     }
 
     #[test]
-    fn the_desk_names_the_person_as_it_knows_them() {
+    fn the_shell_names_the_person_as_it_knows_them() {
         let key = "3f".repeat(32);
         assert_eq!(
-            desk_person_name(Some("Ada Lovelace".into()), &key),
+            person_name(Some("Ada Lovelace".into()), &key),
             "Ada Lovelace"
         );
         assert_eq!(
-            desk_person_name(None, "Pat"),
+            person_name(None, "Pat"),
             "Pat",
             "a computer with no identity goes by the name its session acts as"
         );
         assert_eq!(
-            desk_person_name(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), "Pat"),
+            person_name(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), "Pat"),
             "Pat",
             "an unnamed identity leaves the session's name standing"
         );
         let account = tilo_identity_host::provisioning::login_account_display_name();
         assert_eq!(
-            desk_person_name(None, &key),
+            person_name(None, &key),
             account,
             "a key is never shown as the person's name"
         );

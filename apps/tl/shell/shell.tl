@@ -94,7 +94,7 @@ fn shell_lists(traditional: Bool, roomy: Bool) -> Bool {
 /// The shell the person's style draws its places through, with `traditional` for the desktop
 /// style's chrome and `body` the places: every style that shows the arrangement beside the
 /// shell's bar and dock draws through this, so no style repeats the chrome.
-template view desk_style(a: Arrangement, traditional: Bool, body: View) {
+template view style_shell(a: Arrangement, traditional: Bool, body: View) {
     shell_around(a, traditional, body)
 }
 
@@ -103,7 +103,7 @@ template view desk_style(a: Arrangement, traditional: Bool, body: View) {
 /// The person's places as windows in rows and strips, scrolled sideways (`strips_view`).
 view strips(a: Arrangement) {
     let lists = shell_lists(false, space.width_class == .expanded or space.width_class == .wide)
-    desk_style(a, false) {
+    style_shell(a, false) {
         strips_view(a, viewing, lists, fill)
     }
 }
@@ -113,7 +113,7 @@ view strips(a: Arrangement) {
 /// The places at points on a pannable, zoomable canvas, each in its own frame.
 view frames(a: Arrangement) {
     let lists = shell_lists(false, space.width_class == .expanded or space.width_class == .wide)
-    desk_style(a, false) {
+    style_shell(a, false) {
         canvas(a, "Canvas", true, lists, fill)
     }
 }
@@ -122,7 +122,7 @@ view frames(a: Arrangement) {
 ///
 /// The places at points, each drawn as its own view standing as content.
 view spaces(a: Arrangement) {
-    desk_style(a, false) {
+    style_shell(a, false) {
         canvas(a, "Spaces", false, false, fill)
     }
 }
@@ -145,7 +145,7 @@ view desktop(a: Arrangement) {
             }
         }
     } else {
-        desk_style(a, true) {
+        style_shell(a, true) {
             front_window(a, lists, fill)
         }
     }

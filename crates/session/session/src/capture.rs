@@ -311,13 +311,13 @@ pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
 
 /// Every display on, each at its place in the layout.
 pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
-    Ok(desk(compositor, Look::Whole)?.picture)
+    Ok(shell(compositor, Look::Whole)?.picture)
 }
 
 /// Every display on, each at its place in the layout, as the person in front of them sees it: the
 /// session's own look at its displays, for a check, with nothing withheld.
 pub(crate) fn shown(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
-    Ok(desk(compositor, Look::Drawn)?.picture)
+    Ok(shell(compositor, Look::Drawn)?.picture)
 }
 
 /// Every display on, each at its place in the layout, drawn to fit `max` — the frame a video of the
@@ -327,7 +327,7 @@ pub(crate) fn video(
     compositor: &mut Compositor,
     max: (u32, u32),
 ) -> Result<image::RgbaImage, String> {
-    Ok(desk(compositor, Look::Fitted(max))?.picture)
+    Ok(shell(compositor, Look::Fitted(max))?.picture)
 }
 
 /// The colour under the pointer: the pixel under it where a screenshot of every display puts it, as
@@ -345,17 +345,17 @@ fn colour(compositor: &mut Compositor) -> Result<(f64, f64, f64), CaptureError> 
     {
         return Err(none());
     }
-    let desk = desk(compositor, Look::Whole).map_err(CaptureError::Failed)?;
-    desk.colour_at(pointer).ok_or_else(none)
+    let shell = shell(compositor, Look::Whole).map_err(CaptureError::Failed)?;
+    shell.colour_at(pointer).ok_or_else(none)
 }
 
 /// A picture of every display on, each at its place in the layout, and where each one landed in it.
-struct Desk {
+struct Shell {
     picture: image::RgbaImage,
     placed: Vec<Placed>,
 }
 
-/// Where one display landed in a [`Desk`].
+/// Where one display landed in a [`Shell`].
 struct Placed {
     /// The display's rectangle in the layout.
     rect: (i32, i32, i32, i32),
@@ -365,7 +365,7 @@ struct Placed {
     scale: f64,
 }
 
-/// One display read back, before it is placed in a [`Desk`].
+/// One display read back, before it is placed in a [`Shell`].
 struct Frame {
     rect: (i32, i32, i32, i32),
     at: (i64, i64),
@@ -376,7 +376,7 @@ struct Frame {
 /// A display's name and its place in the layout, in its own pixels.
 type Layout = (String, (i32, i32, i32, i32));
 
-/// What a copy of the desk is for.
+/// What a copy of the shell is for.
 #[derive(Clone, Copy)]
 enum Look {
     /// The session's own look at its displays, for a check: what is drawn on them, nothing
@@ -391,7 +391,7 @@ enum Look {
 /// Every display on, each at its place in the layout, as `look` copies it; a fitted copy fits the
 /// whole layout into that frame — the size a video of the desktop is streamed at — and every other
 /// keeps each display's own pixels.
-fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
+fn shell(compositor: &mut Compositor, look: Look) -> Result<Shell, String> {
     let displays: Vec<Layout> = compositor
         .outputs()
         .into_iter()
@@ -452,10 +452,10 @@ fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
     let (width, height) = (size(left, right), size(top, bottom));
     let mut composed = image::RgbaImage::new(width, height);
     if fitted.is_some() {
-        // Between the displays is the desk, as a display shows it, not nothing: a video frame has
+        // Between the displays is the shell, as a display shows it, not nothing: a video frame has
         // no alpha to carry.
         for pixel in composed.pixels_mut() {
-            *pixel = desk_pixel();
+            *pixel = shell_pixel();
         }
     }
     let mut placed = Vec::new();
@@ -471,13 +471,13 @@ fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
             scale: frame.scale,
         });
     }
-    Ok(Desk {
+    Ok(Shell {
         picture: composed,
         placed,
     })
 }
 
-impl Desk {
+impl Shell {
     /// The colour `pointer` , a point of the layout, is over: red, green and blue from 0 to 1, as
     /// the picture shows them. `None` when the pointer is over no display.
     #[allow(
@@ -500,7 +500,7 @@ impl Desk {
         let x = pixel(placed.at.0, placed.rect.0, pointer.0, self.picture.width())?;
         let y = pixel(placed.at.1, placed.rect.1, pointer.1, self.picture.height())?;
         // The picture's alpha says nothing about the colour: a window that draws nothing shows the
-        // desk through, as it does on the display.
+        // shell through, as it does on the display.
         let [red, green, blue, _] = self.picture.get_pixel(x, y).0;
         Some((
             f64::from(red) / 255.0,
@@ -520,7 +520,7 @@ fn holds(rect: (i32, i32, i32, i32), point: (f64, f64)) -> bool {
 }
 
 /// The colour the compositor draws between and behind displays.
-fn desk_pixel() -> image::Rgba<u8> {
+fn shell_pixel() -> image::Rgba<u8> {
     let [red, green, blue, alpha] = tilo_compositor::render::BACKGROUND;
     #[allow(
         clippy::cast_possible_truncation,

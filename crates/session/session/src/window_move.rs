@@ -1041,7 +1041,7 @@ struct Standing {
     workspace: WorkspaceRead,
 }
 
-/// The tile `tab` holds, as the desk has it.
+/// The tile `tab` holds, as the shell has it.
 fn tab_tile(tree: &Layout, tab: TabId) -> Option<&TileContent> {
     tree.workspaces
         .iter()
@@ -1053,7 +1053,7 @@ fn tab_tile(tree: &Layout, tab: TabId) -> Option<&TileContent> {
 }
 
 /// The window `tab` shows and the workspace the tab stands in; `None` when the tab is not on the
-/// desk or holds no window of an app this device started.
+/// shell or holds no window of an app this device started.
 fn standing(tree: &Layout, tab: TabId, person: &str, earlier: &[String]) -> Option<Standing> {
     let TileContent::Foreign { app_id, surface_id } = tab_tile(tree, tab)? else {
         return None;
@@ -1178,9 +1178,9 @@ mod tests {
         );
     }
 
-    /// A desk with a session on it, and the window of [`PROBE`] in a tab of the workspace in front,
+    /// A shell with a session on it, and the window of [`PROBE`] in a tab of the workspace in front,
     /// showing `record` .
-    struct Desk {
+    struct Shell {
         _home: tilo_test_env::TestHome,
         /// Where each start is written down.
         started: PathBuf,
@@ -1195,8 +1195,8 @@ mod tests {
         tab: TabId,
     }
 
-    impl Desk {
-        /// A desk of two workspaces whose window shows a record of its own.
+    impl Shell {
+        /// A shell of two workspaces whose window shows a record of its own.
         fn new() -> Self {
             let mut home = tilo_test_env::TestHome::new().expect("a home");
             let started = home.home().join("started");
@@ -1233,7 +1233,7 @@ mod tests {
                 &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
             )
             .expect("a session");
-            // The desk this device shows, as a session that came back to one puts it in front.
+            // The shell this device shows, as a session that came back to one puts it in front.
             session.handle().replace_tree(two_workspaces());
             let (from, to, to_id) = session
                 .handle()
@@ -1254,7 +1254,7 @@ mod tests {
                 },
                 &apps.workspace_named(&from),
             )
-            .expect("the desk starts the app");
+            .expect("the shell starts the app");
             wait(&mut session, "the app is started", |_| {
                 (starts(&started) == 1).then_some(())
             });
@@ -1414,7 +1414,7 @@ mod tests {
         records.try_flush().expect("the record is written");
     }
 
-    /// The desk the person is at: the workspace in front, with a strip the app's window takes, and
+    /// The shell the person is at: the workspace in front, with a strip the app's window takes, and
     /// one behind it.
     fn two_workspaces() -> Layout {
         let mut home = Workspace::new(WorkspaceId::from_u128(1), "Home");
@@ -1533,7 +1533,7 @@ mod tests {
             .to_string()
     }
 
-    /// Every tab of the desk.
+    /// Every tab of the shell.
     fn tabs_of(session: &Session) -> Vec<TabId> {
         session.handle().read(|tree| {
             tree.workspaces
@@ -1592,27 +1592,27 @@ mod tests {
     #[test]
     fn a_moved_window_takes_the_record_it_shows_to_the_workspace_it_moves_to() {
         let _settled = ui::motion::testing::settled();
-        let mut desk = Desk::new();
-        let showing = desk.showing("first draft");
-        desk.carry();
-        let (_, arrived) = desk.arrived();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.carry();
+        let (_, arrived) = shell.arrived();
         assert_ne!(
             arrived.as_str(),
             showing.id.as_str(),
             "the record arrives under an id of the workspace it went to"
         );
         // The app it left writes once more before its window closes.
-        desk.edit(&showing.id, "first draft, last words");
-        desk.land();
+        shell.edit(&showing.id, "first draft, last words");
+        shell.land();
         let successor = Successor {
-            workspace: desk.to_id.clone(),
+            workspace: shell.to_id.clone(),
             record: arrived.as_str().to_owned(),
-            by: desk.session.shared.person.clone(),
+            by: shell.session.shared.person.clone(),
         };
-        let source = Desk::profile(&desk.from);
-        let from = desk.from.clone();
+        let source = Shell::profile(&shell.from);
+        let from = shell.from.clone();
         let left = wait(
-            &mut desk.session,
+            &mut shell.session,
             "the record it left says where it went",
             |_| stored_at(&source, &from, &showing.id).and_then(|doc| retirement(&doc)),
         );
@@ -1621,7 +1621,7 @@ mod tests {
             Retirement::Moved(Some(successor)),
             "the record it left names where it went and who moved it"
         );
-        let kept = Desk::stored(&desk.to_id, &arrived).expect("the record is kept where it went");
+        let kept = Shell::stored(&shell.to_id, &arrived).expect("the record is kept where it went");
         assert_eq!(
             body(&kept).as_deref(),
             Some("first draft, last words"),
@@ -1633,8 +1633,8 @@ mod tests {
             "and the record it arrived from is its provenance"
         );
         assert_eq!(
-            workspace_of(&desk.session, desk.tab),
-            Some(desk.to),
+            workspace_of(&shell.session, shell.tab),
+            Some(shell.to),
             "the tab is where the person put it"
         );
     }
@@ -1645,13 +1645,13 @@ mod tests {
     #[test]
     fn a_move_whose_app_opens_no_window_puts_the_tab_back() {
         let _settled = ui::motion::testing::settled();
-        let mut desk = Desk::new();
-        let showing = desk.showing("first draft");
-        desk.carry();
-        let (_, arrived) = desk.arrived();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.carry();
+        let (_, arrived) = shell.arrived();
         // The app starts and runs, but never opens a window there.
         let said = wait_maybe(
-            &mut desk.session,
+            &mut shell.session,
             OPENING.saturating_add(tilo_test_env::hang_bound()),
             |session| {
                 session
@@ -1669,21 +1669,21 @@ mod tests {
             said.notification.body
         );
         assert_eq!(
-            workspace_of(&desk.session, desk.tab),
+            workspace_of(&shell.session, shell.tab),
             Some(WorkspaceId::from_u128(1)),
             "the tab went back where it was"
         );
         assert_eq!(
-            tile_of(&desk.session, desk.tab),
+            tile_of(&shell.session, shell.tab),
             Some(TileContent::Foreign {
                 surface_id: 11,
                 app_id: PROBE.into()
             }),
             "still showing the window it had"
         );
-        let to = Desk::profile(&desk.to_id);
-        let to_id = desk.to_id.clone();
-        let retired = wait(&mut desk.session, "the copy it made is retired", |_| {
+        let to = Shell::profile(&shell.to_id);
+        let to_id = shell.to_id.clone();
+        let retired = wait(&mut shell.session, "the copy it made is retired", |_| {
             stored_at(&to, &to_id, &arrived).and_then(|doc| retirement(&doc))
         });
         assert_eq!(
@@ -1691,7 +1691,7 @@ mod tests {
             Retirement::Abandoned,
             "the copy is retired as one nothing opened"
         );
-        let left = Desk::stored(&desk.from, &showing.id).expect("the record it showed lives on");
+        let left = Shell::stored(&shell.from, &showing.id).expect("the record it showed lives on");
         assert_eq!(
             retirement(&left),
             None,

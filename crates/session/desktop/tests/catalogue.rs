@@ -7,25 +7,25 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use tilo_actions::ResourceSpec;
-use tilo_desktop::desk_verbs::launchpad_resource;
-use tilo_desktop::desk_verbs::{
-    CHROME_RESOURCE, DESK_RESOURCE, OpenSearch, chrome_resource, desk_resource, tab_resource_id,
+use tilo_desktop::verbs::launchpad_resource;
+use tilo_desktop::verbs::{
+    CHROME_RESOURCE, OpenSearch, SHELL_RESOURCE, chrome_resource, shell_resource, tab_resource_id,
 };
 use tilo_desktop_surface::SearchRow;
 use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
 use tilo_desktop_surface::window;
 use tilo_resource::Effect;
 
-/// Every resource the desktop publishes: the chrome over the windows, the desk under them with its
+/// Every resource the desktop publishes: the chrome over the windows, the shell under them with its
 /// windows, a display and the open search, and the launchpad.
 fn published() -> Vec<ResourceSpec> {
     let windows = [
-        tilo_desktop::desk_verbs::Shown {
+        tilo_desktop::verbs::Shown {
             tab: 7,
             title: "Notes".to_owned(),
             foreign: None,
         },
-        tilo_desktop::desk_verbs::Shown {
+        tilo_desktop::verbs::Shown {
             tab: 8,
             title: "Mail".to_owned(),
             foreign: Some("so.tilo.mail".to_owned()),
@@ -39,7 +39,7 @@ fn published() -> Vec<ResourceSpec> {
     }];
     vec![
         chrome_resource(&ui::shortcut_table::ShortcutConfig::default()),
-        desk_resource(
+        shell_resource(
             &windows,
             &[8],
             &[1],
@@ -126,11 +126,11 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_desks_and_the_chromes_verbs_are_told_apart;
+    phase the_shells_and_the_chromes_verbs_are_told_apart;
     {
-        assert_eq!(DESK_RESOURCE, "desktop:desk");
+        assert_eq!(SHELL_RESOURCE, "desktop:shell");
         assert_eq!(CHROME_RESOURCE, "desktop:chrome");
-        let desk: BTreeSet<&str> = LayoutEffect::declarations()
+        let shell: BTreeSet<&str> = LayoutEffect::declarations()
             .iter()
             .map(|decl| decl.id)
             .collect();
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
             .iter()
             .map(|decl| decl.id)
             .collect();
-        assert!(desk.is_disjoint(&chrome));
+        assert!(shell.is_disjoint(&chrome));
     }
 
     phase every_row_offers_a_verb_of_the_desktop;
@@ -162,7 +162,7 @@ tilo_test_env::scenario! {
 
     phase the_launchpad_cards_are_its_controls_for_scripts;
     {
-        // A card submits the launchpad verb for what the empty desk shows, and a script or an agent
+        // A card submits the launchpad verb for what the empty shell shows, and a script or an agent
         // invokes the same verb by the row this resource publishes. People reach the verbs through
         // their host actions, which is what the palette lists, so this resource is never the palette's
         // door.
@@ -190,15 +190,15 @@ tilo_test_env::scenario! {
     }
 
     phase a_foreign_window_offers_the_two_reads_and_nothing_that_acts;
-    // A window this session does not run — another desktop's — is read and pictured through the desk,
+    // A window this session does not run — another desktop's — is read and pictured through the shell,
     // and nothing acts on it: the two verbs it adds only read, and reach agents, who have no other way
     // to see it.
     {
-        let desk = published()
+        let shell = published()
             .into_iter()
-            .find(|resource| resource.id.as_str() == DESK_RESOURCE)
-            .expect("the desk");
-        let window = desk
+            .find(|resource| resource.id.as_str() == SHELL_RESOURCE)
+            .expect("the shell");
+        let window = shell
             .children
             .iter()
             .find(|resource| resource.id.as_str() == tab_resource_id(8))
@@ -239,12 +239,12 @@ tilo_test_env::scenario! {
                 spec.id
             );
         }
-        // The desk's own verbs are the only ones it adds to a window it runs.
+        // The shell's own verbs are the only ones it adds to a window it runs.
         let window = published()
             .into_iter()
-            .find(|resource| resource.id.as_str() == DESK_RESOURCE)
-            .and_then(|desk| {
-                desk.children
+            .find(|resource| resource.id.as_str() == SHELL_RESOURCE)
+            .and_then(|shell| {
+                shell.children
                     .into_iter()
                     .find(|resource| resource.id.as_str() == tab_resource_id(7))
             })

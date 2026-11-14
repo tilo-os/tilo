@@ -79,10 +79,10 @@ mod tests {
         assert_eq!(door.app_id(), "so.tilo.settings");
         assert!(door.is_resource(catalogue::RESOURCE));
 
-        let rows = door.catalogue_rows("desk", &keymap);
+        let rows = door.catalogue_rows("shell", &keymap);
         assert_eq!(rows.len(), 1, "one resource carries the catalogue");
         let row = &rows[0];
-        assert_eq!(row.provider, "desk");
+        assert_eq!(row.provider, "shell");
         assert_eq!(row.resource.id, catalogue::RESOURCE);
         assert!(!row.has_children);
         assert_eq!(
@@ -143,7 +143,7 @@ mod tests {
         assert_eq!(descriptor.address.resource, catalogue::RESOURCE);
         assert_eq!(descriptor.address.action, catalogue::LIST_ACTION);
         assert_eq!(
-            catalogue::catalogue_rows("desk")[0].app_id,
+            catalogue::catalogue_rows("shell")[0].app_id,
             "so.tilo.settings",
             "the rows are checked against Settings, which administers them"
         );

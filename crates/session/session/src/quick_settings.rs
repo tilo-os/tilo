@@ -8,7 +8,7 @@
 //! both reached over the broker as any app of the session reaches them. What is left to the session
 //! is where the popover stands and whether it shows, which only the overlay stack knows.
 //! Opening Settings from the panel, and from the dictation card that sends the person there, is the
-//! session's too: it is the desk's own search, and the panel's app has no workspace of its own to
+//! session's too: it is the shell's own search, and the panel's app has no workspace of its own to
 //! search in.
 
 use std::path::PathBuf;
@@ -72,7 +72,7 @@ pub fn surface_of(program: impl Into<PathBuf>) -> Surface {
 }
 
 /// Whether a quick settings app is among the session's surface apps: what the bar's status keys and
-/// the desk's own status answer from.
+/// the shell's own status answer from.
 #[must_use]
 pub fn installed(surfaces: &[Surface]) -> bool {
     surfaces.iter().any(|surface| surface.name == SURFACE)

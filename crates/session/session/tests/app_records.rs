@@ -81,7 +81,7 @@ fn session_launching(
         launches,
         ..Options::default()
     });
-    let workspace = wait_for(&mut session, "the workspace the desk shows", |session| {
+    let workspace = wait_for(&mut session, "the workspace the shell shows", |session| {
         session.handle().read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())

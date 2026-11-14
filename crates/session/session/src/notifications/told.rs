@@ -4,12 +4,12 @@ use tilo_desktop_surface::DesktopNotifications;
 
 use crate::platform::notice::{Notice, Notices};
 
-/// A test host's notices, on a desk of its own.
+/// A test host's notices, on a shell of its own.
 #[derive(Clone, Default)]
 pub(crate) struct Told(pub(crate) DesktopNotifications);
 
 impl Told {
-    /// What the desk shows, live first: each one's title and body.
+    /// What the shell shows, live first: each one's title and body.
     pub(crate) fn told(&self) -> Vec<(String, String)> {
         let log = self.0.log();
         log.active()

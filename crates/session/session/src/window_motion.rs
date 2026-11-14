@@ -1,6 +1,6 @@
 //! Windows coming and going: a window the compositor maps fades in and grows into place, and one
 //! that closes shrinks and fades from its last frame, on the toolkit's window motion
-//! ([`WindowMotion::OPEN`]), the curve and pace a window's tile runs inside the desk. The
+//! ([`WindowMotion::OPEN`]), the curve and pace a window's tile runs inside the shell. The
 //! compositor draws them through window effects; input lands where a window stands.
 
 use std::collections::BTreeMap;
@@ -44,7 +44,7 @@ impl WindowMotions {
         }
     }
 
-    /// Whether a window is still opening or closing: the desk is moving.
+    /// Whether a window is still opening or closing: the shell is moving.
     pub(crate) fn animating(&self) -> bool {
         self.known.values().any(Option::is_some) || !self.closing.is_empty()
     }

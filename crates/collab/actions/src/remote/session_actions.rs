@@ -12,10 +12,10 @@
 //! pass, attributed to the agent and the person who asked, as a change the person takes
 //! back like any other.
 //!
-//! An app reaches the desk's invitation the same way, as the person using it: what it shows
-//! is shared by inviting people into the workspace it is in — the desk's own invite sheet
+//! An app reaches the shell's invitation the same way, as the person using it: what it shows
+//! is shared by inviting people into the workspace it is in — the shell's own invite sheet
 //! ([`SHOW_INVITE`]), and the invitation it makes ([`ISSUE_INVITATION`]) — and nothing else of
-//! the desk.
+//! the shell.
 
 /// The provider the session answers its own actions under: the same name its own door
 /// publishes them as, so a catalogue that names a session action names it here too.
@@ -41,7 +41,7 @@ pub const SHOW_INVITE: &str = "show-invite";
 /// (Settings' Devices) offers adding to it this way.
 pub const SHOW_PAIR_DEVICE: &str = "show-pair-device";
 
-/// The resource the person's arrangement is published as: the desk itself, which a place is put
+/// The resource the person's arrangement is published as: the layout itself, which a place is put
 /// on, brought forward and closed through, and which carries the system's `open`.
 pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 

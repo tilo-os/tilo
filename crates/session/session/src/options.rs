@@ -1,13 +1,13 @@
 //! What a session is started with: the device it runs on, the person it acts for, the settings it
-//! follows, and the services, sockets and desks it is lent. Everything the loop can do without — a
-//! panel, a lock, a fabric — is `None` here, and a session without it keeps that part of the desk
+//! follows, and the services, sockets and sessions it is lent. Everything the loop can do without — a
+//! panel, a lock, a fabric — is `None` here, and a session without it keeps that part of the shell
 //! dark.
 
 use std::rc::Rc;
 
 use ui::application::ComponentRunnerInputs;
 
-use crate::BeforeDesk;
+use crate::BeforeShell;
 use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
@@ -73,7 +73,7 @@ pub struct Options {
     /// What stands over everything before the desktop is used: the setup the person goes through
     /// once (the first use of this device, or the recovery of its identity), or the wait for the
     /// clock to admit this device's certificate.
-    pub setup: Option<BeforeDesk>,
+    pub setup: Option<BeforeShell>,
     /// The workspace's Browser this session holds, when a host started it for one: the device,
     /// workspace and record it was handed, and what it reports of the window it holds
     /// ([`crate::hosted_browser::HostedBrowser`]). A session a person starts has none, and does
@@ -88,7 +88,7 @@ pub struct Options {
     /// for.
     pub user: String,
     /// The ids the person went by before this device had an identity — the login account among
-    /// them — under which a desk they kept, and the workspaces it holds, are still theirs.
+    /// them — under which a shell they kept, and the workspaces it holds, are still theirs.
     pub earlier: Vec<String>,
     /// Whether a password unlocks the session; without one nothing does.
     pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
@@ -113,7 +113,7 @@ pub struct Options {
     /// grant.
     pub desktop: Option<Rc<desktop_services::DesktopServices>>,
     /// The questions the session's sheets answer, when nothing runs beside it to ask them: a
-    /// session with desk services asks theirs.
+    /// session with shell services asks theirs.
     pub questions: Option<tilo_service::Questions>,
     /// The portal's link to the loop: what shares the session's screens,
     /// drives its seat and passes its selection.
@@ -126,8 +126,8 @@ pub struct Options {
     /// acts on it and what holds it awake. Without one, this session runs no idle, lid, key or
     /// battery policy — it is a session in a window of another desktop, or a test's.
     pub power: Option<tilo_session_power::PowerLink>,
-    /// Where this device keeps what outlives a session: the desk as it was left, and the pictures
-    /// on it. Without one, the session starts on a fresh desk and keeps nothing (tests and
+    /// Where this device keeps what outlives a session: the shell as it was left, and the pictures
+    /// on it. Without one, the session starts on a fresh shell and keeps nothing (tests and
     /// screenshots).
     pub state: Option<std::path::PathBuf>,
     /// Whether the session takes part in the collaboration plane: who is here in each workspace,
@@ -138,7 +138,7 @@ pub struct Options {
     /// on a network.
     pub sync: Option<Rc<sync::Client>>,
     /// What this device's endpoint relays through. `None` : the person's setting
-    /// ([`tilo_endpoint_reachability::relays`]), which is what a session on their desk uses. `Some`
+    /// ([`tilo_endpoint_reachability::relays`]), which is what a session on their shell uses. `Some`
     /// is a test's own: a relay on this machine's loopback, so nothing it does leaves the machine.
     pub relays: Option<tilo_endpoint_reachability::EndpointRelays>,
     /// The person's device fabric, when this session runs on one: what was copied here is shared
@@ -299,7 +299,7 @@ pub(crate) fn start_collaboration(
     }
     let own = sync::OwnPresence {
         // What everyone here calls them: the name they gave, else their account's, never their key.
-        label: crate::platform::person::desk_person_name(
+        label: crate::platform::person::person_name(
             ui::local_identity::load().map(|identity| identity.display_name),
             &options.person,
         ),
@@ -346,8 +346,8 @@ pub(crate) fn start_collaboration(
     }
 }
 
-/// This device's workspaces, holding what the desk shows of them and what a join takes in, kept
-/// beside the desk. `None` when this computer has no identity to hold them with, or keeps no state
+/// This device's workspaces, holding what the shell shows of them and what a join takes in, kept
+/// beside the session. `None` when this computer has no identity to hold them with, or keeps no state
 /// to keep them in.
 pub(crate) fn open_engine(
     options: &Options,
@@ -363,7 +363,7 @@ pub(crate) fn open_engine(
     match engine::Engine::for_this_device(
         options.state.as_deref(),
         workspaces,
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     ) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {

@@ -52,7 +52,7 @@ pub struct MediaKeys {
 }
 
 /// The window [`SHARE_WINDOW`] and [`END_WINDOW_SHARE`] name: the app it is
-/// a window of, and its tab, as the device's desk minted it.
+/// a window of, and its tab, as the device's session minted it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowShare {

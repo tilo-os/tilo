@@ -381,7 +381,7 @@ fn an_apps_window_moved_to_a_point_is_drawn_there() {
     for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
         session
             .invoke(
-                tilo_desktop::desk_verbs::CHROME_RESOURCE,
+                tilo_desktop::verbs::CHROME_RESOURCE,
                 "open-app",
                 serde_json::json!({"app": app})
                     .as_object()

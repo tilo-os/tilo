@@ -1,5 +1,5 @@
 //! The rotation lock: the built-in panel turns with the device until the person pins it, and the
-//! desk lays its windows out on the turned screen.
+//! shell lays its windows out on the turned screen.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -156,14 +156,14 @@ fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i3
 }
 
 /// Where the window of `app` reaches to: its left and top edges, its width and its bottom edge, in
-/// the desk's coordinates. A window filling the screen fills it edge to edge and may start below
+/// the shell's coordinates. A window filling the screen fills it edge to edge and may start below
 /// the top inset.
 fn edges(session: &mut Session, app: &str) -> (i32, i32, i32, i32) {
     let (x, y, width, height) = window(session.compositor(), app).expect("mapped").1;
     (x, y, width, y + height)
 }
 
-/// What the person sees of the built-in panel: its rectangle in the desk's coordinates, the way the
+/// What the person sees of the built-in panel: its rectangle in the shell's coordinates, the way the
 /// compositor holds it.
 fn panel(session: &mut Session) -> (i32, i32, i32, i32) {
     session
@@ -175,7 +175,7 @@ fn panel(session: &mut Session) -> (i32, i32, i32, i32) {
 }
 
 #[test]
-fn the_lock_turns_the_outputs_and_the_desk_follows() {
+fn the_lock_turns_the_outputs_and_the_shell_follows() {
     let _settled = ui::motion::testing::settled();
     let sensor = sensor();
     settings();
@@ -220,7 +220,7 @@ fn the_lock_turns_the_outputs_and_the_desk_follows() {
         .set(true)
         .expect("the person's setting");
     hold(&sensor, (0, -9, 0));
-    // Two seconds of the desk's own time with the machine on its side: the turn has long been read
+    // Two seconds of the shell's own time with the machine on its side: the turn has long been read
     // and debounced by now, so anything that were to follow the sensor would have happened.
     for _ in 0..100 {
         client.exchange();
@@ -231,6 +231,6 @@ fn the_lock_turns_the_outputs_and_the_desk_follows() {
     assert_eq!(
         edges(&mut session, "org.example.Editor"),
         turned,
-        "and the desk keeps its windows on the screen the person reads"
+        "and the shell keeps its windows on the screen the person reads"
     );
 }

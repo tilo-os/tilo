@@ -7,7 +7,7 @@ type Placed = (i32, i32, i32, i32);
 
 /// Two windows on one screen, the second opened beside the first: the session settles on the width
 /// they share, and the window that was open first draws itself in it, as a person's app does when
-/// the desk resizes it. Returns the two windows' clients — closing them closes the windows — and
+/// the shell resizes it. Returns the two windows' clients — closing them closes the windows — and
 /// their rectangles, in the order they stand in.
 fn two_windows(session: &mut Session) -> (TestClient, TestClient, [Placed; 2]) {
     let mut terminal = mapped(session, "org.example.Terminal");
@@ -102,14 +102,14 @@ fn two_windows_keep_the_strips_gutters_and_stand_below_the_bar() {
     let mut session = session();
     let (_terminal, _files, rects) = two_windows(&mut session);
     assert_pair_stands_in_the_strip(rects);
-    super::desk::capture_to(&mut session, &shots_dir(), "two-windows-dark");
+    super::shell::capture_to(&mut session, &shots_dir(), "two-windows-dark");
 }
 
 #[test]
 fn two_windows_stand_the_same_way_in_the_light_theme() {
     let _settled = ui::motion::testing::settled();
-    let mut session = super::desk::light_session();
+    let mut session = super::shell::light_session();
     let (_terminal, _files, rects) = two_windows(&mut session);
     assert_pair_stands_in_the_strip(rects);
-    super::desk::capture_to(&mut session, &shots_dir(), "two-windows-light");
+    super::shell::capture_to(&mut session, &shots_dir(), "two-windows-light");
 }

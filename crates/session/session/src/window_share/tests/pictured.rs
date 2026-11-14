@@ -1,7 +1,7 @@
 //! What a device says of a window it shows is what the tile showing it holds, after every turn.
 //!
 //! A tile's decoder never holds the loop: the picture of a unit it was handed comes out later,
-//! between two turns, and the desk takes it into the tile while it builds a frame. That is after
+//! between two turns, and the shell takes it into the tile while it builds a frame. That is after
 //! the pass of the shares that turn, so the shares ask their tiles once more when the frame is
 //! drawn. Without that, the reading said the window waits for its first picture under a tile that
 //! showed it, until something else brought the next pass.
@@ -23,11 +23,11 @@ fn holds_picture(viewer: &Member, tab: u64) -> bool {
 ///
 /// The picture reaches the tile the slow way. The sharing device stands still once the window's
 /// first picture is on the viewing device's plane, so nothing pushed after it brings it out of
-/// the decoder: it comes out between two turns, and the desk takes it while it builds a frame.
+/// the decoder: it comes out between two turns, and the shell takes it while it builds a frame.
 #[test]
 fn a_window_is_said_to_be_pictured_in_the_turn_its_tile_takes_the_picture() {
     tilo_window_share::flatpak_share::read_encoders();
-    let mut host = member(0x1a, own_desk());
+    let mut host = member(0x1a, own_shell());
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = tab_of(&host.session, APP);
     share(&mut host, APP, tab);

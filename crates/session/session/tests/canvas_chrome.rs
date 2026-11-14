@@ -1,15 +1,15 @@
 //! What a place on the framed canvas looks like and where it stands (`shell.md` §4, §8;
 //! `docs/designs/app-language/canvas.md`; the frames preset in `apps/tl/shell/canvas.tl`).
 //!
-//! Two things a person saw on a live desk and reported:
+//! Two things a person saw on a live shell and reported:
 //!
 //! 1. A third place opened beside the conversation squeezed all three into one narrow column and
 //!    resized the place already standing: opening something never moves or resizes what stands,
 //!    and it never changes the person's zoom — it pans when what arrived would stand off-screen.
-//! 2. The desk style menu's band above its first row stood empty.
+//! 2. The style menu's band above its first row stood empty.
 //!
 //! Every step is the production path: the session's own `place_found`/`open` actions, the shell's
-//! preset, and the arrangement the desk reads back.
+//! preset, and the arrangement the shell reads back.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -57,7 +57,7 @@ fn enter_text(session: &mut Session, text: &str) {
     crate::common::point_and_say(session, (x + w * 0.5, y + h * 0.3), text);
 }
 
-/// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)`, as the desk
+/// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)`, as the shell
 /// holds it.
 fn boxes(session: &Session) -> Vec<(String, i64, i64, i64, i64)> {
     arrangement(session)
@@ -76,7 +76,7 @@ fn boxes(session: &Session) -> Vec<(String, i64, i64, i64, i64)> {
         .collect()
 }
 
-/// The place a resource's root names (a mail root, a chat channel), as the desk stands.
+/// The place a resource's root names (a mail root, a chat channel), as the shell stands.
 fn place_showing(session: &Session, needle: &str) -> Option<(String, i64, i64, i64, i64)> {
     boxes(session)
         .into_iter()
@@ -252,10 +252,10 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     );
 }
 
-/// The desk style menu has no empty band above its first row: the menu's top is its first row's
+/// The style menu has no empty band above its first row: the menu's top is its first row's
 /// top, and nothing stands between the panel's edge and the row.
 #[test]
-fn the_desk_style_menu_has_no_empty_band_above_its_rows() {
+fn the_style_shell_menu_has_no_empty_band_above_its_rows() {
     use ui::window_targets::TargetAction;
     let _settled = ui::motion::testing::settled();
     let root = private_home();

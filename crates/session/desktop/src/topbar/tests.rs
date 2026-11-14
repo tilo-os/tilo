@@ -1233,7 +1233,7 @@ tilo_test_env::scenario! {
 
     phase the_bar_leads_with_one_menu_and_ends_with_you;
     // The bar leads with the mark and the workspace's name as one menu,
-    // shows desks only when there are several, and ends with the person's
+    // shows sessions only when there are several, and ends with the person's
     // own avatar opening their profile card.
     {
         let tree = two_workspace_tree();
@@ -2850,7 +2850,7 @@ tilo_test_env::scenario! {
     }
 
     phase one_display_needs_no_places;
-    // A desk of one display needs no placing: the bar's own layout stands it across the desk, and a
+    // A shell of one display needs no placing: the bar's own layout stands it across the shell, and a
     // window covering that display is the one bar's.
     {
         let mut tree = Layout::default();
@@ -2947,7 +2947,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A display of `monitor` at `x` , 1280 by 800, as the desk knows one.
+/// A display of `monitor` at `x` , 1280 by 800, as the shell knows one.
 fn display(id: u32, monitor: &str, x: f64) -> tilo_desktop_model::Display {
     tilo_desktop_model::Display {
         id,
@@ -2960,7 +2960,7 @@ fn display(id: u32, monitor: &str, x: f64) -> tilo_desktop_model::Display {
     }
 }
 
-/// A desk nobody named says so in German on a German desk: the workspace is the German word for a
+/// A shell nobody named says so in German on a German shell: the workspace is the German word for a
 /// workspace and the strip it comes with stands in the first place, never the English a default
 /// name used to be stored as.
 #[test]
@@ -2987,7 +2987,7 @@ fn a_german_bar_names_what_nobody_named_in_german() {
     assert_eq!(
         named(TopBarChrome::CONTROL_STRIP_NAME),
         None,
-        "the desk's own strip keeps no name, so the bar leaves it to the workspace"
+        "the shell's own strip keeps no name, so the bar leaves it to the workspace"
     );
     assert_eq!(
         tilo_desktop_surface::names::strip_named("", 0),

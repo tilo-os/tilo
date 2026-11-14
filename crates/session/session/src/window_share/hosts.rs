@@ -1,10 +1,10 @@
-//! How the windows that run on other devices stand on this desk while nothing of them is shown.
+//! How the windows that run on other devices stand on this session while nothing of them is shown.
 //!
-//! The workspace's layout lists a window that runs only on its device on every desk, shared or
-//! not, and a desk that holds none of its pictures says why in the window's tab
+//! The workspace's layout lists a window that runs only on its device on every shell, shared or
+//! not, and a shell that holds none of its pictures says why in the window's tab
 //! ([`Elsewhere`]). Only a session can read that: whether the workspace says the window is
 //! shared and it is still on its way here, whether its device is heard in the workspace, and
-//! whether the workspace still admits that device. The desk draws what is read here and decides
+//! whether the workspace still admits that device. The shell draws what is read here and decides
 //! none of it, and the shares' reading says the same of each such window in a word a tool
 //! branches on (`hosted`).
 
@@ -20,10 +20,10 @@ use super::{WindowShares, device_key};
 use crate::engine::Engine;
 use crate::sync::Client;
 
-/// One window that runs on another device, as this desk lists it, and how it stands here.
+/// One window that runs on another device, as this session lists it, and how it stands here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct HostedTab {
-    /// The tab of this desk the window stands in.
+    /// The tab of this session the window stands in.
     tab: TabId,
     /// The workspace that tab stands in.
     workspace: String,
@@ -70,17 +70,17 @@ const fn word(standing: &Elsewhere) -> &'static str {
 }
 
 impl WindowShares {
-    /// Read how every window that runs on another device stands on this desk, and tell the desk
+    /// Read how every window that runs on another device stands on this session, and tell the shell
     /// where that changed: each tab says it from its next pass on. A session with no plane reads
     /// nothing of its workspaces, and its tabs say only where their windows run.
     pub(super) fn follow_hosted(
         &mut self,
-        desk: &DesktopHandle,
+        shell: &DesktopHandle,
         sync: Option<&Client>,
         engine: Option<&Arc<Engine>>,
         now: Instant,
     ) {
-        let listed: Vec<(TabId, String, String)> = desk.read(|tree| {
+        let listed: Vec<(TabId, String, String)> = shell.read(|tree| {
             tree.workspaces
                 .iter()
                 .flat_map(|held| {
@@ -108,7 +108,7 @@ impl WindowShares {
             })
             .collect();
         if read != self.elsewhere {
-            desk.set_elsewhere(
+            shell.set_elsewhere(
                 read.iter()
                     .map(|hosted| (hosted.tab, hosted.standing.clone()))
                     .collect(),
@@ -118,7 +118,7 @@ impl WindowShares {
         }
     }
 
-    /// How the window this desk lists in `tab` of `workspace`, which runs on the device `host`,
+    /// How the window this session lists in `tab` of `workspace`, which runs on the device `host`,
     /// stands while nothing of it is shown.
     fn standing_of(
         &mut self,
@@ -164,7 +164,7 @@ impl WindowShares {
     }
 
     /// The windows that run on other devices, as the reading says them: the tab each stands in on
-    /// this desk, its workspace and device, and how it stands. `shown` while a share of it stands
+    /// this session, its workspace and device, and how it stands. `shown` while a share of it stands
     /// in its tab; until then why it does not (`not-shared`, `awaited` with what it waits for,
     /// `away`, `left`), or `unread` where this session reads nothing of its workspace.
     pub(super) fn hosted_rows(&self) -> Vec<Value> {

@@ -19,7 +19,7 @@ mod well_policy;
 mod widget;
 
 pub use desktop::{
-    DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
+    DesktopHost, PointerSamples, ShellGesture, StripPolicy, WindowObserver, desktop, desktop_with,
 };
 pub use shell_part::{SessionLink, ShellPart, ShellWork};
 pub use well_policy::{WellHost, WellPolicy, WindowModel, well_policy};

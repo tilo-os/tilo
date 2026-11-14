@@ -1,4 +1,4 @@
-//! The shell's own record is the person's real record: what they choose of their desk — the
+//! The shell's own record is the person's real record: what they choose of their shell — the
 //! style, where the dock rides and the style's own settings — survives
 //! the session ending, and it is the same record their other devices read and change.
 //!
@@ -135,14 +135,14 @@ fn placed(session: &Session, record: &str) -> bool {
         .any(|place| place.record == record)
 }
 
-// The shell's record is the person's: the choices a person makes of their desk — the style,
+// The shell's record is the person's: the choices a person makes of their shell — the style,
 // where the dock rides and the style's own setting — are the
 // same after the session ends and a new one starts on this device.
 //
 // It fails on a build that starts the shell on an empty record: the second session draws the
 // shipped defaults, and none of the four is there.
 #[test]
-fn the_desk_choices_survive_the_session_ending() {
+fn the_shell_choices_survive_the_session_ending() {
     let _settled = ui::motion::testing::settled();
     let _person = person_dir();
     let state = tempfile::tempdir().expect("a state directory for this device");
@@ -160,7 +160,7 @@ fn the_desk_choices_survive_the_session_ending() {
             &mut session,
             "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
         );
-        assert!(!failed, "the desk shows the desktop: {answer}");
+        assert!(!failed, "the shell shows the shelltop: {answer}");
         session
             .run_shell_action("dock_on", vec![serde_json::json!("left")])
             .expect("the dock moves to the leading edge");
@@ -224,7 +224,7 @@ fn the_desk_choices_survive_the_session_ending() {
     };
     assert_eq!(
         after, before,
-        "every desk choice the first session held is the one the new session holds"
+        "every shell choice the first session held is the one the new session holds"
     );
     assert_eq!(
         after.frames_snap,
@@ -242,7 +242,7 @@ fn the_desk_choices_survive_the_session_ending() {
     drop(note);
 }
 
-/// The shell's desk choices a test reads across a restart: the dock's edge, whether the Frames
+/// The shell's shell choices a test reads across a restart: the dock's edge, whether the Frames
 /// grid is on, and the style shown, as each setting's record value.
 #[derive(Debug, PartialEq)]
 struct Choices {

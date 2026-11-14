@@ -1,7 +1,7 @@
 //! The song Music plays, on the shell's surfaces: the bar's pill names it,
 //! and its card opens from the pill with the song's cover, the point it
 //! stands at and what is left of it, and the transport under it. Every state
-//! is a test, and every state is written as a picture beside the desk's own.
+//! is a test, and every state is written as a picture beside the shell's own.
 
 use super::*;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -15,11 +15,11 @@ const MUSIC: &str = "so.tilo.music";
 const COVER: &str = ui::headless::FIXTURE_PICTURE;
 
 /// The bar's height, whole logical pixels: everything above stands in the bar, everything below is
-/// the desk the cards float over.
+/// the shell the cards float over.
 const BAR: u32 = 32;
 
-/// The first row under the desk.
-fn desk_bottom() -> u32 {
+/// The first row under the shell.
+fn shell_bottom() -> u32 {
     u32::try_from(HEIGHT).expect("a display with rows")
 }
 
@@ -69,7 +69,7 @@ fn song_with(artwork: &str, playing: bool) -> Summary {
 }
 
 /// Show `summary` on the session's board as `app` publishes it: the bar names it, and no card
-/// stands over the desk until the person opens it.
+/// stands over the shell until the person opens it.
 fn show(session: &Session, app: &str, summary: Summary) {
     let published = Published::of(summary);
     session.live_activities().show(
@@ -107,7 +107,7 @@ fn changed(before: &[u8], after: &[u8], width: u32, from: u32, to: u32) -> usize
 }
 
 /// Where the song's pill stands on the bar: the middle of what the song painted there, found from
-/// `before` and `after` so the pill is pressed wherever its reading puts it, on a wide desk or a
+/// `before` and `after` so the pill is pressed wherever its reading puts it, on a wide shell or a
 /// phone's.
 fn pill_x(before: &[u8], after: &[u8], width: u32) -> f64 {
     let columns = usize::try_from(width).expect("a display with columns");
@@ -167,7 +167,7 @@ fn click_the_pill(session: &mut Session, before: &[u8], after: &[u8], width: u32
 }
 
 /// The session draws the song's pill in the bar, and the pill opens as the song's card over the
-/// desk: the pair is written as `{name}-pill.png` and `{name}-card.png` where `name` asks for a
+/// shell: the pair is written as `{name}-pill.png` and `{name}-card.png` where `name` asks for a
 /// picture.
 fn pill_and_card(
     session: &mut Session,
@@ -187,24 +187,24 @@ fn pill_and_card(
         changed(&empty, &named, width, 0, BAR)
     );
     assert_eq!(
-        changed(&empty, &named, width, BAR, desk_bottom()),
+        changed(&empty, &named, width, BAR, shell_bottom()),
         0,
-        "a song never stands on the desk as a card by itself"
+        "a song never stands on the shell as a card by itself"
     );
     if let Some(name) = name {
-        super::desk::capture_to(session, dir, &format!("{name}-pill"));
+        super::shell::capture_to(session, dir, &format!("{name}-pill"));
     }
 
     click_the_pill(session, &empty, &named, width);
     settle(session, 8);
     let (opened, _) = shot(session);
     assert!(
-        changed(&named, &opened, width, BAR, desk_bottom()) > 1_000,
-        "the card stands over the desk: {} pixels of it moved",
-        changed(&named, &opened, width, BAR, desk_bottom())
+        changed(&named, &opened, width, BAR, shell_bottom()) > 1_000,
+        "the card stands over the shell: {} pixels of it moved",
+        changed(&named, &opened, width, BAR, shell_bottom())
     );
     if let Some(name) = name {
-        super::desk::capture_to(session, dir, &format!("{name}-card"));
+        super::shell::capture_to(session, dir, &format!("{name}-card"));
     }
 }
 
@@ -223,7 +223,7 @@ fn session_wide(width: i32) -> Session {
 fn light_session_wide(width: i32) -> Session {
     Session::headless(
         Options {
-            presentation: super::desk::light_presentation,
+            presentation: super::shell::light_presentation,
             collab: false,
             ..Options::default()
         },
@@ -235,11 +235,11 @@ fn light_session_wide(width: i32) -> Session {
 /// The width a phone's display stands at.
 const PHONE: i32 = 420;
 
-/// The song's pill and card on the dark desk.
+/// The song's pill and card on the dark shell.
 #[test]
 fn the_song_stands_in_the_bar_and_opens_as_its_card() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session();
     pill_and_card(&mut session, &dir, Some("u2-dark"), song(COVER));
@@ -250,7 +250,7 @@ fn the_song_stands_in_the_bar_and_opens_as_its_card() {
 #[test]
 fn a_paused_song_offers_to_play_again() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut paused = session();
     pill_and_card(
@@ -265,7 +265,7 @@ fn a_paused_song_offers_to_play_again() {
     pill_and_card(&mut playing, &dir, None, song(COVER));
     let (playing_card, _) = shot(&mut playing);
 
-    let differs = changed(&playing_card, &paused_card, width, BAR, desk_bottom());
+    let differs = changed(&playing_card, &paused_card, width, BAR, shell_bottom());
     assert!(
         differs > 20,
         "a paused song's card offers another control than a playing one's: {differs} pixels"
@@ -277,18 +277,18 @@ fn a_paused_song_offers_to_play_again() {
 #[test]
 fn a_song_without_a_cover_keeps_the_card_its_shape() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session();
     pill_and_card(&mut session, &dir, Some("u2-dark-no-art"), song(""));
 }
 
-/// A phone's desk keeps the song in the pill, and expanding it drops the card full-width from the
+/// A phone's shell keeps the song in the pill, and expanding it drops the card full-width from the
 /// bar.
 #[test]
 fn a_phone_names_the_song_in_the_pill_and_drops_its_card_from_the_bar() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session_wide(PHONE);
     pill_and_card(&mut session, &dir, Some("u2-phone"), song(COVER));
@@ -298,19 +298,19 @@ fn a_phone_names_the_song_in_the_pill_and_drops_its_card_from_the_bar() {
 #[test]
 fn a_phone_in_the_light_theme_drops_the_song_card_from_the_bar() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = light_session_wide(PHONE);
     pill_and_card(&mut session, &dir, Some("u2-phone-light"), song(COVER));
 }
 
-/// The song's pill and card on the light desk.
+/// The song's pill and card on the light shell.
 #[test]
 fn the_song_stands_in_the_light_bar_and_opens_as_its_card() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let dir = shots_dir();
-    let mut session = super::desk::light_session();
+    let mut session = super::shell::light_session();
     pill_and_card(&mut session, &dir, Some("u2-light"), song(COVER));
 }
 
@@ -344,7 +344,7 @@ fn cover_pixels(
 }
 
 /// The cover's darker half, as both the fixture picture and the picture Music sends paint it: a
-/// purple no part of the desk or the panel's chrome is.
+/// purple no part of the shell or the panel's chrome is.
 fn cover_purple(r: u8, g: u8, b: u8) -> bool {
     r < 120 && g < 85 && b > 125 && u32::from(b) > u32::from(r) + 40
 }
@@ -383,21 +383,21 @@ fn box_differing(
 }
 
 /// The part of the display under the bar, where the cards stand.
-fn desk() -> (i32, i32, i32, i32) {
+fn shell() -> (i32, i32, i32, i32) {
     (
         0,
         i32::try_from(BAR).expect("a bar of rows"),
         WIDTH,
-        i32::try_from(desk_bottom() - BAR).expect("a display with rows"),
+        i32::try_from(shell_bottom() - BAR).expect("a display with rows"),
     )
 }
 
 /// The card paints the song's cover: the picture's own two colours stand in its artwork tile, and
-/// nowhere on the desk it covers.
+/// nowhere on the shell it covers.
 #[test]
 fn the_card_paints_the_songs_cover() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     let mut session = session();
     settle(&mut session, 8);
     let (empty, width) = shot(&mut session);
@@ -410,17 +410,17 @@ fn the_card_paints_the_songs_cover() {
     let (card, _) = shot(&mut session);
 
     let (purple, warm) = (
-        cover_pixels(&card, width, desk(), cover_purple),
-        cover_pixels(&card, width, desk(), cover_warm),
+        cover_pixels(&card, width, shell(), cover_purple),
+        cover_pixels(&card, width, shell(), cover_warm),
     );
     assert!(
         purple > 200 && warm > 200,
         "the cover's two colours stand in the card's artwork tile: {purple} purple, {warm} warm pixels"
     );
     assert_eq!(
-        cover_pixels(&empty, width, desk(), cover_purple),
+        cover_pixels(&empty, width, shell(), cover_purple),
         0,
-        "nothing on the desk paints the cover before the card opens"
+        "nothing on the shell paints the cover before the card opens"
     );
 }
 
@@ -613,14 +613,14 @@ fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde
     invoke(&mut session, CHROME_RESOURCE, "quick-settings");
     let arrived = crate::common::wait_for(
         &mut session,
-        "the panel is drawn over the desk",
+        "the panel is drawn over the shell",
         |session| {
             session
                 .surfaces()
                 .running(quick_settings::SURFACE)
                 .then_some(())?;
             let (drawn, _) = shot(session);
-            box_differing(&closed, &drawn, width, desk())
+            box_differing(&closed, &drawn, width, shell())
                 .filter(|(_, _, across, down)| *across > 200 && *down > 150)
         },
     );
@@ -630,7 +630,7 @@ fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde
     // and read the panel's own box from the frame it came to rest at.
     settle(&mut session, 60);
     let (open, _) = shot(&mut session);
-    let rect = box_differing(&closed, &open, width, desk())
+    let rect = box_differing(&closed, &open, width, shell())
         .filter(|(_, _, across, down)| *across > 200 && *down > 150)
         .unwrap_or(arrived);
 
@@ -662,7 +662,7 @@ fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde
         settle(&mut session, 8);
     }
 
-    super::desk::capture_to(&mut session, &dir, name);
+    super::shell::capture_to(&mut session, &dir, name);
 
     // A press on the transport is the panel's action running on the player.
     ask_the_panel(&mut session, "play-pause");
@@ -676,13 +676,13 @@ fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde
     );
 }
 
-/// The song Quick Settings names, on the dark desk: the panel opens on a song
+/// The song Quick Settings names, on the dark shell: the panel opens on a song
 /// whose player has not sent its cover, and the cover arrives while it stands,
 /// so the picture in its window came from a reading published after it opened.
 #[test]
 fn quick_settings_names_the_song_that_plays() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     panel_names_the_song(
         "u2-quick-settings",
         song_without_a_cover(),
@@ -695,7 +695,7 @@ fn quick_settings_names_the_song_that_plays() {
 #[test]
 fn quick_settings_names_a_paused_song_and_one_without_a_cover() {
     let _settled = ui::motion::testing::settled();
-    let _clock = super::desk::held_clock();
+    let _clock = super::shell::held_clock();
     panel_names_the_song("u2-quick-settings-paused", paused_song(), None);
     panel_names_the_song("u2-quick-settings-no-art", song_without_a_cover(), None);
 }
@@ -834,7 +834,7 @@ fn the_lock_screen_reads_in_the_persons_language() {
     .expect("write the frame");
 }
 
-/// The song the lock screen shows, on the desk as the session draws it.
+/// The song the lock screen shows, on the shell as the session draws it.
 #[test]
 fn the_lock_screen_shows_the_song_that_plays() {
     let _settled = ui::motion::testing::settled();

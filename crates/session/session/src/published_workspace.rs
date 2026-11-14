@@ -7,7 +7,7 @@
 //! beside theirs rather than in none, and its file chooser is the one that workspace grants.
 //!
 //! Only a workspace switch changes what the file holds, and the pass that noticed the switch hands
-//! over the id ([`Published::follow`]): nothing here reads the desk on its own clock. The file is
+//! over the id ([`Published::follow`]): nothing here reads the shell on its own clock. The file is
 //! written without syncing — it lives in the runtime directory, which a crash empties, and a sync
 //! of the file and its directory is a journal commit the frame loop cannot spare on a busy disk.
 
@@ -68,7 +68,7 @@ impl Published {
         }
     }
 
-    /// Name `workspace` from now on: the file reads its id, or is gone while the desk shows no
+    /// Name `workspace` from now on: the file reads its id, or is gone while the shell shows no
     /// workspace at all. Returns at once when nothing changed.
     pub(crate) fn follow(&mut self, workspace: Option<WorkspaceId>) {
         if self.written == workspace {

@@ -7,7 +7,7 @@
 //! The resource also reports what the session's heap is doing ([`tilo_compositor::heap_trim`]):
 //! whether a trim a close asked for is still owed, how many ran, and whether startup's trim has
 //! run.
-//! It is published on the session's door like the desk and the session's controls, so the action
+//! It is published on the session's door like the shell and the session's controls, so the action
 //! model lists it: `tilo-control actions list session-diagnostics` , an agent through the broker,
 //! and the test-control door all reach the same verbs, and `profile-status` answers the same
 //! reading the owner's `profile_status` request does.

@@ -168,7 +168,7 @@ pub(crate) enum HostCmd {
     TakePart(native_ingress::Connect),
     /// Send one piece of a record's content to the device of the workspace that asked for it.
     Content(tilo_network_actor::RecordContentDelivery),
-    /// Redeem an invitation into the workspace the desk made for it.
+    /// Redeem an invitation into the workspace the session made for it.
     Enroll(Enrolling),
     /// Take one of the person's workspaces in as their further device, at the host the list names.
     Enter(Box<Entering>),
@@ -282,7 +282,7 @@ enum HostEvent {
 }
 
 /// The person's other devices, dialled as this device's siblings: the session between two of their
-/// desks is where each tells the other the workspaces it holds, and what it hosts, so one can adopt
+/// sessions is where each tells the other the workspaces it holds, and what it hosts, so one can adopt
 /// what the other keeps.
 #[derive(Clone)]
 #[cfg(target_os = "linux")]
@@ -330,9 +330,9 @@ impl SiblingDials {
 /// lists them, the workspaces' state and channels, the live plane, the fabric and the transfers.
 #[cfg(target_os = "linux")]
 pub(crate) struct Seat {
-    /// The desk this session shows, whose workspaces' policies every message from another member is
+    /// The session this session shows, whose workspaces' policies every message from another member is
     /// held to.
-    desk: RefCell<Option<DesktopHandle>>,
+    session: RefCell<Option<DesktopHandle>>,
     /// Where this device's own commands go: the client's vocabulary is its own, this is the
     /// desktop's own beside it.
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
@@ -352,11 +352,11 @@ pub(crate) struct Seat {
     /// ([`Self::take_call_pictures`]).
     call_pictures: RefCell<Vec<(String, Heard)>>,
     /// The shared windows' pictures and pages the workspaces' live planes heard since the last
-    /// call, each with the workspace it was heard in: what the desks showing those windows draw
+    /// call, each with the workspace it was heard in: what the sessions showing those windows draw
     /// ([`Self::take_window_objects`]).
     window_objects: RefCell<Vec<(String, Heard)>>,
     /// The workspaces whose host said their owner deleted them since the last call: what the
-    /// session takes off the desk and out of this device's record ([`Self::take_deleted`]).
+    /// session takes off the shell and out of this device's record ([`Self::take_deleted`]).
     deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
     /// This device's workspaces: `None` when the session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
@@ -615,7 +615,7 @@ impl Seat {
     }
 
     /// Take the shared windows' pictures and pages the workspaces' live planes heard since the last
-    /// call, each with the workspace it was heard in and already opened: what the desk showing that
+    /// call, each with the workspace it was heard in and already opened: what the session showing that
     /// window draws.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -952,7 +952,7 @@ impl Seat {
                     continue;
                 }
                 if matches!(object.track, Track::Page(_) | Track::Window(..)) {
-                    // A shared window's pictures or page, already opened: the desk showing that
+                    // A shared window's pictures or page, already opened: the session showing that
                     // window draws them.
                     self.window_objects
                         .borrow_mut()
@@ -1178,7 +1178,7 @@ impl Host for Hosting {
             return;
         };
         if let Some(connect) = tilo_desktop_model::WorkspaceId::parse(workspace)
-            .and_then(|desk| native_ingress::Connect::new(engine.owner().clone(), desk).ok())
+            .and_then(|session| native_ingress::Connect::new(engine.owner().clone(), session).ok())
         {
             let _ = seat.commands.send(HostCmd::TakePart(connect));
         }
@@ -1207,7 +1207,7 @@ impl Host for Hosting {
     }
 }
 
-/// The desk a session shows, as the workspace gate reads it.
+/// The session a session shows, as the workspace gate reads it.
 /// A page's host: the roster, over the transport the page brings.
 #[cfg(not(target_os = "linux"))]
 impl Host for Hosting {
@@ -1218,14 +1218,14 @@ impl Host for Hosting {
 }
 
 #[cfg(target_os = "linux")]
-struct DeskGate {
-    desk: DesktopHandle,
+struct Gate {
+    session: DesktopHandle,
 }
 
 #[cfg(target_os = "linux")]
-impl GateShell for DeskGate {
+impl GateShell for Gate {
     fn allows(&self, workspace: &str, person: &str, required: &WorkspaceAction, now: u64) -> bool {
-        self.desk
+        self.session
             .read(|tree| tilo_session_client::gate::allows(tree, workspace, person, required, now))
     }
 }
@@ -1784,13 +1784,14 @@ impl Client {
             .unwrap_or_else(|| self.endpoint_addr())
     }
 
-    /// Hand the workspace gate the desk this session shows: whose workspaces' policies hold every
+    /// Hand the workspace gate the session this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
     #[cfg(target_os = "linux")]
-    pub fn attach_desk(&self, desk: DesktopHandle) {
-        self.inner
-            .attach_shell(Rc::new(DeskGate { desk: desk.clone() }));
-        *self.hosting.seat.desk.borrow_mut() = Some(desk);
+    pub fn attach_shell(&self, session: DesktopHandle) {
+        self.inner.attach_shell(Rc::new(Gate {
+            session: session.clone(),
+        }));
+        *self.hosting.seat.session.borrow_mut() = Some(session);
     }
 
     /// Hand the records' content plane its place on this client.
@@ -1980,7 +1981,7 @@ impl Seat {
         Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
             seat: Rc::new(Self {
-                desk: RefCell::new(None),
+                session: RefCell::new(None),
                 commands,
                 host_events,
                 fabric_waiting: RefCell::default(),
@@ -2016,7 +2017,7 @@ impl Seat {
     ) -> Self {
         let (_said, versions) = std::sync::mpsc::channel();
         Self {
-            desk: RefCell::new(None),
+            session: RefCell::new(None),
             commands,
             host_events,
             fabric_waiting: RefCell::default(),

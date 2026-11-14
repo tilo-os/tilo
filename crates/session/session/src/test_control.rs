@@ -10,7 +10,7 @@
 //! is, in its own namespaces, and serves only the action model, the state it shows
 //! and the session's diagnostics ([`Op::owner_serves`]).
 //! Each connection is read on a thread of its own; what a request asks of the
-//! compositor, the desk or the hosted surfaces is answered on the loop's pass, and
+//! compositor, the session or the hosted surfaces is answered on the loop's pass, and
 //! the loop is woken for it.
 
 use std::cell::RefCell;
@@ -188,11 +188,11 @@ pub fn owner_decision(
 }
 
 /// What the session is, for the answers that read it: the doors every hosted surface's actions go
-/// through, the desk's tree, what stands over it, the workspaces this computer holds, whether the
+/// through, the layout, what stands over it, the workspaces this computer holds, whether the
 /// person locked the screen, whether the lock screen's own frame is on it, and the agents seated at
 /// the person's door.
 #[derive(Clone, Copy)]
-pub(crate) struct Desk<'a> {
+pub(crate) struct Session<'a> {
     pub(crate) doors: &'a Doors,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
@@ -201,7 +201,7 @@ pub(crate) struct Desk<'a> {
     /// either way.
     pub(crate) overview: &'a std::cell::Cell<bool>,
     pub(crate) engine: Option<&'a Engine>,
-    /// The agents the person admitted at its door, as the desk's bar shows them.
+    /// The agents the person admitted at its door, as the session's bar shows them.
     pub(crate) agent_sessions: &'a std::sync::Arc<crate::agent_sessions::AgentSessions>,
     /// Who is here, as the collaboration plane says it: this session's membership of each
     /// workspace, when it takes part in one.
@@ -247,11 +247,11 @@ pub(crate) struct Control {
     /// The fingers a `swipe` with `release: false` left on the touchpad, so the next `swipe`
     /// carries the same gesture on and its release lifts them.
     fingers_down: std::cell::Cell<Option<u32>>,
-    /// The desk state the loop last published, as its stamp.
+    /// The session state the loop last published, as its stamp.
     published: std::cell::Cell<Option<u64>>,
     changes: Arc<Changes>,
-    /// What asked anything but the desk's input since the last pass: it is answered after the
-    /// frame, where it sees the desk the frame shows.
+    /// What asked anything but the session's input since the last pass: it is answered after the
+    /// frame, where it sees the session the frame shows.
     waiting: RefCell<Vec<Asked>>,
 }
 
@@ -471,7 +471,7 @@ impl Op {
 }
 
 impl Op {
-    /// Whether what `request` asks of this op starts work the broker answers, which needs no desk
+    /// Whether what `request` asks of this op starts work the broker answers, which needs no session
     /// the frame shows: an action a tool or an agent invokes starts now, in this pass, and the
     /// answer it waits on comes back beside the frame instead of after it. An invocation the
     /// session's own actions answer is the loop's to run later in the pass, so it waits for the
@@ -484,7 +484,7 @@ impl Op {
                 .is_some_and(|provider| provider != tilo_actions::remote::SESSION_ACTIONS_PROVIDER)
     }
 
-    /// Whether it hands the desk input, which the loop serves where a device's own input reaches
+    /// Whether it hands the session input, which the loop serves where a device's own input reaches
     /// it: in the pass it arrives in, before that pass draws its frame.
     const fn hands_input(self) -> bool {
         matches!(
@@ -613,16 +613,16 @@ impl Control {
         Arc::clone(&self.door)
     }
 
-    /// What a tool handed the desk's input since the last pass, answered where a device's input
-    /// reaches the desk: a key or a press a tool injects takes effect in the frame this pass draws,
+    /// What a tool handed the session's input since the last pass, answered where a device's input
+    /// reaches the session: a key or a press a tool injects takes effect in the frame this pass draws,
     /// as the same input from a device does. Everything else asked waits for the frame
-    /// ([`Self::serve`]), where it reads the desk the frame shows.
-    pub(crate) fn serve_input(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
-        self.door.actions.set_workspace(desk.handle.read(|tree| {
+    /// ([`Self::serve`]), where it reads the session the frame shows.
+    pub(crate) fn serve_input(&self, compositor: &mut Compositor, session: &Session<'_>) {
+        self.door.actions.set_workspace(session.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         }));
-        self.door.actions.set_locked(desk.locked);
+        self.door.actions.set_locked(session.locked);
         self.take();
         let mut waiting = self.waiting.borrow_mut();
         let mut later = Vec::new();
@@ -639,7 +639,7 @@ impl Control {
                     &request,
                     &ctx,
                     compositor,
-                    desk,
+                    session,
                     &self.held,
                     &self.fingers_down,
                 ));
@@ -655,14 +655,14 @@ impl Control {
         *waiting = later;
     }
 
-    /// Take the connections waiting, publish the desk its watchers read, and answer what was asked
+    /// Take the connections waiting, publish the session its watchers read, and answer what was asked
     /// of the loop since the last pass.
-    pub(crate) fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
-        self.door.actions.set_workspace(desk.handle.read(|tree| {
+    pub(crate) fn serve(&self, compositor: &mut Compositor, session: &Session<'_>) {
+        self.door.actions.set_workspace(session.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         }));
-        self.door.actions.set_locked(desk.locked);
+        self.door.actions.set_locked(session.locked);
         self.take();
         let ready: Vec<Asked> = self.waiting.borrow_mut().drain(..).collect();
         for Asked {
@@ -677,7 +677,7 @@ impl Control {
                 &request,
                 &ctx,
                 compositor,
-                desk,
+                session,
                 &self.held,
                 &self.fingers_down,
             ));
@@ -685,7 +685,7 @@ impl Control {
     }
 
     /// Everything the connections sent the loop since the last look, oldest first. What asks for
-    /// the desk's input, or starts an action the broker answers, is served in the pass it arrives
+    /// the session's input, or starts an action the broker answers, is served in the pass it arrives
     /// in; the rest waits for the frame.
     fn take(&self) {
         while let Ok(asked) = self.asked.try_recv() {
@@ -693,25 +693,25 @@ impl Control {
         }
     }
 
-    /// Tell the watchers where the desk stands, when it moved since the last pass: the state dump
+    /// Tell the watchers where the session stands, when it moved since the last pass: the state dump
     /// is only built when someone reads it.
-    pub(crate) fn publish(&self, desk: &Desk<'_>) {
+    pub(crate) fn publish(&self, session: &Session<'_>) {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::hash::DefaultHasher::new();
-        desk.handle.navigation_revision().hash(&mut hasher);
-        desk.locked.hash(&mut hasher);
+        session.handle.navigation_revision().hash(&mut hasher);
+        session.locked.hash(&mut hasher);
         for slot in Slot::ALL {
-            desk.overlays.is_open(slot).hash(&mut hasher);
+            session.overlays.is_open(slot).hash(&mut hasher);
         }
-        desk.overview.get().hash(&mut hasher);
-        presence_stamp(desk, &mut hasher);
+        session.overview.get().hash(&mut hasher);
+        presence_stamp(session, &mut hasher);
         let stamp = hasher.finish();
         let moved = self.published.get() != Some(stamp);
         if moved {
             self.published.set(Some(stamp));
         }
         self.changes
-            .follow(moved, || desk.handle.read(|tree| state_dump(tree, desk)));
+            .follow(moved, || session.handle.read(|tree| state_dump(tree, session)));
     }
 }
 
@@ -840,7 +840,7 @@ pub(crate) fn serve_app(
     serve_connection(stream, &ctx, door, Some(first));
 }
 
-/// A connection's writer: shared with the thread that streams the desk's state, so a state line and
+/// A connection's writer: shared with the thread that streams the session's state, so a state line and
 /// an answer never interleave.
 type Writer = Arc<Mutex<UnixStream>>;
 
@@ -933,7 +933,7 @@ impl Watching {
     }
 }
 
-/// Stream the desk's state to `writer` until it stops watching, off the change signal the loop
+/// Stream the session's state to `writer` until it stops watching, off the change signal the loop
 /// publishes on: nothing here polls, and a change wakes the wait. What the connection may see of it
 /// is what it is sent ([`shown`]).
 fn stream_state(writer: &Writer, ctx: &Context, door: &Door) -> Watching {
@@ -1043,7 +1043,7 @@ fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     }
 }
 
-/// Start or stop streaming the desk's state to a connection (`watch`).
+/// Start or stop streaming the session's state to a connection (`watch`).
 fn watch(
     request: &Json,
     writer: &Writer,
@@ -1067,18 +1067,18 @@ fn watch(
     json!({"ok": {}})
 }
 
-/// The answer to what `op` asks of the desk, the pointer, the gestures and the keyboard, on the
+/// The answer to what `op` asks of the session, the pointer, the gestures and the keyboard, on the
 /// loop's pass.
 fn loop_answer(
     op: Op,
     request: &Json,
     ctx: &Context,
     compositor: &mut Compositor,
-    desk: &Desk<'_>,
+    session: &Session<'_>,
     held: &RefCell<BTreeSet<u32>>,
     fingers_down: &std::cell::Cell<Option<u32>>,
 ) -> Json {
-    if let Some(answer) = asked_of_desk(ctx, op, request, compositor, desk) {
+    if let Some(answer) = asked_of_shell(ctx, op, request, compositor, session) {
         return answer;
     }
     if op == Op::Scroll {
@@ -1100,13 +1100,13 @@ fn loop_answer(
     )
 }
 
-/// The answer to what `op` asks of the desk and its hosted surfaces, when it asks of them.
-fn asked_of_desk(
+/// The answer to what `op` asks of the session and its hosted surfaces, when it asks of them.
+fn asked_of_shell(
     ctx: &Context,
     op: Op,
     request: &Json,
     compositor: &mut Compositor,
-    desk: &Desk<'_>,
+    session: &Session<'_>,
 ) -> Option<Json> {
     Some(match op {
         Op::Snapshot => {
@@ -1117,24 +1117,24 @@ fn asked_of_desk(
             match snapshot(compositor, path) {
                 // Whether the picture is of the lock screen, which is all a locked display shows: a
                 // tool reads it, never a blank frame.
-                Ok(()) => json!({"ok": {"frame": 0, "locked": desk.locked}}),
+                Ok(()) => json!({"ok": {"frame": 0, "locked": session.locked}}),
                 Err((code, message)) => refusal(code, &message),
             }
         }
         // The session's lock comes down as it does for a password that unlocks: the screen
         // dissolves, and the compositor lifts the lock once it has.
         Op::Unlock => {
-            let was_locked = desk.locked;
+            let was_locked = session.locked;
             if was_locked {
-                desk.lock.unlocked();
+                session.lock.unlocked();
             }
             json!({"ok": {"locked": false, "was_locked": was_locked}})
         }
         Op::ProvisionTestIdentity => provision_test_identity(),
-        Op::ListTargets => json!({"targets": listed_targets(desk)}),
-        Op::ClickNamed => return Some(clicked_named(request, desk)),
+        Op::ListTargets => json!({"targets": listed_targets(session)}),
+        Op::ClickNamed => return Some(clicked_named(request, session)),
         Op::SearchRows => {
-            let (query, rows) = desk.handle.search_rows();
+            let (query, rows) = session.handle.search_rows();
             let rows: Vec<Json> = rows
                 .iter()
                 .map(|row| {
@@ -1151,20 +1151,20 @@ fn asked_of_desk(
             json!({"answer": {
                 "query": query,
                 "rows": rows,
-                "searching": desk.handle.search_searching(),
+                "searching": session.handle.search_searching(),
             }})
         }
         Op::ProcessMemory => json!({"answer": tilo_compositor::memory_report::report()}),
         Op::ProfileStart => profile_start(request),
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
-        Op::StateDump => shown(ctx, desk.handle.read(|tree| state_dump(tree, desk))),
-        Op::WorkspaceHosts => desk
+        Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
+        Op::WorkspaceHosts => session
             .handle
-            .read(|tree| state::workspace_hosts(tree, desk, ctx)),
+            .read(|tree| state::workspace_hosts(tree, session, ctx)),
         Op::Windows => {
             // Nothing shows a window while the screen is locked.
-            let rows = if ctx.gate != Gate::Dev && desk.locked {
+            let rows = if ctx.gate != Gate::Dev && session.locked {
                 Vec::new()
             } else {
                 // Where each window is drawn, read off the frame's own layout: a row says what a
@@ -1173,10 +1173,10 @@ fn asked_of_desk(
                 let rect_of = |id: u64| compositor.window_rect(id);
                 let frames_of = |id: u64| compositor.window_frames(id);
                 match &ctx.scope {
-                    None => desk
+                    None => session
                         .handle
                         .read(|tree| window_rows(tree, rect_of, frames_of)),
-                    Some(scope) => desk
+                    Some(scope) => session
                         .handle
                         .read(|tree| window_rows(&within(tree, scope), rect_of, frames_of)),
                 }
@@ -1419,13 +1419,13 @@ const MAX_WAIT: Duration = Duration::from_secs(30);
 /// How long a settled wait stands by the host's own answer once it gave one.
 const SETTLE_WAIT: Duration = Duration::from_secs(35);
 
-/// The workspace in front, as the loop last served the desk, and the wait for a request that
-/// arrives before the desk holds one.
+/// The workspace in front, as the loop last served the session, and the wait for a request that
+/// arrives before the session holds one.
 ///
-/// A session adopts the person's workspaces in its first passes, so a desk holds none for the
+/// A session adopts the person's workspaces in its first passes, so a session holds none for the
 /// moment between its first frame and them: what a request asks in that moment is where the person
 /// is, which is not yet known, and waiting for it is the answer — the person's own authority over
-/// their own desk is not in question, so a refusal would be a lie.
+/// their own session is not in question, so a refusal would be a lie.
 #[derive(Default)]
 struct Front {
     workspace: Mutex<String>,
@@ -1434,7 +1434,7 @@ struct Front {
 }
 
 impl Front {
-    /// The loop served the desk: `workspace` is the one in front now.
+    /// The loop served the session: `workspace` is the one in front now.
     fn served(&self, workspace: String) {
         let mut held = self.workspace.lock_recover();
         if *held != workspace {
@@ -1444,7 +1444,7 @@ impl Front {
         }
     }
 
-    /// The workspace in front, once the desk holds one, waiting up to `wait` for a desk that
+    /// The workspace in front, once the session holds one, waiting up to `wait` for a session that
     /// started before it had any: `None` when there is none to name yet.
     fn known(&self, wait: Duration) -> Option<String> {
         let until = Instant::now().checked_add(wait)?;
@@ -1483,7 +1483,7 @@ impl Actions {
         }
     }
 
-    /// Whose workspace is in front, as the loop read it: a desk that holds none names none.
+    /// Whose workspace is in front, as the loop read it: a session that holds none names none.
     fn set_workspace(&self, workspace: Option<String>) {
         if let Some(workspace) = workspace {
             self.front.served(workspace);
@@ -1706,10 +1706,10 @@ fn legacy_rows(
         .collect()
 }
 
-/// The controls the desk shows now, as the tools read them: each one's name, what it does where it
+/// The controls the session shows now, as the tools read them: each one's name, what it does where it
 /// does something the app publishes, and where it stands.
-fn listed_targets(desk: &Desk<'_>) -> Vec<Json> {
-    desk.doors
+fn listed_targets(session: &Session<'_>) -> Vec<Json> {
+    session.doors
         .controls()
         .into_iter()
         .map(|control| {
@@ -1727,8 +1727,8 @@ fn listed_targets(desk: &Desk<'_>) -> Vec<Json> {
 }
 
 /// The answer to `click_named`: the control the caller names, by its name or by what it does, is
-/// pressed as assistive technology presses it — or the desk says it shows none.
-fn clicked_named(request: &Json, desk: &Desk<'_>) -> Json {
+/// pressed as assistive technology presses it — or the session says it shows none.
+fn clicked_named(request: &Json, session: &Session<'_>) -> Json {
     // What the control does, where the caller names it that way: the identity it keeps wherever
     // the window's composition draws it, in whatever language.
     let identity = request.get("identity").and_then(Json::as_str);
@@ -1748,9 +1748,9 @@ fn clicked_named(request: &Json, desk: &Desk<'_>) -> Json {
         }
     };
     let pressed = if let Some(identity) = identity {
-        desk.doors.press_identity(identity, action)
+        session.doors.press_identity(identity, action)
     } else {
-        desk.doors.press_action(name, action)
+        session.doors.press_action(name, action)
     };
     match pressed {
         Ok(()) => json!({"ok": {}}),
@@ -1900,9 +1900,9 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
              this door",
         );
     }
-    // Which workspace the action is asked in is the desk's answer, not a copy of it: a request
-    // that lands while the session is still adopting the person's workspaces waits for the desk
-    // rather than naming none and being refused as if the person's own desk were not theirs.
+    // Which workspace the action is asked in is the session's answer, not a copy of it: a request
+    // that lands while the session is still adopting the person's workspaces waits for the session
+    // rather than naming none and being refused as if the person's own session were not theirs.
     let workspace = match &ctx.scope {
         Some(scope) => scope.workspace.clone(),
         None => match actions.front.known(HOST_WAIT) {
@@ -1910,7 +1910,7 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
             None => {
                 return refusal(
                     "unavailable",
-                    "this desk holds no workspace yet; there is nothing in front to act in",
+                    "this session holds no workspace yet; there is nothing in front to act in",
                 );
             }
         },
@@ -2077,7 +2077,7 @@ fn wait_deadline(wait_ms: Option<u64>) -> Instant {
 /// The target a tool's `(provider, id)` names, in the action model's own addressing.
 fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActionTarget, Json> {
     // The workspace verbs by the names tools spell them (`workspace.create`, `workspace.branch`):
-    // the desk's own actions, as the workspace menu invokes them.
+    // the session's own actions, as the workspace menu invokes them.
     if provider == "actions"
         && let Some(action) = match id {
             "workspace.create" => Some("new-workspace"),
@@ -2087,7 +2087,7 @@ fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActi
     {
         return Ok(RemoteActionTarget {
             provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
-            address: ActionAddress::new(tilo_desktop::desk_verbs::CHROME_RESOURCE, action),
+            address: ActionAddress::new(tilo_desktop::verbs::CHROME_RESOURCE, action),
         });
     }
     if provider == "applications" {
@@ -2325,7 +2325,7 @@ fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str
 }
 
 /// Mint a throwaway identity for this session's user, the one a session started after it opens its
-/// desk with: what `provision_test_identity` answers on the shell's socket, in the same shape. A
+/// session with: what `provision_test_identity` answers on the shell's socket, in the same shape. A
 /// real identity is never replaced; a release build mints none.
 fn provision_test_identity() -> Json {
     use tilo_identity_host::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
@@ -2363,7 +2363,7 @@ fn refusal_json(code: &str, message: &str) -> Json {
     json!({"err": {"code": code, "message": message}})
 }
 
-/// The session's change signal, as its watchers and the held action requests read it: what the desk
+/// The session's change signal, as its watchers and the held action requests read it: what the session
 /// published, generation by generation, and a condvar that wakes everyone waiting on one.
 struct Changes {
     state: Mutex<Changed>,
@@ -2373,7 +2373,7 @@ struct Changes {
 
 /// What [`Changes`] keeps.
 struct Changed {
-    /// How many state dumps the desk published: a waiter has seen one of these.
+    /// How many state dumps the session published: a waiter has seen one of these.
     generation: u64,
     /// The latest dump, and the generation it was published at.
     dump: Option<(u64, Json)>,
@@ -2428,7 +2428,7 @@ impl Changes {
         }
     }
 
-    /// Publish a pass: `moved` says the desk's state changed, and the dump is only built when a
+    /// Publish a pass: `moved` says the session's state changed, and the dump is only built when a
     /// watcher reads it.
     fn follow(&self, moved: bool, dump: impl FnOnce() -> Json) {
         let mut state = self.state.lock_recover();
@@ -2508,13 +2508,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_request_before_the_desk_holds_a_workspace_waits_for_the_one_in_front() {
+    fn a_request_before_the_shell_holds_a_workspace_waits_for_the_one_in_front() {
         let front = Arc::new(Front::default());
         let waiting = {
             let front = Arc::clone(&front);
             std::thread::spawn(move || front.known(Duration::from_secs(5)))
         };
-        // The loop's pass serves the desk while the request waits: it is answered for the
+        // The loop's pass serves the session while the request waits: it is answered for the
         // workspace in front, not for none.
         front.served("workspace-1".to_owned());
         assert_eq!(
@@ -2528,7 +2528,7 @@ mod tests {
     }
 
     #[test]
-    fn a_desk_that_never_holds_a_workspace_names_none() {
+    fn a_shell_that_never_holds_a_workspace_names_none() {
         let front = Front::default();
         assert_eq!(front.known(Duration::from_millis(10)), None);
     }
@@ -2721,7 +2721,7 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_desk_shows_the_owner_door_nothing_the_lock_hides() {
+    fn a_locked_shell_shows_the_owner_door_nothing_the_lock_hides() {
         let dump = |locked: bool| {
             json!({"state": {
                 "workspace_tree": {"workspaces": [{"name": "Work"}]},
@@ -2735,11 +2735,11 @@ mod tests {
                 "sharing": {"sharing": [{"tab": "7", "room": "room-1", "viewers": []}]},
             }})
         };
-        // Unlocked, the owner's door sees the desk as the development socket does.
+        // Unlocked, the owner's door sees the session as the development socket does.
         assert_eq!(
             owner_shown(Gate::Owner, dump(false)),
             dump(false),
-            "an unlocked desk is shown whole"
+            "an unlocked session is shown whole"
         );
         // Locked, it learns that the screen is locked, and nothing of what the lock covers.
         let locked = owner_shown(Gate::Owner, dump(true));
@@ -2749,15 +2749,15 @@ mod tests {
         assert_eq!(
             locked["state"]["sharing"],
             Json::Null,
-            "which windows the desk shares is behind the lock too"
+            "which windows the session shares is behind the lock too"
         );
         assert_eq!(
             locked["state"]["chrome"]["overlays"],
             json!({"quick_settings": false, "overview": false})
         );
-        // A development socket sees the desk it drives, locked or not.
+        // A development socket sees the session it drives, locked or not.
         assert_eq!(owner_shown(Gate::Dev, dump(true)), dump(true));
-        // An app reads its own workspace of the desk, and nothing of what the desk shares.
+        // An app reads its own workspace of the session, and nothing of what the session shares.
         let app = Context {
             gate: Gate::Dev,
             scope: Some(Arc::new(Scope {
@@ -2768,7 +2768,7 @@ mod tests {
         assert_eq!(
             shown(&app, dump(false))["state"]["sharing"],
             Json::Null,
-            "the window shares are the desk's, and no app's to read"
+            "the window shares are the session's, and no app's to read"
         );
     }
 
@@ -2825,12 +2825,12 @@ mod tests {
         assert_eq!(session.address.resource, "desktop:tab:5");
         assert_eq!(session.address.action, "close-tab");
 
-        // The workspace verbs by the names tools spell them are the desk's own.
+        // The workspace verbs by the names tools spell them are the session's own.
         for (spelled, action) in [
             ("workspace.create", "new-workspace"),
             ("workspace.branch", "branch-workspace"),
         ] {
-            let verb = legacy_target("actions", spelled, "room-1").expect("the desk's verb");
+            let verb = legacy_target("actions", spelled, "room-1").expect("the session's verb");
             assert_eq!(verb.provider, "so.tilo.session");
             assert_eq!(verb.address.resource, "desktop:chrome");
             assert_eq!(verb.address.action, action);

@@ -45,7 +45,7 @@ pub use crate::records::Records;
 pub use crate::rotation::Accelerometer;
 pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
-pub use crate::setup::BeforeDesk;
+pub use crate::setup::BeforeShell;
 pub use crate::vpn::Vpn;
 pub use crate::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use crate::workspace_keys::KeyLink;
@@ -120,7 +120,7 @@ impl Session {
         // Who sits here, as the one id the session acts as: the person their
         // workspaces' governance names, which this device's certificate
         // carries. Everything the person does here — the workspaces they
-        // own, what the desk records, what the sheets change — is theirs.
+        // own, what the shell records, what the sheets change — is theirs.
         let seat = crate::identity::seat(&options);
         options.earlier.clone_from(&seat.earlier);
         options.person = seat.person;
@@ -144,7 +144,7 @@ impl Session {
             .map(crate::vpn::Vpn::served)
             .unwrap_or_default();
         let vpn = options.vpn.take().map(crate::vpn::Vpn::start);
-        // What the desk and the chrome ask of the session, from their own
+        // What the shell and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
         // The centre opens with what it kept when this session last ended.
@@ -155,7 +155,7 @@ impl Session {
         let notification_policy = std::sync::Arc::new(std::sync::Mutex::new(
             settings_store::notification_policy::NotificationPolicy::load(),
         ));
-        // The notifications the banners app shows and the desk keeps, and the link it asks back on.
+        // The notifications the banners app shows and the shell keeps, and the link it asks back on.
         let banners = tilo_notification_banners::Link::new();
         // The person's notifications: what their apps sent the notifications service, and what the
         // session's roles tell them through it.
@@ -180,15 +180,15 @@ impl Session {
         // A device's answer to another's ask about the person is worked out
         // off the loop; when it lands here, the loop wakes to put it to them.
         crate::certification::attach(options.wake.handle());
-        // The pictures the desk shows are this device's, kept beside its
-        // desk: a change of the person's reaches them the same way.
+        // The pictures the shell shows are this device's, kept beside its
+        // shell: a change of the person's reaches them the same way.
         let wallpapers = std::sync::Arc::new(crate::wallpapers::Wallpapers::new(
             options.state.clone(),
             std::sync::Arc::clone(&woken),
         ));
         let watched_wallpapers = std::sync::Arc::clone(&wallpapers);
-        // The desk widgets' choices, kept current by the same watch.
-        let widget_prefs = crate::desk::prefs();
+        // The Desktop widgets' choices, kept current by the same watch.
+        let widget_prefs = crate::background::prefs();
         let watched_widgets = std::sync::Arc::clone(&widget_prefs);
         // What may continue on the person's other devices — what they play
         // here, the Wi-Fi passphrases they share — read from the same settings
@@ -201,7 +201,7 @@ impl Session {
         let arranged = crate::shared_input::Arranged::loaded();
         let watched_arranged = arranged.clone();
         // The bar's own setting, read on the same watch: it changes what the
-        // desk's band takes and when the bars show.
+        // shell's band takes and when the bars show.
         let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
             settings_store::desktop_controls::DesktopControlsConfig::load().hide_top_bar,
         ));
@@ -232,7 +232,7 @@ impl Session {
             *watched.lock_recover() =
                 settings_store::notification_policy::NotificationPolicy::from_document(&document);
             watched_wallpapers.follow(&document);
-            crate::desk::follow_prefs(&watched_widgets, &document);
+            crate::background::follow_prefs(&watched_widgets, &document);
             watched_continuity.read(&document);
             watched_arranged.read(&document);
             watched_night_light.read(&document);
@@ -252,16 +252,16 @@ impl Session {
             presentation.theme.motion(),
             presentation.theme.reduce_motion,
         );
-        // The desk's open card, which the keys fold on Escape and the
-        // overview folds as it comes over the desk: the desk is under the
+        // The shell's open card, which the keys fold on Escape and the
+        // overview folds as it comes over the shell: the shell is under the
         // windows and hears neither itself.
-        let fold = tilo_desktop::desk_widgets::DeskFold::default();
-        // What plays, which the desk's music widget shows: the session keeps
+        let fold = tilo_desktop::widgets::Fold::default();
+        // What plays, which the shell's music widget shows: the session keeps
         // it current from the player Quick Settings already reads, so the
         // widget is a view of that one reading.
-        let music = tilo_desktop::desk_widgets::DeskMusic::default();
-        // The workspace's activity: the desk's own document, and the records
-        // its apps keep in the store. The desk records into it, the model
+        let music = tilo_desktop::widgets::Music::default();
+        // The workspace's activity: the shell's own document, and the records
+        // its apps keep in the store. The shell records into it, the model
         // reads it, and the apps this session runs reach the same model.
         // This device's records, as its store keeps them: the workspaces' app records, which the
         // activity's history reads and the person's mentions are looked for in. Every write that
@@ -279,13 +279,13 @@ impl Session {
             .map_or_else(crate::platform::records::Changes::default, |records| {
                 records.changes()
             });
-        // What each open window shows, as the broker knows it: the desk offers the windows a person
+        // What each open window shows, as the broker knows it: the shell offers the windows a person
         // may share from, and the sharing doors read it.
         let notes = options.launches.notes();
-        // The workspaces' layouts, which hold the desk itself: what every member shows, and what a
+        // The workspaces' layouts, which hold the shell itself: what every member shows, and what a
         // change of it is written into.
         let desktops = Rc::new(
-            crate::shared_desktop::SharedDesktops::new(
+            crate::layout::Layouts::new(
                 std::sync::Arc::clone(&notes),
                 options.wake.clone(),
                 options.person.clone(),
@@ -300,29 +300,29 @@ impl Session {
             Some(std::sync::Arc::new(options.lists.clone())
                 as std::sync::Arc<dyn crate::platform::apps::Apps>),
             Some(options.wake.handle()),
-            Box::new(crate::shared_desktop::LayoutHistory::new(
+            Box::new(crate::layout::LayoutHistory::new(
                 Rc::clone(&desktops),
                 &options.person,
             )),
         );
         tilo_startup_metrics::mark("session-activity-done");
-        // When each display's bar shows over the window covering it: the desk's
+        // When each display's bar shows over the window covering it: the shell's
         // band, the chrome and the input that reaches for the bar read the one
         // model.
         let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
         // Super alone, as the compositor reads it: a tap opens the search and a hold shows the
         // keys, until a key or a click makes it a chord's modifier.
         let super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>> = Rc::default();
-        // The desk a login shows is built before its first frame: this pair
+        // The shell a login shows is built before its first frame: this pair
         // is the phase between the compositor coming up and the frame that
         // draws it (tools/perf/startup_marks.py).
-        tilo_startup_metrics::mark("desk-build-start");
-        let (desktop, strips, asks) = crate::desk::desk(
+        tilo_startup_metrics::mark("shell-build-start");
+        let (desktop, strips, asks) = crate::background::background(
             &options,
             &activity,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
-            crate::desk::DeskLook {
+            crate::background::Background {
                 widgets: widget_prefs,
                 fold: fold.clone(),
                 overview: overview.open_flag(),
@@ -331,25 +331,25 @@ impl Session {
             },
         );
         desktop.set_gestures(options.config.gestures);
-        // What each open window is told of the desk it stands on, from the
-        // settings as they are now; the desk wears the same theme.
+        // What each open window is told of the shell it stands on, from the
+        // settings as they are now; the shell wears the same theme.
         let warmth =
             crate::window_warmth::Windows::new(presentation.theme.clone(), &options.person);
         desktop.set_theme(presentation.theme.clone());
-        tilo_startup_metrics::mark("desk-build-done");
+        tilo_startup_metrics::mark("shell-build-done");
         let handle = desktop.with_policy(|policy| policy.handle().clone());
-        // The desk is the workspaces' layouts, which the first pass lays out as their records hold
+        // The shell is the workspaces' layouts, which the first pass lays out as their records hold
         // them; what this device keeps of its own is what it showed.
-        let restore = crate::desk_restore::Restore::default();
+        let restore = crate::restore::Restore::default();
         let mut tree = handle.read(Clone::clone);
         if activity.show(&mut tree) {
             handle.replace_tree(tree);
         }
-        // The person's arrangement: the desk this session holds, whose layout the workspaces keep.
+        // The person's arrangement: the shell this session holds, whose layout the workspaces keep.
         let arrangement = Rc::new(RefCell::new(arrangement::Arrangement::new(
             &options.person,
             handle.clone(),
-            Rc::new(crate::shared_desktop::Steps::new(
+            Rc::new(crate::layout::Steps::new(
                 Rc::clone(&desktops),
                 handle.clone(),
             )),
@@ -517,7 +517,7 @@ impl Session {
             ask,
             ask_origin,
         ))));
-        // What the person's settings say the desk shows: a device that kept
+        // What the person's settings say the shell shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
         // the pictures this device kept for them until the setting changes.
         wallpapers.set_active(handle.read(|tree| {
@@ -540,7 +540,7 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
         ));
         let settling = Rc::clone(&window_doors);
-        let mut policy = crate::desk::DeskPolicy::for_shell(options.shell, &desktop, strips);
+        let mut policy = crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
         // A window opens in the workspace its process was launched into: an agent's or a service's
         // open of an app in a workspace that is not in front lands there, never in front.
         let launched = std::sync::Arc::clone(&options.launches);
@@ -548,10 +548,10 @@ impl Session {
             policy
                 .reads_launch_workspaces(Rc::new(move |pid, app| launched.workspace_of(pid, app)));
         });
-        // What each window shows: the desk offers the windows a person may
+        // What each window shows: the shell offers the windows a person may
         // share from the note, and one whose app holds no record shows none.
         desktop.with_policy(|policy| {
-            policy.reads_window_records(Rc::new(crate::continuations::DeskNotes(
+            policy.reads_window_records(Rc::new(crate::continuations::SurfaceNotes(
                 std::sync::Arc::clone(&notes),
             )));
         });
@@ -565,7 +565,7 @@ impl Session {
         }
 
         // The programs the person downloaded: the registry takes the
-        // windows the desk gives a tab as they appear, so one that names no
+        // windows the shell gives a tab as they appear, so one that names no
         // application directory is offered the first time it shows itself.
         crate::downloaded::install(&mut options, &mut policy);
         tilo_startup_metrics::mark("compositor-start");
@@ -589,7 +589,7 @@ impl Session {
         compositor.set_backlight(Box::new(crate::display_settings::PanelBacklight::find()));
         let machine = crate::power::install(&mut compositor, &options);
         compositor.add_host(crate::shell::under(options.shell, desktop.clone()));
-        // The desk draws every window whole — its card, the lift under it
+        // The shell draws every window whole — its card, the lift under it
         // and its edge, in the theme's colours, brighter on the window in
         // use. The compositor shapes a window's corners to that card and
         // draws nothing around it: one drawing, not two edges and two
@@ -600,15 +600,15 @@ impl Session {
         // What stands over the windows, opened by the chrome's own widgets, by the session's
         // verbs and by the views bound to them, and read by whoever asks through the door.
         let overlays = Overlays::new();
-        // Alt+Tab's panel: the desk's walk says what it shows, the chrome draws it, and the
+        // Alt+Tab's panel: the shell's walk says what it shows, the chrome draws it, and the
         // compositor pictures the windows its cards name.
         let switcher = tilo_desktop::window_switcher::Switcher::default();
         // The keys a held Super reaches: the session says them, the chrome draws them.
         let super_peek = tilo_desktop::super_peek::SuperPeek::default();
-        // The surfaces the desk shows over its windows, and where each stands: the shell's own
-        // views, or the quick settings' app where the device has one and the desk draws it. The
-        // desk's door and the chrome's door open them through it.
-        let surfaces = crate::desk_resource::Surfaces {
+        // The surfaces the shell shows over its windows, and where each stands: the shell's own
+        // views, or the quick settings' app where the device has one and the shell draws it. The
+        // shell's door and the chrome's door open them through it.
+        let surfaces = crate::device_lists::Surfaces {
             status_panel: crate::quick_settings::installed(&options.surfaces),
             shell: options.shell,
             overlays: overlays.clone(),
@@ -619,15 +619,15 @@ impl Session {
         let one_surface = surfaces.clone();
         let shell_surfaces = surfaces.clone();
         // What the keys ask the panel's own app, which the surface loop hands
-        // the running app each pass. A device whose desk draws the panel has
+        // the running app each pass. A device whose shell draws the panel has
         // one; the shell's own view of the quick settings answers its own keys.
         let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let panel_keys =
             (surfaces.panel_shows(crate::quick_settings::SURFACE)).then(|| Rc::clone(&panel_asks));
-        let desk_door: tilo_session_core::door::Shared =
-            crate::shell::desk_door(options.shell, desktop.clone(), surfaces.clone());
-        doors.add(Rc::clone(&desk_door));
-        // The chrome above the windows: its own tree, beside the desk's.
+        let lists_door: tilo_session_core::door::Shared =
+            crate::shell::lists_door(options.shell, desktop.clone(), surfaces.clone());
+        doors.add(Rc::clone(&lists_door));
+        // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = activity.open_engine(&options, &handle);
         // This device's channels of its workspaces' sealed records: its keys,
@@ -722,12 +722,12 @@ impl Session {
             }
         }
         // What other members send here is the workspaces' to admit: their
-        // policies are read from the desk this session shows.
+        // policies are read from the shell this session shows.
         if let Some(sync) = &sync {
-            sync.attach_desk(handle.clone());
+            sync.attach_shell(handle.clone());
         }
         // The person's own workspaces, which their other devices hold with
-        // them: kept beside the desk, and opened when this computer knows
+        // them: kept beside the shell, and opened when this computer knows
         // whose they are.
         let personal = crate::workspaces::personal_for(options.state.as_deref());
         // The fabric the session acts on: one handed to it — a stand-in in a
@@ -780,7 +780,7 @@ impl Session {
         }
         // The machine's status, which the bar's status cluster shows as the
         // battery, network and volume glyphs, the lock screen shows under its
-        // card and the desk reads: every part of it is read off the services
+        // card and the shell reads: every part of it is read off the services
         // that publish it.
         let readings = Rc::new(RefCell::new(crate::status::Readings::default()));
         // Every app shows its live activity on this one board, which the
@@ -789,9 +789,9 @@ impl Session {
         // A timer starting in the background must reach the bar on the next
         // frame, not the next minute.
         live_activities.set_host_wake(options.wake.handle());
-        // The cards apps draw themselves, over the desk: the session
+        // The cards apps draw themselves, over the shell: the session
         // authorises what each presents, and the floating layer's place is
-        // where the desk stands its window.
+        // where the shell stands its window.
         let cards = crate::cards::Cards::new();
         desktop.with_policy(|policy| policy.use_cards(cards.placements()));
         let activities = Rc::new(crate::chrome::Activities::new(
@@ -818,7 +818,7 @@ impl Session {
         // encoder wakes the loop when it has a frame, and the bar reads them.
         // A window another device shares is decoded on the same waker, so a
         // picture that comes out late lands without waiting for the next
-        // frame the desk draws for something else.
+        // frame the shell draws for something else.
         // A session in a workspace's VM, holding its Browser or its Linux apps, runs for the
         // workspace's members: nobody sits at it, so its windows are shared the moment they open.
         let hosted_browser = crate::hosted_browser::shares_by_default();
@@ -880,9 +880,9 @@ impl Session {
         compositor.add_host(crate::shell::under(options.shell, Rc::clone(&chrome)));
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
-        // and the desk publishes it on its next pass.
+        // and the shell publishes it on its next pass.
         handle.search_palette().borrow_mut().adopt();
-        // The desk as the session publishes it, which the shell reads through the door.
+        // The shell as the session publishes it, which the shell reads through the door.
         let chrome_door = crate::shell::chrome_door(options.shell, &chrome, surfaces.clone());
         doors.add(Rc::clone(&chrome_door));
         // The seam the MCP server's connections ask this session's own doors on: made before
@@ -900,8 +900,8 @@ impl Session {
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // arrangement, its undo, the windows and the notices, which the REPL already calls.
-        // Each is answered on the loop's pass, where the arrangement is. The desk's styles, read
-        // from the store, share the desk's reading (shell.md §6).
+        // Each is answered on the loop's pass, where the arrangement is. The shell's styles, read
+        // from the store, share the shell's reading (shell.md §6).
         let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> =
             std::sync::Arc::clone(&session_doors)
                 as std::sync::Arc<dyn crate::platform::steps::SessionSteps>;
@@ -917,10 +917,10 @@ impl Session {
         // control it shows: the session keeps them in its settings service, and this is what the
         // broker hands a change of them, on the loop's pass, as it hands the session's own steps.
         let settings_steps = std::sync::Arc::new(crate::settings_steps::SettingsSteps::new(steps));
-        // The agent sessions the person admits at the MCP server: what the desk and the bar show,
+        // The agent sessions the person admits at the MCP server: what the shell and the bar show,
         // and what the broker admits each session's certificate on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
-        let desk = crate::desk_resource::desk_from(crate::desk_resource::Shared {
+        let shell = crate::device_lists::device_lists_from(crate::device_lists::Shared {
             agent_sessions: std::sync::Arc::clone(&agent_sessions),
             handle: handle.clone(),
             person: options.person.clone(),
@@ -929,16 +929,16 @@ impl Session {
             sync: sync.clone(),
             tray: tray.clone(),
             engine: engine.clone(),
-            // The invite sheet is the session's own surface: the desk asks for it here.
+            // The invite sheet is the session's own surface: the shell asks for it here.
             asks: Rc::clone(&asks),
         });
-        let desk_service = desk();
+        let shell_service = shell();
         let shell = if options.shell {
             Some(
                 crate::shell::Shell::mount(
                     &mut compositor,
                     &mut doors,
-                    desk(),
+                    shell(),
                     wells,
                     presentation.theme.clone(),
                     options.state.as_deref(),
@@ -954,9 +954,9 @@ impl Session {
         };
         // The surfaces the shell stands in for read as nothing, as they draw
         // nothing: the shell's parts are what a client finds there, while the
-        // desktop's own desk and chrome keep their actions.
+        // desktop's own shell and chrome keep their actions.
         let aside: Vec<tilo_session_core::door::Shared> = if shell.is_some() {
-            vec![Rc::clone(&desk_door), Rc::clone(&chrome_door)]
+            vec![Rc::clone(&lists_door), Rc::clone(&chrome_door)]
         } else {
             Vec::new()
         };
@@ -1118,7 +1118,7 @@ impl Session {
             options.scale,
             (readout_band, &readout_place),
         );
-        // The readout draws in the person's theme like the desk and the shell
+        // The readout draws in the person's theme like the shell and the shell
         // do: its ground is the theme's floating surface, never a fixed fill.
         readout.borrow_mut().set_theme(presentation.theme);
 
@@ -1137,16 +1137,16 @@ impl Session {
             apps.lend_launches(std::sync::Arc::clone(&options.launches));
         }
         // A launch a service, an app or an agent asks the session for waits
-        // for the pass that starts it: the same path the desk's own launches
+        // for the pass that starts it: the same path the shell's own launches
         // take.
         options.launches.waking(options.wake.handle());
 
         // The shortcuts the person saved and the triggers that start them
-        // without anyone invoking them: armed on the desk this device shows,
+        // without anyone invoking them: armed on the shell this device shows,
         // and started on the broker below. A run executes here, on a runtime
         // of its own, and what a person saves through the action door is one
         // of its workspace's settings, written into the workspace's records
-        // and shown on the desk on the loop's next pass.
+        // and shown on the shell on the loop's next pass.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("tilo-automation")
@@ -1215,16 +1215,16 @@ impl Session {
             );
         }
         // What Files may read, and where a received file may land, is what
-        // this session's workspaces grant it: read off the desk the broker
+        // this session's workspaces grant it: read off the shell the broker
         // decides against.
         if let (Some(nearby), Some(plane)) = (&nearby, &action_plane) {
-            nearby.attach_authority(std::sync::Arc::clone(&plane.desk)
+            nearby.attach_authority(std::sync::Arc::clone(&plane.layout)
                 as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>);
         }
         // The MCP server: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
         // binds first, and is served from the broker the plane starts, which
-        // already decides against the desk the loop shows.
+        // already decides against the shell the loop shows.
         let questions = options.questions.clone().or_else(|| {
             options
                 .desktop
@@ -1247,9 +1247,9 @@ impl Session {
         // machine's readings an app the launcher connects reads, and the
         // data this device used. They start here, before any app does.
         let table = crate::doors::start(crate::doors::Serving {
-            desk: action_plane
+            shell: action_plane
                 .as_ref()
-                .map(|plane| std::sync::Arc::clone(&plane.desk)),
+                .map(|plane| std::sync::Arc::clone(&plane.layout)),
             person: options.person.clone(),
             render_node: compositor.render_node(),
             keys: engine
@@ -1299,7 +1299,7 @@ impl Session {
                 action_plane.as_ref().and_then(Plane::agent_broker),
                 action_plane
                     .as_ref()
-                    .map(|plane| std::sync::Arc::clone(&plane.desk)),
+                    .map(|plane| std::sync::Arc::clone(&plane.layout)),
             );
             door.hear_remote(std::sync::Arc::clone(&remote));
             door
@@ -1347,7 +1347,7 @@ impl Session {
         // the session draws what the session says it does.
         let keyboard = crate::keyboard::Keyboard::default();
         let mut started = std::mem::take(&mut options.services);
-        started.push(Box::new(desk_service));
+        started.push(Box::new(shell_service));
         // A service that records who changed what records the person's, not
         // the id its caller made it with: the session knows who sits here
         // before it starts them.
@@ -1465,9 +1465,9 @@ impl Session {
             crate::workspace_settings::WorkspaceTabs::new(&records, options.wake.handle());
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
-        // The desk's own fields copy and paste through the desktop's clipboard, as apps do.
+        // The shell's own fields copy and paste through the shelltop's clipboard, as apps do.
         ui::host::install_default(
-            ui::host::HostServices::null().with_clipboard(Arc::new(clipboard.desk())),
+            ui::host::HostServices::null().with_clipboard(Arc::new(clipboard.shell())),
         );
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community =
@@ -1508,7 +1508,7 @@ impl Session {
             .borrow_mut()
             .answer_through(Rc::clone(&landings));
         let inviting = crate::invite::Invite::new(
-            Rc::new(crate::platform::invite::DeskWorkspace {
+            Rc::new(crate::platform::invite::InviteWorkspace {
                 landings: Rc::clone(&landings),
                 handle: handle.clone(),
                 person: options.person.clone(),
@@ -1686,7 +1686,7 @@ impl Session {
         shared
             .doors
             .add(Rc::new(std::cell::RefCell::new(crate::diagnostics::Served)));
-        // The person's own desk styles as packages in their workspace: "make it mine", `check`
+        // The person's own styles as packages in their workspace: "make it mine", `check`
         // and `install`, the same commands a person types at `tilolang`, so a shell view, the
         // canvas chat's agent and the REPL make and change styles the same way
         // (`shell.md` §6, "Agents make styles with the same commands a person types").
@@ -1908,7 +1908,7 @@ impl Session {
     pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, crate::Error> {
         // The desktop this session runs inside hands it over as one
         // connection the window takes once, so the window opens before the
-        // session builds anything of its own: the desk builds the surface
+        // session builds anything of its own: the shell builds the surface
         // apps' renderers, whose adapter request connects to that desktop,
         // and after that the window would find no connection left.
         let window = tilo_compositor::NestedBackend::open_window(config)?;
@@ -1928,7 +1928,7 @@ impl Session {
             // The lock screen is started when the session locks, the
             // on-screen keyboard when the person may need it and quick
             // settings while its slot is up: what their windows show is never
-            // the desk's to open.
+            // the shell's to open.
             if surface.lock
                 || surface.name == crate::keyboard::SURFACE
                 || surface.name == crate::quick_settings::SURFACE
@@ -2015,11 +2015,11 @@ impl Session {
         self.shared.open_clipboard_beside_caret();
     }
 
-    /// The display the person works on, as the compositor places it: the desk's focused display,
+    /// The display the person works on, as the compositor places it: the shell's focused display,
     /// which a press on a display, a step of focus past a display's last window or a window opened
     /// there moves. Every surface of the session that stands on one display stands on this one: the
     /// full bar, the overview, the sheets, quick settings and the other overlays, the notification
-    /// banners, the activity cards, and the lock's prompt. `None` while the desk knows no such
+    /// banners, the activity cards, and the lock's prompt. `None` while the shell knows no such
     /// display (it spans one).
     pub(crate) fn working_output(&self) -> Option<tilo_compositor::OutputInfo> {
         let display = self.shared.handle.focused_display()?;
@@ -2034,7 +2034,7 @@ impl Session {
             .find(|output| output.monitor == monitor)
     }
 
-    /// Place the surfaces over the desk on the displays as they are now: the
+    /// Place the surfaces over the shell on the displays as they are now: the
     /// outputs' rectangles, and the one the person works on.
     pub(crate) fn follow_overlays(&self) {
         let rect = |(x, y, w, h): (i32, i32, i32, i32)| {
@@ -2182,7 +2182,7 @@ impl Session {
         &self.banners
     }
 
-    /// The desk's notifications: the banners it is showing now and the
+    /// The shell's notifications: the banners it is showing now and the
     /// centre it keeps behind them.
     #[must_use]
     pub fn notifications(&self) -> tilo_desktop_surface::DesktopNotifications {
@@ -2210,7 +2210,7 @@ impl Session {
         self.shared.doors.add(surface);
     }
 
-    /// Everything the session publishes now: the desk's resource (its
+    /// Everything the session publishes now: the shell's resource (its
     /// windows among its children), the chrome's, the surface apps', the
     /// session's own and the services', with their actions.
     #[must_use]
@@ -2221,7 +2221,7 @@ impl Session {
     /// The windows the overview pictures as the compositor draws them now:
     /// each window's id and the rect its picture rests at, logical
     /// `(x, y, width, height)`, bottom first. Empty while the overview is
-    /// away, and before a window on the desk has a picture.
+    /// away, and before a window on the shell has a picture.
     #[must_use]
     pub fn remote_door(
         &self,
@@ -2232,7 +2232,7 @@ impl Session {
 
     /// The windows the overview pictures as the compositor draws them now: each window's id and
     /// the rect its picture rests at, logical `(x, y, width, height)` , bottom first. Empty while
-    /// the overview is away, and before a window on the desk has a picture.
+    /// the overview is away, and before a window on the shell has a picture.
     #[must_use]
     pub fn overview_pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
         match self.shell.as_ref() {
@@ -2254,7 +2254,7 @@ impl Session {
         self.shared.services.borrow_mut().settle();
     }
 
-    /// The person's arrangement: the desk this session holds, with its history and undo.
+    /// The person's arrangement: the shell this session holds, with its history and undo.
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement
@@ -2285,14 +2285,14 @@ impl Session {
     }
 
     /// What the windows ask of the workspace's activity and follow, as this
-    /// session serves it: the same door the desk's own pane reads through.
+    /// session serves it: the same door the shell's own pane reads through.
     #[must_use]
     pub fn conversation_runs(&self) -> std::sync::Arc<dyn tilo_broker_core::services::TrackerRuns> {
         self.shared.conversations.runs()
     }
 
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the
-    /// same door the desk's own pane reads through.
+    /// same door the shell's own pane reads through.
     #[must_use]
     pub fn activity(&self) -> tilo_desktop_surface::session::ActivityRequests {
         self.shared.activity.requests()
@@ -2422,13 +2422,13 @@ impl Session {
     }
 
     /// The labels of what the session shows to assistive technology: the
-    /// desk's, the chrome's and every open surface app's.
+    /// shell's, the chrome's and every open surface app's.
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
         self.shared.doors.accessible_labels()
     }
 
-    /// The other people whose pointers the desk drew on this session, as the
+    /// The other people whose pointers the shell drew on this session, as the
     /// last frame drew them: their name and the point, in the surface's
     /// coordinates. Drawn over the window each is on, whatever the roster
     /// shows.
@@ -2474,7 +2474,7 @@ impl Session {
         self.ended
     }
 
-    /// What stands before the desk runs its own pass: the wait for the clock
+    /// What stands before the shell runs its own pass: the wait for the clock
     /// finishes itself and gives the layer to what a verified identity opens.
     pub(crate) fn follow_setup(&self) {
         if let Some(setup) = &self.setup {
@@ -2541,9 +2541,9 @@ impl Session {
         // changes.
         if let Some(account) = crate::host_account::changed() {
             self.with_chrome_mut(|chrome| {
-                chrome.set_tilo(tilo_desktop::overview_tilo::TiloDesk {
+                chrome.set_tilo(tilo_desktop::overview_tilo::TiloOverview {
                     hosts: vec![account],
-                    ..tilo_desktop::overview_tilo::TiloDesk::default()
+                    ..tilo_desktop::overview_tilo::TiloOverview::default()
                 });
             });
         }
@@ -2577,7 +2577,7 @@ impl Session {
             // tab it was in.
             self.shared.follow_restore();
             // What the apps asked of their own tabs, and of what a capture
-            // may show of them, as the desk commands they are.
+            // may show of them, as the shell commands they are.
             self.follow_app_asks();
             self.shared.follow_gestures();
             self.shared.follow_tab_menus();
@@ -2602,7 +2602,7 @@ impl Session {
                 break;
             }
             // What ran may have queued desktop commands on the shared
-            // handle (the chrome switching workspace): the desk carries
+            // handle (the chrome switching workspace): the shell carries
             // them out on its next pass.
             self.shared.desktop.with_widgets(WidgetHost::relayout);
         }
@@ -2610,7 +2610,7 @@ impl Session {
     }
 
     /// Answer what the apps asked of their own tabs, and of what a capture
-    /// may show of them, as the desk commands they are.
+    /// may show of them, as the shell commands they are.
     pub(crate) fn follow_app_asks(&mut self) {
         if let Some(tabs) = &mut self.tabs {
             tabs.follow(
@@ -2634,8 +2634,8 @@ impl Session {
         let Some(broker) = plane.action_broker() else {
             return;
         };
-        // The app each window runs, and the windows the desk shows: a record of another app is
-        // not what a window shows, and a window the desk no longer shows says nothing.
+        // The app each window runs, and the windows the shell shows: a record of another app is
+        // not what a window shows, and a window the shell no longer shows says nothing.
         let (apps, live): (
             std::collections::BTreeMap<u64, String>,
             std::collections::BTreeSet<u64>,
@@ -2678,7 +2678,7 @@ impl Session {
         // reads a place. They are read again only once the door moved, and what is offered then
         // is compared with what was offered before, so the broker is told only when the rows
         // themselves moved.
-        // A held pointer drags or resizes a window: every frame of it moves the desk, never what
+        // A held pointer drags or resizes a window: every frame of it moves the shell, never what
         // the steps offer, so the rows are read once the person lets go.
         if self.shared.underway.get().gesture || !actions.door_moved(self.shared.doors.revision()) {
             return;
@@ -2705,19 +2705,19 @@ impl Session {
         }
     }
 
-    /// Keep the broker's copy of the desk level with the desk as the pass leaves it: the workspaces
+    /// Keep the broker's copy of the shell level with the shell as the pass leaves it: the workspaces
     /// the pass opened, and whose each of them is, are decided here and a person's own action is
     /// decided against that copy.
-    pub(crate) fn publish_desk(&mut self) {
+    pub(crate) fn publish_layout(&mut self) {
         let Some(plane) = &self.action_plane else {
             return;
         };
-        let desk = std::sync::Arc::clone(&plane.desk);
-        self.automation.publish_desk(Some(&desk));
+        let shell = std::sync::Arc::clone(&plane.layout);
+        self.automation.publish_layout(Some(&shell));
     }
 
     /// Start the shortcuts whose triggers fired since the last pass, and keep
-    /// the apps' broker's copy of the desk level with the desk shown: a run
+    /// the apps' broker's copy of the shell level with the shell shown: a run
     /// starting there checks the shortcut against it.
     pub(crate) fn follow_automation(&mut self) {
         if let Some(plane) = &self.action_plane {
@@ -2728,7 +2728,7 @@ impl Session {
             {
                 self.automation.attach(broker);
             }
-            self.automation.settle(Some(&plane.desk));
+            self.automation.settle(Some(&plane.layout));
         } else {
             self.automation.settle(None);
         }
@@ -2761,7 +2761,7 @@ impl Session {
 
     /// Lock the session as the person asked: with a key, a command, or
     /// because one of their other devices locked. A session that could not be
-    /// left again never locks ([`Session::can_lock`]). The desk goes the
+    /// left again never locks ([`Session::can_lock`]). The shell goes the
     /// moment the lock is asked for and not when the screen has started, so
     /// nothing of what was on it stays up for the start of a process; the
     /// screen that shows the lock is started here, and asks the compositor for
@@ -2839,8 +2839,8 @@ impl Drop for Session {
         // A profile still recording is completed, its files written, before
         // the process goes.
         tilo_frame_metrics::profile::shutdown();
-        // The desk the person left, written whatever ended the session.
-        self.shared.keep_desk_now();
+        // The shell the person left, written whatever ended the session.
+        self.shared.keep_layout_now();
         // Its apps' display goes with it, and so do they: the apps outlive
         // no session, whoever else still holds what started them.
         if let Some(launch) = &self.shared.launch {

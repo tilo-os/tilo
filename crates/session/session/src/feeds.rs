@@ -1,8 +1,8 @@
 //! What the session tells its services as it runs.
-//! Both follow the desk's revision: the portal hears which apps run, which exited and when the
+//! Both follow the session's revision: the portal hears which apps run, which exited and when the
 //! screen locked, and the Files daemon and the capture broker hear what the person took away.
 
-use crate::desk::running_apps;
+use crate::background::running_apps;
 
 impl crate::Session {
     /// Tell the portal what it asks of the session about its apps: which run and how, which exited,
@@ -34,8 +34,8 @@ impl crate::Session {
         }
     }
 
-    /// Publish the desk's file access list to the Files daemon, and end what
-    /// apps may no longer hold, whenever the desk changed.
+    /// Publish the session's file access list to the Files daemon, and end what
+    /// apps may no longer hold, whenever the session changed.
     ///
     /// Both follow the same revision because both are the same decision: what
     /// an app was allowed when it was launched is not what it is allowed now.
@@ -47,7 +47,7 @@ impl crate::Session {
     pub(crate) fn feed_capabilities(&self) {
         let revision = self.shared.handle.revision();
         // A list the daemon did not take stands for nothing: until one does,
-        // the desk hands the same revision over again.
+        // the session hands the same revision over again.
         let unpublished = self
             .shared
             .fs_authority
@@ -78,7 +78,7 @@ impl crate::Session {
             crate::capture_grants::still_allowed(&tree, app, workspace, kind, now)
         });
         if ended > 0 {
-            tracing::debug!(ended, "captures ended: the desk no longer allows them");
+            tracing::debug!(ended, "captures ended: the session no longer allows them");
         }
     }
 }

@@ -20,7 +20,7 @@ use tilo_system_service::update::{self, Fallback, Presence, Update};
 use crate::Session;
 use crate::notices::RESTART_ACTION;
 
-/// When the session first looks for an update to finish: once the desk has settled.
+/// When the session first looks for an update to finish: once the shell has settled.
 const FIRST_LOOK_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often it looks again. Both looks are one file read and one reading.
 const LOOK_EVERY: Duration = Duration::from_secs(60);
@@ -77,7 +77,7 @@ impl Finish {
         )
     }
 
-    /// A clock that first looks when the desk has settled, recording what it asks at `asked` ,
+    /// A clock that first looks when the shell has settled, recording what it asks at `asked` ,
     /// which survives a restart of the desktop; the person's answers to the update's notice come
     /// back through `notifications` , when this session tells the person through one, and which
     /// fallbacks they already heard of is read from and written to `heard` .
@@ -444,7 +444,7 @@ mod tests {
         assert_eq!(
             finish.step(now, clock, away(), &pending_desktop(), false, false),
             None,
-            "the desk settles first"
+            "the shell settles first"
         );
         let look = now + FIRST_LOOK_AFTER;
         assert_eq!(
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(
             finish.step(now, clock, away(), &pending_desktop(), false, false),
             None,
-            "the desk still settles"
+            "the shell still settles"
         );
         let look = now + FIRST_LOOK_AFTER;
         assert_eq!(
@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(
             finish.step(look, clock, away(), &staged, false, false),
             Some(Due::Ask),
-            "the person is told, once the desk has settled"
+            "the person is told, once the shell has settled"
         );
         assert_eq!(
             finish.step(

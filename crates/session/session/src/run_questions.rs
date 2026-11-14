@@ -1,9 +1,9 @@
-//! What an agent session, or an app, asks its person, on this desk's sheet.
+//! What an agent session, or an app, asks its person, on this session's sheet.
 //!
 //! An agent session (an MCP server connection's, [`crate::agent_sessions`]) pauses before a step
 //! its grants ask first about, and the broker puts the question to the person here
 //! ([`AppActionConsentPrompter`]): the same sheet family that admitted the agent, naming it as the
-//! desk names it ("Claude Code in dev #1"), the step and what it would do. The person allows it
+//! shell names it ("Claude Code in dev #1"), the step and what it would do. The person allows it
 //! once, allows the agent every such step for as long as the session lasts, or denies it, with
 //! Deny or Escape. An agent from another of the person's devices is asked about on the device it
 //! drives, where its session is — unless the person let such agents act without asking on this
@@ -39,7 +39,7 @@ pub(crate) const ALLOW_AGENT: usize = 1;
 /// A run's or an app's question, as the sheet shows it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct RunQuestion {
-    /// The agent, as the desk seats it; the asking app's id when an app asks.
+    /// The agent, as the shell seats it; the asking app's id when an app asks.
     pub agent: String,
     /// The app whose action an app asks to take, by its id; `None` for an agent session.
     #[serde(default)]
@@ -56,7 +56,7 @@ pub(crate) struct RunQuestion {
     pub may_allow_agent: bool,
 }
 
-/// The desk's sheet, as the broker asks it.
+/// The shell's sheet, as the broker asks it.
 pub(crate) struct Sheet {
     questions: Questions,
     /// The MCP server's agent sessions: which of them came from the person's other devices.

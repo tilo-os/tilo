@@ -162,7 +162,7 @@ pub(crate) fn follow(
 
 impl crate::Shared {
     /// Add a device: the sheet showing the link a new device of this person's becomes one of
-    /// theirs, up over the desk.
+    /// theirs, up over the shell.
     pub(crate) fn open_pair_device(&self) {
         let Some(seat) = self.pair_device.as_ref() else {
             return;

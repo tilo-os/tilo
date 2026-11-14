@@ -1,7 +1,7 @@
 //! Capture work that waits on an encoder or the disk, run off the session's
 //! loop.
 //!
-//! A screenshot encodes a PNG of the whole desk and writes it into a folder
+//! A screenshot encodes a PNG of the whole shell and writes it into a folder
 //! that may be a network mount; a recording encodes every frame it keeps,
 //! muxes it into a file and, when it ends, drains the encoder and writes the
 //! file's trailer. On the loop's thread any of these is a frozen desktop:
@@ -13,7 +13,7 @@
 //! hands work over: frames go through a depth bound ([`DEPTH`]), and a frame
 //! that arrives while the encoder already holds that many is dropped and
 //! counted instead of waited on, so a slow disk shortens a recording rather
-//! than stalling the desk.
+//! than stalling the shell.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};

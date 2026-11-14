@@ -156,7 +156,7 @@ pub fn presentation(device: &SigningKey, cert: &DeviceCert, cluster: &str) -> Ve
 }
 
 /// A session serving `app` on `socket`, on this computer's certified device,
-/// with its state at `state`: the desk is the session's own, and the person's
+/// with its state at `state`: the shell is the session's own, and the person's
 /// records are in no workspace on it. `windowless` records the app's process
 /// as an endpoint no window serves, as the files daemon's is.
 pub fn session(

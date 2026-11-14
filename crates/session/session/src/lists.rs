@@ -157,7 +157,7 @@ impl AppLists {
         }
     }
 
-    /// Whether the Tilo app `app` is installed here: what the desk offers a card for, and what
+    /// Whether the Tilo app `app` is installed here: what the shell offers a card for, and what
     /// search lists under the app's own name.
     #[must_use]
     pub fn has_app(&self, app: &str) -> bool {
@@ -737,7 +737,7 @@ mod tests {
     }
 
     /// An app installed or removed is a new reading, and the generation says so: a cache keyed on it
-    /// (the desk's, the launcher's) sees the change. The generation is a rising count, not the
+    /// (the shell's, the launcher's) sees the change. The generation is a rising count, not the
     /// reading's address, so it moves even when the new reading happens to land where the old one
     /// was — the case the old address key got wrong.
     #[test]

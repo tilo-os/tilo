@@ -211,7 +211,7 @@ fn own_card() -> ProfileModel {
     }
 }
 
-/// The bare desk, the workspace menu open over it and the person's own card open over it, in one
+/// The bare shell, the workspace menu open over it and the person's own card open over it, in one
 /// theme, each drawn once.
 struct Surfaces {
     bare: Framed<WorkspaceMenu>,

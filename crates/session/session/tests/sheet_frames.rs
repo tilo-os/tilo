@@ -19,7 +19,7 @@
 use std::path::Path;
 
 use serde_json::{Value, json};
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::workspace_settings::Tab;
@@ -43,7 +43,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str) {
         .expect("a frame");
 }
 
-/// The desk as `snapshot` writes it, the request `tilo-control snapshot` makes.
+/// The shell as `snapshot` writes it, the request `tilo-control snapshot` makes.
 fn snapshot(session: &mut Session, socket: &Path, path: &Path) -> image::RgbaImage {
     let answer = crate::common::control(
         session,
@@ -92,7 +92,7 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
     let socket = root.path().join("test-control.sock");
     let mut session = session(&socket);
 
-    let desk = snapshot(&mut session, &socket, &root.path().join("desk.png"));
+    let shell = snapshot(&mut session, &socket, &root.path().join("shell.png"));
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     let seat = session
         .workspace_settings()
@@ -106,7 +106,7 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
     // The next frame is the sheet's: the display changed where the sheet stands, over a large part
     // of it.
     let sheet = snapshot(&mut session, &socket, &root.path().join("sheet.png"));
-    let (x0, y0, x1, y1, changed) = differed(&desk, &sheet);
+    let (x0, y0, x1, y1, changed) = differed(&shell, &sheet);
     assert!(
         x1 > x0 && y1 > y0,
         "the snapshot shows the sheet: nothing changed in it"
@@ -117,7 +117,7 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
          between ({x0}, {y0}) and ({x1}, {y1})"
     );
 
-    // And the desk names the controls the sheet is pressed by, as it names an app's window's: the
+    // And the shell names the controls the sheet is pressed by, as it names an app's window's: the
     // tabs it switches with, by what they say.
     let people = tilo_desktop_surface::i18n::t("workspace-settings-tab-people");
     let agents = tilo_desktop_surface::i18n::t("workspace-settings-tab-agents");
@@ -155,9 +155,9 @@ fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
     let socket = root.path().join("test-control.sock");
     let mut session = session(&socket);
 
-    let desk = snapshot(&mut session, &socket, &root.path().join("desk.png"));
-    // The empty desk's launchpad is what the person presses to invite someone: the sheet it opens
-    // is the session's own, drawn over the desk.
+    let shell = snapshot(&mut session, &socket, &root.path().join("shell.png"));
+    // The empty shell's launchpad is what the person presses to invite someone: the sheet it opens
+    // is the session's own, drawn over the shell.
     let invite = tilo_desktop_surface::i18n::t("invite-title");
     let pressed = crate::common::control(
         &mut session,
@@ -178,7 +178,7 @@ fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
     );
 
     let sheet = snapshot(&mut session, &socket, &root.path().join("invite.png"));
-    let (x0, y0, x1, y1, changed) = differed(&desk, &sheet);
+    let (x0, y0, x1, y1, changed) = differed(&shell, &sheet);
     assert!(
         x1 > x0 && y1 > y0,
         "the snapshot shows the invite sheet: nothing changed in it"

@@ -1,4 +1,4 @@
-//! The Linux desk's side of inviting: the workspace in front as this device holds it, its links
+//! The Linux shell's side of inviting: the workspace in front as this device holds it, its links
 //! made and cancelled through the session's own published actions.
 
 use std::cell::RefCell;
@@ -11,9 +11,9 @@ use tilo_sheets::invite as sheet;
 
 use crate::invite::{Answer, Issued, Refused, Workspace};
 
-/// The workspace in front of this desk, as this device holds it: its governance says who may
+/// The workspace in front of this session, as this device holds it: its governance says who may
 /// invite whom, and the session's own published actions make and cancel the links.
-pub(crate) struct DeskWorkspace {
+pub(crate) struct InviteWorkspace {
     /// Where a link the device's signer signs is answered once it landed.
     pub(crate) landings: Rc<crate::landing::Landings>,
     pub(crate) handle: tilo_desktop_surface::DesktopHandle,
@@ -25,7 +25,7 @@ pub(crate) struct DeskWorkspace {
     pub(crate) site: fn() -> Option<url::Url>,
 }
 
-impl DeskWorkspace {
+impl InviteWorkspace {
     /// The workspace in front, by its id.
     fn in_front(&self) -> Option<String> {
         self.handle.read(|tree| {
@@ -67,7 +67,7 @@ impl DeskWorkspace {
     }
 }
 
-impl Workspace for DeskWorkspace {
+impl Workspace for InviteWorkspace {
     /// A workspace this device holds, whose own governance lets the person invite into it, with a
     /// transport a link can name. The write path asks the workspace's record again, so this only
     /// decides what is offered.

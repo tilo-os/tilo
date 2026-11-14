@@ -2,7 +2,7 @@
 //! A computer set up for a community is in that community already: nobody wants to be told to join
 //! the lounge they were given a computer for. So the session asks the site's door once — the same
 //! door, and the same verified invitation, a listing's Join asks — and the workspace comes onto the
-//! desk like any other joined one.
+//! shell like any other joined one.
 //! There is no loop and no timer: one ask per session start, and one more when the machine's
 //! network comes back while the join is still waiting, which is the one thing that can make a join
 //! that never reached its site land.

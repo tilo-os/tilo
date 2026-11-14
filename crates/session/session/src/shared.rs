@@ -1,4 +1,4 @@
-//! What the session's desk keeps between frames, and the passes that fold what arrived into it:
+//! What the session's shell keeps between frames, and the passes that fold what arrived into it:
 //! each workspace's shared desktop, the workspace's history, the windows left open, and what the
 //! sheets and settings asked for.
 
@@ -11,9 +11,9 @@ use tilo_session_core::arrangement;
 
 impl Shared {
     /// Keep what this device shows: the workspace in front and the displays' partition, so the next
-    /// session starts where this one was. The desk itself is the workspaces' layouts, written as the
+    /// session starts where this one was. The shell itself is the workspaces' layouts, written as the
     /// windows change.
-    pub(crate) fn keep_desk(&self) {
+    pub(crate) fn keep_layout(&self) {
         if crate::termination::asked() {
             return;
         }
@@ -22,13 +22,13 @@ impl Shared {
         });
     }
 
-    /// [`Self::keep_desk`], and wait for what was written: what ends the session.
-    pub(crate) fn keep_desk_now(&self) {
-        // A workspace made on this desk is founded off the loop, and the desk's own writes need
+    /// [`Self::keep_layout`], and wait for what was written: what ends the session.
+    pub(crate) fn keep_layout_now(&self) {
+        // A workspace made on this session is founded off the loop, and the shell's own writes need
         // it held: what ends the session waits for it first.
         self.landings.settle(std::time::Duration::from_secs(5));
         if let Some(engine) = &self.engine {
-            crate::shared_desktop::SharedDesktops::settle_keys(
+            crate::layout::Layouts::settle_keys(
                 engine,
                 &self.handle.read(Clone::clone),
                 std::time::Duration::from_secs(5),
@@ -53,13 +53,13 @@ impl Shared {
 
     /// Show each workspace's shared desktop as the workspace holds it, and write back what this
     /// device changed there: what every device in a workspace sees of its strips and windows
-    /// ([`shared_desktop::SharedDesktops`]).
-    pub(crate) fn follow_shared_desktops(&self) {
+    /// ([`layout::Layouts`]).
+    pub(crate) fn follow_layouts(&self) {
         let Some(engine) = &self.engine else {
             return;
         };
         self.desktops.attach_engine(engine);
-        // The apps a login's end takes with it leave the workspaces' desks as they were.
+        // The apps a login's end takes with it leave the workspaces' sessions as they were.
         if crate::termination::asked() {
             return;
         }
@@ -72,7 +72,7 @@ impl Shared {
         {
             return;
         }
-        // What the records hold, folded into a copy of the desk: what this device opened or moved
+        // What the records hold, folded into a copy of the shell: what this device opened or moved
         // since was written first, so the fold comes back with this device's own change in it and
         // nothing is undone.
         // A step of a layout the person asked for while a write of it was under way is taken now
@@ -82,10 +82,10 @@ impl Shared {
         }
         let mut tree = self.handle.read(Clone::clone);
         self.desktops.capture(engine, &tree);
-        // What the workspace did not take of this desk is on the desk the person used: they hear it
+        // What the workspace did not take of this session is on the shell the person used: they hear it
         // once, naming the workspace and why.
         if let Some(refusal) = self.desktops.take_refusal() {
-            crate::notices::tell_desk_not_taken(&self.notifications, &tree, refusal);
+            crate::notices::tell_shell_not_taken(&self.notifications, &tree, refusal);
         }
         let device = self
             .sync
@@ -100,7 +100,7 @@ impl Shared {
             #[cfg(target_os = "linux")]
             {
                 let mut restore = self.restore.borrow_mut();
-                // The first layout this session lays out is the desk it reopens: a place no window
+                // The first layout this session lays out is the shell it reopens: a place no window
                 // came for is not a window. After that, a window someone else opened in the
                 // workspace is one this device shows through its own instance of the app, on the
                 // same record, and its app is asked for it as a window this device left open is.
@@ -115,7 +115,7 @@ impl Shared {
 
     /// Run what waited for the person to finish their gesture or their typing: an arranging action
     /// that arrived then, in the order it came, after the windows the person floated or put back on
-    /// the desk, which are their own and never wait.
+    /// the shell, which are their own and never wait.
     pub(crate) fn follow_arrangement(&self, underway: arrangement::Busy) {
         let mut arrangement = self.arrangement.borrow_mut();
         if let Err(why) = arrangement.take_asked_floats() {
@@ -266,7 +266,7 @@ impl Shared {
 
     /// Take up what the workspace's history wrote back and what the person opened from it, and tell
     /// the apps following it what moved. A window that asked, or a change of what the history
-    /// reads, asks the desk for the frame that serves it.
+    /// reads, asks the shell for the frame that serves it.
     pub(crate) fn serve_activity(&self) {
         if let Some(tree) = self.activity.take_restored() {
             self.handle.replace_tree(tree);
@@ -277,11 +277,11 @@ impl Shared {
         self.activity.keep_unlock();
         self.activity.serve(&self.notifications.borrow());
         // What the history says its changes were, and the names over the runs of them, are written
-        // into the desk's document as models answer; the desk draws a frame to read them.
+        // into the shell's document as models answer; the shell draws a frame to read them.
         let described = self.activity.describe(&self.handle.read(Clone::clone));
         if self.activity.take_woken() || described {
             // A window asked the activity model something, or what the history reads moved: the
-            // desk draws a frame, which serves it.
+            // shell draws a frame, which serves it.
             self.desktop.with_widgets(WidgetHost::relayout);
         }
     }
@@ -457,7 +457,7 @@ impl Shared {
             self.directory.as_ref(),
             &self.directory_store,
             &*self.telling(),
-            &crate::platform::directory::DeskDirectory(self),
+            &crate::platform::directory::SessionDirectory(self),
         );
         workspace_settings::follow(
             self.workspace_settings.as_ref(),
@@ -492,7 +492,7 @@ impl Shared {
         self.app_sheets.follow(self.downloaded_apps().as_ref());
     }
     /// One anchored surface at a time, whichever side opened it.
-    /// The desk's own popovers and the shell's views are two stacks that meet here: a popover that
+    /// The shell's own popovers and the shell's views are two stacks that meet here: a popover that
     /// came up over a shell surface takes that surface down — the person is looking at the menu
     /// they just opened — and a shell surface that came up closes the roster, which the roster's
     /// own host draws over everything.

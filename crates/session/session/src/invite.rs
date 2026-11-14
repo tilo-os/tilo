@@ -1,7 +1,7 @@
 //! Inviting people into a workspace: the sheet a link is made from, the links that still work, and
 //! taking one back, on every host.
 //! The sheet shows and asks; the workspace's host makes, lists and cancels the invitations
-//! ([`Workspace`]): on a desktop the desk's own published actions, so a link handed over from here
+//! ([`Workspace`]): on a desktop the shell's own published actions, so a link handed over from here
 //! is the same invitation an app or an agent makes; on the page the workspace's host it reaches.
 //! What is the role's here is what the sheet says, leaving the link on its site's shelf, and
 //! putting it on the clipboard long enough to hand it over.

@@ -38,7 +38,7 @@ use tilo_desktop_search::providers::records::HeldRecord;
 use ui::record::RecordCheckout;
 
 /// A record one or more workspaces on this device hold: what search offers,
-/// without the names of the workspaces, which only the desk knows.
+/// without the names of the workspaces, which only the shell knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Held {
     id: String,
@@ -75,7 +75,7 @@ pub struct Records {
     /// The indexes as last read, read again whenever the change stream says a record of this
     /// device moved: the one watcher there is.
     reading: Reading<Vec<Held>>,
-    /// The name the desk gives each workspace, as of its last frame: a record held elsewhere is
+    /// The name the shell gives each workspace, as of its last frame: a record held elsewhere is
     /// offered under the name of the workspace that holds it, and a workspace id alone names
     /// nothing a person knows.
     names: RefCell<Vec<(String, String)>>,
@@ -141,7 +141,7 @@ impl Records {
         self.changes.clone()
     }
 
-    /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
+    /// The workspaces this device shows, by id and the name the shell gives it: what a row says of a
     /// record no workspace in front holds.
     pub fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         *self.names.borrow_mut() = workspaces;

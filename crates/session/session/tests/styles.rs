@@ -1,6 +1,6 @@
-//! Desk styles as views of the arrangement (`docs/designs/app-language/shell.md` §6): every
-//! installed package's styles are published on the desk reading, found by the type they draw,
-//! and the desk draws the person's chosen one through `show`. A style is a view whose first
+//! styles as views of the arrangement (`docs/designs/app-language/shell.md` §6): every
+//! installed package's styles are published on the shell reading, found by the type they draw,
+//! and the layout draws the person's chosen one through `show`. A style is a view whose first
 //! parameter is the session's arrangement — the type whose origin is `session.arrangement` —
 //! never a keyword and never a list in code, so a package a person or their agent wrote offers
 //! its styles beside the four the shell ships.
@@ -102,7 +102,7 @@ fn style_state(session: &Session, style: &str) -> Option<(bool, String)> {
 }
 
 /// Step 2 of shell.md §6, "Styles are views": the four styles `so.tilo.shell` ships are views of
-/// the arrangement, published on the desk's reading and listed by their doc lines, and the desk
+/// the arrangement, published on the shell's reading and listed by their doc lines, and the layout
 /// draws the one the person chooses through `show`. Switching keeps the arrangement.
 #[test]
 fn the_four_shipped_styles_are_listed_and_drawn() {
@@ -120,12 +120,12 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
     // The styles the session read from its store: the shell's own four, each a view of the
     // arrangement, listed by its doc line.
     let styles = crate::common::styles(&session);
-    assert!(!styles.is_empty(), "the desk offers styles: {styles:?}");
+    assert!(!styles.is_empty(), "the layout offers styles: {styles:?}");
     for name in ["strips", "frames", "spaces", "desktop"] {
         let found = styles
             .iter()
             .find(|style| style.style == format!("so.tilo.shell:{name}"))
-            .unwrap_or_else(|| panic!("the desk offers the {name} style: {styles:?}"));
+            .unwrap_or_else(|| panic!("the layout offers the {name} style: {styles:?}"));
         assert!(found.loads, "the shipped {name} style loads");
         assert!(
             !found.line.is_empty(),
@@ -144,25 +144,25 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
     until(&mut session, |session| crate::common::canvas_shown(session));
 }
 
-/// Step 2's part the shell alone cannot show: a desk style **another** installed package declares
-/// is listed by the switch and, chosen, draws the desk.
+/// Step 2's part the shell alone cannot show: a style **another** installed package declares
+/// is listed by the switch and, chosen, draws the layout.
 ///
 /// The person's own package writes a view taking `shell.Arrangement` — the arrangement's type,
 /// whose origin is `session.arrangement` — and nothing else. The session finds it by that type,
-/// never by a list in code, and the desk draws the package's own view once it is chosen.
+/// never by a list in code, and the layout draws the package's own view once it is chosen.
 ///
 /// This fails without the change: before it `Viewing.showing` was a closed `Preset`, so no
 /// package could offer a style; and a first cut that read the arrangement's name only from the
 /// package's own `meta.types` never listed a second package's style at all.
 #[test]
-fn a_style_from_another_installed_package_is_listed_and_draws_the_desk() {
+fn a_style_from_another_installed_package_is_listed_and_draws_the_shell() {
     let _settled = ui::motion::testing::settled();
     let store = crate::common::app_store();
     // The person's own style package, written into a scratch directory and installed into the
     // store as any package is: a view of the arrangement and nothing else, its one line naming
     // it in the switch.
     let scratch = std::env::temp_dir().join(format!(
-        "desk-style-{}-{}",
+        "layout-style-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -178,7 +178,7 @@ fn a_style_from_another_installed_package_is_listed_and_draws_the_desk() {
 
 use so.tilo.shell as shell
 
-/// Timeline of the desk
+/// Timeline of the layout
 view timeline(a: shell.Arrangement) {
     ui.Text("Timeline of {a.places.count()} places")
 }
@@ -204,20 +204,20 @@ view timeline(a: shell.Arrangement) {
         .expect("the person's style is listed");
     assert!(own.loads, "the person's style loads: {own:?}");
     assert_eq!(
-        own.line, "Timeline of the desk",
+        own.line, "Timeline of the layout",
         "listed by its author's doc line"
     );
-    // Choosing it is one action on the person's viewing, as the switch runs, and the desk draws
+    // Choosing it is one action on the person's viewing, as the switch runs, and the layout draws
     // the package's own view of the arrangement: its words stand on the screen. The bar's style
     // menu lists every style by the one name it has everywhere (`style_label`), and the person's
     // own stands beside the shell's four.
     //
     // This style draws only its own words and no bar (`shell.md` §6 lets a style draw what it
-    // wills), so once it is chosen the bar's switch is gone: the desk's answer is its own drawn
+    // wills), so once it is chosen the bar's switch is gone: the layout's answer is its own drawn
     // text, not a menu title. Open the bar's style menu, press the person's style, and read the
-    // desk's answer.
+    // layout's answer.
     let mut since = usize::MAX;
-    crate::common::wait_for(&mut session, "the timeline to draw the desk", |session| {
+    crate::common::wait_for(&mut session, "the timeline to draw the layout", |session| {
         if session
             .accessible_labels()
             .iter()
@@ -229,8 +229,8 @@ view timeline(a: shell.Arrangement) {
             since = since.saturating_add(1);
             return None;
         }
-        if crate::common::on_screen(session, "Timeline of the desk").is_some() {
-            crate::common::press(session, "Timeline of the desk");
+        if crate::common::on_screen(session, "Timeline of the layout").is_some() {
+            crate::common::press(session, "Timeline of the layout");
         } else if let Some(menu) = crate::common::preset_menu(session) {
             crate::common::press(session, &menu);
         }
@@ -245,8 +245,8 @@ view timeline(a: shell.Arrangement) {
 ///
 /// A module the compiler rejects never reaches the store, so the store's guard is not this
 /// path. A package that installs and whose payload the session cannot read is the one that
-/// reaches a person's desk: the store's row and the manifest stand, the switch lists the style
-/// from the metadata it reads, and the load fails — the desk then shows the built-in strips,
+/// reaches a person's layout: the store's row and the manifest stand, the switch lists the style
+/// from the metadata it reads, and the load fails — the layout then shows the built-in strips,
 /// says why, and keeps the choice. The runtime's own test names the other half (a package the
 /// runtime refuses by name:
 /// `tilolang-runtime`'s `a_style_whose_package_does_not_load_draws_a_failed_state_and_is_reported`).
@@ -254,7 +254,7 @@ view timeline(a: shell.Arrangement) {
 fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_the_choice() {
     let _settled = ui::motion::testing::settled();
     let store = crate::common::app_store();
-    let scratch = Scratch::new("desk-style-broken");
+    let scratch = Scratch::new("layout-style-broken");
     let installed = scratch.install("broken", WORKING_STYLE, store);
     assert_eq!(installed, "atest.broken", "the style package installs");
     // The payload's module is taken away: the store still names the package, the manifest and
@@ -281,24 +281,24 @@ fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_t
             .log()
             .active()
             .iter()
-            .any(|notice| notice.title == "Your desk style could not be shown")
+            .any(|notice| notice.title == "Your layout style could not be shown")
     });
-    // The desk shows the built-in strips, not a blank screen: the strips' own dock and bar stand
-    // (the broken style draws nothing of the desk), and the bar keeps naming the person's choice
+    // The layout shows the built-in strips, not a blank screen: the strips' own dock and bar stand
+    // (the broken style draws nothing of the layout), and the bar keeps naming the person's choice
     // because the choice is theirs, never rewritten.
     until(&mut session, |session| {
         let labels = session.accessible_labels();
         labels.iter().any(|label| label == "Dock")
             && labels
                 .iter()
-                .any(|label| label == "Showing A broken style of the desk")
+                .any(|label| label == "Showing A broken style of the layout")
     });
     // The person's choice is kept as it was: the bar still names the broken style as what the
     // person picked, which the switch reads off `Viewing.style` — never rewritten to Strips.
     let kept = session
         .accessible_labels()
         .into_iter()
-        .any(|label| label == "Showing A broken style of the desk");
+        .any(|label| label == "Showing A broken style of the layout");
     assert!(
         kept,
         "the person's choice is kept, never rewritten: {:?}",
@@ -312,7 +312,7 @@ const WORKING_STYLE: &str = r#"app atest.broken "A broken style"
 
 use so.tilo.shell as shell
 
-/// A broken style of the desk
+/// A broken style of the layout
 view broken(a: shell.Arrangement) {
     ui.Text("Nothing of the kind: {a.places.count()}")
 }
@@ -400,7 +400,7 @@ const TRAPPING: &str = r#"app atest.trapping "A trappng style"
 
 use so.tilo.shell as shell
 
-/// A trapping style of the desk
+/// A trapping style of the layout
 view trapping(a: shell.Arrangement) {
     let places = a.places.count()
     ui.Text("at {places / 0} places")
@@ -411,7 +411,7 @@ view trapping(a: shell.Arrangement) {
 fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
     let _settled = ui::motion::testing::settled();
     let store = crate::common::app_store();
-    let scratch = Scratch::new("desk-style-trapping");
+    let scratch = Scratch::new("layout-style-trapping");
     let installed = scratch.install("trapping", TRAPPING, store);
     assert_eq!(installed, "atest.trapping", "the style package installs");
     let mut session = session();
@@ -435,24 +435,24 @@ fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
             .log()
             .active()
             .iter()
-            .any(|notice| notice.title == "Your desk style could not be shown")
+            .any(|notice| notice.title == "Your layout style could not be shown")
     });
     until(&mut session, |session| {
         let labels = session.accessible_labels();
         labels.iter().any(|label| label == "Dock")
             && labels
                 .iter()
-                .any(|label| label == "Showing A trapping style of the desk")
+                .any(|label| label == "Showing A trapping style of the layout")
     });
 }
 
-/// A style that failed and is installed again fixed draws again with no restart: the desk
+/// A style that failed and is installed again fixed draws again with no restart: the layout
 /// returns to it as soon as its package loads (`shell.md` §6).
 #[test]
 fn a_fixed_style_package_brings_the_style_back_live() {
     let _settled = ui::motion::testing::settled();
     let store = crate::common::app_store();
-    let scratch = Scratch::new("desk-style-fixed");
+    let scratch = Scratch::new("layout-style-fixed");
     let installed = scratch.install("fixed", TRAPPING, store);
     assert_eq!(installed, "atest.trapping", "the style package installs");
     let mut session = session();
@@ -467,7 +467,7 @@ fn a_fixed_style_package_brings_the_style_back_live() {
         |session| style_state(session, "atest.trapping:trapping").filter(|(loads, _)| !*loads),
     );
     // The same package, fixed and installed again: the store moved, the session read it again,
-    // and the shell loads the fixed package. The desk returns to the style with no restart.
+    // and the shell loads the fixed package. The layout returns to the style with no restart.
     let fixed = scratch.install("fixed-again", WORKING, store);
     assert_eq!(
         fixed, "atest.trapping",
@@ -489,7 +489,7 @@ const WORKING: &str = r#"app atest.trapping "A working style"
 
 use so.tilo.shell as shell
 
-/// A working style of the desk
+/// A working style of the layout
 view trapping(a: shell.Arrangement) {
     ui.Text("A working style, {a.places.count()} places")
 }
@@ -500,7 +500,7 @@ view trapping(a: shell.Arrangement) {
 /// at whatever next wakes the shell.
 ///
 /// This fails without the fix: the named press set no input on the shell's part, so the part took
-/// the change into its record but never ran its turn for it, and the desk kept drawing the style
+/// the change into its record but never ran its turn for it, and the layout kept drawing the style
 /// the person left until the clock's minute woke it (25 s to a minute of wall time in a live
 /// session). A press of the pointer sets the part's input and always drew at once, which is why
 /// only the named route was slow.
@@ -516,7 +516,7 @@ fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
             .iter()
             .any(|label| label == "Showing Strips")
     });
-    // Let the desk rest, so the press is the only thing that may wake it.
+    // Let the layout rest, so the press is the only thing that may wake it.
     for _ in 0..30 {
         session.step(Duration::from_millis(16)).expect("step");
     }
@@ -539,18 +539,18 @@ fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
     let labels = session.accessible_labels();
     assert!(
         crate::common::canvas_shown(&session),
-        "the desk shows the style a named press chose, within {frames} frames: {labels:?}"
+        "the layout shows the style a named press chose, within {frames} frames: {labels:?}"
     );
 }
 
-/// Step 4 of shell.md §6, "Two ways to change a desk", without an agent: the desktop style's
+/// Step 4 of shell.md §6, "Two ways to change a layout", without an agent: the layouttop style's
 /// dock rides the foot, and the style's own action `dock_on` — the one its settings control
-/// runs — moves it to the leading edge, and the desk draws the dock there. The settings are the
+/// runs — moves it to the leading edge, and the layout draws the dock there. The settings are the
 /// style's own plain tilolang state with defaults, changed by typed actions, and the change
 /// applies live.
 ///
 /// This fails without the change: before it the desktop had no settings view of its own and no
-/// entry opened one from the desk, so a person could not change where the desktop's dock rides
+/// entry opened one from the layout, so a person could not change where the layouttop's dock rides
 /// from the place they pick the style.
 #[test]
 fn the_desktops_dock_edge_setting_moves_the_dock() {
@@ -561,7 +561,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
     until(&mut session, |session| {
         crate::common::preset_menu(session).is_some()
     });
-    // The desktop, by the style switch's own action: `show_style` names the view the desk draws
+    // The layouttop, by the style switch's own action: `show_style` names the view the layout draws
     // (`Viewing.style`), through the shell's door as the switch's row runs. The desktop's own
     // bar drops the style menu, so a press on the bar cannot pick it back.
     let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
@@ -570,7 +570,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
         &mut session,
         "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
     );
-    assert!(!failed, "the desk shows the desktop: {answer}");
+    assert!(!failed, "the layout shows the layouttop: {answer}");
     until(&mut session, |session| {
         crate::common::preset_menu(session).is_none()
     });
@@ -583,7 +583,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
         "the dock rides the foot first: {before:?}"
     );
     // The style's own setting, the action its settings control runs: the dock to the leading
-    // edge, through the shell's record the desk reads.
+    // edge, through the shell's record the layout reads.
     session
         .run_shell_action("dock_on", vec![serde_json::json!("left")])
         .unwrap_or_else(|why| panic!("the dock moves to the leading edge: {why}"));
@@ -600,7 +600,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
 /// Step 4's third part (`shell.md` §6, "Agents make styles with the same commands a person
 /// types"): the settings and the switch are ordinary actions the REPL — the person typing what
 /// the agent would — calls by the same names, so it switches to the desktop and moves its dock
-/// to the leading edge with the calls a Settings control runs, and the desk draws it there.
+/// to the leading edge with the calls a Settings control runs, and the layout draws it there.
 ///
 /// This fails without the change: the settings were reached only through the shell's own
 /// `run_shell_action` (a test's back door, not a broker action every caller has), so the REPL

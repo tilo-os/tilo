@@ -65,7 +65,7 @@ impl SwitcherScope {
 /// The shell's surface over the windows: at rest, or one of the shell's own views.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Overlay {
-    /// The desk at rest, with its bar.
+    /// The shell at rest, with its bar.
     #[default]
     Rest,
     /// Every strip and window of the workspace, to search and move.
@@ -91,7 +91,7 @@ impl Overlay {
     #[must_use]
     pub fn named(name: &str) -> Option<Self> {
         Some(match name {
-            "" | "none" | "desk" => Self::Rest,
+            "" | "none" | "shell" => Self::Rest,
             "overview" => Self::Overview,
             "switcher" => Self::Switcher,
             "launcher" => Self::Launcher,
@@ -133,7 +133,7 @@ pub enum Slot {
     About,
     /// The emoji picker.
     Emoji,
-    /// A window's menu: the rows the desk offers that window.
+    /// A window's menu: the rows the shell offers that window.
     WindowMenu,
     /// The menu of the workspace in front, opened from its name on the bar.
     WorkspaceMenu,
@@ -202,8 +202,8 @@ impl Slot {
         }
     }
 
-    /// Whether the surface stands over the desk beside others: a menu, a popover, the strip labels,
-    /// the search, quick settings — one at a time. The overview is the desk itself, the surface
+    /// Whether the surface stands over the shell beside others: a menu, a popover, the strip labels,
+    /// the search, quick settings — one at a time. The overview is the shell itself, the surface
     /// everything else stands over, so it is not one of them.
     #[must_use]
     pub const fn stands_beside(self) -> bool {
@@ -406,12 +406,12 @@ impl Anchor {
     }
 }
 
-/// What holds the keyboard: the desk's windows, or a surface over them.
+/// What holds the keyboard: the shell's windows, or a surface over them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// The window in front: nothing over the desk wants the keyboard.
+    /// The window in front: nothing over the shell wants the keyboard.
     Window,
-    /// A surface over the desk holds the keyboard.
+    /// A surface over the shell holds the keyboard.
     Surface(Slot),
 }
 
@@ -762,7 +762,7 @@ impl Overlays {
     }
 
     /// The display the person works on, as the desktop last placed its surfaces on it: the one
-    /// every surface without a place of its own stands on. `None` while the desk spans one display.
+    /// every surface without a place of its own stands on. `None` while the shell spans one display.
     #[must_use]
     pub fn focused_display(&self) -> Option<Rect> {
         self.0.borrow().displays.focused
@@ -1135,7 +1135,7 @@ mod tests {
                 "and quick settings after them"
             );
             assert!(overlays.is_open(Slot::QuickSettings));
-            // The overview is the desk the others stand over, not one of them.
+            // The overview is the shell the others stand over, not one of them.
             overlays.open(Slot::Overview, None);
             assert!(
                 overlays.is_open(Slot::QuickSettings),
@@ -1151,7 +1151,7 @@ mod tests {
         phase the_keyboard_goes_to_the_topmost_surface_and_comes_back_down;
         {
             let overlays = overlays();
-            assert_eq!(overlays.target(), Target::Window, "the desk has it");
+            assert_eq!(overlays.target(), Target::Window, "the shell has it");
 
             overlays.open(Slot::Overview, None);
             assert_eq!(overlays.target(), Target::Surface(Slot::Overview));
@@ -1307,7 +1307,7 @@ mod tests {
             assert_eq!(
                 overlays.press_outside(640.0, 700.0),
                 None,
-                "nothing is up, so the press is the desk's"
+                "nothing is up, so the press is the shell's"
             );
             overlays.open(Slot::WorkspaceMenu, None);
             assert_eq!(
@@ -1320,7 +1320,7 @@ mod tests {
             assert_eq!(
                 overlays.press_outside(640.0, 700.0),
                 Some(Slot::WorkspaceMenu),
-                "a press on the desk misses the panel"
+                "a press on the shell misses the panel"
             );
             assert_eq!(
                 overlays.press_outside(panel.center().x, panel.center().y),
@@ -1346,7 +1346,7 @@ mod tests {
             assert_eq!(
                 entries.iter().map(|entry| entry.slot).collect::<Vec<_>>(),
                 vec![Slot::Overview, Slot::QuickSettings],
-                "the overview is the desk the panel stands over, not a second popup"
+                "the overview is the shell the panel stands over, not a second popup"
             );
             let overview = &entries[0];
             assert_eq!(overview.role, Role::Overlay);
@@ -1374,7 +1374,7 @@ mod tests {
             );
             assert!(
                 place.y1 < DISPLAY.y1 - POPOVER_MARGIN,
-                "with the desk it does not cover left below it"
+                "with the shell it does not cover left below it"
             );
         }
 
@@ -1549,7 +1549,7 @@ mod tests {
         assert_eq!(overlays.spotlight(), "quotes");
         for name in [
             "none",
-            "desk",
+            "shell",
             "overview",
             "switcher",
             "launcher",

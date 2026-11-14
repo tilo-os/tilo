@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use tilo_actions::{ActionAddress, DoorError};
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
+use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::super_tap::Ask;
 use tilo_session_core::surface::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use ui::host_operation::ResourceOperationStart;
@@ -23,7 +23,7 @@ use crate::displays;
 use crate::doors::plane::answered;
 use crate::i18n::t;
 use crate::keys::{DeviceKey, Invocation, Press, SessionKeys};
-use crate::platform::surfaces::DeskGesture;
+use crate::platform::surfaces::ShellGesture;
 use crate::shell::state::WINDOW_MENU;
 
 /// What plays: the audio service's media, whose own controls reach the player in front.
@@ -399,7 +399,7 @@ impl Shared {
                         self.super_tap.borrow_mut().took_hints();
                     } else {
                         self.super_peek
-                            .show(self.shortcut_guide.peek(self.peek_desk()));
+                            .show(self.shortcut_guide.peek(self.peek_shell()));
                     }
                 }
                 Ask::HintsGone => self.super_peek.hide(),
@@ -407,9 +407,9 @@ impl Shared {
         }
     }
 
-    /// What the desk holds where the person works: the windows of the shown strip, and the tabs
+    /// What the shell holds where the person works: the windows of the shown strip, and the tabs
     /// of the focused one.
-    fn peek_desk(&self) -> tilo_sheets::shortcut_guide::PeekDesk {
+    fn peek_shell(&self) -> tilo_sheets::shortcut_guide::PeekDesk {
         self.handle
             .read(|tree| {
                 let strip_id = tree.active_strip_id()?;
@@ -441,16 +441,16 @@ impl Shared {
         let mut invocations = self.invocations.borrow_mut();
         for gesture in gestures {
             invocations.push(match gesture {
-                DeskGesture::StepStrip(steps) => {
+                ShellGesture::StepStrip(steps) => {
                     // A finger chose the strip: the change it makes is drawn sliding, not landed
                     // as a chord's would be.
                     ui::motion::note_source(ui::tokens::MotionSource::Gesture);
                     Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
                 }
-                // A strip under the fingers is the desk's own drawing, as the strip deck is: the
+                // A strip under the fingers is the shell's own drawing, as the strip deck is: the
                 // fingers move it here, where the frame is, rather than through a published action
                 // that would arrive a pass later.
-                DeskGesture::StripDrag { travel, began } => {
+                ShellGesture::StripDrag { travel, began } => {
                     self.desktop.with_widgets(|host| {
                         if began {
                             host.begin_strip_carry(travel);
@@ -460,15 +460,15 @@ impl Shared {
                     });
                     continue;
                 }
-                DeskGesture::StripDragEnd { cancelled } => {
+                ShellGesture::StripDragEnd { cancelled } => {
                     self.desktop
                         .with_widgets(|host| host.end_strip_carry(cancelled));
                     continue;
                 }
-                DeskGesture::SwitchWorkspace(delta) => {
+                ShellGesture::SwitchWorkspace(delta) => {
                     Invocation::new(CHROME_RESOURCE, "switch-workspace").with("delta", delta)
                 }
-                DeskGesture::Overview(open) => {
+                ShellGesture::Overview(open) => {
                     Invocation::new(CHROME_RESOURCE, "overview").with("open", open)
                 }
             });

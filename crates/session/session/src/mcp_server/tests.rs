@@ -127,7 +127,7 @@ fn the_shell_runtime_is_its_executable_in_its_unit_of_this_login() {
     );
 }
 
-/// An agent works in one workspace: the desk's windows of another, and windows the desk no
+/// An agent works in one workspace: the shell's windows of another, and windows the shell no
 /// longer knows, are not its; the windows of its own are, and so is anything not a window.
 #[test]
 fn a_window_of_another_workspace_is_not_an_agents() {
@@ -146,7 +146,7 @@ fn a_window_of_another_workspace_is_not_an_agents() {
     );
     assert!(
         doors.window_elsewhere("desktop:tab:11", "studio"),
-        "one no longer on the desk"
+        "one no longer on the shell"
     );
     assert!(
         !doors.window_elsewhere("notes.notebook", "studio"),
@@ -176,7 +176,7 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     assert!(
         matches!(&read, Err(ActionHostError::Unavailable { reason })
             if reason == "this desktop keeps no records of its own"),
-        "answered from the broker, which this desk has none of: {read:?}"
+        "answered from the broker, which this shell has none of: {read:?}"
     );
     assert!(started.elapsed() < WAIT, "nothing waited on the session");
     assert!(records.session.asks.lock_recover().is_empty());

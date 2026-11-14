@@ -1,5 +1,5 @@
-//! A window on a session's desk, as an app's is: a Wayland client of this test process's own
-//! connects to the session's display and maps a toplevel, which the session's desk places as a
+//! A window on a session's shell, as an app's is: a Wayland client of this test process's own
+//! connects to the session's display and maps a toplevel, which the session's shell places as a
 //! window of the workspace in front.
 //! A headless session draws no display to see, but it serves a display to its apps all the same
 //! (`WAYLAND_DISPLAY`, in the device's runtime directory): what a package's window connects to when
@@ -118,7 +118,7 @@ impl Seen {
     }
 }
 
-/// The windows of one client on a session's desk, up while this value lives.
+/// The windows of one client on a session's shell, up while this value lives.
 pub struct Client {
     connection: Connection,
     queue: EventQueue<Seen>,
@@ -139,8 +139,8 @@ impl Client {
         Self::of(compositor.connect_client().expect("client socket"))
     }
 
-    /// Map a window of `app` called `title` on the desk of the session whose
-    /// device directory is `device`, waiting until the desk places it.
+    /// Map a window of `app` called `title` on the shell of the session whose
+    /// device directory is `device`, waiting until the shell places it.
     ///
     /// # Panics
     /// The device's session serves no display, or the window is not placed.
@@ -311,7 +311,7 @@ impl Client {
     }
 
     /// Open the toplevel of `app` (set up by `before` ), draw it at the size it was configured to,
-    /// else `fallback` , and wait until the desk shows it.
+    /// else `fallback` , and wait until the shell shows it.
     #[track_caller]
     pub fn map(
         &mut self,
@@ -389,7 +389,7 @@ pub fn pump(
     });
 }
 
-/// The window of `app` and its rectangle `(x, y, w, h)` , once the desk places it.
+/// The window of `app` and its rectangle `(x, y, w, h)` , once the shell places it.
 pub fn window_of(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i32))> {
     compositor
         .windows()

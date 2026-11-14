@@ -123,7 +123,7 @@ pub struct HintFrame {
 
 impl HintFrame {
     /// The cards a hint keeps clear of, from what the strip's row knows: those standing over the
-    /// desk, and the corners a window's app stands its own activity cards in. An app's card and the
+    /// shell, and the corners a window's app stands its own activity cards in. An app's card and the
     /// hint share one place rule, so neither covers the other.
     #[must_use]
     pub fn cards_over(row: &HintPlaces) -> Vec<Rect> {
@@ -373,7 +373,7 @@ impl ControlHints {
 }
 
 /// How hint `spec` shows over `frame` , if its anchor is on screen and no card standing over the
-/// desk covers it.
+/// shell covers it.
 fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     let area = frame.area;
     let over = HintFrame::cards_over(&frame.row);
@@ -431,7 +431,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
                 Vec::new(),
             )
         }
-        // What moves the view is no control on the desk either: the hint stands in the bar while
+        // What moves the view is no control on the shell either: the hint stands in the bar while
         // the strip's own edge, the side the windows hide past, lights along its length.
         Gesture::PanView => {
             let (x, inward) = match row.beyond {
@@ -451,7 +451,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             )
         }
     };
-    // A card standing over the desk hides the control a hint points at: nothing is taught where
+    // A card standing over the shell hides the control a hint points at: nothing is taught where
     // there is nothing to take, and the hint's card would stand over the card's content.
     let covered = |rect: Rect| over.iter().any(|card| card.overlaps(rect));
     if stand.anchor().is_some_and(covered)
@@ -476,7 +476,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     })
 }
 
-/// The content no hint may stand over: the cards standing over the desk, an app's activity cards
+/// The content no hint may stand over: the cards standing over the shell, an app's activity cards
 /// in a window's corner, and every window's body — the one whose bar or edge a hint teaches
 /// included, since a hint below that bar would stand over the window itself.
 fn clear_of(frame: &HintFrame, over: &[Rect]) -> Vec<Rect> {
@@ -586,7 +586,7 @@ mod tests {
                 ),
                 "beside the edge it takes, which it lights"
             );
-            // The view moves from no control on the desk either: the bar, and the edge the windows
+            // The view moves from no control on the shell either: the bar, and the edge the windows
             // hide past lights.
             for (by, at_x) in [
                 ((false, true), 1440.0 - EDGE_INSET),
@@ -688,7 +688,7 @@ mod tests {
         }
 
         phase a_card_over_the_handle_keeps_the_hint_away;
-        // A card standing over the desk is another surface: a hint points at a control the card does
+        // A card standing over the shell is another surface: a hint points at a control the card does
         // not cover, and its own card keeps clear of the card's content.
         {
             let mut frame = frame();
@@ -699,7 +699,7 @@ mod tests {
                 let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
                 assert!(place(spec, &frame).is_none(), "{gesture:?} under the card");
             }
-            // The hint pointing at nothing on the desk still shows: the card keeps it, not the search.
+            // The hint pointing at nothing on the shell still shows: the card keeps it, not the search.
             let open = HINTS
                 .iter()
                 .find(|s| s.gesture == Gesture::OpenFromSearch)

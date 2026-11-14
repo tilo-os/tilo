@@ -2,7 +2,7 @@
 
 use tilo_desktop_model::Workspace;
 
-/// The name a workspace the desk is making gets: `name` as the person gave it, else the next number
+/// The name a workspace the shell is making gets: `name` as the person gave it, else the next number
 /// after those `held` here. A name already held is numbered, so two workspaces of one name never
 /// stand side by side in the bar, the menu and the overview, where a person picks one by its name.
 pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
@@ -10,7 +10,7 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map_or_else(|| numbered(held), str::to_owned);
-    // A workspace nobody named is held under the word the desk gives it, so a workspace asking for
+    // A workspace nobody named is held under the word the shell gives it, so a workspace asking for
     // that word is numbered beside it rather than standing as its twin.
     let taken = |candidate: &str| {
         held.iter()
@@ -31,7 +31,7 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
     }
 }
 
-/// The name of a workspace the desk numbers itself: the next one after those `held` here.
+/// The name of a workspace the shell numbers itself: the next one after those `held` here.
 fn numbered(held: &[Workspace]) -> String {
     tilo_desktop_surface::i18n::t_args(
         "browser-new-workspace-name",
@@ -44,7 +44,7 @@ mod tests {
     use super::*;
     use tilo_desktop_model::WorkspaceId;
 
-    /// `names` held as workspaces here, the way a desk keeps them.
+    /// `names` held as workspaces here, the way a shell keeps them.
     fn held(names: &[&str]) -> Vec<Workspace> {
         names
             .iter()
@@ -82,7 +82,7 @@ mod tests {
         }
 
         phase the_word_an_unnamed_workspace_reads_by_is_taken;
-        // A desk whose one workspace nobody named still holds the word it reads by: a workspace the
+        // A shell whose one workspace nobody named still holds the word it reads by: a workspace the
         // person calls that is numbered beside it, never its twin.
         {
             crate::i18n::ensure();
@@ -97,7 +97,7 @@ mod tests {
             assert_eq!(
                 made(None, &tree),
                 "Workspace 2",
-                "a workspace made without a name is numbered by the desk"
+                "a workspace made without a name is numbered by the shell"
             );
             assert_eq!(
                 made(Some("   "), &tree),
@@ -124,15 +124,15 @@ mod tests {
             );
         }
 
-        phase the_desks_own_number_starts_at_one_and_is_never_a_twin;
-        // The name the desk gives by number is a name like any other: the first on a desk with
+        phase the_shells_own_number_starts_at_one_and_is_never_a_twin;
+        // The name the shell gives by number is a name like any other: the first on a shell with
         // nothing on it, and numbered beside the workspace that already holds it.
         {
             crate::i18n::ensure();
             assert_eq!(
                 made(None, &[]),
                 "Workspace 1",
-                "the first workspace of an empty desk"
+                "the first workspace of an empty shell"
             );
             assert_eq!(
                 made(Some("Home"), &[]),
@@ -143,7 +143,7 @@ mod tests {
             assert_eq!(
                 made(None, &tree),
                 "Workspace 3 2",
-                "the number the desk would give is held, so it is numbered beside that workspace"
+                "the number the shell would give is held, so it is numbered beside that workspace"
             );
         }
     }

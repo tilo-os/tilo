@@ -12,17 +12,17 @@ use tilo_session::ActionPlane;
 
 const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
 
-/// The session locked, with the desk it showed before anything went wrong.
+/// The session locked, with the shell it showed before anything went wrong.
 struct LockedSession {
     session: Session,
-    /// The window the desk showed, kept open for the whole test.
+    /// The window the shell showed, kept open for the whole test.
     _client: TestClient,
     /// The session serves its services in this directory: the lock screen reaches them by it.
     _home: tempfile::TempDir,
-    desk: Vec<Vec<f64>>,
+    shots: Vec<Vec<f64>>,
 }
 
-/// A session on two displays, its desk drawn and then locked behind the lock screen on both of
+/// A session on two displays, its shell drawn and then locked behind the lock screen on both of
 /// them.
 fn locked_session() -> LockedSession {
     let _settled = ui::motion::testing::settled();
@@ -34,17 +34,17 @@ fn locked_session() -> LockedSession {
         std::sync::Arc::new(Sesame),
     );
     let client = mapped(&mut session, "org.example.Terminal");
-    let desk = pictures(&mut session, &DISPLAYS);
+    let shots = pictures(&mut session, &DISPLAYS);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
     pump(&mut session, &mut [], |session, _| {
         session.compositor().locked()
     });
-    until_drawn(&mut session, &DISPLAYS, &desk);
+    until_drawn(&mut session, &DISPLAYS, &shots);
     LockedSession {
         session,
         _client: client,
         _home: home,
-        desk,
+        shots,
     }
 }
 
@@ -54,7 +54,7 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
         mut session,
         _client,
         _home,
-        desk,
+        shots,
     } = locked_session();
 
     // The process drawing the lock screen goes away, as it does when it crashes.
@@ -65,7 +65,7 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
     );
 
     // The session is still locked, and starts its screen again: the person is not left looking at
-    // their desk, and not let into it either.
+    // their shell, and not let into it either.
     pump(&mut session, &mut [], |session, _| {
         session.surfaces().running("lock")
     });
@@ -73,15 +73,15 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
         session.compositor().locked(),
         "the session is still locked when its screen was started again"
     );
-    let again = until_drawn(&mut session, &DISPLAYS, &desk);
+    let again = until_drawn(&mut session, &DISPLAYS, &shots);
     for (index, display) in DISPLAYS.iter().enumerate() {
         // The screen says the time, so it is no copy of the one before: what the person gets is a
-        // lock screen over their desk, drawing what it shows.
-        let over_desk = apart(&again[index], &desk[index]);
+        // lock screen over their shell, drawing what it shows.
+        let over_shell = apart(&again[index], &shots[index]);
         assert!(
-            over_desk > 24.0,
-            "{display} shows the lock screen again, not the desk it covers: \
-             {over_desk:.0} of 255 from the desk"
+            over_shell > 24.0,
+            "{display} shows the lock screen again, not the shots it covers: \
+             {over_shell:.0} of 255 from the shots"
         );
         let colours: std::collections::BTreeSet<Vec<u8>> = session
             .compositor()
@@ -105,7 +105,7 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
     pump(&mut session, &mut [], |session, _| {
         !session.surfaces().running("lock")
     });
-    until_back(&mut session, &DISPLAYS, &desk);
+    until_back(&mut session, &DISPLAYS, &shots);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
         mut session,
         _client,
         _home,
-        desk,
+        shots,
         ..
     } = locked_session();
 
@@ -129,7 +129,7 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
             "the lock screen's app never stopped being the one that shows the lock"
         );
         let gone = !session.surfaces().running("lock");
-        if gone && apart(&pictures(&mut session, &DISPLAYS)[0], &desk[0]) > 24.0 {
+        if gone && apart(&pictures(&mut session, &DISPLAYS)[0], &shots[0]) > 24.0 {
             break;
         }
     }
@@ -163,11 +163,11 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
     pump(&mut session, &mut [], |session, _| {
         !session.compositor().locked()
     });
-    // The lock the person saw was the session's own drawing, and the desk they come back to says
+    // The lock the person saw was the session's own drawing, and the shell they come back to says
     // so until they take that back.
     take_back_the_notice_of_the_locks_own_view(&mut session);
-    // And the desk is back, which is what the person gets once they unlock.
-    until_back(&mut session, &DISPLAYS, &desk);
+    // And the shell is back, which is what the person gets once they unlock.
+    until_back(&mut session, &DISPLAYS, &shots);
 }
 
 /// The login's record says the session before this one was left locked: the one that starts comes
@@ -215,7 +215,7 @@ fn a_session_left_locked_comes_back_locked() {
     pump(&mut session, &mut [], |session, _| {
         session.surfaces().running("lock")
     });
-    // The person sees the lock screen, and nothing of the desk, until they unlock it.
+    // The person sees the lock screen, and nothing of the shell, until they unlock it.
     assert!(
         publisher(&session, "overview").is_none(),
         "the recovered lock withholds the desktop's actions"

@@ -2,7 +2,7 @@
 //! what only the session can do about workspaces (making one, joining one,
 //! leaving this one, and its settings) and about the session itself (locking
 //! the screen, logging out, restarting the computer, shutting it down), and
-//! the empty desk's welcome verbs, which the launchpad declares and its cards
+//! the empty shell's welcome verbs, which the launchpad declares and its cards
 //! show. The workspace menu lists the workspace rows, quick settings' power
 //! menu the session's, and search all of them.
 //!
@@ -36,8 +36,8 @@ const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
     ),
 ];
 
-/// The empty desk's cards this device offers: a verb that opens an app stands only where the app is
-/// installed here, which is the app catalogue the desk's search lists it from. The desk draws these
+/// The empty shell's cards this device offers: a verb that opens an app stands only where the app is
+/// installed here, which is the app catalogue the shell's search lists it from. The shell draws these
 /// cards, publishes a row for each to agents, and search lists them; a verb whose app is not here
 /// is no card, no row and no search entry.
 #[cfg(target_os = "linux")]
@@ -49,14 +49,14 @@ pub(crate) fn cards(lists: &crate::lists::Lists) -> Vec<LaunchpadAction> {
         .collect()
 }
 
-/// Whether this device offers `card`: its app is installed here, or the verb happens on the desk
+/// Whether this device offers `card`: its app is installed here, or the verb happens on the shell
 /// itself.
 #[cfg(target_os = "linux")]
 pub(crate) fn offers(lists: &crate::lists::Lists, card: LaunchpadAction) -> bool {
     card.offered(|app| lists.latest().has_app(app))
 }
 
-/// Offer the session's host actions: the workspace rows always, the empty desk's welcome verbs, and
+/// Offer the session's host actions: the workspace rows always, the empty shell's welcome verbs, and
 /// the session's own rows where this session can carry them out — a session in a window of another
 /// desktop neither restarts nor shuts its host down, and one that cannot be unlocked again is not
 /// offered locking.
@@ -133,7 +133,7 @@ pub fn publish(
         Icon::Settings,
         HostActionSource::Workspace,
     ));
-    // The empty desk's welcome verbs, declared by the launchpad that shows them: the desk's cards,
+    // The empty shell's welcome verbs, declared by the launchpad that shows them: the shell's cards,
     // search and the catalogue agents read all read these rows, and only the verbs whose app this
     // device has are offered.
     #[cfg(target_os = "linux")]

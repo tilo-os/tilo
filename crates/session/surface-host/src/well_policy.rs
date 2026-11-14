@@ -32,7 +32,7 @@ use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
 use ui::widget::arrange::rem_of;
 
-use crate::desktop::{DeskGesture, GestureReader, WindowFollowers, WindowObserver};
+use crate::desktop::{GestureReader, ShellGesture, WindowFollowers, WindowObserver};
 use crate::widget::WidgetHost;
 
 /// Where a window not shown waits: left of every output, out of sight and out of the pointer's
@@ -75,7 +75,7 @@ pub trait WindowModel {
     /// The desktop took a gesture, and it asked `gesture` of it: it is the same
     /// desktop the strips' policy takes them on, so they reach its chrome the
     /// same way.
-    fn took_gesture(&self, _gesture: DeskGesture) {}
+    fn took_gesture(&self, _gesture: ShellGesture) {}
 }
 
 /// The policy's own desktop ([`well_policy`]).

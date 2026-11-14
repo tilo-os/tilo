@@ -1,11 +1,11 @@
-//! Where a desk widget rests, and how far an open card reaches from it.
+//! Where a Desktop widget rests, and how far an open card reaches from it.
 //! A widget rests wherever the person put it, on whichever display: its place is kept per display
 //! as fractions of the space its resting form can move in there ([`ui::desk_widgets::Place`]), so a
 //! widget against an edge or in a corner stays there when the resolution changes.
 //! A widget's open card grows from its resting form toward the middle of the display
 //! ([`open_rect`]): from the corner of the form nearest the display's nearer sides, so opening
 //! never pushes it off the screen and the form and the card share that corner.
-//! Everything here is pure geometry in desktop coordinates, tested on its own; the desk feeds it
+//! Everything here is pure geometry in desktop coordinates, tested on its own; the shell feeds it
 //! displays and widgets.
 
 #![allow(
@@ -336,7 +336,7 @@ mod tests {
     const PILL: Size = Size::new(240.0, 40.0);
 
     tilo_test_env::scenario! {
-        fn a_desk_widgets_place_rests_drops_and_throws;
+        fn a_shell_widgets_place_rests_drops_and_throws;
 
         phase a_place_round_trips_and_keeps_to_its_edge_on_another_resolution;
         {

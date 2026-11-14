@@ -36,7 +36,7 @@ impl Shared {
         reading
     }
 
-    /// Who is in each workspace now, and the calls in progress there, as the desk's member list and
+    /// Who is in each workspace now, and the calls in progress there, as the shell's member list and
     /// the presence say: what the empty palette lists first, by workspace, the one in front first.
     pub(crate) fn here_now(&self) -> Vec<WorkspaceHere> {
         let calls = self
@@ -97,7 +97,7 @@ impl Shared {
                                 .people
                                 .iter()
                                 .map(|caller| {
-                                    // Who they are on the desk, when it lists them: the same face
+                                    // Who they are on the shell, when it lists them: the same face
                                     // and name.
                                     workspace
                                         .present
@@ -156,7 +156,7 @@ impl Shared {
     }
 }
 
-/// Whether the desk's row for someone says they are away from their machine: what dims their face,
+/// Whether the shell's row for someone says they are away from their machine: what dims their face,
 /// and what the launcher says in words.
 fn away(here: &tilo_desktop_model::Present) -> bool {
     here.availability.dims()

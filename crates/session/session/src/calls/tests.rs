@@ -1,4 +1,4 @@
-//! A call on the native desk, in two shapes: an app joins a voice channel
+//! A call on the native shell, in two shapes: an app joins a voice channel
 //! on a session that can carry one, and the person and the people in the
 //! workspace hear each other; and a session with no transport ends the
 //! call it cannot carry, saying why.
@@ -77,10 +77,10 @@ fn target() -> CallTarget {
     }
 }
 
-/// A desk showing one workspace, as this device holds it.
-fn desk_tree() -> Layout {
+/// A shell showing one workspace, as this device holds it.
+fn layout_tree() -> Layout {
     let workspace_id = workspace_id();
-    let workspace = Workspace::new(workspace_id, "Desk");
+    let workspace = Workspace::new(workspace_id, "Session");
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
@@ -206,7 +206,7 @@ async fn founded(keys: &KeyProvider) {
     }
 }
 
-/// A session taking part in the workspace through `sync` , showing the desk.
+/// A session taking part in the workspace through `sync` , showing the shell.
 fn session(sync: &std::rc::Rc<Client>, socket: &std::path::Path) -> Session {
     let session = Session::headless(
         Options {
@@ -218,7 +218,7 @@ fn session(sync: &std::rc::Rc<Client>, socket: &std::path::Path) -> Session {
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    session.handle().replace_tree(desk_tree());
+    session.handle().replace_tree(layout_tree());
     session
 }
 
@@ -500,19 +500,19 @@ struct Pair {
     clippy::future_not_send,
     reason = "a session's client is not Send, and the test runtime does not need it to be"
 )]
-async fn one_call(laptop: &Client, desk: &Client) -> Pair {
-    laptop.connect(desk.endpoint_addr());
-    desk.connect(laptop.endpoint_addr());
-    laptop.follow_desktop(&desk_tree());
-    desk.follow_desktop(&desk_tree());
+async fn one_call(laptop: &Client, session: &Client) -> Pair {
+    laptop.connect(session.endpoint_addr());
+    session.connect(laptop.endpoint_addr());
+    laptop.follow_desktop(&layout_tree());
+    session.follow_desktop(&layout_tree());
     // Each session hears the other say it is in the channel's call.
-    for (here, there) in [(laptop, 0x22_u8), (desk, 0x11_u8)] {
+    for (here, there) in [(laptop, 0x22_u8), (session, 0x11_u8)] {
         here.hear(hello(there, "the other device"));
         presence(here, there, collab_types::PeerPresencePayload::Arrived);
         availability(here, there, Some(call_presence()));
     }
     bound(laptop).await;
-    bound(desk).await;
+    bound(session).await;
     let (keys, kept) = keys(0x11, 0x11, &[0x11, 0x22]);
     founded(&keys).await;
     // Voice runs on the workspace's plane: both devices publish and hear on their own plane in one
@@ -526,7 +526,7 @@ async fn one_call(laptop: &Client, desk: &Client) -> Pair {
         Some(plane(&relay, devices[0], &devices, &workspace)),
     );
     let right = carrier(
-        desk,
+        session,
         &keys,
         Some(plane(&relay, devices[1], &devices, &workspace)),
     );
@@ -562,13 +562,13 @@ async fn one_call(laptop: &Client, desk: &Client) -> Pair {
 async fn leaves_and_rejoins() {
     let person = person_key();
     let laptop = device(&person, 0x11, "Laptop");
-    let desk = device(&person, 0x22, "Desk");
+    let session = device(&person, 0x22, "Session");
     let Pair {
         left,
         right,
         mut here,
         ..
-    } = one_call(&laptop, &desk).await;
+    } = one_call(&laptop, &session).await;
     let (leaving, staying, rejoining) = (&mut here, &right, &left);
     // Heard for a while, the device owns a place in the playout of the one that stays, well past
     // the start of a stream: a stream that starts over would take that long to be heard again.
@@ -622,14 +622,14 @@ async fn a_device_that_leaves_a_call_and_rejoins_is_heard_again_at_once() {
 async fn two_devices_in_one_call_hear_each_other_until_a_mute_a_deafen_or_a_leave() {
     let person = person_key();
     let laptop = device(&person, 0x11, "Laptop");
-    let desk = device(&person, 0x22, "Desk");
+    let session = device(&person, 0x22, "Session");
     let Pair {
         left,
         right,
         mut here,
         mut there,
         ..
-    } = one_call(&laptop, &desk).await;
+    } = one_call(&laptop, &session).await;
     assert_eq!(
         left.calls.callers(CHANNEL),
         vec![*public(0x22).as_bytes()],
@@ -746,11 +746,11 @@ async fn receive_pictures(
 async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     let root = person_key();
     let ana = device(&root, 0x11, "Laptop");
-    let ben = device(&root, 0x22, "Desk");
+    let ben = device(&root, 0x22, "Session");
     ana.connect(ben.endpoint_addr());
     ben.connect(ana.endpoint_addr());
-    ana.follow_desktop(&desk_tree());
-    ben.follow_desktop(&desk_tree());
+    ana.follow_desktop(&layout_tree());
+    ben.follow_desktop(&layout_tree());
     for (here, there) in [(&ana, 0x22_u8), (&ben, 0x11_u8)] {
         here.hear(hello(there, "the other device"));
         presence(here, there, collab_types::PeerPresencePayload::Arrived);
@@ -842,7 +842,7 @@ async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     there.close();
 }
 
-/// Draw the desk into `share` as the session's pass does, until the test stops it: the call takes
+/// Draw the shell into `share` as the session's pass does, until the test stops it: the call takes
 /// each frame the share holds and sends it.
 fn drawing(share: &'static Arc<ScreenShare>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -865,11 +865,11 @@ fn drawing(share: &'static Arc<ScreenShare>) -> tokio::task::JoinHandle<()> {
 async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
     let root = person_key();
     let ana = device(&root, 0x11, "Laptop");
-    let ben = device(&root, 0x22, "Desk");
+    let ben = device(&root, 0x22, "Session");
     ana.connect(ben.endpoint_addr());
     ben.connect(ana.endpoint_addr());
-    ana.follow_desktop(&desk_tree());
-    ben.follow_desktop(&desk_tree());
+    ana.follow_desktop(&layout_tree());
+    ben.follow_desktop(&layout_tree());
     for (here, there) in [(&ana, 0x22_u8), (&ben, 0x11_u8)] {
         here.hear(hello(there, "the other device"));
         presence(here, there, collab_types::PeerPresencePayload::Arrived);
@@ -1008,14 +1008,14 @@ fn a_locked_screen_stops_the_share_at_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_joins_while_the_workspace_keys_are_still_on_their_way() {
     let person = person_key();
-    // This desk's device is not the one its workspace is governed by, and its channel's keys have
+    // This session's device is not the one its workspace is governed by, and its channel's keys have
     // not reached it yet.
     let laptop = device(&person, 0x22, "Laptop");
-    let desk = device(&person, 0x11, "Desk");
-    laptop.connect(desk.endpoint_addr());
-    desk.connect(laptop.endpoint_addr());
-    laptop.follow_desktop(&desk_tree());
-    desk.follow_desktop(&desk_tree());
+    let session = device(&person, 0x11, "Session");
+    laptop.connect(session.endpoint_addr());
+    session.connect(laptop.endpoint_addr());
+    laptop.follow_desktop(&layout_tree());
+    session.follow_desktop(&layout_tree());
     laptop.hear(hello(0x11, "the other device"));
     presence(&laptop, 0x11, collab_types::PeerPresencePayload::Arrived);
     availability(&laptop, 0x11, Some(call_presence()));
@@ -1056,7 +1056,7 @@ async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
     step(&mut session);
     let media = session
         .media_service()
-        .expect("the desk hands its apps a media service")
+        .expect("the session hands its apps a media service")
         .clone();
 
     // Chat joins a voice channel through that service, as its people's call action does. This
@@ -1102,7 +1102,7 @@ async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
     // Another person's device still reads this person in a call when this person's presence says
     // so: the presence is the whole of it.
     let peer = Client::untethered(public(0xb0), OwnPresence::default());
-    peer.follow_desktop(&desk_tree());
+    peer.follow_desktop(&layout_tree());
     peer.hear(hello(0xf0, "Framework 16"));
     presence(
         &peer,
@@ -1143,7 +1143,7 @@ fn a_channels_roster_says_who_has_a_camera_or_screen_on() {
             ..OwnPresence::default()
         },
     );
-    mine.follow_desktop(&desk_tree());
+    mine.follow_desktop(&layout_tree());
     // Two people in the channel, sending nothing: in it, with neither on.
     for (seed, label) in [(0xaa, "Framework 16"), (0xbb, "ThinkPad")] {
         mine.hear(hello(seed, label));

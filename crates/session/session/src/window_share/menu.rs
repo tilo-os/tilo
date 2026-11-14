@@ -1,6 +1,6 @@
 //! The shares as a window's menu reads them, and what the menu asks of them.
 //!
-//! A window's menu offers to share the window with its workspace, or to stop. The desk keeps
+//! A window's menu offers to share the window with its workspace, or to stop. The shell keeps
 //! nothing of the share: what the row says is what the shares' resource reads when the menu is
 //! asked for ([`WindowShares::reading`]), and choosing the row invokes the resource's own action
 //! with the tab, through the door every caller uses. The menu is one more caller of
@@ -54,7 +54,7 @@ impl WindowShares {
     }
 }
 
-/// What the desk's window menus read of `shares` : how the resource's reading says each window's
+/// What the shell's window menus read of `shares` : how the resource's reading says each window's
 /// share stands when its menu is asked for. A session that takes no part in a workspace (`sync`
 /// holds no topic of it) shares nothing with it, so the windows there offer no share.
 pub(crate) fn reading_for_menus(
@@ -74,8 +74,9 @@ pub(crate) fn reading_for_menus(
 
 /// What the windows' menus asked of the shares since the last pass, as the resource's published
 /// actions: `share` with the tab, or `stop` with it.
-pub(crate) fn follow_asks(desk: &DesktopHandle) -> Vec<Invocation> {
-    desk.take_workspace_share_asks()
+pub(crate) fn follow_asks(shell: &DesktopHandle) -> Vec<Invocation> {
+    shell
+        .take_workspace_share_asks()
         .into_iter()
         .map(|(tab, share)| {
             Invocation::new(SHARES_RESOURCE, if share { "share" } else { "stop" })

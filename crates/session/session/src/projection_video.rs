@@ -168,7 +168,7 @@ impl ProjectionVideo {
         }
     }
 
-    /// When a live projection next needs a frame of the desk: the profile's frame rate, from the
+    /// When a live projection next needs a frame of the shell: the profile's frame rate, from the
     /// last frame drawn.
     pub(crate) fn next_deadline(&self, stream: Option<&VideoStream>) -> Option<Instant> {
         let stream = stream?;

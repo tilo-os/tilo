@@ -1,18 +1,18 @@
-//! The file access list the running desk hands the Files daemon.
+//! The file access list the running shell hands the Files daemon.
 //! The Files mount decides every open and read against a signed capability list, and the session is
-//! what keeps that list current: while it runs it publishes the desk's file capabilities on every
+//! what keeps that list current: while it runs it publishes the shell's file capabilities on every
 //! change, so taking a folder away stops the app that holds it at its next open — without closing
 //! the app, restarting it, or asking it to notice anything.
 //! The list is the workspace's own permissions in the mount's terms: the grants apps hold through
 //! portals, and what each member's role lets them reach in the workspace's files (a viewer reads,
-//! an editor writes). Both follow the desk's replica revision, so a role change or a removed member
+//! an editor writes). Both follow the shell's replica revision, so a role change or a removed member
 //! reaches the daemon in the same pass, never on a timer.
 //! The daemon signs the list it reads into the ACL every mount enforces
 //! (`WorkspaceAuthority::apply`), so writing the file is the session's whole part wherever the
 //! daemon holds the governor key. A desktop that keeps that key out of reach — a host install,
 //! where only the protected signing session may use it — names a signer in
 //! `TILO_FS_AUTHORITY_PUBLISHER` and the session runs it after each write. Publishing is coalesced:
-//! a burst of desk changes publishes the newest list, and an unchanged list is neither rewritten
+//! a burst of shell changes publishes the newest list, and an unchanged list is neither rewritten
 //! nor published again.
 
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ const RETRY_BUDGET: Duration = Duration::from_secs(60);
 const FIRST_RETRY: Duration = Duration::from_millis(100);
 const LAST_RETRY: Duration = Duration::from_secs(5);
 
-/// The desk's file capabilities and each workspace's readers, as the Files daemon enforces them for
+/// The shell's file capabilities and each workspace's readers, as the Files daemon enforces them for
 /// this device.
 /// Every workspace exports together (one mount serves them all), so two workspaces granting the
 /// same path to different people union. A grant to this person is exported twice: once by the
@@ -189,7 +189,7 @@ impl Publisher {
     }
 
     /// Hand a list to the daemon. `false` when it is already in force or already on its way: most
-    /// desk changes touch nothing Files enforces.
+    /// shell changes touch nothing Files enforces.
     pub(crate) fn publish(&self, authority: &FsAuthority) -> bool {
         let Ok(bytes) = serde_json::to_vec_pretty(authority) else {
             return false;
@@ -217,7 +217,7 @@ impl Publisher {
     }
 
     /// Whether the newest list handed over did not reach the daemon, and no worker is still trying
-    /// it: nothing of what the desk decided then is enforced until one does.
+    /// it: nothing of what the shell decided then is enforced until one does.
     pub(crate) fn unpublished(&self) -> bool {
         let state = self.inner.state.lock_recover();
         state.last_error.is_some() && !state.running && state.pending.is_none()
@@ -644,13 +644,13 @@ mod tests {
             dir.path().join("config/fs-capabilities.json"),
         );
         // A worker that gave up: the list is not in force and nothing is trying it,
-        // so the next change of the desk hands it over again.
+        // so the next change of the shell hands it over again.
         publisher.inner.state.lock_recover().last_error = Some("the daemon refused it".into());
         assert!(
             publisher.unpublished(),
             "nothing is trying the list the daemon refused"
         );
-        // A list being tried is the worker's, not the desk's to hand over again.
+        // A list being tried is the worker's, not the shell's to hand over again.
         publisher.inner.state.lock_recover().running = true;
         assert!(
             !publisher.unpublished(),
@@ -695,7 +695,7 @@ mod tests {
             seen.join("refused").is_file()
         });
         // Its refusal reaches the publisher a moment after the daemon said it, and the worker goes
-        // on trying the list: the desk leaves it to the worker.
+        // on trying the list: the shell leaves it to the worker.
         assert!(
             !publisher.unpublished(),
             "a worker is still trying the list"

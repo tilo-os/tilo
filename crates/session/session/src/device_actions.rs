@@ -555,7 +555,7 @@ mod tests {
                     id.clone(),
                     Some(directory.path()),
                     std::iter::empty(),
-                    crate::platform::custody::of_this_desk(),
+                    crate::platform::custody::of_this_session(),
                 )
                 .expect("this device's engine opens"),
             );

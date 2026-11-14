@@ -1,8 +1,8 @@
-//! The arrangement is the desk's own record (shell.md §2, workspace-model.md
-//! §9): what is open where, kept with the desk the workspace shares, with
-//! history and undo. No second record of it exists, and what the desk's windows
+//! The arrangement is the layout's own record (shell.md §2, workspace-model.md
+//! §9): what is open where, kept with the layout the workspace shares, with
+//! history and undo. No second record of it exists, and what the layout's windows
 //! do not carry — the view a place shows and whether it is pinned — is kept
-//! with the desk too.
+//! with the layout too.
 //!
 //! Each test here fails without it: nothing attributes a move to anyone,
 //! nothing undoes one, an agent's move lands under the person's hands, and a
@@ -48,7 +48,7 @@ fn person() -> String {
     tilo_session::identity::seated_person(&options(None))
 }
 
-/// A session of `person` 's: the device's desk is a workspace's layout, so it is one that holds
+/// A session of `person` 's: the device's layout is a workspace's layout, so it is one that holds
 /// its workspaces.
 fn session_as(seat: &str) -> Session {
     crate::common::headless(Options {
@@ -77,7 +77,7 @@ fn undone(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
     });
 }
 
-/// The arrangement the session's desk holds now, as a shell reads it.
+/// The arrangement the session's layout holds now, as a shell reads it.
 fn arrangement(session: &Session) -> arrangement::Reading {
     session.arrangement().borrow().reading()
 }
@@ -115,12 +115,12 @@ fn strip_at(session: &Session, strip: u64) -> Option<arrangement::StripReading> 
         .find(|held| held.key == key)
 }
 
-/// A window of `app` on the desk, its tab's id.
+/// A window of `app` on the shell, its tab's id.
 fn open_window(session: &mut Session, app: &str) -> u64 {
     open_window_called(session, app, app)
 }
 
-/// A window of `app` on the desk calling itself `title` , its tab's id.
+/// A window of `app` on the shell calling itself `title` , its tab's id.
 fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
     // A table's window, opened the way the launcher opens one: a tab of the strip in front.
     let handle = session.handle().clone();
@@ -251,7 +251,7 @@ fn strip_reading_of(session: &Session, place: u64) -> arrangement::StripReading 
     strip_at(session, strip).expect("the strip is in the record")
 }
 
-// (6) A window let go outside its strip floats above the desk, where every member of the workspace
+// (6) A window let go outside its strip floats above the shell, where every member of the workspace
 // sees it: one step of the person's record, taken back by undo, and snapping it back with no target
 // returns it exactly where it was.
 #[test]
@@ -456,10 +456,10 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     });
 }
 
-// (3) One record answers what the arrangement is: the desk's own, which the workspace shares.
+// (3) One record answers what the arrangement is: the layout's own, which the workspace shares.
 // Nothing is kept beside it, and another member of the workspace reads none of it.
 #[test]
-fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
+fn the_arrangement_is_the_shells_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
     // A device of this machine's own, holding its workspaces: the identity is minted in its home,
     // so its engine opens and its layout is the workspace's.
@@ -477,7 +477,7 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     assert_eq!(
         strip_of(&here, window).map(|strip| row_of(&here, strip)),
         Some(second),
-        "the desk holds the move"
+        "the layout holds the move"
     );
     drop(here);
 
@@ -492,7 +492,7 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
         "no second record of the arrangement is kept"
     );
 
-    // Another member of the workspace runs a desk of their own: nothing of this one's arrangement
+    // Another member of the workspace runs a layout of their own: nothing of this one's arrangement
     // is theirs.
     let mut theirs = session_as(BO);
     step(&mut theirs);
@@ -503,9 +503,9 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
 }
 
 // (5) What a place shows and whether it is pinned are the window's own, so they survive a restart
-// with the desk — and nothing is kept beside it.
+// with the layout — and nothing is kept beside it.
 #[test]
-fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
+fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
     let _settled = ui::motion::testing::settled();
     // A device of this machine's own, holding its workspaces: the identity is minted in its home,
     // so its engine opens and its layout is the workspace's.
@@ -551,8 +551,8 @@ fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
     assert!(back.pinned, "the place is still pinned");
 }
 
-// A place a launch left on the desk and no window came for is not a window the person had open: the
-// next start does not bring it back, and the desk is exactly what was open.
+// A place a launch left on the shell and no window came for is not a window the person had open: the
+// next start does not bring it back, and the layout is exactly what was open.
 #[test]
 fn a_launch_that_left_no_window_is_gone_after_a_restart() {
     let _settled = ui::motion::testing::settled();
@@ -613,7 +613,7 @@ fn a_launch_that_left_no_window_is_gone_after_a_restart() {
     });
     assert!(
         !tabs.contains(&place),
-        "the place no window came for is not on the desk again: {tabs:?}"
+        "the place no window came for is not on the layout again: {tabs:?}"
     );
     assert!(
         tabs.contains(&window),
@@ -762,7 +762,7 @@ fn the_arrangement_reads_out_by_key_for_the_shells_views() {
     );
     assert!(
         !reading.workspaces.is_empty(),
-        "the desk shows its workspaces"
+        "the layout shows its workspaces"
     );
 }
 
@@ -894,7 +894,7 @@ fn resizing_a_strip_is_one_step_and_undone() {
     });
 }
 
-// A window is maximized through the published action, so the desk shows the one window it is,
+// A window is maximized through the published action, so the layout shows the one window it is,
 // and one undo brings the others back beside it.
 #[test]
 fn maximizing_a_window_is_one_step_and_undone() {
@@ -911,7 +911,7 @@ fn maximizing_a_window_is_one_step_and_undone() {
             .strips
             .iter()
             .all(|strip| !strip.maximized),
-        "the desk starts beside itself"
+        "the layout starts beside itself"
     );
 
     invoke_as(
@@ -925,7 +925,7 @@ fn maximizing_a_window_is_one_step_and_undone() {
             .map(|strip| strip.maximized)
             .expect("the strip is in the record")
     };
-    assert!(maximized(&session, strip), "the window fills the desk");
+    assert!(maximized(&session, strip), "the window fills the layout");
     assert!(
         !maximized(&session, other_strip),
         "and no other window does"
@@ -958,7 +958,7 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
     let other = open_window_called(&mut session, "org.example.Notes", "Other");
     assert!(
         window > u64::try_from(i64::MAX).unwrap() && other > window,
-        "the desk's ids do not fit an integer: {window}, {other}"
+        "the layout's ids do not fit an integer: {window}, {other}"
     );
     let second = add_strip(&session, "Second");
     step(&mut session);

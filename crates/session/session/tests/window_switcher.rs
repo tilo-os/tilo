@@ -6,7 +6,7 @@
 //! to the window the walk reached, and a press on a card goes to that window.
 //!
 //! A flick shorter than the panel's reveal delay switches windows and flashes nothing: the
-//! walk is the desk's from the press of the chord to the release of Alt.
+//! walk is the shell's from the press of the chord to the release of Alt.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -69,10 +69,10 @@ fn group(id: u64, tab: Tab) -> WindowGroup {
     }
 }
 
-/// The desk the session starts on: two strips and three windows in the workspace in front — two of
+/// The shell the session starts on: two strips and three windows in the workspace in front — two of
 /// the notes app, one of the mail app — and a window of another workspace, which the walk never
 /// crosses.
-fn desk_tree() -> Layout {
+fn layout_tree() -> Layout {
     let mut work = Workspace::new(WorkspaceId::from_u128(1), "Work");
     work.strips = vec![
         Strip {
@@ -106,7 +106,7 @@ fn desk_tree() -> Layout {
     tree
 }
 
-/// The default session — the Rust chrome, not the opt-in shell — on the desk above.
+/// The default session — the Rust chrome, not the opt-in shell — on the shell above.
 fn session() -> Session {
     session_on(WIDTH, HEIGHT)
 }
@@ -126,7 +126,7 @@ fn session_on(width: i32, height: i32) -> Session {
         delay: Duration::from_secs(1),
         rate: 0,
     });
-    session.handle().replace_tree(desk_tree());
+    session.handle().replace_tree(layout_tree());
     session.step(REFRESH).expect("a turn of the session");
     session
 }
@@ -158,7 +158,7 @@ fn cards(view: &SwitcherView) -> Vec<String> {
     view.cards.iter().map(|card| card.title.clone()).collect()
 }
 
-/// Alt+Tab held down from a fresh desk, and the time until its panel shows.
+/// Alt+Tab held down from a fresh shell, and the time until its panel shows.
 fn hold_alt_tab(session: &mut Session) -> Duration {
     key(session, KEY_LEFTALT, true);
     let pressed = Instant::now();
@@ -192,7 +192,7 @@ fn move_to_card(session: &mut Session, index: usize) {
 fn holding_alt_tab_shows_the_workspaces_windows_across_its_strips() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
-    let plain = shot(&mut session, "switcher-desk");
+    let plain = shot(&mut session, "switcher-shell");
 
     let waited = hold_alt_tab(&mut session);
     let view = panel(&session).expect("the panel is up while Alt is held");
@@ -209,12 +209,12 @@ fn holding_alt_tab_shows_the_workspaces_windows_across_its_strips() {
     assert_eq!(
         front(&session),
         "Mail",
-        "the desk lifts the window the walk reached, as the shell's reading always has"
+        "the shell lifts the window the walk reached, as the shell's reading always has"
     );
     let held = shot(&mut session, "switcher-held");
     assert!(
         changed(&plain, &held) > plain.rgba.len() / 4 / 100,
-        "the panel shows over the desk: {} pixels differ",
+        "the panel shows over the shell: {} pixels differ",
         changed(&plain, &held)
     );
 
@@ -270,9 +270,9 @@ fn letting_alt_go_goes_to_the_window_the_walk_reached() {
         "the panel is down once Alt is let go"
     );
     assert_eq!(
-        crate::common::desk_here(&session),
+        crate::common::shell_here(&session),
         "none",
-        "the desk is at rest again"
+        "the shell is at rest again"
     );
     shot(&mut session, "switcher-after");
     eprintln!("letting Alt go went to Mail {settled:?} later");
@@ -336,7 +336,7 @@ fn a_flick_shows_no_panel_and_switches_windows() {
     let mut session = session();
     session
         .step(Duration::from_millis(300))
-        .expect("the desk settles");
+        .expect("the shell settles");
     let plain = shot(&mut session, "switcher-flick-before");
     key(&mut session, KEY_LEFTALT, true);
     key(&mut session, KEY_TAB, true);
@@ -345,11 +345,11 @@ fn a_flick_shows_no_panel_and_switches_windows() {
         "a flick shorter than the reveal delay shows no panel"
     );
     let mid_flick = shot(&mut session, "switcher-flick-mid");
-    // The desk is the desk: the walk of a flick crosses the windows with no panel over them.
+    // The shell is the shell: the walk of a flick crosses the windows with no panel over them.
     let moved = changed(&plain, &mid_flick);
     assert!(
         moved < plain.rgba.len() / 4 / 100,
-        "a flick draws no panel over the desk: {moved} pixels differ"
+        "a flick draws no panel over the shell: {moved} pixels differ"
     );
     key(&mut session, KEY_LEFTALT, false);
     until(
@@ -374,7 +374,7 @@ fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
     let mut session = session();
     session
         .step(Duration::from_millis(300))
-        .expect("the desk settles");
+        .expect("the shell settles");
     hold_alt_tab(&mut session);
     assert_eq!(
         cards(&panel(&session).expect("the panel is up")),
@@ -418,7 +418,7 @@ fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
     let mut session = session();
     session
         .step(Duration::from_millis(300))
-        .expect("the desk settles");
+        .expect("the shell settles");
     hold_alt_tab(&mut session);
     move_to_card(&mut session, 1);
     until(&mut session, "the walk reached another window", |session| {
@@ -625,7 +625,7 @@ fn on_display(value: f64) -> i32 {
 }
 
 /// Alt+Tab with one window open does nothing: there is nowhere to walk, and no panel stands over
-/// the desk.
+/// the shell.
 #[test]
 fn one_window_opens_no_walk() {
     let _settled = ui::motion::testing::settled();
@@ -653,6 +653,6 @@ fn one_window_opens_no_walk() {
         .step(Duration::from_millis(200))
         .expect("a turn of the session");
     assert!(panel(&session).is_none(), "one window is nowhere to walk");
-    assert_eq!(crate::common::desk_here(&session), "none");
+    assert_eq!(crate::common::shell_here(&session), "none");
     key(&mut session, KEY_LEFTALT, false);
 }

@@ -1,6 +1,6 @@
 //! Where each thing kept at the edges of the screen waits: its edge, its place in the stack of
 //! things sharing that edge, and around the system activities (a call, a navigation card) already
-//! floating there. The desk widgets and the pinned people overlay both stand here, in the native
+//! floating there. The Desktop widgets and the pinned people overlay both stand here, in the native
 //! shell and the browser alike: dragged and let go, each snaps to the edge nearest the drop
 //! ([`nearest_edge`]) and keeps it in the person's settings (`settings_store::desk_widgets`).
 //! Widgets that share an edge stack along it, away from its corner or out from its middle. A system
@@ -80,7 +80,7 @@ pub struct Item<I> {
     pub has_content: bool,
 }
 
-/// Lay out `items` in `area` (the work area of the display the desk is on).
+/// Lay out `items` in `area` (the work area of the display the shell is on).
 /// With `stack_open`, widgets stack by their open size (the Super surface,
 /// where every card is open); otherwise by their glance size, and an open
 /// card grows from its glance's corner over its neighbours instead of
@@ -263,7 +263,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn widgets_wait_stack_and_snap_at_the_desks_edges;
+        fn widgets_wait_stack_and_snap_at_the_shells_edges;
 
         phase widgets_wait_at_their_edges_and_never_at_the_top;
         {

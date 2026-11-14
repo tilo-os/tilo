@@ -1,5 +1,5 @@
 //! A person shares a workspace by handing out an invitation into it, and the apps they run share
-//! what they show the same way: the desk makes the link, and it admits exactly the person it names,
+//! what they show the same way: the shell makes the link, and it admits exactly the person it names,
 //! at the part it grants. A member whose own part does not let them invite is refused, so an app
 //! can only share as far as the person using it may.
 
@@ -14,10 +14,10 @@
 use crate::common::people::{Person, shared_invitation};
 use serde_json::json;
 
-/// The invitation the desk hands out admits the person it was made for: their device joins the
-/// workspace the desk shows and holds it, and the site records them as a member.
+/// The invitation the shell hands out admits the person it was made for: their device joins the
+/// workspace the shell shows and holds it, and the site records them as a member.
 #[test]
-fn the_desks_invitation_admits_the_person_it_names() {
+fn the_shells_invitation_admits_the_person_it_names() {
     let (site, _ada, bob, ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
     let invitation = crate::common::people::shared_invitation(&ada_laptop, "editor", bob.public);
     let mut bob_laptop = bob.device("Bob's laptop");
@@ -27,7 +27,7 @@ fn the_desks_invitation_admits_the_person_it_names() {
     site.wait_for_member(bob.public);
 }
 
-/// A member whose part is to read is refused the invitation an app asks the desk for: sharing is
+/// A member whose part is to read is refused the invitation an app asks the shell for: sharing is
 /// inviting into the workspace, and only what the person using the app may do reaches another
 /// person through it.
 #[test]
@@ -40,7 +40,7 @@ fn a_member_whose_part_does_not_let_them_invite_is_refused() {
     bob_laptop.wait_holding(&site.workspace);
     site.wait_for_member(bob.public);
 
-    let answer = crate::common::people::desk_answer(&bob_laptop, &json!({"role": "editor"}));
+    let answer = crate::common::people::shell_answer(&bob_laptop, &json!({"role": "editor"}));
     assert_eq!(
         answer["err"]["code"],
         json!("refused"),
@@ -62,7 +62,7 @@ fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through()
     let ada = Person::new("Ada");
     let mut laptop = ada.device("Ada's laptop");
     laptop.start();
-    // Made on this desk, so its record names this device as its own host and its person may
+    // Made on this session, so its record names this device as its own host and its person may
     // invite into it.
     let made = laptop.act_wait("actions", "workspace.create", &json!({}));
     assert_eq!(

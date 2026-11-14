@@ -264,11 +264,11 @@ impl OverviewPanel {
 
     /// The workspace this session is in, by its place among the cards.
     pub(super) fn here_index(&self) -> Option<usize> {
-        self.desk.cards.iter().position(|card| card.is_current)
+        self.shell.cards.iter().position(|card| card.is_current)
     }
 
     pub(super) fn here_card(&self) -> Option<&WorkspaceCard> {
-        self.desk.cards.iter().find(|card| card.is_current)
+        self.shell.cards.iter().find(|card| card.is_current)
     }
 
     /// How many share rows the "shared out of here" list draws: none when the workspace shares
@@ -517,7 +517,7 @@ impl OverviewPanel {
     }
 
     fn workspaces_in_list(&self) -> usize {
-        self.desk
+        self.shell
             .cards
             .len()
             .saturating_sub(usize::from(self.here_index().is_some()))
@@ -531,7 +531,7 @@ impl OverviewPanel {
 
     /// The "Join a workspace…" row, after "New workspace".
     pub(super) fn join_rect(&self) -> Option<Rect> {
-        self.desk.can_join.then(|| {
+        self.shell.can_join.then(|| {
             self.list_slot_rect(
                 self.workspaces_in_list()
                     .saturating_add(usize::from(self.can_add())),
@@ -562,8 +562,8 @@ impl OverviewPanel {
     /// The Leave control on workspace `idx` when it is a site's workspace, at its row's trailing
     /// edge.
     pub(super) fn leave_rect(&self, idx: usize) -> Option<Rect> {
-        let card = self.desk.cards.get(idx)?;
-        if !self.desk.leavable.contains(&card.id) {
+        let card = self.shell.cards.get(idx)?;
+        if !self.shell.leavable.contains(&card.id) {
             return None;
         }
         let row = self.row_rect(idx);
@@ -597,7 +597,7 @@ impl OverviewPanel {
         } else {
             0.0
         };
-        let count = self.desk.cards.len();
+        let count = self.shell.cards.len();
         let slot = if idx >= count {
             // New workspace, then Join.
             let past = idx.saturating_sub(count);
@@ -633,7 +633,7 @@ impl OverviewPanel {
             return None;
         }
         let band = self.list_band();
-        (0..self.desk.cards.len()).find(|&i| {
+        (0..self.shell.cards.len()).find(|&i| {
             let r = self.row_rect(i);
             let visible =
                 self.slot_of(i).is_none() || (r.y0 >= band.y0 - 0.5 && r.y1 <= band.y1 + 0.5);
@@ -646,7 +646,7 @@ impl OverviewPanel {
     /// Whether the overview pictures this workspace: it has strips and the host shows its windows.
     pub(super) fn shows_windows(&self) -> bool {
         // A page as narrow as a phone has no room for it: its windows would be slivers.
-        !self.desk.hide_windows
+        !self.shell.hide_windows
             && !self.uses_full_window()
             && self.here_card().is_some_and(|card| !card.strips.is_empty())
     }
@@ -703,7 +703,7 @@ impl OverviewPanel {
                 let mut picture = PictureStrip {
                     id: strip.id,
                     name: strip.name.clone(),
-                    renamable: self.desk.renamable.contains(&strip.id),
+                    renamable: self.shell.renamable.contains(&strip.id),
                     focused: Some(strip.id) == focused,
                     windows: Vec::new(),
                     sizes: Vec::new(),
@@ -713,7 +713,7 @@ impl OverviewPanel {
                 };
                 for group in &strip.groups {
                     let size = self
-                        .desk
+                        .shell
                         .group_sizes
                         .get(&group.id)
                         .copied()
@@ -770,12 +770,12 @@ impl OverviewPanel {
 
     /// The colour person `id` wears: their cursor's.
     pub(super) fn person_color(&self, id: &str) -> Color {
-        super::paint::face_colour(&self.desk.colors, id)
+        super::paint::face_colour(&self.shell.colors, id)
     }
 
     /// Each person's colour, as a face stack reads them.
     pub(super) fn colors(&self) -> &HashMap<String, (u8, u8, u8)> {
-        &self.desk.colors
+        &self.shell.colors
     }
 
     /// The picture, laid out.
@@ -954,6 +954,6 @@ impl OverviewPanel {
 
     /// The workspace `id` names, by its place among the cards.
     pub(super) fn card_index(&self, id: WorkspaceId) -> Option<usize> {
-        self.desk.cards.iter().position(|card| card.id == id)
+        self.shell.cards.iter().position(|card| card.id == id)
     }
 }

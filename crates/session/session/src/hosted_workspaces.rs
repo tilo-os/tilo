@@ -13,7 +13,7 @@
 //! host: it runs on this session's own endpoint and holds no keys, since the
 //! device is one endpoint and one member of each workspace's key group.
 //!
-//! A workspace this device hosts itself, or one founded on its own desk
+//! A workspace this device hosts itself, or one founded on its own shell
 //! (whose host is a desktop, which runs no workers), is decided here.
 
 use std::collections::HashMap;
@@ -536,9 +536,9 @@ mod tests {
             placed_on_host(&taker, device).is_none(),
             "a device runs the records of the workspaces it serves itself"
         );
-        let (desk, _) = hint(false, DeviceCapabilities::primary());
+        let (shell, _) = hint(false, DeviceCapabilities::primary());
         assert!(
-            placed_on_host(&desk, [7; 32]).is_none(),
+            placed_on_host(&shell, [7; 32]).is_none(),
             "a device that takes no work has its records run where its windows are"
         );
     }

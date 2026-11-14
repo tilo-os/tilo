@@ -21,7 +21,7 @@ const APPEARANCE: &str = "settings:settings.appearance";
 const POWER: &str = "settings:settings.power";
 const INPUT: &str = "settings:settings.input";
 const NIGHT_LIGHT: &str = "settings:settings.night-light";
-/// The workspace this desktop hosts, as the desk names it.
+/// The workspace this desktop hosts, as the shell names it.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
 /// This device's identity and the workspace it hosts, where the session reads them: what makes the
@@ -96,10 +96,10 @@ fn person_id(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A desk showing the workspace, known by its id, owned by the person.
-fn desk(fixture: &Fixture) -> Layout {
+/// A shell showing the workspace, known by its id, owned by the person.
+fn shell(fixture: &Fixture) -> Layout {
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace_id, "Desk");
+    let mut workspace = Workspace::new(workspace_id, "Shell");
     workspace.set_owner(person_id(&fixture.cert.user_public_key));
     Layout {
         workspaces: vec![workspace.clone()],
@@ -124,7 +124,7 @@ fn serving(fixture: &Fixture, plane: &Path) -> crate::Session {
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("a session");
-    session.handle().replace_tree(desk(fixture));
+    session.handle().replace_tree(shell(fixture));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }

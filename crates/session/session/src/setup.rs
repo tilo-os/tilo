@@ -1,4 +1,4 @@
-//! What stands over everything before the desk is used: the first-use ceremony
+//! What stands over everything before the session is used: the first-use ceremony
 //! ([`tilo_onboarding_host::view::OnboardingView`]) on a layer covering the outputs, above the
 //! desktop and every window, taking the keyboard until the person finished it, or the wait for the
 //! clock to admit this device's certificate, which goes away by itself. Its actions are the setup
@@ -76,8 +76,8 @@ pub(crate) fn browser_continuity() -> Option<PathBuf> {
         .clone()
 }
 
-/// What this session shows before its desk is used.
-pub enum BeforeDesk {
+/// What this session shows before its session is used.
+pub enum BeforeShell {
     /// Setup the person goes through once: the first use of this device, or the recovery of its
     /// identity.
     Ceremony(Box<OnboardingView>),
@@ -113,15 +113,15 @@ pub(crate) struct Setup {
 impl Setup {
     /// Show `surface` over the outputs, waking `waiter` when the wait for the clock has something
     /// new to answer.
-    pub(crate) fn new(surface: BeforeDesk, scale: f64, waiter: Waker) -> Self {
+    pub(crate) fn new(surface: BeforeShell, scale: f64, waiter: Waker) -> Self {
         let placement = Placement {
             origin: (0, 0),
             size: (1, 1),
             scale,
         };
         let surface = match surface {
-            BeforeDesk::Ceremony(view) => ceremony(*view, placement),
-            BeforeDesk::WaitForClock(wait) => {
+            BeforeShell::Ceremony(view) => ceremony(*view, placement),
+            BeforeShell::WaitForClock(wait) => {
                 let wait = wait.listening(waiter);
                 let screen = wait.screen();
                 Surface::WaitForClock {
@@ -136,7 +136,7 @@ impl Setup {
         }
     }
 
-    /// Whether the layer is still over the desk.
+    /// Whether the layer is still over the shell.
     pub(crate) fn up(&self) -> bool {
         match &self.surface {
             Surface::Ceremony { finished, .. } => !(finished)(),
@@ -145,7 +145,7 @@ impl Setup {
     }
 
     /// Advance what the layer shows: the wait for the clock finishes itself once the identity
-    /// verifies, and gives the layer to the setup the device still needs, or back to the desk.
+    /// verifies, and gives the layer to the setup the device still needs, or back to the session.
     pub(crate) fn step(&mut self) {
         let Surface::WaitForClock { wait, .. } = &mut self.surface else {
             return;
@@ -212,7 +212,7 @@ fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
     }
 }
 
-/// A tree covering every output and taking the keyboard: what stands in front of the desk withholds
+/// A tree covering every output and taking the keyboard: what stands in front of the session withholds
 /// it.
 fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetHost {
     WidgetHost::new(root, placement, false)
@@ -303,7 +303,7 @@ impl SurfaceHost for Setup {
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        // What stands before the desk withholds it: the pointer reaches nothing under the layer.
+        // What stands before the session withholds it: the pointer reaches nothing under the layer.
         self.up() && {
             let (ox, oy) = self.widgets().placement().origin;
             let (w, h) = self.widgets().placement().size;
@@ -342,7 +342,7 @@ impl SurfaceHost for Setup {
         self.up() && self.widgets_mut().prepare_frame()
     }
 
-    /// A layer that is not over the desk asks for no frames.
+    /// A layer that is not over the shell asks for no frames.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         self.up().then(|| self.widgets().next_deadline()).flatten()
     }

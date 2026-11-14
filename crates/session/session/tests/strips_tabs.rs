@@ -1,10 +1,10 @@
-//! The Strips desk style's window tabs (`docs/designs/app-language/shell.md` §2, §3): a strip of
+//! The Strips style's window tabs (`docs/designs/app-language/shell.md` §2, §3): a strip of
 //! several places shows them as its window's tabs, and a person tabs one window's place into
 //! another window's bar, switches between them by click and by the keyboard, and drags one back
 //! out into a window of its own.
 //!
 //! Every one of them is an arranging action of the session's (`shell:arrangement`'s `move`, and
-//! the desk's `split-right`), so a press, a key and an agent change the desk the same way,
+//! the shell's `split-right`), so a press, a key and an agent change the shell the same way,
 //! attributed and undoable. What stands on screen is read from what the shell lays out for
 //! assistive technology, never from pixels.
 
@@ -78,7 +78,7 @@ fn keep(session: &mut Session, name: &str) {
 ///
 /// The place names only its resource, not a workspace, a row, a strip or a place id: the session
 /// mints those against the surface in front. A device's ids reach past what a JSON number holds (a
-/// person's own key salts them), so they travel as the desk's own, never through the call
+/// person's own key salts them), so they travel as the shell's own, never through the call
 /// (`place_here` in `shell_screen` places the same way, and the arrangement's own `place` reads
 /// them from the surface when the call names none).
 fn place(session: &mut Session, resource: &str) -> (u64, u64) {
@@ -136,7 +136,7 @@ fn shown_as(session: &Session, title: &str) -> String {
         .into_iter()
         .find(|place| place.title == title)
         .map_or_else(
-            || panic!("the desk holds a place for {title}"),
+            || panic!("the shell holds a place for {title}"),
             |place| place.name,
         )
 }
@@ -315,7 +315,7 @@ fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
 }
 
 /// Dragging a tab pill out of its window's bar gives it a window of its own: the tab strip's own
-/// `detach` reports the pill let go outside the bar, and the shell runs the desk's `split-right`
+/// `detach` reports the pill let go outside the bar, and the shell runs the shell's `split-right`
 /// for the place it carried, so the place leaves the window into one of its own, right after it.
 #[test]
 fn dragging_a_tab_out_gives_it_its_own_window() {
@@ -357,7 +357,7 @@ fn dragging_a_tab_out_gives_it_its_own_window() {
 
 /// Drag the window bar of the place shown under `title` onto the window of the strip `onto`, as a
 /// person does: press its bar, travel past the drag threshold to the other window's bar, and let
-/// go. The two windows must stand apart on the desk, so each bar is a target of its own.
+/// go. The two windows must stand apart on the shell, so each bar is a target of its own.
 #[test]
 fn dragging_a_windows_bar_onto_another_tabs_it_in() {
     let _settled = ui::motion::testing::settled();
@@ -365,7 +365,7 @@ fn dragging_a_windows_bar_onto_another_tabs_it_in() {
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
     });
-    // Two notes, each a window of its own, side by side on the desk.
+    // Two notes, each a window of its own, side by side on the shell.
     let (first, _own) = place(&mut session, &notes[0]);
     let (second, _own) = place(&mut session, &notes[1]);
     let strip_first = strip_of(&session, first).expect("the first place stands in a strip");
@@ -376,7 +376,7 @@ fn dragging_a_windows_bar_onto_another_tabs_it_in() {
     );
     let first_name = shown_as(&session, TITLES[0]);
     let second_name = shown_as(&session, TITLES[1]);
-    // Both windows' bars stand on the desk: the first place's window and the second's.
+    // Both windows' bars stand on the shell: the first place's window and the second's.
     let from = crate::common::wait_for(&mut session, "the first window's bar", |session| {
         on_screen(session, &first_name)
     });

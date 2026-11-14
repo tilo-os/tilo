@@ -1,4 +1,4 @@
-//! The running desk's file access list, as the Files daemon reads it: the session writes it as it
+//! The running shell's file access list, as the Files daemon reads it: the session writes it as it
 //! starts and again when it changes, so taking a folder or a member's role away reaches the app at
 //! its next open instead of waiting for the next login. The daemon re-reads the file on change and
 //! signs it into the workspace authority every mount enforces.
@@ -45,7 +45,7 @@ fn the_session_writes_its_file_access_list_for_the_files_daemon() {
     let mut session = crate::common::seeded_session(root.path());
     crate::common::until(&mut session, "the file access list", |_| acl.is_file());
     access_list(&acl).expect("the list is readable");
-    // A desk change that grants nothing new does not rewrite the list: the daemon signs every list
+    // A shell change that grants nothing new does not rewrite the list: the daemon signs every list
     // it reads into a new revision.
     let before = std::fs::read(&acl).unwrap();
     crate::common::show_preset(&mut session, "so.tilo.shell:frames");

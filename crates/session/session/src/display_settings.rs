@@ -343,7 +343,7 @@ fn place(config: &mut CompositorDisplayConfig, connector: &str, output: &OutputC
     if !output.enabled {
         config.disabled.insert(connector.to_owned());
     }
-    // The display the person made primary is the one their desk's bar, new windows and sheets go
+    // The display the person made primary is the one their shell's bar, new windows and sheets go
     // to. A stored primary the person turned off stays named here and the compositor names no
     // primary while nothing is lit on it, so the choice comes back with the display.
     if output.primary {

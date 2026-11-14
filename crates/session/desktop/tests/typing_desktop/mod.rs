@@ -1,4 +1,4 @@
-//! A desk of six app windows, driven in process through the frame path both
+//! A shell of six app windows, driven in process through the frame path both
 //! hosts run: what one keystroke into one of them costs, and what each
 //! window's app did about it.
 //!
@@ -12,7 +12,7 @@
     clippy::expect_used,
     clippy::panic,
     dead_code,
-    reason = "a fixture: a desk that cannot be built is the assertion, and the \
+    reason = "a fixture: a shell that cannot be built is the assertion, and the \
               test and the measurement each use the part they need"
 )]
 
@@ -33,7 +33,7 @@ use ui::record::{RecordCheckout, RecordOwners, RecordStore};
 use ui::state::State;
 use ui::widget::TileHost;
 
-/// One of the demo's windows: its key in the desk's records, its title, and
+/// One of the demo's windows: its key in the shell's records, its title, and
 /// the app it shows.
 pub type DemoApp = (
     &'static str,
@@ -108,12 +108,12 @@ impl TileSource for Source {
     }
 }
 
-/// A desk of one strip, one window per demo app.
-pub struct DemoDesk {
+/// A shell of one strip, one window per demo app.
+pub struct Demo {
     pub harness: FrameHarness,
     #[allow(
         dead_code,
-        reason = "the desk keeps its handle alive while the harness runs it"
+        reason = "the shell keeps its handle alive while the harness runs it"
     )]
     pub handle: DesktopHandle,
     /// Each window's record, as the store the app reads it through holds it.
@@ -124,8 +124,8 @@ pub struct DemoDesk {
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl DemoDesk {
-    /// The desk, its six apps mounted and drawn.
+impl Demo {
+    /// The shell, its six apps mounted and drawn.
     pub fn open() -> Self {
         let cache = ui::portable_storage::PortableStorage::new("profile", "device").unwrap();
         let mut owners = RecordOwners::portable(cache.clone());
@@ -162,7 +162,7 @@ impl DemoDesk {
         let note_tab = tabs.first().expect("the note is the first window").id;
         let tree = seed_tree(&mut minter, "Work", tabs);
         // What wakes a window (a worker's reply, another replica's change
-        // arriving) asks the host for a frame, as the live desk's event loop
+        // arriving) asks the host for a frame, as the live shell's event loop
         // is asked for one.
         let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wake: std::sync::Arc<dyn Fn() + Send + Sync> = {
@@ -236,7 +236,7 @@ impl DemoDesk {
             .expect("the note's record is open")
     }
 
-    /// How many app windows the desk has open.
+    /// How many app windows the shell has open.
     pub fn apps_open(&self) -> usize {
         self.records.len()
     }
@@ -250,7 +250,7 @@ impl DemoDesk {
             .records
             .iter()
             .find(|(owner, _, _)| *owner == app)
-            .expect("the desk has that app open");
+            .expect("the shell has that app open");
         let mut theirs = store
             .with(&checkout.id, ui::automerge::AutoCommit::fork)
             .expect("the record is open");
@@ -276,7 +276,7 @@ impl DemoDesk {
             .shown_tiles()
             .into_iter()
             .find(|(tab, _)| *tab == self.note_tab)
-            .expect("the note's window is on the desk")
+            .expect("the note's window is on the shell")
             .1;
         let in_tile = |node: &ui::accesskit::Node| {
             node.bounds().is_some_and(|bounds| {
@@ -353,7 +353,7 @@ pub const BOUND_DECLARATIONS: &str = "framework.bound_declarations";
 /// window whose inputs stood still skips it.
 pub const COMPONENT_SYNC: &str = "ui.component.sync";
 
-impl DemoDesk {
+impl Demo {
     /// Type `key` and answer what it cost, from the roles an app names as it
     /// runs ([`tilo_resource::profiling`]).
     pub fn measure_key(&mut self, key: &str) -> KeyCost {
@@ -393,15 +393,15 @@ impl DemoDesk {
     /// is motion, and a window in motion syncs every frame until it lands,
     /// however fast the frames come.
     pub fn rest(&mut self) {
-        tilo_test_env::wait_until("every window of the desk at rest", || {
-            self.syncs_during(|desk| {
-                desk.idle();
-                desk.idle();
+        tilo_test_env::wait_until("every window of the shell at rest", || {
+            self.syncs_during(|shell| {
+                shell.idle();
+                shell.idle();
             }) == 0
         });
     }
 
-    /// Run the frames the host runs while nothing new reaches the desk.
+    /// Run the frames the host runs while nothing new reaches the shell.
     pub fn idle(&mut self) {
         if self.woken.swap(false, std::sync::atomic::Ordering::AcqRel) {
             self.harness.woken();

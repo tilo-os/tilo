@@ -21,7 +21,7 @@ use std::time::Duration;
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
+use tilo_desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
 use tilo_session::{Options, Session, SessionConfig};
 use tilo_sheets::Seat as _;
 use tilo_sheets::shortcut_guide::{Guide, Pair};
@@ -138,7 +138,7 @@ fn up(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// The displays the desk publishes, in reading order.
+/// The displays the shell publishes, in reading order.
 fn displays(session: &Session) -> Vec<ResourceSpec> {
     fn find(resources: &[ResourceSpec], hit: &dyn Fn(&ResourceSpec) -> bool) -> Vec<ResourceSpec> {
         resources
@@ -157,7 +157,7 @@ fn displays(session: &Session) -> Vec<ResourceSpec> {
     })
 }
 
-/// Work on the display `index` of the desk, counting from the left, and wait until the sheets
+/// Work on the display `index` of the shell, counting from the left, and wait until the sheets
 /// follow it there.
 fn focus(session: &mut Session, index: usize) {
     let display = displays(session)[index].id.clone();
@@ -214,7 +214,7 @@ fn pair(guide: &Guide, action: &str) -> Pair {
         .clone()
 }
 
-/// The workspace the person is in, as the desk names it.
+/// The workspace the person is in, as the shell names it.
 fn workspace(session: &Session) -> Option<tilo_desktop_model::WorkspaceId> {
     session.handle().read(|tree| {
         tree.active_workspace()
@@ -228,13 +228,13 @@ fn open_a_workspace(session: &mut Session) -> Option<tilo_desktop_model::Workspa
     let before = workspace(session);
     session
         .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())
-        .expect("the desk opens a workspace");
+        .expect("the shell opens a workspace");
     until(session, |session| workspace(session) != before);
     assert_ne!(workspace(session), before, "a new workspace opened");
     before
 }
 
-/// Whether the desk publishes the resource `id` now: the open search, say.
+/// Whether the shell publishes the resource `id` now: the open search, say.
 fn published(session: &Session, id: &str) -> bool {
     fn find(resources: &[ResourceSpec], id: &str) -> bool {
         resources
@@ -433,7 +433,7 @@ fn the_desktop_help_chord_shows_the_same_guide() {
 fn the_guide_is_drawn_over_the_display_in_focus_and_leaves_it_clean() {
     let _settled = ui::motion::testing::settled();
     let mut session = docked();
-    assert_eq!(displays(&session).len(), 2, "the desk tells both apart");
+    assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
     focus(&mut session, 1);
     let centre = (WIDTH / 2, HEIGHT / 2);
     let before_left = shot(&mut session, "HEADLESS-1");

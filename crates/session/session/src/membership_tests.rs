@@ -1,6 +1,6 @@
 //! The workspace's own governance takes the people the settings change,
-//! and refuses what it refuses, whatever this desk holds; and what it has
-//! of them is what the desk's copy shows.
+//! and refuses what it refuses, whatever this session holds; and what it has
+//! of them is what the session's copy shows.
 
 tilo_automerge_isolate::test_worker!();
 
@@ -24,7 +24,7 @@ fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> HostIden
     HostIdentity::kept(cert.clone(), key.clone())
 }
 
-/// This device's engine, holding the workspace it governs, and the desk's own view of it with
+/// This device's engine, holding the workspace it governs, and the session's own view of it with
 /// the person in it as its owner. `joiner` joins the workspace too, as their own device, and
 /// comes back as the person the workspace knows them by.
 fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir) {
@@ -115,7 +115,7 @@ fn workspace_signed_through(
         identity,
         Some(directory.path()),
         std::iter::empty(),
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("this device's engine opens");
     let governor = TestGovernor::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
@@ -174,14 +174,14 @@ fn role_of(engine: &Engine, person: &str) -> Option<Role> {
         .and_then(|held| held.role)
 }
 
-/// Two devices of one workspace: the owner's, which signs for the workspace, and this desk's,
+/// Two devices of one workspace: the owner's, which signs for the workspace, and this session's,
 /// both holding what the workspace admitted.
-struct TwoDesks {
+struct TwoSessions {
     workspace_id: WorkspaceId,
     owner: Engine,
     owner_cert: tilo_user_identity::DeviceCert,
-    desk: Engine,
-    desk_cert: tilo_user_identity::DeviceCert,
+    session: Engine,
+    session_cert: tilo_user_identity::DeviceCert,
     person: String,
     now: tilo_clock::time::SystemTime,
     _states: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
@@ -189,7 +189,7 @@ struct TwoDesks {
 
 /// The workspace's owner admits ada as their own device, and what that changed reaches both
 /// devices' copies of the workspace, as the workspace's host carries it.
-fn the_owner_admitted_ada() -> TwoDesks {
+fn the_owner_admitted_ada() -> TwoSessions {
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
     let now = tilo_clock::wall();
     // The workspace's owner, whose own device signs for it.
@@ -203,25 +203,25 @@ fn the_owner_admitted_ada() -> TwoDesks {
         identity(&a_cert, &a_key),
         Some(a_state.path()),
         std::iter::empty(),
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("the owner's engine opens");
     let mut governor = testing::enroll_into(governor, a_engine.owner(), &a_key, &a_cert)
         .expect("the workspace is the owner's");
-    // The person at this desk joins it as their own device, and so does another member.
+    // The person at this session joins it as their own device, and so does another member.
     let b_root = SigningKey::from_bytes(&[53; 32]);
     let b_key = SigningKey::from_bytes(&[54; 32]);
-    let b_cert = testing::certificate(&b_root, &b_key, "This desk");
-    let b_state = tempfile::TempDir::new().expect("this desk's state directory");
+    let b_cert = testing::certificate(&b_root, &b_key, "This session");
+    let b_state = tempfile::TempDir::new().expect("this session's state directory");
     let b_engine = Engine::open(
         identity(&b_cert, &b_key),
         Some(b_state.path()),
         [workspace_id],
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
-    .expect("this desk's engine opens");
+    .expect("this session's engine opens");
     governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
-        .expect("the workspace admits this desk");
+        .expect("the workspace admits this session");
     let her_root = SigningKey::from_bytes(&[55; 32]);
     let her_key = SigningKey::from_bytes(&[56; 32]);
     let her = testing::certificate(&her_root, &her_key, "ada");
@@ -247,42 +247,42 @@ fn the_owner_admitted_ada() -> TwoDesks {
                 .expect("a device takes the workspace as its host has it");
         }
     }
-    TwoDesks {
+    TwoSessions {
         workspace_id,
         owner: a_engine,
         owner_cert: a_cert,
-        desk: b_engine,
-        desk_cert: b_cert,
+        session: b_engine,
+        session_cert: b_cert,
         person: hex::encode(her.user_public_key),
         now,
         _states: (a_state, b_state, hers_at),
     }
 }
 
-/// What this desk holds of a workspace two devices share after the owner
+/// What this session holds of a workspace two devices share after the owner
 /// raised ada from their own device: the people the workspace has here,
-/// the owner, this desk's person, and ada, as the owner's change left her.
+/// the owner, this session's person, and ada, as the owner's change left her.
 fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, String) {
-    let desks = the_owner_admitted_ada();
+    let sessions = the_owner_admitted_ada();
     assert_eq!(
-        role_of(&desks.desk, &desks.person),
+        role_of(&sessions.session, &sessions.person),
         Some(Role::Editor),
         "the workspace has her as an editor"
     );
 
     // The owner gives her moderation from their own device, and what they wrote reaches this
-    // desk.
-    Membership::of(&desks.owner, desks.workspace_id)
+    // session.
+    Membership::of(&sessions.owner, sessions.workspace_id)
         .commit(&Change::SetRole {
-            person: desks.person.clone(),
+            person: sessions.person.clone(),
             role: Role::Moderator,
         })
         .block_on()
         .expect("the workspace takes the change");
-    let written = desks
+    let written = sessions
         .owner
         .owner()
-        .with_outgoing(desks.workspace_id, desks.now, |_, outgoing| {
+        .with_outgoing(sessions.workspace_id, sessions.now, |_, outgoing| {
             outgoing
                 .entries()
                 .map(|entry| postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string()))
@@ -294,51 +294,54 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
         "the owner's device published something"
     );
     for message in written {
-        desks
-            .desk
+        sessions
+            .session
             .owner()
             .receive(
-                desks.workspace_id,
+                sessions.workspace_id,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    desks.owner_cert.device_public_key,
+                    sessions.owner_cert.device_public_key,
                 ),
                 message,
-                desks.now,
+                sessions.now,
             )
-            .expect("this desk takes the change");
+            .expect("this session takes the change");
     }
     assert_eq!(
-        role_of(&desks.desk, &desks.person),
+        role_of(&sessions.session, &sessions.person),
         Some(Role::Moderator),
-        "this desk's workspace has her as a moderator"
+        "this session's workspace has her as a moderator"
     );
-    let policy = desks
-        .desk
+    let policy = sessions
+        .session
         .policy(WORKSPACE)
         .expect("the workspace's people");
     (
-        desks.workspace_id,
+        sessions.workspace_id,
         policy,
-        hex::encode(desks.owner_cert.user_public_key),
-        hex::encode(desks.desk_cert.user_public_key),
-        desks.person,
+        hex::encode(sessions.owner_cert.user_public_key),
+        hex::encode(sessions.session_cert.user_public_key),
+        sessions.person,
     )
 }
 
-/// A role one member's device sets reaches another member's desk: what this desk has of the
+/// A role one member's device sets reaches another member's session: what this session has of the
 /// workspace's people — the roster the People tab shows — has her with it, though the device
 /// that set it is not here.
 #[test]
-fn a_role_another_member_sets_reaches_this_desks_people() {
-    let (workspace_id, policy, owner, desk, person) = the_owner_raised_ada();
-    // What this desk had of the workspace's people before the change is the owner's and this
+fn a_role_another_member_sets_reaches_this_shells_people() {
+    let (workspace_id, policy, owner, session, person) = the_owner_raised_ada();
+    // What this session had of the workspace's people before the change is the owner's and this
     // person's; after it, what the workspace has.
     let mut workspace = Workspace::new(workspace_id, "Test");
     workspace.set_owner(owner.clone());
-    workspace.policy.members.insert(desk.clone(), Role::Editor);
+    workspace
+        .policy
+        .members
+        .insert(session.clone(), Role::Editor);
     assert!(
         project(&mut workspace, &policy),
-        "the people the workspace has are projected on to this desk"
+        "the people the workspace has are projected on to this session"
     );
     assert_eq!(
         workspace.role_of(&person),
@@ -346,7 +349,7 @@ fn a_role_another_member_sets_reaches_this_desks_people() {
         "the People tab shows her with the role the owner set"
     );
     assert_eq!(
-        workspace.role_of(&desk),
+        workspace.role_of(&session),
         Some(Role::Editor),
         "and this person as the workspace has her"
     );
@@ -356,13 +359,13 @@ fn a_role_another_member_sets_reaches_this_desks_people() {
     );
     assert!(
         !project(&mut workspace, &policy),
-        "a desk already showing them is not written again"
+        "a session already showing them is not written again"
     );
 }
 
 /// A person named in the workspace's settings is given another role,
 /// removed, and named again: each is a change the workspace's own
-/// admission makes, so it reaches every member, not only this desk.
+/// admission makes, so it reaches every member, not only this session.
 #[test]
 fn the_workspace_takes_the_people_its_settings_change() {
     let (engine, mut workspace, person, _state) = workspace_here("ada");
@@ -461,12 +464,12 @@ fn the_workspace_takes_the_people_its_settings_change() {
 }
 
 /// A change the workspace's admission refuses leaves its people as they were, whatever this
-/// desk's copy of them says.
+/// session's copy of them says.
 #[test]
 fn a_change_the_workspace_refuses_leaves_its_people_as_they_were() {
     let (engine, workspace, _, _state) = workspace_here("ada");
     let membership = Membership::of(&engine, workspace.id());
-    // A person this desk's copy names and the workspace never took in: a role for her is
+    // A person this session's copy names and the workspace never took in: a role for her is
     // refused, because there is no membership of hers to give a role.
     let stranger = hex::encode(SigningKey::from_bytes(&[31; 32]).verifying_key().to_bytes());
     assert!(
@@ -512,10 +515,10 @@ fn a_change_the_workspace_refuses_leaves_its_people_as_they_were() {
     );
 }
 
-/// The desk this computer keeps under `state` , acting as `person` , with its own workspace
+/// The session this computer keeps under `state` , acting as `person` , with its own workspace
 /// governed by this computer's device — the workspace's owner — and ada admitted by a device of
 /// her own.
-struct GovernedDesk {
+struct GovernedSession {
     session: Option<crate::Session>,
     state: tempfile::TempDir,
     _served: Option<tempfile::TempDir>,
@@ -554,22 +557,22 @@ fn session_as(
     .expect("a session")
 }
 
-fn a_governed_desk() -> GovernedDesk {
-    governed_desk(None)
+fn a_governed_session() -> GovernedSession {
+    governed_session(None)
 }
 
-/// [`a_governed_desk`] whose session serves its apps' broker, so this computer's own device
+/// [`a_governed_session`] whose session serves its apps' broker, so this computer's own device
 /// changes the workspace through the session it runs.
-fn a_governed_desk_serving() -> GovernedDesk {
-    governed_desk(Some(private_directory()))
+fn a_governed_session_serving() -> GovernedSession {
+    governed_session(Some(private_directory()))
 }
 
-fn governed_desk(served: Option<tempfile::TempDir>) -> GovernedDesk {
+fn governed_session(served: Option<tempfile::TempDir>) -> GovernedSession {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let (identity, cert, key) = provisioned_identity(&mut home);
     let person = hex::encode(cert.user_public_key);
     let state = tempfile::tempdir().expect("a state directory");
-    let workspace_id = a_workspace_on_the_desk(state.path());
+    let workspace_id = a_workspace_on_the_shell(state.path());
     let now = tilo_clock::wall();
     let hers = tempfile::tempdir().expect("her state directory");
     let (her, _her_cert, _her_key, ada) =
@@ -581,7 +584,7 @@ fn governed_desk(served: Option<tempfile::TempDir>) -> GovernedDesk {
     session
         .step(std::time::Duration::from_millis(1))
         .expect("a frame");
-    GovernedDesk {
+    GovernedSession {
         session: Some(session),
         state,
         _served: served,
@@ -598,13 +601,13 @@ fn governed_desk(served: Option<tempfile::TempDir>) -> GovernedDesk {
     }
 }
 
-impl GovernedDesk {
-    /// The session this desk runs.
+impl GovernedSession {
+    /// The session this session runs.
     fn session(&mut self) -> &mut crate::Session {
         self.session.as_mut().expect("the session runs")
     }
 
-    /// The session's sheet as the desk holds it.
+    /// The session's sheet as the session holds it.
     fn settings(&mut self) -> tilo_sheets::workspace_settings::Settings {
         self.session()
             .workspace_settings()
@@ -612,7 +615,7 @@ impl GovernedDesk {
             .settings()
     }
 
-    /// Run one frame of the session's desk.
+    /// Run one frame of the session's session.
     fn frames(&mut self) {
         self.session()
             .step(std::time::Duration::from_millis(1))
@@ -628,33 +631,34 @@ impl GovernedDesk {
         }
     }
 
-    /// Close the session, as this computer does when its desk is not up.
+    /// Close the session, as this computer does when its session is not up.
     fn close(&mut self) {
         self.session = None;
     }
 }
 
-/// The sheet the session hosts, as the person at this desk presses it.
+/// The sheet the session hosts, as the person at this session presses it.
 fn settings_sheet(
-    desk: &mut GovernedDesk,
+    session: &mut GovernedSession,
 ) -> tilo_app::framework::testing::HeadlessApp<tilo_sheets::workspace_settings::WorkspaceSettingsApp>
 {
-    desk.session()
+    session
+        .session()
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "workspace-settings",
             &serde_json::Map::new(),
         )
         .expect("settings opens on the workspace in front");
-    desk.frames();
-    let seat = desk
+    session.frames();
+    let seat = session
         .session()
         .workspace_settings()
         .expect("the session hosts workspace settings")
         .clone();
     let mut app = tilo_app::framework::testing::HeadlessApp::<
         tilo_sheets::workspace_settings::WorkspaceSettingsApp,
-    >::for_person_with_lent(&desk.person, seat)
+    >::for_person_with_lent(&session.person, seat)
     .expect("the sheet");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();
@@ -664,15 +668,16 @@ fn settings_sheet(
         },
     )
     .expect("show the people");
-    desk.frames();
+    session.frames();
     app.settle();
     app
 }
 
 /// The role the sheet shows for `who` .
-fn shown_role(desk: &mut GovernedDesk, who: &str) -> Option<String> {
+fn shown_role(session: &mut GovernedSession, who: &str) -> Option<String> {
     let who = who.to_owned();
-    desk.settings()
+    session
+        .settings()
         .people
         .people
         .into_iter()
@@ -716,34 +721,34 @@ fn activate(
 #[test]
 fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
     let _settled = ui::motion::testing::settled();
-    let mut desk = a_governed_desk();
-    let mut app = settings_sheet(&mut desk);
-    let ada = desk.ada.clone();
+    let mut session = a_governed_session();
+    let mut app = settings_sheet(&mut session);
+    let ada = session.ada.clone();
     assert_eq!(
-        shown_role(&mut desk, &ada).as_deref(),
+        shown_role(&mut session, &ada).as_deref(),
         Some("editor"),
         "the People tab shows her as the workspace has her"
     );
     press(&mut app, &format!("ws-people-role-{ada}"));
     activate(&mut app, "Commenter");
-    desk.frames_until(|desk| shown_role(desk, &ada).as_deref() == Some("commenter"));
+    session.frames_until(|session| shown_role(session, &ada).as_deref() == Some("commenter"));
     app.settle();
     assert_eq!(
-        shown_role(&mut desk, &ada).as_deref(),
+        shown_role(&mut session, &ada).as_deref(),
         Some("commenter"),
         "the sheet's row says what the workspace now has her as"
     );
     drop(app);
-    desk.close();
+    session.close();
     assert_eq!(
         her_device_takes(
-            desk.state.path(),
-            desk.workspace_id,
-            &desk.cert,
-            &desk.key,
-            &desk.her,
-            &desk.ada,
-            desk.now
+            session.state.path(),
+            session.workspace_id,
+            &session.cert,
+            &session.key,
+            &session.her,
+            &session.ada,
+            session.now
         ),
         Some(Role::Commenter),
         "her device takes the role the person set here"
@@ -755,18 +760,18 @@ fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
 #[test]
 fn a_refused_role_change_says_why_and_keeps_the_role() {
     let _settled = ui::motion::testing::settled();
-    let mut desk = a_governed_desk();
-    let mut app = settings_sheet(&mut desk);
+    let mut session = a_governed_session();
+    let mut app = settings_sheet(&mut session);
     app.effect(
         &tilo_sheets::workspace_settings::WorkspaceSettingsEffect::SetRole {
-            member: desk.ada.clone(),
+            member: session.ada.clone(),
             role: "owner".to_owned(),
         },
     )
     .expect("the sheet asks for the role");
-    desk.frames();
+    session.frames();
     app.settle();
-    let notice = desk
+    let notice = session
         .settings()
         .notice
         .expect("the sheet says the workspace refused it");
@@ -779,13 +784,13 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
         "the sheet says why: {:?}",
         notice.detail
     );
-    let ada = desk.ada.clone();
+    let ada = session.ada.clone();
     assert_eq!(
-        shown_role(&mut desk, &ada).as_deref(),
+        shown_role(&mut session, &ada).as_deref(),
         Some("editor"),
         "she keeps the role she had"
     );
-    let governed = desk
+    let governed = session
         .session()
         .handle()
         .read(|tree| tree.workspaces.first().and_then(|ws| ws.role_of(&ada)));
@@ -801,9 +806,9 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
 #[test]
 fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     let _settled = ui::motion::testing::settled();
-    let mut desk = a_governed_desk();
+    let mut session = a_governed_session();
     // The workspace grants an app the camera, as one of its devices wrote.
-    let mut tree = desk.session().handle().read(Clone::clone);
+    let mut tree = session.session().handle().read(Clone::clone);
     tree.active_workspace_mut()
         .expect("a workspace in front")
         .grant_app(
@@ -813,17 +818,17 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
                 scope: tilo_desktop_model::GRANT_SESSION,
             },
         );
-    desk.session().handle().replace_tree(tree);
-    let mut app = settings_sheet(&mut desk);
+    session.session().handle().replace_tree(tree);
+    let mut app = settings_sheet(&mut session);
     app.effect(
         &tilo_sheets::workspace_settings::WorkspaceSettingsEffect::ShowTab {
             tab: "permissions".to_owned(),
         },
     )
     .expect("show the permissions");
-    desk.frames();
+    session.frames();
     app.settle();
-    let granted = desk
+    let granted = session
         .settings()
         .permissions
         .sections
@@ -834,18 +839,18 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     // The confirmation is open when another of the workspace's devices takes the grant back, so
     // what this sheet has is out of date.
     press(&mut app, &format!("ws-permission-revoke-{}", granted.key));
-    let mut tree = desk.session().handle().read(Clone::clone);
+    let mut tree = session.session().handle().read(Clone::clone);
     tilo_desktop::workspace_settings::apply_revoke(
         tree.active_workspace_mut().expect("a workspace in front"),
-        &desk.person.clone(),
+        &session.person.clone(),
         &granted.key,
     )
     .expect("another device takes the grant back");
-    desk.session().handle().replace_tree(tree);
+    session.session().handle().replace_tree(tree);
     press(&mut app, "ws-settings-decision.primary");
-    desk.frames();
+    session.frames();
     app.settle();
-    let notice = desk
+    let notice = session
         .settings()
         .notice
         .expect("the sheet says the workspace refused it");
@@ -859,7 +864,7 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
         notice.detail
     );
     assert!(
-        desk.session().handle().read(|tree| {
+        session.session().handle().read(|tree| {
             tree.workspaces
                 .first()
                 .is_some_and(|workspace| workspace.sandbox.iter().all(|cap| cap.id != granted.key))
@@ -902,7 +907,7 @@ fn this_computer(
     (root, device, cert)
 }
 
-/// The desk this computer keeps under `state` .
+/// The session this computer keeps under `state` .
 fn session_keeping(state: &std::path::Path) -> crate::Session {
     crate::Session::headless(
         crate::Options {
@@ -922,12 +927,12 @@ fn session_keeping(state: &std::path::Path) -> crate::Session {
 #[test]
 fn a_bot_the_sheet_removes_is_no_longer_asked_of_the_host() {
     let _settled = ui::motion::testing::settled();
-    let mut desk = a_governed_desk_serving();
+    let mut session = a_governed_session_serving();
     let entry = "so.tilo.bots.standup";
-    let workspace_id = desk.workspace_id;
-    let cert = desk.cert.clone();
+    let workspace_id = session.workspace_id;
+    let cert = session.cert.clone();
     change_governance(
-        desk.session(),
+        session.session(),
         workspace_id,
         &cert,
         &WorkspaceMembershipCommand::RequestBot(
@@ -939,7 +944,7 @@ fn a_bot_the_sheet_removes_is_no_longer_asked_of_the_host() {
             },
         ),
     );
-    let mut app = settings_sheet(&mut desk);
+    let mut app = settings_sheet(&mut session);
     // The bots a member asks for are listed on the Agents tab, beside the agents themselves.
     app.effect(
         &tilo_sheets::workspace_settings::WorkspaceSettingsEffect::ShowTab {
@@ -947,13 +952,13 @@ fn a_bot_the_sheet_removes_is_no_longer_asked_of_the_host() {
         },
     )
     .expect("show the agents");
-    desk.frames();
+    session.frames();
     app.settle();
-    the_sheet_lists_bot(&mut desk, entry, true);
+    the_sheet_lists_bot(&mut session, entry, true);
     press(&mut app, &format!("ws-bots-remove-{entry}"));
-    desk.frames();
-    the_sheet_lists_bot(&mut desk, entry, false);
-    let asks = desk
+    session.frames();
+    the_sheet_lists_bot(&mut session, entry, false);
+    let asks = session
         .session()
         .shared
         .engine
@@ -970,15 +975,15 @@ fn a_bot_the_sheet_removes_is_no_longer_asked_of_the_host() {
     );
 }
 
-/// A person another device of the workspace took in is on this desk's copy of it, in the part
-/// the workspace gives them, when the desk comes back: the People tab shows the workspace's
-/// people, not only those this desk put there.
+/// A person another device of the workspace took in is on this session's copy of it, in the part
+/// the workspace gives them, when the session comes back: the People tab shows the workspace's
+/// people, not only those this session put there.
 #[test]
-fn the_people_another_device_admits_are_on_this_desks_people() {
+fn the_people_another_device_admits_are_on_this_shells_people() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let (_identity, key, cert) = this_computer(&mut env);
     let state = tempfile::tempdir().expect("a state directory");
-    // A frame brings the desk and its own workspace up.
+    // A frame brings the session and its own workspace up.
     let workspace_id = {
         let mut session = session_keeping(state.path());
         session
@@ -987,10 +992,10 @@ fn the_people_another_device_admits_are_on_this_desks_people() {
         session
             .handle()
             .read(|tree| tree.workspaces.first().map(Workspace::id))
-            .expect("a workspace on the desk")
+            .expect("a workspace on the session")
     };
     // The workspace, as this computer's device governs it, takes ada in: a change another
-    // member's device makes while this desk is away.
+    // member's device makes while this session is away.
     let now = tilo_clock::wall();
     let her_root = SigningKey::from_bytes(&[0x63; 32]);
     let her_key = SigningKey::from_bytes(&[0x64; 32]);
@@ -1000,7 +1005,7 @@ fn the_people_another_device_admits_are_on_this_desks_people() {
             identity(&cert, &key),
             Some(state.path()),
             [workspace_id],
-            crate::platform::custody::of_this_desk(),
+            crate::platform::custody::of_this_session(),
         )
         .expect("this computer's engine opens");
         the_fixture_governs(&engine, workspace_id);
@@ -1027,7 +1032,7 @@ fn the_people_another_device_admits_are_on_this_desks_people() {
         }
     }
     let person = hex::encode(her.user_public_key);
-    // A new session of the same desk shows the workspace's people.
+    // A new session of the same session shows the workspace's people.
     let mut session = session_keeping(state.path());
     session
         .step(std::time::Duration::from_millis(1))
@@ -1038,12 +1043,12 @@ fn the_people_another_device_admits_are_on_this_desks_people() {
     assert_eq!(
         role,
         Some(Role::Editor),
-        "the desk's workspace has the person the workspace took in"
+        "the session's workspace has the person the workspace took in"
     );
     // The sheet shows her in the People tab.
     session
         .invoke(
-            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            tilo_desktop::verbs::CHROME_RESOURCE,
             "workspace-settings",
             &serde_json::Map::new(),
         )
@@ -1147,9 +1152,9 @@ fn wait_for_people(
     }
 }
 
-/// The workspace this computer's desk opens when it has none of its own: the id the session's
+/// The workspace this computer's session opens when it has none of its own: the id the session's
 /// engine and the test's other devices act on.
-fn a_workspace_on_the_desk(state: &std::path::Path) -> WorkspaceId {
+fn a_workspace_on_the_shell(state: &std::path::Path) -> WorkspaceId {
     let mut session = session_keeping(state);
     session
         .step(std::time::Duration::from_millis(1))
@@ -1157,10 +1162,10 @@ fn a_workspace_on_the_desk(state: &std::path::Path) -> WorkspaceId {
     session
         .handle()
         .read(|tree| tree.workspaces.first().map(Workspace::id))
-        .expect("a workspace on the desk")
+        .expect("a workspace on the session")
 }
 
-/// Let go of the workspace the desk founded here, so a fixture host can be the one that governs
+/// Let go of the workspace the session founded here, so a fixture host can be the one that governs
 /// it: the fixture's own genesis is the workspace's then, and the devices it admits are the
 /// workspace's.
 fn the_fixture_governs(mine: &Engine, workspace_id: WorkspaceId) {
@@ -1184,7 +1189,7 @@ fn a_second_device(
         identity(&her, &her_key),
         Some(her_state),
         [workspace_id],
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("her engine opens");
     // This computer's device governs the workspace, and admits her.
@@ -1192,10 +1197,10 @@ fn a_second_device(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("this computer's engine opens");
-    // The workspace the desk made is this computer's own already: a fixture host governs it
+    // The workspace the session made is this computer's own already: a fixture host governs it
     // from here, and admits her device into it.
     the_fixture_governs(&mine, workspace_id);
     let governor =
@@ -1267,10 +1272,10 @@ fn change_people(
 
 /// Run frames until the sheet lists the bot whose entry is `entry` , or stops listing it.
 #[track_caller]
-fn the_sheet_lists_bot(desk: &mut GovernedDesk, entry: &str, listed: bool) {
+fn the_sheet_lists_bot(session: &mut GovernedSession, entry: &str, listed: bool) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let shows = desk
+        let shows = session
             .settings()
             .agents
             .bots
@@ -1284,13 +1289,13 @@ fn the_sheet_lists_bot(desk: &mut GovernedDesk, entry: &str, listed: bool) {
             "the sheet never {} the bot {entry}",
             if listed { "listed" } else { "dropped" }
         );
-        desk.frames();
+        session.frames();
     }
 }
 
-/// Run frames until the desk shows `person` in `expected` 's part of the workspace.
+/// Run frames until the session shows `person` in `expected` 's part of the workspace.
 #[track_caller]
-fn the_desk_shows(session: &mut crate::Session, person: &str, expected: Option<Role>) {
+fn the_shell_shows(session: &mut crate::Session, person: &str, expected: Option<Role>) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let shown = session
@@ -1301,7 +1306,7 @@ fn the_desk_shows(session: &mut crate::Session, person: &str, expected: Option<R
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the desk never showed the change: {shown:?}"
+            "the session never showed the change: {shown:?}"
         );
         session
             .step(std::time::Duration::from_millis(1))
@@ -1323,7 +1328,7 @@ fn her_device_takes(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("this computer's engine opens");
     let written = mine
@@ -1367,7 +1372,7 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
         "the session reads this computer's own device"
     );
     let state = tempfile::tempdir().expect("a state directory");
-    let workspace_id = a_workspace_on_the_desk(state.path());
+    let workspace_id = a_workspace_on_the_shell(state.path());
     let now = tilo_clock::wall();
     let her_state = tempfile::tempdir().expect("her state directory");
     let (hers, _her, _her_key, her_person) = a_second_device(
@@ -1400,9 +1405,9 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
             .step(std::time::Duration::from_millis(1))
             .expect("a frame");
         change_people(&session, workspace_id, &cert, &change);
-        // What the desk shows is the workspace the session's engine holds: the role is hers, or
+        // What the session shows is the workspace the session's engine holds: the role is hers, or
         // she is gone from it.
-        the_desk_shows(&mut session, &her_person, expected);
+        the_shell_shows(&mut session, &her_person, expected);
         drop(session);
         // The change this computer's device wrote, carried to her device as the workspace's
         // host carries every change.
@@ -1486,7 +1491,7 @@ fn an_agent_cannot_change_a_workspaces_people() {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let (_identity, cert, _key) = provisioned_identity(&mut home);
     let state = tempfile::tempdir().expect("a state directory");
-    let workspace_id = a_workspace_on_the_desk(state.path());
+    let workspace_id = a_workspace_on_the_shell(state.path());
     let stranger = SigningKey::from_bytes(&[0x73; 32])
         .verifying_key()
         .to_bytes();
@@ -1512,7 +1517,7 @@ fn an_agent_cannot_change_a_workspaces_people() {
         crate::sync::device_identity().expect("this computer is a device"),
         Some(state.path()),
         [workspace_id],
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("this computer's engine opens");
     assert!(
@@ -1538,7 +1543,7 @@ fn invite_from_this_device(
         identity(cert, key),
         Some(state),
         [workspace_id],
-        crate::platform::custody::of_this_desk(),
+        crate::platform::custody::of_this_session(),
     )
     .expect("this computer's engine opens");
     let now = tilo_clock::wall();
@@ -1557,7 +1562,7 @@ fn invite_from_this_device(
     pollster::block_on(issued).expect("this device issues the link")
 }
 
-/// The invitations the desk's own action lists for the workspace `workspace` .
+/// The invitations the session's own action lists for the workspace `workspace` .
 fn listed_invitations(session: &mut crate::Session, workspace: &str) -> Vec<serde_json::Value> {
     let mut arguments = serde_json::Map::new();
     arguments.insert("workspace".into(), workspace.into());
@@ -1567,7 +1572,7 @@ fn listed_invitations(session: &mut crate::Session, workspace: &str) -> Vec<serd
             "invitations",
             &arguments,
         )
-        .expect("the desk lists the invitations it made")
+        .expect("the session lists the invitations it made")
         .completed()
         .expect("listing finishes on return")
         .value
@@ -1575,8 +1580,8 @@ fn listed_invitations(session: &mut crate::Session, workspace: &str) -> Vec<serd
     serde_json::from_value(listed).expect("a list of invitations")
 }
 
-/// Whether the desk's own action cancelling `invite` changed the workspace.
-fn cancelled_at_the_desk(session: &mut crate::Session, workspace: &str, invite: &str) -> bool {
+/// Whether the session's own action cancelling `invite` changed the workspace.
+fn cancelled_at_the_shell(session: &mut crate::Session, workspace: &str, invite: &str) -> bool {
     let mut arguments = serde_json::Map::new();
     arguments.insert("workspace".into(), workspace.into());
     arguments.insert("invite".into(), invite.into());
@@ -1586,7 +1591,7 @@ fn cancelled_at_the_desk(session: &mut crate::Session, workspace: &str, invite: 
             "cancel-invitation",
             &arguments,
         )
-        .expect("the desk cancels the link this device made")
+        .expect("the session cancels the link this device made")
         .completed()
         .expect("cancelling finishes on return")
         .value
@@ -1596,11 +1601,11 @@ fn cancelled_at_the_desk(session: &mut crate::Session, workspace: &str, invite: 
         .expect("whether the workspace changed")
 }
 
-/// An invitation this device's person made into a workspace is listed by the desk's own action
-/// and cancelled there, and the desk lists none afterwards: inviting and taking a link back
+/// An invitation this device's person made into a workspace is listed by the session's own action
+/// and cancelled there, and the session lists none afterwards: inviting and taking a link back
 /// need no host, only the device that made it.
 #[test]
-fn the_desk_lists_and_cancels_the_invitations_this_device_made() {
+fn the_shell_lists_and_cancels_the_invitations_this_device_made() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let (_identity, key, cert) = this_computer(&mut env);
     let state = tempfile::tempdir().expect("a state directory");
@@ -1612,7 +1617,7 @@ fn the_desk_lists_and_cancels_the_invitations_this_device_made() {
         session
             .handle()
             .read(|tree| tree.workspaces.first().map(Workspace::id))
-            .expect("a workspace on the desk")
+            .expect("a workspace on the session")
     };
     let invitation = invite_from_this_device(state.path(), workspace_id, &cert, &key);
     let mut session = session_keeping(state.path());
@@ -1626,7 +1631,7 @@ fn the_desk_lists_and_cancels_the_invitations_this_device_made() {
                 .first()
                 .map(|workspace| workspace.id().to_string())
         })
-        .expect("a workspace on the desk");
+        .expect("a workspace on the session");
     let listed = listed_invitations(&mut session, &workspace);
     assert_eq!(listed.len(), 1, "the one link this device made");
     assert_eq!(listed[0]["invite"], hex::encode(invitation.invite_id));
@@ -1634,11 +1639,11 @@ fn the_desk_lists_and_cancels_the_invitations_this_device_made() {
     assert_eq!(listed[0]["invitee_name"], "Ada");
     let invite = hex::encode(invitation.invite_id);
     assert!(
-        cancelled_at_the_desk(&mut session, &workspace, &invite),
+        cancelled_at_the_shell(&mut session, &workspace, &invite),
         "the link is cancelled"
     );
     assert!(
-        !cancelled_at_the_desk(&mut session, &workspace, &invite),
+        !cancelled_at_the_shell(&mut session, &workspace, &invite),
         "cancelling it again changes nothing"
     );
     assert!(
@@ -1784,11 +1789,11 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
 }
 
 /// "Allow for this issue" on the sheet a run's question asked is a grant in the workspace's
-/// governance, given by the person at this device, and in force for the broker once the desk the
+/// governance, given by the person at this device, and in force for the broker once the session the
 /// loop publishes carries it: the call it was given for waits for exactly that. A grant given
 /// once is taken back the same way once spent.
 #[test]
-fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
+fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
     use tilo_action_broker::services::WorkspaceGrants as _;
     let (engine, mut workspace, _, _state) = workspace_here("ada");
     let engine = std::sync::Arc::new(engine);
@@ -1799,7 +1804,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
         workspaces: vec![workspace.clone()],
         ..tilo_desktop_model::Layout::default()
     };
-    let desk = std::sync::Arc::new(crate::plane::DeskAuthority::new(
+    let session = std::sync::Arc::new(crate::plane::LayoutAuthority::new(
         tree(&workspace),
         crate::engine::revocations_of(None),
         None,
@@ -1810,7 +1815,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
     ));
     let grants = crate::plane::SessionGrants::new(
         std::sync::Arc::clone(&engine),
-        std::sync::Arc::clone(&desk),
+        std::sync::Arc::clone(&session),
     );
     let today = "so.tilo.lang.today";
     let grant = Grant::new(
@@ -1849,7 +1854,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
             grant,
             tilo_action_broker::app_actions::AppActionConsent::Always,
         );
-        // Written into the governance, the grant is not yet in force: the desk does not carry it.
+        // Written into the governance, the grant is not yet in force: the session does not carry it.
         let held = |engine: &crate::engine::Engine| {
             engine.policy(WORKSPACE).is_ok_and(|policy| {
                 policy
@@ -1864,19 +1869,19 @@ fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
         while !held(&engine) {
             assert!(
                 turns < 4096,
-                "the governance never carries the grant the desk was given: {:?}",
+                "the governance never carries the grant the session was given: {:?}",
                 engine.policy(WORKSPACE)
             );
             turns += 1;
             tokio::select! {
-                recorded = &mut recording => panic!("in force before the desk carries it: {recorded:?}"),
+                recorded = &mut recording => panic!("in force before the session carries it: {recorded:?}"),
                 () = tokio::task::yield_now() => {}
             }
         }
-        // The loop's pass: the governance projected into the desk, and the desk published.
+        // The loop's pass: the governance projected into the session, and the session published.
         let policy = engine.policy(WORKSPACE).expect("the workspace's governance here");
-        assert!(project(&mut workspace, &policy), "the desk takes the grant");
-        desk.publish(tree(&workspace));
+        assert!(project(&mut workspace, &policy), "the session takes the grant");
+        session.publish(tree(&workspace));
         recording.await
     });
     assert_eq!(recorded.as_deref(), Ok("app-action:clear"));

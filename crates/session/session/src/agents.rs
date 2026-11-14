@@ -381,13 +381,13 @@ mod tests {
 
     use super::same_person;
 
-    /// The person at the desk, who owns its workspace.
+    /// The person at the shell, who owns its workspace.
     const PERSON: &str = "ada";
     /// The workspace in front of them, where nobody set an agent up yet.
     const STUDIO: &str = "8b0e8f5e-6c1f-4f4e-9d4a-1f2e3d4c5b6a";
 
-    /// A headless session at a desk whose one workspace is the person's, its passes run until the
-    /// desk stands.
+    /// A headless session at a shell whose one workspace is the person's, its passes run until the
+    /// shell stands.
     fn session(state: &std::path::Path) -> crate::Session {
         let mut session = crate::Session::headless(
             crate::Options {

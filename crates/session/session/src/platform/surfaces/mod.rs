@@ -7,7 +7,7 @@
 //! it too, so a panel is pressed and read the same on both.
 //!
 //! The hosts themselves are named here beside the trait, so a role asks for the widget trees, the
-//! desk or the shell's parts and never for the crate that draws them.
+//! shell or the shell's parts and never for the crate that draws them.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,12 +27,12 @@ pub use linux::Hosted;
 #[cfg(target_os = "linux")]
 pub use tilo_surface_host::shell_part::{ShellIdentity, compile_shell, installed_shell};
 /// The desktop's own hosts, as a Linux session drives them: the toolkit's widget trees on their
-/// layers ([`WidgetHost`]), the desk under the windows and its window policy ([`DesktopHost`],
+/// layers ([`WidgetHost`]), the shell under the windows and its window policy ([`DesktopHost`],
 /// [`StripPolicy`]), a surface app on a layer of its own ([`AppHost`]) and the tilolang shell's
 /// parts and slot views.
 #[cfg(target_os = "linux")]
 pub use tilo_surface_host::{
-    AppHost, DeskGesture, DesktopHost, PointerSamples, SessionLink, ShellPart, ShellWork,
+    AppHost, DesktopHost, PointerSamples, SessionLink, ShellGesture, ShellPart, ShellWork,
     StripPolicy, WellPolicy, WidgetHost, WindowObserver, desktop, desktop_with, slot_view,
 };
 
@@ -54,15 +54,15 @@ pub trait Surfaces {
     fn publish(&mut self, published: Rc<RefCell<dyn Published>>);
 }
 
-/// The desk under the windows, as the roles standing over it read it.
-pub trait Desk {
-    /// The windows the desk shows, each at its logical rectangle on the desktop.
+/// The shell under the windows, as the roles standing over it read it.
+pub trait Shell {
+    /// The windows the shell shows, each at its logical rectangle on the desktop.
     fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)>;
 
-    /// Where the desk's layer begins on the desktop: the chrome over it draws from there too.
+    /// Where the shell's layer begins on the desktop: the chrome over it draws from there too.
     fn origin(&self) -> (i32, i32);
 
-    /// Lay the desk's layer out again: a panel standing over it went up or down.
+    /// Lay the shell's layer out again: a panel standing over it went up or down.
     fn relayout(&self);
 }
 

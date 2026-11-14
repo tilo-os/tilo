@@ -2,14 +2,14 @@
 //!
 //! Holding Alt and pressing Tab walks the workspace's windows in the order
 //! they were last used, and letting Alt go goes to the chosen one: the walk
-//! itself is the desk's (the session's overlays), which knows the windows and
+//! itself is the shell's (the session's overlays), which knows the windows and
 //! their order. This module is the panel that walk draws: which card it lifts,
 //! where the cards stand, and what the panel says to a screen reader.
 //!
-//! A "window" is a tab, as it is for every other window traversal on the desk:
+//! A "window" is a tab, as it is for every other window traversal on the shell:
 //! groups are frames around windows, not windows themselves.
 //!
-//! The chrome draws the panel and the desk's reading places the cards; the
+//! The chrome draws the panel and the shell's reading places the cards; the
 //! windows' own pixels stay the compositor's. Each card names the window it
 //! stands for, and the compositor draws that window's latest buffer over the
 //! card's well, in the same frame ([`Switcher::pictures`]).
@@ -132,7 +132,7 @@ impl WindowApp {
         }
     }
 
-    /// A window as the desk's reading names it: the app it shows, and the symbol that app wears
+    /// A window as the shell's reading names it: the app it shows, and the symbol that app wears
     /// where a window has no picture.
     #[must_use]
     pub fn named(app_key: &str) -> Self {
@@ -155,7 +155,7 @@ pub struct SwitcherWindow {
     pub preview: PreviewSource,
 }
 
-/// The shape a card takes when the desk knows nothing of its window's: the desk's own 16:10.
+/// The shape a card takes when the shell knows nothing of its window's: the shell's own 16:10.
 const STANDING_ASPECT: f64 = 16.0 / 10.0;
 
 /// The shortest a preview well goes, however small the display: a card still shows what it holds.
@@ -179,7 +179,7 @@ pub struct SwitcherCard {
     /// window's own shape, so its picture fills it. `None` where there is no window to measure.
     pub size: Option<(u32, u32)>,
     pub title: String,
-    /// The app the window shows, as the desk's reading names it.
+    /// The app the window shows, as the shell's reading names it.
     pub app_key: String,
 }
 
@@ -525,7 +525,7 @@ fn geometry_with(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
 
 /// Alt+Tab's panel: what it shows, where it stands, and the windows whose pictures stand in its
 /// wells.
-/// The desk owns the walk; this is one panel's worth of it, shared by the session (which sets it),
+/// The shell owns the walk; this is one panel's worth of it, shared by the session (which sets it),
 /// the chrome (which draws it) and the compositor (which pictures the windows it names).
 #[derive(Clone)]
 pub struct Switcher {
@@ -652,7 +652,7 @@ impl Switcher {
     }
 
     /// The pictures of the windows this panel names, where its wells stand: each window's latest
-    /// buffer, in the desk's coordinates. The session hands them to the compositor, which draws
+    /// buffer, in the shell's coordinates. The session hands them to the compositor, which draws
     /// them over the chrome, so a preview is the window as it is now, not a copy of it.
     #[must_use]
     pub fn pictures(&self) -> Vec<Picture> {
@@ -729,7 +729,7 @@ impl Switcher {
         )
     }
 
-    /// Paint the panel, over the desk and under the windows' own pictures. `host` is the display it
+    /// Paint the panel, over the shell and under the windows' own pictures. `host` is the display it
     /// centres on, in the chrome's coordinates.
     pub fn draw(
         &self,
@@ -748,7 +748,7 @@ impl Switcher {
         };
         let metrics = Metrics::from_theme(theme);
         let geometry = geometry(host, view, metrics);
-        // The panel is modal while it is up: the desk behind it waits.
+        // The panel is modal while it is up: the shell behind it waits.
         ui::overlay::scrim::modal(scene, transform, host, 1.0, theme);
         let m = geometry.metrics;
         let panel = geometry.panel;
@@ -814,9 +814,9 @@ impl Switcher {
         inner.drawn.set(inner.revision.get());
     }
 
-    /// How a card paints: the card stands on the panel, not on the desk, so its lift is taken off
+    /// How a card paints: the card stands on the panel, not on the shell, so its lift is taken off
     /// the panel's own ground — the surface step that makes it read as lifted there rather than off
-    /// the desk behind.
+    /// the shell behind.
     fn card_tier(theme: &Theme, state: ui::chrome::SelectionState) -> ui::chrome::SelectionTier {
         ui::chrome::selection_tier_on(theme, state, ui::chrome::shell::panel_ground(theme))
     }
@@ -1120,7 +1120,7 @@ mod tests {
                 !drawn(&unknown).is_empty(),
                 "an unknown app still has a mark"
             );
-            // A window the desk names the same way wears the same face.
+            // A window the shell names the same way wears the same face.
             assert_eq!(WindowApp::named("so.tilo.weather").glyph, Icon::Cloud);
         }
 
@@ -1234,7 +1234,7 @@ mod tests {
                     "under the well only the title's room"
                 );
             }
-            // A card the desk has no window to measure stands at the desk's own shape, so an unpictured
+            // A card the shell has no window to measure stands at the shell's own shape, so an unpictured
             // window's app face is not squeezed either.
             let mut standing = shaped.clone();
             for card in &mut standing.cards {
@@ -1346,8 +1346,8 @@ mod tests {
             assert!(!spoken.contains("Alt + Tab"));
         }
 
-        phase the_panel_hands_the_compositor_each_windows_place_on_the_desk;
-        // The panel names each window it shows where its well stands, in the desk's coordinates, so
+        phase the_panel_hands_the_compositor_each_windows_place_on_the_shell;
+        // The panel names each window it shows where its well stands, in the shell's coordinates, so
         // the compositor can draw the window itself there.
         {
             let switcher = Switcher::default();
