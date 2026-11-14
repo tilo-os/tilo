@@ -30,11 +30,6 @@ struct Person {
     name: String,
 }
 
-/// The Lounge's id, as the seed names its workspace.
-fn workspace_id(seed: &Seed) -> WorkspaceId {
-    WorkspaceId::parse(&seed.workspace).expect("the seed names a workspace")
-}
-
 impl Person {
     fn device(&self) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
         own_device(self.seed, &self.name)
@@ -242,24 +237,26 @@ fn started_or_why(workspace: &mut Workspace) -> Started {
     }
 }
 
-/// A page of `person`'s device in the Lounge, once the host let it in.
+/// A page of `person`'s device in the Lounge `workspace` (the id the release
+/// started with, not the one the released state names), once the host let it
+/// in.
 async fn their_page(
     plain: std::net::SocketAddr,
-    seed: &Seed,
+    workspace: WorkspaceId,
     person: &Person,
 ) -> tilo_session_client::Link {
-    let (host, host_cert, _) = chat_route(plain, &seed.workspace).await;
+    let (host, host_cert, _) = chat_route(plain, &workspace.to_string()).await;
     let (key, cert) = person.device();
     let link = page(host, key, cert, &host_cert);
     let events = link.events();
-    link.send(Cmd::Join(workspace_id(seed))).unwrap();
+    link.send(Cmd::Join(workspace)).unwrap();
     wait_for(
         &format!("{} to be let in", person.name),
         || {
             events
                 .drain()
                 .iter()
-                .any(|event| matches!(event, Event::HostReady { ws, .. } if *ws == workspace_id(seed)))
+                .any(|event| matches!(event, Event::HostReady { ws, .. } if *ws == workspace))
                 .then_some(())
         },
         || format!("{:?}", link.status()),
@@ -282,16 +279,22 @@ async fn administer(
 }
 
 /// The addresses on the Lounge's wait list, as its owner sees them.
-async fn wait_list(plain: std::net::SocketAddr, seed: &Seed) -> Vec<String> {
-    let owner = their_page(plain, seed, &seed.declared_owner).await;
+async fn wait_list(
+    plain: std::net::SocketAddr,
+    workspace: WorkspaceId,
+    owner: &Person,
+) -> Vec<String> {
+    let link = their_page(plain, workspace, owner).await;
     let reply = administer(
-        &owner,
+        &link,
+        // The workspace as the relay governs it: the id it minted at this
+        // start.
         WorkspacesRequest::WaitList {
-            workspace: seed.workspace.clone(),
+            workspace: workspace.to_string(),
         },
     )
     .await;
-    owner.close();
+    link.close();
     let WorkspacesReply::WaitList(entries) = reply else {
         panic!("no wait list: {reply:?}");
     };
@@ -360,6 +363,11 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
         &mail_url,
     );
     let started = started_or_why(&mut workspace);
+    assert_ne!(
+        started.workspace.to_lowercase(),
+        seed.workspace.to_lowercase(),
+        "the release's Lounge is a new workspace, not the released one read back"
+    );
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let listed = directory_page(started.plain).await;
@@ -395,9 +403,12 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
         Some("owner_declared"),
         "{declared}"
     );
+    let lounge = WorkspaceId::parse(&started.workspace).expect("the started workspace");
     runtime.block_on(async {
         assert!(
-            wait_list(started.plain, &seed).await.is_empty(),
+            wait_list(started.plain, lounge, &seed.declared_owner)
+                .await
+                .is_empty(),
             "the new Lounge starts with an empty wait list"
         );
     });
@@ -424,7 +435,7 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
         .filter(|member| !member.role.eq_ignore_ascii_case("owner") && member.email.is_none())
         .collect();
     runtime.block_on(async {
-        let waiting = wait_list(started.plain, &seed).await;
+        let waiting = wait_list(started.plain, lounge, &seed.declared_owner).await;
         for address in &addressed {
             assert!(
                 waiting.iter().any(|contact| contact == address),
