@@ -63,6 +63,9 @@ pub enum Item {
     Root(RootDecl),
     DefaultView(DefaultViewDecl),
     RowView(DefaultViewDecl),
+    /// `place view v for T`: what a place of a `T` shows, standing as content on its own (a
+    /// place on the canvas, an answer's view), when its default view is the app's window.
+    PlaceView(DefaultViewDecl),
     Views(ViewsDecl),
     Scenario(ScenarioDecl),
     Trigger(TriggerDecl),
@@ -82,7 +85,11 @@ impl Item {
             Self::Action(d) => &d.doc,
             Self::View(d) => &d.doc,
             Self::Fn(d) => &d.doc,
-            Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
+            Self::Use(_)
+            | Self::Root(_)
+            | Self::DefaultView(_)
+            | Self::RowView(_)
+            | Self::PlaceView(_) => &[],
             Self::Views(d) => &d.doc,
         }
     }
@@ -94,7 +101,7 @@ impl Item {
             Self::Alias(d) => d.span,
             Self::Enum(d) => d.span,
             Self::Root(d) => d.span,
-            Self::DefaultView(d) | Self::RowView(d) => d.span,
+            Self::DefaultView(d) | Self::RowView(d) | Self::PlaceView(d) => d.span,
             Self::Views(d) => d.span,
             Self::Scenario(d) => d.span,
             Self::Trigger(d) => d.span,

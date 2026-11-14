@@ -610,6 +610,7 @@ fn app_open_offer(app: &str, second: bool) -> Offer {
         broker_peer_id: None,
         broker_provider: None,
         descriptor: ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(format!("app.{app}"), surface::OPEN_ACTION),
@@ -805,6 +806,7 @@ fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> Actio
         ),
     };
     ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: surface::open_record_address(app, record),

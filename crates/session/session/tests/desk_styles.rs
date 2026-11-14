@@ -139,12 +139,9 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
         session.shell_parts()
     );
     choose(&mut session, "so.tilo.shell:frames");
-    until(&mut session, |session| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.starts_with("Showing "))
-    });
+    // The canvas is the whole screen: its bar keeps no switch (`canvas.md` §7), so the canvas
+    // standing under a bar that names no style is what says it is shown.
+    until(&mut session, |session| crate::common::canvas_shown(session));
 }
 
 /// Step 2's part the shell alone cannot show: a desk style **another** installed package declares
@@ -541,7 +538,7 @@ fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
     }
     let labels = session.accessible_labels();
     assert!(
-        labels.iter().any(|label| label == "Showing Frames"),
+        crate::common::canvas_shown(&session),
         "the desk shows the style a named press chose, within {frames} frames: {labels:?}"
     );
 }

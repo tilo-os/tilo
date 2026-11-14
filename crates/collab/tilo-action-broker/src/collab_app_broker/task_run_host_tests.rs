@@ -24,6 +24,8 @@ const DESKTOP_PROVIDER: &str = "test-desktop";
 #[derive(Default)]
 struct Desktop {
     started: Mutex<Vec<String>>,
+    /// The turn each step was handed as its actor's, in order.
+    turns: Mutex<Vec<Option<tilo_action_policy::turn::Turn>>>,
     /// Whether its steps are a task agent's steps of its run.
     for_tasks: bool,
     /// Whether its steps are a turn's (the session's own, as a session's shell publishes them).
@@ -45,6 +47,7 @@ impl crate::services::HostStepServices for Desktop {
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
+            did: None,
             semantic_identity: None,
             address: ActionAddress::new("desktop", "list-windows"),
             resource_kind: "desktop".into(),
@@ -70,6 +73,10 @@ impl crate::services::HostStepServices for Desktop {
             .lock()
             .unwrap()
             .push(request.actor.id().to_owned());
+        self.turns
+            .lock()
+            .unwrap()
+            .push(request.actor.turn().cloned());
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -452,6 +459,45 @@ async fn a_door_connection_takes_a_session_step_in_its_run_though_it_works_no_tu
                     .is_err()
             );
             assert_eq!(shell.started.lock().unwrap().len(), 1);
+            drop(f);
+        })
+        .await;
+}
+
+/// A kept agent answers a person's turn through its run's connection, which carries no turn on
+/// its caller: the run names the message. The session's step is handed an actor on that turn,
+/// since the session stands what the step shows beside the turn that asked (an agent's `place`
+/// beside its turn on the canvas). An actor without it stood the place at the canvas' origin.
+#[tokio::test(flavor = "current_thread")]
+async fn a_runs_session_step_is_handed_the_turn_the_run_answers() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let desk = Arc::new(Desktop {
+                for_turns: true,
+                ..Desktop::default()
+            });
+            let f = Fixture::with_services(None, vec![desk.clone()]);
+            let agent = admit(&f);
+            let turn = tilo_action_policy::turn::Turn::new(
+                "chat.workspace/channels/the-conversation",
+                "asked-second",
+            );
+            for run in f.native.runs.lock().unwrap().iter_mut() {
+                run.turn = Some(turn.clone());
+            }
+            f.caused("asked-second");
+            f.state.refresh_native_task_delivery();
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            host.invoke(&caller, list_windows_request(63))
+                .await
+                .expect("answered")
+                .unwrap();
+            assert_eq!(
+                desk.turns.lock().unwrap().as_slice(),
+                [Some(turn)],
+                "the step's actor is on the run's turn"
+            );
             drop(f);
         })
         .await;

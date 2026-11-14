@@ -69,6 +69,11 @@ struct Sending {
     item: Option<String>,
     text: String,
     workspace: Option<String>,
+    /// The person's ask from the canvas this is, by the number [`Sends::ask`] gave it: the
+    /// conversation it lands in does not open, and the message Chat posts for it is kept under
+    /// that number ([`Sends::posted`]), for its turn to stand where the person asked. `None` for
+    /// a box's send, which opens the conversation where the box stood.
+    asked: Option<u64>,
 }
 
 /// A send as carried out: what it carried, whom it reached, and whether it landed.
@@ -92,7 +97,15 @@ pub(crate) struct Sends {
     read_at: Rc<Cell<Option<(u64, u64)>>>,
     /// Whether the reading moved since the service last said so.
     moved: Rc<Cell<bool>>,
+    /// The number the next ask from the canvas takes.
+    asks: Rc<std::cell::Cell<u64>>,
+    /// The message Chat answered each ask's send with, by the ask's number: written on the
+    /// thread Chat's answer lands on, read by the pass.
+    posted: Posted,
 }
+
+/// The message Chat posted for each ask, by the ask's number.
+type Posted = std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, String>>>;
 
 /// What [`RESOURCE`] publishes: the send.
 fn published() -> Vec<ResourceSpec> {
@@ -115,6 +128,37 @@ impl Sends {
         by: Option<tilo_actions::ActionInvoker>,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
+        self.take(by, arguments, None)
+    }
+
+    /// Take the person's ask from the canvas, a send with `arguments`, as [`Self::send`] does, and
+    /// answer the number it goes by: the conversation it lands in does not open, since the turn
+    /// it opens stands on the canvas where the person asked (canvas.md §3), and the message Chat
+    /// posts for it is [`Self::posted`] under that number once Chat answers.
+    ///
+    /// # Errors
+    /// The arguments are not a send's, or the message has nothing to say or carry.
+    pub(crate) fn ask(&self, arguments: &Map<String, Value>) -> Result<u64, DoorError> {
+        let asked = self.asks.get().wrapping_add(1);
+        self.asks.set(asked);
+        self.take(None, arguments, Some(asked))?;
+        Ok(asked)
+    }
+
+    /// The message Chat posted for the ask `asked`, once Chat answered its send with it.
+    pub(crate) fn posted(&self, asked: u64) -> Option<String> {
+        self.posted
+            .lock()
+            .ok()
+            .and_then(|posted| posted.get(&asked).cloned())
+    }
+
+    fn take(
+        &self,
+        by: Option<tilo_actions::ActionInvoker>,
+        arguments: &Map<String, Value>,
+        asked: Option<u64>,
+    ) -> Result<Started, DoorError> {
         let SendToAction::Send {
             to,
             attached,
@@ -135,6 +179,7 @@ impl Sends {
             item,
             text,
             workspace,
+            asked,
         });
         Ok(Started::Accepted)
     }
@@ -234,6 +279,7 @@ impl Shared {
                     &to,
                     &attached,
                     &sending.text,
+                    sending.asked,
                 )
                 .err()
             });
@@ -305,6 +351,7 @@ impl Shared {
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
         text: &str,
+        asked: Option<u64>,
     ) -> Result<(), String> {
         let text = text.trim();
         if text.is_empty() && attached.is_empty() {
@@ -316,7 +363,13 @@ impl Shared {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
                 // Only a person's box opens the conversation where it stood.
-                let target = send_target(&workspace, &resolved, attached, text, agent.is_none())?;
+                let target = send_target(
+                    &workspace,
+                    &resolved,
+                    attached,
+                    text,
+                    asked.is_none() && agent.is_none(),
+                )?;
                 (workspace, target)
             }
             // A report is read where it lands, not floated over the window it was written over: it
@@ -331,6 +384,33 @@ impl Shared {
                 )
             }
         };
+        // An ask from the canvas is told which message Chat posted: its turn stands by it.
+        if let Some(asked) = asked {
+            let posted = std::sync::Arc::clone(&self.sends.posted);
+            let wake = std::sync::Arc::clone(&self.wake_handle);
+            return self
+                .search
+                .perform_answered(
+                    &workspace,
+                    target,
+                    Box::new(move |answer| {
+                        let message = answer
+                            .as_ref()
+                            .and_then(|answer| answer.get("message"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        let Some(message) = message else {
+                            tracing::warn!(asked, "Chat's answer to an ask names no message");
+                            return;
+                        };
+                        if let Ok(mut posted) = posted.lock() {
+                            posted.insert(asked, message);
+                        }
+                        wake();
+                    }),
+                )
+                .map_err(|error| error.to_string());
+        }
         self.search
             .perform(&workspace, target, &mut |own| {
                 let look = &mut tilo_session_core::door::Look::none();
@@ -639,6 +719,31 @@ mod tests {
             found("ada").is_empty(),
             "and absent from a search for someone"
         );
+    }
+
+    /// A box's send opens the conversation it lands in; the person's ask from the canvas does not,
+    /// since its turn stands on the canvas where they asked.
+    #[test]
+    fn an_ask_from_the_canvas_opens_no_conversation_and_a_boxs_send_does() {
+        let sends = Sends::default();
+        let arguments = serde_json::json!({
+            "to": [Recipient::found(RecipientKind::Agent, "a1".to_owned(), "Assistant")],
+            "text": "what is due?",
+        });
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("an object");
+        };
+        let first = sends.ask(&arguments).expect("the ask is taken");
+        sends.send(None, &arguments).expect("the send is taken");
+        let second = sends.ask(&arguments).expect("another ask is taken");
+        let asked: Vec<Option<u64>> = sends
+            .waiting
+            .borrow()
+            .iter()
+            .map(|sending| sending.asked)
+            .collect();
+        assert_eq!(asked, [Some(first), None, Some(second)]);
+        assert_ne!(first, second, "each ask is one of its own");
     }
 
     /// What a box holds reaches Chat as one action naming the recipients, what the message carries

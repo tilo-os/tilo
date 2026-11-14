@@ -309,6 +309,7 @@ fn surface() -> Vec<runtime_collab::ExportedAction> {
     use runtime_collab::{ExportedAction, ExportedInput};
     use tilo_actions::{ActionContract, ActionKind, OperationKind};
     let action = |action: &str, kind: ActionKind| ExportedAction {
+        did: None,
         resource: RESOURCE.into(),
         semantic_identity: None,
         action: action.into(),

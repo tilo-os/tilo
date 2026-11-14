@@ -1985,7 +1985,8 @@ pub(crate) mod replaced_tripwire;
 pub use layout::{
     AuthoredExtent, DeviceScaleGuard, ExtentSizing, SkippedFrames, WidgetLayoutError,
     compute_widget_layout, device_scale, enter_device_scale, insets, insets_all, insets_xy,
-    layout_clip, placing_again, text_control_height, with_layout_clip,
+    layout_clip, placing_again, take_unsettled_layout, take_unsettled_report, text_control_height,
+    with_layout_clip,
 };
 #[cfg(debug_assertions)]
 pub use paint_pass::painting;
@@ -2294,6 +2295,8 @@ pub use send_to::{SendToBox, SendToFocus};
 pub mod attached;
 mod hover_toolbar;
 pub use hover_toolbar::HoverToolbar;
+mod canvas_place;
+pub use canvas_place::{CanvasPlace, PlaceProps};
 mod swipe_row;
 pub use attached::{
     Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,

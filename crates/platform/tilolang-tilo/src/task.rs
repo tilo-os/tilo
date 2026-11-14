@@ -43,11 +43,10 @@ use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
 use tilolang_runtime::meta::{Meta, PackageMeta, parse_ty};
 use tilolang_runtime::program::{ProgramOutcome, Session};
-use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::run::Journal;
 use tilolang_runtime::store::{
     Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewRecord, OutboxEntry,
-    Scalar, Store, StoreError, SubId, Txn, Version,
+    Store, StoreError, SubId, Txn, Version, field_json, field_of,
 };
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, Runtime};
@@ -1048,6 +1047,34 @@ const WRITES_NOTHING: &str =
     "a program changes nothing directly: it invokes its apps' actions and field edits";
 
 impl TaskStore {
+    /// The versions of `at` its app's log holds (`created(r)`, `updated(r)`, `history(r)`),
+    /// asked of the app's host as every read of the task is: all of them, or the end `last`
+    /// names.
+    fn versions_of(
+        &self,
+        at: &ResourceRef,
+        last: Option<bool>,
+    ) -> Result<Vec<Version>, StoreError> {
+        let app = self.app_of(at)?;
+        let request = tilolang_runtime::reads::ReadRequest::Versions {
+            app: app.clone(),
+            ty: at.ty.clone(),
+            id: at.id_string(),
+            last,
+        };
+        let encoded = serde_json::to_value(&request)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let answered = self
+            .door
+            .query(&app, &encoded)
+            .map_err(StoreError::Backend)?;
+        serde_json::from_value(answered).map_err(|error| {
+            StoreError::Backend(format!(
+                "{app} answered versions a program cannot read: {error}"
+            ))
+        })
+    }
+
     /// The resource `at` as its app reads it, read once per program.
     fn resource(&self, at: &ResourceRef) -> Result<Rc<Read>, StoreError> {
         let id = at.id_string();
@@ -1182,10 +1209,47 @@ impl Store for TaskStore {
     }
 
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
-        Err(StoreError::Invalid(format!(
-            "a task reads no history of {} yet",
-            at.id_string()
-        )))
+        self.versions_of(at, None)
+    }
+
+    fn version_end(&self, at: &ResourceRef, last: bool) -> Result<Option<Version>, StoreError> {
+        Ok(self.versions_of(at, Some(last))?.pop())
+    }
+
+    /// What a version's change wrote, asked of the app's host, whose log holds it.
+    fn written(
+        &self,
+        at: &ResourceRef,
+        fields: &[FieldSpec],
+        change: &str,
+    ) -> Result<Vec<(String, FieldValue, FieldValue)>, StoreError> {
+        let app = self.app_of(at)?;
+        let request = tilolang_runtime::reads::ReadRequest::Written {
+            app: app.clone(),
+            ty: at.ty.clone(),
+            id: at.id_string(),
+            fields: fields.to_vec(),
+            change: change.to_owned(),
+        };
+        let encoded = serde_json::to_value(&request)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let answered = self
+            .door
+            .query(&app, &encoded)
+            .map_err(StoreError::Backend)?;
+        let unread =
+            || StoreError::Backend(format!("{app} answered a change a program cannot read"));
+        answered
+            .as_array()
+            .ok_or_else(unread)?
+            .iter()
+            .map(|row| {
+                let field = row[0].as_str().ok_or_else(unread)?.to_owned();
+                let before = field_of(&row[1]).map_err(StoreError::Backend)?;
+                let after = field_of(&row[2]).map_err(StoreError::Backend)?;
+                Ok((field, before, after))
+            })
+            .collect()
     }
 
     fn subscribe(&mut self, _: &DocId, _: Box<dyn FnMut(&ChangeSummary)>) -> SubId {
@@ -1240,78 +1304,6 @@ impl Store for TaskStore {
 
 // ---- the read, on both ends -----------------------------------------------------------------
 
-/// A field as `read-values` carries it.
-pub(crate) fn field_json(value: &FieldValue) -> Json {
-    match value {
-        FieldValue::Absent => json!({"absent": true}),
-        FieldValue::Scalar(Scalar::Bool(flag)) => json!({"bool": flag}),
-        FieldValue::Scalar(Scalar::Int(int)) => json!({"int": int}),
-        FieldValue::Scalar(Scalar::Float(float)) => json!({"float": float}),
-        FieldValue::Scalar(Scalar::Text(text)) => json!({"str": text}),
-        FieldValue::Scalar(Scalar::Json(value)) => json!({"json": value}),
-        FieldValue::Counter(count) => json!({"counter": count}),
-        FieldValue::Text(text) => json!({"text": text}),
-        FieldValue::Rich(rich) => json!({"rich": rich}),
-        FieldValue::Items(items) => json!({"items": items}),
-        FieldValue::Keys(keys) => json!({"keys": keys}),
-        FieldValue::Entries(entries) => json!({
-            "entries": entries
-                .iter()
-                .map(|(key, value)| json!([key, field_json(&FieldValue::Scalar(value.clone()))]))
-                .collect::<Vec<_>>()
-        }),
-    }
-}
-
-fn field_of(json: &Json) -> Result<FieldValue, String> {
-    let bad = || format!("a field read as {json} is no field");
-    let (tag, value) = json
-        .as_object()
-        .and_then(|fields| fields.iter().next())
-        .ok_or_else(bad)?;
-    Ok(match tag.as_str() {
-        "absent" => FieldValue::Absent,
-        "bool" => FieldValue::Scalar(Scalar::Bool(value.as_bool().ok_or_else(bad)?)),
-        "int" => FieldValue::Scalar(Scalar::Int(value.as_i64().ok_or_else(bad)?)),
-        "float" => FieldValue::Scalar(Scalar::Float(value.as_f64().ok_or_else(bad)?)),
-        "str" => FieldValue::Scalar(Scalar::Text(value.as_str().ok_or_else(bad)?.to_owned())),
-        "json" => FieldValue::Scalar(Scalar::Json(value.clone())),
-        "counter" => FieldValue::Counter(value.as_i64().ok_or_else(bad)?),
-        "text" => FieldValue::Text(value.as_str().ok_or_else(bad)?.to_owned()),
-        "rich" => {
-            FieldValue::Rich(serde_json::from_value::<RichValue>(value.clone()).map_err(|_| bad())?)
-        }
-        "items" | "keys" => {
-            let texts = value
-                .as_array()
-                .ok_or_else(bad)?
-                .iter()
-                .map(|item| item.as_str().map(str::to_owned).ok_or_else(bad))
-                .collect::<Result<Vec<_>, _>>()?;
-            if tag == "items" {
-                FieldValue::Items(texts)
-            } else {
-                FieldValue::Keys(texts)
-            }
-        }
-        "entries" => FieldValue::Entries(
-            value
-                .as_array()
-                .ok_or_else(bad)?
-                .iter()
-                .map(|entry| {
-                    let key = entry[0].as_str().ok_or_else(bad)?.to_owned();
-                    match field_of(&entry[1])? {
-                        FieldValue::Scalar(scalar) => Ok((key, scalar)),
-                        _ => Err(bad()),
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        _ => return Err(bad()),
-    })
-}
-
 /// A resource as `read-values` answered it.
 fn read_of(answer: &Json) -> Result<Read, String> {
     let ty = answer["type"]
@@ -1359,6 +1351,8 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilolang_runtime::rich::RichValue;
+    use tilolang_runtime::store::Scalar;
 
     tilo_test_env::scenario! {
         fn a_task_reads_previews_and_names_what_apps_offer;

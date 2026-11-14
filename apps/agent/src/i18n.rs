@@ -37,6 +37,57 @@ pub fn step(step: &TaskStep) -> String {
     t_args(key, &[("what", ui::i18n::ArgValue::from(bounded(subject)))])
 }
 
+/// One step of a run once it is done, said to the person: what it did, and to
+/// what. The record of a turn's steps says what happened; [`step`] says what is
+/// under way.
+#[must_use]
+pub fn step_done(step: &TaskStep) -> String {
+    let (key, subject) = match step {
+        TaskStep::Searching(what) => ("agent-step-searched", what),
+        TaskStep::Reading(what) | TaskStep::Exploring(what) => ("agent-step-read", what),
+        TaskStep::Editing(what) => ("agent-step-edited", what),
+    };
+    t_args(key, &[("what", ui::i18n::ArgValue::from(bounded(subject)))])
+}
+
+/// A program that read and changed nothing, said as done: it looked up the app
+/// its answer names, by the app's title exactly as the app publishes it
+/// ("Looked up Tasks"), or looked things up when it named none.
+#[must_use]
+pub fn looked_up(app_title: Option<&str>) -> String {
+    match app_title.map(str::trim).filter(|title| !title.is_empty()) {
+        Some(title) => t_args(
+            "agent-step-looked-up",
+            &[("what", ui::i18n::ArgValue::from(bounded(title)))],
+        ),
+        None => t("agent-step-program"),
+    }
+}
+
+/// What an action did, in its app's own words: what the app declares it did
+/// (`did`, "showed on the canvas"), else its label as the app words it, with
+/// `subject`, the title of what it acted on, beside it ("Showed on the canvas:
+/// All inboxes"). Nothing here makes grammar of an app's words: an app that
+/// wants its step said as done declares how.
+#[must_use]
+pub fn did(label: &str, declared: Option<&str>, subject: &str) -> String {
+    let said = declared
+        .map(str::trim)
+        .filter(|did| !did.is_empty())
+        .map_or_else(|| label.trim().to_owned(), ui::format::capitalize_first);
+    let subject = bounded(subject);
+    if subject.is_empty() || said.contains(subject.as_str()) {
+        return said;
+    }
+    t_args(
+        "agent-step-on",
+        &[
+            ("action", ui::i18n::ArgValue::from(said)),
+            ("subject", ui::i18n::ArgValue::from(subject)),
+        ],
+    )
+}
+
 /// The most characters of a query or an address a step's note carries: enough
 /// to say what the step is about, short enough to read as one line.
 const MOST_SUBJECT_CHARS: usize = 80;
@@ -96,6 +147,11 @@ mod tests {
             "agent-step-editing",
             "agent-step-exploring",
             "agent-step-program",
+            "agent-step-looked-up",
+            "agent-step-on",
+            "agent-step-edited",
+            "agent-step-searched",
+            "agent-step-read",
             "agent-run-needs-decision",
             "agent-run-directions-require-review",
             "agent-run-cancelled-before-planning",
@@ -159,6 +215,53 @@ mod tests {
             step(&TaskStep::Searching("borrow checker".into())),
             "Sucht im Web nach „borrow checker“…"
         );
+    }
+
+    /// A step line says what happened in the app's own words: what the action declares it did,
+    /// else its label, with the title of what it acted on beside it exactly as the app publishes
+    /// it, never a past tense or a plural the agent made up ("Looked up your taskses").
+    #[test]
+    fn a_step_says_what_it_did_in_the_apps_own_words() {
+        ui::i18n::I18nManager::init("en-US");
+        for (label, declared, subject, said) in [
+            (
+                "Show a resource on the canvas, as one of its views",
+                Some("showed on the canvas"),
+                "All inboxes",
+                "Showed on the canvas: All inboxes",
+            ),
+            (
+                "Add subtask",
+                Some("added a subtask"),
+                "Buy milk",
+                "Added a subtask: Buy milk",
+            ),
+            // No declared form: the label as the app words it, never a made-up past tense.
+            ("Today", None, "Book a haircut", "Today: Book a haircut"),
+            ("Move to Done", None, "Buy milk", "Move to Done: Buy milk"),
+            ("Undo", None, "", "Undo"),
+            ("Open Mail", Some("opened Mail"), "Mail", "Opened Mail"),
+        ] {
+            assert_eq!(did(label, declared, subject), said, "{label} on {subject}");
+        }
+        // The app's title exactly as it publishes it: "Tasks" stays "Tasks".
+        assert_eq!(looked_up(Some("Tasks")), "Looked up Tasks");
+        assert_eq!(looked_up(Some("Mail")), "Looked up Mail");
+        assert_eq!(looked_up(None), "Looked things up");
+        assert_eq!(
+            step_done(&TaskStep::Searching("borrow checker".into())),
+            "Searched the web for “borrow checker”"
+        );
+        assert_eq!(
+            step_done(&TaskStep::Editing("Notes".into())),
+            "Edited Notes"
+        );
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(
+            did("Anzeigen", None, "Alle Posteingänge"),
+            "Anzeigen: Alle Posteingänge"
+        );
+        assert_eq!(looked_up(Some("Aufgaben")), "Aufgaben nachgeschlagen");
     }
 
     /// A long query stays one line: the note is a line, not a paragraph.
