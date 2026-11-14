@@ -193,10 +193,17 @@ pub fn governance_actions(workspace: &str) -> TreePath {
     workspace_resource(workspace).any(Level::Action)
 }
 
+/// What the ids of the grants that make someone an administrator and of the
+/// keeper's grant start with: the writing and the reading of each id share
+/// one spelling.
+const ADMINISTRATOR_GRANT_PREFIX: &str = "workspace-admin-v1:";
+const ADMINISTRATOR_MODERATION_GRANT_PREFIX: &str = "workspace-admin-moderation-v1:";
+const KEEPER_GRANT_PREFIX: &str = "workspace-keeper-v1:";
+
 /// The id of the grant that makes `person` an administrator of a workspace.
 #[must_use]
 pub fn administrator_grant_id(person: &str) -> GrantId {
-    GrantId(format!("workspace-admin-v1:{person}"))
+    GrantId(format!("{ADMINISTRATOR_GRANT_PREFIX}{person}"))
 }
 
 /// The grant that makes `person` an administrator of `workspace`, given by its
@@ -234,7 +241,7 @@ pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -
 /// The id of the grant that lets an administrator moderate `person`'s workspace.
 #[must_use]
 pub fn administrator_moderation_grant_id(person: &str) -> GrantId {
-    GrantId(format!("workspace-admin-moderation-v1:{person}"))
+    GrantId(format!("{ADMINISTRATOR_MODERATION_GRANT_PREFIX}{person}"))
 }
 
 /// The grant that lets `person`, an administrator of `workspace`, moderate it:
@@ -261,8 +268,8 @@ pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by:
 #[must_use]
 pub fn administrator_named(id: &GrantId) -> Option<&str> {
     let id = id.as_str();
-    id.strip_prefix("room-admin-v1:")
-        .or_else(|| id.strip_prefix("room-admin-moderation-v1:"))
+    id.strip_prefix(ADMINISTRATOR_GRANT_PREFIX)
+        .or_else(|| id.strip_prefix(ADMINISTRATOR_MODERATION_GRANT_PREFIX))
 }
 
 /// The node of making and unmaking a workspace's administrators. It is not
@@ -279,7 +286,7 @@ pub fn administrators_node(workspace: &str) -> TreePath {
 /// The id of the grant naming `person` as whom the workspace is kept for.
 #[must_use]
 pub fn keeper_grant_id(person: &str) -> GrantId {
-    GrantId(format!("room-keeper-v1:{person}"))
+    GrantId(format!("{KEEPER_GRANT_PREFIX}{person}"))
 }
 
 /// The grant naming `person` as whom `workspace` is kept for: the person a
@@ -309,7 +316,7 @@ pub fn keeper_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant
 /// Whose keeper grant `id` is ([`keeper_grant_id`]).
 #[must_use]
 pub fn keeper_named(id: &GrantId) -> Option<&str> {
-    id.as_str().strip_prefix("room-keeper-v1:")
+    id.as_str().strip_prefix(KEEPER_GRANT_PREFIX)
 }
 
 /// Whether `grant` is an administrator's grant of `workspace` in the shape workspaces
@@ -863,3 +870,23 @@ pub const FILES_APP: &str = "so.tilo.file-explorer";
 /// The kind the session publishes its own resources under: the compositor's
 /// state, the clipboard, the lock.
 pub const SESSION_KIND: &str = "session";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writing a governance grant's id and reading it back name the same
+    /// person: the reading follows the writing.
+    #[test]
+    fn the_governance_grant_ids_name_their_person() {
+        for id in [
+            administrator_grant_id("a person"),
+            administrator_moderation_grant_id("a person"),
+        ] {
+            assert_eq!(administrator_named(&id), Some("a person"), "{id}");
+        }
+        let keeper = keeper_grant_id("a person");
+        assert_eq!(keeper_named(&keeper), Some("a person"), "{keeper}");
+        assert_eq!(administrator_named(&keeper), None, "{keeper}");
+    }
+}
