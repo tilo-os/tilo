@@ -6147,11 +6147,10 @@ on = ["dispatch"]
 [[check]]
 name = "release-tilo-sh"
 # tilo.sh in one dispatch: the Lounge relay, the web entry and the API published from this one
-# commit, once the people the live relay's release kept come through the export and the import,
-# every browser flow passes and a fresh stack admits a page. It prints the three digests; pinning
-# them in the infra repo rolls it out.
+# commit, every browser flow passing and a fresh stack admitting a page. It prints the three
+# digests; pinning them in the infra repo rolls it out.
 run = "python3 -I -c 'import json,sys\nfor name,path in [(\"lounge\",\"/target/publish/lounge/release/receipt.json\"),(\"web-entry\",\"/target/publish/web-entry/receipt.json\"),(\"api\",\"/target/publish/api/receipt.json\")]:\n    print(name, json.load(open(path))[\"image\"])'"
-needs = ["publish-lounge", "publish-web-entry", "publish-api", "relay-upgrade", "e2e", "tilo-sh-admits-a-page"]
+needs = ["publish-lounge", "publish-web-entry", "publish-api", "e2e", "tilo-sh-admits-a-page"]
 requires = ["arch=any"]
 on = ["dispatch"]
 
@@ -6168,30 +6167,3 @@ pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]
-
-# The people the live relay's release kept, carried into a release that starts its relay on fresh
-# state (tools/relay-upgrade/run.sh). `relay-upgrade-release` builds that release and has its own
-# relay keep a Lounge: the source is fetched from the forge by its commit and checked against the
-# SHA-256 tools/relay-upgrade/<release>/source pins, so the network it reaches is pinned, and its
-# result is kept until that directory changes. `relay-upgrade` exports the people out of a copy of
-# that state (read-only), starts this checkout's relay on a fresh directory of the same volume and
-# imports them: the wait list matches and each person with an address was mailed an invitation.
-# Moving the live relay to a new release is a new directory there and these two lines.
-[[check]]
-name = "relay-upgrade-release"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/relay-upgrade/run.sh release v0.1.5 /target/relay-upgrade/v0.1.5/kept"
-env = { RUST_BACKTRACE = "1" }
-requires = ["arch=x86_64"]
-outputs = ["/target/relay-upgrade/v0.1.5/kept/**"]
-timeout_secs = 5400
-
-[[check]]
-name = "relay-upgrade"
-run = "bash tools/relay-upgrade/run.sh upgrade v0.1.5 /target/relay-upgrade/v0.1.5/kept"
-# The relay with its agents links every app, and some apps embed image fixtures whose build
-# script fetches them: this check has no network, so the seeded cache is their only source.
-needs = ["relay-upgrade-release", "test-assets"]
-env = { RUST_BACKTRACE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-requires = ["arch=x86_64"]
-timeout_secs = 3600

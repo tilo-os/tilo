@@ -1171,8 +1171,7 @@ async fn approve_admitted(
                     | OperatorCommand::Confirm { .. }
                     | OperatorCommand::Standing { .. }
                     | OperatorCommand::InviteMailQueued { .. }
-                    | OperatorCommand::DeclareOwner { .. }
-                    | OperatorCommand::ImportPeople { .. },
+                    | OperatorCommand::DeclareOwner { .. },
                 )) => {
                     // Not the command itself: a wait-list command carries an
                     // email address, which no log keeps.

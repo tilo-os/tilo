@@ -1765,20 +1765,10 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
                 )
                 .await
             }
-            Ok(OperatorCommand::ImportPeople { people }) => {
-                let imported = tilo_relay::release_people::import(
-                    &context.workspaces,
-                    &context.workspace,
-                    &context.host_cert,
-                    people,
-                )
-                .await;
-                OperatorEvent::PeopleImported { imported }.to_line()
-            }
             Ok(other) => OperatorEvent::OwnerRefused {
                 user_public_key: String::new(),
                 reason: format!(
-                    "the owner socket takes declare_owner and import_people, not {}",
+                    "the owner socket takes declare_owner, not {}",
                     other.to_line().trim()
                 ),
             }
@@ -1862,16 +1852,6 @@ async fn serve_operator(
                 // An invitation the door mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
                 Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
-                Some(Ok(OperatorCommand::ImportPeople { people })) => {
-                    let imported = tilo_relay::release_people::import(
-                        &context.workspaces,
-                        &context.workspace,
-                        &context.host_cert,
-                        people,
-                    )
-                    .await;
-                    println!("{}", OperatorEvent::PeopleImported { imported }.to_line());
-                }
                 Some(Ok(OperatorCommand::DeclareOwner {
                     user_public_key,
                     name,

@@ -1521,8 +1521,3 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
     );
     workspace.stop();
 }
-
-/// The release of tilo.sh that starts its relay on fresh state, on what the
-/// live relay's release kept.
-#[path = "persistent_workspace/release_upgrade.rs"]
-mod release_upgrade;
