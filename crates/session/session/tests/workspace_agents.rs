@@ -135,11 +135,21 @@ fn send(device: &Device, to: &Value, text: &str) -> Value {
             })
         },
     );
-    device.act_wait(
+    let answered = device.act_wait(
         row["provider"].as_str().expect("a provider"),
         row["id"].as_str().expect("an id"),
         &json!({ "to": to, "text": text }),
-    )
+    );
+    // The send is answered when it is carried out: a receipt left accepted is an invocation
+    // nothing settles, which a caller waits out rather than reads.
+    let state = answered["answer"]["receipt"]["update"]["state"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !matches!(state, "accepted" | "progress"),
+        "the send settles: {answered}"
+    );
+    answered
 }
 
 /// Ada's laptop in a published workspace, Chat open in it.

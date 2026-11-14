@@ -74,6 +74,9 @@ struct Sending {
     /// that number ([`Sends::posted`]), for its turn to stand where the person asked. `None` for
     /// a box's send, which opens the conversation where the box stood.
     asked: Option<u64>,
+    /// The caller's answer: the pass completes it once the message is in the record, or says why
+    /// it never landed.
+    answer: tilo_actions::remote::Completer<Result<tilo_actions::ActionOutput, DoorError>>,
 }
 
 /// A send as carried out: what it carried, whom it reached, and whether it landed.
@@ -119,7 +122,9 @@ fn published() -> Vec<ResourceSpec> {
 impl Sends {
     /// Take a send with `arguments`, as `by` (the person sitting here without), for the session's
     /// pass to carry out ([`Shared::deliver_sends`]): the one entry of `session:send-to#send`, for
-    /// the service and for the canvas asking the workspace's agent alike.
+    /// the service and for the canvas asking the workspace's agent alike. The caller is answered
+    /// when the pass has carried the send out, so an invocation settles with the message in the
+    /// record rather than staying accepted.
     ///
     /// # Errors
     /// The arguments are not a send's, or the message has nothing to say or carry.
@@ -172,6 +177,7 @@ impl Sends {
                 "a message needs words or something to carry".into(),
             ));
         }
+        let (answer, later) = tilo_actions::remote::pending();
         self.waiting.borrow_mut().push(Sending {
             by,
             to,
@@ -180,8 +186,9 @@ impl Sends {
             text,
             workspace,
             asked,
+            answer,
         });
-        Ok(Started::Accepted)
+        Ok(Started::Later(later))
     }
 }
 
@@ -291,11 +298,18 @@ impl Shared {
                 to,
                 attached,
                 text: sending.text,
-                refused,
+                refused: refused.clone(),
             });
             let over = sent.len().saturating_sub(KEPT);
             sent.drain(..over);
+            drop(sent);
             self.sends.moved.set(true);
+            // The send is in the record now, so the caller is answered: the receipt of an
+            // invocation is what says the message landed, or why it did not.
+            sending.answer.complete(match refused {
+                Some(reason) => Err(DoorError::Failed(reason)),
+                None => Ok(tilo_actions::ActionOutput::default()),
+            });
         }
     }
 
