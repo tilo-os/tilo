@@ -1612,9 +1612,9 @@ impl ShellPart {
                 .collect();
             if heads != self.seen_heads {
                 self.seen_heads = heads;
+                self.instance.moved();
                 let record = self.record.borrow();
                 self.instance.sync(Some(&record));
-                self.instance.moved();
                 record_moved = true;
             }
         }
