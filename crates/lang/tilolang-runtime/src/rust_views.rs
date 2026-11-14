@@ -375,45 +375,49 @@ mod tests {
         Rc::new(std::cell::RefCell::new(all))
     }
 
-    /// A registry that answers for every app draws only the kinds it declares: a tilolang
-    /// package's type (`so.tilo.lang.notes#Note`) is no Rust app's, and neither is the bare id
-    /// the type's own package names it by (`mavvhka7`) — the two a placed Notes root's views ask
-    /// `meta` of.
-    #[test]
-    fn a_registry_of_every_app_draws_only_its_own_kinds() {
-        let shared = held(&["chat.workspace.channels", "tube.channel"]);
-        assert!(
-            app_of(&shared, "chat.workspace.channels").is_some(),
-            "the kind it declares is its own"
-        );
-        assert!(
-            app_of(&shared, "chat#channels").is_some(),
-            "the app-and-type key the session publishes its resource by is its own"
-        );
-        assert!(
-            app_of(&shared, "tube#channel").is_some(),
-            "another Rust app's type, from the one registry that answers for every app"
-        );
-        assert!(
-            app_of(&shared, "so.tilo.lang.notes#Note").is_none(),
-            "a tilolang package's type is no Rust app's"
-        );
-        assert!(
-            app_of(&shared, "mavvhka7").is_none(),
-            "the bare id a type is named by is no Rust app's"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_registry_draws_only_what_is_its_own;
 
-    /// A registry held under its own app answers for its app's types, and for no other's.
-    #[test]
-    fn an_apps_registry_draws_only_its_apps_types() {
-        let mut all: BTreeMap<String, Rc<dyn RustViews>> = BTreeMap::new();
-        all.insert(
-            "chat".to_owned(),
-            Rc::new(EveryApp(vec!["chat.workspace.channels".to_owned()])),
-        );
-        let shared = Rc::new(std::cell::RefCell::new(all));
-        assert!(app_of(&shared, "chat.workspace.channels").is_some());
-        assert!(app_of(&shared, "tube.channel").is_none());
+        phase a_registry_of_every_app_draws_only_its_own_kinds;
+        // A registry that answers for every app draws only the kinds it declares: a tilolang
+        // package's type (`so.tilo.lang.notes#Note`) is no Rust app's, and neither is the bare id
+        // the type's own package names it by (`mavvhka7`) — the two a placed Notes root's views ask
+        // `meta` of.
+        {
+            let shared = held(&["chat.workspace.channels", "tube.channel"]);
+            assert!(
+                app_of(&shared, "chat.workspace.channels").is_some(),
+                "the kind it declares is its own"
+            );
+            assert!(
+                app_of(&shared, "chat#channels").is_some(),
+                "the app-and-type key the session publishes its resource by is its own"
+            );
+            assert!(
+                app_of(&shared, "tube#channel").is_some(),
+                "another Rust app's type, from the one registry that answers for every app"
+            );
+            assert!(
+                app_of(&shared, "so.tilo.lang.notes#Note").is_none(),
+                "a tilolang package's type is no Rust app's"
+            );
+            assert!(
+                app_of(&shared, "mavvhka7").is_none(),
+                "the bare id a type is named by is no Rust app's"
+            );
+        }
+
+        phase an_apps_registry_draws_only_its_apps_types;
+        // A registry held under its own app answers for its app's types, and for no other's.
+        {
+            let mut all: BTreeMap<String, Rc<dyn RustViews>> = BTreeMap::new();
+            all.insert(
+                "chat".to_owned(),
+                Rc::new(EveryApp(vec!["chat.workspace.channels".to_owned()])),
+            );
+            let shared = Rc::new(std::cell::RefCell::new(all));
+            assert!(app_of(&shared, "chat.workspace.channels").is_some());
+            assert!(app_of(&shared, "tube.channel").is_none());
+        }
     }
 }

@@ -141,140 +141,144 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
             .clone()
     }
 
-    #[test]
-    fn an_actions_request_runs_once_and_is_kept_with_its_change() {
-        let web = FakeWeb::answering(hello());
-        let world = world(&web);
-        world
-            .rt
-            .invoke_action(
-                &me(),
-                (
-                    world.reader.action("fetch").as_str(),
-                    vec![Value::resource(&world.feed)],
-                ),
-            )
-            .unwrap();
+    tilo_test_env::scenario! {
+        fn a_web_request_is_declared_journaled_and_answered_as_a_value;
 
-        assert_eq!(feed(&world.rt, &world.feed), "hello");
-        let seen = web.requests();
-        assert_eq!(seen.len(), 1, "the request ran once");
-        assert_eq!(seen[0].method, "GET");
-        assert_eq!(seen[0].url, "https://example.com/feed");
-        assert_eq!(seen[0].headers, ["Accept: text/plain"]);
-        assert_eq!(seen[0].if_none_match.as_deref(), Some("v1"));
-        assert_eq!(
-            effects(&world.rt, &world.feed),
-            [JournalEntry::Web {
-                request: seen[0].clone(),
-                response: WebResponse {
-                    status: 200,
-                    status_text: "OK".to_owned(),
-                    headers: vec!["ETag: \"v2\"".to_owned()],
-                    body: Some(json!("hello")),
-                },
-            }],
-            "the answer is recorded beside the change"
-        );
-    }
+        phase an_actions_request_runs_once_and_is_kept_with_its_change;
+        {
+            let web = FakeWeb::answering(hello());
+            let world = world(&web);
+            world
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        world.reader.action("fetch").as_str(),
+                        vec![Value::resource(&world.feed)],
+                    ),
+                )
+                .unwrap();
 
-    #[test]
-    fn a_run_resumed_answers_from_its_journal() {
-        let web = FakeWeb::answering(hello());
-        let mut world = world(&web);
-        let out = world
-            .rt
-            .invoke_action(
-                &me(),
-                (
-                    world.reader.action("start").as_str(),
-                    vec![Value::resource(&world.feed), Value::resource(&world.board)],
-                ),
-            )
-            .unwrap();
-        let InvokeOutcome::Suggested(first) = out else {
-            panic!("the other package's action must ask: {out:?}");
-        };
-        assert_eq!(
-            web.requests().len(),
-            1,
-            "the request ran before the run suspended"
-        );
-        let journal = world
-            .store
-            .load_journal(&first.run)
-            .unwrap()
-            .expect("a suspended run's journal");
-        assert!(
-            matches!(journal.entries.first(), Some(JournalEntry::Web { .. })),
-            "the answer is in the journal: {:?}",
-            journal.entries
-        );
+            assert_eq!(feed(&world.rt, &world.feed), "hello");
+            let seen = web.requests();
+            assert_eq!(seen.len(), 1, "the request ran once");
+            assert_eq!(seen[0].method, "GET");
+            assert_eq!(seen[0].url, "https://example.com/feed");
+            assert_eq!(seen[0].headers, ["Accept: text/plain"]);
+            assert_eq!(seen[0].if_none_match.as_deref(), Some("v1"));
+            assert_eq!(
+                effects(&world.rt, &world.feed),
+                [JournalEntry::Web {
+                    request: seen[0].clone(),
+                    response: WebResponse {
+                        status: 200,
+                        status_text: "OK".to_owned(),
+                        headers: vec!["ETag: \"v2\"".to_owned()],
+                        body: Some(json!("hello")),
+                    },
+                }],
+                "the answer is recorded beside the change"
+            );
+        }
 
-        let out = world
-            .rt
-            .resolve(&first.run, &me(), Resolution::Approve)
-            .unwrap();
-        assert_eq!(out, RunOutcome::Done(Value::text("hello")));
-        assert_eq!(
-            web.requests().len(),
-            1,
-            "the resumed run answers from its journal, it does not ask again"
-        );
-    }
+        phase a_run_resumed_answers_from_its_journal;
+        {
+            let web = FakeWeb::answering(hello());
+            let mut world = world(&web);
+            let out = world
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        world.reader.action("start").as_str(),
+                        vec![Value::resource(&world.feed), Value::resource(&world.board)],
+                    ),
+                )
+                .unwrap();
+            let InvokeOutcome::Suggested(first) = out else {
+                panic!("the other package's action must ask: {out:?}");
+            };
+            assert_eq!(
+                web.requests().len(),
+                1,
+                "the request ran before the run suspended"
+            );
+            let journal = world
+                .store
+                .load_journal(&first.run)
+                .unwrap()
+                .expect("a suspended run's journal");
+            assert!(
+                matches!(journal.entries.first(), Some(JournalEntry::Web { .. })),
+                "the answer is in the journal: {:?}",
+                journal.entries
+            );
 
-    #[test]
-    fn a_host_the_package_did_not_declare_is_refused_as_a_value() {
-        let web = FakeWeb::answering(hello());
-        let world = world(&web);
-        world
-            .rt
-            .invoke_action(
-                &me(),
-                (
-                    world.reader.action("ask_elsewhere").as_str(),
-                    vec![Value::resource(&world.feed)],
-                ),
-            )
-            .unwrap();
+            let out = world
+                .rt
+                .resolve(&first.run, &me(), Resolution::Approve)
+                .unwrap();
+            assert_eq!(out, RunOutcome::Done(Value::text("hello")));
+            assert_eq!(
+                web.requests().len(),
+                1,
+                "the resumed run answers from its journal, it does not ask again"
+            );
+        }
 
-        assert!(web.requests().is_empty(), "no request left the device");
-        let why = feed(&world.rt, &world.feed);
-        assert!(
-            why.contains("may not reach") && why.contains("evil.example"),
-            "the value says why: {why}"
-        );
-        let recorded = effects(&world.rt, &world.feed);
-        assert!(
-            matches!(recorded.as_slice(), [JournalEntry::Web { response, .. }] if response.status == 0),
-            "the refusal is recorded too: {recorded:?}"
-        );
-    }
+        phase a_host_the_package_did_not_declare_is_refused_as_a_value;
+        {
+            let web = FakeWeb::answering(hello());
+            let world = world(&web);
+            world
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        world.reader.action("ask_elsewhere").as_str(),
+                        vec![Value::resource(&world.feed)],
+                    ),
+                )
+                .unwrap();
 
-    #[test]
-    fn a_post_sends_its_body_and_a_failure_is_a_value() {
-        let web = FakeWeb::answering(WebReply::failed("no answer within 30 seconds"));
-        let world = world(&web);
-        world
-            .rt
-            .invoke_action(
-                &me(),
-                (
-                    world.reader.action("post_to").as_str(),
-                    vec![Value::resource(&world.feed)],
-                ),
-            )
-            .unwrap();
+            assert!(web.requests().is_empty(), "no request left the device");
+            let why = feed(&world.rt, &world.feed);
+            assert!(
+                why.contains("may not reach") && why.contains("evil.example"),
+                "the value says why: {why}"
+            );
+            let recorded = effects(&world.rt, &world.feed);
+            assert!(
+                matches!(recorded.as_slice(), [JournalEntry::Web { response, .. }] if response.status == 0),
+                "the refusal is recorded too: {recorded:?}"
+            );
+        }
 
-        let seen = web.requests();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].method, "POST");
-        assert_eq!(seen[0].body.as_deref(), Some("hi"));
-        assert_eq!(seen[0].headers, ["Content-Type: text/plain"]);
-        assert_eq!(
-            feed(&world.rt, &world.feed),
-            "0 no answer within 30 seconds",
-            "a timeout is the value the action reads, not a trap"
-        );
+        phase a_post_sends_its_body_and_a_failure_is_a_value;
+        {
+            let web = FakeWeb::answering(WebReply::failed("no answer within 30 seconds"));
+            let world = world(&web);
+            world
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        world.reader.action("post_to").as_str(),
+                        vec![Value::resource(&world.feed)],
+                    ),
+                )
+                .unwrap();
+
+            let seen = web.requests();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].method, "POST");
+            assert_eq!(seen[0].body.as_deref(), Some("hi"));
+            assert_eq!(seen[0].headers, ["Content-Type: text/plain"]);
+            assert_eq!(
+                feed(&world.rt, &world.feed),
+                "0 no answer within 30 seconds",
+                "a timeout is the value the action reads, not a trap"
+            );
+        }
     }
 }

@@ -134,35 +134,39 @@ fn int_as_f64(v: i64) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn classes_follow_the_documented_boundaries() {
-        let class = |w| Space::from_rem(w, 20.0).width_class();
-        assert_eq!(
-            [class(10.0), class(30.0), class(52.0), class(75.0)],
-            [0, 1, 2, 3]
-        );
-        assert_eq!(Space::from_rem(100.0, 30.0).orientation(), 2);
-        assert_eq!(Space::from_rem(20.0, 30.0).orientation(), 0);
-        assert_eq!(Space::from_rem(40.0, 30.0).orientation(), 1);
-        assert_eq!(Space::from_rem(20.0, 30.0).field("compact"), Some(1.0));
-        assert_eq!(Space::from_rem(20.0, 30.0).field("nope"), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_space_class_follows_its_boundaries;
 
-    #[test]
-    fn a_class_changes_only_past_its_boundary_by_the_hysteresis() {
-        let medium = Space::from_rem(31.0, 40.0);
-        // Just under the compact boundary: still medium; well under it: compact.
-        assert_eq!(medium.followed(29.8, 40.0).width_class(), 1);
-        let compact = medium.followed(29.0, 40.0);
-        assert_eq!(compact.width_class(), 0);
-        // Back just over it: still compact, until past it by the hysteresis.
-        assert_eq!(compact.followed(30.2, 40.0).width_class(), 0);
-        assert_eq!(compact.followed(30.6, 40.0).width_class(), 1);
-        // A jump over several boundaries lands in the class it reaches.
-        assert_eq!(compact.followed(100.0, 40.0).width_class(), 3);
-        // Landscape to portrait right at square keeps landscape.
-        let landscape = Space::from_rem(50.0, 40.0);
-        assert_eq!(landscape.followed(39.0, 40.0).orientation(), 1);
-        assert_eq!(landscape.followed(30.0, 40.0).orientation(), 0);
+        phase classes_follow_the_documented_boundaries;
+        {
+            let class = |w| Space::from_rem(w, 20.0).width_class();
+            assert_eq!(
+                [class(10.0), class(30.0), class(52.0), class(75.0)],
+                [0, 1, 2, 3]
+            );
+            assert_eq!(Space::from_rem(100.0, 30.0).orientation(), 2);
+            assert_eq!(Space::from_rem(20.0, 30.0).orientation(), 0);
+            assert_eq!(Space::from_rem(40.0, 30.0).orientation(), 1);
+            assert_eq!(Space::from_rem(20.0, 30.0).field("compact"), Some(1.0));
+            assert_eq!(Space::from_rem(20.0, 30.0).field("nope"), None);
+        }
+
+        phase a_class_changes_only_past_its_boundary_by_the_hysteresis;
+        {
+            let medium = Space::from_rem(31.0, 40.0);
+            // Just under the compact boundary: still medium; well under it: compact.
+            assert_eq!(medium.followed(29.8, 40.0).width_class(), 1);
+            let compact = medium.followed(29.0, 40.0);
+            assert_eq!(compact.width_class(), 0);
+            // Back just over it: still compact, until past it by the hysteresis.
+            assert_eq!(compact.followed(30.2, 40.0).width_class(), 0);
+            assert_eq!(compact.followed(30.6, 40.0).width_class(), 1);
+            // A jump over several boundaries lands in the class it reaches.
+            assert_eq!(compact.followed(100.0, 40.0).width_class(), 3);
+            // Landscape to portrait right at square keeps landscape.
+            let landscape = Space::from_rem(50.0, 40.0);
+            assert_eq!(landscape.followed(39.0, 40.0).orientation(), 1);
+            assert_eq!(landscape.followed(30.0, 40.0).orientation(), 0);
+        }
     }
 }

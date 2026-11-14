@@ -40,33 +40,109 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
             .unwrap_or_else(|| panic!("no {kind} in\n{}", dump(n)))
     }
 
-    #[test]
-    fn the_library_view_carries_units_tokens_and_weights_through_the_tree() {
-        let (rt, app, lib) = setup();
-        let view = rt
-            .open_view(&me(), &app.view("library"), vec![Value::resource(&lib)])
-            .unwrap();
-        let tree = view.tree();
-        let grid = first(tree, "grid");
-        assert_eq!(grid.props["min.rem"], Value::Float(11.0), "{}", dump(tree));
-        let cards: Vec<&UiNode> = grid.children.iter().collect();
-        assert_eq!(cards.len(), 2);
-        for card in &cards {
-            assert_eq!(card.kind, "fragment");
-            assert_eq!(card.props["fill"], Value::Float(2.0), "{}", dump(tree));
+    tilo_test_env::scenario! {
+        fn the_library_lays_out_by_units_and_the_space_it_is_offered;
+
+        phase the_library_view_carries_units_tokens_and_weights_through_the_tree;
+        {
+            let (rt, app, lib) = setup();
+            let view = rt
+                .open_view(&me(), &app.view("library"), vec![Value::resource(&lib)])
+                .unwrap();
+            let tree = view.tree();
+            let grid = first(tree, "grid");
+            assert_eq!(grid.props["min.rem"], Value::Float(11.0), "{}", dump(tree));
+            let cards: Vec<&UiNode> = grid.children.iter().collect();
+            assert_eq!(cards.len(), 2);
+            for card in &cards {
+                assert_eq!(card.kind, "fragment");
+                assert_eq!(card.props["fill"], Value::Float(2.0), "{}", dump(tree));
+            }
+            let image = first(tree, "ui.Image");
+            assert_eq!(image.props["alt"], Value::Text("The cover".into()));
+            assert!(matches!(image.props["aspect"], Value::Float(f) if (f - 16.0 / 9.0).abs() < 1e-9));
+            let layered_text = first(first(tree, "layers"), "ui.Text");
+            assert_eq!(text_prop(layered_text, "at"), "bottom_trailing");
+            let titles: Vec<&UiNode> = of_kind(tree, "ui.Text")
+                .into_iter()
+                .filter(|t| t.props.contains_key("truncate"))
+                .collect();
+            assert_eq!(titles.len(), 2);
+            assert_eq!(titles[0].props["lines"], Value::Int(1));
+            assert_eq!(titles[0].props["truncate"], Value::Int(1));
         }
-        let image = first(tree, "ui.Image");
-        assert_eq!(image.props["alt"], Value::Text("The cover".into()));
-        assert!(matches!(image.props["aspect"], Value::Float(f) if (f - 16.0 / 9.0).abs() < 1e-9));
-        let layered_text = first(first(tree, "layers"), "ui.Text");
-        assert_eq!(text_prop(layered_text, "at"), "bottom_trailing");
-        let titles: Vec<&UiNode> = of_kind(tree, "ui.Text")
-            .into_iter()
-            .filter(|t| t.props.contains_key("truncate"))
-            .collect();
-        assert_eq!(titles.len(), 2);
-        assert_eq!(titles[0].props["lines"], Value::Int(1));
-        assert_eq!(titles[0].props["truncate"], Value::Int(1));
+
+        phase a_view_that_reads_space_follows_the_class_it_is_offered;
+        {
+            let (rt, app, lib) = setup();
+            let Value::List(albums) = rt.read(&lib, "albums").unwrap() else {
+                panic!("albums");
+            };
+            let Value::Ref(album) = &albums[0] else {
+                panic!("ref")
+            };
+            let mut view = rt
+                .open_view(
+                    &me(),
+                    &app.view("bar"),
+                    vec![Value::resource(&album.target)],
+                )
+                .unwrap();
+            let roomy = dump(view.tree());
+            assert!(
+                text_prop(first(view.tree(), "row"), "gap") == "section",
+                "{roomy}"
+            );
+            assert_eq!(of_kind(view.tree(), "ui.Text").len(), 2);
+
+            assert!(view.set_space("", Space::from_rem(20.0, 40.0)));
+            let patches = view.poll_patches().unwrap();
+            assert!(!patches.is_empty());
+            let compact = first(view.tree(), "row");
+            assert_eq!(
+                text_prop(compact, "distribute"),
+                "between",
+                "{}",
+                dump(view.tree())
+            );
+            assert_eq!(of_kind(view.tree(), "ui.Text").len(), 1);
+
+            assert!(
+                !view.set_space("", Space::from_rem(25.0, 40.0)),
+                "same class: nothing re-runs"
+            );
+            assert!(view.set_space("", Space::from_rem(60.0, 40.0)));
+            assert!(matches!(
+                view.poll_patches().unwrap().first(),
+                Some(Patch::Remove { .. } | Patch::Insert { .. } | Patch::SetProp { .. })
+            ));
+            assert_eq!(dump(view.tree()), roomy);
+        }
+
+        phase the_album_card_hides_the_artist_when_compact;
+        {
+            let (rt, app, lib) = setup();
+            let Value::List(albums) = rt.read(&lib, "albums").unwrap() else {
+                panic!("albums");
+            };
+            let Value::Ref(album) = &albums[0] else {
+                panic!("ref")
+            };
+            let mut view = rt
+                .open_view(
+                    &me(),
+                    &app.view("album_card"),
+                    vec![Value::resource(&album.target)],
+                )
+                .unwrap();
+            let wide = of_kind(view.tree(), "ui.Text").len();
+            view.set_space("", Space::from_rem(10.0, 20.0));
+            view.poll_patches().unwrap();
+            assert_eq!(
+                of_kind(view.tree(), "ui.Text").len(),
+                wide.saturating_sub(1)
+            );
+        }
     }
 
     #[test]
@@ -103,78 +179,6 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
         let clamped = first(first(tree, "scroll"), "ui.Text");
         assert_eq!(clamped.props["min.dp"], Value::Float(4.0));
         assert_eq!(clamped.props["max.rem"], Value::Float(1.5));
-    }
-
-    #[test]
-    fn a_view_that_reads_space_follows_the_class_it_is_offered() {
-        let (rt, app, lib) = setup();
-        let Value::List(albums) = rt.read(&lib, "albums").unwrap() else {
-            panic!("albums");
-        };
-        let Value::Ref(album) = &albums[0] else {
-            panic!("ref")
-        };
-        let mut view = rt
-            .open_view(
-                &me(),
-                &app.view("bar"),
-                vec![Value::resource(&album.target)],
-            )
-            .unwrap();
-        let roomy = dump(view.tree());
-        assert!(
-            text_prop(first(view.tree(), "row"), "gap") == "section",
-            "{roomy}"
-        );
-        assert_eq!(of_kind(view.tree(), "ui.Text").len(), 2);
-
-        assert!(view.set_space("", Space::from_rem(20.0, 40.0)));
-        let patches = view.poll_patches().unwrap();
-        assert!(!patches.is_empty());
-        let compact = first(view.tree(), "row");
-        assert_eq!(
-            text_prop(compact, "distribute"),
-            "between",
-            "{}",
-            dump(view.tree())
-        );
-        assert_eq!(of_kind(view.tree(), "ui.Text").len(), 1);
-
-        assert!(
-            !view.set_space("", Space::from_rem(25.0, 40.0)),
-            "same class: nothing re-runs"
-        );
-        assert!(view.set_space("", Space::from_rem(60.0, 40.0)));
-        assert!(matches!(
-            view.poll_patches().unwrap().first(),
-            Some(Patch::Remove { .. } | Patch::Insert { .. } | Patch::SetProp { .. })
-        ));
-        assert_eq!(dump(view.tree()), roomy);
-    }
-
-    #[test]
-    fn the_album_card_hides_the_artist_when_compact() {
-        let (rt, app, lib) = setup();
-        let Value::List(albums) = rt.read(&lib, "albums").unwrap() else {
-            panic!("albums");
-        };
-        let Value::Ref(album) = &albums[0] else {
-            panic!("ref")
-        };
-        let mut view = rt
-            .open_view(
-                &me(),
-                &app.view("album_card"),
-                vec![Value::resource(&album.target)],
-            )
-            .unwrap();
-        let wide = of_kind(view.tree(), "ui.Text").len();
-        view.set_space("", Space::from_rem(10.0, 20.0));
-        view.poll_patches().unwrap();
-        assert_eq!(
-            of_kind(view.tree(), "ui.Text").len(),
-            wide.saturating_sub(1)
-        );
     }
 
     /// The host puts a record's actions on the record, grouped as their declarations say: a

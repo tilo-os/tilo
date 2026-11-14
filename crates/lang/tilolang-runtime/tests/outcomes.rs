@@ -85,185 +85,189 @@ view item(item: Todo) {
         }
     }
 
-    #[test]
-    fn a_left_out_argument_is_computed_when_invoked_and_recorded() {
-        let w = World::new();
-        w.check(vec![Value::resource(&w.item)]);
-        assert_eq!(w.done(), Value::Bool(true));
-        w.check(vec![Value::resource(&w.item)]);
-        assert_eq!(
-            w.done(),
-            Value::Bool(false),
-            "the default reads the state then"
-        );
-        let recorded = w.recorded("check");
-        assert_eq!(recorded.len(), 2);
-        assert_eq!(recorded[0].get(1), Some(&json!(true)), "{recorded:?}");
-        assert_eq!(recorded[1].get(1), Some(&json!(false)), "{recorded:?}");
-    }
+    tilo_test_env::scenario! {
+        fn a_left_out_argument_takes_its_default;
 
-    #[test]
-    fn an_explicit_argument_wins() {
-        let w = World::new();
-        w.check(vec![Value::resource(&w.item), Value::Bool(false)]);
-        assert_eq!(
-            w.done(),
-            Value::Bool(false),
-            "not flipped: `done: false` was asked"
-        );
-        w.check(vec![Value::resource(&w.item), Value::Bool(true)]);
-        w.check(vec![Value::resource(&w.item), Value::Bool(true)]);
-        assert_eq!(
-            w.done(),
-            Value::Bool(true),
-            "checking twice leaves it checked"
-        );
-        assert_eq!(w.recorded("check")[0].get(1), Some(&json!(false)));
-    }
+        phase a_left_out_argument_is_computed_when_invoked_and_recorded;
+        {
+            let w = World::new();
+            w.check(vec![Value::resource(&w.item)]);
+            assert_eq!(w.done(), Value::Bool(true));
+            w.check(vec![Value::resource(&w.item)]);
+            assert_eq!(
+                w.done(),
+                Value::Bool(false),
+                "the default reads the state then"
+            );
+            let recorded = w.recorded("check");
+            assert_eq!(recorded.len(), 2);
+            assert_eq!(recorded[0].get(1), Some(&json!(true)), "{recorded:?}");
+            assert_eq!(recorded[1].get(1), Some(&json!(false)), "{recorded:?}");
+        }
 
-    #[test]
-    fn the_runtime_completes_the_arguments_a_caller_left_out() {
-        let w = World::new();
-        let id = w.app.action("check");
-        let args =
-            w.rt.complete_args(&id, vec![Some(Value::resource(&w.item)), None])
-                .unwrap();
-        assert_eq!(args[1], Value::Bool(true));
-        let explicit =
-            w.rt.complete_args(
-                &id,
-                vec![Some(Value::resource(&w.item)), Some(Value::Bool(false))],
-            )
-            .unwrap();
-        assert_eq!(explicit[1], Value::Bool(false));
-        assert!(
-            w.rt.complete_args(&id, vec![None, None]).is_err(),
-            "the subject has no default"
-        );
-    }
+        phase an_explicit_argument_wins;
+        {
+            let w = World::new();
+            w.check(vec![Value::resource(&w.item), Value::Bool(false)]);
+            assert_eq!(
+                w.done(),
+                Value::Bool(false),
+                "not flipped: `done: false` was asked"
+            );
+            w.check(vec![Value::resource(&w.item), Value::Bool(true)]);
+            w.check(vec![Value::resource(&w.item), Value::Bool(true)]);
+            assert_eq!(
+                w.done(),
+                Value::Bool(true),
+                "checking twice leaves it checked"
+            );
+            assert_eq!(w.recorded("check")[0].get(1), Some(&json!(false)));
+        }
 
-    #[test]
-    fn a_button_invokes_with_the_default_of_when_it_is_pressed() {
-        let w = World::new();
-        let v =
-            w.rt.open_view(&me(), &w.app.view("item"), vec![Value::resource(&w.item)])
-                .unwrap();
-        let (tick, clear) = (w.app.anchor("item", "tick"), w.app.anchor("item", "clear"));
-        assert!(matches!(v.press(&tick).unwrap(), InvokeOutcome::Done(_)));
-        assert_eq!(w.done(), Value::Bool(true));
-        assert!(matches!(v.press(&tick).unwrap(), InvokeOutcome::Done(_)));
-        assert_eq!(
-            w.done(),
-            Value::Bool(false),
-            "pressed again, on the new state"
-        );
-        assert!(matches!(v.press(&clear).unwrap(), InvokeOutcome::Done(_)));
-        assert_eq!(
-            w.done(),
-            Value::Bool(false),
-            "an explicit `done: false` wins over the default, which would have checked it"
-        );
-        let recorded = w.recorded("check");
-        let dones: Vec<_> = recorded.iter().map(|args| args.get(1).cloned()).collect();
-        assert_eq!(
-            dones,
-            [Some(json!(true)), Some(json!(false))],
-            "the last press changed nothing, so it left no change behind"
-        );
-    }
-
-    #[test]
-    fn a_call_that_leaves_out_a_parameter_before_one_it_gives_fills_it() {
-        let w = World::new();
-        let mark = w.app.action("mark");
-        let out =
-            w.rt.invoke_action(&me(), (mark.as_str(), vec![Value::resource(&w.item)]))
-                .unwrap();
-        assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
-        assert_eq!(
-            w.rt.read(&w.item, "archived").unwrap(),
-            Value::Bool(true),
-            "`archived` is the item's then"
-        );
-        assert_eq!(w.rt.read(&w.item, "title").unwrap(), Value::text("marked"));
-        let recorded = w.recorded("file");
-        assert_eq!(
-            recorded[0],
-            json!([{"ref": w.item.id_string(), "ty": w.item.ty}, true, "marked"]),
-            "the invocation recorded the argument its default made"
-        );
-        // A view applies the same call, its arguments made when the button is pressed.
-        let v =
-            w.rt.open_view(&me(), &w.app.view("item"), vec![Value::resource(&w.item)])
-                .unwrap();
-        let file_it = w.app.anchor("item", "file_it");
-        assert!(matches!(v.press(&file_it).unwrap(), InvokeOutcome::Done(_)));
-        assert_eq!(
-            w.rt.read(&w.item, "title").unwrap(),
-            Value::text("from the view")
-        );
-        assert_eq!(
-            w.rt.read(&w.item, "archived").unwrap(),
-            Value::Bool(false),
-            "flipped from what it was"
-        );
-    }
-
-    #[test]
-    fn a_called_action_defaults_on_the_state_its_call_sees() {
-        let w = World::new();
-        let tick = w.app.action("tick");
-        let out =
-            w.rt.invoke_action(&me(), (tick.as_str(), vec![Value::resource(&w.item)]))
-                .unwrap();
-        assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
-        assert_eq!(w.done(), Value::Bool(true));
-        assert_eq!(w.recorded("check")[0].get(1), Some(&json!(true)));
-        let twice = w.app.action("check_twice");
-        w.rt.invoke_action(&me(), (twice.as_str(), vec![Value::resource(&w.item)]))
-            .unwrap();
-        assert_eq!(
-            w.done(),
-            Value::Bool(true),
-            "each call computes its default on the state the call before it committed: checked, then unchecked"
-        );
-    }
-
-    #[test]
-    fn the_label_reads_the_default_for_the_subject() {
-        let w = World::new();
-        let present = || {
-            let view = w
-                .app
-                .meta()
-                .actions
-                .iter()
-                .find(|a| a.name == "check")
-                .and_then(|a| a.present.clone())
-                .expect("a presentation view");
-            let v =
-                w.rt.open_view(&me(), &view, vec![Value::resource(&w.item)])
+        phase the_runtime_completes_the_arguments_a_caller_left_out;
+        {
+            let w = World::new();
+            let id = w.app.action("check");
+            let args =
+                w.rt.complete_args(&id, vec![Some(Value::resource(&w.item)), None])
                     .unwrap();
-            v.tree().clone()
-        };
-        assert_eq!(text_prop(&present(), "label"), "Check");
-        w.check(vec![Value::resource(&w.item)]);
-        assert_eq!(text_prop(&present(), "label"), "Uncheck");
-        assert_eq!(present().props["on"], Value::Int(1));
-    }
+            assert_eq!(args[1], Value::Bool(true));
+            let explicit =
+                w.rt.complete_args(
+                    &id,
+                    vec![Some(Value::resource(&w.item)), Some(Value::Bool(false))],
+                )
+                .unwrap();
+            assert_eq!(explicit[1], Value::Bool(false));
+            assert!(
+                w.rt.complete_args(&id, vec![None, None]).is_err(),
+                "the subject has no default"
+            );
+        }
 
-    #[test]
-    fn the_catalogue_shows_the_default() {
-        let w = World::new();
-        let check =
-            w.rt.catalogue()
-                .into_iter()
-                .find(|s| s.name == "check")
-                .expect("listed");
-        assert!(
-            check.text.contains("done: Bool = not item.done"),
-            "{}",
-            check.text
-        );
+        phase a_button_invokes_with_the_default_of_when_it_is_pressed;
+        {
+            let w = World::new();
+            let v =
+                w.rt.open_view(&me(), &w.app.view("item"), vec![Value::resource(&w.item)])
+                    .unwrap();
+            let (tick, clear) = (w.app.anchor("item", "tick"), w.app.anchor("item", "clear"));
+            assert!(matches!(v.press(&tick).unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(w.done(), Value::Bool(true));
+            assert!(matches!(v.press(&tick).unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(
+                w.done(),
+                Value::Bool(false),
+                "pressed again, on the new state"
+            );
+            assert!(matches!(v.press(&clear).unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(
+                w.done(),
+                Value::Bool(false),
+                "an explicit `done: false` wins over the default, which would have checked it"
+            );
+            let recorded = w.recorded("check");
+            let dones: Vec<_> = recorded.iter().map(|args| args.get(1).cloned()).collect();
+            assert_eq!(
+                dones,
+                [Some(json!(true)), Some(json!(false))],
+                "the last press changed nothing, so it left no change behind"
+            );
+        }
+
+        phase a_call_that_leaves_out_a_parameter_before_one_it_gives_fills_it;
+        {
+            let w = World::new();
+            let mark = w.app.action("mark");
+            let out =
+                w.rt.invoke_action(&me(), (mark.as_str(), vec![Value::resource(&w.item)]))
+                    .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(
+                w.rt.read(&w.item, "archived").unwrap(),
+                Value::Bool(true),
+                "`archived` is the item's then"
+            );
+            assert_eq!(w.rt.read(&w.item, "title").unwrap(), Value::text("marked"));
+            let recorded = w.recorded("file");
+            assert_eq!(
+                recorded[0],
+                json!([{"ref": w.item.id_string(), "ty": w.item.ty}, true, "marked"]),
+                "the invocation recorded the argument its default made"
+            );
+            // A view applies the same call, its arguments made when the button is pressed.
+            let v =
+                w.rt.open_view(&me(), &w.app.view("item"), vec![Value::resource(&w.item)])
+                    .unwrap();
+            let file_it = w.app.anchor("item", "file_it");
+            assert!(matches!(v.press(&file_it).unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(
+                w.rt.read(&w.item, "title").unwrap(),
+                Value::text("from the view")
+            );
+            assert_eq!(
+                w.rt.read(&w.item, "archived").unwrap(),
+                Value::Bool(false),
+                "flipped from what it was"
+            );
+        }
+
+        phase a_called_action_defaults_on_the_state_its_call_sees;
+        {
+            let w = World::new();
+            let tick = w.app.action("tick");
+            let out =
+                w.rt.invoke_action(&me(), (tick.as_str(), vec![Value::resource(&w.item)]))
+                    .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(w.done(), Value::Bool(true));
+            assert_eq!(w.recorded("check")[0].get(1), Some(&json!(true)));
+            let twice = w.app.action("check_twice");
+            w.rt.invoke_action(&me(), (twice.as_str(), vec![Value::resource(&w.item)]))
+                .unwrap();
+            assert_eq!(
+                w.done(),
+                Value::Bool(true),
+                "each call computes its default on the state the call before it committed: checked, then unchecked"
+            );
+        }
+
+        phase the_label_reads_the_default_for_the_subject;
+        {
+            let w = World::new();
+            let present = || {
+                let view = w
+                    .app
+                    .meta()
+                    .actions
+                    .iter()
+                    .find(|a| a.name == "check")
+                    .and_then(|a| a.present.clone())
+                    .expect("a presentation view");
+                let v =
+                    w.rt.open_view(&me(), &view, vec![Value::resource(&w.item)])
+                        .unwrap();
+                v.tree().clone()
+            };
+            assert_eq!(text_prop(&present(), "label"), "Check");
+            w.check(vec![Value::resource(&w.item)]);
+            assert_eq!(text_prop(&present(), "label"), "Uncheck");
+            assert_eq!(present().props["on"], Value::Int(1));
+        }
+
+        phase the_catalogue_shows_the_default;
+        {
+            let w = World::new();
+            let check =
+                w.rt.catalogue()
+                    .into_iter()
+                    .find(|s| s.name == "check")
+                    .expect("listed");
+            assert!(
+                check.text.contains("done: Bool = not item.done"),
+                "{}",
+                check.text
+            );
+        }
     }
 }

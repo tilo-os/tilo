@@ -173,60 +173,64 @@ view canvas() {
             .unwrap_or_else(|| panic!("the channel's page is drawn: {}", dump(view.tree())))
     }
 
-    #[test]
-    fn a_rust_views_press_of_a_published_verb_reaches_the_apps_door() {
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        let view = opened(
-            Some((
-                vec!["channel".to_owned(), "text".to_owned()],
-                APP.to_owned(),
-            )),
-            &sent,
-        );
-        let key = send_key(&view);
-        view.fire(&key, "press")
-            .unwrap_or_else(|why| panic!("{why}"));
-        let sent = sent.borrow();
-        let [
-            Invocation::Action {
-                app,
-                action,
-                args,
-                subject,
-                ..
-            },
-        ] = sent.as_slice()
-        else {
-            panic!("one invocation of the channel's verb: {sent:?}");
-        };
-        assert_eq!((app.as_str(), action.as_str()), (APP, "post"));
-        assert_eq!(subject.as_ref(), Some(&channel()));
-        // The arguments after the subject, by the names the app publishes, in the order it
-        // declares them: the channel it names and the text the view wrote.
-        assert_eq!(
-            args,
-            &[
-                ("channel".to_owned(), Value::text(channel().id_string())),
-                ("text".to_owned(), Value::text("hi")),
-            ],
-            "the verb's arguments by name, after its subject"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_published_verb_reaches_only_the_app_that_publishes_it;
 
-    #[test]
-    fn a_verb_no_app_publishes_is_still_no_action() {
-        // The same view over a channel whose app publishes nothing: no table entry, no package,
-        // so the press is the runtime's refusal — never a silent no-op.
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        let view = opened(None, &sent);
-        let key = send_key(&view);
-        let why = view
-            .fire(&key, "press")
-            .expect_err("no app publishes `post`");
-        assert!(
-            format!("{why}").contains("post"),
-            "the refusal names the verb: {why}"
-        );
-        assert!(sent.borrow().is_empty(), "nothing was sent on");
+        phase a_rust_views_press_of_a_published_verb_reaches_the_apps_door;
+        {
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            let view = opened(
+                Some((
+                    vec!["channel".to_owned(), "text".to_owned()],
+                    APP.to_owned(),
+                )),
+                &sent,
+            );
+            let key = send_key(&view);
+            view.fire(&key, "press")
+                .unwrap_or_else(|why| panic!("{why}"));
+            let sent = sent.borrow();
+            let [
+                Invocation::Action {
+                    app,
+                    action,
+                    args,
+                    subject,
+                    ..
+                },
+            ] = sent.as_slice()
+            else {
+                panic!("one invocation of the channel's verb: {sent:?}");
+            };
+            assert_eq!((app.as_str(), action.as_str()), (APP, "post"));
+            assert_eq!(subject.as_ref(), Some(&channel()));
+            // The arguments after the subject, by the names the app publishes, in the order it
+            // declares them: the channel it names and the text the view wrote.
+            assert_eq!(
+                args,
+                &[
+                    ("channel".to_owned(), Value::text(channel().id_string())),
+                    ("text".to_owned(), Value::text("hi")),
+                ],
+                "the verb's arguments by name, after its subject"
+            );
+        }
+
+        phase a_verb_no_app_publishes_is_still_no_action;
+        {
+            // The same view over a channel whose app publishes nothing: no table entry, no package,
+            // so the press is the runtime's refusal — never a silent no-op.
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            let view = opened(None, &sent);
+            let key = send_key(&view);
+            let why = view
+                .fire(&key, "press")
+                .expect_err("no app publishes `post`");
+            assert!(
+                format!("{why}").contains("post"),
+                "the refusal names the verb: {why}"
+            );
+            assert!(sent.borrow().is_empty(), "nothing was sent on");
+        }
     }
 }

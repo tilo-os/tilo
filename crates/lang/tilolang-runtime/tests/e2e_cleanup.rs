@@ -101,60 +101,64 @@ mod cases {
         }
     }
 
-    #[test]
-    fn the_action_asks_for_each_foreign_removal_and_replays_without_repeating_work() {
-        let w = world();
-        w.add("a", true);
-        w.add("b", false);
-        w.add("c", true);
+    tilo_test_env::scenario! {
+        fn the_cleanup_asks_is_declined_or_is_trusted;
 
-        let InvokeOutcome::Suggested(first) = w.start() else {
-            panic!("a foreign action from an untrusted package asks");
-        };
-        assert_eq!(first.action, w.todo.action("remove"));
-        assert_eq!(w.titles(), ["a", "b", "c"], "asking changes nothing");
+        phase the_action_asks_for_each_foreign_removal_and_replays_without_repeating_work;
+        {
+            let w = world();
+            w.add("a", true);
+            w.add("b", false);
+            w.add("c", true);
 
-        let RunOutcome::Suspended(second) =
-            w.rt.resolve(&first.run, &me(), Resolution::Approve)
-                .unwrap()
-        else {
-            panic!("the second finished item asks too");
-        };
-        assert_eq!(w.titles(), ["b", "c"], "the first removal ran once");
-        assert_eq!(w.removes(), 1);
+            let InvokeOutcome::Suggested(first) = w.start() else {
+                panic!("a foreign action from an untrusted package asks");
+            };
+            assert_eq!(first.action, w.todo.action("remove"));
+            assert_eq!(w.titles(), ["a", "b", "c"], "asking changes nothing");
 
-        let out =
-            w.rt.resolve(&second.run, &me(), Resolution::Approve)
-                .unwrap();
-        assert_eq!(out, RunOutcome::Done(Value::Int(2)));
-        assert_eq!(w.titles(), ["b"]);
-        assert_eq!(
-            w.removes(),
-            2,
-            "replays answered from the journal never ran an action again"
-        );
-    }
+            let RunOutcome::Suspended(second) =
+                w.rt.resolve(&first.run, &me(), Resolution::Approve)
+                    .unwrap()
+            else {
+                panic!("the second finished item asks too");
+            };
+            assert_eq!(w.titles(), ["b", "c"], "the first removal ran once");
+            assert_eq!(w.removes(), 1);
 
-    #[test]
-    fn a_declined_removal_leaves_the_item_and_the_run_goes_on() {
-        let w = world();
-        w.add("a", true);
-        let InvokeOutcome::Suggested(s) = w.start() else {
-            panic!("expected a suggestion");
-        };
-        let out = w.rt.resolve(&s.run, &me(), Resolution::Decline).unwrap();
-        assert!(matches!(out, RunOutcome::Done(Value::Int(1))), "{out:?}");
-        assert_eq!(w.titles(), ["a"]);
-    }
+            let out =
+                w.rt.resolve(&second.run, &me(), Resolution::Approve)
+                    .unwrap();
+            assert_eq!(out, RunOutcome::Done(Value::Int(2)));
+            assert_eq!(w.titles(), ["b"]);
+            assert_eq!(
+                w.removes(),
+                2,
+                "replays answered from the journal never ran an action again"
+            );
+        }
 
-    #[test]
-    fn trusting_the_cleanup_package_runs_it_without_asking() {
-        let w = world();
-        w.add("a", true);
-        w.add("b", false);
-        w.auth.trust(&w.cleanup_id);
-        assert_eq!(w.start(), InvokeOutcome::Done(Value::Int(1)));
-        assert_eq!(w.titles(), ["b"]);
+        phase a_declined_removal_leaves_the_item_and_the_run_goes_on;
+        {
+            let w = world();
+            w.add("a", true);
+            let InvokeOutcome::Suggested(s) = w.start() else {
+                panic!("expected a suggestion");
+            };
+            let out = w.rt.resolve(&s.run, &me(), Resolution::Decline).unwrap();
+            assert!(matches!(out, RunOutcome::Done(Value::Int(1))), "{out:?}");
+            assert_eq!(w.titles(), ["a"]);
+        }
+
+        phase trusting_the_cleanup_package_runs_it_without_asking;
+        {
+            let w = world();
+            w.add("a", true);
+            w.add("b", false);
+            w.auth.trust(&w.cleanup_id);
+            assert_eq!(w.start(), InvokeOutcome::Done(Value::Int(1)));
+            assert_eq!(w.titles(), ["b"]);
+        }
     }
 
     #[test]

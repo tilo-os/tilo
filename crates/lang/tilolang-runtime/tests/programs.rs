@@ -123,37 +123,135 @@ mod cases {
         lines.join("\n")
     }
 
-    #[test]
-    fn lets_survive_between_programs_of_a_session() {
-        let w = world();
-        w.auth.trust_principal(&agent().0);
-        let mut session = Session::new();
-        let first = session.run(
-            &w.rt,
-            &agent(),
-            &format!(
-                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, title: \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
-                w.list_literal()
-            ),
-        );
-        let out = done(&first);
-        assert!(out.starts_with("2 notes"), "{out}");
-        assert!(out.contains("\"Launch video script\""), "{out}");
-        assert!(out.contains("@notes.Note:"), "{out}");
-        assert_eq!(
-            w.todo_titles(),
-            [
-                "Follow up: Launch video script",
-                "Follow up: Launch checklist"
-            ]
-        );
-        assert_eq!(session.bindings().len(), 1);
-        assert_eq!(session.bindings()[0].name, "hits");
+    tilo_test_env::scenario! {
+        fn an_agents_programs_run_in_one_session;
 
-        let second = session.run(&w.rt, &agent(), "print(hits.len())\nlet n = hits.len()");
-        assert_eq!(done(&second), "2");
-        let third = session.run(&w.rt, &agent(), "n + 1");
-        assert_eq!(done(&third), "3");
+        phase lets_survive_between_programs_of_a_session;
+        {
+            let w = world();
+            w.auth.trust_principal(&agent().0);
+            let mut session = Session::new();
+            let first = session.run(
+                &w.rt,
+                &agent(),
+                &format!(
+                    "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, title: \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
+                    w.list_literal()
+                ),
+            );
+            let out = done(&first);
+            assert!(out.starts_with("2 notes"), "{out}");
+            assert!(out.contains("\"Launch video script\""), "{out}");
+            assert!(out.contains("@notes.Note:"), "{out}");
+            assert_eq!(
+                w.todo_titles(),
+                [
+                    "Follow up: Launch video script",
+                    "Follow up: Launch checklist"
+                ]
+            );
+            assert_eq!(session.bindings().len(), 1);
+            assert_eq!(session.bindings()[0].name, "hits");
+
+            let second = session.run(&w.rt, &agent(), "print(hits.len())\nlet n = hits.len()");
+            assert_eq!(done(&second), "2");
+            let third = session.run(&w.rt, &agent(), "n + 1");
+            assert_eq!(done(&third), "3");
+        }
+
+        phase find_without_a_type_finds_every_app_and_of_narrows;
+        {
+            let w = world();
+            let mut session = Session::new();
+            let reply = session.run(
+                &w.rt,
+                &agent(),
+                "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Task).len())",
+            );
+            assert_eq!(done(&reply), "2 0");
+            assert_eq!(w.notes.len(), 3);
+        }
+
+        phase an_action_the_agent_may_not_take_alone_asks_and_the_program_waits;
+        {
+            let w = world();
+            let mut session = Session::new();
+            let reply = session.run(
+                &w.rt,
+                &agent(),
+                &format!(
+                    "print(\"before\")\ntasks.new_task({}, title: \"Ask first\")\nprint(\"after\")",
+                    w.list_literal()
+                ),
+            );
+            let ProgramOutcome::Suspended(asked) = &reply.outcome else {
+                panic!("the action did not ask: {:?}", reply.outcome);
+            };
+            assert_eq!(asked.action, w.todo.action("new_task"));
+            assert_eq!(reply.output, ["before"]);
+            assert!(w.todo_titles().is_empty());
+        }
+
+        phase a_program_that_fails_to_compile_keeps_the_session;
+        {
+            let w = world();
+            let mut session = Session::new();
+            done(&session.run(&w.rt, &agent(), "let x = 41"));
+            rejected(&session.run(&w.rt, &agent(), "let x = nope"));
+            assert_eq!(done(&session.run(&w.rt, &agent(), "x + 1")), "42");
+        }
+
+        phase a_programs_assignment_is_its_apps_field_edit;
+        {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+
+            struct Sent(Rc<RefCell<Vec<Invocation>>>);
+            impl Invoker for Sent {
+                fn invoke(&self, invocation: &Invocation) -> Invoked {
+                    self.0.borrow_mut().push(invocation.clone());
+                    Invoked::Done(Value::Unit)
+                }
+            }
+
+            let w = world();
+            let note = &w.notes[0];
+            let assign = format!(
+                "let n = @notes.Note:{}\nn.title = \"Mine\"",
+                note.id_string()
+            );
+            // A runtime that runs its apps' code itself has nowhere to send it: the program never
+            // writes the record.
+            let reply = Session::new().run(&w.rt, &agent(), &assign);
+            let ProgramOutcome::Failed(why) = &reply.outcome else {
+                panic!("an edit with nowhere to go ran: {:?}", reply.outcome);
+            };
+            assert!(why.contains("through its app"), "{why}");
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            w.rt.set_invoker(Sent(Rc::clone(&sent)));
+            let reply = Session::new().run(&w.rt, &agent(), &assign);
+            done(&reply);
+            let sent = sent.borrow();
+            let [
+                Invocation::Edit {
+                    field,
+                    value,
+                    target,
+                    ..
+                },
+            ] = sent.as_slice()
+            else {
+                panic!("one field edit: {sent:?}");
+            };
+            assert_eq!((field.as_str(), value), ("title", &Value::text("Mine")));
+            assert_eq!(target.id_string(), note.id_string());
+            assert_ne!(
+                w.rt.read(note, "title").unwrap(),
+                Value::text("Mine"),
+                "the program wrote nothing itself"
+            );
+        }
     }
 
     #[test]
@@ -181,39 +279,6 @@ mod cases {
     }
 
     #[test]
-    fn find_without_a_type_finds_every_app_and_of_narrows() {
-        let w = world();
-        let mut session = Session::new();
-        let reply = session.run(
-            &w.rt,
-            &agent(),
-            "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Task).len())",
-        );
-        assert_eq!(done(&reply), "2 0");
-        assert_eq!(w.notes.len(), 3);
-    }
-
-    #[test]
-    fn an_action_the_agent_may_not_take_alone_asks_and_the_program_waits() {
-        let w = world();
-        let mut session = Session::new();
-        let reply = session.run(
-            &w.rt,
-            &agent(),
-            &format!(
-                "print(\"before\")\ntasks.new_task({}, title: \"Ask first\")\nprint(\"after\")",
-                w.list_literal()
-            ),
-        );
-        let ProgramOutcome::Suspended(asked) = &reply.outcome else {
-            panic!("the action did not ask: {:?}", reply.outcome);
-        };
-        assert_eq!(asked.action, w.todo.action("new_task"));
-        assert_eq!(reply.output, ["before"]);
-        assert!(w.todo_titles().is_empty());
-    }
-
-    #[test]
     fn errors_name_what_was_meant() {
         let w = world();
         let mut session = Session::new();
@@ -228,67 +293,6 @@ mod cases {
         assert!(name.contains("did you mean `hits`?"), "{name}");
         let field = rejected(&session.run(&w.rt, &agent(), "for n in hits { print(n.titel) }"));
         assert!(field.contains("did you mean `title`?"), "{field}");
-    }
-
-    #[test]
-    fn a_program_that_fails_to_compile_keeps_the_session() {
-        let w = world();
-        let mut session = Session::new();
-        done(&session.run(&w.rt, &agent(), "let x = 41"));
-        rejected(&session.run(&w.rt, &agent(), "let x = nope"));
-        assert_eq!(done(&session.run(&w.rt, &agent(), "x + 1")), "42");
-    }
-
-    #[test]
-    fn a_programs_assignment_is_its_apps_field_edit() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-
-        struct Sent(Rc<RefCell<Vec<Invocation>>>);
-        impl Invoker for Sent {
-            fn invoke(&self, invocation: &Invocation) -> Invoked {
-                self.0.borrow_mut().push(invocation.clone());
-                Invoked::Done(Value::Unit)
-            }
-        }
-
-        let w = world();
-        let note = &w.notes[0];
-        let assign = format!(
-            "let n = @notes.Note:{}\nn.title = \"Mine\"",
-            note.id_string()
-        );
-        // A runtime that runs its apps' code itself has nowhere to send it: the program never
-        // writes the record.
-        let reply = Session::new().run(&w.rt, &agent(), &assign);
-        let ProgramOutcome::Failed(why) = &reply.outcome else {
-            panic!("an edit with nowhere to go ran: {:?}", reply.outcome);
-        };
-        assert!(why.contains("through its app"), "{why}");
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        w.rt.set_invoker(Sent(Rc::clone(&sent)));
-        let reply = Session::new().run(&w.rt, &agent(), &assign);
-        done(&reply);
-        let sent = sent.borrow();
-        let [
-            Invocation::Edit {
-                field,
-                value,
-                target,
-                ..
-            },
-        ] = sent.as_slice()
-        else {
-            panic!("one field edit: {sent:?}");
-        };
-        assert_eq!((field.as_str(), value), ("title", &Value::text("Mine")));
-        assert_eq!(target.id_string(), note.id_string());
-        assert_ne!(
-            w.rt.read(note, "title").unwrap(),
-            Value::text("Mine"),
-            "the program wrote nothing itself"
-        );
     }
 
     #[test]

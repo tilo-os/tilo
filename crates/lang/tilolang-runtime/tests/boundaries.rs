@@ -351,111 +351,311 @@ view deck(d: Deck) {
 }
 "#;
 
-    #[test]
-    fn what_a_host_shows_beside_what_the_view_read_runs_it_again() {
-        let app = App::compile(CARDS, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        app.load(&rt);
-        let deck = rt.create("Deck").unwrap();
-        let card = match rt
-            .invoke_action(
-                &me(),
-                (app.action("add").as_str(), vec![Value::resource(&deck)]),
-            )
-            .unwrap()
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_change_re_runs_only_the_boundaries_that_read_it;
+
+        phase what_a_host_shows_beside_what_the_view_read_runs_it_again;
         {
-            InvokeOutcome::Done(Value::Ref(target)) => target.target,
-            other => panic!("{other:?}"),
-        };
-        let mut view = rt
-            .open_view(&me(), &app.view("card"), vec![Value::resource(&card)])
-            .unwrap_or_else(|error| panic!("{error}"));
-        let _ = view.poll_patches().unwrap();
+            let app = App::compile(CARDS, &[]);
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            let deck = rt.create("Deck").unwrap();
+            let card = match rt
+                .invoke_action(
+                    &me(),
+                    (app.action("add").as_str(), vec![Value::resource(&deck)]),
+                )
+                .unwrap()
+            {
+                InvokeOutcome::Done(Value::Ref(target)) => target.target,
+                other => panic!("{other:?}"),
+            };
+            let mut view = rt
+                .open_view(&me(), &app.view("card"), vec![Value::resource(&card)])
+                .unwrap_or_else(|error| panic!("{error}"));
+            let _ = view.poll_patches().unwrap();
 
-        // The card's body is not what this view read: a change to it alone does not run it.
-        let write = |body: &str| {
-            rt.invoke_action(
-                &me(),
-                (
-                    app.action("write").as_str(),
-                    vec![
-                        Value::resource(&card),
-                        Value::Rich(tilolang_runtime::rich::RichValue::from_text(body)),
-                    ],
-                ),
-            )
-            .unwrap()
-        };
-        let opened = view.stats();
-        write("two");
-        let _ = view.poll_patches().unwrap();
-        assert_eq!(
-            view.stats().root_runs,
-            opened.root_runs,
-            "a field the view read nothing of runs nothing it shows"
-        );
-
-        // What the host converted it reads: the view runs again when it changes, and the host
-        // converts the card again.
-        let body = app
-            .meta()
-            .types
-            .iter()
-            .find(|ty| ty.name == "Card")
-            .and_then(|ty| ty.fields.iter().find(|field| field.name == "body"))
-            .map(|field| field.id.clone())
-            .expect("the card's body");
-        view.shows([
-            (card.id_string(), body),
-            (
-                card.id_string(),
-                tilolang_runtime::store::ANY_FIELD.to_owned(),
-            ),
-        ]);
-        let shown = view.stats();
-        write("three");
-        let _ = view.poll_patches().unwrap();
-        assert_eq!(
-            view.stats().root_runs,
-            shown.root_runs.saturating_add(1),
-            "what it shows changed: the view runs again, so the host converts it again"
-        );
-    }
-
-    /// One item's change re-runs its row and no other: where the loop's body is a view of its
-    /// own, where it stands inline (no view factored out: the body is a row of its own all the
-    /// same), and where the item is the only one.
-    #[test]
-    fn one_items_change_re_runs_only_its_row() {
-        for (shown, n, at) in [
-            ("eager", 50, 17),
-            ("inline", 50, 17),
-            ("eager", 1, 0),
-            ("inline", 1, 0),
-        ] {
-            let case = format!("`{shown}` of {n}, item {at}");
-            let rows = Rows::new(n);
-            let mut view = rows.view(shown);
+            // The card's body is not what this view read: a change to it alone does not run it.
+            let write = |body: &str| {
+                rt.invoke_action(
+                    &me(),
+                    (
+                        app.action("write").as_str(),
+                        vec![
+                            Value::resource(&card),
+                            Value::Rich(tilolang_runtime::rich::RichValue::from_text(body)),
+                        ],
+                    ),
+                )
+                .unwrap()
+            };
             let opened = view.stats();
+            write("two");
+            let _ = view.poll_patches().unwrap();
             assert_eq!(
-                opened.boundaries,
-                n + 1,
-                "{case}: the view and one boundary per row"
+                view.stats().root_runs,
+                opened.root_runs,
+                "a field the view read nothing of runs nothing it shows"
             );
-            assert_eq!(opened.renders, u64::try_from(n + 1).unwrap(), "{case}");
 
-            rows.retitle(at, "seventeen");
+            // What the host converted it reads: the view runs again when it changes, and the host
+            // converts the card again.
+            let body = app
+                .meta()
+                .types
+                .iter()
+                .find(|ty| ty.name == "Card")
+                .and_then(|ty| ty.fields.iter().find(|field| field.name == "body"))
+                .map(|field| field.id.clone())
+                .expect("the card's body");
+            view.shows([
+                (card.id_string(), body),
+                (
+                    card.id_string(),
+                    tilolang_runtime::store::ANY_FIELD.to_owned(),
+                ),
+            ]);
+            let shown = view.stats();
+            write("three");
+            let _ = view.poll_patches().unwrap();
+            assert_eq!(
+                view.stats().root_runs,
+                shown.root_runs.saturating_add(1),
+                "what it shows changed: the view runs again, so the host converts it again"
+            );
+        }
+
+        phase one_items_change_re_runs_only_its_row;
+        // One item's change re-runs its row and no other: where the loop's body is a view of its
+        // own, where it stands inline (no view factored out: the body is a row of its own all the
+        // same), and where the item is the only one.
+        {
+            for (shown, n, at) in [
+                ("eager", 50, 17),
+                ("inline", 50, 17),
+                ("eager", 1, 0),
+                ("inline", 1, 0),
+            ] {
+                let case = format!("`{shown}` of {n}, item {at}");
+                let rows = Rows::new(n);
+                let mut view = rows.view(shown);
+                let opened = view.stats();
+                assert_eq!(
+                    opened.boundaries,
+                    n + 1,
+                    "{case}: the view and one boundary per row"
+                );
+                assert_eq!(opened.renders, u64::try_from(n + 1).unwrap(), "{case}");
+
+                rows.retitle(at, "seventeen");
+                let patches = view.poll_patches().unwrap();
+                assert_eq!(
+                    view.stats().renders - opened.renders,
+                    1,
+                    "{case}: only the retitled item's row ran"
+                );
+                assert!(
+                    matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
+                    "{case}: {patches:?}"
+                );
+                assert_eq!(texts(view.tree())[at], "seventeen", "{case}");
+            }
+        }
+
+        phase renaming_the_bag_re_runs_the_bag_view_but_no_row;
+        {
+            let rows = Rows::new(20);
+            let mut view = rows.view("eager");
+            let opened = view.stats();
+            rows.call(
+                "rename",
+                vec![Value::resource(&rows.bag), Value::text("Groceries")],
+            );
             let patches = view.poll_patches().unwrap();
             assert_eq!(
                 view.stats().renders - opened.renders,
                 1,
-                "{case}: only the retitled item's row ran"
+                "the rows were kept"
             );
+            assert_eq!(patches.len(), 1, "{patches:?}");
+            assert_eq!(
+                text_prop(of_kind(view.tree(), "ui.Section")[0], "title"),
+                "Groceries"
+            );
+        }
+
+        phase moves_inserts_and_removes_keep_the_other_rows;
+        {
+            let rows = Rows::new(6);
+            let mut view = rows.view("eager");
+            let opened = view.stats();
+            rows.call(
+                "move_before",
+                vec![
+                    Value::resource(&rows.bag),
+                    Value::resource(&rows.items[4]),
+                    Value::resource(&rows.items[1]),
+                ],
+            );
+            let patches = view.poll_patches().unwrap();
             assert!(
-                matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
-                "{case}: {patches:?}"
+                patches.iter().all(|p| matches!(p, Patch::Move { .. })),
+                "{patches:?}"
             );
-            assert_eq!(texts(view.tree())[at], "seventeen", "{case}");
+            assert_eq!(
+                texts(view.tree()),
+                ["item 0", "item 4", "item 1", "item 2", "item 3", "item 5"]
+            );
+            rows.call(
+                "remove",
+                vec![Value::resource(&rows.bag), Value::resource(&rows.items[2])],
+            );
+            let removed = view.poll_patches().unwrap();
+            assert!(
+                matches!(removed.as_slice(), [Patch::Remove { .. }]),
+                "{removed:?}"
+            );
+            rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+            let added = view.poll_patches().unwrap();
+            assert!(
+                matches!(added.as_slice(), [Patch::Insert { .. }]),
+                "{added:?}"
+            );
+            assert_eq!(
+                texts(view.tree()),
+                ["item 0", "item 4", "item 1", "item 3", "item 5", "new"]
+            );
+            // The rows followed the collection: the one new row ran once, the bag view and no other
+            // row ran.
+            assert_eq!(view.stats().renders - opened.renders, 1);
+        }
+
+        phase a_rows_argument_from_outside_its_item_reaches_the_row;
+        {
+            // The rows of the list are the same items, and the row view's other argument changed:
+            // the rows shown stand for the new one, not for the one they were built with.
+            let rows = Rows::new(10);
+            let mut view = rows.view("tinted");
+            let list = list_key(&view);
+            for i in 0..3 {
+                assert!(view.row(&list, i).unwrap().is_some());
+            }
+            let shown = |view: &mut ViewInstance| texts(view.row(&list, 1).unwrap().unwrap());
+            assert_eq!(shown(&mut view), ["item 1", ""]);
+
+            rows.call(
+                "rename",
+                vec![Value::resource(&rows.bag), Value::text("groceries")],
+            );
+            let patches = view.poll_patches().unwrap();
+            assert!(!patches.is_empty(), "the shown rows ran again");
+            assert_eq!(shown(&mut view), ["item 1", "groceries"]);
+        }
+
+        phase an_item_that_joins_reaches_the_filtered_views_it_matches;
+        // An item that comes into a collection reaches the filtered views of it whose filter holds
+        // of it, and only those: one it does not match was in none of them before either.
+        {
+            let rows = Rows::new(100);
+            let mut named = rows.view("named_new");
+            assert_eq!(texts(named.tree()), ["0"]);
+            let mut views = [&mut named];
+            let add = |title: &'static str| {
+                move |rows: &Rows| {
+                    rows.call("add", vec![Value::resource(&rows.bag), Value::text(title)]);
+                }
+            };
+            assert_eq!(runs_for(&rows, &mut views, add("other")), [0]);
+            assert_eq!(runs_for(&rows, &mut views, add("new")), [1]);
+            assert_eq!(texts(named.tree()), ["1"]);
+            // An item already in it that comes to match is counted as well.
+            let mut views = [&mut named];
+            assert_eq!(
+                runs_for(&rows, &mut views, |rows: &Rows| rows.retitle(5, "new")),
+                [1]
+            );
+            assert_eq!(texts(named.tree()), ["2"]);
+        }
+
+        phase a_view_that_reads_every_item_follows_every_change;
+        {
+            let rows = Rows::new(300);
+            let mut view = rows.view("done_count");
+            assert_eq!(texts(view.tree()), ["300 open"]);
+            rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+            view.poll_patches().unwrap();
+            assert_eq!(texts(view.tree()), ["301 open"]);
+            rows.call(
+                "remove",
+                vec![Value::resource(&rows.bag), Value::resource(&rows.items[7])],
+            );
+            view.poll_patches().unwrap();
+            assert_eq!(texts(view.tree()), ["300 open"]);
+        }
+
+        phase a_boundary_the_tree_no_longer_holds_does_not_replace_the_whole_view;
+        // A boundary that the tree no longer holds must not write where the whole view's content
+        // belongs. A view call's `fragment` leaves the tree when the branch holding it swaps, but
+        // the boundary made for it is still a boundary of the view, still marked to run by the
+        // change it read, and its cached path is then the empty trail of a call never placed — the
+        // trail that names the root. Writing there put that one call's content over the whole
+        // view, and the diff that followed dropped every other child of the screen.
+        //
+        // The shape that reaches it has the same call in both branches: the boundary the departing
+        // branch made is left behind when the other branch's call takes the key, and the change
+        // that follows asks it to run.
+        //
+        // Through the public interface a swap clears the departing boundary's dirtiness, so this
+        // test passes with and without the guard: it states the behaviour, not the mechanism. The
+        // mechanism — a planted orphan whose cached trail is the empty one — is
+        // `view_instance::orphan_tests::a_boundary_the_tree_does_not_hold_writes_nowhere`, which
+        // fails without the guard.
+        {
+            let (rt, app, board, mut view) = swapping();
+            assert_eq!(
+                lines(&view),
+                ["a banner", "chosen says ", "a footer"],
+                "the first branch draws"
+            );
+
+            // The branch swaps: the chosen call leaves the tree where it stood, and the other
+            // branch's call takes its place.
+            call(&rt, &app, "switch", vec![Value::resource(&board)]);
+            view.poll_patches().unwrap();
+            assert_eq!(
+                lines(&view),
+                ["a banner", "chosen says ", "a footer"],
+                "the other branch draws"
+            );
+
+            // The record changes. Every boundary that read it runs, including the one the departing
+            // branch left: none of them may stand in for the whole view.
+            call(
+                &rt,
+                &app,
+                "set_said",
+                vec![Value::resource(&board), Value::text("hello")],
+            );
+            view.poll_patches().unwrap();
+            assert_eq!(
+                lines(&view),
+                ["a banner", "chosen says hello", "a footer"],
+                "the view is whole: the branch that stands drew the change"
+            );
+            let stack = of_kind(view.tree(), "stack")
+                .into_iter()
+                .max_by_key(|node| node.children.len())
+                .expect("the view's stack");
+            assert_eq!(
+                stack.children.len(),
+                3,
+                "the stack keeps every child: {}",
+                dump(stack)
+            );
         }
     }
 
@@ -608,74 +808,6 @@ view deck(d: Deck) {
     }
 
     #[test]
-    fn renaming_the_bag_re_runs_the_bag_view_but_no_row() {
-        let rows = Rows::new(20);
-        let mut view = rows.view("eager");
-        let opened = view.stats();
-        rows.call(
-            "rename",
-            vec![Value::resource(&rows.bag), Value::text("Groceries")],
-        );
-        let patches = view.poll_patches().unwrap();
-        assert_eq!(
-            view.stats().renders - opened.renders,
-            1,
-            "the rows were kept"
-        );
-        assert_eq!(patches.len(), 1, "{patches:?}");
-        assert_eq!(
-            text_prop(of_kind(view.tree(), "ui.Section")[0], "title"),
-            "Groceries"
-        );
-    }
-
-    #[test]
-    fn moves_inserts_and_removes_keep_the_other_rows() {
-        let rows = Rows::new(6);
-        let mut view = rows.view("eager");
-        let opened = view.stats();
-        rows.call(
-            "move_before",
-            vec![
-                Value::resource(&rows.bag),
-                Value::resource(&rows.items[4]),
-                Value::resource(&rows.items[1]),
-            ],
-        );
-        let patches = view.poll_patches().unwrap();
-        assert!(
-            patches.iter().all(|p| matches!(p, Patch::Move { .. })),
-            "{patches:?}"
-        );
-        assert_eq!(
-            texts(view.tree()),
-            ["item 0", "item 4", "item 1", "item 2", "item 3", "item 5"]
-        );
-        rows.call(
-            "remove",
-            vec![Value::resource(&rows.bag), Value::resource(&rows.items[2])],
-        );
-        let removed = view.poll_patches().unwrap();
-        assert!(
-            matches!(removed.as_slice(), [Patch::Remove { .. }]),
-            "{removed:?}"
-        );
-        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
-        let added = view.poll_patches().unwrap();
-        assert!(
-            matches!(added.as_slice(), [Patch::Insert { .. }]),
-            "{added:?}"
-        );
-        assert_eq!(
-            texts(view.tree()),
-            ["item 0", "item 4", "item 1", "item 3", "item 5", "new"]
-        );
-        // The rows followed the collection: the one new row ran once, the bag view and no other
-        // row ran.
-        assert_eq!(view.stats().renders - opened.renders, 1);
-    }
-
-    #[test]
     fn a_lists_rows_render_when_shown_and_stop_when_hidden() {
         let rows = Rows::new(300);
         let mut view = rows.view("lazy");
@@ -770,191 +902,381 @@ view deck(d: Deck) {
         }
     }
 
-    #[test]
-    fn a_rows_argument_from_outside_its_item_reaches_the_row() {
-        // The rows of the list are the same items, and the row view's other argument changed:
-        // the rows shown stand for the new one, not for the one they were built with.
-        let rows = Rows::new(10);
-        let mut view = rows.view("tinted");
-        let list = list_key(&view);
-        for i in 0..3 {
-            assert!(view.row(&list, i).unwrap().is_some());
-        }
-        let shown = |view: &mut ViewInstance| texts(view.row(&list, 1).unwrap().unwrap());
-        assert_eq!(shown(&mut view), ["item 1", ""]);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn lazy_rows_are_built_when_shown_and_keep_their_places;
 
-        rows.call(
-            "rename",
-            vec![Value::resource(&rows.bag), Value::text("groceries")],
-        );
-        let patches = view.poll_patches().unwrap();
-        assert!(!patches.is_empty(), "the shown rows ran again");
-        assert_eq!(shown(&mut view), ["item 1", "groceries"]);
-    }
-
-    /// The document of a row is built for the row standing open into its item, and for no other
-    /// row on screen: a list of ten thousand tasks costs the one page a person reads, and the
-    /// rows that stand closed carry none of theirs.
-    /// A closed row runs none of the document it would open into: what that document reads and
-    /// the row does not is no read of the row, so renaming the bag every document names runs
-    /// no row standing closed, and the row a person opens shows the bag's name now.
-    #[test]
-    fn a_closed_rows_document_reads_nothing() {
-        let rows = Rows::new(20);
-        let mut view = rows.view("bag_documents");
-        let list = list_key(&view);
-        for i in 0..10 {
-            view.row(&list, i).unwrap();
-        }
-        let before = view.stats().renders;
-        rows.call(
-            "rename",
-            vec![Value::resource(&rows.bag), Value::text("groceries")],
-        );
-        view.poll_patches().unwrap();
-        // The view holding the list reads the bag; no row does.
-        let ran = view.stats().renders - before;
-        assert!(
-            ran <= 1,
-            "renaming the bag ran {ran} boundaries: the rows standing closed ran"
-        );
-
-        let third = view.row_key(&list, 2).expect("the third row");
-        view.open_row(&list, Some(&third));
-        view.poll_patches().unwrap();
-        let opened = view.row(&list, 2).unwrap().unwrap();
-        assert!(
-            texts(opened)
-                .iter()
-                .any(|text| text == "item 2 is in groceries"),
-            "the row standing open shows its document as the bag is now: {opened:?}"
-        );
-    }
-
-    #[test]
-    fn a_rows_document_is_built_for_the_row_standing_open_alone() {
-        let rows = Rows::new(100);
-        let mut view = rows.view("documents");
-        let list = list_key(&view);
-        let opened = view.stats();
-        for i in 0..10 {
-            view.row(&list, i).unwrap();
-        }
-        // Every row shows its item's line, and none shows a document: the row's `detail` slot
-        // holds what the item is about only while the row stands open into it.
-        for i in 0..10 {
-            let row = view.row(&list, i).unwrap().unwrap();
-            assert_eq!(titles(row), [format!("item {i}")]);
-            assert!(
-                texts(row).iter().all(|text| !text.contains("what item")),
-                "row {i} built the document of an item nobody opened"
-            );
-        }
-        // Two boundaries per row: the row and the line its item shows. A document would be a
-        // third.
-        assert_eq!(
-            view.stats().renders - opened.renders,
-            20,
-            "showing ten rows ran ten rows and their lines, and no document"
-        );
-
-        // The person opens the fourth row where it stands: its document arrives, built once.
-        let fourth = view.row_key(&list, 3).expect("the fourth row");
-        let before = view.stats().renders;
-        view.open_row(&list, Some(&fourth));
-        let patches = view.poll_patches().unwrap();
-        let opened_row = view.row(&list, 3).unwrap().unwrap();
-        assert!(
-            texts(opened_row)
-                .iter()
-                .any(|text| text == "what item 3 is for"),
-            "the row standing open shows its item's document: {opened_row:?}"
-        );
-        assert!(
-            patches
-                .iter()
-                .any(|patch| matches!(patch, Patch::Insert { .. })),
-            "the document is sent where it stands: {patches:?}"
-        );
-        // The row, the line it shows, and the document it now stands open into.
-        assert_eq!(
-            view.stats().renders - before,
-            3,
-            "opening a row runs it, its line and its document, and no other row"
-        );
-        for i in 0..10 {
-            if i == 3 {
-                continue;
+        phase a_closed_rows_document_reads_nothing;
+        // The document of a row is built for the row standing open into its item, and for no other
+        // row on screen: a list of ten thousand tasks costs the one page a person reads, and the
+        // rows that stand closed carry none of theirs.
+        // A closed row runs none of the document it would open into: what that document reads and
+        // the row does not is no read of the row, so renaming the bag every document names runs
+        // no row standing closed, and the row a person opens shows the bag's name now.
+        {
+            let rows = Rows::new(20);
+            let mut view = rows.view("bag_documents");
+            let list = list_key(&view);
+            for i in 0..10 {
+                view.row(&list, i).unwrap();
             }
-            let row = view.row(&list, i).unwrap().unwrap();
+            let before = view.stats().renders;
+            rows.call(
+                "rename",
+                vec![Value::resource(&rows.bag), Value::text("groceries")],
+            );
+            view.poll_patches().unwrap();
+            // The view holding the list reads the bag; no row does.
+            let ran = view.stats().renders - before;
             assert!(
-                texts(row).iter().all(|text| !text.contains("what item")),
-                "row {i} built a document of its own beside the one the person reads"
+                ran <= 1,
+                "renaming the bag ran {ran} boundaries: the rows standing closed ran"
+            );
+
+            let third = view.row_key(&list, 2).expect("the third row");
+            view.open_row(&list, Some(&third));
+            view.poll_patches().unwrap();
+            let opened = view.row(&list, 2).unwrap().unwrap();
+            assert!(
+                texts(opened)
+                    .iter()
+                    .any(|text| text == "item 2 is in groceries"),
+                "the row standing open shows its document as the bag is now: {opened:?}"
             );
         }
 
-        // A change to the open row's item reaches its document as it ever did.
-        rows.retitle(3, "three");
-        view.poll_patches().unwrap();
-        let opened_row = view.row(&list, 3).unwrap().unwrap();
-        assert!(
-            texts(opened_row)
-                .iter()
-                .any(|text| text == "what three is for"),
-            "{opened_row:?}"
-        );
+        phase a_rows_document_is_built_for_the_row_standing_open_alone;
+        {
+            let rows = Rows::new(100);
+            let mut view = rows.view("documents");
+            let list = list_key(&view);
+            let opened = view.stats();
+            for i in 0..10 {
+                view.row(&list, i).unwrap();
+            }
+            // Every row shows its item's line, and none shows a document: the row's `detail` slot
+            // holds what the item is about only while the row stands open into it.
+            for i in 0..10 {
+                let row = view.row(&list, i).unwrap().unwrap();
+                assert_eq!(titles(row), [format!("item {i}")]);
+                assert!(
+                    texts(row).iter().all(|text| !text.contains("what item")),
+                    "row {i} built the document of an item nobody opened"
+                );
+            }
+            // Two boundaries per row: the row and the line its item shows. A document would be a
+            // third.
+            assert_eq!(
+                view.stats().renders - opened.renders,
+                20,
+                "showing ten rows ran ten rows and their lines, and no document"
+            );
 
-        // Closed again, the row drops its document, and no document of it runs from then on.
-        let before = view.stats().renders;
-        view.open_row(&list, None);
-        let patches = view.poll_patches().unwrap();
-        let closed = view.row(&list, 3).unwrap().unwrap();
-        assert!(
-            texts(closed).iter().all(|text| !text.contains("what")),
-            "the row that closed dropped its document: {closed:?}"
-        );
-        assert!(
-            patches
-                .iter()
-                .any(|patch| matches!(patch, Patch::Remove { .. })),
-            "the document is taken where it stood: {patches:?}"
-        );
-        // The row and the line it shows again; the document is gone, not built.
-        assert_eq!(
-            view.stats().renders - before,
-            2,
-            "closing a row runs it and its line again, and builds no document"
-        );
-        // The row still shows its item's line, and runs for that alone: the document of the
-        // item it no longer stands open into is not built again.
-        let before = view.stats().renders;
-        rows.retitle(3, "drei");
-        assert!(!view.poll_patches().unwrap().is_empty());
-        assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
-        assert!(
-            texts(view.row(&list, 3).unwrap().unwrap())
-                .iter()
-                .all(|text| !text.contains("what")),
-            "the closed row builds no document when its item changes"
-        );
-        assert!(
-            view.stats().renders - before <= 3,
-            "the closed row's item changing runs the view that holds the list, the row and its \
+            // The person opens the fourth row where it stands: its document arrives, built once.
+            let fourth = view.row_key(&list, 3).expect("the fourth row");
+            let before = view.stats().renders;
+            view.open_row(&list, Some(&fourth));
+            let patches = view.poll_patches().unwrap();
+            let opened_row = view.row(&list, 3).unwrap().unwrap();
+            assert!(
+                texts(opened_row)
+                    .iter()
+                    .any(|text| text == "what item 3 is for"),
+                "the row standing open shows its item's document: {opened_row:?}"
+            );
+            assert!(
+                patches
+                    .iter()
+                    .any(|patch| matches!(patch, Patch::Insert { .. })),
+                "the document is sent where it stands: {patches:?}"
+            );
+            // The row, the line it shows, and the document it now stands open into.
+            assert_eq!(
+                view.stats().renders - before,
+                3,
+                "opening a row runs it, its line and its document, and no other row"
+            );
+            for i in 0..10 {
+                if i == 3 {
+                    continue;
+                }
+                let row = view.row(&list, i).unwrap().unwrap();
+                assert!(
+                    texts(row).iter().all(|text| !text.contains("what item")),
+                    "row {i} built a document of its own beside the one the person reads"
+                );
+            }
+
+            // A change to the open row's item reaches its document as it ever did.
+            rows.retitle(3, "three");
+            view.poll_patches().unwrap();
+            let opened_row = view.row(&list, 3).unwrap().unwrap();
+            assert!(
+                texts(opened_row)
+                    .iter()
+                    .any(|text| text == "what three is for"),
+                "{opened_row:?}"
+            );
+
+            // Closed again, the row drops its document, and no document of it runs from then on.
+            let before = view.stats().renders;
+            view.open_row(&list, None);
+            let patches = view.poll_patches().unwrap();
+            let closed = view.row(&list, 3).unwrap().unwrap();
+            assert!(
+                texts(closed).iter().all(|text| !text.contains("what")),
+                "the row that closed dropped its document: {closed:?}"
+            );
+            assert!(
+                patches
+                    .iter()
+                    .any(|patch| matches!(patch, Patch::Remove { .. })),
+                "the document is taken where it stood: {patches:?}"
+            );
+            // The row and the line it shows again; the document is gone, not built.
+            assert_eq!(
+                view.stats().renders - before,
+                2,
+                "closing a row runs it and its line again, and builds no document"
+            );
+            // The row still shows its item's line, and runs for that alone: the document of the
+            // item it no longer stands open into is not built again.
+            let before = view.stats().renders;
+            rows.retitle(3, "drei");
+            assert!(!view.poll_patches().unwrap().is_empty());
+            assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
+            assert!(
+                texts(view.row(&list, 3).unwrap().unwrap())
+                    .iter()
+                    .all(|text| !text.contains("what")),
+                "the closed row builds no document when its item changes"
+            );
+            assert!(
+                view.stats().renders - before <= 3,
+                "the closed row's item changing runs the view that holds the list, the row and its \
              line, and no document: {} ran",
-            view.stats().renders - before
-        );
-    }
+                view.stats().renders - before
+            );
+        }
 
-    #[test]
-    fn a_host_that_draws_everything_turns_lazy_rows_off() {
-        let rows = Rows::new(5);
-        let mut view = rows.view("lazy");
-        view.set_lazy_rows(false).unwrap();
-        assert_eq!(view.stats().unrendered, 0);
-        assert_eq!(titles(view.tree()).len(), 5);
-        rows.retitle(0, "first");
-        view.poll_patches().unwrap();
-        assert_eq!(titles(view.tree())[0], "first");
+        phase a_host_that_draws_everything_turns_lazy_rows_off;
+        {
+            let rows = Rows::new(5);
+            let mut view = rows.view("lazy");
+            view.set_lazy_rows(false).unwrap();
+            assert_eq!(view.stats().unrendered, 0);
+            assert_eq!(titles(view.tree()).len(), 5);
+            rows.retitle(0, "first");
+            view.poll_patches().unwrap();
+            assert_eq!(titles(view.tree())[0], "first");
+        }
+
+        phase a_virtual_lists_rows_follow_steps_and_a_filter_chosen;
+        {
+            let rows = Rows::new(30);
+            for i in [1, 3, 5] {
+                rows.call("check", vec![Value::resource(&rows.items[i])]);
+            }
+            let mut view = rows.view("chosen");
+            let list = list_key(&view);
+            let mut held = row_keys(&view, &list);
+            assert_eq!(held.len(), 30);
+            for i in 0..10 {
+                view.row(&list, i).unwrap();
+            }
+            let built = view.stats().boundaries;
+
+            // A new item: one row more for the host, none built.
+            rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+            let added = view.poll_patches().unwrap();
+            follow(&view, &list, &mut held, &added);
+            assert_eq!(held, row_keys(&view, &list));
+            assert_eq!(view.stats().boundaries, built, "{added:?}");
+
+            // A shown row moved down, and one moved into the rows shown.
+            rows.call(
+                "move_before",
+                vec![
+                    Value::resource(&rows.bag),
+                    Value::resource(&rows.items[2]),
+                    Value::resource(&rows.items[21]),
+                ],
+            );
+            rows.call(
+                "move_before",
+                vec![
+                    Value::resource(&rows.bag),
+                    Value::resource(&rows.items[25]),
+                    Value::resource(&rows.items[5]),
+                ],
+            );
+            let moved = view.poll_patches().unwrap();
+            follow(&view, &list, &mut held, &moved);
+            assert_eq!(held, row_keys(&view, &list));
+            built_in_order(&view, &list, &held);
+
+            // A shown row removed.
+            rows.call(
+                "remove",
+                vec![Value::resource(&rows.bag), Value::resource(&rows.items[0])],
+            );
+            let removed = view.poll_patches().unwrap();
+            follow(&view, &list, &mut held, &removed);
+            assert_eq!(held, row_keys(&view, &list));
+            built_in_order(&view, &list, &held);
+
+            // Another filter: rows of another query, which the host reads anew; the list builds
+            // the rows it shows.
+            choose(&view, "is:open");
+            let chosen = view.poll_patches().unwrap();
+            assert!(
+                chosen
+                    .iter()
+                    .any(|p| matches!(p, Patch::Insert { node, .. } if node.key == list)),
+                "the host reads the rows anew: {chosen:?}"
+            );
+            assert!(chosen.len() < 10, "no step per row: {chosen:?}");
+            follow(&view, &list, &mut held, &chosen);
+            assert_eq!(held, row_keys(&view, &list));
+            assert_eq!(held.len(), 27, "{chosen:?}");
+            built_in_order(&view, &list, &held);
+            let titles_now: Vec<String> = (0..4)
+                .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
+                .collect();
+            assert_eq!(titles_now, ["item 4", "item 25", "item 6", "item 7"]);
+        }
+
+        phase a_row_the_viewer_checks_out_of_a_query_keeps_its_place;
+        {
+            let rows = Rows::new(6);
+            let mut view = rows.view("chosen");
+            choose(&view, "is:open");
+            view.poll_patches().unwrap();
+            let list = list_key(&view);
+            let before = row_keys(&view, &list);
+            assert_eq!(before.len(), 6, "all six are open: {before:?}");
+            // The person checks the third off: the query leaves it out, and its row stands.
+            rows.call("check", vec![Value::resource(&rows.items[2])]);
+            let patches = view.poll_patches().unwrap();
+            assert!(
+                !patches.iter().any(|p| matches!(
+                    p,
+                    Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
+                )),
+                "no row moves: {patches:?}"
+            );
+            assert_eq!(
+                row_keys(&view, &list),
+                before,
+                "the row stands where it was"
+            );
+            assert_eq!(
+                titles(view.row(&list, 2).unwrap().unwrap()).concat(),
+                "item 2",
+                "the row still presents the item"
+            );
+
+            // Leaving the place settles the list: the checked item is not one of the open ones.
+            choose(&view, "all");
+            view.poll_patches().unwrap();
+            choose(&view, "is:open");
+            view.poll_patches().unwrap();
+            let settled = row_keys(&view, &list);
+            assert_eq!(
+                settled.len(),
+                5,
+                "the checked item is not open: {settled:?}"
+            );
+            assert!(!settled.contains(&before[2]));
+        }
+
+        phase rows_checked_one_after_another_keep_their_places;
+        // Rows a person checks one after another stand where they are: each kept row keeps its
+        // own place, and the list goes on rendering.
+        {
+            let rows = Rows::new(6);
+            let mut view = rows.view("chosen");
+            choose(&view, "is:open");
+            view.poll_patches().unwrap();
+            let list = list_key(&view);
+            let before = row_keys(&view, &list);
+            for i in 0..3 {
+                rows.call("check", vec![Value::resource(&rows.items[i])]);
+                let patches = view.poll_patches().unwrap();
+                assert!(
+                    !patches.iter().any(|p| matches!(
+                        p,
+                        Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
+                    )),
+                    "no row moves: {patches:?}"
+                );
+                assert_eq!(
+                    row_keys(&view, &list),
+                    before,
+                    "the rows the person checked stay: {patches:?}"
+                );
+                for at in 0..=i {
+                    assert_eq!(
+                        titles(view.row(&list, at).unwrap().unwrap()).concat(),
+                        format!("item {at}"),
+                        "the row checked at {at} stays where it stood"
+                    );
+                }
+            }
+            let keys = row_keys(&view, &list);
+            let unique: std::collections::HashSet<&String> = keys.iter().collect();
+            assert_eq!(unique.len(), keys.len(), "each row is one row: {keys:?}");
+        }
+
+        phase a_virtual_list_of_a_filtered_collection_follows_its_items;
+        // The rows of a list of a filtered collection follow its items in and out of the filter.
+        {
+            let rows = Rows::new(30);
+            let mut view = rows.view("chosen");
+            let list = list_key(&view);
+            choose(&view, "is:open");
+            let mut held = row_keys(&view, &list);
+            let chosen = view.poll_patches().unwrap();
+            follow(&view, &list, &mut held, &chosen);
+            assert_eq!(held.len(), 30);
+            for i in 0..10 {
+                view.row(&list, i).unwrap();
+            }
+            rows.call("check", vec![Value::resource(&rows.items[2])]);
+            rows.call("check", vec![Value::resource(&rows.items[20])]);
+            let checked = view.poll_patches().unwrap();
+            follow(&view, &list, &mut held, &checked);
+            assert_eq!(held, row_keys(&view, &list));
+            assert_eq!(
+                held.len(),
+                30,
+                "the checked rows stand where they are: {checked:?}"
+            );
+            built_in_order(&view, &list, &held);
+
+            // Leaving the view settles the rows: the checked items are not open.
+            choose(&view, "all");
+            view.poll_patches().unwrap();
+            choose(&view, "is:open");
+            let settled = view.poll_patches().unwrap();
+            follow(&view, &list, &mut held, &settled);
+            assert_eq!(held, row_keys(&view, &list));
+            assert_eq!(held.len(), 28, "{settled:?}");
+            built_in_order(&view, &list, &held);
+            rows.call("uncheck", vec![Value::resource(&rows.items[2])]);
+            let unchecked = view.poll_patches().unwrap();
+            follow(&view, &list, &mut held, &unchecked);
+            assert_eq!(held, row_keys(&view, &list));
+            assert_eq!(held.len(), 29);
+            built_in_order(&view, &list, &held);
+            let titles_now: Vec<String> = (0..3)
+                .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
+                .collect();
+            assert_eq!(titles_now, ["item 0", "item 1", "item 2"]);
+        }
     }
 
     /// How many times each of `views` ran for the change `change` made.
@@ -1072,31 +1394,6 @@ view deck(d: Deck) {
             assert_eq!(texts(newest.tree()), [alone], "{n} items: it left");
             assert_eq!(texts(count.tree()), [n.to_string()], "{n} items: it left");
         }
-    }
-
-    /// An item that comes into a collection reaches the filtered views of it whose filter holds
-    /// of it, and only those: one it does not match was in none of them before either.
-    #[test]
-    fn an_item_that_joins_reaches_the_filtered_views_it_matches() {
-        let rows = Rows::new(100);
-        let mut named = rows.view("named_new");
-        assert_eq!(texts(named.tree()), ["0"]);
-        let mut views = [&mut named];
-        let add = |title: &'static str| {
-            move |rows: &Rows| {
-                rows.call("add", vec![Value::resource(&rows.bag), Value::text(title)]);
-            }
-        };
-        assert_eq!(runs_for(&rows, &mut views, add("other")), [0]);
-        assert_eq!(runs_for(&rows, &mut views, add("new")), [1]);
-        assert_eq!(texts(named.tree()), ["1"]);
-        // An item already in it that comes to match is counted as well.
-        let mut views = [&mut named];
-        assert_eq!(
-            runs_for(&rows, &mut views, |rows: &Rows| rows.retitle(5, "new")),
-            [1]
-        );
-        assert_eq!(texts(named.tree()), ["2"]);
     }
 
     #[test]
@@ -1260,179 +1557,6 @@ view deck(d: Deck) {
         }
     }
 
-    #[test]
-    fn a_virtual_lists_rows_follow_steps_and_a_filter_chosen() {
-        let rows = Rows::new(30);
-        for i in [1, 3, 5] {
-            rows.call("check", vec![Value::resource(&rows.items[i])]);
-        }
-        let mut view = rows.view("chosen");
-        let list = list_key(&view);
-        let mut held = row_keys(&view, &list);
-        assert_eq!(held.len(), 30);
-        for i in 0..10 {
-            view.row(&list, i).unwrap();
-        }
-        let built = view.stats().boundaries;
-
-        // A new item: one row more for the host, none built.
-        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
-        let added = view.poll_patches().unwrap();
-        follow(&view, &list, &mut held, &added);
-        assert_eq!(held, row_keys(&view, &list));
-        assert_eq!(view.stats().boundaries, built, "{added:?}");
-
-        // A shown row moved down, and one moved into the rows shown.
-        rows.call(
-            "move_before",
-            vec![
-                Value::resource(&rows.bag),
-                Value::resource(&rows.items[2]),
-                Value::resource(&rows.items[21]),
-            ],
-        );
-        rows.call(
-            "move_before",
-            vec![
-                Value::resource(&rows.bag),
-                Value::resource(&rows.items[25]),
-                Value::resource(&rows.items[5]),
-            ],
-        );
-        let moved = view.poll_patches().unwrap();
-        follow(&view, &list, &mut held, &moved);
-        assert_eq!(held, row_keys(&view, &list));
-        built_in_order(&view, &list, &held);
-
-        // A shown row removed.
-        rows.call(
-            "remove",
-            vec![Value::resource(&rows.bag), Value::resource(&rows.items[0])],
-        );
-        let removed = view.poll_patches().unwrap();
-        follow(&view, &list, &mut held, &removed);
-        assert_eq!(held, row_keys(&view, &list));
-        built_in_order(&view, &list, &held);
-
-        // Another filter: rows of another query, which the host reads anew; the list builds
-        // the rows it shows.
-        choose(&view, "is:open");
-        let chosen = view.poll_patches().unwrap();
-        assert!(
-            chosen
-                .iter()
-                .any(|p| matches!(p, Patch::Insert { node, .. } if node.key == list)),
-            "the host reads the rows anew: {chosen:?}"
-        );
-        assert!(chosen.len() < 10, "no step per row: {chosen:?}");
-        follow(&view, &list, &mut held, &chosen);
-        assert_eq!(held, row_keys(&view, &list));
-        assert_eq!(held.len(), 27, "{chosen:?}");
-        built_in_order(&view, &list, &held);
-        let titles_now: Vec<String> = (0..4)
-            .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
-            .collect();
-        assert_eq!(titles_now, ["item 4", "item 25", "item 6", "item 7"]);
-    }
-
-    #[test]
-    fn a_row_the_viewer_checks_out_of_a_query_keeps_its_place() {
-        let rows = Rows::new(6);
-        let mut view = rows.view("chosen");
-        choose(&view, "is:open");
-        view.poll_patches().unwrap();
-        let list = list_key(&view);
-        let before = row_keys(&view, &list);
-        assert_eq!(before.len(), 6, "all six are open: {before:?}");
-        // The person checks the third off: the query leaves it out, and its row stands.
-        rows.call("check", vec![Value::resource(&rows.items[2])]);
-        let patches = view.poll_patches().unwrap();
-        assert!(
-            !patches.iter().any(|p| matches!(
-                p,
-                Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
-            )),
-            "no row moves: {patches:?}"
-        );
-        assert_eq!(
-            row_keys(&view, &list),
-            before,
-            "the row stands where it was"
-        );
-        assert_eq!(
-            titles(view.row(&list, 2).unwrap().unwrap()).concat(),
-            "item 2",
-            "the row still presents the item"
-        );
-
-        // Leaving the place settles the list: the checked item is not one of the open ones.
-        choose(&view, "all");
-        view.poll_patches().unwrap();
-        choose(&view, "is:open");
-        view.poll_patches().unwrap();
-        let settled = row_keys(&view, &list);
-        assert_eq!(
-            settled.len(),
-            5,
-            "the checked item is not open: {settled:?}"
-        );
-        assert!(!settled.contains(&before[2]));
-    }
-
-    /// Rows a person checks one after another stand where they are: each kept row keeps its
-    /// own place, and the list goes on rendering.
-    #[test]
-    fn rows_checked_one_after_another_keep_their_places() {
-        let rows = Rows::new(6);
-        let mut view = rows.view("chosen");
-        choose(&view, "is:open");
-        view.poll_patches().unwrap();
-        let list = list_key(&view);
-        let before = row_keys(&view, &list);
-        for i in 0..3 {
-            rows.call("check", vec![Value::resource(&rows.items[i])]);
-            let patches = view.poll_patches().unwrap();
-            assert!(
-                !patches.iter().any(|p| matches!(
-                    p,
-                    Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
-                )),
-                "no row moves: {patches:?}"
-            );
-            assert_eq!(
-                row_keys(&view, &list),
-                before,
-                "the rows the person checked stay: {patches:?}"
-            );
-            for at in 0..=i {
-                assert_eq!(
-                    titles(view.row(&list, at).unwrap().unwrap()).concat(),
-                    format!("item {at}"),
-                    "the row checked at {at} stays where it stood"
-                );
-            }
-        }
-        let keys = row_keys(&view, &list);
-        let unique: std::collections::HashSet<&String> = keys.iter().collect();
-        assert_eq!(unique.len(), keys.len(), "each row is one row: {keys:?}");
-    }
-
-    #[test]
-    fn a_view_that_reads_every_item_follows_every_change() {
-        let rows = Rows::new(300);
-        let mut view = rows.view("done_count");
-        assert_eq!(texts(view.tree()), ["300 open"]);
-        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
-        view.poll_patches().unwrap();
-        assert_eq!(texts(view.tree()), ["301 open"]);
-        rows.call(
-            "remove",
-            vec![Value::resource(&rows.bag), Value::resource(&rows.items[7])],
-        );
-        view.poll_patches().unwrap();
-        assert_eq!(texts(view.tree()), ["300 open"]);
-    }
-
     /// A count and a list of the items a lambda over their fields holds of are answered by the
     /// store: opening builds no reference per item, and a change to an item's field moves it
     /// in or out.
@@ -1496,53 +1620,6 @@ view deck(d: Deck) {
         };
         assert_eq!(open.len(), 299);
         assert_eq!(open[..2], [Value::text("skip"), Value::text("item 1")]);
-    }
-
-    /// The rows of a list of a filtered collection follow its items in and out of the filter.
-    #[test]
-    fn a_virtual_list_of_a_filtered_collection_follows_its_items() {
-        let rows = Rows::new(30);
-        let mut view = rows.view("chosen");
-        let list = list_key(&view);
-        choose(&view, "is:open");
-        let mut held = row_keys(&view, &list);
-        let chosen = view.poll_patches().unwrap();
-        follow(&view, &list, &mut held, &chosen);
-        assert_eq!(held.len(), 30);
-        for i in 0..10 {
-            view.row(&list, i).unwrap();
-        }
-        rows.call("check", vec![Value::resource(&rows.items[2])]);
-        rows.call("check", vec![Value::resource(&rows.items[20])]);
-        let checked = view.poll_patches().unwrap();
-        follow(&view, &list, &mut held, &checked);
-        assert_eq!(held, row_keys(&view, &list));
-        assert_eq!(
-            held.len(),
-            30,
-            "the checked rows stand where they are: {checked:?}"
-        );
-        built_in_order(&view, &list, &held);
-
-        // Leaving the view settles the rows: the checked items are not open.
-        choose(&view, "all");
-        view.poll_patches().unwrap();
-        choose(&view, "is:open");
-        let settled = view.poll_patches().unwrap();
-        follow(&view, &list, &mut held, &settled);
-        assert_eq!(held, row_keys(&view, &list));
-        assert_eq!(held.len(), 28, "{settled:?}");
-        built_in_order(&view, &list, &held);
-        rows.call("uncheck", vec![Value::resource(&rows.items[2])]);
-        let unchecked = view.poll_patches().unwrap();
-        follow(&view, &list, &mut held, &unchecked);
-        assert_eq!(held, row_keys(&view, &list));
-        assert_eq!(held.len(), 29);
-        built_in_order(&view, &list, &held);
-        let titles_now: Vec<String> = (0..3)
-            .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
-            .collect();
-        assert_eq!(titles_now, ["item 0", "item 1", "item 2"]);
     }
 
     // ----- a view call whose branch leaves the tree ------------------------------------------
@@ -1611,66 +1688,5 @@ view board(b: Board) {
     /// The whole view, as its text, in order: every line the board draws.
     fn lines(view: &ViewInstance) -> Vec<String> {
         texts(view.tree())
-    }
-
-    /// A boundary that the tree no longer holds must not write where the whole view's content
-    /// belongs. A view call's `fragment` leaves the tree when the branch holding it swaps, but
-    /// the boundary made for it is still a boundary of the view, still marked to run by the
-    /// change it read, and its cached path is then the empty trail of a call never placed — the
-    /// trail that names the root. Writing there put that one call's content over the whole
-    /// view, and the diff that followed dropped every other child of the screen.
-    ///
-    /// The shape that reaches it has the same call in both branches: the boundary the departing
-    /// branch made is left behind when the other branch's call takes the key, and the change
-    /// that follows asks it to run.
-    ///
-    /// Through the public interface a swap clears the departing boundary's dirtiness, so this
-    /// test passes with and without the guard: it states the behaviour, not the mechanism. The
-    /// mechanism — a planted orphan whose cached trail is the empty one — is
-    /// `view_instance::orphan_tests::a_boundary_the_tree_does_not_hold_writes_nowhere`, which
-    /// fails without the guard.
-    #[test]
-    fn a_boundary_the_tree_no_longer_holds_does_not_replace_the_whole_view() {
-        let (rt, app, board, mut view) = swapping();
-        assert_eq!(
-            lines(&view),
-            ["a banner", "chosen says ", "a footer"],
-            "the first branch draws"
-        );
-
-        // The branch swaps: the chosen call leaves the tree where it stood, and the other
-        // branch's call takes its place.
-        call(&rt, &app, "switch", vec![Value::resource(&board)]);
-        view.poll_patches().unwrap();
-        assert_eq!(
-            lines(&view),
-            ["a banner", "chosen says ", "a footer"],
-            "the other branch draws"
-        );
-
-        // The record changes. Every boundary that read it runs, including the one the departing
-        // branch left: none of them may stand in for the whole view.
-        call(
-            &rt,
-            &app,
-            "set_said",
-            vec![Value::resource(&board), Value::text("hello")],
-        );
-        view.poll_patches().unwrap();
-        assert_eq!(
-            lines(&view),
-            ["a banner", "chosen says hello", "a footer"],
-            "the view is whole: the branch that stands drew the change"
-        );
-        let stack = of_kind(view.tree(), "stack")
-            .into_iter()
-            .max_by_key(|node| node.children.len())
-            .expect("the view's stack");
-        assert_eq!(
-            stack.children.len(),
-            3,
-            "the stack keeps every child: {}",
-            dump(stack)
-        );
     }
 }

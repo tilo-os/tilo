@@ -2013,47 +2013,51 @@ mod tests {
         order
     }
 
-    #[test]
-    fn the_items_that_stayed_take_no_step_though_another_one_went() {
-        let before = ["a", "b", "c", "d"];
-        let after = ["a", "b", "d"];
-        let steps = moved_steps(&listing(&before), &listing(&after), before).unwrap();
-        assert_eq!(
-            steps,
-            vec![Splice::Remove {
-                at: 2,
-                item: "c".to_owned(),
-            }],
-            "the three that stayed take no step"
-        );
-        assert_eq!(replayed(&before, &steps), after);
-    }
+    tilo_test_env::scenario! {
+        fn a_listing_steps_only_the_items_that_moved;
 
-    #[test]
-    fn a_moved_item_is_a_removal_and_an_insertion_and_the_others_take_none() {
-        let before = ["a", "b", "c", "d"];
-        let after = ["c", "a", "b", "d"];
-        let steps = moved_steps(&listing(&before), &listing(&after), before).unwrap();
-        assert_eq!(replayed(&before, &steps), after);
-        assert!(
-            !steps
-                .iter()
-                .any(|step| step.item() == "d" && matches!(step, Splice::Remove { .. })),
-            "the row that stayed is not taken out and put back: {steps:?}"
-        );
-        assert_eq!(
-            steps,
-            vec![
-                Splice::Remove {
+        phase the_items_that_stayed_take_no_step_though_another_one_went;
+        {
+            let before = ["a", "b", "c", "d"];
+            let after = ["a", "b", "d"];
+            let steps = moved_steps(&listing(&before), &listing(&after), before).unwrap();
+            assert_eq!(
+                steps,
+                vec![Splice::Remove {
                     at: 2,
                     item: "c".to_owned(),
-                },
-                Splice::Insert {
-                    at: 0,
-                    item: "c".to_owned(),
-                },
-            ],
-            "only the row that came to stand among others moves, and one step of its own"
-        );
+                }],
+                "the three that stayed take no step"
+            );
+            assert_eq!(replayed(&before, &steps), after);
+        }
+
+        phase a_moved_item_is_a_removal_and_an_insertion_and_the_others_take_none;
+        {
+            let before = ["a", "b", "c", "d"];
+            let after = ["c", "a", "b", "d"];
+            let steps = moved_steps(&listing(&before), &listing(&after), before).unwrap();
+            assert_eq!(replayed(&before, &steps), after);
+            assert!(
+                !steps
+                    .iter()
+                    .any(|step| step.item() == "d" && matches!(step, Splice::Remove { .. })),
+                "the row that stayed is not taken out and put back: {steps:?}"
+            );
+            assert_eq!(
+                steps,
+                vec![
+                    Splice::Remove {
+                        at: 2,
+                        item: "c".to_owned(),
+                    },
+                    Splice::Insert {
+                        at: 0,
+                        item: "c".to_owned(),
+                    },
+                ],
+                "only the row that came to stand among others moves, and one step of its own"
+            );
+        }
     }
 }

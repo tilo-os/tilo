@@ -121,162 +121,166 @@ mod cases {
         Value::Rich(RichValue::from_text(text))
     }
 
-    /// A link says how it links as a case of `host.LinkHow`, so code compares it with
-    /// `.field` or `.mention` and never with a word.
-    #[test]
-    fn a_link_says_how_as_a_case_of_the_hosts_enum() {
-        let l = Links::new();
-        let source = l.add_note("A");
-        l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source);
-        // An item whose field names the note.
-        returned_ref(l.call(
-            "item_about",
-            vec![l.board_arg(), Value::resource(&source), Value::text("I")],
-        ));
-        // A note whose text mentions it.
-        l.note_about(&source, "M");
-        assert_eq!(l.titles_of("naming", &source), vec!["I".to_owned()]);
-        assert_eq!(l.titles_of("mentioning", &source), vec!["M".to_owned()]);
-        // A note made from it names it in no field and mentions it nowhere.
-        assert!(l.titles_of("naming", &l.titled("B")).is_empty());
-        assert!(l.titles_of("mentioning", &l.titled("B")).is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn what_a_resource_was_made_from_is_recorded_as_links;
 
-    /// The word the index keeps a link's how under is the case `host.LinkHow` names, so a link
-    /// read from the index is the case code compares.
-    #[test]
-    fn a_links_how_word_is_the_case_it_is_read_as() {
-        use tilolang_runtime::store::LinkHow;
-
-        let meta = tilolang::host_meta();
-        let declared = meta
-            .enums
-            .iter()
-            .find(|e| e.id == tilolang::LINK_HOW_TYPE)
-            .expect("the host declares LinkHow");
-        assert_eq!(
-            declared
-                .variants
-                .iter()
-                .map(|v| v.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["created_from", "field", "mention"]
-        );
-        for how in [LinkHow::CreatedFrom, LinkHow::Field, LinkHow::Mention] {
-            assert!(
-                declared.variants.iter().any(|v| v.id == how.word()),
-                "`{}` is a case of the host's `LinkHow`",
-                how.word()
-            );
+        phase a_link_says_how_as_a_case_of_the_hosts_enum;
+        // A link says how it links as a case of `host.LinkHow`, so code compares it with
+        // `.field` or `.mention` and never with a word.
+        {
+            let l = Links::new();
+            let source = l.add_note("A");
+            l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source);
+            // An item whose field names the note.
+            returned_ref(l.call(
+                "item_about",
+                vec![l.board_arg(), Value::resource(&source), Value::text("I")],
+            ));
+            // A note whose text mentions it.
+            l.note_about(&source, "M");
+            assert_eq!(l.titles_of("naming", &source), vec!["I".to_owned()]);
+            assert_eq!(l.titles_of("mentioning", &source), vec!["M".to_owned()]);
+            // A note made from it names it in no field and mentions it nowhere.
+            assert!(l.titles_of("naming", &l.titled("B")).is_empty());
+            assert!(l.titles_of("mentioning", &l.titled("B")).is_empty());
         }
-    }
 
-    #[test]
-    fn made_from_is_recorded_with_the_change() {
-        let l = Links::new();
-        let source = l.add_note("A");
-        let made =
-            returned_ref(l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source));
-        assert_eq!(l.made_from(&made), "A");
-        // One made on its own was made from nothing.
-        let alone = l.add_note("C");
-        assert_eq!(l.made_from(&alone), "");
-    }
+        phase a_links_how_word_is_the_case_it_is_read_as;
+        // The word the index keeps a link's how under is the case `host.LinkHow` names, so a link
+        // read from the index is the case code compares.
+        {
+            use tilolang_runtime::store::LinkHow;
 
-    /// A scenario makes a resource from another through the same path an invocation made from it
-    /// takes: the change it makes records what it made from, and what links to the source names
-    /// the resource made from it.
-    #[test]
-    fn a_scenario_makes_a_resource_from_another() {
-        let l = Links::new();
-        let made = l.scenario("a note made from another");
-        assert_eq!(l.made_from(&made), "A");
-        // What links to the source: the note made from it, and nothing it says itself.
-        let source = l.titled("A");
-        assert_eq!(l.made_from(&source), "");
-        assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
-        assert!(l.links_of(&made).is_empty());
-    }
+            let meta = tilolang::host_meta();
+            let declared = meta
+                .enums
+                .iter()
+                .find(|e| e.id == tilolang::LINK_HOW_TYPE)
+                .expect("the host declares LinkHow");
+            assert_eq!(
+                declared
+                    .variants
+                    .iter()
+                    .map(|v| v.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["created_from", "field", "mention"]
+            );
+            for how in [LinkHow::CreatedFrom, LinkHow::Field, LinkHow::Mention] {
+                assert!(
+                    declared.variants.iter().any(|v| v.id == how.word()),
+                    "`{}` is a case of the host's `LinkHow`",
+                    how.word()
+                );
+            }
+        }
 
-    #[test]
-    fn links_are_made_from_mentioned_and_referred() {
-        let l = Links::new();
-        let source = l.add_note("A");
-        l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source);
-        // An item whose field names the note.
-        returned_ref(l.call(
-            "item_about",
-            vec![l.board_arg(), Value::resource(&source), Value::text("I")],
-        ));
-        // A note whose text mentions it.
-        let mention = l.note_about(&source, "M");
-        assert_eq!(
-            l.links_of(&source),
-            vec![
-                "created_from B".to_owned(),
-                "field I".to_owned(),
-                "mention M".to_owned(),
-            ]
-        );
-        // What links to the source links to nothing itself.
-        assert!(l.links_of(&mention).is_empty());
-    }
+        phase made_from_is_recorded_with_the_change;
+        {
+            let l = Links::new();
+            let source = l.add_note("A");
+            let made =
+                returned_ref(l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source));
+            assert_eq!(l.made_from(&made), "A");
+            // One made on its own was made from nothing.
+            let alone = l.add_note("C");
+            assert_eq!(l.made_from(&alone), "");
+        }
 
-    #[test]
-    fn links_follow_the_fields_that_make_them() {
-        let l = Links::new();
-        let source = l.add_note("A");
-        l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source);
-        let item = returned_ref(l.call(
-            "item_about",
-            vec![l.board_arg(), Value::resource(&source), Value::text("I")],
-        ));
-        let mention = l.note_about(&source, "M");
-        assert_eq!(l.links_of(&source).len(), 3);
+        phase a_scenario_makes_a_resource_from_another;
+        // A scenario makes a resource from another through the same path an invocation made from it
+        // takes: the change it makes records what it made from, and what links to the source names
+        // the resource made from it.
+        {
+            let l = Links::new();
+            let made = l.scenario("a note made from another");
+            assert_eq!(l.made_from(&made), "A");
+            // What links to the source: the note made from it, and nothing it says itself.
+            let source = l.titled("A");
+            assert_eq!(l.made_from(&source), "");
+            assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
+            assert!(l.links_of(&made).is_empty());
+        }
 
-        // A field that no longer names it drops the link.
-        l.call("clear_about", vec![Value::resource(&item)]);
-        assert_eq!(
-            l.links_of(&source),
-            vec!["created_from B".to_owned(), "mention M".to_owned()]
-        );
+        phase links_are_made_from_mentioned_and_referred;
+        {
+            let l = Links::new();
+            let source = l.add_note("A");
+            l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source);
+            // An item whose field names the note.
+            returned_ref(l.call(
+                "item_about",
+                vec![l.board_arg(), Value::resource(&source), Value::text("I")],
+            ));
+            // A note whose text mentions it.
+            let mention = l.note_about(&source, "M");
+            assert_eq!(
+                l.links_of(&source),
+                vec![
+                    "created_from B".to_owned(),
+                    "field I".to_owned(),
+                    "mention M".to_owned(),
+                ]
+            );
+            // What links to the source links to nothing itself.
+            assert!(l.links_of(&mention).is_empty());
+        }
 
-        // A note dropped while its text still mentions it leaves no link behind.
-        l.call("drop_note", vec![l.board_arg(), Value::resource(&mention)]);
-        assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
+        phase links_follow_the_fields_that_make_them;
+        {
+            let l = Links::new();
+            let source = l.add_note("A");
+            l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source);
+            let item = returned_ref(l.call(
+                "item_about",
+                vec![l.board_arg(), Value::resource(&source), Value::text("I")],
+            ));
+            let mention = l.note_about(&source, "M");
+            assert_eq!(l.links_of(&source).len(), 3);
 
-        // Text that no longer mentions it drops the link.
-        let other = l.note_about(&source, "N");
-        assert_eq!(l.links_of(&source).len(), 2);
-        l.call(
-            "rewrite",
-            vec![Value::resource(&other), rich("nothing here")],
-        );
-        assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
-    }
+            // A field that no longer names it drops the link.
+            l.call("clear_about", vec![Value::resource(&item)]);
+            assert_eq!(
+                l.links_of(&source),
+                vec!["created_from B".to_owned(), "mention M".to_owned()]
+            );
 
-    /// A page applies its action from the resource it shows: the button it draws carries the
-    /// `.made_from(n)` the view wrote, so what a press makes is made from `n` — the same record
-    /// a scenario's `made from` leaves, and the same thread a comment on a task joins.
-    #[test]
-    fn an_action_a_page_applies_from_its_resource_is_made_from_it() {
-        let l = Links::new();
-        let page = l.add_note("A");
-        let view =
-            l.rt.open_view(
-                &me(),
-                &l.app.view("note_page"),
-                vec![Value::resource(&page)],
-            )
-            .unwrap();
-        let buttons = of_kind(view.tree(), "ui.Button");
-        let button = buttons.first().expect("the page draws its button");
-        assert!(matches!(
-            view.press(&button.key).unwrap(),
-            InvokeOutcome::Done(_)
-        ));
-        let made = l.titled("under");
-        assert_eq!(l.made_from(&made), "A");
-        assert_eq!(l.links_of(&page), vec!["created_from under".to_owned()]);
+            // A note dropped while its text still mentions it leaves no link behind.
+            l.call("drop_note", vec![l.board_arg(), Value::resource(&mention)]);
+            assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
+
+            // Text that no longer mentions it drops the link.
+            let other = l.note_about(&source, "N");
+            assert_eq!(l.links_of(&source).len(), 2);
+            l.call(
+                "rewrite",
+                vec![Value::resource(&other), rich("nothing here")],
+            );
+            assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
+        }
+
+        phase an_action_a_page_applies_from_its_resource_is_made_from_it;
+        // A page applies its action from the resource it shows: the button it draws carries the
+        // `.made_from(n)` the view wrote, so what a press makes is made from `n` — the same record
+        // a scenario's `made from` leaves, and the same thread a comment on a task joins.
+        {
+            let l = Links::new();
+            let page = l.add_note("A");
+            let view =
+                l.rt.open_view(
+                    &me(),
+                    &l.app.view("note_page"),
+                    vec![Value::resource(&page)],
+                )
+                .unwrap();
+            let buttons = of_kind(view.tree(), "ui.Button");
+            let button = buttons.first().expect("the page draws its button");
+            assert!(matches!(
+                view.press(&button.key).unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            let made = l.titled("under");
+            assert_eq!(l.made_from(&made), "A");
+            assert_eq!(l.links_of(&page), vec!["created_from under".to_owned()]);
+        }
     }
 }

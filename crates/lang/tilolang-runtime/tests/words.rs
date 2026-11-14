@@ -94,58 +94,61 @@ view editor_with_own_words(n: Note) {
 }
 "#;
 
-    /// A record with no title is called what its type says, in the reader's language, at every
-    /// surface that names it: its row, the title every window shows, and its title field's
-    /// placeholder.
-    #[test]
-    fn a_types_untitled_words_read_in_the_readers_language() {
-        let app = App::compile(TITLED, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        app.load(&rt);
-        rt.set_words(German);
-        let nb = rt.create("Notebook").unwrap();
-        let note = returned_ref(
-            rt.invoke_action(
-                &me(),
-                (app.action("new_note").as_str(), vec![Value::resource(&nb)]),
-            )
-            .unwrap(),
-        );
-        assert_eq!(rt.title(&note).unwrap(), "Ohne Titel");
-        let mut editor = rt
-            .open_view(
-                &me(),
-                &app.view("note_editor"),
-                vec![Value::resource(&note)],
-            )
-            .unwrap();
-        editor.poll_patches().unwrap();
-        let field = of_kind(editor.tree(), "ui.TextInput")[0];
-        assert_eq!(text_prop(field, "placeholder"), "Ohne Titel");
-        // A view that gives its own placeholder keeps it.
-        let mut own = rt
-            .open_view(
-                &me(),
-                &app.view("editor_with_own_words"),
-                vec![Value::resource(&note)],
-            )
-            .unwrap();
-        own.poll_patches().unwrap();
-        assert_eq!(
-            text_prop(of_kind(own.tree(), "ui.TextInput")[0], "placeholder"),
-            "Say it in a line"
-        );
-        let mut list = rt
-            .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
-            .unwrap();
-        list.poll_patches().unwrap();
-        let row = of_kind(list.tree(), "ui.ListRow")[0];
-        assert_eq!(text_prop(row, "title"), "Ohne Titel");
-    }
+    tilo_test_env::scenario! {
+        fn words_read_in_the_readers_language;
 
-    #[test]
-    fn a_type_that_says_which_field_names_it_is_called_by_that_field() {
-        const DRAFTS: &str = r#"app so.tilo.drafts "Drafts"
+        phase a_types_untitled_words_read_in_the_readers_language;
+        // A record with no title is called what its type says, in the reader's language, at every
+        // surface that names it: its row, the title every window shows, and its title field's
+        // placeholder.
+        {
+            let app = App::compile(TITLED, &[]);
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            rt.set_words(German);
+            let nb = rt.create("Notebook").unwrap();
+            let note = returned_ref(
+                rt.invoke_action(
+                    &me(),
+                    (app.action("new_note").as_str(), vec![Value::resource(&nb)]),
+                )
+                .unwrap(),
+            );
+            assert_eq!(rt.title(&note).unwrap(), "Ohne Titel");
+            let mut editor = rt
+                .open_view(
+                    &me(),
+                    &app.view("note_editor"),
+                    vec![Value::resource(&note)],
+                )
+                .unwrap();
+            editor.poll_patches().unwrap();
+            let field = of_kind(editor.tree(), "ui.TextInput")[0];
+            assert_eq!(text_prop(field, "placeholder"), "Ohne Titel");
+            // A view that gives its own placeholder keeps it.
+            let mut own = rt
+                .open_view(
+                    &me(),
+                    &app.view("editor_with_own_words"),
+                    vec![Value::resource(&note)],
+                )
+                .unwrap();
+            own.poll_patches().unwrap();
+            assert_eq!(
+                text_prop(of_kind(own.tree(), "ui.TextInput")[0], "placeholder"),
+                "Say it in a line"
+            );
+            let mut list = rt
+                .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
+                .unwrap();
+            list.poll_patches().unwrap();
+            let row = of_kind(list.tree(), "ui.ListRow")[0];
+            assert_eq!(text_prop(row, "title"), "Ohne Titel");
+        }
+
+        phase a_type_that_says_which_field_names_it_is_called_by_that_field;
+        {
+            const DRAFTS: &str = r#"app so.tilo.drafts "Drafts"
 
 type Draft (title: subject, untitled: "New message") {
     from: Text
@@ -177,106 +180,107 @@ view draft_editor(d: Draft) {
     ui.TextInput(bind: d.subject, title: true)
 }
 "#;
-        let app = App::compile(DRAFTS, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        app.load(&rt);
-        let ds = rt.create("Drafts").unwrap();
-        let draft = |subject: &str| {
-            returned_ref(
-                rt.invoke_action(
-                    &me(),
-                    (
-                        app.action("new_draft").as_str(),
-                        vec![Value::resource(&ds), Value::Text(subject.to_owned())],
-                    ),
+            let app = App::compile(DRAFTS, &[]);
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            let ds = rt.create("Drafts").unwrap();
+            let draft = |subject: &str| {
+                returned_ref(
+                    rt.invoke_action(
+                        &me(),
+                        (
+                            app.action("new_draft").as_str(),
+                            vec![Value::resource(&ds), Value::Text(subject.to_owned())],
+                        ),
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-        };
-        let hi = draft("Hi there");
-        assert_eq!(
-            rt.title(&hi).unwrap(),
-            "Hi there",
-            "the field the type names, not the first one it declares"
-        );
-        let empty = draft("");
-        assert_eq!(rt.title(&empty).unwrap(), "New message");
-        let mut list = rt
-            .open_view(&me(), &app.view("drafts"), vec![Value::resource(&ds)])
-            .unwrap();
-        list.poll_patches().unwrap();
-        let titles: Vec<String> = of_kind(list.tree(), "ui.ListRow")
-            .into_iter()
-            .map(|row| text_prop(row, "title"))
-            .collect();
-        assert_eq!(titles, ["Hi there", "New message"]);
-        let mut editor = rt
-            .open_view(
-                &me(),
-                &app.view("draft_editor"),
-                vec![Value::resource(&empty)],
-            )
-            .unwrap();
-        editor.poll_patches().unwrap();
-        assert_eq!(
-            text_prop(of_kind(editor.tree(), "ui.TextInput")[0], "placeholder"),
-            "New message"
-        );
-    }
+            };
+            let hi = draft("Hi there");
+            assert_eq!(
+                rt.title(&hi).unwrap(),
+                "Hi there",
+                "the field the type names, not the first one it declares"
+            );
+            let empty = draft("");
+            assert_eq!(rt.title(&empty).unwrap(), "New message");
+            let mut list = rt
+                .open_view(&me(), &app.view("drafts"), vec![Value::resource(&ds)])
+                .unwrap();
+            list.poll_patches().unwrap();
+            let titles: Vec<String> = of_kind(list.tree(), "ui.ListRow")
+                .into_iter()
+                .map(|row| text_prop(row, "title"))
+                .collect();
+            assert_eq!(titles, ["Hi there", "New message"]);
+            let mut editor = rt
+                .open_view(
+                    &me(),
+                    &app.view("draft_editor"),
+                    vec![Value::resource(&empty)],
+                )
+                .unwrap();
+            editor.poll_patches().unwrap();
+            assert_eq!(
+                text_prop(of_kind(editor.tree(), "ui.TextInput")[0], "placeholder"),
+                "New message"
+            );
+        }
 
-    #[test]
-    fn a_views_words_draw_in_the_readers_language() {
-        let app = App::compile(SOURCE, &[]);
-        let catalogue = tilolang::messages::source_catalogue(app.meta());
-        assert!(
-            catalogue.contains(".w-new-messages = { $unread } new messages"),
-            "{catalogue}"
-        );
-        assert!(catalogue.contains(".w-at-work = At work"), "{catalogue}");
-        assert!(
-            !catalogue.contains("w-home ="),
-            "a compared literal is no message: {catalogue}"
-        );
-        assert!(
-            !catalogue.contains("example"),
-            "a data prop's literal is no message: {catalogue}"
-        );
-        assert!(catalogue.contains("d-so-tilo-inbox = Inbox"), "{catalogue}");
-        let inbox_id = app.meta().types[0].id.clone();
-        let filter = tilolang::messages::filter_key(&inbox_id, "pinned");
-        assert!(
-            catalogue.contains(&format!("{filter} = Pinned")),
-            "a filter's label is a message: {catalogue}"
-        );
+        phase a_views_words_draw_in_the_readers_language;
+        {
+            let app = App::compile(SOURCE, &[]);
+            let catalogue = tilolang::messages::source_catalogue(app.meta());
+            assert!(
+                catalogue.contains(".w-new-messages = { $unread } new messages"),
+                "{catalogue}"
+            );
+            assert!(catalogue.contains(".w-at-work = At work"), "{catalogue}");
+            assert!(
+                !catalogue.contains("w-home ="),
+                "a compared literal is no message: {catalogue}"
+            );
+            assert!(
+                !catalogue.contains("example"),
+                "a data prop's literal is no message: {catalogue}"
+            );
+            assert!(catalogue.contains("d-so-tilo-inbox = Inbox"), "{catalogue}");
+            let inbox_id = app.meta().types[0].id.clone();
+            let filter = tilolang::messages::filter_key(&inbox_id, "pinned");
+            assert!(
+                catalogue.contains(&format!("{filter} = Pinned")),
+                "a filter's label is a message: {catalogue}"
+            );
 
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        app.load(&rt);
-        rt.set_words(German);
-        let inbox = rt.create("Inbox").unwrap();
-        let mut view = rt
-            .open_view(&me(), &app.view("inbox"), vec![Value::resource(&inbox)])
-            .unwrap();
-        view.poll_patches().unwrap();
-        let texts: Vec<String> = of_kind(view.tree(), "ui.Text")
-            .into_iter()
-            .map(|t| text_prop(t, "value"))
-            .collect();
-        assert_eq!(
-            texts,
-            [
-                "3 neue Nachrichten",
-                "Bei der Arbeit",
-                "Eingang",
-                "Angeheftet"
-            ],
-            "a window's title and a filter's label are words too"
-        );
-        let link = of_kind(view.tree(), "ui.Link");
-        assert_eq!(text_prop(link[0], "url"), "https://example.com/help");
-        assert_eq!(
-            text_prop(link[0], "label"),
-            "Hilfe",
-            "an option of words is words"
-        );
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            rt.set_words(German);
+            let inbox = rt.create("Inbox").unwrap();
+            let mut view = rt
+                .open_view(&me(), &app.view("inbox"), vec![Value::resource(&inbox)])
+                .unwrap();
+            view.poll_patches().unwrap();
+            let texts: Vec<String> = of_kind(view.tree(), "ui.Text")
+                .into_iter()
+                .map(|t| text_prop(t, "value"))
+                .collect();
+            assert_eq!(
+                texts,
+                [
+                    "3 neue Nachrichten",
+                    "Bei der Arbeit",
+                    "Eingang",
+                    "Angeheftet"
+                ],
+                "a window's title and a filter's label are words too"
+            );
+            let link = of_kind(view.tree(), "ui.Link");
+            assert_eq!(text_prop(link[0], "url"), "https://example.com/help");
+            assert_eq!(
+                text_prop(link[0], "label"),
+                "Hilfe",
+                "an option of words is words"
+            );
+        }
     }
 }

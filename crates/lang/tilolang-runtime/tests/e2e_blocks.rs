@@ -78,22 +78,45 @@ mod cases {
         assert_eq!(of_kind(view.tree(), "row").len(), 1);
     }
 
-    #[test]
-    fn a_blocks_own_button_asks_because_the_agent_wrote_it() {
-        let w = world();
-        let src = format!(
-            "stack {{\n    text(\"Clean up\")\n    button(\"Add\", on: todo.add({}, \"x\"))\n}}",
-            w.list_ref()
-        );
-        let BlockOutput::View(view) = w.rt.run_block(&me(), &w.block(&src)).unwrap() else {
-            panic!("a view block renders");
-        };
-        let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
-        let InvokeOutcome::Suggested(s) = view.press(&button).unwrap() else {
-            panic!("code from a stranger has no grants");
-        };
-        assert_eq!(s.action, w.todo.action("add"));
-        assert_eq!(s.chain.len(), 1);
+    tilo_test_env::scenario! {
+        fn a_block_asks_for_its_button_and_returns_its_data;
+
+        phase a_blocks_own_button_asks_because_the_agent_wrote_it;
+        {
+            let w = world();
+            let src = format!(
+                "stack {{\n    text(\"Clean up\")\n    button(\"Add\", on: todo.add({}, \"x\"))\n}}",
+                w.list_ref()
+            );
+            let BlockOutput::View(view) = w.rt.run_block(&me(), &w.block(&src)).unwrap() else {
+                panic!("a view block renders");
+            };
+            let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
+            let InvokeOutcome::Suggested(s) = view.press(&button).unwrap() else {
+                panic!("code from a stranger has no grants");
+            };
+            assert_eq!(s.action, w.todo.action("add"));
+            assert_eq!(s.chain.len(), 1);
+        }
+
+        phase a_data_block_returns_its_value;
+        {
+            let w = world();
+            let BlockOutput::Data(v) = w.rt.run_block(&me(), &w.block("1 + 2")).unwrap() else {
+                panic!("data");
+            };
+            assert_eq!(v, Value::Int(3));
+            let src = w.list_ref();
+            let BlockOutput::Data(v) = w.rt.run_block(&me(), &w.block(&src)).unwrap() else {
+                panic!("data");
+            };
+            assert!(
+                matches!(v, Value::Ref(ref r) if *r.target == w.list),
+                "{v:?}"
+            );
+            let projection = w.rt.project(&v);
+            assert_eq!(projection["type"], serde_json::json!("TodoList"));
+        }
     }
 
     #[test]
@@ -116,24 +139,5 @@ mod cases {
             w.rt.project(&w.rt.read(&w.list, "items").unwrap())["count"],
             serde_json::json!(3)
         );
-    }
-
-    #[test]
-    fn a_data_block_returns_its_value() {
-        let w = world();
-        let BlockOutput::Data(v) = w.rt.run_block(&me(), &w.block("1 + 2")).unwrap() else {
-            panic!("data");
-        };
-        assert_eq!(v, Value::Int(3));
-        let src = w.list_ref();
-        let BlockOutput::Data(v) = w.rt.run_block(&me(), &w.block(&src)).unwrap() else {
-            panic!("data");
-        };
-        assert!(
-            matches!(v, Value::Ref(ref r) if *r.target == w.list),
-            "{v:?}"
-        );
-        let projection = w.rt.project(&v);
-        assert_eq!(projection["type"], serde_json::json!("TodoList"));
     }
 }

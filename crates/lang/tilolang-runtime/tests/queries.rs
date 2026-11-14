@@ -166,200 +166,204 @@ view sorted(b: Board, q: Text) {
             .collect()
     }
 
-    #[test]
-    fn a_typed_search_and_a_query_in_code_are_one_query() {
-        let t = Tasks::new();
-        let message = t.ty("Message");
-        let clock = Clock::at(NOW).unwrap();
-        let typed = find("from:*@yc.com is:unread received:-7d").unwrap();
-        // What `query(Message, from: "*@yc.com", unread: true, received: -7d)` writes.
-        let coded = Query {
-            terms: vec![
-                Term::new("from", "mailto:*@yc.com"),
-                Term::new("unread", "true"),
-                Term::new("received", "-7d"),
-            ],
-            ..Query::default()
-        };
-        let enums = &t.app.meta().enums;
-        let a = resolve(&typed, message, enums, &clock, None).unwrap();
-        let b = resolve(&coded, message, enums, &clock, None).unwrap();
-        assert_eq!(a, b);
-        let field = |name: &str| Operand::Field(t.field("Message", name));
-        assert_eq!(
-            a.pred,
-            Pred::And(vec![
-                Pred::Like(t.field("Message", "from"), "mailto:*@yc.com".into()),
-                Pred::Cmp(CmpOp::Eq, field("unread"), Operand::Lit(Lit::Bool(true))),
+    tilo_test_env::scenario! {
+        fn a_query_reads_its_filters_and_follows_changes;
+
+        phase a_typed_search_and_a_query_in_code_are_one_query;
+        {
+            let t = Tasks::new();
+            let message = t.ty("Message");
+            let clock = Clock::at(NOW).unwrap();
+            let typed = find("from:*@yc.com is:unread received:-7d").unwrap();
+            // What `query(Message, from: "*@yc.com", unread: true, received: -7d)` writes.
+            let coded = Query {
+                terms: vec![
+                    Term::new("from", "mailto:*@yc.com"),
+                    Term::new("unread", "true"),
+                    Term::new("received", "-7d"),
+                ],
+                ..Query::default()
+            };
+            let enums = &t.app.meta().enums;
+            let a = resolve(&typed, message, enums, &clock, None).unwrap();
+            let b = resolve(&coded, message, enums, &clock, None).unwrap();
+            assert_eq!(a, b);
+            let field = |name: &str| Operand::Field(t.field("Message", name));
+            assert_eq!(
+                a.pred,
                 Pred::And(vec![
-                    Pred::Cmp(
-                        CmpOp::Ge,
-                        field("received"),
-                        Operand::Lit(Lit::Time("2026-10-20T10:00:00Z".into()))
-                    ),
-                    Pred::Cmp(
-                        CmpOp::Le,
-                        field("received"),
-                        Operand::Lit(Lit::Time(NOW.into()))
-                    ),
-                ]),
-            ])
-        );
-        // And they find the same messages.
-        assert_eq!(t.shows("coded", None), ["fresh from yc"]);
-        assert_eq!(
-            t.shows("typed_mail", Some("from:*@yc.com is:unread received:-7d")),
-            ["fresh from yc"]
-        );
-    }
-
-    #[test]
-    fn free_text_finds_what_a_type_holds_by_a_word_of_it() {
-        let t = Tasks::new();
-        // The message subjects' words find their messages, in any case.
-        assert_eq!(
-            t.shows("typed_mail", Some("fresh")),
-            ["fresh from yc", "fresh from acme"]
-        );
-        assert_eq!(
-            t.shows("typed_mail", Some("FRESH acme")),
-            ["fresh from acme"]
-        );
-        assert_eq!(
-            t.shows("typed_mail", Some("yc")),
-            ["fresh from yc", "old from yc", "read from yc",]
-        );
-        // Free text with filters is both: the word and the filter together.
-        assert_eq!(
-            t.shows("typed_mail", Some("acme is:unread")),
-            ["fresh from acme"]
-        );
-        assert!(t.shows("typed_mail", Some("nothing says this")).is_empty());
-        // A rich text's words find it too: what the store reads of it, whoever reads it.
-        assert_eq!(t.shows("typed_mail", Some("offline")), ["old from yc"]);
-    }
-
-    #[test]
-    fn a_query_lists_what_its_filters_hold_in_its_order_and_follows_changes() {
-        let t = Tasks::new();
-        let mut view = t.view("open_by_effort", None);
-        assert_eq!(texts(view.tree()), ["b", "c", "a"]);
-        let a = match t.rt.read(&t.board, "tasks").unwrap() {
-            Value::List(items) => match items.first() {
-                Some(Value::Ref(r)) => (*r.target).clone(),
-                other => panic!("{other:?}"),
-            },
-            other => panic!("{other:?}"),
-        };
-        t.call("check", vec![Value::resource(&a)]);
-        view.poll_patches().unwrap();
-        assert_eq!(texts(view.tree()), ["b", "c"], "a done task leaves");
-    }
-
-    #[test]
-    fn each_kind_of_filter_reads_its_values() {
-        let t = Tasks::new();
-        let cases: &[(&str, &[&str])] = &[
-            ("", &["a", "b", "c", "d"]),
-            ("is:open", &["a", "b", "c"]),
-            ("is:done", &["d"]),
-            ("done:false", &["a", "b", "c"]),
-            ("due:today", &["a"]),
-            ("due:2026-10", &["a", "b"]),
-            ("due:2026-10-21..", &["a", "d"]),
-            ("due:..today", &["a", "b"]),
-            ("due:-7d", &["a", "b"]),
-            ("due:+7d", &["a", "d"]),
-            ("due:none", &["c"]),
-            ("due:any", &["a", "b", "d"]),
-            ("status:waiting", &["a", "d"]),
-            ("status:waiting,blocked", &["a", "b", "d"]),
-            ("effort:>3", &["b", "c"]),
-            ("effort:>=3", &["a", "b", "c"]),
-            ("effort:3..5", &["a", "c"]),
-            ("effort:<3", &["d"]),
-            ("contact:*@yc.com", &["a", "d"]),
-            ("contact:jane@yc.com", &["a"]),
-            ("contact:tel:+49*", &["b"]),
-            ("*@yc.com", &["a", "d"]),
-            ("tel:+49*", &["b"]),
-            ("tags:home", &["a"]),
-            ("tags:none", &["b", "d"]),
-            ("is:open effort:>3 sort:-effort", &["b", "c"]),
-            ("sort:effort", &["d", "a", "c", "b"]),
-            ("sort:-due", &["d", "a", "b", "c"]),
-        ];
-        for (q, want) in cases {
-            assert_eq!(t.shows("typed", Some(q)), *want, "`{q}`");
+                    Pred::Like(t.field("Message", "from"), "mailto:*@yc.com".into()),
+                    Pred::Cmp(CmpOp::Eq, field("unread"), Operand::Lit(Lit::Bool(true))),
+                    Pred::And(vec![
+                        Pred::Cmp(
+                            CmpOp::Ge,
+                            field("received"),
+                            Operand::Lit(Lit::Time("2026-10-20T10:00:00Z".into()))
+                        ),
+                        Pred::Cmp(
+                            CmpOp::Le,
+                            field("received"),
+                            Operand::Lit(Lit::Time(NOW.into()))
+                        ),
+                    ]),
+                ])
+            );
+            // And they find the same messages.
+            assert_eq!(t.shows("coded", None), ["fresh from yc"]);
+            assert_eq!(
+                t.shows("typed_mail", Some("from:*@yc.com is:unread received:-7d")),
+                ["fresh from yc"]
+            );
         }
-        // Over a list of resources the same query reads each one's fields.
-        assert_eq!(t.shows("sorted", Some("is:open effort:>3")), ["b", "c"]);
-        assert_eq!(
-            t.shows("sorted", Some("sort:-effort")),
-            ["b", "c", "a", "d"]
-        );
-    }
 
-    #[test]
-    fn a_token_that_does_not_fit_the_types_filters_says_why() {
-        let t = Tasks::new();
-        let task = t.ty("Task");
-        let clock = Clock::at(NOW).unwrap();
-        let enums = &t.app.meta().enums;
-        let why = |q: &str| {
-            resolve(&find(q).unwrap(), task, enums, &clock, None)
-                .err()
-                .unwrap_or_else(|| panic!("`{q}` resolves"))
-        };
-        assert!(why("status:done").contains("Status has no case `done`"));
-        assert!(why("done:maybe").contains("a toggle is `true` or `false`"));
-        assert!(why("effort:lots").contains("is not a whole number"));
-        assert!(why("due:soon").contains("is not a day"));
-        assert!(why("contact:janedoe").contains("is not an identifier"));
-        assert!(why("sort:-tags").contains("which has no order"));
-        assert!(why("owner.org:YC").contains("goes through a reference"));
-        // A word alone is free text, and free text is searched, not refused: every text field
-        // of the type is searched, so a word finds what it appears in.
-        let text = |q: &str| {
-            resolve(&find(q).unwrap(), task, enums, &clock, None)
-                .unwrap_or_else(|why| panic!("`{q}` resolves as text: {why}"))
-                .pred
-        };
-        assert_eq!(
-            text("nope>1"),
-            Pred::Text(t.field("Task", "title"), "nope>1".into())
-        );
-        assert_eq!(
-            text("milk"),
-            Pred::Text(t.field("Task", "title"), "milk".into())
-        );
-        assert_eq!(
-            text("two words"),
-            Pred::And(vec![
-                Pred::Text(t.field("Task", "title"), "two".into()),
-                Pred::Text(t.field("Task", "title"), "words".into()),
-            ])
-        );
-        // A key that is no filter, of a type that holds no identifier, says so; an identifier
-        // alone in such a type matches nothing, nor does a word in a type with no text.
-        let board = t.ty("Board");
-        assert!(
-            resolve(&find("nope:1").unwrap(), board, enums, &clock, None)
-                .err()
-                .is_some_and(|why| why.contains("`nope` is no filter; Board has no filters")),
-        );
-        assert_eq!(
-            resolve(&find("*@yc.com").unwrap(), board, enums, &clock, None)
-                .unwrap()
-                .pred,
-            Pred::Const(false)
-        );
-        assert_eq!(
-            resolve(&find("milk").unwrap(), board, enums, &clock, None)
-                .unwrap()
-                .pred,
-            Pred::Const(false),
-            "a type with no text field holds no free text"
-        );
+        phase free_text_finds_what_a_type_holds_by_a_word_of_it;
+        {
+            let t = Tasks::new();
+            // The message subjects' words find their messages, in any case.
+            assert_eq!(
+                t.shows("typed_mail", Some("fresh")),
+                ["fresh from yc", "fresh from acme"]
+            );
+            assert_eq!(
+                t.shows("typed_mail", Some("FRESH acme")),
+                ["fresh from acme"]
+            );
+            assert_eq!(
+                t.shows("typed_mail", Some("yc")),
+                ["fresh from yc", "old from yc", "read from yc",]
+            );
+            // Free text with filters is both: the word and the filter together.
+            assert_eq!(
+                t.shows("typed_mail", Some("acme is:unread")),
+                ["fresh from acme"]
+            );
+            assert!(t.shows("typed_mail", Some("nothing says this")).is_empty());
+            // A rich text's words find it too: what the store reads of it, whoever reads it.
+            assert_eq!(t.shows("typed_mail", Some("offline")), ["old from yc"]);
+        }
+
+        phase a_query_lists_what_its_filters_hold_in_its_order_and_follows_changes;
+        {
+            let t = Tasks::new();
+            let mut view = t.view("open_by_effort", None);
+            assert_eq!(texts(view.tree()), ["b", "c", "a"]);
+            let a = match t.rt.read(&t.board, "tasks").unwrap() {
+                Value::List(items) => match items.first() {
+                    Some(Value::Ref(r)) => (*r.target).clone(),
+                    other => panic!("{other:?}"),
+                },
+                other => panic!("{other:?}"),
+            };
+            t.call("check", vec![Value::resource(&a)]);
+            view.poll_patches().unwrap();
+            assert_eq!(texts(view.tree()), ["b", "c"], "a done task leaves");
+        }
+
+        phase each_kind_of_filter_reads_its_values;
+        {
+            let t = Tasks::new();
+            let cases: &[(&str, &[&str])] = &[
+                ("", &["a", "b", "c", "d"]),
+                ("is:open", &["a", "b", "c"]),
+                ("is:done", &["d"]),
+                ("done:false", &["a", "b", "c"]),
+                ("due:today", &["a"]),
+                ("due:2026-10", &["a", "b"]),
+                ("due:2026-10-21..", &["a", "d"]),
+                ("due:..today", &["a", "b"]),
+                ("due:-7d", &["a", "b"]),
+                ("due:+7d", &["a", "d"]),
+                ("due:none", &["c"]),
+                ("due:any", &["a", "b", "d"]),
+                ("status:waiting", &["a", "d"]),
+                ("status:waiting,blocked", &["a", "b", "d"]),
+                ("effort:>3", &["b", "c"]),
+                ("effort:>=3", &["a", "b", "c"]),
+                ("effort:3..5", &["a", "c"]),
+                ("effort:<3", &["d"]),
+                ("contact:*@yc.com", &["a", "d"]),
+                ("contact:jane@yc.com", &["a"]),
+                ("contact:tel:+49*", &["b"]),
+                ("*@yc.com", &["a", "d"]),
+                ("tel:+49*", &["b"]),
+                ("tags:home", &["a"]),
+                ("tags:none", &["b", "d"]),
+                ("is:open effort:>3 sort:-effort", &["b", "c"]),
+                ("sort:effort", &["d", "a", "c", "b"]),
+                ("sort:-due", &["d", "a", "b", "c"]),
+            ];
+            for (q, want) in cases {
+                assert_eq!(t.shows("typed", Some(q)), *want, "`{q}`");
+            }
+            // Over a list of resources the same query reads each one's fields.
+            assert_eq!(t.shows("sorted", Some("is:open effort:>3")), ["b", "c"]);
+            assert_eq!(
+                t.shows("sorted", Some("sort:-effort")),
+                ["b", "c", "a", "d"]
+            );
+        }
+
+        phase a_token_that_does_not_fit_the_types_filters_says_why;
+        {
+            let t = Tasks::new();
+            let task = t.ty("Task");
+            let clock = Clock::at(NOW).unwrap();
+            let enums = &t.app.meta().enums;
+            let why = |q: &str| {
+                resolve(&find(q).unwrap(), task, enums, &clock, None)
+                    .err()
+                    .unwrap_or_else(|| panic!("`{q}` resolves"))
+            };
+            assert!(why("status:done").contains("Status has no case `done`"));
+            assert!(why("done:maybe").contains("a toggle is `true` or `false`"));
+            assert!(why("effort:lots").contains("is not a whole number"));
+            assert!(why("due:soon").contains("is not a day"));
+            assert!(why("contact:janedoe").contains("is not an identifier"));
+            assert!(why("sort:-tags").contains("which has no order"));
+            assert!(why("owner.org:YC").contains("goes through a reference"));
+            // A word alone is free text, and free text is searched, not refused: every text field
+            // of the type is searched, so a word finds what it appears in.
+            let text = |q: &str| {
+                resolve(&find(q).unwrap(), task, enums, &clock, None)
+                    .unwrap_or_else(|why| panic!("`{q}` resolves as text: {why}"))
+                    .pred
+            };
+            assert_eq!(
+                text("nope>1"),
+                Pred::Text(t.field("Task", "title"), "nope>1".into())
+            );
+            assert_eq!(
+                text("milk"),
+                Pred::Text(t.field("Task", "title"), "milk".into())
+            );
+            assert_eq!(
+                text("two words"),
+                Pred::And(vec![
+                    Pred::Text(t.field("Task", "title"), "two".into()),
+                    Pred::Text(t.field("Task", "title"), "words".into()),
+                ])
+            );
+            // A key that is no filter, of a type that holds no identifier, says so; an identifier
+            // alone in such a type matches nothing, nor does a word in a type with no text.
+            let board = t.ty("Board");
+            assert!(
+                resolve(&find("nope:1").unwrap(), board, enums, &clock, None)
+                    .err()
+                    .is_some_and(|why| why.contains("`nope` is no filter; Board has no filters")),
+            );
+            assert_eq!(
+                resolve(&find("*@yc.com").unwrap(), board, enums, &clock, None)
+                    .unwrap()
+                    .pred,
+                Pred::Const(false)
+            );
+            assert_eq!(
+                resolve(&find("milk").unwrap(), board, enums, &clock, None)
+                    .unwrap()
+                    .pred,
+                Pred::Const(false),
+                "a type with no text field holds no free text"
+            );
+        }
     }
 }

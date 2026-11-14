@@ -201,29 +201,54 @@ action fine(b: Board) uses time {
             .collect()
     }
 
-    #[test]
-    fn a_length_of_time_reads_in_its_largest_unit_and_moves_days_and_moments() {
-        let sheet = Sheet::in_zone(0, None);
-        assert_eq!(
-            sheet.bare("lengths"),
-            [
-                "a 2h",
-                "b 90m",
-                "c 5d",
-                "d 150m",
-                "e 9000",
-                "f -30m",
-                "g 0s",
-                "h true",
-                "i true",
-                "j 3d",
-                "k 90m",
-                "l 2026-11-01",
-                "m 2026-11-01",
-                "n 2026-10-22",
-                "o 2026-10-29T12:30:00Z",
-            ]
-        );
+    tilo_test_env::scenario! {
+        fn days_and_lengths_of_time_move_by_whole_units;
+
+        phase a_length_of_time_reads_in_its_largest_unit_and_moves_days_and_moments;
+        {
+            let sheet = Sheet::in_zone(0, None);
+            assert_eq!(
+                sheet.bare("lengths"),
+                [
+                    "a 2h",
+                    "b 90m",
+                    "c 5d",
+                    "d 150m",
+                    "e 9000",
+                    "f -30m",
+                    "g 0s",
+                    "h true",
+                    "i true",
+                    "j 3d",
+                    "k 90m",
+                    "l 2026-11-01",
+                    "m 2026-11-01",
+                    "n 2026-10-22",
+                    "o 2026-10-29T12:30:00Z",
+                ]
+            );
+        }
+
+        phase a_day_moves_by_whole_days_only;
+        {
+            let sheet = Sheet::in_zone(0, None);
+            sheet.call("fine", vec![Value::resource(&sheet.board)]);
+            assert_eq!(
+                sheet.view("read_back"),
+                ["1970-01-01T00:00:00Z 2026-10-31 0"]
+            );
+            // A span code holds can be part of a day: the checker cannot tell it, so the day tells
+            // it where it moves.
+            let id = sheet.app.action("too_fine");
+            let refused = sheet
+                .rt
+                .invoke_action(&me(), (id.as_str(), vec![Value::resource(&sheet.board)]));
+            let said = refused.expect_err("an afternoon cannot move a day");
+            assert!(
+                said.to_string().contains("whole days"),
+                "the reason says what a day moves by: {said}"
+            );
+        }
     }
 
     /// The clock a host keeps for the person, in a style of its own: 12-hour here, as a person
@@ -284,27 +309,6 @@ action fine(b: Board) uses time {
             sheet.view("read_back")[1],
             "1970-01-01T00:00:00Z 2026-11-04 1793311800",
             "a week ahead, two days back, then the seconds since the epoch"
-        );
-    }
-
-    #[test]
-    fn a_day_moves_by_whole_days_only() {
-        let sheet = Sheet::in_zone(0, None);
-        sheet.call("fine", vec![Value::resource(&sheet.board)]);
-        assert_eq!(
-            sheet.view("read_back"),
-            ["1970-01-01T00:00:00Z 2026-10-31 0"]
-        );
-        // A span code holds can be part of a day: the checker cannot tell it, so the day tells
-        // it where it moves.
-        let id = sheet.app.action("too_fine");
-        let refused = sheet
-            .rt
-            .invoke_action(&me(), (id.as_str(), vec![Value::resource(&sheet.board)]));
-        let said = refused.expect_err("an afternoon cannot move a day");
-        assert!(
-            said.to_string().contains("whole days"),
-            "the reason says what a day moves by: {said}"
         );
     }
 

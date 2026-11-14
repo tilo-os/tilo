@@ -65,138 +65,142 @@ mod cases {
         text_prop(title, "value")
     }
 
-    #[test]
-    fn items_are_added_toggled_and_counted() {
-        let t = Todo::new();
-        t.call(
-            "rename",
-            vec![Value::resource(&t.list), Value::text("Groceries")],
-        );
-        let milk = t.add("milk");
-        t.add("eggs");
-        assert_eq!(t.rt.read(&milk, "title").unwrap(), Value::text("milk"));
-        assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(false));
+    tilo_test_env::scenario! {
+        fn the_todo_list_follows_its_items;
 
-        let mut view = t.view();
-        assert_eq!(heading(view.tree()), "Groceries (2 open)");
-        assert_eq!(titles(view.tree()), ["milk", "eggs"]);
-
-        t.call("toggle", vec![Value::resource(&milk)]);
-        assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
-        let patches = view.poll_patches().unwrap();
-        assert!(
-            patches.iter().any(
-                |p| matches!(p, Patch::SetProp { name, value: Some(Value::Text(v)), .. }
-                if name == "value" && v == "Groceries (1 open)")
-            ),
-            "{patches:?}"
-        );
-        assert_eq!(heading(view.tree()), "Groceries (1 open)");
-    }
-
-    #[test]
-    fn rows_are_keyed_by_the_identity_of_their_item() {
-        let t = Todo::new();
-        let a = t.add("a");
-        let b = t.add("b");
-        let view = t.view();
-        let keys: Vec<&String> = rows(view.tree()).iter().map(|r| &r.key).collect();
-        let item_id = |r: &ResourceRef| r.item.clone().unwrap();
-        assert!(keys[0].contains(&item_id(&a)), "{keys:?}");
-        assert!(keys[1].contains(&item_id(&b)), "{keys:?}");
-        assert_ne!(keys[0], keys[1]);
-    }
-
-    #[test]
-    fn moving_an_item_moves_its_row_and_touches_nothing_else() {
-        let t = Todo::new();
-        let a = t.add("a");
-        t.add("b");
-        let c = t.add("c");
-        let mut view = t.view();
-        // Each row is a boundary of its own: the column's children after the heading.
-        let before: Vec<String> = view
-            .tree()
-            .children
-            .iter()
-            .filter(|c| c.kind == "fragment")
-            .map(|r| r.key.clone())
-            .collect();
-
-        t.call(
-            "move_before",
-            vec![
-                Value::resource(&t.list),
-                Value::resource(&c),
-                Value::resource(&a),
-            ],
-        );
-        let patches = view.poll_patches().unwrap();
-        assert_eq!(
-            patches,
-            vec![Patch::Move {
-                parent: vec![view.tree().key.clone()],
-                key: before[2].clone(),
-                from: 3,
-                // The title is the column's first child, so the first row is at 1.
-                to: 1
-            }]
-        );
-        assert_eq!(titles(view.tree()), ["c", "a", "b"]);
-    }
-
-    #[test]
-    fn pressing_a_rows_remove_button_removes_that_item() {
-        let t = Todo::new();
-        t.add("a");
-        t.add("b");
-        t.add("c");
-        let mut view = t.view();
-        let remove = {
-            let row = rows(view.tree())[1];
-            of_kind(row, "ui.Button")[0].key.clone()
-        };
-        assert!(matches!(
-            view.press(&remove).unwrap(),
-            InvokeOutcome::Done(_)
-        ));
-        let patches = view.poll_patches().unwrap();
-        assert!(
-            patches.iter().any(|p| matches!(p, Patch::Remove { .. })),
-            "{patches:?}"
-        );
-        assert_eq!(titles(view.tree()), ["a", "c"]);
-        assert_eq!(
-            t.rt.project(&t.rt.read(&t.list, "items").unwrap())["count"],
-            serde_json::json!(2)
-        );
-    }
-
-    #[test]
-    fn editing_the_bound_name_splices_the_text() {
-        let t = Todo::new();
-        let mut view = t.view();
-        let input = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
-        for text in ["Errands", "Errands today", "Chores today"] {
-            assert_eq!(
-                view.edit(&input, &Value::text(text)).unwrap(),
-                tilolang_runtime::EditOutcome::Applied
+        phase items_are_added_toggled_and_counted;
+        {
+            let t = Todo::new();
+            t.call(
+                "rename",
+                vec![Value::resource(&t.list), Value::text("Groceries")],
             );
-            assert_eq!(t.rt.read(&t.list, "name").unwrap(), Value::text(text));
-        }
-        view.poll_patches().unwrap();
-        assert!(heading(view.tree()).starts_with("Chores today"));
-    }
+            let milk = t.add("milk");
+            t.add("eggs");
+            assert_eq!(t.rt.read(&milk, "title").unwrap(), Value::text("milk"));
+            assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(false));
 
-    #[test]
-    fn a_bound_checkbox_toggles_the_item() {
-        let t = Todo::new();
-        let milk = t.add("milk");
-        let mut view = t.view();
-        let checkbox = of_kind(view.tree(), "ui.Checkbox")[0].key.clone();
-        view.edit(&checkbox, &Value::Bool(true)).unwrap();
-        assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
-        view.poll_patches().unwrap();
-        assert!(heading(view.tree()).contains("(0 open)"));
+            let mut view = t.view();
+            assert_eq!(heading(view.tree()), "Groceries (2 open)");
+            assert_eq!(titles(view.tree()), ["milk", "eggs"]);
+
+            t.call("toggle", vec![Value::resource(&milk)]);
+            assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
+            let patches = view.poll_patches().unwrap();
+            assert!(
+                patches.iter().any(
+                    |p| matches!(p, Patch::SetProp { name, value: Some(Value::Text(v)), .. }
+                    if name == "value" && v == "Groceries (1 open)")
+                ),
+                "{patches:?}"
+            );
+            assert_eq!(heading(view.tree()), "Groceries (1 open)");
+        }
+
+        phase rows_are_keyed_by_the_identity_of_their_item;
+        {
+            let t = Todo::new();
+            let a = t.add("a");
+            let b = t.add("b");
+            let view = t.view();
+            let keys: Vec<&String> = rows(view.tree()).iter().map(|r| &r.key).collect();
+            let item_id = |r: &ResourceRef| r.item.clone().unwrap();
+            assert!(keys[0].contains(&item_id(&a)), "{keys:?}");
+            assert!(keys[1].contains(&item_id(&b)), "{keys:?}");
+            assert_ne!(keys[0], keys[1]);
+        }
+
+        phase moving_an_item_moves_its_row_and_touches_nothing_else;
+        {
+            let t = Todo::new();
+            let a = t.add("a");
+            t.add("b");
+            let c = t.add("c");
+            let mut view = t.view();
+            // Each row is a boundary of its own: the column's children after the heading.
+            let before: Vec<String> = view
+                .tree()
+                .children
+                .iter()
+                .filter(|c| c.kind == "fragment")
+                .map(|r| r.key.clone())
+                .collect();
+
+            t.call(
+                "move_before",
+                vec![
+                    Value::resource(&t.list),
+                    Value::resource(&c),
+                    Value::resource(&a),
+                ],
+            );
+            let patches = view.poll_patches().unwrap();
+            assert_eq!(
+                patches,
+                vec![Patch::Move {
+                    parent: vec![view.tree().key.clone()],
+                    key: before[2].clone(),
+                    from: 3,
+                    // The title is the column's first child, so the first row is at 1.
+                    to: 1
+                }]
+            );
+            assert_eq!(titles(view.tree()), ["c", "a", "b"]);
+        }
+
+        phase pressing_a_rows_remove_button_removes_that_item;
+        {
+            let t = Todo::new();
+            t.add("a");
+            t.add("b");
+            t.add("c");
+            let mut view = t.view();
+            let remove = {
+                let row = rows(view.tree())[1];
+                of_kind(row, "ui.Button")[0].key.clone()
+            };
+            assert!(matches!(
+                view.press(&remove).unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            let patches = view.poll_patches().unwrap();
+            assert!(
+                patches.iter().any(|p| matches!(p, Patch::Remove { .. })),
+                "{patches:?}"
+            );
+            assert_eq!(titles(view.tree()), ["a", "c"]);
+            assert_eq!(
+                t.rt.project(&t.rt.read(&t.list, "items").unwrap())["count"],
+                serde_json::json!(2)
+            );
+        }
+
+        phase editing_the_bound_name_splices_the_text;
+        {
+            let t = Todo::new();
+            let mut view = t.view();
+            let input = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+            for text in ["Errands", "Errands today", "Chores today"] {
+                assert_eq!(
+                    view.edit(&input, &Value::text(text)).unwrap(),
+                    tilolang_runtime::EditOutcome::Applied
+                );
+                assert_eq!(t.rt.read(&t.list, "name").unwrap(), Value::text(text));
+            }
+            view.poll_patches().unwrap();
+            assert!(heading(view.tree()).starts_with("Chores today"));
+        }
+
+        phase a_bound_checkbox_toggles_the_item;
+        {
+            let t = Todo::new();
+            let milk = t.add("milk");
+            let mut view = t.view();
+            let checkbox = of_kind(view.tree(), "ui.Checkbox")[0].key.clone();
+            view.edit(&checkbox, &Value::Bool(true)).unwrap();
+            assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
+            view.poll_patches().unwrap();
+            assert!(heading(view.tree()).contains("(0 open)"));
+        }
     }
 }

@@ -437,23 +437,27 @@ fn files_of(blobs: &dyn BlobHost, file: &FileValue) -> Result<Vec<Value>, String
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_files_address_is_the_content_it_names() {
-        let file = FileValue::new("plan.png", "image/png", 12, "bafy123");
-        assert_eq!(file.url(), "tilo-blob://bafy123");
-        assert_eq!(media_of("plan.png"), "image/png");
-        assert_eq!(media_of("notes.MD"), "text/markdown");
-        assert_eq!(media_of("thing"), "application/octet-stream");
-    }
+    tilo_test_env::scenario! {
+        fn files_are_addressed_by_content_and_chosen_by_type;
 
-    #[test]
-    fn a_chooser_takes_the_types_it_names() {
-        let images = vec!["image/*".to_owned()];
-        assert!(accepts(&images, "image/png"));
-        assert!(!accepts(&images, "text/plain"));
-        let one = vec!["image/webp".to_owned()];
-        assert!(accepts(&one, "image/webp"));
-        assert!(!accepts(&one, "image/png"));
-        assert!(accepts(&[], "anything/at-all"), "no type asked, any file");
+        phase a_files_address_is_the_content_it_names;
+        {
+            let file = FileValue::new("plan.png", "image/png", 12, "bafy123");
+            assert_eq!(file.url(), "tilo-blob://bafy123");
+            assert_eq!(media_of("plan.png"), "image/png");
+            assert_eq!(media_of("notes.MD"), "text/markdown");
+            assert_eq!(media_of("thing"), "application/octet-stream");
+        }
+
+        phase a_chooser_takes_the_types_it_names;
+        {
+            let images = vec!["image/*".to_owned()];
+            assert!(accepts(&images, "image/png"));
+            assert!(!accepts(&images, "text/plain"));
+            let one = vec!["image/webp".to_owned()];
+            assert!(accepts(&one, "image/webp"));
+            assert!(!accepts(&one, "image/png"));
+            assert!(accepts(&[], "anything/at-all"), "no type asked, any file");
+        }
     }
 }

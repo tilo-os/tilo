@@ -140,33 +140,74 @@ view bigs(b: lib.Bag) {
         }
     }
 
-    #[test]
-    fn a_run_replays_the_rule_it_read_from_the_package_that_wrote_it() {
-        let w = world();
-        w.add(20);
-        w.add(1);
-        let InvokeOutcome::Suggested(asked) = w.start() else {
-            panic!("the other package's action asks");
-        };
-        assert_eq!(asked.action, w.lib.action("drop_big"));
-        assert_eq!(w.items(), 2, "asking changes nothing");
-        let out =
-            w.rt.resolve(&asked.run, &me(), Resolution::Approve)
-                .unwrap();
-        assert_eq!(
-            out,
-            RunOutcome::Done(Value::Int(1)),
-            "the replay takes the branch it took before the question, and the rule reads what \
+    tilo_test_env::scenario! {
+        fn a_rule_of_another_package_is_replayed_and_followed;
+
+        phase a_run_replays_the_rule_it_read_from_the_package_that_wrote_it;
+        {
+            let w = world();
+            w.add(20);
+            w.add(1);
+            let InvokeOutcome::Suggested(asked) = w.start() else {
+                panic!("the other package's action asks");
+            };
+            assert_eq!(asked.action, w.lib.action("drop_big"));
+            assert_eq!(w.items(), 2, "asking changes nothing");
+            let out =
+                w.rt.resolve(&asked.run, &me(), Resolution::Approve)
+                    .unwrap();
+            assert_eq!(
+                out,
+                RunOutcome::Done(Value::Int(1)),
+                "the replay takes the branch it took before the question, and the rule reads what \
              the clear left"
-        );
-        assert_eq!(w.items(), 1, "the item over ten went; the other stayed");
-        let drops =
-            w.rt.history(&w.bag.doc)
-                .unwrap()
-                .iter()
-                .filter(|n| n.action == w.lib.action("drop_big"))
-                .count();
-        assert_eq!(drops, 1, "the clear ran once for the whole run");
+            );
+            assert_eq!(w.items(), 1, "the item over ten went; the other stayed");
+            let drops =
+                w.rt.history(&w.bag.doc)
+                    .unwrap()
+                    .iter()
+                    .filter(|n| n.action == w.lib.action("drop_big"))
+                    .count();
+            assert_eq!(drops, 1, "the clear ran once for the whole run");
+        }
+
+        phase a_view_over_another_packages_record_runs_again_for_the_field_it_read;
+        {
+            let w = world();
+            let mut counts =
+                w.rt.open_view(&me(), &w.caller.view("counts"), vec![res(&w.bag)])
+                    .unwrap();
+            let mut bigs =
+                w.rt.open_view(&me(), &w.caller.view("bigs"), vec![res(&w.bag)])
+                    .unwrap();
+            assert_eq!(textual(counts.tree()), "0");
+            assert_eq!(textual(bigs.tree()), "0");
+            // A row appears: both read the bag's items, so both run.
+            w.add(20);
+            assert!(
+                !counts.poll_patches().unwrap().is_empty(),
+                "the row it counts appeared"
+            );
+            assert!(
+                !bigs.poll_patches().unwrap().is_empty(),
+                "the items it looks at changed"
+            );
+            assert_eq!(textual(counts.tree()), "1");
+            assert_eq!(textual(bigs.tree()), "1");
+            // The package that owns the record changes what its items hold: the view that counts
+            // them reads none of that, and only the view that reads it runs.
+            w.set_all(3);
+            assert!(
+                counts.poll_patches().unwrap().is_empty(),
+                "no item was added or removed: the count did not move"
+            );
+            assert!(
+                !bigs.poll_patches().unwrap().is_empty(),
+                "the field it reads moved"
+            );
+            assert_eq!(textual(bigs.tree()), "0");
+        }
     }
 
     #[test]
@@ -182,43 +223,6 @@ view bigs(b: lib.Bag) {
             "the view read the bag through another package's fn: it runs again when it changes"
         );
         assert_eq!(textual(view.tree()), "big");
-    }
-
-    #[test]
-    fn a_view_over_another_packages_record_runs_again_for_the_field_it_read() {
-        let w = world();
-        let mut counts =
-            w.rt.open_view(&me(), &w.caller.view("counts"), vec![res(&w.bag)])
-                .unwrap();
-        let mut bigs =
-            w.rt.open_view(&me(), &w.caller.view("bigs"), vec![res(&w.bag)])
-                .unwrap();
-        assert_eq!(textual(counts.tree()), "0");
-        assert_eq!(textual(bigs.tree()), "0");
-        // A row appears: both read the bag's items, so both run.
-        w.add(20);
-        assert!(
-            !counts.poll_patches().unwrap().is_empty(),
-            "the row it counts appeared"
-        );
-        assert!(
-            !bigs.poll_patches().unwrap().is_empty(),
-            "the items it looks at changed"
-        );
-        assert_eq!(textual(counts.tree()), "1");
-        assert_eq!(textual(bigs.tree()), "1");
-        // The package that owns the record changes what its items hold: the view that counts
-        // them reads none of that, and only the view that reads it runs.
-        w.set_all(3);
-        assert!(
-            counts.poll_patches().unwrap().is_empty(),
-            "no item was added or removed: the count did not move"
-        );
-        assert!(
-            !bigs.poll_patches().unwrap().is_empty(),
-            "the field it reads moved"
-        );
-        assert_eq!(textual(bigs.tree()), "0");
     }
 
     /// A resource, as a call takes it.

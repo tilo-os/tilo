@@ -80,6 +80,8 @@ default = ["wasmtime"]
 wasmtime = ["dep:wasmtime"]
 
 [dev-dependencies]
+# A subject's cases are the phases of one test (`scenario!`).
+tilo-test-env = { path = "../../dev/test-env" }
 wat = "1"
 
 [lints]

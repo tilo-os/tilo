@@ -149,45 +149,49 @@ mod tests {
         d
     }
 
-    #[test]
-    fn a_keystroke_is_one_small_splice() {
-        let d = check("hello world", "hello, world");
-        assert_eq!(
-            d,
-            vec![Splice {
-                at: 5,
-                delete: 0,
-                insert: ",".into()
-            }]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_text_change_is_the_fewest_splices_that_make_it;
 
-    #[test]
-    fn identical_text_has_no_splices() {
-        assert!(check("same", "same").is_empty());
-    }
+        phase a_keystroke_is_one_small_splice;
+        {
+            let d = check("hello world", "hello, world");
+            assert_eq!(
+                d,
+                vec![Splice {
+                    at: 5,
+                    delete: 0,
+                    insert: ",".into()
+                }]
+            );
+        }
 
-    #[test]
-    fn scattered_edits_stay_separate() {
-        let d = check("the quick brown fox", "the slow brown cat");
-        assert!(d.len() >= 2, "{d:?}");
-        let touched: usize = d.iter().map(|s| s.delete).sum();
-        assert!(touched < 19, "must not rewrite the whole text: {d:?}");
-    }
+        phase identical_text_has_no_splices;
+        {
+            assert!(check("same", "same").is_empty());
+        }
 
-    #[test]
-    fn unicode_and_empty_cases() {
-        check("", "abc");
-        check("abc", "");
-        check("naive café", "naïve cafe");
-        check("a\u{1F600}b", "a\u{1F600}\u{1F600}b");
-    }
+        phase scattered_edits_stay_separate;
+        {
+            let d = check("the quick brown fox", "the slow brown cat");
+            assert!(d.len() >= 2, "{d:?}");
+            let touched: usize = d.iter().map(|s| s.delete).sum();
+            assert!(touched < 19, "must not rewrite the whole text: {d:?}");
+        }
 
-    #[test]
-    fn a_huge_middle_falls_back_to_one_splice() {
-        let old = "a".repeat(3000);
-        let new = "b".repeat(3000);
-        let d = check(&old, &new);
-        assert_eq!(d.len(), 1);
+        phase unicode_and_empty_cases;
+        {
+            check("", "abc");
+            check("abc", "");
+            check("naive café", "naïve cafe");
+            check("a\u{1F600}b", "a\u{1F600}\u{1F600}b");
+        }
+
+        phase a_huge_middle_falls_back_to_one_splice;
+        {
+            let old = "a".repeat(3000);
+            let new = "b".repeat(3000);
+            let d = check(&old, &new);
+            assert_eq!(d.len(), 1);
+        }
     }
 }
