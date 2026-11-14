@@ -1,7 +1,7 @@
 //! The directory model a path is read through: one resource of an app's
 //! directory, and the rows one listing holds under a parent.
 
-use super::*;
+use super::{ActionDescriptor, CatalogueRow, HashMap, bound_key, path_name};
 
 /// One resource of an app's directory, as an agent names it.
 #[derive(Clone, Debug)]

@@ -2,7 +2,7 @@
 //! to one that would: an answer names a resource whole
 //! (`tasks.tracker/issues/7`), and that is a path the next call takes.
 
-use super::*;
+use super::{ActionHost, Levels, McpServer, Node, ROOT_PEEK, Resolved};
 
 /// The close matches an action no resource offers is told with.
 pub(super) const CLOSE_MATCHES: usize = 5;

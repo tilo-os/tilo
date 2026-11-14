@@ -132,11 +132,11 @@ const WORKSPACE: &str = "…";
 
 /// A route of this API, as [`render`] writes one, and the call it is.
 fn rest_mention(text: &str) -> Option<Mention> {
-    let (method, rest) = ["GET", "POST"].into_iter().find_map(|method| {
-        text.strip_prefix(method)
-            .and_then(|rest| rest.strip_prefix(' '))
-            .map(|rest| (method, rest))
-    })?;
+    let (method, rest) = if let Some(rest) = text.strip_prefix("GET ") {
+        ("GET", rest)
+    } else {
+        ("POST", text.strip_prefix("POST ")?)
+    };
     let rest = rest.strip_prefix("/v1/workspaces/")?;
     let rest = rest
         .strip_prefix(WORKSPACE)
