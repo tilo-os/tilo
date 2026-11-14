@@ -65,8 +65,12 @@ fn icon_bytes(icon: &OwnedValue) -> Option<Vec<u8>> {
     bytes.downcast::<Vec<u8>>().ok()
 }
 
+/// The largest side of an icon the session shows, in pixels.
+const MAX_ICON_SIDE: u32 = 512;
+
 /// Whether `bytes` is an icon the session will show: a PNG or JPEG of at
-/// most 512 pixels a side, or an SVG that runs nothing and loads nothing.
+/// most [`MAX_ICON_SIDE`] pixels a side, or an SVG that runs nothing and loads
+/// nothing.
 pub fn valid_icon_payload(bytes: &[u8]) -> bool {
     if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
         return false;
@@ -74,9 +78,11 @@ pub fn valid_icon_payload(bytes: &[u8]) -> bool {
     if let Some((format, width, height)) = tilo_content_types::image_size(bytes) {
         // An SVG's width and height are what it draws in; what it may contain is checked below.
         if format.extension != "svg" {
-            return matches!(format.extension, "png" | "jpg") && width <= 512 && height <= 512; // allow-breakpoint: the icon size an app may hand over, not a layout width
+            return matches!(format.extension, "png" | "jpg")
+                && width <= MAX_ICON_SIDE
+                && height <= MAX_ICON_SIDE;
         }
-        if width > 512 || height > 512 {
+        if width > MAX_ICON_SIDE || height > MAX_ICON_SIDE {
             return false;
         }
     }
