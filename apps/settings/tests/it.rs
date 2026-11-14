@@ -89,17 +89,31 @@ mod support {
             }
             widget.children().into_iter().any(settling)
         }
+        /// Whether the window still shows the note that stands for a read
+        /// of the device under way. The window asks for no frame on that
+        /// read's account, so nothing else of it says the page is not there
+        /// yet: the frame drawn meanwhile is complete, and holds the note
+        /// where the page's controls will be.
+        fn reading(widget: &dyn Widget, note: &str) -> bool {
+            widget.accessibility().and_then(|node| node.name).as_deref() == Some(note)
+                || widget
+                    .children()
+                    .into_iter()
+                    .any(|child| reading(child, note))
+        }
         let mut app = Window::new().expect("settings opens headlessly");
         app.effect(&settings::effects::open_pane(category))
             .expect("the pane opens");
         app.harness()
             .relayout_themed(ui::headless::viewport((w, h)), theme)
             .unwrap_or_else(|error| panic!("{category:?} does not lay out at {w}x{h}: {error}"));
+        let note = settings::i18n::t("settings-pane-reading");
         assert!(
             app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |harness| !settling(
-                    harness.root_widget()
-                )),
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
+                    let root = harness.root_widget();
+                    !settling(root) && !reading(root, &note)
+                }),
             "{category:?} shows what it reads"
         );
         app.settle();
