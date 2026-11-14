@@ -38,7 +38,7 @@
 //! certified workspace readers, through the host's canonical Read policy;
 //! that grants no document invocation authority.
 //!
-//! The service joins each workspace as the host's own device ([`WorkspaceMember`], from
+//! The service joins each workspace as the host's own device ([`HostDevice`], from
 //! the [`WorkspaceRecordsLink`] the host supplies): a member of the workspace's
 //! channels like any other, admitted by the workspace's participants. It reads
 //! only records it holds keys for and writes nothing in the clear. When the
@@ -66,9 +66,7 @@ mod run_context;
 mod run_voice;
 mod terminal;
 pub use content::MAX_PUT_BYTES;
-pub use link::{
-    FeedbackReviewer, ViewDocument, ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
-};
+pub use link::{FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceRecordsLink};
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -250,7 +248,7 @@ struct Shared {
     link: OnceLock<Arc<dyn WorkspaceRecordsLink>>,
     jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
     /// How the service joins workspaces, once its thread runs.
-    member: OnceLock<WorkspaceMember>,
+    host_device: OnceLock<HostDevice>,
     /// Every workspace a request named, by id: joined as the request
     /// arrives, while the service's one thread still answers others, so the
     /// first requests of many fresh workspaces join side by side instead of
@@ -282,7 +280,7 @@ impl WorkspaceActions {
                 ledger: Mutex::new(Ledger::default()),
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
-                member: OnceLock::new(),
+                host_device: OnceLock::new(),
                 joins: Mutex::default(),
                 stores: Mutex::default(),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
@@ -369,14 +367,14 @@ impl WorkspaceActions {
     /// Joining sends the subscription and returns; the session runs on the
     /// member's runtime.
     fn join_ahead(&self, workspace_id: WorkspaceId) {
-        let Some(member) = self.shared.member.get() else {
+        let Some(host_device) = self.shared.host_device.get() else {
             return;
         };
         let mut joins = self.shared.joins.lock_recover();
         if joins.contains_key(&workspace_id) {
             return;
         }
-        match Workspace::join(member, workspace_id, &self.shared) {
+        match Workspace::join(host_device, workspace_id, &self.shared) {
             Ok(workspace) => {
                 joins.insert(workspace_id, Some(workspace));
                 drop(joins);
@@ -933,20 +931,20 @@ struct Workspace {
 
 impl Workspace {
     fn join(
-        member: &WorkspaceMember,
+        host_device: &HostDevice,
         workspace_id: WorkspaceId,
         shared: &Arc<Shared>,
     ) -> Result<Self, String> {
-        let _runtime = member.runtime.enter();
+        let _runtime = host_device.runtime.enter();
         let peer = tilo_session_client::start_session(
             PeerConfig {
-                host: member.endpoint.host.clone(),
-                cert: member.endpoint.host_cert.clone(),
-                host_cert: member.endpoint.host_cert.clone(),
+                host: host_device.endpoint.host.clone(),
+                cert: host_device.endpoint.host_cert.clone(),
+                host_cert: host_device.endpoint.host_cert.clone(),
                 revocations: RevocationList::new(),
                 entering: None,
             },
-            Arc::new(member.key.clone()),
+            Arc::new(host_device.key.clone()),
             Arc::new(MemoryPeerStore::default()),
         );
         let events = peer.events();
@@ -965,7 +963,10 @@ impl Workspace {
         }));
         peer.send(Cmd::Join(workspace_id))?;
         Ok(Self {
-            runs: run_voice::Runs::new(workspace_id, member.endpoint.host_cert.device_public_key),
+            runs: run_voice::Runs::new(
+                workspace_id,
+                host_device.endpoint.host_cert.device_public_key,
+            ),
             peer,
             events,
             awaited,
@@ -1221,7 +1222,7 @@ struct Waiting {
 }
 
 struct Worker {
-    member: WorkspaceMember,
+    host_device: HostDevice,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
     participant: String,
@@ -1329,11 +1330,11 @@ fn take_all(
 
 impl Worker {
     fn new(link: &dyn WorkspaceRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
-        let member = link.member();
-        let _ = shared.member.set(member.clone());
+        let host_device = link.host_device();
+        let _ = shared.host_device.set(host_device.clone());
         Self {
             participant: hex::encode(link.user_public_key()),
-            member,
+            host_device,
             catalogue,
             shared,
             workspaces: HashMap::new(),
@@ -1715,7 +1716,7 @@ impl Worker {
                 .flatten();
             let workspace = match ahead {
                 Some(workspace) => workspace,
-                None => Workspace::join(&self.member, workspace_id, &self.shared)
+                None => Workspace::join(&self.host_device, workspace_id, &self.shared)
                     .map_err(|reason| ActionHostError::Unavailable { reason })?,
             };
             self.workspaces.insert(workspace_id, workspace);

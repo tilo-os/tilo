@@ -10,9 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tilo_actions::remote::{
     Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
 };
-use tilo_agent_participant::workspace_actions::{
-    ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
-};
+use tilo_agent_participant::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::Outbox;
 use ui::permissions::Role;
@@ -23,7 +21,7 @@ const TASKS: &str = "so.tilo.tasks";
 /// The workspace's word on one member: their role, whether their device is
 /// revoked, and what they answer when the host asks them.
 struct Membership {
-    member: WorkspaceMember,
+    member: HostDevice,
     person: [u8; 32],
     device: [u8; 32],
     role: Mutex<Option<Role>>,
@@ -55,7 +53,7 @@ impl WorkspaceRecordsLink for Membership {
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
-    fn member(&self) -> WorkspaceMember {
+    fn host_device(&self) -> HostDevice {
         self.member.clone()
     }
     fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
@@ -357,7 +355,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     );
 
     let membership = Arc::new(Membership {
-        member: WorkspaceMember {
+        member: HostDevice {
             endpoint: tilo_agent_participant::HostEndpoint::iroh(
                 hosted.relay.node_addr(),
                 host.cert.clone(),

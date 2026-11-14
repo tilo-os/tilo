@@ -28,9 +28,7 @@ use tilo_actions::remote::{
     Caller, CallerPrincipal, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer,
     ContentPutStep, Pending,
 };
-use tilo_agent_participant::workspace_actions::{
-    ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
-};
+use tilo_agent_participant::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
 use tilo_broker_core::{BrokerActor, CrdtRoute, PublishedAction, PublishedInput, PublishedSurface};
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
@@ -43,7 +41,7 @@ const TERMINAL: &str = "so.tilo.terminal";
 /// The workspace's word on its one member: an editor, on their own device
 /// and on the keys they certified, who allows what they are asked.
 struct Member {
-    host: WorkspaceMember,
+    host: HostDevice,
     person: [u8; 32],
     devices: Vec<[u8; 32]>,
     asked: AtomicUsize,
@@ -95,7 +93,7 @@ impl WorkspaceRecordsLink for Member {
     fn user_public_key(&self) -> [u8; 32] {
         self.host.endpoint.host_cert.user_public_key
     }
-    fn member(&self) -> WorkspaceMember {
+    fn host_device(&self) -> HostDevice {
         self.host.clone()
     }
     fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
@@ -413,7 +411,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let mut differences = Vec::new();
     let person = guest_device.cert.user_public_key;
     let member = Arc::new(Member {
-        host: WorkspaceMember {
+        host: HostDevice {
             endpoint: tilo_agent_participant::HostEndpoint::iroh(
                 hosted.relay.node_addr(),
                 host.cert.clone(),

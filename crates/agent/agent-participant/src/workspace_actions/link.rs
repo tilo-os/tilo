@@ -1,6 +1,6 @@
 //! What the service needs of the host it runs under, and what the host
-//! hands it: the host's own membership of its workspaces
-//! ([`WorkspaceMember`]), the standing and read policy it decides a view by
+//! hands it: the host's own device in its workspaces
+//! ([`HostDevice`]), the standing and read policy it decides a view by
 //! ([`ViewReadPolicy`]), the verified snapshot a view is discovered from
 //! ([`ViewDocument`]), and the two doors back into the host
 //! ([`WorkspaceRecordsLink`] for everything the service asks, and
@@ -18,11 +18,11 @@ use super::WorkspaceShell;
 use crate::host::HostEndpoint;
 use tilo_relay_protocol::WorkspaceId;
 
-/// How the service takes part in the host's workspaces: as the host's own
-/// device, a member of each workspace's channels like any other. It opens only
-/// what a workspace's participants admitted it to and seals everything it writes.
+/// The host's own device, as the service takes part in its workspaces: a
+/// member of each workspace's channels like any other device. It opens only
+/// what a workspace's members admitted it to and seals everything it writes.
 #[derive(Clone)]
-pub struct WorkspaceMember {
+pub struct HostDevice {
     /// The host's endpoint and certificate; the member is the host device.
     pub endpoint: HostEndpoint,
     /// The host device's key, which signs the member's changes.
@@ -69,8 +69,8 @@ pub struct ViewDocument {
 pub trait WorkspaceRecordsLink: Send + Sync {
     /// The user root the host chains to: the person whose device this service is.
     fn user_public_key(&self) -> [u8; 32];
-    /// How the service joins the host's workspaces.
-    fn member(&self) -> WorkspaceMember;
+    /// The host's own device, as the service joins its workspaces.
+    fn host_device(&self) -> HostDevice;
     /// Whether `workspace` admits `caller`, on the device it speaks for: a
     /// person the workspace lets in, as its governance records them, and the
     /// person the host serves itself. Anyone else is a stranger to it.

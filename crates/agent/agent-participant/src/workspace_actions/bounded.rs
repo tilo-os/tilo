@@ -473,8 +473,8 @@ impl Worker {
             link.admits(
                 workspace_id,
                 &Caller::authenticated(
-                    self.member.endpoint.host_cert.user_public_key,
-                    self.member.endpoint.host_cert.device_public_key,
+                    self.host_device.endpoint.host_cert.user_public_key,
+                    self.host_device.endpoint.host_cert.device_public_key,
                 ),
             )
         })

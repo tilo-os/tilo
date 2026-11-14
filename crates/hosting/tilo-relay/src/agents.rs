@@ -32,9 +32,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_agent_participant::workspace_actions::{
-    ShellRan, Watching, WorkspaceMember, WorkspaceShell,
-};
+use tilo_agent_participant::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
 use tilo_agent_participant::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
@@ -644,7 +642,7 @@ fn serve_with_browser(
 /// The relay's own device, as the workspace actions service joins its workspaces.
 struct RelayRecordsLink {
     user_public_key: [u8; 32],
-    member: WorkspaceMember,
+    host_device: HostDevice,
     workspaces: Option<crate::workspaces::Workspaces>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
@@ -688,7 +686,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         let (completer, answer) = tilo_actions::remote::pending();
         let certification = self.certification.clone();
         let workspaces = self.workspaces.clone();
-        self.member.runtime.spawn(async move {
+        self.host_device.runtime.spawn(async move {
             let mut pending = pending;
             // The person reads the workspace by its name, not its id.
             if let Some(workspaces) = workspaces
@@ -709,7 +707,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
 
     fn workspace_content(&self, workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         let identity = self
-            .member
+            .host_device
             .runtime
             .block_on(self.workspaces.as_ref()?.workspace_identity(workspace))?;
         self.stores.get(&identity).ok()
@@ -727,19 +725,19 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         self.user_public_key
     }
 
-    fn member(&self) -> WorkspaceMember {
-        self.member.clone()
+    fn host_device(&self) -> HostDevice {
+        self.host_device.clone()
     }
 
     fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
-        self.member
+        self.host_device
             .runtime
             .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
     }
 
     fn admits(&self, workspace: WorkspaceId, caller: &tilo_actions::remote::Caller) -> bool {
         self.workspaces.as_ref().is_some_and(|workspaces| {
-            self.member
+            self.host_device
                 .runtime
                 .block_on(workspaces.admits(workspace, caller))
         })
@@ -752,7 +750,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         app: &str,
         record: &str,
     ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
-        self.member.runtime.block_on(
+        self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()?
                 .resource_view_policy(workspace, caller, app, record),
@@ -764,7 +762,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
     ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
-        self.member.runtime.block_on(
+        self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()?
                 .workspace_policy(workspace, caller),
@@ -777,7 +775,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         caller: &tilo_actions::remote::Caller,
         source: &tilo_peer_state::document_frame::DocumentRoute,
     ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {
-        self.member.runtime.block_on(
+        self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()
                 .ok_or("governed workspaces unavailable")?
@@ -790,14 +788,16 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
     ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
-        self.member
+        self.host_device
             .runtime
             .block_on(self.workspaces.as_ref()?.own_route_keys(route, create))
     }
 
     fn records(&self, channel: &str) -> Option<Vec<(String, String)>> {
         let workspaces = self.workspaces.as_ref()?;
-        self.member.runtime.block_on(workspaces.records(channel))
+        self.host_device
+            .runtime
+            .block_on(workspaces.records(channel))
     }
 
     fn view_locator(
@@ -809,7 +809,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: (*origin).clone(),
             workspace: workspace.to_owned(),
-            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            host_device: hex::encode(self.host_device.endpoint.host_cert.device_public_key),
             provider: provider.to_owned(),
             web_entry: self.web_entry.clone(),
         })
@@ -817,7 +817,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
 
     fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
         self.workspaces.as_ref().is_some_and(|workspaces| {
-            self.member
+            self.host_device
                 .runtime
                 .block_on(workspaces.bot_personas(workspace, installation))
         })
@@ -829,7 +829,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
     /// workspace answers none, which refuses an appearance naming an avatar.
     fn content_blob(&self, workspace: WorkspaceId, hash: &str) -> Option<Vec<u8>> {
         let workspaces = self.workspaces.as_ref()?;
-        self.member
+        self.host_device
             .runtime
             .block_on(workspaces.kept_content(workspace, hash))
     }
@@ -942,7 +942,7 @@ fn attach_records(
             feedback_reviewer,
             stores: relay.content(),
             certification: relay.web_context().certification.clone(),
-            member: WorkspaceMember {
+            host_device: HostDevice {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.workspace_records().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),

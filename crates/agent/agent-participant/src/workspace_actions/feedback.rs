@@ -13,7 +13,7 @@ use tilo_feedback_transport::{
 use ui::feedback::Destination;
 use ui::feedback::{Error, Receipt, Submission};
 
-use super::{AppCatalogue, DocumentRoute, WorkspaceMember, WorkspaceRecordsLink, reads, record_of};
+use super::{AppCatalogue, DocumentRoute, HostDevice, WorkspaceRecordsLink, reads, record_of};
 use tilo_relay_protocol::WorkspaceId;
 
 fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
@@ -97,10 +97,10 @@ pub(super) fn answer(
         .view_read_policy(workspace, &caller, &route.app_id, &route.record)
         .filter(|policy| policy.workspace == route.cluster_id)
         .ok_or_else(|| unavailable("certified feedback admission unavailable"))?;
-    let member = link.member();
-    let cert = &member.endpoint.host_cert;
+    let host_device = link.host_device();
+    let cert = &host_device.endpoint.host_cert;
     if cert.user_public_key != link.user_public_key()
-        || cert.device_public_key != member.key.verifying_key().to_bytes()
+        || cert.device_public_key != host_device.key.verifying_key().to_bytes()
     {
         return Err(unavailable("feedback owner identity mismatch"));
     }
@@ -137,7 +137,7 @@ pub(super) fn answer(
             serde_json::from_value(value).map_err(|error| unavailable(&error))?;
         let signer = OwnerSigner {
             owner: owner.clone(),
-            member,
+            host_device,
         };
         let mut service = CanonicalDestination::from_source(
             owner,
@@ -292,13 +292,18 @@ impl CanonicalReceiptSource for RetainedSource {
 }
 struct OwnerSigner {
     owner: Caller,
-    member: WorkspaceMember,
+    host_device: HostDevice,
 }
 impl ReceiptSigner for OwnerSigner {
     fn owner(&self) -> &Caller {
         &self.owner
     }
     fn sign(&mut self, request: &ReceiptSigningRequest) -> Result<Vec<u8>, Error> {
-        Ok(self.member.key.sign(request.digest()).to_bytes().to_vec())
+        Ok(self
+            .host_device
+            .key
+            .sign(request.digest())
+            .to_bytes()
+            .to_vec())
     }
 }
