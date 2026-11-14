@@ -954,7 +954,7 @@ fn edit_paths(
                 // A collection of text items takes the text operations at each item, not only
                 // the whole-value `set` a record item takes.
                 let item_ops: &[&str] = match *inner {
-                    crate::Shape::Text => &["set", "splice", "replace", "rich"],
+                    crate::Shape::Value => &["set", "splice", "replace", "rich"],
                     _ => &["set"],
                 };
                 out.push(alternative(

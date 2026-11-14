@@ -469,9 +469,7 @@ tilo_test_env::scenario! {
 fn an_edit_never_grows_a_file_past_its_limit() {
     // A record a window keeps writes the large parts of an action into that window's content
     // store; this replica records one on a thread with a store of its own, as a window has.
-    let window = tilo_wake::WakeScope::new();
-    ui::tilo_resource::content::register(&window.handle(), ui::content::ContentStore::memory());
-    let _entered = window.enter();
+    let _store = ui::tilo_resource::content::register_for_records();
     let mut project = Replica::<Project>::new();
     let id = file(&mut project, "big.txt", None, "");
     let big = "x".repeat(MAX_TEXT_BYTES);

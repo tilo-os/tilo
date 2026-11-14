@@ -93,6 +93,18 @@ pub(crate) fn recording_store() -> Option<ContentStore> {
     })
 }
 
+/// Keep a content store of this thread's own for the records it writes, where a window keeps its
+/// own: a replica a test or a headless tool runs has no window to lend one, and an action past the
+/// history budget is refused when nothing keeps its large parts. The returned scope must stay
+/// alive for as long as records are written.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn register_for_records() -> tilo_wake::WakeScope {
+    let window = tilo_wake::WakeScope::new();
+    register(&window.handle(), ContentStore::memory());
+    window
+}
+
 /// Keep `bytes` in the content store of the window whose code records them,
 /// answering the reference the recorded action names them by: sealed under a
 /// key of their own when the store seals. Where no store keeps content, the
