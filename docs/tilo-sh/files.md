@@ -105,7 +105,7 @@ also JSON, TOML or a shell script that no app owns — in Notes. Each line it pr
 file landed in, or, for bytes no app opens, the reference they are kept under:
 
 ```sh
-tilo files put passport.png -w jane-doe                 # pdf-viewer@6f1c…  passport.png
+tilo files put passport.png -w jane-doe                 # photos@6f1c…  passport.png
 tilo files put ./contracts -w jane-doe                  # a folder goes up whole, keeping its structure
 tilo files put config.json -w jane-doe --store          # the bytes only: prints tilo.content:…
 tilo -w jane-doe do pdf-viewer#import-pdf-content \
