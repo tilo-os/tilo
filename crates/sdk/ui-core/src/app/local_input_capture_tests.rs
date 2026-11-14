@@ -232,7 +232,6 @@ tilo_test_env::scenario! {
         // The conservative byte budget may saturate before the count limit.
         assert!((2..=128).contains(&reported));
         assert_eq!(fixture.app.local_input_capture.pending_count(), reported);
-        assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
     }
 
     phase disconnected_input_keeps_local_framework_edits_available;
@@ -257,7 +256,6 @@ tilo_test_env::scenario! {
             "a disconnected edit is the person's, saved here: nothing to say"
         );
         assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
-        assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
     }
 
     phase disconnected_input_retains_the_last_published_revision_and_exact_route;
@@ -434,7 +432,6 @@ fn definitive_local_capture_failures_release_pins_and_editing_recovers() {
     ));
     assert_eq!(capture_reports(&sent).len(), 196);
     assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
-    assert_eq!(fixture.app.local_document_action_admissions().count(), 1);
 }
 
 struct RecoveringCapturePeer {
@@ -732,7 +729,6 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|pin| pin.strong_count() > 0)
         );
-        assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
         // A later authenticated status for the same UUID can confirm admission;
         // the unknown reply did not drop its snapshot or reserve another identity.
         let invocation = sent
@@ -766,15 +762,11 @@ tilo_test_env::scenario! {
                     }),
                 }),
             });
-        let (capture, admission) = fixture
-            .app
-            .local_document_action_admissions()
-            .next()
-            .unwrap();
-        assert_eq!(capture.invocation, invocation);
-        assert_eq!(capture.revision, revision);
-        assert_eq!(admission, "{\"private_admission\":true}");
-        assert_eq!(fixture.app.local_document_action_admission_evictions(), 0);
+        assert_eq!(
+            fixture.app.local_input_capture.pending_count(),
+            0,
+            "the admission settles the change"
+        );
         // Refusal is visible, but is neither a blocked UI thread nor a consumed
         // next keystroke: the next ordinary action still enters the same door.
         fixture

@@ -6209,6 +6209,35 @@ fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
 }
 
 // Not `Send`: the route state it holds stays on the shovel thread's `LocalSet`.
+/// Start `round_trip` in the order it was asked, and answer it beside the
+/// connection's other traffic: polled once here, so its call goes out now,
+/// then left to finish on the shovel's `LocalSet` if it waits.
+#[allow(
+    clippy::future_not_send,
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
+)]
+async fn answer_beside<T: 'static>(
+    round_trip: impl std::future::Future<Output = T> + 'static,
+    inbound_tx: &InboundBridge,
+    event: impl FnOnce(T) -> CollabEvent + 'static,
+) {
+    let mut round_trip = Box::pin(round_trip);
+    let first =
+        std::future::poll_fn(|context| std::task::Poll::Ready(round_trip.as_mut().poll(context)))
+            .await;
+    match first {
+        std::task::Poll::Ready(result) => {
+            let _ = inbound_tx.send_reply(event(result));
+        }
+        std::task::Poll::Pending => {
+            let inbound = inbound_tx.clone();
+            tokio::task::spawn_local(async move {
+                let _ = inbound.send_reply(event(round_trip.await));
+            });
+        }
+    }
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -6641,29 +6670,15 @@ async fn dispatch_sdk_request(
             }
         }
         CollabRequest::RemoteAction { message } if message.waits() => {
-            // The host holds this answer until the invocation moves; the
-            // connection's other traffic must not wait behind it. Polled
-            // once here, so the call still goes out in the order it was
-            // asked (a cancel right after its invoke stays after it).
+            // The host holds this answer until the invocation moves (a cancel
+            // right after its invoke still goes out after it).
             let channel = route.channel.clone();
-            let mut round_trip =
-                Box::pin(async move { remote_action_round_trip(&channel, message).await });
-            let first = std::future::poll_fn(|context| {
-                std::task::Poll::Ready(round_trip.as_mut().poll(context))
-            })
+            answer_beside(
+                async move { remote_action_round_trip(&channel, message).await },
+                inbound_tx,
+                |message| CollabEvent::RemoteAction { message },
+            )
             .await;
-            match first {
-                std::task::Poll::Ready(answer) => {
-                    let _ = inbound_tx.send_reply(CollabEvent::RemoteAction { message: answer });
-                }
-                std::task::Poll::Pending => {
-                    let inbound = inbound_tx.clone();
-                    tokio::task::spawn_local(async move {
-                        let answer = round_trip.await;
-                        let _ = inbound.send_reply(CollabEvent::RemoteAction { message: answer });
-                    });
-                }
-            }
         }
         CollabRequest::RemoteAction { message } => {
             let answer = remote_action_round_trip(&route.channel, message).await;
@@ -6672,19 +6687,28 @@ async fn dispatch_sdk_request(
         CollabRequest::ReportLocalDocumentAction { request_id, report } => {
             // Only the already authenticated route owns this call. In particular,
             // do not query the directory to rebase a stale captured revision.
-            let result = tokio::time::timeout(
-                Duration::from_secs(4),
-                route.channel.admit_local_document_action(&report),
+            // The host resolves the report against this app's own directory,
+            // answered on the app's next turn: awaited here, every report
+            // and document change behind it would wait a turn each.
+            let channel = route.channel.clone();
+            answer_beside(
+                async move {
+                    tokio::time::timeout(
+                        Duration::from_secs(4),
+                        channel.admit_local_document_action(&report),
+                    )
+                    .await
+                    .map_err(|_| {
+                        runtime_collab::LocalDocumentActionError::Uncertain(
+                            "local document report timed out; admission may be unknown".to_owned(),
+                        )
+                    })
+                    .and_then(std::convert::identity)
+                },
+                inbound_tx,
+                move |result| CollabEvent::LocalDocumentActionReported { request_id, result },
             )
-            .await
-            .map_err(|_| {
-                runtime_collab::LocalDocumentActionError::Uncertain(
-                    "local document report timed out; admission may be unknown".to_owned(),
-                )
-            })
-            .and_then(std::convert::identity);
-            let _ = inbound_tx
-                .send_reply(CollabEvent::LocalDocumentActionReported { request_id, result });
+            .await;
         }
         CollabRequest::LaunchInstalledApplication {
             request_id,
@@ -6739,12 +6763,9 @@ async fn dispatch_sdk_request(
             arguments,
             wait: Some(wait),
         } => {
-            // The broker holds this answer until the child moves; the
-            // connection's other traffic must not wait behind it. Polled
-            // once here, so the re-ask still goes out in the order it was
-            // asked, as a waiting remote action does.
+            // The broker holds this answer until the child moves.
             let channel = route.channel.clone();
-            let mut round_trip = Box::pin(async move {
+            let round_trip = Box::pin(async move {
                 let argument = format!(
                     "{}{}",
                     tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -6763,23 +6784,10 @@ async fn dispatch_sdk_request(
                     .map_err(|error| error.to_string())
                     .and_then(|(id, update)| parse_task_update(id, &update))
             });
-            let first = std::future::poll_fn(|context| {
-                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            answer_beside(round_trip, inbound_tx, move |result| {
+                CollabEvent::TaskActionInvocationResult { request_id, result }
             })
             .await;
-            let event =
-                move |result| CollabEvent::TaskActionInvocationResult { request_id, result };
-            match first {
-                std::task::Poll::Ready(result) => {
-                    let _ = inbound_tx.send_reply(event(result));
-                }
-                std::task::Poll::Pending => {
-                    let inbound = inbound_tx.clone();
-                    tokio::task::spawn_local(async move {
-                        let _ = inbound.send_reply(event(round_trip.await));
-                    });
-                }
-            }
         }
         CollabRequest::InvokeTaskAction {
             request_id,

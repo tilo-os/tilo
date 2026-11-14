@@ -96,15 +96,21 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
         .directory_row
         .unwrap();
     unrelated_row.action = Some("unrelated-checkpoint-action".into());
-    let _unrelated_pin = fixture
-        .app
-        .restore_local_directory_row(
+    let restore = |app: &mut App, row| {
+        app.restore_local_directory_row(
             report.revision.clone(),
             report.resource.clone(),
             "unrelated-checkpoint-action".into(),
-            unrelated_row,
+            row,
         )
-        .unwrap();
+        .unwrap()
+    };
+    let _unrelated_pin = restore(&mut fixture.app, unrelated_row.clone());
+    // Changes reported against one row of one surface share its pin.
+    assert!(Rc::ptr_eq(
+        &_unrelated_pin,
+        &restore(&mut fixture.app, unrelated_row)
+    ));
     sent.borrow_mut().clear();
     fixture.app.restore_local_input_checkpoint(&route).unwrap();
     assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
@@ -220,5 +226,4 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
         0,
         "a durable terminal refusal must not become a fresh pending report"
     );
-    assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
 }

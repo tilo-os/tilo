@@ -17,9 +17,6 @@ const UNRECORDED: &str = "history-local-action-unrecorded";
 pub(super) struct LocalInputCapture {
     queues: HashMap<crate::collaboration::RouteSpec, Queue>,
     pending: HashMap<u64, PendingCapture>,
-    retained: std::collections::VecDeque<(crate::local_document_action::CapturedAction, String)>,
-    retained_bytes: usize,
-    evicted: u64,
     transport_connected: bool,
     // One bounded, inert copy of the last authenticated pre-input surface.
     offline_routes: Vec<InputRoute>,
@@ -62,6 +59,32 @@ struct PendingCapture {
 }
 
 impl LocalInputCapture {
+    /// Keep `capture` until its report's outcome is known, under a request
+    /// id of its own, reported from `now`.
+    fn hold(
+        &mut self,
+        route: crate::collaboration::RouteSpec,
+        capture: crate::local_document_action::CapturedAction,
+        lease: crate::local_document_action::Lease,
+        now: crate::time::Instant,
+    ) {
+        let mut request_id = capture.invocation.as_u64_pair().0;
+        while self.pending.contains_key(&request_id) {
+            request_id = request_id.wrapping_add(1);
+        }
+        self.pending.insert(
+            request_id,
+            PendingCapture {
+                capture,
+                route,
+                _lease: lease,
+                _pin: None,
+                retry_at: now,
+                retry_delay: crate::time::Duration::from_secs(1),
+            },
+        );
+    }
+
     #[cfg(test)]
     pub(super) fn pending_count(&self) -> usize {
         self.pending.len()
@@ -78,7 +101,7 @@ impl LocalInputCapture {
     pub(super) fn custody_size(&self) -> usize {
         self.pending
             .values()
-            .map(|pending| retained_size(&pending.capture, ""))
+            .map(|pending| retained_size(&pending.capture))
             .sum()
     }
 
@@ -88,7 +111,7 @@ impl LocalInputCapture {
     }
 }
 
-fn retained_size(capture: &crate::local_document_action::CapturedAction, admission: &str) -> usize {
+fn retained_size(capture: &crate::local_document_action::CapturedAction) -> usize {
     // Include allocations duplicated in the typed and published forms.
     capture.encoded.payload.len()
         + capture.encoded.type_id.len()
@@ -101,25 +124,9 @@ fn retained_size(capture: &crate::local_document_action::CapturedAction, admissi
                 + serde_json::to_vec(&published.arguments).map_or(0, |bytes| bytes.len())
         })
         + (capture.original_heads.len() + capture.mutation_hashes.len()) * 32
-        + admission.len()
 }
 
 impl App {
-    /// Private admission evidence, not execution proof or publication authority.
-    pub fn local_document_action_admissions(
-        &self,
-    ) -> impl Iterator<Item = (&crate::local_document_action::CapturedAction, &str)> {
-        self.local_input_capture
-            .retained
-            .iter()
-            .map(|(capture, admission)| (capture, admission.as_str()))
-    }
-
-    /// Oldest private admissions evicted by the bounded history.
-    pub fn local_document_action_admission_evictions(&self) -> u64 {
-        self.local_input_capture.evicted
-    }
-
     #[cfg(feature = "native")]
     pub(super) fn begin_local_input_event(
         &mut self,
@@ -385,10 +392,6 @@ impl App {
                 if let Some(pin) = self.report_pin(&capture) {
                     lease.narrow_pin(pin);
                 }
-                let mut request_id = capture.invocation.as_u64_pair().0;
-                while self.local_input_capture.pending.contains_key(&request_id) {
-                    request_id = request_id.wrapping_add(1);
-                }
                 // A change still waiting for a surface to be reported
                 // against is kept once it has one (`fill_pending_revisions`).
                 if !capture.revision.is_empty()
@@ -398,17 +401,8 @@ impl App {
                 }
                 // Transfer custody before enqueueing: send failure must not
                 // discard an action already applied to the local document.
-                self.local_input_capture.pending.insert(
-                    request_id,
-                    PendingCapture {
-                        capture,
-                        route: route.clone(),
-                        _lease: lease,
-                        _pin: None,
-                        retry_at: now,
-                        retry_delay: crate::time::Duration::from_secs(1),
-                    },
-                );
+                self.local_input_capture
+                    .hold(route.clone(), capture, lease, now);
             }
         }
         let connected = self.collaboration.manager.is_connected();
@@ -427,12 +421,13 @@ impl App {
         self.local_input_capture.transport_connected = connected;
         let mut rejected = Vec::new();
         let mut reports_nothing = Vec::new();
-        let mut still_going: Vec<String> = Vec::new();
         if connected {
             self.fill_pending_revisions(now);
-            // A bounded amount of nonblocking enqueue work per pump. Retrying
-            // reports is not dispatch: the original UUID, snapshot and mutations
-            // are reused, and the document action is never executed again.
+            // Every report due goes out: the host answers each on a later
+            // turn, so one held back here waits a turn more while typing
+            // fills the queue. Retrying reports is not dispatch: the original
+            // UUID, snapshot and mutations are reused, and the document
+            // action is never executed again.
             for (request_id, pending) in self
                 .local_input_capture
                 .pending
@@ -442,7 +437,6 @@ impl App {
                 .filter(|(_, pending)| {
                     pending.retry_at <= now && !pending.capture.revision.is_empty()
                 })
-                .take(4)
             {
                 // Missing legacy provenance is private evidence only. Never
                 // relabel it with the principal of a new connection.
@@ -489,7 +483,7 @@ impl App {
                         failures.push(error.to_string());
                     } else {
                         // Reported again, paced: still on its way.
-                        still_going.push(error.to_string());
+                        tracing::debug!(%error, "a change is still on its way to the history");
                     }
                 }
             }
@@ -515,9 +509,6 @@ impl App {
                     .iter()
                     .any(|owner| &owner.route == route)
         });
-        for error in still_going {
-            tracing::debug!(%error, "a change is still on its way to the history");
-        }
         for error in failures {
             self.local_input_capture_failed(&error);
         }
@@ -599,7 +590,9 @@ impl App {
                     "private action recovery requires original authenticated connection".into(),
                 );
             }
-            if receipt.as_deref() == Some("{\"local_capture_rejected\":true}") {
+            // An admitted or refused change is settled: its evidence stays
+            // on disk, and nothing of it is reported again.
+            if receipt.is_some() {
                 continue;
             }
             let report = checkpoint.report;
@@ -608,11 +601,6 @@ impl App {
                 .pending
                 .values()
                 .any(|pending| pending.capture.invocation == report.invocation)
-                || self
-                    .local_input_capture
-                    .retained
-                    .iter()
-                    .any(|(capture, _)| capture.invocation == report.invocation)
             {
                 continue;
             }
@@ -645,65 +633,33 @@ impl App {
             {
                 return Err("private action checkpoint report changed on recovery".into());
             }
-            let recovery_pin = if receipt.is_none() {
-                checkpoint
-                    .directory_row
-                    .map(|row| {
-                        self.restore_local_directory_row(
-                            report.revision.clone(),
-                            report.resource.clone(),
-                            report.action.clone(),
-                            row,
-                        )
-                        .ok_or("private action recovery exceeds directory pin budget")
-                    })
-                    .transpose()?
-            } else {
-                None
-            };
+            let recovery_pin = checkpoint
+                .directory_row
+                .map(|row| {
+                    self.restore_local_directory_row(
+                        report.revision.clone(),
+                        report.resource.clone(),
+                        report.action.clone(),
+                        row,
+                    )
+                    .ok_or("private action recovery exceeds directory pin budget")
+                })
+                .transpose()?;
             let history = &mut self.local_input_capture;
-            if let Some(receipt) = receipt {
-                history.retained_bytes += retained_size(&capture, &receipt);
-                history.retained.push_back((capture, receipt));
-                while history.retained.len() > 128 || history.retained_bytes > 4 * 1024 * 1024 {
-                    let Some((capture, receipt)) = history.retained.pop_front() else {
-                        break;
-                    };
-                    history.retained_bytes -= retained_size(&capture, &receipt);
-                    history.evicted += 1;
-                }
-            } else {
-                let bytes: usize = history
-                    .pending
-                    .values()
-                    .map(|pending| retained_size(&pending.capture, ""))
-                    .sum();
-                if history.pending.len() >= 128
-                    || bytes + retained_size(&capture, "") > 4 * 1024 * 1024
-                {
-                    return Err("private action recovery exceeds pending custody budget".into());
-                }
-                let mut request_id = capture.invocation.as_u64_pair().0;
-                while history.pending.contains_key(&request_id) {
-                    request_id = request_id.wrapping_add(1);
-                }
-                let queue = history.queues.entry(route.clone()).or_default();
-                let lease = queue.restore_lease(
-                    &capture,
-                    recovery_pin.map(|pin| pin as Rc<dyn std::any::Any>),
-                )?;
-                history.pending.insert(
-                    request_id,
-                    PendingCapture {
-                        capture,
-                        route: route.clone(),
-                        _lease: lease,
-                        _pin: None,
-                        retry_at: crate::time::now(),
-                        retry_delay: crate::time::Duration::from_secs(1),
-                    },
-                );
+            let bytes: usize = history
+                .pending
+                .values()
+                .map(|pending| retained_size(&pending.capture))
+                .sum();
+            if history.pending.len() >= 128 || bytes + retained_size(&capture) > 4 * 1024 * 1024 {
+                return Err("private action recovery exceeds pending custody budget".into());
             }
+            let queue = history.queues.entry(route.clone()).or_default();
+            let lease = queue.restore_lease(
+                &capture,
+                recovery_pin.map(|pin| pin as Rc<dyn std::any::Any>),
+            )?;
+            history.hold(route.clone(), capture, lease, crate::time::now());
         }
         Ok(())
     }
@@ -852,26 +808,12 @@ impl App {
         // reported against (`fill_pending_revisions`).
         for (route, capture) in refused {
             let history = &mut self.local_input_capture;
-            let mut request_id = capture.invocation.as_u64_pair().0;
-            while history.pending.contains_key(&request_id) {
-                request_id = request_id.wrapping_add(1);
-            }
             let lease = history
                 .queues
                 .entry(route.clone())
                 .or_default()
                 .restore_lease(&capture, None)?;
-            history.pending.insert(
-                request_id,
-                PendingCapture {
-                    capture,
-                    route,
-                    _lease: lease,
-                    _pin: None,
-                    retry_at: crate::time::now(),
-                    retry_delay: crate::time::Duration::from_secs(1),
-                },
-            );
+            history.hold(route, capture, lease, crate::time::now());
         }
         Ok(())
     }
@@ -926,26 +868,13 @@ impl App {
                 let Some(pending) = self.local_input_capture.pending.remove(&request_id) else {
                     return;
                 };
+                // The admission is kept as the change's durable evidence.
                 if let Err(error) = self.stage_local_action_evidence(
                     &pending.route,
                     &pending.capture,
                     Some(&admission),
                 ) {
                     self.local_input_capture_failed(&error);
-                }
-                let history = &mut self.local_input_capture;
-                history.retained_bytes += retained_size(&pending.capture, &admission);
-                history.retained.push_back((pending.capture, admission));
-                while history.retained.len() > 128 || history.retained_bytes > 4 * 1024 * 1024 {
-                    let Some((capture, admission)) = history.retained.pop_front() else {
-                        break;
-                    };
-                    history.retained_bytes -= retained_size(&capture, &admission);
-                    history.evicted += 1;
-                    tracing::warn!(
-                        evicted = history.evicted,
-                        "oldest private local admission evicted"
-                    );
                 }
             }
             Err(error @ Rejected(_)) if is_connection_without_reports(&error) => {
@@ -1242,7 +1171,7 @@ mod tests {
             assert_eq!(app.local_input_capture.pending_count(), 0);
         }
 
-        phase noops_are_submitted_and_authenticated_admissions_have_bounded_private_history;
+        phase noops_are_submitted_and_authenticated_admissions_settle_them;
         {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));
@@ -1255,7 +1184,6 @@ mod tests {
                 .insert(route.clone(), queue.clone());
             let mut doc = automerge::AutoCommit::new();
             let mut host = crate::local_dispatch::LocalDispatch::new();
-            let mut first = None;
             for _ in 0..130 {
                 {
                     let _scope = input(&queue, &route);
@@ -1281,7 +1209,6 @@ mod tests {
                         _ => None,
                     })
                     .expect("read/no-op must be submitted");
-                first.get_or_insert(invocation);
                 app.observe_local_input_capture(
                     request_id,
                     Ok(runtime_collab::PublishedInvocationObservation {
@@ -1304,14 +1231,7 @@ mod tests {
                 );
                 assert!(!queue.has_outstanding());
             }
-            assert_eq!(app.local_document_action_admissions().count(), 128);
-            assert_eq!(app.local_document_action_admission_evictions(), 2);
-            assert!(
-                app.local_document_action_admissions()
-                    .all(|(capture, admission)| {
-                        Some(capture.invocation) != first && admission == "{\"admitted\":true}"
-                    })
-            );
+            assert_eq!(app.local_input_capture.pending_count(), 0);
         }
     }
 }

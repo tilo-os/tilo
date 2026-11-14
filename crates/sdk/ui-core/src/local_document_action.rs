@@ -18,7 +18,8 @@ struct Pending {
     actions: VecDeque<(CapturedAction, Lease)>,
     reserved: usize,
     bytes: usize,
-    refused: bool,
+    /// Why the last observation was not retained, until taken.
+    refused: Option<&'static str>,
 }
 
 /// One route's UI-thread queue. Draining never performs IO, signing or blocking.
@@ -219,11 +220,13 @@ impl Queue {
 
     /// Saturation is visible even when an affordance logs/swallow its error.
     pub fn take_refusals(&self) -> Vec<String> {
-        if std::mem::take(&mut self.0.borrow_mut().refused) {
-            vec!["local action observation could not be retained".into()]
-        } else {
-            Vec::new()
-        }
+        self.0
+            .borrow_mut()
+            .refused
+            .take()
+            .map(|reason| format!("local action observation could not be retained: {reason}"))
+            .into_iter()
+            .collect()
     }
 }
 
@@ -295,7 +298,7 @@ pub(crate) fn reserve(
         if input_is_active() {
             INPUT_ROUTES.with_borrow(|routes| {
                 for route in routes {
-                    route.queue.0.borrow_mut().refused = true;
+                    route.queue.0.borrow_mut().refused = Some("no input route owns it");
                 }
             });
             return Err(ActionError::Refused(
@@ -309,12 +312,12 @@ pub(crate) fn reserve(
         // Compatibility actions have no exact semantic address to attest.
         // Preserve their local behavior, but make the observation gap visible;
         // never invent an action from an encoded type or a display label.
-        active.queue.0.borrow_mut().refused = true;
+        active.queue.0.borrow_mut().refused = Some("it has no published address");
         return Ok(None);
     }
     if let (Some(invocation), Some(aliases)) = (&mut published, &active.aliases) {
         let Some(alias) = aliases.get(&invocation.resource) else {
-            active.queue.0.borrow_mut().refused = true;
+            active.queue.0.borrow_mut().refused = Some("its resource is not published");
             return Err(ActionError::Refused(
                 "local action is absent from its published resource snapshot".into(),
             ));
@@ -332,21 +335,25 @@ pub(crate) fn reserve(
     let bytes = match estimate {
         Ok(bytes) => bytes,
         Err(error) => {
-            active.queue.0.borrow_mut().refused = true;
+            active.queue.0.borrow_mut().refused = Some("its report exceeds the report budget");
             return Err(ActionError::Refused(error));
         }
     };
     let mut pending = active.queue.0.borrow_mut();
-    if (active.revision.is_empty() && !active.revision_pending)
-        || pending.reserved >= CAPACITY
-        || bytes > BYTE_BUDGET.saturating_sub(pending.bytes)
-    {
+    let refusal = if active.revision.is_empty() && !active.revision_pending {
+        Some("no published surface could be held for it")
+    } else if pending.reserved >= CAPACITY || bytes > BYTE_BUDGET.saturating_sub(pending.bytes) {
+        Some("every report the queue may hold is still on its way")
+    } else {
+        None
+    };
+    if let Some(refusal) = refusal {
         // The person's edit never waits on the history. While every report
         // the queue may hold is still on its way (or no surface can be held
         // for this one), the edit lands unreported and the gap is shown, as
         // for an action with no published address. The bound stays a bound
         // on reports, never on typing.
-        pending.refused = true;
+        pending.refused = Some(refusal);
         return Ok(None);
     }
     pending.reserved += 1;
@@ -377,7 +384,7 @@ impl Reservation {
         // Flush the executor's committed changes, never substitute only the tips.
         doc.get_heads();
         if before.len() > 256 || doc.get_changes(before).len() > 256 {
-            self.active.queue.0.borrow_mut().refused = true;
+            self.active.queue.0.borrow_mut().refused = Some("it exceeds the hash budget");
             // Actions may explicitly commit multiple changes. Do not leave an
             // unreportable speculative document behind if that exceeds the
             // conservative bound reserved before execution.

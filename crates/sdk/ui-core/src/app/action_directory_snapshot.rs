@@ -141,12 +141,21 @@ impl App {
         {
             return None;
         }
-        let mut snapshot = ActionDirectorySnapshot::default();
-        snapshot
-            .actions
-            .insert(ActionAddress::new(resource, action), row);
+        let address = ActionAddress::new(resource, action);
         let pins = &mut self.actions.local_document_directory_pins;
         pins.retain(|pin| pin.strong_count() > 0);
+        // A revision fixes its rows: the changes typed under one surface
+        // share the pin of their row, and the bound counts revisions, not
+        // keystrokes.
+        if let Some(pin) = pins.iter().filter_map(std::rc::Weak::upgrade).find(|pin| {
+            pin.revision == revision
+                && pin.snapshot.actions.len() == 1
+                && pin.snapshot.actions.contains_key(&address)
+        }) {
+            return Some(pin);
+        }
+        let mut snapshot = ActionDirectorySnapshot::default();
+        snapshot.actions.insert(address, row);
         let bytes = snapshot
             .retained_bytes()
             .saturating_add(revision.len())

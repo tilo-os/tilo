@@ -1361,22 +1361,9 @@ impl CollaborationManager {
         Ok(())
     }
 
-    /// Submit an exact capture without querying or rebasing its directory revision.
-    /// The caller drains only its route's local-input queue and retains errors for
-    /// presentation; queue acceptance alone is not admission or signed publication.
-    /// Replies arrive as [`CollabEvent::LocalDocumentActionReported`].
-    pub fn report_local_document_action(
-        &mut self,
-        request_id: u64,
-        capture: crate::local_document_action::CapturedAction,
-    ) -> Result<(), String> {
-        let report = Self::local_document_action_report(capture)?;
-        self.try_send(CollabRequest::ReportLocalDocumentAction { request_id, report })
-            .map_err(|error| error.to_string())
-    }
-
-    /// Report a capture on an explicitly retained shared or local document route.
-    /// The route must own the captured input and published directory revision.
+    /// Report a capture on an explicitly retained document route, without
+    /// querying or rebasing its directory revision. The route must own the
+    /// captured input and published directory revision.
     /// Queueing and admission supply neither execution proof nor publication authority.
     /// Replies arrive as [`CollabEvent::LocalDocumentActionReported`].
     pub fn report_local_document_action_to_route(
@@ -1385,23 +1372,16 @@ impl CollaborationManager {
         request_id: u64,
         capture: crate::local_document_action::CapturedAction,
     ) -> Result<(), runtime_collab::LocalDocumentActionError> {
-        let report = Self::local_document_action_report(capture)
-            .map_err(runtime_collab::LocalDocumentActionError::Rejected)?;
+        use runtime_collab::LocalDocumentActionError::{Rejected, Uncertain};
+        let report = capture.into_report().map_err(Rejected)?;
+        // Reads/no-ops retain their empty mutation sets. Never infer a published
+        // action from the encoded Rust action type, or rebase a captured revision.
+        report.encode().map_err(Rejected)?;
         self.try_send_to_route(
             route,
             CollabRequest::ReportLocalDocumentAction { request_id, report },
         )
-        .map_err(|error| runtime_collab::LocalDocumentActionError::Uncertain(error.to_string()))
-    }
-
-    fn local_document_action_report(
-        capture: crate::local_document_action::CapturedAction,
-    ) -> Result<runtime_collab::LocalDocumentActionReport, String> {
-        let report = capture.into_report()?;
-        // Reads/no-ops retain their empty mutation sets. Never infer a published
-        // action from the encoded Rust action type, or rebase a captured revision.
-        report.encode()?;
-        Ok(report)
+        .map_err(|error| Uncertain(error.to_string()))
     }
 
     /// Ask the transport for a completion receipt covering every document
@@ -2101,15 +2081,12 @@ mod local_document_report_tests {
         /// Reporting a captured local document action, each case on a manager of its own.
         fn a_local_document_action_is_reported_exactly_or_refused;
 
-        phase exact_capture_reports_on_primary_shared_and_local_routes_without_mutations;
+        phase exact_capture_reports_on_shared_and_local_routes_without_mutations;
         {
             let reports = Reports::default();
             let mut manager =
                 CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
             let captured = capture();
-            manager
-                .report_local_document_action(10, captured.clone())
-                .unwrap();
             let shared = RouteSpec::record("app", uuid::Uuid::from_bytes([3; 16]), "shared");
             let local = RouteSpec::record("app", uuid::Uuid::from_bytes([4; 16]), "local");
             for (request_id, route) in [(11, shared.clone()), (12, local.clone())] {
@@ -2118,11 +2095,9 @@ mod local_document_report_tests {
                     .unwrap();
             }
             let reports = reports.lock_recover();
-            assert_eq!(reports.len(), 3);
+            assert_eq!(reports.len(), 2);
             for ((route, request_id, bytes), (expected_route, expected_id)) in
-                reports
-                    .iter()
-                    .zip([(None, 10), (Some(shared), 11), (Some(local), 12)])
+                reports.iter().zip([(Some(shared), 11), (Some(local), 12)])
             {
                 assert_eq!(route, &expected_route);
                 assert_eq!(*request_id, expected_id);
@@ -2153,9 +2128,10 @@ mod local_document_report_tests {
 
         phase unavailable_transport_and_missing_published_invocation_refuse;
         {
+            let route = RouteSpec::record("app", uuid::Uuid::from_bytes([3; 16]), "shared");
             assert!(
                 CollaborationManager::disabled()
-                    .report_local_document_action(1, capture())
+                    .report_local_document_action_to_route(route.clone(), 1, capture())
                     .is_err()
             );
             let mut missing = capture();
@@ -2163,7 +2139,11 @@ mod local_document_report_tests {
             let reports = Reports::default();
             let mut manager =
                 CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
-            assert!(manager.report_local_document_action(2, missing).is_err());
+            assert!(
+                manager
+                    .report_local_document_action_to_route(route, 2, missing)
+                    .is_err()
+            );
             assert!(reports.lock_recover().is_empty());
         }
     }

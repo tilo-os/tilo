@@ -123,6 +123,11 @@ pub struct FixtureChanges {
 
 #[derive(Default)]
 pub struct Captures {
+    /// Hold each next local document report until its gate opens, as a
+    /// host waiting on the app's directory does; ungated ones are answered
+    /// at once. Every report is refused: the fixture admits none.
+    pub admit_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
+    pub admits_asked: usize,
     /// How long after it is asked for the op stream hands out each op.
     pub op_stream_delay: Option<Duration>,
     /// The app and the records whose settings the channel hands out.
@@ -874,6 +879,19 @@ impl FakeHost {
                     ops: seed.ops,
                     exhausted: seed.done,
                 }))
+            }
+            Operation::Admit { .. } => {
+                let gate = {
+                    let mut captures = self.captures();
+                    captures.admits_asked += 1;
+                    captures.admit_gates.pop_front()
+                };
+                Box::pin(async move {
+                    if let Some(gate) = gate {
+                        let _ = gate.await;
+                    }
+                    Err("the fixture admits no reports".into())
+                })
             }
             other => answered(Err(format!("the fixture does not answer {other:?}"))),
         }
@@ -4022,6 +4040,65 @@ fn document_publication_superseded_receipt_does_not_stop_worker() {
 
 #[cfg(test)]
 include!("native_media_tests.rs");
+
+/// A report the host resolves against the app's directory waits for the
+/// app's next turn. Reports and changes behind it go out and are answered
+/// meanwhile, or typing would outrun them and its edits miss the history.
+#[test]
+fn a_waiting_local_document_report_holds_back_nothing_behind_it() {
+    let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+    let (release, held) = tokio::sync::oneshot::channel();
+    captures.lock().unwrap().admit_gates.push_back(held);
+    let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
+        captures,
+        ..FakeBroker::default()
+    });
+    let workspace = Uuid::new_v4();
+    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.notes", workspace);
+    let route = RouteSpec::app("so.tilo.notes", workspace);
+    let capture = |invocation: u128| crate::local_document_action::CapturedAction {
+        custody: None,
+        invocation: Uuid::from_u128(invocation),
+        capture_id: Uuid::from_u128(invocation + 100),
+        revision: "surface".into(),
+        published: Some(crate::local_document_action::PublishedInvocation {
+            resource: "notes.notebook".into(),
+            action: "apply".into(),
+            arguments: serde_json::Map::new(),
+        }),
+        encoded: tilo_actions::EncodedAction {
+            type_id: "notes.edit".into(),
+            payload: b"{}".to_vec(),
+        },
+        context: None,
+        original_heads: Vec::new(),
+        mutation_hashes: Vec::new(),
+    };
+    tilo_test_env::wait_until("the primary route to join", || {
+        manager.poll();
+        manager.primary_route().is_some()
+    });
+    manager
+        .report_local_document_action_to_route(route.clone(), 1, capture(1))
+        .unwrap();
+    tilo_test_env::wait_until("the first report to reach the host", || {
+        captures.lock().unwrap().admits_asked == 1
+    });
+    manager
+        .report_local_document_action_to_route(route, 2, capture(2))
+        .unwrap();
+    let mut answered = Vec::new();
+    tilo_test_env::wait_until("the second report's answer, the first still held", || {
+        answered.extend(manager.poll().into_iter().filter_map(|event| match event {
+            CollabEvent::LocalDocumentActionReported { request_id, .. } => Some(request_id),
+            _ => None,
+        }));
+        answered.contains(&2)
+    });
+    assert_eq!(answered, [2], "the first report is still waiting");
+    drop((release, manager));
+    worker.join().unwrap();
+}
 
 #[cfg(test)]
 include!("idle_wake_tests.rs");
