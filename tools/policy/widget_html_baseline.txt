@@ -71,7 +71,6 @@ widget-without-html 1 apps/snippets/src/detail_pane.rs
 widget-without-html 1 apps/store/src/app/window.rs
 widget-without-html 1 apps/terminal/src/main_body.rs
 widget-without-html 1 apps/themes/src/preview.rs
-widget-without-html 1 apps/tilolang/src/window.rs
 widget-without-html 1 apps/totp/src/add_panel.rs
 widget-without-html 1 apps/totp/src/app.rs
 widget-without-html 1 apps/tube/src/app.rs
