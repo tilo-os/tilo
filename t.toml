@@ -216,12 +216,16 @@ on = ["dispatch"]
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
 # compiler cache keys a unit by what it was given, whichever family asked for it). Its selection
 # is `check`'s: a member either family leaves out is `clippy-idle`'s or a per-architecture
-# family's, so the shared libraries resolve to the same units in both.
+# family's, so the shared libraries resolve to the same units in both. It declares `unify` like
+# the test families: a run that asks for a few of its packages builds them beside workspace-unify,
+# so every shared library resolves with the features the family's whole build gives it, and an
+# ad-hoc `t cargo clippy -p` of a package resolves them the same way.
 [[cargo]]
 name = "clippy"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
 args = ["--locked", "--all-targets"]
+unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
@@ -232,22 +236,30 @@ exclude = [
     "windows-vm", "workspace-unify",
 ]
 
+# The lints `clippy` leaves out: on main's newest head when t has room, when dispatched, and by
+# name. It declares `unify` like `clippy`, so a run asking for one of these packages builds it
+# alone beside workspace-unify, with the features the family's whole build gives its libraries.
 [[cargo]]
 name = "clippy-idle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
 args = ["--locked", "--all-targets"]
+unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 packages = ["music", "tilo-messaging-protocol"]
 heavy = true
 on = ["dispatch", "idle"]
 
+# The same packages' lints once per architecture, and the same `unify` as `clippy`: their shared
+# libraries resolve with the features every family that declares workspace-unify gives them, so a
+# run asking for one package lints what the family's whole build lints.
 [[cargo]]
 name = "clippy-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
 requires = ["arch={arch}"]
 args = ["--locked", "--all-targets"]
+unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
@@ -260,12 +272,16 @@ matrix = { arch = ["x86_64", "aarch64"] }
 
 # `cargo check` alone, when someone wants a package's errors without clippy's lints or a build.
 # Its members are `clippy`'s: `clippy-idle` and the per-architecture families cover what both
-# leave out, and the shared libraries keep one unit per crate across the two selections.
+# leave out, and the shared libraries keep one unit per crate across the two selections. It
+# declares `unify` too: a run that asks for a few of its packages builds them beside
+# workspace-unify, so every shared library resolves with the features the family's whole build
+# gives it, and an ad-hoc `t cargo check -p` of a package resolves them the same way.
 [[cargo]]
 name = "check"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "check"
 args = ["--locked", "--all-targets"]
+unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
