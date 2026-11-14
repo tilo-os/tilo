@@ -190,6 +190,9 @@ pub(crate) struct HostInner {
     chunk_loader: Cell<bool>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
+    /// Whether the next plan is the run of an invocation the record applies next
+    /// ([`Host::carrying_out`]): what it writes stays, as the change the record commits.
+    carried: Cell<bool>,
 }
 
 thread_local! {
@@ -600,11 +603,18 @@ impl HostInner {
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         // Planning is a trial run: whatever it wrote into the mirror is taken back, so asking
         // for an action (to describe it, to offer it) never changes the workspace. It runs the
-        // action, so it is counted: a frame that shows controls plans none.
+        // action, so it is counted: a frame that shows controls plans none. The run of an
+        // invocation the record applies next keeps what it wrote: those writes are the change
+        // the record commits, and the action runs once.
         let _phase = tilo_resource::profiling::Phase::start("tl.plan");
+        let carried = self.carried.replace(false);
         let checkpoint = self.store.checkpoint();
         let planned = self.plan_in_mirror(request);
-        self.store.rewind(checkpoint);
+        if carried && planned.is_ok() {
+            self.store.keep(checkpoint);
+        } else {
+            self.store.rewind(checkpoint);
+        }
         planned
     }
 
@@ -1022,6 +1032,7 @@ impl Host {
             chunks,
             chunk_loader: Cell::new(can_load_chunks),
             triggers,
+            carried: Cell::new(false),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -1230,6 +1241,17 @@ impl Host {
                 .then(|| package.meta.action_published_as(action).cloned())
                 .flatten()
         })
+    }
+
+    /// Run `encode`, the door building an invocation the record applies as soon as it is built:
+    /// the action it plans keeps what it wrote, so the store's writes are the change the record
+    /// commits ([`crate::store::TiloStore::written_as`]) and the action does not run a second
+    /// time. Every other plan is a trial and is taken back.
+    pub fn carrying_out<R>(&self, encode: impl FnOnce() -> R) -> R {
+        self.inner.carried.set(true);
+        let out = encode();
+        self.inner.carried.set(false);
+        out
     }
 
     /// The resource `action` returned when it was last planned here, for whoever invoked it,

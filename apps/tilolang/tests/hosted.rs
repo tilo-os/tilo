@@ -767,20 +767,29 @@ impl Session {
             .is_some_and(|host| host.store().settled())
     }
 
+    /// The window's hosted instance.
+    fn instance(&self) -> &tilolang_host::hosted::Hosted {
+        self.host.instances().next().expect("the window's instance")
+    }
+
+    /// The host of the window's instance: its runtime and its store.
+    fn instance_host(&self) -> tilolang_tilo::host::Host {
+        self.instance()
+            .instance()
+            .host()
+            .expect("the instance's store")
+    }
+
     /// How many indexes the window's instance built from its record: none when it opens over
     /// the ones an earlier run of the app kept.
     fn builds(&self) -> u64 {
-        let hosted = self.host.instances().next().expect("the window's instance");
-        let host = hosted.instance().host().expect("the instance's store");
-        host.store().stats().builds
+        self.instance_host().store().stats().builds
     }
 
     /// How many indexes the window's instance brought up to date from the heads they were
     /// stamped with: a chunk caught up after the index was built, rather than built over.
     fn catch_ups(&self) -> u64 {
-        let hosted = self.host.instances().next().expect("the window's instance");
-        let host = hosted.instance().host().expect("the instance's store");
-        host.store().stats().catch_ups
+        self.instance_host().store().stats().catch_ups
     }
 
     /// How many of those the window's store derived on its own frames: none, for a window whose
@@ -794,9 +803,7 @@ impl Session {
     /// Hand the window's store every chunk of `chunks`, as a replica that joined each chunk's
     /// route holds them: what a window that reads only the chunks it shows is compared with.
     fn held_every_chunk(&self, chunks: &tilolang_tilo::chunk::Chunks) {
-        let hosted = self.host.instances().next().expect("the window's instance");
-        let host = hosted.instance().host().expect("the instance's store");
-        host.sync(chunks);
+        self.instance_host().sync(chunks);
     }
 
     fn hosted(&mut self) -> &HostedWindow {
@@ -1995,16 +2002,56 @@ fn entry(session: &mut Session) -> String {
 /// The record's heads: what the app has written, as its changes name it.
 fn heads(session: &Session) -> Vec<String> {
     session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
+        .instance()
         .record()
         .doc()
         .get_heads()
         .into_iter()
         .map(|head| format!("{head:?}"))
         .collect()
+}
+
+/// How many changes the window's record holds: what the window wrote into the workspace.
+fn changes(session: &Session) -> usize {
+    let doc = session.instance().record().doc();
+    doc.committed_document().get_changes(&[]).len()
+}
+
+/// Replay the action each change `doc` holds past `from` records, as a peer taking it does:
+/// every change comes out the same, to the byte. How many recorded an action.
+fn replayed(
+    doc: &mut automerge::AutoCommit,
+    from: &[automerge::ChangeHash],
+    host: &tilolang_tilo::host::Host,
+) -> usize {
+    let mut registry = ui::tilo_actions::ActionRegistry::new();
+    tilolang_tilo::history::register(&mut registry);
+    let arrived: Vec<_> = doc
+        .get_changes(from)
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    let mut reproduced = 0;
+    for change in arrived {
+        let verified =
+            host.with_schemas(|| ui::tilo_actions::verify_change(doc, change, &registry));
+        match verified {
+            Ok(ui::tilo_actions::Verified::Reproduced) => reproduced += 1,
+            Ok(ui::tilo_actions::Verified::NothingRecorded) => {}
+            other => panic!("a peer replaying a change gets another one: {other:?}"),
+        }
+    }
+    reproduced
+}
+
+/// The store of the window's instance.
+fn store(session: &Session) -> tilolang_tilo::store::TiloStore {
+    session.instance_host().store().clone()
+}
+
+/// The window's record: the workspace as this device holds it.
+fn record(session: &Session) -> tilolang_tilo::chunk::Chunks {
+    session.instance().record().chunks()
 }
 
 /// The texts a view's tree shows: every text and every person it names.
@@ -2809,13 +2856,7 @@ fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
 /// record's chunks.
 fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
     use tilolang_tilo::DynValue;
-    let chunks = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .chunks();
+    let chunks = session.instance().record().chunks();
     let Some(record) = chunks.first() else {
         return false;
     };

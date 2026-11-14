@@ -688,11 +688,7 @@ impl Opened {
     fn of(session: &mut Session) -> Self {
         let rows = session.titles().len();
         let (indexed, _removed, _reset) = session.index_published();
-        let hosted = session
-            .host
-            .instances()
-            .next()
-            .expect("the window's instance");
+        let hosted = session.instance();
         let instance = hosted.instance();
         let builds = instance
             .host()
@@ -1196,14 +1192,7 @@ pub(super) fn number_of(title: &str) -> Option<usize> {
 
 /// The chunks the window's store holds, in order.
 fn holding(session: &Session) -> Vec<tilolang_tilo::chunk::ChunkNo> {
-    let host = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .instance()
-        .host()
-        .expect("the instance's store");
+    let host = session.instance_host();
     host.store()
         .held_chunks()
         .into_iter()
@@ -1515,15 +1504,7 @@ fn opening(chunks: Chunks) -> Opening {
          {redraw:?}"
     );
     let written = changes(&session) - seeded;
-    let stats = {
-        let hosted = session
-            .host
-            .instances()
-            .next()
-            .expect("the window's instance");
-        let host = hosted.instance().host().expect("the instance's store");
-        host.store().stats()
-    };
+    let stats = store(&session).stats();
     let read = (stats.attaches + stats.incremental_syncs) + stats.full_syncs;
     Opening {
         written,
@@ -1532,21 +1513,6 @@ fn opening(chunks: Chunks) -> Opening {
         published: shown.published,
         rows: shown.rows,
     }
-}
-
-/// The changes the window's record holds: what the window wrote into the workspace.
-fn changes(session: &Session) -> usize {
-    let hosted = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance");
-    hosted
-        .record()
-        .doc()
-        .committed_document()
-        .get_changes(&[])
-        .len()
 }
 
 /// Opening a window of a workspace it has used before writes nothing: the root the window
@@ -1930,17 +1896,20 @@ fn typing_a_tasks_title_reruns_the_views_that_read_it(seeded: &Chunks) {
 
 /// Checking tasks off one after another: every row the person checked stays where it stands,
 /// reading checked, the list goes on rendering, and checking one task runs a handful of
-/// boundaries rather than every row the window shows.
+/// boundaries rather than every row the window shows. Each check runs its action once: what the
+/// run wrote is the change the record keeps, and a peer replaying the action gets that change.
 #[test]
 fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     let _motion = ui::motion::testing::settled();
     let chunks = seeded_tasks(100);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_in(&route, chunks, None);
+    let held = record(&session);
     let mut checked = Vec::new();
     for _ in 0..4 {
         let (title, x, y) = first_check(&mut session);
         let before = renders(&session);
+        let written = store(&session).stats().written_once;
         session.window.click_at(x, y);
         session.settle();
         let ran = renders(&session) - before;
@@ -1949,8 +1918,23 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
             "checking {title} runs {ran} boundaries: the rows that read it and the window, \
              not every row it shows"
         );
+        assert_eq!(
+            store(&session).stats().written_once,
+            written + 1,
+            "checking {title} writes it into the record once, as the change it makes"
+        );
         checked.push(title);
     }
+    let host = session.instance_host();
+    let mut reproduced = 0;
+    for (chunk, doc) in record(&session).all() {
+        let from = held.held(chunk).map(automerge::AutoCommit::committed_heads);
+        reproduced += replayed(&mut doc.clone(), from.as_deref().unwrap_or(&[]), &host);
+    }
+    assert!(
+        reproduced >= 4,
+        "a peer reproduced {reproduced} of the four checks"
+    );
     for title in checked {
         assert!(
             checked_off(&mut session, &title),
@@ -1975,12 +1959,7 @@ fn a_step_reaches_the_window_in_one_frame(seeded: &Chunks) {
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
         let mut session = Session::tasks_over_in(&route, chunks, None);
         let counted = |session: &Session| -> (u64, u64) {
-            let instance = session
-                .host
-                .instances()
-                .next()
-                .expect("the window's instance")
-                .instance();
+            let instance = session.instance().instance();
             let runs = instance
                 .view(tilo_render_protocol::patch::Lane::Root)
                 .expect("the root view")
@@ -2050,11 +2029,7 @@ impl Done {
     /// What the window and its instance have done so far.
     fn now(session: &mut Session) -> Self {
         let (renders, items, reads, sent) = {
-            let hosted = session
-                .host
-                .instances()
-                .next()
-                .expect("the window's instance");
+            let hosted = session.instance();
             let instance = hosted.instance();
             let host = instance.host().expect("the instance's host");
             let reads = host.store().read_stats();

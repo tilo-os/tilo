@@ -9,21 +9,6 @@ use tilolang_tilo::runtime::Principal;
 use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::value::ResourceRef;
 
-/// How many changes the workspace's record holds: what the person did, one per letter typed.
-fn changes(session: &Session) -> usize {
-    let hosted = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance");
-    hosted
-        .record()
-        .doc()
-        .committed_document()
-        .get_changes(&[])
-        .len()
-}
-
 /// A person at a Notes window of the notebook the record `chunks` holds, as one opens it again
 /// after closing it: what a window kept of a workspace they had open before.
 fn notes_over(route: &RouteSpec, chunks: Chunks) -> Session {
@@ -40,50 +25,14 @@ fn notes_over(route: &RouteSpec, chunks: Chunks) -> Session {
     session
 }
 
-/// The store of the window's instance.
-fn store(session: &Session) -> tilolang_tilo::store::TiloStore {
-    let host = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .instance()
-        .host()
-        .expect("the instance's store");
-    host.store().clone()
-}
-
-/// The window's record: the workspace as this device holds it.
-fn record(session: &Session) -> Chunks {
-    session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .chunks()
-}
-
 /// The record's heads now: what the changes a peer takes start after.
 fn marks(session: &Session) -> Stamps {
-    session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .marks()
+    session.instance().record().marks()
 }
 
 /// The changes the window's record holds past `marks`, as the workspace hands them to a peer.
 fn changes_since(session: &Session, marks: &Stamps) -> Vec<u8> {
-    session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .changes_since(marks)
+    session.instance().record().changes_since(marks)
 }
 
 /// How long a pause without a keystroke ends the burst the person is typing.
@@ -131,24 +80,7 @@ impl Peer {
             .load_incoming_whole(&changes)
             .expect("a peer takes every change");
         // The peer replays the action each change records and gets that change, to the byte.
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        tilolang_tilo::history::register(&mut registry);
-        let arrived: Vec<_> = self
-            .doc
-            .get_changes(&held)
-            .iter()
-            .map(automerge::Change::hash)
-            .collect();
-        for change in arrived {
-            assert!(
-                matches!(
-                    ui::tilo_actions::verify_change(&mut self.doc, change, &registry),
-                    Ok(ui::tilo_actions::Verified::Reproduced
-                        | ui::tilo_actions::Verified::NothingRecorded)
-                ),
-                "the peer reproduces every change it takes"
-            );
-        }
+        replayed(&mut self.doc, &held, &self.host);
         self.host.sync_from(&self.doc);
         self.host.wait_index();
         true
@@ -397,14 +329,7 @@ fn a_window_dropped_mid_burst_keeps_every_letter() {
     after_a_pause(&session, std::time::Duration::from_secs(600));
     session.window.type_text("twenty characters in");
     session.settle();
-    let route = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .route()
-        .clone();
+    let route = session.instance().record().route().clone();
     let held = record(&session);
     // What the record holds, as another device of the workspace reads it.
     let mut reader = Peer::over(&session);

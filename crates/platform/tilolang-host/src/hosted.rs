@@ -1758,15 +1758,17 @@ impl Hosted {
         let (resources, address) = surface.naming(resources, address);
         let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
-        CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let encoded = encode(&resources, &address, argument);
-        CALLER.with(|slot| *slot.borrow_mut() = None);
-        let encoded =
-            encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
         let host = self
             .instance
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
+        // The action is applied as soon as it is built: the run that builds it is the one whose
+        // writes the record commits.
+        CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
+        let encoded = host.carrying_out(|| encode(&resources, &address, argument));
+        CALLER.with(|slot| *slot.borrow_mut() = None);
+        let encoded =
+            encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
         if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
             return Err(Refused::new(
                 "action_invalid_arguments",
