@@ -12,9 +12,10 @@ writes an app's ``surface.toml``. Two sides speak to each other only when
 their numbers are equal (docs/architecture/compatibility.md); there is no
 negotiation and no code for an older number.
 
-``check`` (the repository policy suite) fails when a committed schema differs
-from what the code declares, or when the version the file records is not the
-one the code and the image's ``system-interfaces.toml`` carry.
+``check`` (the pre-commit hook and the repository policy suite) fails when a
+committed schema differs from what the code declares, or when the version the
+file records is not the one the code and the image's
+``system-interfaces.toml`` carry.
 
 ``against BASE`` (the ``changes`` check, against main) fails when the schema
 the code declares changed incompatibly since BASE's code without a higher

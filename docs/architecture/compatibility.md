@@ -106,12 +106,13 @@ mounted image.
 - `interface.toml` is written from the code, the way `tilo-app surface` writes
   an app's `surface.toml`: every type the interface carries, read from its
   sources with the serde attributes that shape the wire.
-  `tools/policy/check_interfaces.py` fails when the file differs from
-  the code (`check`, policy suite) and when it changed incompatibly since main
-  without a higher version (`against`). An added optional
-  field of a JSON message, a new type, and a
-  postcard field under another name that keeps its position and type are
-  compatible; every other change to what one side sends or reads is not.
+  `tools/policy/check_interfaces.py` fails when the file, its version, the
+  versions the image serves or an app's manifest differ from the code (`check`,
+  in the pre-commit hook and the policy suite) and when the interface changed
+  incompatibly since main without a higher version (`against`). An added
+  optional field of a JSON message, a new type, and a postcard field under
+  another name that keeps its position and type are compatible; every other
+  change to what one side sends or reads is not.
 
 ## A mismatch is a state
 
