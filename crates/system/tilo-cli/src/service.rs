@@ -247,11 +247,11 @@ mod tests {
     #[test]
     fn the_launchd_agent_runs_the_holder_and_escapes_what_it_names() {
         let agent = agent(
-            Path::new("/Users/a&b/tilo"),
+            Path::new("/Users/you&co/tilo"),
             &[("XDG_STATE_HOME", "/s<t>".to_owned())],
         );
         assert!(agent.contains(
-            "<string>/Users/a&amp;b/tilo</string><string>mcp</string><string>--hold</string>"
+            "<string>/Users/you&amp;co/tilo</string><string>mcp</string><string>--hold</string>"
         ));
         assert!(agent.contains("<key>XDG_STATE_HOME</key><string>/s&lt;t&gt;</string>"));
     }
