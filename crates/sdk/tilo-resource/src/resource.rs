@@ -776,6 +776,17 @@ fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
     }
 }
 
+/// The vocabulary the value at `at` has of its own (a rich text's), when it
+/// has one.
+fn rich_schema_at<'a>(
+    rich: &'a [(String, serde_json::Value)],
+    at: &str,
+) -> Option<&'a serde_json::Value> {
+    rich.iter()
+        .find(|(path, _)| path == at)
+        .map(|(_, schema)| schema)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one walk over the stored shape, an alternative per kind of path"
@@ -881,10 +892,7 @@ fn edit_paths(
             serde_json::json!({ "const": field.key }),
         ));
         let path = format!("{dotted}{}", field.key);
-        let rich_schema = rich
-            .iter()
-            .find(|(at, _)| *at == path)
-            .map(|(_, schema)| schema);
+        let rich_schema = rich_schema_at(rich, &path);
         let ops = field_ops(field, rich_schema.is_some());
         let collection = matches!(
             field.shape,
@@ -996,12 +1004,18 @@ fn edit_paths(
             crate::Shape::Map(_) => {
                 let mut entries = here.clone();
                 entries.push(step_schema("key", serde_json::json!({ "type": "string" })));
+                // An entry whose type has its own vocabulary (a text) is edited in it.
+                let entry_rich = rich_schema_at(rich, &format!("{path}.*"));
+                let mut ops = vec!["set", "splice", "replace", "add", "insert", "remove"];
+                if entry_rich.is_some() {
+                    ops.push("rich");
+                }
                 out.push(alternative(
                     &entries,
                     true,
-                    &["set", "splice", "replace", "add", "insert", "remove"],
+                    &ops,
                     serde_json::json!({}),
-                    None,
+                    entry_rich,
                     field.title,
                     "an entry, by its key, and what is inside it".to_owned(),
                 ));
