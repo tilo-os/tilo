@@ -73,6 +73,28 @@ impl RichText {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// The markdown this value holds: its body paragraphs that have been read, with their
+    /// marks, links, lists, code and headings, as markdown that writes back the same text
+    /// ([`RichText::from_markdown`]), or the markdown of a new value. What a record's reader
+    /// gets, so text an agent writes reads back as it was written.
+    #[must_use]
+    pub fn markdown(&self) -> String {
+        if let Some(initial) = &self.initial {
+            return initial.clone();
+        }
+        let Some(state) = &self.state else {
+            return String::new();
+        };
+        let blocks: Vec<tilo_doc::snapshot::BlockView> = state
+            .body()
+            .all()
+            .filter_map(|id| state.block(id))
+            .map(|block| block.as_ref().clone())
+            .collect();
+        let markdown = tilo_doc_codecs::rich::markdown_of_blocks(&blocks);
+        markdown.trim_end_matches('\n').to_owned()
+    }
 }
 
 fn refused(error: tilo_actions::ActionError) -> ModelError {
@@ -231,7 +253,7 @@ impl Model for RichText {
     }
 
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::String(self.text())
+        serde_json::Value::String(self.markdown())
     }
 
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
@@ -495,6 +517,27 @@ mod tests {
             let text = self.body.text();
             self.body.perform(RichTextAction::AppendParagraph { text });
         }
+    }
+
+    /// A record's reader gets the markdown its rich text was written as:
+    /// marks, link targets, lists and code, which writes back the same text.
+    #[test]
+    fn a_read_gives_the_markdown_back() {
+        let markdown = "## Plan\n\n**bold** and a [link](https://example.com)\n\n- one\n- two";
+        let mut card = Replica::<Card>::new();
+        card.apply(Card::WRITE.with(markdown)).unwrap();
+        let read = card.state().unwrap().body.to_json();
+        let read = read.as_str().unwrap();
+        for kept in [
+            "## Plan",
+            "**bold**",
+            "[link](https://example.com)",
+            "- one",
+        ] {
+            assert!(read.contains(kept), "{kept:?} is lost from {read:?}");
+        }
+        card.apply(Card::WRITE.with(read)).unwrap();
+        assert_eq!(card.state().unwrap().body.to_json().as_str(), Some(read));
     }
 
     /// A record holding short text reads all of it: its verbs and readers
