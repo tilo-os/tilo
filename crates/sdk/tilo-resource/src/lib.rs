@@ -141,6 +141,7 @@ pub mod model;
 mod non_blank;
 pub mod order;
 pub mod ordered;
+pub mod origin;
 pub mod path;
 pub mod reactions;
 pub mod read;
@@ -193,6 +194,7 @@ pub use model::{
 };
 pub use non_blank::{Blank, NonBlank};
 pub use ordered::{Arranged, Ordered};
+pub use origin::{Origin, acting_name};
 pub use path::{
     At, Edit, EditOp, OP_ARGUMENTS, Operations, Path, Segment, Settable, op_argument_schema,
     op_arguments, op_usage, outbox_settle_arguments,

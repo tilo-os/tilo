@@ -42,6 +42,8 @@ pub struct Replica<R: Resource> {
     app: Option<(String, String)>,
     /// What a bot shows for later actions instead of its own name.
     appearance: Option<tilo_actions::Appearance>,
+    /// The name the host admitted the actor of later actions under.
+    name: Option<String>,
     /// The work unit later actions belong to (id, label, kind).
     group: Option<(String, String, String)>,
     now_ms: i64,
@@ -92,6 +94,7 @@ impl<R: Resource> Replica<R> {
             invoker: None,
             app: None,
             appearance: None,
+            name: None,
             group: None,
             now_ms: 1_700_000_000_000,
             reader: None,
@@ -157,6 +160,14 @@ impl<R: Resource> Replica<R> {
     #[must_use]
     pub fn showing(mut self, appearance: tilo_actions::Appearance) -> Self {
         self.appearance = Some(appearance);
+        self
+    }
+
+    /// Admit the actor of later actions under the name `name`, as a host
+    /// names an agent it admits (`Company mover`).
+    #[must_use]
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = Some(name.to_owned());
         self
     }
 
@@ -251,7 +262,9 @@ impl<R: Resource> Replica<R> {
                         .acting_for(person.clone()),
                     None => invoker,
                 };
-                let invoker = invoker.with_appearance(self.appearance.clone());
+                let invoker = invoker
+                    .with_appearance(self.appearance.clone())
+                    .named(self.name.clone());
                 tilo_actions::ActionContext::default().with_invoker(invoker)
             });
         let ambient = match &self.app {

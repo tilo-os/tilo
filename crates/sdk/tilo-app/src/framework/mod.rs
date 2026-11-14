@@ -408,7 +408,7 @@ pub use kinds::{hosted_kinds, resource_kind, seed_record};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use opening::Opened;
-pub use people::People;
+pub use people::{Actor, Byline, People};
 pub use person::{PersonKind, PersonRecord};
 pub use preview::PastVersion;
 pub use publishing::Publishes;

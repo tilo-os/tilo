@@ -91,3 +91,9 @@ feedback-compose-remove-screenshot = Screenshot entfernen
 feedback-compose-remove-recording = Aufnahme entfernen
 feedback-compose-toggle = Teil ein- oder ausblenden
 tilo-feedback-draft = Feedback
+
+## Who wrote an item and when
+# An item moved from another tool: its author there, the tool, and the day it was written there.
+byline-moved = { $name } in { $source }, { $date }
+# An item written here: its author and the day.
+byline-here = { $name }, { $date }
