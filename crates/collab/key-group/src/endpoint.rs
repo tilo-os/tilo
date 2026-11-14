@@ -149,9 +149,7 @@ impl ContentKeys {
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        // What a 0.1 release sealed is history: never a new write, though a
-        // device removed since holds its keys.
-        if metadata.epoch != self.epoch || metadata.released_channel.is_some() {
+        if metadata.epoch != self.epoch {
             return Err(Error::InvalidState(
                 "payload is not sealed under the workspace's current epoch".into(),
             ));

@@ -240,9 +240,7 @@ pub struct GroupPeer {
     /// Frames to publish, written before they were queued.
     outbox: Vec<MlsGovernanceFrame>,
     /// Content keys the group this device is in may lack: those of group
-    /// states it left behind, and those of the channels a 0.1 release kept
-    /// for this workspace ([`Self::adopt`]). Handed to the members with its
-    /// next commit.
+    /// states it left behind. Handed to the members with its next commit.
     orphaned: ContentKeyring,
     /// `None` for a peer kept in memory.
     states: Option<Arc<dyn PeerStates>>,
@@ -642,8 +640,7 @@ impl GroupPeer {
 
     /// Content keys for the device's application endpoints, once admitted:
     /// its group's, and after them those it holds that its group does not
-    /// yet ([`Self::adopt`]), which open what was sealed under them and
-    /// never seal.
+    /// yet, which open what was sealed under them and never seal.
     pub fn content_keys(&self) -> Option<ContentKeys> {
         match &self.record {
             MemberRecord::Joined(group) => {
@@ -1064,34 +1061,6 @@ impl GroupPeer {
             // A full keyring keeps what it holds; the rest is lost as before.
             self.orphaned.merge(group.keyring()).ok();
         }
-    }
-
-    /// Keep `keys`, the content keys a 0.1 release kept for one of this
-    /// workspace's channels ([`crate::released`]), as those of a state this
-    /// device left behind: they never seal, its next commit hands them to
-    /// every member, and every later joiner gets them with the rest of the
-    /// history, so what was written then stays readable. Keys it holds
-    /// already change nothing; returns whether any were new.
-    ///
-    /// # Errors
-    ///
-    /// The keyring is full, or the state cannot be written; nothing was
-    /// kept then.
-    pub fn adopt(&mut self, keys: &ContentKeyring, vault: &VaultKey) -> Result<bool> {
-        let mut new = keys.missing_from(&self.orphaned);
-        if let Some(held) = self.keyring() {
-            new = new.missing_from(held);
-        }
-        if new.is_empty() {
-            return Ok(false);
-        }
-        let before = self.orphaned.clone();
-        self.orphaned.merge(&new)?;
-        if let Err(error) = self.save(vault) {
-            self.orphaned = before;
-            return Err(error);
-        }
-        Ok(true)
     }
 
     /// Every content key this device's group holds, or `None` while it is in

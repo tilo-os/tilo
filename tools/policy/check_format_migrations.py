@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""A versioned on-disk format never stops reading what a machine may hold.
+"""A versioned on-disk format names the layout it reads.
 
-User data survives every update (docs/architecture/compatibility.md). A
+Stored formats change with the code (docs/architecture/compatibility.md). A
 program that writes a file in a format of its own declares it as a
 ``tilo_files::native::migration::Format``: its version, the oldest version it
-still brings up, and one step per version in between. A machine that missed
-updates still holds a file of an older version, so the chain only grows:
+still brings up, and one step per version in between. A build keeps no reader
+for what another build wrote, so the oldest version is the one this build
+writes unless a step is still there, and a layout change deletes its step with
+the layout it read:
 
 ``check`` (the repository policy suite) fails when a declaration's
 ``oldest`` is not a plain number, which the comparison below needs, and when
@@ -13,15 +15,16 @@ no loader brings the format's stored versions up: a declared chain of steps
 only keeps data if the code that opens the file runs it. Each format's crate
 must call ``<FORMAT>.bring_up(path, bytes, stored)`` (or ``bring_up_moved``
 for a version that lived in a file of its own) with the version it read from
-the file, not a number it assumed, so every stored version goes through the
-steps and leaves its old file beside the new one; and no loader calls
-``migrate``, which brings bytes up but keeps no copy of what the file held.
-A loader that brought up only the first version's file and read a later one
-as it was refused a whole relay's state at start.
+the file, not a number it assumed, so a file of another version is refused
+rather than read as this one; and no loader calls ``migrate``, which brings
+bytes up but keeps no copy of what the file held. A loader that brought up
+only the first version's file and read a later one as it was refused a whole
+relay's state at start.
 
-``against BASE`` (run against main before landing) fails when a format
-declared at BASE now brings up fewer versions: its ``oldest`` rose, or the
-declaration is gone while its file may still be on disk.
+``against BASE`` (run against main before landing) fails when the golden bytes
+of a version this build still declares changed. A format may bring up fewer
+versions, and one may be gone with its steps: that is a landing, not a
+regression.
 
 Each step is tested against a file its previous version wrote, and only that
 (``assert_step_reads_previous``, beside each declaration).
@@ -34,9 +37,10 @@ relay's invitations each did). So ``check`` also fails a format whose crate
 keeps no ``golden/<name>/v<version>.hex`` (the name lowercased, each run of
 other characters a ``-``; the bytes as lowercase hex pairs, 16 to a line), or no test of the crate that reads that path: the
 test hands it to ``assert_golden_bytes``, which fails when this build reads
-or writes it differently. And ``against BASE`` fails when a golden file BASE
-kept changed or is gone: what a version wrote never changes, so a layout
-change is a new version, with its own golden file and the step from this one.
+or writes it differently. And ``against BASE`` fails when a golden file of a version this
+build still declares changed: what a version wrote never changes, so a layout
+change is a new version, with its own golden file. The golden file of a
+version no declaration names any more goes with its step.
 """
 
 from __future__ import annotations
@@ -143,6 +147,26 @@ def goldens(root: Path, texts: dict[str, str]) -> list[str]:
                     f"bytes format {name!r} version {version} stored differently"
                 )
     return problems
+
+
+def declared_goldens(
+    root: Path, texts: dict[str, str], cache: dict[Path, dict[str, str]] | None = None
+) -> list[str]:
+    """The golden paths the formats declared now name, by the versions they
+    declare now."""
+    kept = []
+    cache = {} if cache is None else cache
+    for path, text in texts.items():
+        for match in VERSIONED.finditer(without_tests(path, text)):
+            crate = crate_of(root, path)
+            version = version_of(match.group("version"), crate_sources(crate, root, cache))
+            if version is not None:
+                kept.append(
+                    (crate / f"golden/{slug(match.group('name'))}/v{version}.hex")
+                    .relative_to(root)
+                    .as_posix()
+                )
+    return kept
 
 
 def without_tests(path: str, text: str) -> str:
@@ -307,16 +331,19 @@ def kept_goldens(root: Path, revision: str) -> list[str]:
     return [path for path in listed.splitlines() if GOLDEN.search(path)]
 
 
-def changed_goldens(base: str, root: Path = ROOT) -> list[str]:
-    """Each golden file `base` kept that is gone or holds other bytes now."""
+def changed_goldens(base: str, root: Path, declared: list[str]) -> list[str]:
+    """Each golden file `base` kept that holds other bytes now. The bytes of a
+    version this build no longer declares may be gone with its step."""
     problems = []
     for path in kept_goldens(root, base):
         file = root / path
         if not file.is_file():
-            problems.append(
-                f"{path}: the bytes a version of a stored format wrote are gone; machines "
-                "still hold them, so keep the file and the test that reads it"
-            )
+            if path in declared:
+                problems.append(
+                    f"{path}: the bytes a version of a stored format wrote are gone; this "
+                    "build still declares the version, so keep the file and the test that "
+                    "reads it"
+                )
             continue
         then = subprocess.run(
             ["git", "rev-parse", f"{base}:{path}"], cwd=root, capture_output=True, text=True
@@ -334,25 +361,12 @@ def changed_goldens(base: str, root: Path = ROOT) -> list[str]:
 
 
 def against(base: str, root: Path = ROOT) -> list[str]:
-    problems = []
+    """What a change may not do to the bytes of a stored layout: change those
+    of a version this build still declares. A format may bring up fewer
+    versions, and one may be gone with its steps."""
     then = sources_at(root, base)
-    before = declarations(then)
-    now = declarations(sources_since(root, base, then))
-    for name, (path, oldest) in before.items():
-        if name not in now:
-            problems.append(
-                f"{path}: format {name!r} is no longer declared; files a machine holds in it "
-                "would no longer load"
-            )
-            continue
-        new_path, new_oldest = now[name]
-        if oldest.isdigit() and new_oldest.isdigit() and int(new_oldest) > int(oldest):
-            problems.append(
-                f"{new_path}: format {name!r} no longer brings up version {oldest}; a machine "
-                "that missed updates may still hold it. Keep its step."
-            )
-    problems.extend(changed_goldens(base, root))
-    return problems
+    now = sources_since(root, base, then)
+    return changed_goldens(base, root, declared_goldens(root, now))
 
 
 def main(argv: list[str] | None = None) -> int:

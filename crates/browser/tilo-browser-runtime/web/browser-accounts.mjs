@@ -31,14 +31,12 @@ export async function readBrowserAccounts({origin, runtime, indexedDB = globalTh
           const match = /^tilo-identity:([a-f0-9]{64})@(.+)$/u.exec(profile);
           if (match?.[2] === host && typeof device === 'string' && device.length <= 256
             && (!currentDevice || currentDevice(profile) === device)
-            && (key === runtime.browser_accounts_key(match[1])
-              || key === runtime.browser_accounts_former_key(match[1]))) {
+            && key === runtime.browser_accounts_key(match[1])) {
             if (++requested > 64) throw Error('Account lookup exceeds its profile budget');
-            const current = key === runtime.browser_accounts_key(match[1]);
             const read = store.get(item.key);
             read.onsuccess = () => {
               const row = read.result;
-              if (row?.namespace === namespace && row.key === key) rows.push({profile, device, root: match[1], bytes: row.bytes, current});
+              if (row?.namespace === namespace && row.key === key) rows.push({profile, device, root: match[1], bytes: row.bytes});
             };
           }
         }
@@ -58,10 +56,7 @@ export async function readBrowserAccounts({origin, runtime, indexedDB = globalTh
 export function projectBrowserAccounts(rows, runtime, origin) {
   if (rows.length > 64) throw Error('Account lookup exceeds its profile budget');
   const accounts = [];
-  // A record kept before the person's own scope existed is offered only until
-  // the scope has one: the row the app writes there from now on wins.
-  const ordered = [...rows].sort((a, b) => Number(b.current === true) - Number(a.current === true));
-  for (const row of ordered) {
+  for (const row of rows) {
     if (row.profile !== `tilo-identity:${row.root}@${new URL(origin).host}`) continue;
     const bytes = new Uint8Array(row.bytes);
     if (bytes.length > 1024 * 1024) throw Error('Account projection exceeds its read budget');

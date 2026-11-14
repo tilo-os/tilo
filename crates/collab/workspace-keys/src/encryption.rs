@@ -314,19 +314,6 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn holds_key_state(&self) -> Result<bool, String> {
         Ok(false)
     }
-    /// The sealed state a 0.1 release kept for each of `workspace`'s
-    /// channels, when this store holds any: those releases gave every
-    /// channel a group of its own, whose keys what they sealed still needs
-    /// ([`key_group::released`]), each with where it is kept. A store no
-    /// release wrote answers none.
-    fn released(&self, _workspace: WorkspaceId) -> Vec<(String, Vec<u8>)> {
-        Vec::new()
-    }
-    /// The key the release sealed [`Self::released`]'s state under, when it
-    /// is not the one this store's state is sealed under now.
-    fn released_vault(&self) -> Option<&VaultKey> {
-        None
-    }
     /// Forget everything kept of `workspace`'s group: it was deleted.
     ///
     /// # Errors
@@ -343,9 +330,6 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
 #[derive(Debug)]
 pub struct KeyDir {
     state: PathBuf,
-    /// Where a 0.1 release kept each workspace's channel state, when this
-    /// device ran one, and the key it sealed that state under.
-    released: Option<(PathBuf, VaultKey)>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -353,22 +337,7 @@ impl KeyDir {
     /// The state kept under `root`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            state: root.into(),
-            released: None,
-        }
-    }
-
-    /// This directory, reading the channel state a 0.1 release kept under
-    /// `dir` (`<workspace>/channels/<channel>.peer`), sealed under `vault`:
-    /// what that release sealed opens with those keys
-    /// ([`KeyStorage::released`]).
-    #[must_use]
-    pub fn with_released(self, dir: impl Into<PathBuf>, vault: VaultKey) -> Self {
-        Self {
-            released: Some((dir.into(), vault)),
-            ..self
-        }
+        Self { state: root.into() }
     }
 }
 
@@ -409,40 +378,6 @@ impl KeyStorage for KeyDir {
                 workspace
             })
             .collect()
-    }
-
-    fn released_vault(&self) -> Option<&VaultKey> {
-        self.released.as_ref().map(|(_, vault)| vault)
-    }
-
-    /// The files stay where the release left them.
-    fn released(&self, workspace: WorkspaceId) -> Vec<(String, Vec<u8>)> {
-        let Some((released, _)) = &self.released else {
-            return Vec::new();
-        };
-        let dir = released.join(workspace.to_string()).join("channels");
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(error) => {
-                tracing::warn!(dir = %dir.display(), %error, "a release's channel state cannot be listed");
-                return Vec::new();
-            }
-        };
-        let mut kept = Vec::new();
-        for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
-            if path.extension().and_then(|ext| ext.to_str()) != Some("peer") {
-                continue;
-            }
-            match std::fs::read(&path) {
-                Ok(bytes) => kept.push((path.display().to_string(), bytes)),
-                Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "a release's channel state cannot be read");
-                }
-            }
-        }
-        kept.sort_by(|(a, _), (b, _)| a.cmp(b));
-        kept
     }
 
     fn holds_key_state(&self) -> Result<bool, String> {
@@ -1675,8 +1610,7 @@ impl WorkspaceKeys {
         Ok(true)
     }
 
-    fn insert_peer(&mut self, workspace: WorkspaceId, mut peer: GroupPeer, now: Instant) {
-        self.adopt_released(workspace, &mut peer);
+    fn insert_peer(&mut self, workspace: WorkspaceId, peer: GroupPeer, now: Instant) {
         let gate = peer.gate();
         let found_at = now
             .checked_add(found_after(&peer.device(), workspace))
@@ -1704,35 +1638,6 @@ impl WorkspaceKeys {
             },
         );
         self.register_gate(workspace, gate);
-    }
-
-    /// Hand `peer` the content keys a 0.1 release kept for `workspace`'s
-    /// channels, so its group hands them to every member and what was
-    /// sealed then stays readable. Keys the peer holds already change
-    /// nothing, so this runs on every start; a file that does not open is
-    /// said and left as it is.
-    fn adopt_released(&self, workspace: WorkspaceId, peer: &mut GroupPeer) {
-        let Some(store) = &self.store else {
-            return;
-        };
-        for (kept, sealed) in store.state.released(workspace) {
-            let sealed_under = store.state.released_vault().unwrap_or(&store.vault);
-            let adopted = key_group::released::released_channel_keys(&sealed, sealed_under)
-                .and_then(|(channel, keys)| {
-                    Ok((channel, keys.len(), peer.adopt(&keys, &store.vault)?))
-                });
-            match adopted {
-                Ok((channel, epochs, true)) => tracing::info!(
-                    %workspace, %channel, epochs,
-                    "the keys a release kept for a channel are handed to the workspace's group"
-                ),
-                Ok((_, _, false)) => {}
-                Err(error) => tracing::error!(
-                    %workspace, path = %kept, %error,
-                    "a release's channel state does not open: what it sealed stays unreadable"
-                ),
-            }
-        }
     }
 
     fn register_gate(&mut self, workspace: WorkspaceId, gate: key_group::SealGate) {

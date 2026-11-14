@@ -459,12 +459,10 @@ pub enum ContentRetention {
 /// downgrade the scheme.
 ///
 /// Wire form: one tagged value — `0` none, `3` MLS application message
-/// `{epoch}`, `4` content key `{epoch, retention}`. Tags `1` (`{epoch,
-/// channel}`) and `2` (`{epoch, channel, retention}`) are the forms the 0.1
-/// releases signed, when each record sealed under a channel of its own: they
-/// are read with that channel kept ([`Self::released_channel`]), so the op
-/// re-encodes to the bytes its signature covers, and never written for a new
-/// op.
+/// `{epoch}`, `4` content key `{epoch, retention}`. Tags `1` and `2` keep
+/// their places for the forms the 0.1 releases signed, which no build reads.
+/// `retired_channel` was the channel those forms named; no build sets or
+/// reads it, and its place keeps this build's tags where they are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EncryptionMetadata {
     /// MLS epoch the ciphertext belongs to: the ratchet epoch for
@@ -472,9 +470,9 @@ pub struct EncryptionMetadata {
     /// [`EncryptionScheme::ContentKey`].
     pub epoch: u64,
     pub scheme: EncryptionScheme,
-    /// The channel a 0.1 release sealed the op for, as it signed it; `None`
-    /// for every op this build seals.
-    pub released_channel: Option<uuid::Uuid>,
+    /// The channel a 0.1 release sealed the op for, as it signed it. No build
+    /// writes or reads it; the field keeps its place in the struct ([`Self`]).
+    pub retired_channel: Option<uuid::Uuid>,
 }
 
 impl EncryptionMetadata {
@@ -483,7 +481,7 @@ impl EncryptionMetadata {
         Self {
             epoch,
             scheme: EncryptionScheme::MlsApplication,
-            released_channel: None,
+            retired_channel: None,
         }
     }
 
@@ -492,7 +490,7 @@ impl EncryptionMetadata {
         Self {
             epoch,
             scheme: EncryptionScheme::ContentKey { retention },
-            released_channel: None,
+            retired_channel: None,
         }
     }
 
@@ -512,17 +510,22 @@ mod encryption_wire {
     use super::{ContentRetention, EncryptionMetadata, EncryptionScheme};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    /// The variants in tag order: the first three are the 0.1 releases'
-    /// layout, byte for byte.
+    /// The variants in tag order. The first two keep the tags the 0.1
+    /// releases signed a channel-bound op under; nothing writes them, and a
+    /// reader refuses their bytes.
+    #[allow(
+        dead_code,
+        reason = "the retired tags' field shapes keep the current tags in place"
+    )]
     #[derive(Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     enum Wire {
         None,
-        ReleasedMlsApplication {
+        RetiredReleasedMlsApplication {
             epoch: u64,
             channel: uuid::Uuid,
         },
-        ReleasedContentKey {
+        RetiredReleasedContentKey {
             epoch: u64,
             channel: uuid::Uuid,
             retention: ContentRetention,
@@ -540,26 +543,14 @@ mod encryption_wire {
         let Some(&EncryptionMetadata {
             epoch,
             scheme,
-            released_channel,
+            retired_channel: _,
         }) = value
         else {
             return Wire::None;
         };
-        match (scheme, released_channel) {
-            (EncryptionScheme::MlsApplication, Some(channel)) => {
-                Wire::ReleasedMlsApplication { epoch, channel }
-            }
-            (EncryptionScheme::ContentKey { retention }, Some(channel)) => {
-                Wire::ReleasedContentKey {
-                    epoch,
-                    channel,
-                    retention,
-                }
-            }
-            (EncryptionScheme::MlsApplication, None) => Wire::MlsApplication { epoch },
-            (EncryptionScheme::ContentKey { retention }, None) => {
-                Wire::ContentKey { epoch, retention }
-            }
+        match scheme {
+            EncryptionScheme::MlsApplication => Wire::MlsApplication { epoch },
+            EncryptionScheme::ContentKey { retention } => Wire::ContentKey { epoch, retention },
         }
     }
 
@@ -579,18 +570,11 @@ mod encryption_wire {
     ) -> Result<Option<EncryptionMetadata>, D::Error> {
         Ok(match Wire::deserialize(deserializer)? {
             Wire::None => None,
-            Wire::ReleasedMlsApplication { epoch, channel } => Some(EncryptionMetadata {
-                released_channel: Some(channel),
-                ..EncryptionMetadata::mls_application(epoch)
-            }),
-            Wire::ReleasedContentKey {
-                epoch,
-                channel,
-                retention,
-            } => Some(EncryptionMetadata {
-                released_channel: Some(channel),
-                ..EncryptionMetadata::content_key(epoch, retention)
-            }),
+            Wire::RetiredReleasedMlsApplication { .. } | Wire::RetiredReleasedContentKey { .. } => {
+                return Err(serde::de::Error::custom(
+                    "an op a 0.1 release sealed for a channel is not read",
+                ));
+            }
             Wire::MlsApplication { epoch } => Some(EncryptionMetadata::mls_application(epoch)),
             Wire::ContentKey { epoch, retention } => {
                 Some(EncryptionMetadata::content_key(epoch, retention))
@@ -941,11 +925,12 @@ mod tests {
             assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
         }
 
-        phase metadata_a_release_signed_keeps_its_bytes;
+        phase metadata_a_channel_bound_op_is_refused_and_this_builds_tags_stay;
         {
-            // The forms the 0.1 releases wrote: `Option<{epoch, channel}>`
+            // The forms the 0.1 releases wrote — `Option<{epoch, channel}>`
             // for an MLS application message, the third tag for a content
-            // key. Each reads with its channel and writes the same bytes.
+            // key — keep their places so this build's tags do not move; their
+            // bytes are refused.
             #[derive(Serialize)]
             struct Released {
                 epoch: u64,
@@ -953,31 +938,29 @@ mod tests {
             }
             let channel = uuid::Uuid::from_u128(9);
             let mls = canonical_bytes(&Some(Released { epoch: 9, channel })).unwrap();
-            let read: Wrapped = from_canonical_bytes(&mls).unwrap();
-            assert_eq!(
-                read.0,
-                Some(EncryptionMetadata {
-                    released_channel: Some(channel),
-                    ..EncryptionMetadata::mls_application(9)
-                })
-            );
-            assert_eq!(canonical_bytes(&encryption_wire::View(&read.0)).unwrap(), mls);
+            assert!(from_canonical_bytes::<Wrapped>(&mls).is_err());
             let content = [&[2_u8, 9, 16][..], channel.as_bytes(), &[1]].concat();
-            let read: Wrapped = from_canonical_bytes(&content).unwrap();
+            assert!(from_canonical_bytes::<Wrapped>(&content).is_err());
             assert_eq!(
-                read.0,
-                Some(EncryptionMetadata {
-                    released_channel: Some(channel),
-                    ..EncryptionMetadata::content_key(9, ContentRetention::Delta)
-                })
+                canonical_bytes(&encryption_wire::View(&Some(
+                    EncryptionMetadata::mls_application(9),
+                )))
+                .unwrap(),
+                [3, 9]
             );
-            assert_eq!(canonical_bytes(&encryption_wire::View(&read.0)).unwrap(), content);
-            // This build's forms carry no channel, under tags of their own.
+            assert_eq!(
+                canonical_bytes(&encryption_wire::View(&Some(
+                    EncryptionMetadata::content_key(9, ContentRetention::Delta),
+                )))
+                .unwrap(),
+                [4, 9, 1]
+            );
             let ours = canonical_bytes(&encryption_wire::View(&Some(
-                EncryptionMetadata::content_key(9, ContentRetention::Delta),
+                EncryptionMetadata::mls_application(9),
             )))
             .unwrap();
-            assert_eq!(ours, [4, 9, 1]);
+            let read: Wrapped = from_canonical_bytes(&ours).unwrap();
+            assert_eq!(read.0, Some(EncryptionMetadata::mls_application(9)));
         }
 
         phase content_key_metadata_round_trips_and_is_signed;

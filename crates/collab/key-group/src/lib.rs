@@ -71,7 +71,6 @@ pub mod gate;
 pub mod group;
 pub mod peer;
 pub mod persistence;
-pub mod released;
 pub mod signer;
 pub mod welcome;
 

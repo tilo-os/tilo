@@ -67,23 +67,6 @@ const KEY_HISTORY_VERSION: u8 = 1;
 /// number of membership epochs, so a hostile bundle cannot exhaust memory.
 pub const MAX_HISTORY_KEYS: usize = 1 << 20;
 
-/// Where a keyring keeps the key of epoch `e` of a channel a 0.1 release
-/// kept: `RELEASED_EPOCHS | e`, above every epoch a workspace's group
-/// reaches, so such a key never stands for one of the group's own epochs
-/// (a member waits for that epoch's key rather than trying this one) and
-/// never seals. The keys of every channel of the workspace share an epoch
-/// there, each opening only what was bound to its own channel.
-pub(crate) const RELEASED_EPOCHS: u64 = 1 << 63;
-
-/// Where a keyring keeps the key `metadata` was sealed under.
-pub(crate) fn held_epoch(metadata: &EncryptionMetadata) -> u64 {
-    if metadata.released_channel.is_some() {
-        RELEASED_EPOCHS | metadata.epoch
-    } else {
-        metadata.epoch
-    }
-}
-
 /// Every content key a member holds for one workspace, by epoch.
 ///
 /// An epoch normally has one key. A workspace whose group forked (two
@@ -126,7 +109,7 @@ impl ContentKeyring {
 
     /// Whether a key of the epoch `metadata` was sealed under is held.
     pub fn holds_key_for(&self, metadata: &EncryptionMetadata) -> bool {
-        self.keys.contains_key(&held_epoch(metadata))
+        self.keys.contains_key(&metadata.epoch)
     }
 
     /// Whether `key` is one of `epoch`'s keys.
@@ -155,9 +138,7 @@ impl ContentKeyring {
 
     /// Open a content-key payload for `artifact`, under whichever of its
     /// epoch's keys seals it. Needs only the keyring, so history pages
-    /// fetched long after joining decrypt locally. A payload a 0.1 release
-    /// sealed for one of its channels opens under that channel's keys, which
-    /// the workspace's group hands its members as history.
+    /// fetched long after joining decrypt locally.
     ///
     /// # Errors
     ///
@@ -178,14 +159,9 @@ impl ContentKeyring {
         }
         let keys = self
             .keys
-            .get(&held_epoch(metadata))
+            .get(&metadata.epoch)
             .ok_or(Error::MissingContentKey(metadata.epoch))?;
-        // An op a 0.1 release sealed is bound to the channel it named, under
-        // that channel's keys ([`crate::released`]).
-        let bound = metadata
-            .released_channel
-            .unwrap_or_else(|| workspace.as_uuid());
-        let record = content_record(bound, metadata.epoch, artifact);
+        let record = content_record(workspace.as_uuid(), metadata.epoch, artifact);
         let mut failure = Error::MissingContentKey(metadata.epoch);
         for key in keys {
             match tilo_seal::envelope::open(
@@ -213,9 +189,6 @@ impl ContentKeyring {
         retention: ContentRetention,
         plaintext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>)> {
-        if epoch & RELEASED_EPOCHS != 0 {
-            return Err(Error::MissingContentKey(epoch));
-        }
         let key = self.get(epoch).ok_or(Error::MissingContentKey(epoch))?;
         let record = content_record(workspace.as_uuid(), epoch, artifact);
         let sealed =
@@ -447,59 +420,6 @@ mod tests {
         content_is_bound_to_group_epoch_and_artifact();
         keys_of_another_branch_open_and_never_seal();
         history_bundle_round_trips_only_for_its_group_and_epoch();
-        content_a_release_sealed_opens_under_its_channel();
-    }
-
-    /// An op a 0.1 release sealed for a channel opens under that channel's
-    /// key, kept beside the workspace's own for the same epoch, and only
-    /// with the channel it names.
-    fn content_a_release_sealed_opens_under_its_channel() {
-        let (channel, workspace, artifact) =
-            (uuid::Uuid::new_v4(), WorkspaceId::new(), ArtifactId::new());
-        let released = SymmetricKey::generate().unwrap();
-        let sealed = tilo_seal::envelope::seal(
-            &released,
-            Context::new(Label::GroupContent, &content_record(channel, 2, artifact)),
-            b"kept",
-        )
-        .unwrap();
-        let metadata = EncryptionMetadata {
-            released_channel: Some(channel),
-            ..EncryptionMetadata::content_key(2, ContentRetention::Delta)
-        };
-        let mut ring = ContentKeyring::new();
-        let mut history = ContentKeyring::new();
-        history.insert(RELEASED_EPOCHS | 2, released).unwrap();
-        ring.merge(&history).unwrap();
-        assert!(ring.holds_key_for(&metadata));
-        // The workspace's own epoch 2 is not the channel's: its key is still
-        // to come, and a release's key never seals.
-        let own = EncryptionMetadata::content_key(2, ContentRetention::Delta);
-        assert!(!ring.holds_key_for(&own));
-        assert!(
-            ring.seal(
-                workspace,
-                RELEASED_EPOCHS | 2,
-                artifact,
-                ContentRetention::Delta,
-                b"new"
-            )
-            .is_err()
-        );
-        ring.insert(2, SymmetricKey::generate().unwrap()).unwrap();
-        assert_eq!(
-            ring.open(workspace, artifact, &metadata, &sealed)
-                .unwrap()
-                .as_slice(),
-            b"kept"
-        );
-        let elsewhere = EncryptionMetadata {
-            released_channel: Some(uuid::Uuid::new_v4()),
-            ..metadata
-        };
-        assert!(ring.open(workspace, artifact, &elsewhere, &sealed).is_err());
-        let unbound = EncryptionMetadata::content_key(2, ContentRetention::Delta);
-        assert!(ring.open(workspace, artifact, &unbound, &sealed).is_err());
     }
 
     fn content_is_bound_to_group_epoch_and_artifact() {

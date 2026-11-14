@@ -63,7 +63,9 @@ class FormatMigrationTests(unittest.TestCase):
             path.write_text(declaration(1) + loader)
             self.assertEqual(formats.check(Path(root)), [])
 
-    def test_the_chain_of_steps_only_grows(self):
+    def test_a_format_may_bring_up_fewer_versions(self):
+        # A layout change deletes the step that read the one before it, and a
+        # format may go with its steps: neither is a regression.
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             self.git(root, "init", "-q", "-b", "main")
@@ -76,35 +78,9 @@ class FormatMigrationTests(unittest.TestCase):
             self.git(root, "commit", "-qm", "base")
             self.assertEqual(formats.against("main", root), [])
             path.write_text(declaration(2))
-            self.assertIn("no longer brings up version 1", formats.against("main", root)[0])
-            path.write_text("")
-            self.assertIn("no longer declared", formats.against("main", root)[0])
-
-    def test_a_declaration_moved_to_a_new_file_is_found_there(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            self.git(root, "init", "-q", "-b", "main")
-            self.git(root, "config", "user.email", "t@example.com")
-            self.git(root, "config", "user.name", "t")
-            old = root / "crates/x/src/lib.rs"
-            old.parent.mkdir(parents=True)
-            old.write_text(declaration(1))
-            other = root / "crates/x/src/other.rs"
-            other.write_text("// nothing\n")
-            self.git(root, "add", ".")
-            self.git(root, "commit", "-qm", "base")
-            # Into a file git doesn't track yet.
-            old.write_text("")
-            new = root / "crates/x/src/state.rs"
-            new.write_text(declaration(1))
             self.assertEqual(formats.against("main", root), [])
-            new.write_text(declaration(2))
-            self.assertIn("no longer brings up version 1", formats.against("main", root)[0])
-            # Into a tracked file, committed.
-            new.unlink()
-            other.write_text(declaration(1))
-            self.git(root, "commit", "-qam", "moved")
-            self.assertEqual(formats.against("main~1", root), [])
+            path.write_text("")
+            self.assertEqual(formats.against("main", root), [])
 
     def loaded(self, files):
         """What `check` finds in a crate of `files` (path under src -> text)."""
@@ -187,10 +163,15 @@ class FormatMigrationTests(unittest.TestCase):
             found = formats.against("main", root)
             self.assertEqual(len(found), 1, found)
             self.assertIn("golden bytes changed", found[0])
+            # A version this build still declares keeps its bytes: a missing
+            # file is no way to change them.
             (crate / GOLDEN).unlink()
             self.assertIn("are gone", formats.against("main", root)[0])
-            # A new version keeps its own bytes beside the old ones.
-            (crate / GOLDEN).write_text("02 6b\n")
+            # A layout change is a new version: its own bytes, and the one
+            # before it goes with its step.
+            (crate / "src/lib.rs").write_text(
+                declaration(2).replace("const STATE_VERSION: u32 = 2;", "const STATE_VERSION: u32 = 3;")
+            )
             (crate / "golden/fixture-state/v3.hex").write_text("03\n")
             self.assertEqual(formats.against("main", root), [])
 
@@ -200,7 +181,7 @@ class FormatMigrationTests(unittest.TestCase):
         # The type is named through an import as often as in full, so a
         # declaration written as `Format { .. }` is found too.
         self.assertIn("sign-in record", declared)
-        self.assertIn("room wait list", declared)
+        self.assertIn("workspace wait list", declared)
         self.assertIn("device certificate", declared)
 
 

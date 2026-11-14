@@ -28,13 +28,11 @@ use tilo_relay_protocol::operator::WaitListStanding;
 use tilo_relay_protocol::workspaces::{WaitListEntry, contact_key};
 
 /// The wait list's on-disk format: a `u32` version, then the entries.
-/// Version 2 added each entry's removal and confirmation secrets, its
-/// language, the mail it was sent and the invitations sent for it.
 pub(super) const FORMAT: Format = Format {
     name: "workspace wait list",
     version: 2,
-    oldest: 1,
-    steps: &[v1_to_v2],
+    oldest: 2,
+    steps: &[],
 };
 
 /// How long an address waits to be confirmed before the workspace forgets it.
@@ -121,49 +119,6 @@ struct Stored {
     mailed: Vec<Mailed>,
 }
 
-/// Version 1: an entry was its id, address and when it was left. Its
-/// addresses were listed at once, so they come up confirmed.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "a migration step takes its bytes by value"
-)]
-fn v1_to_v2(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    #[derive(Deserialize)]
-    struct EntryV1 {
-        request_id: [u8; 32],
-        contact: String,
-        at_ns: u64,
-    }
-    #[derive(Deserialize)]
-    struct StoredV1 {
-        _version: u32,
-        entries: Vec<EntryV1>,
-    }
-    let stored: StoredV1 = postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-    postcard::to_stdvec(&Stored {
-        version: 2,
-        entries: stored
-            .entries
-            .into_iter()
-            .map(|entry| Entry {
-                request_id: entry.request_id,
-                contact: entry.contact,
-                at_ns: entry.at_ns,
-                removals: Vec::new(),
-                confirms: Vec::new(),
-                confirmed_at_ns: Some(entry.at_ns),
-                language: tilo_relay_protocol::workspaces::mail_language("").to_owned(),
-                mailed_at_ns: None,
-                invites: Vec::new(),
-                invited_at_ns: None,
-                invite_mailed_at_ns: None,
-            })
-            .collect(),
-        mailed: Vec::new(),
-    })
-    .map_err(|error| error.to_string())
-}
-
 /// What keeping a request did. `mail`: send the confirmation mail now (at
 /// most one per `MAIL_EVERY_NS` to an address).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,11 +171,6 @@ impl WaitList {
                 let bytes = FORMAT
                     .bring_up(&path, bytes, stored)
                     .map_err(|error| error.to_string())?;
-                if stored != FORMAT.version {
-                    // The copy of the old version bring_up keeps would hold
-                    // on to addresses whose owners take them off the list.
-                    let _ = std::fs::remove_file(Format::snapshot_path(&path, stored));
-                }
                 postcard::from_bytes::<Stored>(&bytes).map_err(|error| error.to_string())?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Stored {
@@ -1008,51 +958,6 @@ mod tests {
         assert_eq!(list.joined(|invite| invite == [0xa1; 32], 54), Ok(1));
         assert!(!list.has(ada, 54) && list.has(bo, 54));
         assert_eq!(WaitList::open(&workspace).unwrap().entries(55).len(), 1);
-    }
-
-    #[test]
-    fn a_first_version_wait_list_comes_up_listed_and_keeps_no_old_copy() {
-        #[derive(Serialize)]
-        struct EntryV1 {
-            request_id: [u8; 32],
-            contact: String,
-            at_ns: u64,
-        }
-        #[derive(Serialize)]
-        struct StoredV1 {
-            version: u32,
-            entries: Vec<EntryV1>,
-        }
-        let previous = postcard::to_stdvec(&StoredV1 {
-            version: 1,
-            entries: vec![EntryV1 {
-                request_id: [3; 32],
-                contact: "ada@example.org".into(),
-                at_ns: 9,
-            }],
-        })
-        .unwrap();
-        tilo_files::native::migration::assert_step_reads_previous(&FORMAT, &previous, |bytes| {
-            let stored: Stored = postcard::from_bytes(bytes).unwrap();
-            assert_eq!(stored.entries[0].contact, "ada@example.org");
-            assert_eq!(stored.entries[0].confirmed_at_ns, Some(9));
-        });
-
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().join("workspace.workspace");
-        let path = workspace.with_extension("wait-list");
-        std::fs::write(&path, &previous).unwrap();
-        let list = WaitList::open(&workspace).unwrap();
-        assert_eq!(
-            list.entries(UNCONFIRMED_FOR_NS * 10),
-            [WaitListEntry {
-                request_id: [3; 32],
-                contact: "ada@example.org".into(),
-                added_at_ns: 9,
-                invited_at_ns: None,
-            }]
-        );
-        assert!(!Format::snapshot_path(&path, 1).exists());
     }
 
     #[test]

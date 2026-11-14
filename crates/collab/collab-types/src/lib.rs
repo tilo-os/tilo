@@ -131,7 +131,7 @@ pub use op::{
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
     is_personal_cluster, person_record_id, person_record_kind, personal_cluster,
-    personal_cluster_of, retired_person_workspace,
+    personal_cluster_of,
 };
 pub use receipt::{
     Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_appearances,

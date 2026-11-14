@@ -146,81 +146,36 @@ resumes by itself once both speak the same version:
   staged. A browser page behind its host says "This page is out of date.
   Reload it to keep working together."
 
-## User data survives
+## Stored data
 
-A build reads the layout it writes. What it does with another one depends on
-who may have written it.
+Stored formats change with the code. A layout change deletes the reader of the
+one before it in the same change; a file in a layout this build does not read is
+refused, saying which version it holds, and nothing guesses at its bytes. Tilo
+is pre-alpha and every device runs the newest build, so no build but this one
+wrote those files, and dropping their readers costs nobody else's data.
 
-- **Resources** migrate with `#[resource(version, migrate)]`
-  ([resources.md](resources.md) §6). A migration is one change on top of the
-  document's history, so the document before it stays readable there: going
-  back to the build that wrote it loses nothing, and that build refuses the
-  migrated document instead of reading it as its own. A migration may refuse
-  a document it cannot bring up, with a reason: Notes says of a notebook
-  written before notes were kept as a record that it is not migrated, rather
-  than opening it empty.
-- **A file a machine may have missed updates on** is a
-  `tilo_files::native::migration::Format`: a version, the oldest version still
-  brought up, and one forward-only step per version. Loading an older file
-  copies it to `<file>.v<N>` first, then replaces it with the migrated bytes; a
-  newer file is refused untouched. Each step is tested against a file the
-  previous version wrote, and only that. The bytes the current version writes
-  are kept beside it as a golden fixture (`assert_golden_bytes`), read by
-  today's types and written back exactly, so a field added to, removed from or
-  moved in a persisted type fails a test instead of leaving stored files
-  unreadable. The host's governed workspace record, its wait list, its door,
-  its revocation log and its governed access are such formats. A format names
-  the versions it brings up, written out as numbers: a file of any other is
-  refused with the version it holds, never read under another layout.
+- **A version number always means the same bytes.** A stored format names its
+  version and keeps the bytes that version wrote beside it
+  (`golden/<name>/v<version>.hex`); a test reads them with today's types and
+  writes them back exactly, so a field added to, removed from or moved in a
+  stored type fails a test instead of being noticed when a machine's file stops
+  opening. A layout change is a new version with its own bytes.
+  `tools/policy/check_format_migrations.py` runs these checks.
+- **A resource carries its layout version in its document.** A resource that
+  changes its layout adds a `#[resource(version, migrate)]` step
+  ([resources.md](resources.md) §6). The step is one change on top of the
+  document's history, so it reaches every member with the rest of the record,
+  and a device at the older build refuses the migrated document instead of
+  reading it as its own. A migration may refuse a document it cannot read, with
+  a reason: Notes says of a notebook written before notes were kept as a record
+  that it is not migrated, rather than opening it empty.
 - **Signed bytes are never rewritten.** An invitation, a delegation and the
   rows a workspace's governance hashes are kept as their signer wrote them,
-  since their ids and signatures are over those bytes. Their own version names
-  their layout: a change to one takes a new version, and the reader of the
-  old one stays.
-- **What the live relay holds is tested.** `t test relay-upgrade` builds the
-  release the live tilo.sh relay runs (`tools/relay-upgrade/<release>`), has
-  that release's relay keep a Lounge (its owner and moderator, people at their
-  roles, an open invitation, a member's own workspace, a chat message), and
-  starts this checkout's relay on the state it left. A refusal, or anyone or
-  anything missing, fails it. It is one of the regular checks, so a change to
-  a stored layout either keeps it passing or adds the step that does. Moving
-  the live relay to a new release adds a directory there and moves the two
-  checks to it.
-- **What a 0.1 release sealed stays readable.** Those releases gave every
-  channel of a workspace an encryption group of its own; this build keys one
-  group by the workspace. A sealed op they wrote names its channel in its
-  encryption metadata and opens only under that channel's key for its epoch.
-  The host reads the content keys of each channel's state it kept
-  (`<channels>/<workspace>/channels/<channel>.peer`, left where it is) and
-  hands them to the workspace's new group as history, which reaches every
-  member it admits; those keys sit above every epoch the new group reaches,
-  open only what was sealed then, and never seal. The governing host founds
-  the new group, since those releases named no founder, and writes each
-  record again as a whole checkpoint under it.
-- **Grants a 0.1 release gave apps need none now.** Those releases made each
-  app a party a workspace granted to: every workspace granted the desktop
-  session's own app (`session-app`), Files (`files-app`) and quick settings
-  (`device-panel`), and an app a member who could change the workspace opened
-  was granted authorship of its own records (`app-author:<app>`). In this
-  build an app acts as the person whose session runs it, in its own node, so
-  what those grants allowed the person's role allows; bringing the
-  membership up writes no grant for them and logs each one with why. A grant
-  a 0.1 release kept that this build keeps nothing of (one to an app beyond
-  those, to an issue's work or a Shortcut) is logged as a warning with why;
-  `relay-upgrade` fails on any, and has members write through Notes and Files
-  after the upgrade.
-- **A file only this build writes** names the one version it writes and
-  refuses every other, saying which version it holds, instead of reading its
-  rows under rules written for another layout: the state a device keeps of a
-  workspace (`unsupported durable base version 3`), the invocation journal
-  (`invocation journal version or host unsupported`) and a notebook (Notes says
-  a notebook written before notes were kept as a record is not migrated, where
-  it would otherwise open it empty). Saved channel state says the most about
-  it: the bytes are authenticated and this device's own, but no build reaches
-  their layout, so they are dropped, the device asks to join the channel again,
-  and the keys only it held are gone — said as an error where it happens. Tilo
-  is pre-alpha, so no build but ours ever wrote these files and dropping their
-  readers costs nobody else's data. The mechanism for the change after them is
-  the `Format` above and a resource's migration step: a layout change adds its
-  reader there before anything ships at it.
-
+  since their ids and signatures are over those bytes.
+- **A file in an unknown layout says so.** A device's state of a workspace
+  (`unsupported durable base version`), an invocation journal, saved channel
+  state and a notebook each name the versions they read and refuse every other,
+  saying which version the file holds. Saved channel state says the most: the
+  bytes are authenticated and this device's own, but no build reaches their
+  layout, so they are dropped, the device asks to join the channel again, and
+  the keys only it held are gone — said as an error where it happens.

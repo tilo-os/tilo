@@ -38,10 +38,7 @@ fn start_with(
     secrets: &std::path::Path,
     extra: &[&str],
 ) -> std::io::Result<Workspace> {
-    // `warn` unless the run asks for more, as `tools/relay-upgrade/run.sh`
-    // does to say why an upgraded workspace did what it did.
-    let log = std::env::var("TILO_UPGRADE_RELAY_LOG").unwrap_or_else(|_| "warn".to_owned());
-    spawn_workspace(state, root_file, secrets, extra, &log, Stdio::inherit())
+    spawn_workspace(state, root_file, secrets, extra, "warn", Stdio::inherit())
 }
 
 /// The workspace on `state`, as [`start_with`] starts it, logging `log`
@@ -1509,7 +1506,3 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
     );
     workspace.stop();
 }
-
-/// What a release of tilo.sh opens: the Lounge an earlier release kept.
-#[path = "persistent_workspace/release_upgrade.rs"]
-mod release_upgrade;

@@ -3,8 +3,7 @@
 use super::{
     AutoCommit, Parked, PortableStorage, Rc, RecordCheckout, RecordId, RecordOpenError,
     RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
-    Reserved, Transactable, WORKSPACE, identity, meta_obj, transfer, validate_identity,
-    workspace_scope,
+    Reserved, Transactable, validate_identity,
 };
 // The browser cache has its own key space (with a package-primary slot).
 use crate::portable_storage::StorageKey;
@@ -62,9 +61,6 @@ impl RecordSet {
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
         let target = key(&self.app_id, &self.home, &want.id);
-        if cache.get(&target).is_none() {
-            self.take_from_retired_workspace_in_cache(cache, want)?;
-        }
         let value = cache.get(&target).ok_or(RecordOpenError::MissingRecord)?;
         // Complete load: corrupt/truncated cache bytes remain untouched for recovery.
         let mut doc = AutoCommit::load_with_options(
@@ -95,52 +91,6 @@ impl RecordSet {
         );
         Ok(RecordOpenOutcome::Loaded)
     }
-    /// [`RecordSet::take_from_retired_workspace`] for a cache with its own key
-    /// space: a record of the person's still kept in the workspace their
-    /// records were filed under before their own store existed is read there,
-    /// stamped into the scope they have now and written under the same record
-    /// id, with the whole history it had.
-    fn take_from_retired_workspace_in_cache(
-        &self,
-        cache: &PortableStorage,
-        want: &RecordCheckout,
-    ) -> Result<(), RecordOpenError> {
-        let Some(retired) = self.retired.as_deref() else {
-            return Ok(());
-        };
-        let Some(former) = cache.get(&key(&self.app_id, retired, &want.id)) else {
-            return Ok(());
-        };
-        let mut doc = AutoCommit::load_with_options(
-            &former.bytes,
-            automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Error),
-        )
-        .map_err(error)?;
-        if identity(&doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
-            || workspace_scope(&doc).as_deref() != Some(retired)
-            || transfer::is_retired(&doc)
-        {
-            return Ok(());
-        }
-        let Some(metadata) = meta_obj(&mut doc) else {
-            return Ok(());
-        };
-        doc.put(&metadata, "home", &self.home).map_err(error)?;
-        doc.put(&metadata, WORKSPACE, &self.home).map_err(error)?;
-        doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
-        );
-        let actor = doc.get_actor().to_bytes().to_vec();
-        cache
-            .put_document(
-                key(&self.app_id, &self.home, &want.id),
-                &mut doc,
-                Some(actor),
-            )
-            .map_err(error)
-    }
-
     pub(super) fn offer_portable_record(&mut self, id: &RecordId) -> Result<(), String> {
         let cache = self
             .portable

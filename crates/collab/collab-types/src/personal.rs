@@ -54,28 +54,6 @@ pub fn personal_cluster_of(person: &str) -> Option<uuid::Uuid> {
     Some(personal_cluster(&key))
 }
 
-/// The workspace id records of one person were kept under before their store
-/// existed: the person room, which no longer exists.
-///
-/// Read-only, and only by the migration that moves what was stored there into
-/// the person's own store (their own scope's records, keyed in the device's
-/// own store by this id). Never write under it and never derive it for a new
-/// record: a device that never had one starts empty.
-#[must_use]
-pub fn retired_person_workspace(root: &[u8; 32]) -> uuid::Uuid {
-    /// The retired derivation's domain, kept so the old key can be found.
-    const RETIRED_DOMAIN: &[u8] = b"tilo-person-room-v1\0";
-    let digest = Sha256::new()
-        .chain_update(RETIRED_DOMAIN)
-        .chain_update(root)
-        .finalize();
-    let mut bytes = [0u8; 16];
-    for (byte, digested) in bytes.iter_mut().zip(digest) {
-        *byte = digested;
-    }
-    uuid::Builder::from_custom_bytes(bytes).into_uuid()
-}
-
 /// What every person record's id derives from: the app's base record
 /// (`tab:0`), whose role the person's record of a kind plays.
 const PERSON_RECORD_BASE: &str = "tab:0000000000000000";
@@ -146,11 +124,6 @@ mod tests {
             assert_eq!(personal_cluster_of(&hex::encode(ada)), Some(cluster));
             assert_eq!(personal_cluster_of("not a key"), None);
             assert_eq!(personal_cluster_of(&hex::encode([1u8; 31])), None);
-            assert_ne!(
-                cluster,
-                retired_person_workspace(&ada),
-                "the store is not the room its records were kept in"
-            );
         }
     }
 }

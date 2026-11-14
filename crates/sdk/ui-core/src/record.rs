@@ -15,8 +15,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use crate::portable_storage::PortableStorage;
-mod personal_scope;
-use personal_scope::PersonScope;
 mod portable;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -518,9 +516,6 @@ pub struct RecordSet {
     /// record of an app is one record on every device they use, in their store rather than a
     /// workspace's.
     person: Option<uuid::Uuid>,
-    /// The workspace this person's records were kept in before their own store existed: a record
-    /// whose own key holds nothing is read here once and taken into their scope.
-    retired: Option<String>,
     open: HashMap<RecordId, Parked>,
     /// Names currently granted by the workspace index. Discovery is separate from `open`: a hostile
     /// or merely large index must not create local replicas or subscribe the app to unrelated
@@ -616,7 +611,6 @@ impl RecordSet {
             app_id: app_id.into(),
             home: home.into(),
             person: None,
-            retired: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -651,7 +645,6 @@ impl RecordSet {
             app_id: AppId::default(),
             home: String::new(),
             person: None,
-            retired: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -1375,25 +1368,22 @@ impl RecordSet {
             let autosave = app_state::DocWriter::try_start(&owner)?;
             (doc, autosave)
         } else {
-            // Nothing under the new id: a record kept before the person's own store existed, or a
-            // former identity's, is written in full under the new key before it is shown.
-            let mut doc = match self.take_from_retired_workspace(&backend, want)? {
-                Some(taken) => taken,
-                None => adopt_former(
-                    &backend,
-                    want,
-                    &self.home,
-                    |former| StorageKey::document(&self.app_id, &self.home, former.storage_key()),
-                    |key| {
-                        Ok(
-                            app_state::DocOwner::acquire(Rc::clone(&backend), key.clone())?
-                                .load_complete()?
-                                .map(|loaded| loaded.document().clone()),
-                        )
-                    },
-                )?
-                .ok_or(RecordOpenError::MissingRecord)?,
-            };
+            // Nothing under the new id: a former identity's record is written in full under the new
+            // key before it is shown.
+            let mut doc = adopt_former(
+                &backend,
+                want,
+                &self.home,
+                |former| StorageKey::document(&self.app_id, &self.home, former.storage_key()),
+                |key| {
+                    Ok(
+                        app_state::DocOwner::acquire(Rc::clone(&backend), key.clone())?
+                            .load_complete()?
+                            .map(|loaded| loaded.document().clone()),
+                    )
+                },
+            )?
+            .ok_or(RecordOpenError::MissingRecord)?;
             doc.set_actor(owner.actor());
             if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home)) {
                 return Err(RecordOpenError::IdentityMismatch);
@@ -1645,7 +1635,7 @@ impl RecordOwners {
             app_id,
             person::PERSONAL_SCOPE,
             false,
-            PersonScope::of(person),
+            collab_types::personal_cluster_of(person),
         )
     }
 
@@ -1663,7 +1653,7 @@ impl RecordOwners {
         app_id: &str,
         workspace_id: &str,
         joins_construction: bool,
-        person: Option<PersonScope>,
+        person: Option<uuid::Uuid>,
     ) -> Result<RecordStore, RecordOpenError> {
         // A cluster of the person's own routes their own scope only: a
         // workspace's records name the workspace.
@@ -1691,8 +1681,7 @@ impl RecordOwners {
         let store = RecordStore::new(RecordSet {
             app_id: app_id.into(),
             home: workspace_id.to_owned(),
-            person: person.as_ref().map(|person| person.cluster),
-            retired: person.map(|person| person.retired),
+            person,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -2475,23 +2464,14 @@ impl RecordStore {
             .map(|(_, index)| index)
             .collect();
         if !set.home.is_empty() {
-            // What the person kept before their own store existed is listed with what it holds now:
-            // asking for a part opens it, which takes that record into the store.
-            let kept: Vec<String> = std::iter::once(set.home.as_str())
-                .chain(set.retired.as_deref())
-                .flat_map(|workspace| {
-                    match (
-                        &set.portable,
-                        set.backend.as_ref().or(set.documents.as_ref()),
-                    ) {
-                        (Some(cache), _) => cache.records(&set.app_id, workspace),
-                        (None, Some(store)) => {
-                            store.documents(&set.app_id, workspace).unwrap_or_default()
-                        }
-                        (None, None) => Vec::new(),
-                    }
-                })
-                .collect();
+            let kept = match (
+                &set.portable,
+                set.backend.as_ref().or(set.documents.as_ref()),
+            ) {
+                (Some(cache), _) => cache.records(&set.app_id, &set.home),
+                (None, Some(store)) => store.documents(&set.app_id, &set.home).unwrap_or_default(),
+                (None, None) => Vec::new(),
+            };
             // A portable cache keys a record by its id, a store by its
             // storage key.
             held.extend(kept.iter().filter_map(|key| {
@@ -2590,17 +2570,11 @@ impl RecordStore {
                 return Vec::new();
             }
         };
-        // Windows of the person's kept before their own store existed are listed with the ones it
-        // starts here; opening one takes it into the store.
-        let ids = keys
+        let mut found = keys
             .iter()
             .filter_map(|key| RecordId::window_default_of_storage_key(key))
+            .filter_map(|id| Some((id.clone(), read_record(&store, &package, &home, &id, kind)?)))
             .collect::<Vec<_>>();
-        let mut found = ids
-            .iter()
-            .filter_map(|id| Some((id.clone(), read_record(&store, &package, &home, id, kind)?)))
-            .collect::<Vec<_>>();
-        found.extend(self.0.borrow().retired_window_records(&store, kind, &ids));
         found.compact_sort_by(|a, b| a.0.cmp(&b.0));
         found
     }
