@@ -742,28 +742,32 @@ pub fn cell_edits(workbook: &Workbook, id: &Id, cells: &[(Addr, Cell)]) -> Vec<E
 mod tests {
     use super::*;
 
-    #[test]
-    fn writing_past_the_sheet_adds_the_same_rows_on_every_device() {
-        let mut ours = Sheet::named("S");
-        let mut theirs = ours.clone();
-        ours.write((1, 2), Cell::of("x"));
-        theirs.write((0, 2), Cell::of("y"));
-        let rows = |sheet: &Sheet| sheet.layout().rows().to_vec();
-        assert_eq!(rows(&ours), rows(&theirs), "the same row ids");
-        assert_eq!(
-            ours.snapshot().raw.get(&(1, 2)).map(String::as_str),
-            Some("x")
-        );
-        ours.write((1, 2), Cell::default());
-        assert!(ours.snapshot().raw.is_empty(), "a blank write clears");
-    }
+    tilo_test_env::scenario! {
+        fn a_sheets_rows_and_areas_hold_their_place;
 
-    #[test]
-    fn an_area_moves_with_the_rows_around_it() {
-        let mut sheet = Sheet::named("S");
-        let area = sheet.area((1, 1), (2, 3)).unwrap();
-        sheet.cells.insert_row(0, Id::from_raw("new"));
-        let layout = sheet.layout();
-        assert_eq!(Sheet::corners(&layout, &area), Some(((1, 2), (2, 4))));
+        phase writing_past_the_sheet_adds_the_same_rows_on_every_device;
+        {
+            let mut ours = Sheet::named("S");
+            let mut theirs = ours.clone();
+            ours.write((1, 2), Cell::of("x"));
+            theirs.write((0, 2), Cell::of("y"));
+            let rows = |sheet: &Sheet| sheet.layout().rows().to_vec();
+            assert_eq!(rows(&ours), rows(&theirs), "the same row ids");
+            assert_eq!(
+                ours.snapshot().raw.get(&(1, 2)).map(String::as_str),
+                Some("x")
+            );
+            ours.write((1, 2), Cell::default());
+            assert!(ours.snapshot().raw.is_empty(), "a blank write clears");
+        }
+
+        phase an_area_moves_with_the_rows_around_it;
+        {
+            let mut sheet = Sheet::named("S");
+            let area = sheet.area((1, 1), (2, 3)).unwrap();
+            sheet.cells.insert_row(0, Id::from_raw("new"));
+            let layout = sheet.layout();
+            assert_eq!(Sheet::corners(&layout, &area), Some(((1, 2), (2, 4))));
+        }
     }
 }

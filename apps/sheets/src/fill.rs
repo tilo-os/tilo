@@ -503,149 +503,153 @@ mod tests {
         out.iter().map(|o| o.raw.clone()).collect()
     }
 
-    #[test]
-    fn numeric_and_formula_fills_extrapolate() {
-        {
-            let pat = [FillCell::new(
-                "=A1",
-                CellValue::Number(0.0),
-                CellFormat::General,
-            )];
-            assert_eq!(
-                raws(&extend_series(&pat, 3, 0, 1)),
-                vec!["=A2", "=A3", "=A4"]
-            );
-            assert_eq!(
-                raws(&extend_series(&pat, 3, 1, 0)),
-                vec!["=B1", "=C1", "=D1"]
-            );
-            let anch = [FillCell::new(
-                "=$A$1+B1",
-                CellValue::Number(0.0),
-                CellFormat::General,
-            )];
-            assert_eq!(
-                raws(&extend_series(&anch, 2, 0, 1)),
-                vec!["=$A$1+B2", "=$A$1+B3"]
-            );
-        }
+    tilo_test_env::scenario! {
+        fn fills_continue_their_series;
 
+        phase numeric_and_formula_fills_extrapolate;
         {
-            let pat = [num(1.0), num(2.0)];
-            assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["3", "4", "5"]);
-            let pat = [num(2.0), num(4.0)];
-            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["6", "8"]);
-            let pat = [num(10.0), num(7.0)];
-            assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["4", "1", "-2"]);
-        }
-
-        {
-            let pat = [num(2.0), num(4.0), num(6.0)];
-            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["8", "10"]);
-        }
-
-        {
-            let pat = [num(7.0)];
-            assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["7", "7", "7"]);
-        }
-    }
-
-    #[test]
-    fn date_name_and_text_fills_continue_their_pattern() {
-        {
-            let pat = [date(2024, 1, 1)];
-            let out = extend_series(&pat, 2, 0, 1);
-            assert_eq!(out.len(), 2);
-            for o in &out {
-                assert!(matches!(o.fmt, CellFormat::Date(_)));
+            {
+                let pat = [FillCell::new(
+                    "=A1",
+                    CellValue::Number(0.0),
+                    CellFormat::General,
+                )];
+                assert_eq!(
+                    raws(&extend_series(&pat, 3, 0, 1)),
+                    vec!["=A2", "=A3", "=A4"]
+                );
+                assert_eq!(
+                    raws(&extend_series(&pat, 3, 1, 0)),
+                    vec!["=B1", "=C1", "=D1"]
+                );
+                let anch = [FillCell::new(
+                    "=$A$1+B1",
+                    CellValue::Number(0.0),
+                    CellFormat::General,
+                )];
+                assert_eq!(
+                    raws(&extend_series(&anch, 2, 0, 1)),
+                    vec!["=$A$1+B2", "=$A$1+B3"]
+                );
             }
-            let s0: f64 = out[0].raw.parse().unwrap();
-            let s1: f64 = out[1].raw.parse().unwrap();
-            assert_eq!(
-                crate::model::serial_to_date(s0, DateStyle::Iso),
-                "2024-01-02"
-            );
-            assert_eq!(
-                crate::model::serial_to_date(s1, DateStyle::Iso),
-                "2024-01-03"
-            );
-            let pat = [date(2024, 1, 1), date(2024, 1, 8)];
-            let out = extend_series(&pat, 1, 0, 1);
-            let s: f64 = out[0].raw.parse().unwrap();
-            assert_eq!(
-                crate::model::serial_to_date(s, DateStyle::Iso),
-                "2024-01-15"
-            );
+
+            {
+                let pat = [num(1.0), num(2.0)];
+                assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["3", "4", "5"]);
+                let pat = [num(2.0), num(4.0)];
+                assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["6", "8"]);
+                let pat = [num(10.0), num(7.0)];
+                assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["4", "1", "-2"]);
+            }
+
+            {
+                let pat = [num(2.0), num(4.0), num(6.0)];
+                assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["8", "10"]);
+            }
+
+            {
+                let pat = [num(7.0)];
+                assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["7", "7", "7"]);
+            }
         }
 
+        phase date_name_and_text_fills_continue_their_pattern;
         {
-            let pat = [date(2024, 1, 15), date(2024, 2, 15)];
-            let out = extend_series(&pat, 2, 0, 1);
-            let s0: f64 = out[0].raw.parse().unwrap();
-            let s1: f64 = out[1].raw.parse().unwrap();
-            assert_eq!(
-                crate::model::serial_to_date(s0, DateStyle::Iso),
-                "2024-03-15"
-            );
-            assert_eq!(
-                crate::model::serial_to_date(s1, DateStyle::Iso),
-                "2024-04-15"
-            );
-            let pat = [date(2023, 10, 31), date(2023, 12, 31)];
-            let out = extend_series(&pat, 2, 0, 1);
-            let s0: f64 = out[0].raw.parse().unwrap();
-            let s1: f64 = out[1].raw.parse().unwrap();
-            assert_eq!(
-                crate::model::serial_to_date(s0, DateStyle::Iso),
-                "2024-02-29"
-            );
-            assert_eq!(
-                crate::model::serial_to_date(s1, DateStyle::Iso),
-                "2024-04-30"
-            );
-        }
+            {
+                let pat = [date(2024, 1, 1)];
+                let out = extend_series(&pat, 2, 0, 1);
+                assert_eq!(out.len(), 2);
+                for o in &out {
+                    assert!(matches!(o.fmt, CellFormat::Date(_)));
+                }
+                let s0: f64 = out[0].raw.parse().unwrap();
+                let s1: f64 = out[1].raw.parse().unwrap();
+                assert_eq!(
+                    crate::model::serial_to_date(s0, DateStyle::Iso),
+                    "2024-01-02"
+                );
+                assert_eq!(
+                    crate::model::serial_to_date(s1, DateStyle::Iso),
+                    "2024-01-03"
+                );
+                let pat = [date(2024, 1, 1), date(2024, 1, 8)];
+                let out = extend_series(&pat, 1, 0, 1);
+                let s: f64 = out[0].raw.parse().unwrap();
+                assert_eq!(
+                    crate::model::serial_to_date(s, DateStyle::Iso),
+                    "2024-01-15"
+                );
+            }
 
-        {
-            let pat = [text("Jan")];
-            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Feb", "Mar"]);
-            let pat = [text("November"), text("December")];
-            assert_eq!(
-                raws(&extend_series(&pat, 2, 0, 1)),
-                vec!["January", "February"]
-            );
-            let pat = [text("Mon"), text("Wed")];
-            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Fri", "Sun"]);
-        }
+            {
+                let pat = [date(2024, 1, 15), date(2024, 2, 15)];
+                let out = extend_series(&pat, 2, 0, 1);
+                let s0: f64 = out[0].raw.parse().unwrap();
+                let s1: f64 = out[1].raw.parse().unwrap();
+                assert_eq!(
+                    crate::model::serial_to_date(s0, DateStyle::Iso),
+                    "2024-03-15"
+                );
+                assert_eq!(
+                    crate::model::serial_to_date(s1, DateStyle::Iso),
+                    "2024-04-15"
+                );
+                let pat = [date(2023, 10, 31), date(2023, 12, 31)];
+                let out = extend_series(&pat, 2, 0, 1);
+                let s0: f64 = out[0].raw.parse().unwrap();
+                let s1: f64 = out[1].raw.parse().unwrap();
+                assert_eq!(
+                    crate::model::serial_to_date(s0, DateStyle::Iso),
+                    "2024-02-29"
+                );
+                assert_eq!(
+                    crate::model::serial_to_date(s1, DateStyle::Iso),
+                    "2024-04-30"
+                );
+            }
 
-        {
-            let pat = [text("Item 1")];
-            assert_eq!(
-                raws(&extend_series(&pat, 2, 0, 1)),
-                vec!["Item 2", "Item 3"]
-            );
-            let pat = [text("Q1"), text("Q3")];
-            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Q5", "Q7"]);
-            let pat = [text("Row-01")];
-            assert_eq!(
-                raws(&extend_series(&pat, 2, 0, 1)),
-                vec!["Row-02", "Row-03"]
-            );
-        }
+            {
+                let pat = [text("Jan")];
+                assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Feb", "Mar"]);
+                let pat = [text("November"), text("December")];
+                assert_eq!(
+                    raws(&extend_series(&pat, 2, 0, 1)),
+                    vec!["January", "February"]
+                );
+                let pat = [text("Mon"), text("Wed")];
+                assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Fri", "Sun"]);
+            }
 
-        {
-            let pat = [text("Hello")];
-            assert_eq!(
-                raws(&extend_series(&pat, 3, 0, 1)),
-                vec!["Hello", "Hello", "Hello"]
-            );
-        }
+            {
+                let pat = [text("Item 1")];
+                assert_eq!(
+                    raws(&extend_series(&pat, 2, 0, 1)),
+                    vec!["Item 2", "Item 3"]
+                );
+                let pat = [text("Q1"), text("Q3")];
+                assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Q5", "Q7"]);
+                let pat = [text("Row-01")];
+                assert_eq!(
+                    raws(&extend_series(&pat, 2, 0, 1)),
+                    vec!["Row-02", "Row-03"]
+                );
+            }
 
-        {
-            let pat = [num(5.0), text("x")];
-            assert_eq!(
-                raws(&extend_series(&pat, 4, 0, 1)),
-                vec!["5", "x", "5", "x"]
-            );
+            {
+                let pat = [text("Hello")];
+                assert_eq!(
+                    raws(&extend_series(&pat, 3, 0, 1)),
+                    vec!["Hello", "Hello", "Hello"]
+                );
+            }
+
+            {
+                let pat = [num(5.0), text("x")];
+                assert_eq!(
+                    raws(&extend_series(&pat, 4, 0, 1)),
+                    vec!["5", "x", "5", "x"]
+                );
+            }
         }
     }
 }
