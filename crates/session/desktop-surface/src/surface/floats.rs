@@ -230,12 +230,19 @@ pub(super) fn dock(shared: &mut Shared, strip: StripId, row: &GroupRow, group: u
             size: (at.width(), at.height()),
         },
     );
-    set(
-        shared,
-        strip,
-        group,
-        Some(FloatPlace::of_rect(area, place_of(at))),
-    )
+    let place = FloatPlace::of_rect(area, place_of(at));
+    let asked = set(shared, strip, group, Some(place));
+    // The record keeps where the card stands as it opens, so every member finds it there, not
+    // only the host that turns the ask into an arranging action.
+    if let Some(workspace) = shared
+        .tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
+    {
+        workspace.arrangement.set_float(group, Some(place));
+    }
+    asked
 }
 
 /// Float the window `group` of `strip` again: a window that opened as a card goes back to the
