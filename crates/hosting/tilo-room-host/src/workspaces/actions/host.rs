@@ -748,9 +748,16 @@ impl Workspaces {
         {
             return Err(refused(&NOT_YOUR_OWN));
         }
-        let making = own
-            .making(moving.map_or_else(|| hex::encode(person), str::to_owned))
-            .await;
+        // What could be made twice at once waits for the first: a workspace
+        // the ask names (a retried create answers the one the first made),
+        // and a person's own workspace asked for by no name (two of their
+        // devices asking at once get one). A named new workspace has a fresh
+        // identity of its own, so a backend's hundreds are made side by side.
+        let making = match (moving, name) {
+            (Some(room), _) => Some(own.making(room.to_owned()).await),
+            (None, None) => Some(own.making(hex::encode(person)).await),
+            (None, Some(_)) => None,
+        };
         let mine = own.of(&person);
         let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
         let summary = if let Some(moving) = theirs {

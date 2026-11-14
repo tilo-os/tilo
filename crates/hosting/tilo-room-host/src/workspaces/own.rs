@@ -149,10 +149,10 @@ impl OwnWorkspaces {
     /// Wait until nothing else is making a workspace under `name`, and hold
     /// it while this one is made: the workspace's id when the ask names one
     /// (a retried create waits for the first and answers the workspace it
-    /// made), else the person (two of their devices asking for their
-    /// workspace at once are answered in the order they were recorded).
-    /// Workspaces under other names are made side by side: a backend making
-    /// hundreds at once waits for none but its own retries.
+    /// made), else, for an ask that names no workspace and no name, the
+    /// person (two of their devices asking for their workspace at once are
+    /// answered in the order they were recorded). A named new workspace takes
+    /// no lock: a backend making hundreds at once waits for none of them.
     pub(super) async fn making(&self, name: String) -> tokio::sync::OwnedMutexGuard<()> {
         let held = {
             let mut making = self.making.lock_recover();

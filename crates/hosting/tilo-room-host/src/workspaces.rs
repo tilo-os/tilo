@@ -32,6 +32,7 @@ mod authority;
 mod channel_governance;
 mod collaboration;
 mod content;
+mod creating;
 mod delete;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -954,9 +955,8 @@ struct WorkspacesInner {
     /// The work this host runs for its workspaces' devices: none until an
     /// embedder hands it a job runner ([`Workspaces::run_jobs`]).
     jobs: Arc<device_plane::HostWork>,
-    /// Held while a workspace is created: two devices placing the same workspace at
-    /// once create it once.
-    creating: AsyncMutex<()>,
+    /// Who waits for whom while workspaces are created ([`Creating`]).
+    creating: creating::Creating,
     calls: Arc<voice::Calls>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
@@ -1252,7 +1252,7 @@ impl Workspaces {
                 jobs,
                 workspaces,
                 calls: Arc::default(),
-                creating: AsyncMutex::new(()),
+                creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 deletions: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
@@ -1416,7 +1416,16 @@ impl Workspaces {
         name: &str,
         workspace: Option<&str>,
     ) -> Result<WorkspaceSummary, String> {
-        let _creating = self.inner.creating.lock().await;
+        // A workspace placed under an identity waits for another placing the
+        // same one, so two devices placing it at once create it once. Others
+        // are made side by side, a few at a time: making one writes and syncs
+        // its files on this runtime's threads, which every other request needs
+        // too.
+        let _same = match workspace {
+            Some(workspace) => Some(self.inner.creating.one(workspace).await),
+            None => None,
+        };
+        let _turn = self.inner.creating.turn().await;
         if let Some(workspace) = workspace
             && self.inner.workspaces.lock().await.contains_key(workspace)
         {
