@@ -41,7 +41,10 @@ function desktopNavigation(windows) {
     async dispatch(command) {
       commands.push(command);
       const route = {workspace: '1', strip: '1', group: '7', tab: '8'};
-      queueMicrotask(() => show({generation: 'g1', active: route, entries: [...windows, {route, app: command.args?.app}]}));
+      // A launch on a record (`record:<app>:<record>`) opens the app's window on it.
+      const [, app, record] = /^record:([^:]+):(.+)$/.exec(command.args?.app ?? '') ?? [null, command.args?.app];
+      queueMicrotask(() => show({generation: 'g1', active: route,
+        entries: [...windows, {route, app, ...(record ? {record} : {})}]}));
     },
   }};
 }
@@ -56,6 +59,20 @@ test('desktop mode opens the app through navigation, then the view through its w
   await openTarget({mount, navigation, mode: 'desktop', target: {app: 'so.tilo.chat', record: '', resource: message}});
   assert.deepEqual(commands, [{effect: 'show-app', args: {app: 'so.tilo.chat'}}]);
   assert.deepEqual(invoked, [[message.id, 'reveal', {}, {window: '8'}]]);
+});
+
+test('a desktop link to a document opens a window on it, not the app full tab', async () => {
+  const notes = {workspace: '1', strip: '1', group: '3', tab: '4'};
+  // A Notes window on another document is in front: it is not the one the link names.
+  const {commands, navigation} = desktopNavigation([{route: notes, app: 'so.tilo.notes', record: 'uuid:other'}]);
+  const mount = {actions: () => [], invokeAction: () => ({state: 'completed'})};
+  await openTarget({mount, navigation, mode: 'desktop', target: {app: 'so.tilo.notes', record: 'uuid:plan'}});
+  assert.deepEqual(commands, [{effect: 'open-app', args: {app: 'record:so.tilo.notes:uuid:plan'}}]);
+  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const shown = await present({route: {mode: 'desktop', target: {scope, app: 'so.tilo.notes', record: 'uuid:plan'}},
+    surface: {}, mountDesktop: async () => ({navigation: desktopNavigation([]).navigation})});
+  assert.equal(shown.redirect, undefined, 'the desktop shows the document among the other windows');
+  assert.ok(shown.navigation);
 });
 
 test('a refused view reads like a missing one', async () => {
@@ -854,10 +871,10 @@ test('a link opened inside the desktop names its view in the address, and focus 
     parse: () => ({mode: 'desktop', target: {scope}})});
   const written = [];
   page.runtime.formatLink = route => { written.push(JSON.parse(route).target); return `https://acme.example/open/#${written.length}`; };
-  // The app's window is in front from the start, so showing the link's
-  // resource needs no navigation command.
+  // The app's window on the link's record is in front from the start, so
+  // showing the link's resource needs no navigation command.
   const inFront = {workspace: '1', strip: '1', group: '7', tab: '8'};
-  const snapshot = {generation: 'g', active: inFront, entries: [{route: inFront, app: 'so.tilo.chat'}]};
+  const snapshot = {generation: 'g', active: inFront, entries: [{route: inFront, app: 'so.tilo.chat', record: 'c1'}]};
   const listeners = new Set();
   const navigation = {
     getSnapshot: () => snapshot,

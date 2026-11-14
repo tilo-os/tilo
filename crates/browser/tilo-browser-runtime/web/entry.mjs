@@ -264,11 +264,6 @@ export async function present({route, peer, surface, mountDesktop, directory = n
     await openTarget({mount: mounted, target, mode});
     return {mount: mounted};
   }
-  if (target.record) {
-    // The desktop opens an app on its primary record; a document of its own
-    // opens full tab, where the mount names the record.
-    return {redirect: 'app'};
-  }
   const mounted = await mount(surface, {...shown, onStatus, onNavigation: controller => {
     navigation = controller;
     onNavigation?.(controller);
@@ -426,10 +421,6 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       ...(linkOffer ? {linkOffer} : {}),
       ...(invite ? {invite} : {}), ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
-  if (shown.redirect) {
-    window.location.replace(link.format({mode: shown.redirect, target: route.target}));
-    return null;
-  }
   // `show` reads the router it was given, so the address can name what a
   // link opened once it is shown.
   let router;

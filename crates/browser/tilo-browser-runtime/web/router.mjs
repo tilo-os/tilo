@@ -6,12 +6,16 @@
  * through Tilo rather than leaving it:
  * - push when this person opens something: a link they follow in the page
  *   (`open`), or a window they open on the desktop (a search hit, a launch);
+ * - name the document the window in front shows, as a link to it does (the
+ *   record each snapshot entry names, the one `share-link` names): the
+ *   address is what another member pastes to see the same thing;
  * - push when they move to another app's window already open, unless they
  *   left the last one within `FOCUS_SETTLE_MS`: then they were passing
  *   through it (a spun wheel, arrows held down), and the window they stop
  *   at replaces it, so Back goes where they were, not one step of the way;
  * - replace to write the canonical form of a link the page was opened with,
- *   or a deeper address within the app in front;
+ *   or a deeper address within the window in front (its record once it
+ *   bound one, the view a link opened in it);
  * - never for anything else. Collaborators' and agents' windows open on
  *   their own strips, so they never move this person's focus or URL.
  * Back, Forward and a hand-edited fragment parse the URL and show its
@@ -35,17 +39,26 @@ export const FOCUS_SETTLE_MS = 1000;
 
 const sameTarget = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
-/** The target a snapshot's focused window stands for, keeping `current`'s
- * deeper address while the same app stays in front. */
+/** The target a snapshot's focused window stands for: its app and the
+ * record it shows, keeping `current`'s deeper address (the resource and view
+ * a link opened) while the same document stays in front. */
 function focusedTarget(snapshot, current) {
-  const active = snapshot?.active;
-  const same = route => active && route.workspace === active.workspace && route.strip === active.strip
-    && route.group === active.group && route.tab === active.tab;
-  const app = snapshot?.entries?.find(entry => same(entry.route))?.app ?? null;
+  const entry = focusedEntry(snapshot);
+  const app = entry?.app ?? null;
   const scope = current.target.scope;
   if (!app) return {scope};
-  if (app === current.target.app) return current.target;
-  return {scope, app};
+  // An app's primary record is named by the app alone, as a link names it.
+  const record = entry.record || '';
+  if (app === current.target.app && record === (current.target.record || '')) return current.target;
+  return {scope, app, ...(record ? {record} : {})};
+}
+
+/** The snapshot entry of the window in front, or `undefined`. */
+function focusedEntry(snapshot) {
+  const active = snapshot?.active;
+  if (!active) return undefined;
+  return snapshot.entries?.find(({route}) => route.workspace === active.workspace && route.strip === active.strip
+    && route.group === active.group && route.tab === active.tab);
 }
 
 export function startRouter({
@@ -66,6 +79,10 @@ export function startRouter({
   // again is not taken for something they opened.
   let written = null;
   let knownTabs = null;
+  // The window the address names: a change to what that same window shows
+  // (the record it bound once its app arrived, a view within it) refines the
+  // entry in front rather than adding one.
+  let addressedTab = navigation?.getSnapshot?.()?.active?.tab ?? null;
   // While the router itself shows a route, the windows it opens are its
   // own doing: that history entry is written once, by the router.
   let showing = 0;
@@ -133,16 +150,22 @@ export function startRouter({
     const tabs = new Set((snapshot.entries ?? []).map(entry => entry.route.tab));
     const opened = knownTabs !== null && snapshot.active && !knownTabs.has(snapshot.active.tab);
     knownTabs = tabs;
-    if (showing > 0) return;
+    if (showing > 0) {
+      addressedTab = snapshot.active?.tab ?? null;
+      return;
+    }
     const target = focusedTarget(snapshot, current);
+    const tab = snapshot.active?.tab ?? null;
+    const sameWindow = tab !== null && tab === addressedTab;
+    addressedTab = tab;
     if (sameTarget(target, current.target)) return;
     const next = {mode: current.mode, target};
     if (opened) {
       write(next, 'push');
       return;
     }
-    if (target.app === current.target.app) {
-      // Deeper within the app in front: the same place, said more exactly.
+    if (target.app === current.target.app && (sameWindow || (target.record || '') === (current.target.record || ''))) {
+      // Deeper within the window in front: the same place, said more exactly.
       write(next, 'replace');
       return;
     }

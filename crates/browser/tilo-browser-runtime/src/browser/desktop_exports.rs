@@ -7,7 +7,10 @@ use wasm_bindgen::prelude::*;
 use super::{error, with_mount, with_mount_quietly};
 
 /// The desktop's `DesktopNavigationV1` snapshot as JSON; `None` for a
-/// single-application mount.
+/// single-application mount. Each entry also names the record its window
+/// shows (`record`, in the spelling links use: empty for the app's primary
+/// record), so the page's address can name the document in front, as a link
+/// to it does.
 ///
 /// # Errors
 ///
@@ -19,14 +22,41 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
         m.desktop
             .as_ref()
             .map(|d| {
-                serde_json::to_string(
-                    &d.handle
-                        .snapshot(&d.generation, crate::desktop::catalogue()),
-                )
-                .map_err(error)
+                let snapshot = d
+                    .handle
+                    .snapshot(&d.generation, crate::desktop::catalogue());
+                let records = d.handle.read(|tree| d.shared.window_records(tree));
+                let mut value = serde_json::to_value(&snapshot).map_err(error)?;
+                name_records(&mut value, &records);
+                serde_json::to_string(&value).map_err(error)
             })
             .transpose()
     })
+}
+
+/// Add each window's record to the snapshot's entries, by tab.
+fn name_records(snapshot: &mut serde_json::Value, records: &[(tilo_desktop_model::TabId, String)]) {
+    let Some(entries) = snapshot
+        .get_mut("entries")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for entry in entries {
+        let tab = entry
+            .pointer("/route/tab")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|tab| tab.parse::<u64>().ok());
+        let record = tab.and_then(|tab| {
+            records
+                .iter()
+                .find(|(id, _)| *id == tab)
+                .map(|(_, record)| record.clone())
+        });
+        if let (Some(record), Some(entry)) = (record, entry.as_object_mut()) {
+            entry.insert("record".into(), record.into());
+        }
+    }
 }
 
 /// Who holds the input on the desk, and the field an input method is helping

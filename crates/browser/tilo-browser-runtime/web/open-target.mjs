@@ -25,13 +25,37 @@ export function viewInvocation(actions, resource, viewId) {
   return {action: range.action, args: {[range.start_param]: start, [range.end_param]: end, [range.unit_param]: unit}};
 }
 
-/** The app of the focused window in a navigation snapshot, or null. */
-export function focusedApp(snapshot) {
+/** The snapshot entry of the focused window, or `undefined`. */
+function focusedEntry(snapshot) {
   const active = snapshot?.active;
-  if (!active) return null;
+  if (!active) return undefined;
   const same = route => route.workspace === active.workspace && route.strip === active.strip
     && route.group === active.group && route.tab === active.tab;
-  return snapshot.entries?.find(entry => same(entry.route))?.app ?? null;
+  return snapshot.entries?.find(entry => same(entry.route));
+}
+
+/** The app of the focused window in a navigation snapshot, or null. */
+export function focusedApp(snapshot) {
+  return focusedEntry(snapshot)?.app ?? null;
+}
+
+/** Whether the focused window shows `target`'s app on the record it names
+ * (any of the app's windows for its primary record, which a link names by
+ * the app alone). */
+export function showsTarget(snapshot, target) {
+  const entry = focusedEntry(snapshot);
+  if (!entry || entry.app !== target.app) return false;
+  return !target.record || entry.record === target.record;
+}
+
+/** The desktop verb that brings `target`'s window forward, or opens one: a
+ * window on the record a link names (`record:<app>:<record>`, the launch a
+ * search hit on a record makes, which brings a window already on it
+ * forward), else the app's own window. */
+export function showVerb(target) {
+  return target.record
+    ? {effect: 'open-app', args: {app: `record:${target.app}:${target.record}`}}
+    : {effect: 'show-app', args: {app: target.app}};
 }
 
 /** How many frames the desktop draws after a link's command before the
@@ -121,10 +145,8 @@ export async function openTarget({mount, navigation, target, mode, timers}) {
   if (mode === 'desktop') {
     if (!navigation) throw new Error('This desktop cannot follow links');
     const snapshot = navigation.getSnapshot();
-    if (focusedApp(snapshot) !== target.app) {
-      await navigation.dispatch({effect: 'show-app', args: {app: target.app}});
-    }
-    const shown = await untilSnapshot(navigation, next => focusedApp(next) === target.app, {timers, frames});
+    if (!showsTarget(snapshot, target)) await navigation.dispatch(showVerb(target));
+    const shown = await untilSnapshot(navigation, next => showsTarget(next, target), {timers, frames});
     window = shown.active.tab;
   }
   if (!target.resource) return;

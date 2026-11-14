@@ -638,6 +638,17 @@ impl Shared {
             .collect()
     }
 
+    /// The record each window of `tree` shows, in the spelling links and the shared desk use
+    /// (empty for the app's primary record): bound, or still waiting for the record a link or a
+    /// window named.
+    pub fn window_records(&self, tree: &DesktopTree) -> Vec<(TabId, String)> {
+        tilo_desktop_surface::host::records::live(
+            &self.records.borrow(),
+            &self.unbound.borrow(),
+            tree,
+        )
+    }
+
     pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
         self.records
             .borrow()

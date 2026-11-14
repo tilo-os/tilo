@@ -62,7 +62,7 @@ const scope = {kind: 'room', host: 'https://team.example', room: '0b5e7a62-4d0f-
 const route = (tab, extra = {}) => ({workspace: '1', strip: '2', group: `g${tab}`, tab, ...extra});
 const desk = (windows, active) => ({
   generation: 'g', active: active === undefined ? null : route(active),
-  entries: windows.map(([tab, app]) => ({route: route(tab), app, label: app})),
+  entries: windows.map(([tab, app, record]) => ({route: route(tab), app, label: app, ...(record ? {record} : {})})),
 });
 const chat = {scope, app: 'so.tilo.chat', record: '', resource: {kind: 'chat.channel', id: 'chat.channel:general'}};
 
@@ -264,5 +264,46 @@ test('windows the router itself opened never overwrite the view it named', async
   // the address again: it already holds what the router wrote.
   assert.deepEqual(window.writes, [['replace', link.format({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}})]]);
   assert.deepEqual(router.route.target, {scope, app: 'so.tilo.chat'});
+  router.stop();
+});
+
+test('the address names the document in front, and Back goes to the one before', async () => {
+  const clock = heldClock();
+  const windows = [['1', 'so.tilo.notes', 'uuid:plan'], ['2', 'so.tilo.notes', 'uuid:minutes'], ['3', 'so.tilo.chat']];
+  const plan = {scope, app: 'so.tilo.notes', record: 'uuid:plan'};
+  const navigation = fakeNavigation(desk(windows, '1'));
+  const window = fakeWindow(link.format({mode: 'desktop', target: {scope}}));
+  const shown = [];
+  const router = startRouter({window, link, navigation, now: clock.now, initial: {mode: 'desktop', target: {scope}},
+    show: async next => {
+      shown.push(next.target);
+      const tab = windows.find(([, app, record]) => app === next.target.app && (record ?? '') === (next.target.record ?? ''))[0];
+      navigation.emit(desk(windows, tab));
+    }});
+  clock.wait(5000);
+  navigation.emit(desk(windows, '1'));
+  clock.wait(5000);
+  navigation.emit(desk(windows, '2'));
+  clock.wait(5000);
+  navigation.emit(desk(windows, '3'));
+  assert.deepEqual(window.entries.slice(1).map(entry => link.parse(entry.url).target),
+    [plan, {scope, app: 'so.tilo.notes', record: 'uuid:minutes'}, {scope, app: 'so.tilo.chat'}],
+    'two documents of one app are two places; an app\u2019s primary record is named by the app alone');
+  await window.back();
+  await window.back();
+  assert.deepEqual(shown.at(-1), plan, 'Back opens the document before');
+  router.stop();
+});
+
+test('a window binding its record names it in the entry it opened, not a new one', async () => {
+  const navigation = fakeNavigation(desk([['1', 'so.tilo.chat']], '1'));
+  const window = fakeWindow(link.format({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}}));
+  const router = startRouter({window, link, navigation, initial: {mode: 'desktop', target: {scope, app: 'so.tilo.chat'}},
+    show: async () => {}});
+  navigation.emit(desk([['1', 'so.tilo.chat'], ['2', 'so.tilo.notes']], '2'));
+  // The app's code arrived and its window bound the document it shows.
+  navigation.emit(desk([['1', 'so.tilo.chat'], ['2', 'so.tilo.notes', 'uuid:plan']], '2'));
+  assert.equal(window.entries.length, 2, 'the open is one step');
+  assert.deepEqual(link.parse(window.entries[1].url).target, {scope, app: 'so.tilo.notes', record: 'uuid:plan'});
   router.stop();
 });
