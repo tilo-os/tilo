@@ -1975,8 +1975,16 @@ fn splice_gpu(
     gpu_granted: bool,
 ) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
     // An app without `gpu` draws through its workspace's render service: no node, no pin, no ICD
-    // probe.
+    // probe. Where it draws itself all the same it has no device for Mesa's device-select layer to
+    // prefer, and the layer, which crashed such apps at a session's start, is off.
     if !gpu_granted {
+        let entry = pop_entry(argv)?;
+        argv.extend([
+            "--setenv".to_string(),
+            crate::gpu::NO_DEVICE_SELECT_ENV.to_string(),
+            "1".to_string(),
+        ]);
+        argv.push(entry);
         return Ok((None, None));
     }
     let entry = pop_entry(argv)?;
@@ -5593,7 +5601,7 @@ mod render_service_launch_tests {
     tilo_test_env::scenario! {
         fn an_app_gets_a_gpu_only_when_it_declares_one;
 
-        phase an_app_without_gpu_gets_no_device_and_no_graphics_setup;
+        phase an_app_without_gpu_gets_no_device_and_no_graphics_setup_but_the_layer_switch;
         // An app that draws through its workspace's render service: no GPU node, no loader pin, no
         // shader-cache seed, and none of the probing they cost, even with a render node and a session seed
         // to hand out.
@@ -5628,7 +5636,15 @@ mod render_service_launch_tests {
             )
             .unwrap();
             assert!(gpu.is_none() && seed.is_none());
-            assert_eq!(argv, vec!["/app/calculator".to_owned()], "nothing spliced");
+            // No GPU reaches it: no device node, no grant, no loader pin, no seed. The one thing
+            // set is loader hygiene: Mesa's implicit device-select layer is off, which an app
+            // drawing itself without a device crashed in (`native-render-prepare`, at a session's
+            // start on a machine without 3D).
+            assert_eq!(
+                argv,
+                ["--setenv", crate::gpu::NO_DEVICE_SELECT_ENV, "1", "/app/calculator"],
+                "nothing but the layer switch spliced"
+            );
         }
 
         phase an_app_declaring_gpu_gets_its_device;
