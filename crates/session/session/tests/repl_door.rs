@@ -79,7 +79,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     let (desk, failed) = repl.call(session, "tilo_ls", &json!({"path": "session"}));
     assert!(!failed, "{desk}");
     assert!(
-        desk.contains("shell:arrangement") || desk.contains("arrangement"),
+        desk.lines().any(|line| line.starts_with("Layout/")),
         "the arrangement is among the session's resources: {desk}"
     );
 
