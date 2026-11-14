@@ -83,6 +83,10 @@ pub enum HostOperation {
     /// Read the caller's person's workspace list: anyone's for their own
     /// list; an agent's grant reads what its scope reaches.
     ReadPersonalList,
+    /// Name one of the caller's person's devices (`device`, `name`): what
+    /// their lists read it by from then on. Only a device of their own, never
+    /// an agent's grant or a stand-in.
+    NamePersonalDevice,
 }
 
 impl HostOperation {
@@ -107,6 +111,7 @@ impl HostOperation {
             Self::DeleteOwnWorkspace => "workspace.delete",
             Self::KeepPersonalList => "workspace.personal.keep",
             Self::ReadPersonalList => "workspace.personal",
+            Self::NamePersonalDevice => "workspace.personal.name",
         }
     }
 
@@ -124,6 +129,7 @@ impl HostOperation {
                     | Self::ListWorkspaces
                     | Self::KeepPersonalList
                     | Self::ReadPersonalList
+                    | Self::NamePersonalDevice
             )
         {
             return false;
@@ -143,6 +149,7 @@ impl HostOperation {
             | Self::CreateOwnWorkspace => true,
             // The list is what the person's own devices hold; a grant reads it.
             Self::KeepPersonalList
+            | Self::NamePersonalDevice
             | Self::EnterWorkspace
             | Self::PreAdmit
             | Self::PutWorkspaceGrants

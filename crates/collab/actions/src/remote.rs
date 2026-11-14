@@ -260,6 +260,10 @@ pub mod identity_admin {
     /// Root-sign a device's permanent revocation (`device`, `reason`,
     /// `confirm`).
     pub const REVOKE: &str = "revoke";
+    /// Name one of the person's devices (`device`, `name`): what their device
+    /// lists read it by from now on. A page's door forwards it to the host
+    /// that keeps their record; it is no step of the device's own store.
+    pub const RENAME: &str = "rename-device";
     /// Root-revoke and stop a paired home server (`device`, `service`,
     /// `confirm`).
     pub const HOME_PEER_REMOVE: &str = "home-peer-remove";
@@ -331,7 +335,6 @@ pub mod identity_admin {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub workspace: Option<String>,
     }
-
     /// What a key the person's root certified is.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]

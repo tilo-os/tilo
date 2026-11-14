@@ -158,6 +158,88 @@ fn model_on(host: &std::sync::Arc<RecordingHost>) -> (AccessModel, ui::RemoteAct
 }
 
 tilo_test_env::scenario! {
+    fn a_device_row_asks_for_the_name_the_person_types;
+
+    phase the_row_binds_its_device_and_asks_for_the_name;
+    {
+        en();
+        let now = i64::try_from(ui::time::unix_now_ms()).unwrap();
+        let host = RecordingHost::new(record(now));
+        let (model, _) = model_on(&host);
+        let agent = &model.agents()[0];
+        let row = agent_row(agent, "").into_resource();
+        let open = row
+            .actions
+            .iter()
+            .find(|spec| spec.id == "rename-device")
+            .expect("the row offers naming its device");
+        assert!(
+            open.params().is_empty(),
+            "the row carries the name it is published with; it asks for nothing"
+        );
+        // The typed name is the row's too: the app reads the name the row
+        // carries, so a press after typing it sends what was typed.
+        let typed = agent_row(agent, "Build server").into_resource();
+        let open = typed
+            .actions
+            .iter()
+            .find(|spec| spec.id == "rename-device")
+            .expect("the row offers naming its device");
+        let carried = open
+            .target()
+            .get::<serde_json::Map<String, serde_json::Value>>()
+            .expect("the row is bound to the device and the name");
+        assert_eq!(carried["name"], "Build server");
+        assert_eq!(carried["device"], LAPTOP_AGENT);
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_device_is_named_through_the_host;
+
+    phase the_name_the_person_typed_reaches_their_record;
+    {
+        en();
+        let now = i64::try_from(ui::time::unix_now_ms()).unwrap();
+        let host = RecordingHost::new(record(now));
+        let (mut model, remote) = model_on(&host);
+        let rename = DevicesAccessEffect::RenameDevice {
+            device: LAPTOP_AGENT.into(),
+            name: "Build server".into(),
+        };
+        model.act(&remote, &rename, None).unwrap();
+        model.poll(&remote);
+        assert_eq!(
+            host.asked_at(&identity_admin::target(identity_admin::RENAME)),
+            [
+                serde_json::json!({"device": LAPTOP_AGENT, "name": "Build server"})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            ]
+        );
+    }
+
+    phase a_name_of_nothing_is_refused_before_it_is_asked;
+    {
+        en();
+        let now = i64::try_from(ui::time::unix_now_ms()).unwrap();
+        let host = RecordingHost::new(record(now));
+        let (mut model, remote) = model_on(&host);
+        let rename = DevicesAccessEffect::RenameDevice {
+            device: LAPTOP_AGENT.into(),
+            name: "  ".into(),
+        };
+        assert!(model.act(&remote, &rename, None).is_err());
+        assert!(
+            host.asked_at(&identity_admin::target(identity_admin::RENAME))
+                .is_empty(),
+            "nothing is asked for a device the person gave no name"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
     fn the_access_list_is_read_and_changed_through_the_host;
 
     phase an_agent_signed_in_as_the_person_is_listed_with_what_it_may_do;
@@ -421,7 +503,7 @@ tilo_test_env::scenario! {
             .entries()
             .into_iter()
             .filter_map(|entry| match entry {
-                Entry::Device(device) if !device.current => Some(device_row(device)),
+                Entry::Device(device) if !device.current => Some(device_row(device, "")),
                 Entry::Browser(browser) if browser.revocable() => Some(browser_row(&browser)),
                 _ => None,
             })
@@ -433,12 +515,13 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             devices[0].clone().into_resource().actions.len(),
-            REVOKE_REASONS.len()
+            REVOKE_REASONS.len() + 1,
+            "every way to take it back, and naming it"
         );
         let agents: Vec<_> = model
             .agents()
             .iter()
-            .map(|agent| agent_row(agent).into_resource())
+            .map(|agent| agent_row(agent, "").into_resource())
             .collect();
         assert_eq!(agents.len(), 3);
         let nightly = agents

@@ -89,6 +89,23 @@ pub(crate) fn revoke(
     )
 }
 
+/// Name `device` `name`: what the person's device lists read it by from then
+/// on.
+pub(crate) fn rename(
+    remote: &ui::RemoteActions,
+    device: &[u8; 32],
+    name: &str,
+) -> ui::InvocationCall {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("device".into(), hex::encode(device).into());
+    arguments.insert("name".into(), name.into());
+    remote.invoke(
+        identity_admin::target(identity_admin::RENAME),
+        InvokeArgument::Json(arguments),
+        None,
+    )
+}
+
 pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView>, String> {
     let listed: Vec<FleetDevice> =
         serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))

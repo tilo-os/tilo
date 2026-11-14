@@ -66,6 +66,11 @@ pub const CERTIFY_ALPN: &[u8] = b"tilo-device-certify/1";
 pub const MAX_CERTIFY_FRAME_BYTES: usize = 16 * 1024;
 /// Requests one host holds at once; further requests are refused.
 pub const MAX_PENDING_CERTIFICATIONS: usize = 32;
+/// Why a host refuses a request whose device name another of the person's
+/// devices already reads by. The computer asking adds the next number to its
+/// name and asks again (`Claude Code on laptop 2`), so two computers set up
+/// the same way still read apart.
+pub const DEVICE_LABEL_TAKEN: &str = "that name is another of your devices";
 
 /// First frame on a certification stream. Its variants' order is their tag
 /// on the wire: a new opener goes last, and the ones before keep theirs.

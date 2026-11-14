@@ -25,8 +25,8 @@ use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CreatedWorkspace,
     DELETE_WORKSPACE, DETACH_HOST, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER,
     HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL,
-    LIST_REVOCATIONS, LIST_WORKSPACES, NOT_YOUR_OWN, PersonalList, UNHOST_WORKSPACE,
-    WorkspaceLabels, WorkspaceListing, check_labels, labelled,
+    LIST_REVOCATIONS, LIST_WORKSPACES, NOT_YOUR_OWN, PERSONAL_DEVICE_NAME, PersonalList,
+    UNHOST_WORKSPACE, WorkspaceLabels, WorkspaceListing, check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -58,7 +58,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 12] = [
+const HOST_VERBS: [(Verb, HostOperation); 13] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -118,6 +118,16 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             params: keep_personal_params,
         },
         HostOperation::KeepPersonalList,
+    ),
+    (
+        Verb {
+            id: PERSONAL_DEVICE_NAME,
+            label: "Name one of your devices",
+            gate: PERSONAL_DEVICE_NAME,
+            kind: roles::GOVERNANCE_KIND,
+            params: name_personal_params,
+        },
+        HostOperation::NamePersonalDevice,
     ),
     (
         Verb {
@@ -234,6 +244,21 @@ fn keep_personal_params() -> Vec<ActionParam> {
         ParamType::Object,
         "Your workspaces, each with where it is hosted, as your device holds them.",
     )]
+}
+
+fn name_personal_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "device",
+            ParamType::Text,
+            "The device's key, 64 lowercase hex characters.",
+        ),
+        ActionParam::required(
+            "name",
+            ParamType::Text,
+            "The name you want it to read by, such as “Claude Code on laptop 2”.",
+        ),
+    ]
 }
 
 fn host_param() -> ActionParam {
@@ -529,7 +554,9 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "deleted": workspace }))
             }
-            HostOperation::ReadPersonalList | HostOperation::KeepPersonalList => {
+            HostOperation::ReadPersonalList
+            | HostOperation::KeepPersonalList
+            | HostOperation::NamePersonalDevice => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 self.personal_invoke(device, operation, &args).await
@@ -598,6 +625,13 @@ impl Workspaces {
             check_labels(&only.labels).map_err(invalid)?;
             let here = self.listed(device, &only).await;
             return answer(&self.personal(device, &here, &only));
+        }
+        if operation == HostOperation::NamePersonalDevice {
+            let key = args.required_text("device")?;
+            let name = args.required_text("name")?;
+            self.name_device(device, key, name)
+                .map_err(|error| refused(&error))?;
+            return Ok(serde_json::json!({ "named": key }));
         }
         let list: PersonalList = args
             .object("list")?

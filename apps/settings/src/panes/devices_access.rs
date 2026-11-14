@@ -11,6 +11,7 @@ use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing, ses
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
     Button, ButtonRole, Column, DisclosureGroup, DisclosureRow, Element, ListRow, Row, Spacer,
+    TextInput,
 };
 
 use crate::area::AreaContext;
@@ -72,6 +73,16 @@ pub enum DevicesAccessEffect {
         label: String,
         approve: bool,
     },
+    /// Name a device of the person's: what their device lists read it by from
+    /// then on. Two computers set up the same way enroll under one name, so
+    /// the person tells them apart here.
+    #[effect(job, row)]
+    RenameDevice {
+        #[param("The key, in hex")]
+        device: String,
+        #[param("The name it should read by, such as “Claude Code on the laptop 2”")]
+        name: String,
+    },
     /// Show how an agent or another computer connects as the person.
     #[effect(view, label = "settings-access-connect")]
     ShowConnect,
@@ -113,6 +124,9 @@ pub struct DevicesAccessArea {
     model: OnceCell<Rc<RefCell<AccessModel>>>,
     shown: LocalState<u64>,
     removing: LocalState<Option<String>>,
+    /// The device being renamed, by its key, and what is typed for it.
+    naming: LocalState<Option<String>>,
+    name_draft: LocalState<String>,
     details: DisclosureGroup,
 }
 
@@ -132,6 +146,8 @@ impl DevicesAccessArea {
             model: OnceCell::new(),
             shown: LocalState::new(0),
             removing: LocalState::new(None),
+            naming: LocalState::new(None),
+            name_draft: LocalState::new(String::new()),
             details: DisclosureGroup::new(),
         }
     }
@@ -159,13 +175,19 @@ impl DevicesAccessArea {
     }
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        // The name typed for a device now is the row's, since the app reads the
+        // name the row carries.
+        let draft = self.name_draft.get();
         let model = self.model().borrow();
         let devices = model.entries().into_iter().filter_map(|entry| match entry {
-            Entry::Device(device) if !device.current => Some(device_row(device)),
+            Entry::Device(device) if !device.current => Some(device_row(device, &draft)),
             Entry::Browser(browser) if browser.revocable() => Some(browser_row(&browser)),
             Entry::Device(_) | Entry::Browser(_) => None,
         });
-        let agents = model.agents().into_iter().map(|agent| agent_row(&agent));
+        let agents = model
+            .agents()
+            .into_iter()
+            .map(|agent| agent_row(&agent, &draft));
         let asking = model.asking.iter().map(asking_row);
         devices.chain(agents).chain(asking).collect()
     }
@@ -436,6 +458,14 @@ impl AccessModel {
                     return Err(t("settings-access-reason-unknown"));
                 }
                 crate::device_fleet::revoke(remote, &key, reason)
+            }
+            DevicesAccessEffect::RenameDevice { device, name } => {
+                let key = self.device(device)?;
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(t("settings-access-name-required"));
+                }
+                crate::device_fleet::rename(remote, &key, name)
             }
             DevicesAccessEffect::RevokeBrowser { browser, reason } => {
                 let keys = self.browser_keys(browser)?;
@@ -809,6 +839,8 @@ impl AccessModel {
 struct PageState {
     shown: LocalState<u64>,
     removing: LocalState<Option<String>>,
+    naming: LocalState<Option<String>>,
+    name_draft: LocalState<String>,
     details: DisclosureGroup,
 }
 
@@ -816,6 +848,19 @@ impl PageState {
     fn ask_removal(&self, id: Option<String>) {
         self.removing.set(id);
         self.shown.set(self.shown.get().wrapping_add(1));
+    }
+
+    /// Ask what `device` should be called, with `current` in the field; `None`
+    /// closes the ask.
+    fn ask_rename(&self, device: Option<String>, current: &str) {
+        self.name_draft.set(current.to_owned());
+        self.naming.set(device);
+        self.shown.set(self.shown.get().wrapping_add(1));
+    }
+
+    /// Whether the ask is open for the device `key`.
+    fn naming(&self, key: &str) -> bool {
+        self.naming.get().as_deref() == Some(key)
     }
 }
 
@@ -1034,9 +1079,21 @@ impl Removal {
     }
 }
 
-fn device_row(device: &DeviceView) -> LiveRow {
+/// `draft` is what is typed for the device being renamed now: the row it is
+/// published on carries it, since the name the app reads is the row's.
+fn device_row(device: &DeviceView, draft: &str) -> LiveRow {
     let key = hex::encode(device.key);
     let mut row = LiveRow::typed::<Device>(format!("settings.device:{key}"), device.label.clone());
+    row = row.operation(
+        // Bound whole: a row whose action asks for text makes pressing the row
+        // collect its label as that text, which renamed a device to the name it
+        // already had. The name is the row's, published as the person types.
+        SettingsEffect::from(DevicesAccessEffect::RenameDevice {
+            device: key.clone(),
+            name: draft.to_owned(),
+        })
+        .bound(),
+    );
     for reason in REVOKE_REASONS {
         row = row.operation(
             SettingsEffect::from(DevicesAccessEffect::RevokeDevice {
@@ -1049,6 +1106,59 @@ fn device_row(device: &DeviceView) -> LiveRow {
     row
 }
 
+/// Naming `device`: a button that opens a field holding the name it reads by,
+/// and Save hands the new one to the host that keeps the person's record.
+fn rename_control(
+    cx: &ViewCx<Settings>,
+    state: &PageState,
+    id: &str,
+    device: &DeviceView,
+    live: &ui::tilo_actions::ResourceSpec,
+) -> Element {
+    let key = hex::encode(device.key);
+    if !state.naming(&key) {
+        let ask = state.clone();
+        let asked = key;
+        let current = device.label.clone();
+        return Box::new(
+            Button::new(
+                &format!("settings.access.{id}.rename"),
+                &t("settings-access-rename"),
+            )
+            .on_view(move || ask.ask_rename(Some(asked.clone()), &current)),
+        );
+    }
+    let input = TextInput::from_state(&state.name_draft)
+        .with_id(&format!("settings.access.{id}.name"))
+        .with_accessible_name(t("settings-access-name"));
+    let draft = state.name_draft.get();
+    let save = crate::on_row::bind_invocation(
+        &cx.dispatcher(),
+        live,
+        Button::new(
+            &format!("settings.access.{id}.save-name"),
+            &t("settings-access-save-name"),
+        ),
+        DevicesAccessEffect::RenameDevice {
+            device: key,
+            name: draft,
+        },
+    );
+    let ask = state.clone();
+    let cancel = Button::new(
+        &format!("settings.access.{id}.cancel-name"),
+        &t("settings-access-cancel"),
+    )
+    .on_view(move || ask.ask_rename(None, ""));
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .push(Box::new(input))
+            .push(Box::new(save))
+            .push(Box::new(cancel)),
+    )
+}
+
 fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, now: i64) -> Element {
     let key = hex::encode(device.key);
     let id = format!("device.{key}");
@@ -1057,11 +1167,12 @@ fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, no
     } else {
         device.label.clone()
     };
+    let live = device_row(device, &state.name_draft.get()).into_resource();
     let removal = (!device.current).then(|| {
         Removal::new(
             cx,
             &id,
-            &device_row(device).into_resource(),
+            &live,
             DevicesAccessEffect::RevokeDevice {
                 device: key.clone(),
                 reason: REMOVED.to_owned(),
@@ -1073,6 +1184,7 @@ fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, no
     if device.current {
         extra.push(caption(&t("settings-access-remove-from-another")));
     }
+    extra.push(rename_control(cx, state, &id, device, &live));
     entry_row(
         state,
         &id,
@@ -1144,10 +1256,22 @@ fn browser_item(
     )
 }
 
-fn agent_row(agent: &AgentEntry<'_>) -> LiveRow {
+fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
     let id = agent.id();
     let mut row = LiveRow::typed::<AgentGrant>(format!("settings.agent-grant:{id}"), agent.label())
         .operation(SettingsEffect::from(agent.removal()).bound());
+    // A computer an agent works on is a device of the person's too: they name
+    // it here, where two of them enrolled under one name.
+    if let Some(key) = agent.key {
+        let key = hex::encode(key.key);
+        row = row.operation(
+            SettingsEffect::from(DevicesAccessEffect::RenameDevice {
+                device: key,
+                name: draft.to_owned(),
+            })
+            .bound(),
+        );
+    }
     for run in agent.grant.iter().flat_map(|grant| &grant.runs) {
         row = row.operation(
             SettingsEffect::from(DevicesAccessEffect::StopRun {
@@ -1168,7 +1292,7 @@ fn agent_item(
 ) -> Element {
     let key = agent.id();
     let id = format!("agent.{key}");
-    let live = agent_row(agent).into_resource();
+    let live = agent_row(agent, &state.name_draft.get()).into_resource();
     let dispatcher = cx.dispatcher();
     let removal = Removal::new(
         cx,
@@ -1208,6 +1332,9 @@ fn agent_item(
         }
     }
     let keys: Vec<&DeviceView> = agent.key.into_iter().collect();
+    if let Some(device) = agent.key {
+        extra.push(rename_control(cx, state, &id, device, &live));
+    }
     entry_row(
         state,
         &id,
@@ -1303,6 +1430,8 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let state = PageState {
         shown: held.shown.clone(),
         removing: held.removing.clone(),
+        naming: held.naming.clone(),
+        name_draft: held.name_draft.clone(),
         details: held.details.clone(),
     };
     Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx, &state)))

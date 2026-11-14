@@ -40,6 +40,7 @@ use crate::certify::{
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
 use crate::handshake::{EndpointTrust, LiveIdentity};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_relay_protocol::certify::DEVICE_LABEL_TAKEN;
 use tilo_relay_protocol::delegation::{DelegateProposal, Delegation};
 
 /// How long a final answer may wait for the requester to read it.
@@ -432,6 +433,25 @@ impl CertificationProtocol {
                 .contains(&(request.user_public_key, request.invite))
         {
             return Err("this pairing link was used already; make a new one".into());
+        }
+        // A name another of the person's devices already reads by: the asking
+        // computer enrolls under the next number instead, so the person's
+        // device list never shows two alike.
+        let label = request.device_label.trim();
+        if !label.is_empty() {
+            let waiting = self
+                .pending_of(&request.user_public_key, now_ns)
+                .iter()
+                .any(|entry| entry.request.device_label.trim() == label);
+            let kept = self
+                .records
+                .get()
+                .is_some_and(|records| records.device_label_taken(&request.user_public_key, label));
+            if waiting || kept {
+                return Err(format!(
+                    "{DEVICE_LABEL_TAKEN}: a device of yours is already called “{label}”"
+                ));
+            }
         }
         let digest = request.digest().map_err(|error| error.to_string())?;
         let pairing_code = request.pairing_code().map_err(|error| error.to_string())?;
@@ -1147,5 +1167,37 @@ mod confirmation_tests {
             panic!("issued");
         };
         assert_eq!(delivered, cert);
+    }
+
+    #[test]
+    fn a_computer_asking_under_a_name_another_waits_under_is_refused() {
+        let protocol = protocol();
+        let now = unix_now_ns();
+        let request = |device: &ed25519_dalek::SigningKey, nonce: [u8; 16]| {
+            CertificationRequest {
+                version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+                user_public_key: protocol.identity.user_public_key,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Claude Code on laptop".into(),
+                requested: DeviceCapabilities::member(),
+                nonce,
+                invite: [0; 16],
+                issued_at_ns: now,
+                expires_at_ns: now.checked_add(60_000_000_000).unwrap(),
+                signature: [0; 64],
+            }
+            .sign(device)
+            .unwrap()
+        };
+        let first = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+        let second = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+        protocol.enqueue(request(&first, [1; 16]), now).unwrap();
+        let refused = protocol
+            .enqueue(request(&second, [2; 16]), now)
+            .expect_err("the name is taken");
+        assert!(
+            refused.contains(DEVICE_LABEL_TAKEN),
+            "the asking computer is told what happened: {refused}"
+        );
     }
 }

@@ -176,6 +176,7 @@ impl Workspaces {
                     | HostOperation::DeleteOwnWorkspace
                     | HostOperation::KeepPersonalList
                     | HostOperation::ReadPersonalList
+                    | HostOperation::NamePersonalDevice
             ) && !relay_person;
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(

@@ -542,12 +542,10 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
         let rows: Vec<_> = Category::ALL
             .iter()
             .map(|category| {
-                ui::framework::LiveRow::new(
-                    pane_row_id(*category),
-                    "settings.section",
-                    category.label(),
-                )
-                .operation(open_pane(*category).bound())
+                let row = pane_row_id(*category);
+                ui::framework::LiveRow::new(row.clone(), "settings.section", category.label())
+                    .operation(open_pane(*category).bound())
+                    .operation(open_row(&row))
             })
             .collect();
         *built = Some((language, rows.clone()));
@@ -556,6 +554,43 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
 }
 
 pub const SETTING_ANCHOR: &str = "settings.setting:";
+
+/// The `open` a page row offers: the app's own open of this row, as the
+/// framework gives every item its `open` (a search hit's view). A page that
+/// opens Settings at a row's anchor invokes exactly this, and the app shows
+/// the pane the row names; with no `open` on the row the anchor is only a
+/// launch argument, which a launch does not read.
+fn open_row(row: &str) -> ui::tilo_actions::ActionSpec {
+    use ui::tilo_actions::{
+        ActionKind, ActionParam, OperationKind, ParamType, remote::APPLICATION_OPEN_TYPE,
+    };
+    let row = row.to_owned();
+    let encoded = |anchor: &str| {
+        ui::tilo_actions::EncodedAction::encode_operation(
+            APPLICATION_OPEN_TYPE,
+            &serde_json::json!({ "anchor": anchor }),
+        )
+        .unwrap_or_else(|_| ui::tilo_actions::EncodedAction {
+            type_id: APPLICATION_OPEN_TYPE.into(),
+            payload: Vec::new(),
+        })
+    };
+    ui::tilo_actions::ActionSpec::typed_operation(
+        "open",
+        "Open",
+        "The page to show",
+        OperationKind::View,
+        APPLICATION_OPEN_TYPE,
+        vec![ActionParam::optional(
+            "anchor",
+            ParamType::Text,
+            "The row to open; this page when none is given",
+        )],
+        move |args| encoded(args.text("anchor").unwrap_or(&row)),
+    )
+    .of_kind(ActionKind::Read)
+    .with_description("Show a page of Settings.")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]

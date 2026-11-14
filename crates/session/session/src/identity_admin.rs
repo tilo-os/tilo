@@ -28,8 +28,8 @@ use tilo_identity_host::registry::IdentityProfile;
 use crate::pairing::{Answer, Finished, HostCommand, Runner, Started, run_bounded};
 
 pub(crate) use tilo_actions::remote::identity_admin::{
-    ACTIVATE, DEVICES, HOME_PEER_REMOVE, HOME_PEER_RETRY, LIST, PROTECT, REMOVE, RESOURCE, REVOKE,
-    STEPS,
+    ACTIVATE, DEVICES, HOME_PEER_REMOVE, HOME_PEER_RETRY, LIST, PROTECT, REMOVE, RENAME, RESOURCE,
+    REVOKE, STEPS,
 };
 
 const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
@@ -284,6 +284,12 @@ impl IdentityAdmin {
                 protect(store, identity_id(args)?).map(Started::Answered)
             }
             DEVICES => devices(store, identity).map(Started::Answered),
+            // A device's name is kept where the person's record is, on the host
+            // their page reads it from; this device's own store keeps none.
+            RENAME => Err(
+                "a device's name is kept on the host that holds your record: name it from your Tilo page"
+                    .into(),
+            ),
             REVOKE => {
                 confirmed(args, "revoke this device")?;
                 let (device, entry) = revoke(store, identity, args)?;

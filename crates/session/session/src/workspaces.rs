@@ -1541,6 +1541,8 @@ impl crate::Shared {
             .into_iter()
             .map(|cert| tilo_relay_session::workspaces::PersonalDevice {
                 cert,
+                // The person names their devices where the record is kept.
+                name: None,
                 revoked: false,
                 browser: None,
                 // What the keys' sessions on a host said of them is that

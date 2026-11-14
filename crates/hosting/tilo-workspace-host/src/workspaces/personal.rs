@@ -40,6 +40,7 @@ use tilo_relay_session::workspaces::{
     MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalDevice, PersonalList,
     PersonalWorkspace, WorkspaceHostAddress,
 };
+use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
 use tilo_user_identity::{DeviceCert, verify_device_cert};
 
 use super::Workspaces;
@@ -72,6 +73,10 @@ struct Kept {
     /// of it that opened or ended on this host.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     seen: BTreeMap<String, i64>,
+    /// The name the person gave a key, hex, where they named it: what their
+    /// lists show instead of the name its certificate carries.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    names: BTreeMap<String, String>,
 }
 
 /// What one person's record on this host holds, as their keys read it.
@@ -87,6 +92,8 @@ struct Record {
     agents: BTreeMap<String, String>,
     /// When each key was last here, by its hex.
     seen: BTreeMap<String, i64>,
+    /// The name the person gave a key, by its hex.
+    names: BTreeMap<String, String>,
 }
 
 /// How often a session opening writes when a key was last here: a host serves
@@ -128,7 +135,7 @@ impl PersonalLists {
         kept.by = hex::encode(device.device_public_key);
         kept.at_ns = now;
         kept.list = list;
-        add(&mut kept.devices, &person, carried);
+        add(&mut kept.devices, &mut kept.names, &person, carried);
         self.write(&person, &kept)
     }
 
@@ -137,7 +144,7 @@ impl PersonalLists {
     fn add_devices(&self, person: &[u8; 32], certs: Vec<DeviceCert>) -> Result<(), String> {
         let _writing = self.lock();
         let mut kept = self.read(person).unwrap_or_default();
-        if !add(&mut kept.devices, person, certs) {
+        if !add(&mut kept.devices, &mut kept.names, person, certs) {
             return Ok(());
         }
         self.write(person, &kept)
@@ -161,7 +168,7 @@ impl PersonalLists {
             .collect();
         let _writing = self.lock();
         let mut kept = self.read(person).unwrap_or_default();
-        let added = add(&mut kept.devices, person, certs.clone());
+        let added = add(&mut kept.devices, &mut kept.names, person, certs.clone());
         // Only keys the record holds, which `add` verified as the person's.
         let mut keys: Vec<String> = Vec::new();
         for cert in &certs {
@@ -197,6 +204,68 @@ impl PersonalLists {
         self.writing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Name `key`, a device of `person`'s, `name`: what their lists read it by
+    /// from now on. A name another of their devices reads by is refused, so a
+    /// list never shows two devices alike.
+    fn name_device(&self, person: &[u8; 32], key: &str, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty()
+            || name.len() > MAX_CERTIFICATION_LABEL_BYTES
+            || name.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "a device's name is 1 to {MAX_CERTIFICATION_LABEL_BYTES} characters, without control characters"
+            ));
+        }
+        let _writing = self.lock();
+        let mut kept = self.read(person).unwrap_or_default();
+        if !kept
+            .devices
+            .iter()
+            .any(|known| hex::encode(known.device_public_key) == key)
+        {
+            return Err("that key is not a device of this person's".to_owned());
+        }
+        let taken = kept.devices.iter().any(|known| {
+            let other = hex::encode(known.device_public_key);
+            other != key
+                && kept
+                    .names
+                    .get(&other)
+                    .map_or(known.device_label.as_str(), String::as_str)
+                    == name
+        });
+        if taken {
+            return Err(format!(
+                "another of this person's devices is already called “{name}”"
+            ));
+        }
+        if kept.names.get(key).map(String::as_str) == Some(name) {
+            return Ok(());
+        }
+        kept.names.insert(key.to_owned(), name.to_owned());
+        self.write(person, &kept)
+    }
+
+    /// The devices `person`'s record holds here, each with the name the person
+    /// gave it where they named it.
+    fn certs(&self, person: &[u8; 32]) -> Vec<(DeviceCert, Option<String>)> {
+        self.read(person)
+            .map(|kept| {
+                kept.devices
+                    .into_iter()
+                    .map(|cert| {
+                        let name = kept
+                            .names
+                            .get(&hex::encode(cert.device_public_key))
+                            .cloned();
+                        (cert, name)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn write(&self, person: &[u8; 32], kept: &Kept) -> Result<(), String> {
@@ -239,6 +308,7 @@ impl PersonalLists {
                 .collect(),
             agents: kept.agents,
             seen: kept.seen,
+            names: kept.names,
         }
     }
 
@@ -285,7 +355,12 @@ impl PersonalLists {
     fn note_agent(&self, person: &[u8; 32], cert: &DeviceCert, name: &str) {
         let _writing = self.lock();
         let mut kept = self.read(person).unwrap_or_default();
-        add(&mut kept.devices, person, vec![cert.clone()]);
+        add(
+            &mut kept.devices,
+            &mut kept.names,
+            person,
+            vec![cert.clone()],
+        );
         let key = hex::encode(cert.device_public_key);
         if kept.agents.get(&key) == Some(&name.to_owned()) {
             return;
@@ -299,26 +374,63 @@ impl PersonalLists {
 
 /// Add each of `certs` that `person`'s root signed to `devices`: a key not
 /// there yet, or a newer certificate of one that is. Whether any was.
-fn add(devices: &mut Vec<DeviceCert>, person: &[u8; 32], certs: Vec<DeviceCert>) -> bool {
+///
+/// A key that enrolls under a name another of the person's devices already
+/// reads by is kept under the next free number (`Claude Code on laptop`,
+/// `Claude Code on laptop 2`), so two computers set up in the same way still
+/// read apart; a name the person gave the key themselves stays theirs.
+fn add(
+    devices: &mut Vec<DeviceCert>,
+    names: &mut BTreeMap<String, String>,
+    person: &[u8; 32],
+    certs: Vec<DeviceCert>,
+) -> bool {
     let mut added = false;
     for cert in certs {
         if cert.user_public_key != *person || verify_device_cert(&cert).is_err() {
             continue;
         }
         let full = devices.len() >= MAX_PERSONAL_DEVICES;
-        match devices
+        let key = hex::encode(cert.device_public_key);
+        let kept_label = cert.device_label.clone();
+        let changed = match devices
             .iter_mut()
             .find(|known| known.device_public_key == cert.device_public_key)
         {
             Some(known) if known.issued_at_ns < cert.issued_at_ns => {
                 *known = cert;
-                added = true;
+                true
             }
             None if !full => {
                 devices.push(cert);
-                added = true;
+                true
             }
-            Some(_) | None => {}
+            Some(_) | None => false,
+        };
+        if !changed {
+            continue;
+        }
+        added = true;
+        if names.contains_key(&key) {
+            continue;
+        }
+        let taken = |name: &str| {
+            devices.iter().any(|known| {
+                let other = hex::encode(known.device_public_key);
+                other != key
+                    && names
+                        .get(&other)
+                        .map_or(known.device_label.as_str(), String::as_str)
+                        == name
+            })
+        };
+        if taken(&kept_label) {
+            let free = (2..=MAX_PERSONAL_DEVICES)
+                .map(|number| format!("{kept_label} {number}"))
+                .find(|candidate| !taken(candidate));
+            if let Some(free) = free {
+                names.insert(key, free);
+            }
         }
     }
     added
@@ -339,6 +451,39 @@ impl Workspaces {
             .personal
             .keep(device, list, tilo_clock::unix_now_ns())?;
         Ok(count)
+    }
+
+    /// Name `key`, one of `device`'s person's devices, `name`: what their
+    /// lists read it by from now on, instead of the name it enrolled with.
+    pub(super) fn name_device(
+        &self,
+        device: &DeviceCert,
+        key: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        if device.capabilities.agent.is_some() || device.capabilities.stand_in {
+            return Err("only a device of the person's own names their devices".to_owned());
+        }
+        self.inner
+            .personal
+            .name_device(&device.user_public_key, key, name)
+    }
+
+    /// Whether another device of `person`'s reads by `label`: one their record
+    /// here holds, which a revocation this host keeps has not refused. What a
+    /// computer enrolling as them is told, so it enrolls under the next free
+    /// name instead (`DEVICE_LABEL_TAKEN`).
+    #[must_use]
+    pub fn device_label_taken(&self, person: &[u8; 32], label: &str) -> bool {
+        let revocations = self.revocations();
+        self.inner
+            .personal
+            .certs(person)
+            .into_iter()
+            .any(|(cert, name)| {
+                !revocations.refuses(&cert)
+                    && name.as_deref().unwrap_or(cert.device_label.as_str()) == label
+            })
     }
 
     /// `device`'s person's list as `device` reads it: the one their devices
@@ -382,6 +527,7 @@ impl Workspaces {
             browser_of,
             agents,
             seen,
+            names,
         } = self.inner.personal.of(&device.user_public_key);
         let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
         for kept in list.workspaces {
@@ -411,6 +557,7 @@ impl Workspaces {
                 .map(|cert| {
                     let key = hex::encode(cert.device_public_key);
                     PersonalDevice {
+                        name: names.get(&key).cloned(),
                         revoked: revocations.refuses(&cert),
                         browser: browser_of.get(&key).cloned(),
                         agent: agents.get(&key).cloned(),
@@ -535,5 +682,122 @@ impl Workspaces {
             || self.inner.host.cert.device_label.clone(),
             |own| own.offer().host.clone(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+
+    fn key_of(root: &SigningKey, label: &str) -> DeviceCert {
+        let key = SigningKey::from_bytes(&rand::random());
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: Some(tilo_clock::unix_now_ns().saturating_add(86_400_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        cert
+    }
+
+    fn name_of(lists: &PersonalLists, person: &[u8; 32], cert: &DeviceCert) -> Option<String> {
+        let key = hex::encode(cert.device_public_key);
+        lists
+            .of(person)
+            .devices
+            .iter()
+            .find(|known| known.device_public_key == cert.device_public_key)
+            .map(|_| {
+                lists
+                    .of(person)
+                    .names
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| cert.device_label.clone())
+            })
+    }
+
+    #[test]
+    fn two_computers_enrolled_under_one_name_read_apart_and_the_person_names_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = PersonalLists::new(dir.path());
+        let root = SigningKey::from_bytes(&rand::random());
+        let person = root.verifying_key().to_bytes();
+        let desktop = key_of(&root, "studio");
+        let first = key_of(&root, "Claude Code on laptop");
+        let second = key_of(&root, "Claude Code on laptop");
+        let mut list = PersonalList::default();
+        list.devices = vec![PersonalDevice {
+            cert: first.clone(),
+            name: None,
+            revoked: false,
+            browser: None,
+            agent: None,
+            last_active_ms: None,
+            online: false,
+        }];
+        lists.keep(&desktop, list, 1).unwrap();
+        lists.add_devices(&person, vec![second.clone()]).unwrap();
+
+        assert_eq!(
+            name_of(&lists, &person, &first).as_deref(),
+            Some("Claude Code on laptop"),
+            "the first keeps the name it enrolled with"
+        );
+        assert_eq!(
+            name_of(&lists, &person, &second).as_deref(),
+            Some("Claude Code on laptop 2"),
+            "the second reads apart from it"
+        );
+
+        // The person names it what they know it as.
+        lists
+            .name_device(
+                &person,
+                &hex::encode(second.device_public_key),
+                "Build server",
+            )
+            .unwrap();
+        assert_eq!(
+            name_of(&lists, &person, &second).as_deref(),
+            Some("Build server")
+        );
+        assert_eq!(
+            name_of(&lists, &person, &first).as_deref(),
+            Some("Claude Code on laptop"),
+            "naming one leaves the other as it was"
+        );
+
+        // A name another of their devices reads by is refused, and so is a
+        // key that is not theirs.
+        assert!(
+            lists
+                .name_device(
+                    &person,
+                    &hex::encode(second.device_public_key),
+                    "Claude Code on laptop"
+                )
+                .is_err(),
+            "two devices never read alike"
+        );
+        assert!(
+            lists
+                .name_device(&person, &"00".repeat(32), "Nowhere")
+                .is_err(),
+            "only a device of the person's is named"
+        );
+        assert!(
+            lists
+                .name_device(&person, &hex::encode(second.device_public_key), "  ")
+                .is_err(),
+            "a device needs a name"
+        );
     }
 }

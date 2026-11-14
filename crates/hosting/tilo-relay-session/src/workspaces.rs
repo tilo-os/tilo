@@ -193,6 +193,10 @@ pub const DETACH_HOST: &str = "workspace.detach-host";
 /// here, never taken away: a device leaves only by its root's revocation.
 /// Answers `{"kept": count}`.
 pub const KEEP_PERSONAL: &str = "workspace.personal.keep";
+/// The action that names one of the person's devices ([`PersonalDevice::name`]):
+/// what their lists show for it from then on, instead of the name it enrolled
+/// with (`{device, name}`, the device by its key in hex).
+pub const PERSONAL_DEVICE_NAME: &str = "workspace.personal.name";
 /// The caller's person's workspace list ([`PersonalList`]): the one their
 /// devices kept here, with the workspaces this host keeps for them, each
 /// naming its host and how to reach it. Any certified key of the person's
@@ -226,6 +230,11 @@ pub struct PersonalList {
 pub struct PersonalDevice {
     /// Its certificate, signed by the person's root.
     pub cert: tilo_user_identity::DeviceCert,
+    /// The name the person gave it ([`PERSONAL_DEVICE_NAME`]), where they
+    /// named it: what their lists show instead of the name the certificate
+    /// carries, so two computers enrolled under one name read apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// A revocation the answering host keeps refuses it. What a device keeps
     /// says nothing here: the host answers it from its own revocations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

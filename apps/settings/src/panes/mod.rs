@@ -134,13 +134,9 @@ pub(crate) fn view(
         #[cfg(not(feature = "tilo-os"))]
         crate::categories::Category::AgentModels => person_settings::providers_view(cx, app),
         crate::categories::Category::Billing => billing::view(cx, app),
-        #[cfg(feature = "tilo-os")]
+        // The page lists the person's devices and agents too: its host keeps
+        // the record they are read from (the page's own identity door).
         crate::categories::Category::DevicesAccess => devices_access::view(cx, app),
-        // A browser holds no devices or agents of the person's to list or
-        // take back: the page says where they are instead of waiting for a
-        // read its host never answers.
-        #[cfg(not(feature = "tilo-os"))]
-        crate::categories::Category::DevicesAccess => Some(elsewhere(category)),
         #[cfg(not(feature = "tilo-os"))]
         _ => None,
     }

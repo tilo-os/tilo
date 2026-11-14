@@ -30,7 +30,7 @@ use tilo_desktop_surface::session::DesktopSession;
 use tilo_lock::MutexRecover as _;
 #[cfg(target_arch = "wasm32")]
 use tilo_relay_session::workspaces::{
-    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PERSONAL_DEVICE_NAME,
 };
 #[cfg(target_arch = "wasm32")]
 use tilo_session_core::remote::SessionActions;
@@ -84,6 +84,29 @@ fn invalid(reason: &str) -> ActionHostError {
 
 #[cfg(target_arch = "wasm32")]
 impl PageIdentity {
+    /// Name the device `request` names as the person asked it: the host's own
+    /// action on their record, which every list of their devices reads.
+    fn rename(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let InvokeArgument::Json(argument) = &request.argument else {
+            return Pending::ready(Err(invalid(
+                "naming a device says which device, and its name",
+            )));
+        };
+        let record = InvokeRequest {
+            target: RemoteActionTarget {
+                provider: HOST_ACTIONS_PROVIDER.to_owned(),
+                address: ActionAddress::new(HOST_WORKSPACES_RESOURCE, PERSONAL_DEVICE_NAME),
+            },
+            argument: InvokeArgument::Json(argument.clone()),
+            ..request.clone()
+        };
+        self.host.invoke(caller, record)
+    }
+
     /// Hand the page the device `request` takes back, for the reason it
     /// gives.
     fn revoke(&self, request: &InvokeRequest) -> Result<InvocationReceipt, ActionHostError> {
@@ -185,7 +208,11 @@ fn fleet(value: Option<&Value>, own: &[u8; 32]) -> Value {
             let kind =
                 identity_admin::KeyKind::of(scope.is_some() || runs.is_some(), flag("server_key"));
             Some(serde_json::json!({
-                "label": cert.get("device_label")?.as_str()?,
+                "label": device
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| cert.get("device_label").and_then(Value::as_str))?,
                 "key_hex": hex::encode(key),
                 "fingerprint": fingerprint(&key),
                 "current": key == *own,
@@ -265,6 +292,7 @@ impl ActionHost for PageIdentity {
         }
         match step {
             identity_admin::REVOKE => Pending::ready(self.revoke(&request)),
+            identity_admin::RENAME => self.rename(caller, &request),
             identity_admin::DEVICES => {
                 // Asked of the host as the person's record, under the same
                 // invocation, so its answer is this one's.
@@ -405,6 +433,25 @@ mod tests {
             );
             assert_eq!(grant["issued_ms"], 8_000);
             assert_eq!(grant["expires_ms"], 9_000);
+        }
+
+        phase a_device_the_person_named_reads_by_that_name;
+        // A device the person renamed reads by the name they gave it, not the
+        // one it enrolled with; one they named nothing by reads as it enrolled.
+        {
+            let record = json!({
+                "devices": [
+                    device(
+                        cert("Claude Code on laptop", 6, json!({}), 2_000_000_000, None),
+                        json!({"name": "Claude Code on our laptop 2"}),
+                    ),
+                    device(cert("Phone", 7, json!({}), 3_000_000_000, None), json!({})),
+                ],
+            });
+            let listed = fleet(Some(&record), &[9; 32]);
+            let listed = listed.as_array().unwrap();
+            assert_eq!(listed[0]["label"], "Claude Code on our laptop 2");
+            assert_eq!(listed[1]["label"], "Phone");
         }
 
         phase a_key_with_nothing_said_of_it_reads_as_it_was;
