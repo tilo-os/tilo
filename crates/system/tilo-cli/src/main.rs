@@ -204,17 +204,17 @@ enum Cmd {
     )]
     Ls {
         /// What to list: an app, a resource or an action, as `tilo ls` printed it.
-        path: Option<String>,
+        what: Option<String>,
     },
     /// Read one resource of a hosted workspace (-w).
     #[command(
         after_help = "Example:\n  tilo read notes/Notebook/Todo -w jane-doe\n\n\
-                      A long read ends with a cursor: `tilo read PATH --cursor <cursor> -w` reads\n\
-                      the rest."
+                      A long read ends with a cursor: `tilo read notes/Todo --cursor <cursor> -w`\n\
+                      reads the rest."
     )]
     Read {
         /// The resource to read: an app, a record, or what a listing printed.
-        path: String,
+        resource: String,
         /// The cursor a long read ended with, for the rest of it.
         #[arg(long)]
         cursor: Option<String>,
@@ -923,12 +923,12 @@ fn run_hosted(
     };
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
-        Cmd::Ls { path } => workspace
+        Cmd::Ls { what } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::ls(reach, &workspace, path.as_deref())),
-        Cmd::Read { path, cursor } => workspace
+            .map(|workspace| hosted::ls(reach, &workspace, what.as_deref())),
+        Cmd::Read { resource, cursor } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::read(reach, &workspace, &path, cursor.as_deref())),
+            .map(|workspace| hosted::read(reach, &workspace, &resource, cursor.as_deref())),
         Cmd::Keys { cmd } => Ok(hosted::keys(reach, workspace.as_deref(), cmd)),
         Cmd::Members { cmd } => workspace
             .ok_or_else(needs_workspace)
