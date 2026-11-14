@@ -58,7 +58,8 @@ const COMMIT_SPACING: Duration = Duration::from_millis(500);
 /// ([`GroupPeer::save_deferred`]). Sealing the state of a group of hundreds
 /// takes tens of milliseconds, and the Welcome that admits a page arrives as it
 /// enters: written at once, it would hold back the page's first frame, which is
-/// drawn well within this. A device that stops before only asks again.
+/// drawn well within this. A device's pump writes it as the device stops
+/// ([`crate::GovernancePump`]); one that dies before only asks again.
 const DEFERRED_SAVE: Duration = Duration::from_secs(2);
 /// Groups remembered as having a group this device takes no part in.
 const MAX_GROUPS_SEEN: usize = 1 << 16;
