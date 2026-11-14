@@ -1,9 +1,9 @@
-//! What this Tilo is, said the same way wherever Tilo says it: that it is Tilo, an operating
-//! system, where it runs, which version, and where to go next (tilo.so, to get it; be told when it
-//! comes to your computer, its source, its community).
+//! What this Tilo is, said the same way wherever Tilo says it. On a computer: its name, which Tilo
+//! it runs, and its Settings pages for updates and every other detail. In a browser: that this is
+//! Tilo, where it runs, and where to get it.
 //! [`AboutVariant`] picks the words for where Tilo runs, [`AboutLinks`] is the deployment's set of
-//! links (one left empty is not offered) and [`about_view`] lays them out. [`AboutSheet`] shows
-//! them over the window the person asked from, opened by the chrome's `about` verb.
+//! links (one left empty is not offered). [`AboutSheet`] shows them over the window the person
+//! asked from, opened by the chrome's `about` verb, as a surface of the session's stack.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -99,10 +99,10 @@ impl<'de> serde::Deserialize<'de> for AboutLinks {
 pub struct AboutCopy {
     /// The sheet's title.
     pub title: String,
-    /// That this is Tilo, an operating system.
-    pub lead: String,
-    /// Where it runs.
-    pub body: String,
+    /// What leads the sheet: this computer's name, or in a browser that this is Tilo.
+    pub heading: Option<String>,
+    /// In a browser, where Tilo runs.
+    pub body: Option<String>,
     /// Which Tilo this is.
     pub version: String,
     /// Tilo's home on the web ([`TILO_HOME`]): in a browser, where to get Tilo; on a computer that
@@ -113,29 +113,45 @@ pub struct AboutCopy {
 /// The words for Tilo running as `variant` . A browser tab is not "this computer": there it is
 /// About Tilo.
 pub fn about_copy(variant: AboutVariant) -> AboutCopy {
-    let (title, body, home) = match variant {
-        AboutVariant::Native => (
-            "tilo-about-title",
-            "tilo-about-body-native",
-            "tilo-about-link-home",
-        ),
-        AboutVariant::Browser => (
-            "tilo-about-title-browser",
-            "tilo-about-body-browser",
-            "tilo-about-link-get",
-        ),
-    };
-    AboutCopy {
-        title: t(title),
-        lead: t("tilo-about-lead"),
-        body: t(body),
-        version: t_args(
-            "tilo-about-version",
-            &[("version", env!("CARGO_PKG_VERSION").into())],
-        ),
-        home: t(home),
+    let version = t_args(
+        "tilo-about-version",
+        &[("version", env!("CARGO_PKG_VERSION").into())],
+    );
+    match variant {
+        AboutVariant::Native => AboutCopy {
+            title: t("tilo-about-title"),
+            heading: device_name(),
+            body: None,
+            version,
+            home: t("tilo-about-link-home"),
+        },
+        AboutVariant::Browser => AboutCopy {
+            title: t("tilo-about-title-browser"),
+            heading: Some(t("tilo-about-lead")),
+            body: Some(t("tilo-about-body-browser")),
+            version,
+            home: t("tilo-about-link-get"),
+        },
     }
 }
+
+/// This computer's name, as its host name gives it; none when it has no host name.
+#[must_use]
+pub fn device_name() -> Option<String> {
+    tilo_failure::ignored!(
+        "a computer without a host name is still this computer, left unnamed",
+        std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+    )
+}
+
+/// The Settings pages a computer's About sheet leads to: its updates, and every detail of it.
+const SETTINGS_LINKS: [(&str, &str); 2] = [
+    ("tilo-about-link-updates", "settings://updates"),
+    ("tilo-about-link-details", "settings://about"),
+];
 
 /// The Tilo mark at the head of the sheet: no control, just the mark.
 struct Mark {
@@ -181,26 +197,42 @@ impl Widget for Mark {
     }
 }
 
-/// The About sheet's body: the mark, the words for `variant` and the links offered.
-pub fn about_view(variant: AboutVariant, links: &AboutLinks) -> Column {
+/// The About sheet's body: the mark, the words for `variant` and the links offered. A computer's
+/// sheet leads to its Settings pages: the one pressed is left in `asked` .
+fn about_view(
+    variant: AboutVariant,
+    links: &AboutLinks,
+    asked: &Rc<Cell<Option<&'static str>>>,
+) -> Column {
     let copy = about_copy(variant);
     let gap = ui::tokens::Spacing::default().s3;
-    let column = Column::new()
+    let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(gap)
-        .push(Box::new(Mark { rect: Rect::ZERO }))
-        .push(Box::new(
-            Text::new(&copy.lead).with_role(TextRole::Subheading),
-        ))
-        .push(Box::new(Text::new(&copy.body)))
-        .push(Box::new(
-            Text::new(&copy.version).with_role(TextRole::Caption),
-        ));
-    // Tilo's home leads, offered everywhere: the deployment's own links follow.
-    let mut row = Row::new()
-        .with_gap(ui::tokens::Spacing::default().s4)
-        .push(Box::new(Link::new(TILO_HOME).with_label(&copy.home)));
+        .push(Box::new(Mark { rect: Rect::ZERO }));
+    if let Some(heading) = &copy.heading {
+        column = column.push(Box::new(Text::new(heading).with_role(TextRole::Subheading)));
+    }
+    if let Some(body) = &copy.body {
+        column = column.push(Box::new(Text::new(body)));
+    }
+    column = column.push(Box::new(
+        Text::new(&copy.version).with_role(TextRole::Caption),
+    ));
+    let mut row = Row::new().with_gap(ui::tokens::Spacing::default().s4);
+    if variant == AboutVariant::Native {
+        for (label, link) in SETTINGS_LINKS {
+            let asked = Rc::clone(asked);
+            row = row.push(Box::new(
+                Link::new(link)
+                    .with_label(&t(label))
+                    .on_click(move || asked.set(Some(link))),
+            ));
+        }
+    }
+    // Tilo's home, offered everywhere: the deployment's own links follow.
+    row = row.push(Box::new(Link::new(TILO_HOME).with_label(&copy.home)));
     for (label, url) in links.shown() {
         row = row.push(Box::new(Link::new(&url).with_label(&label)));
     }
@@ -212,6 +244,8 @@ pub struct AboutSheet {
     sheet: ModalDialog<Column>,
     /// Set by the sheet's close control, Escape or a click outside it.
     dismissed: Rc<Cell<bool>>,
+    /// The Settings page the person pressed on the sheet, until the chrome opens it.
+    asked: Rc<Cell<Option<&'static str>>>,
     rect: Rect,
 }
 
@@ -220,12 +254,14 @@ impl AboutSheet {
         let copy = about_copy(variant);
         let dismissed = Rc::new(Cell::new(false));
         let dismiss = Rc::clone(&dismissed);
+        let asked = Rc::new(Cell::new(None));
         Self {
-            sheet: ModalDialog::new(copy.title, about_view(variant, links))
+            sheet: ModalDialog::new(copy.title, about_view(variant, links, &asked))
                 .with_test_id("tilo-about")
                 .with_max_width(440.0)
                 .on_dismiss(move || dismiss.set(true)),
             dismissed,
+            asked,
             rect: Rect::ZERO,
         }
     }
@@ -246,6 +282,13 @@ impl AboutSheet {
             return true;
         }
         false
+    }
+
+    /// The Settings page the person pressed on the sheet, which closes it: the chrome opens it.
+    pub fn take_settings_link(&mut self) -> Option<&'static str> {
+        let link = self.asked.take()?;
+        self.sheet.set_open(false);
+        Some(link)
     }
 }
 
@@ -320,12 +363,12 @@ mod tests {
             ui::i18n::I18nManager::init("en-US");
             let browser = about_copy(AboutVariant::Browser);
             let native = about_copy(AboutVariant::Native);
-            assert_eq!(browser.lead, native.lead);
-            assert!(browser.lead.contains("Tilo"), "{}", browser.lead);
-            assert!(browser.body.contains("browser"), "{}", browser.body);
-            assert!(!native.body.contains("browser"), "{}", native.body);
+            let body = browser.body.clone().unwrap_or_default();
+            assert!(body.contains("browser"), "{body}");
+            assert!(native.body.is_none(), "a computer's sheet says nothing of where it runs");
+            assert_eq!(native.heading, device_name(), "a computer's sheet leads with its name");
             // A browser tab is not "this computer".
-            for words in [&browser.title, &browser.body] {
+            for words in [&browser.title, &body] {
                 assert!(
                     !words.contains("computer") || words.contains("own computer"),
                     "{words}"
@@ -336,6 +379,7 @@ mod tests {
             // Both say which Tilo this is, and where to find it on the web; the browser says that is
             // where to get it.
             for copy in [&browser, &native] {
+                assert!(copy.version.starts_with("Tilo "), "{}", copy.version);
                 assert!(
                     copy.version.contains(env!("CARGO_PKG_VERSION")),
                     "{}",

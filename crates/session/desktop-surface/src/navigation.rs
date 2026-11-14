@@ -662,9 +662,7 @@ pub enum ChromeEffect {
     #[effect(view, own_device, idempotent)]
     WorkspaceMenu,
 
-    /// Open or close the About sheet
-    ///
-    /// What this Tilo is, where it runs and which version.
+    /// Show this computer's name and which Tilo it runs
     #[effect(view, own_device, idempotent)]
     About {
         /// Whether it is open.

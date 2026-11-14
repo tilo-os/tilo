@@ -129,6 +129,8 @@ impl Overlay {
 pub enum Slot {
     /// The search palette: over everything, the window it was opened from under it.
     Search,
+    /// The About sheet: this computer's name and which Tilo it runs.
+    About,
     /// The emoji picker.
     Emoji,
     /// A window's menu: the rows the desk offers that window.
@@ -150,8 +152,9 @@ pub enum Slot {
 
 impl Slot {
     /// Every slot, topmost first.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Search,
+        Self::About,
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
@@ -167,6 +170,7 @@ impl Slot {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Search => "search",
+            Self::About => "about",
             Self::Emoji => "emoji",
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
@@ -188,7 +192,7 @@ impl Slot {
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
-            Self::Search => Role::Dialog,
+            Self::Search | Self::About => Role::Dialog,
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
             Self::WindowMenu
             | Self::WorkspaceMenu
@@ -211,7 +215,7 @@ impl Slot {
     pub const fn anchor(self) -> Anchor {
         match self {
             Self::Overview | Self::Strips => Anchor::Fill,
-            Self::Search | Self::Emoji => Anchor::Center,
+            Self::Search | Self::About | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
             Self::WorkspaceMenu | Self::WorkspaceName => Anchor::TopLeading(0.0),
             Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),

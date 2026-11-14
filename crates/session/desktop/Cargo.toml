@@ -62,6 +62,7 @@ tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-failure = { path = "../../platform/tilo-failure" }
 # The models an agent may plan with: the person's own provider settings.
 agent-provider-config = { path = "../../agent/provider-config" }
 ed25519-dalek.workspace = true

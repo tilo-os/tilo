@@ -76,16 +76,9 @@ impl HostAccountDoor {
     }
 }
 
-/// This device's name, as its host name gives it.
+/// This device's name, as its host name gives it, said plainly without one.
 fn device_name() -> String {
-    tilo_failure::ignored!(
-        "a device without a host name is still this device, said plainly",
-        std::fs::read_to_string("/etc/hostname")
-            .ok()
-            .map(|name| name.trim().to_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "This device".to_owned())
-    )
+    tilo_desktop::about::device_name().unwrap_or_else(|| "This device".to_owned())
 }
 
 fn descriptor() -> ActionDescriptor {

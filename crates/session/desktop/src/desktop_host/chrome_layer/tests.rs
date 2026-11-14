@@ -316,3 +316,73 @@ fn a_confirmation_passes_over_the_windows_without_a_notification() {
     assert!(chrome.needs_redraw());
     assert!(chrome.next_wake_deadline().is_some());
 }
+
+/// The About sheet is a surface of the stack: while it is up it holds the keyboard, so Escape
+/// reaches it and closes it, and search opening over the desk takes it down.
+#[test]
+fn the_about_sheet_holds_the_keys_and_goes_on_escape_or_search() {
+    use crate::overlays::{Slot, Target};
+    en();
+    let (chrome, _handle) = chrome_over_a_desk();
+    let overlays = chrome.overlays().clone();
+    let mut harness = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        chrome,
+        (1280, 800),
+        ui::theme::Theme::default(),
+    );
+    let open = |harness: &mut ui::headless::FrameHarness| {
+        let mut chrome = harness.root_mut::<DesktopChrome>();
+        chrome
+            .perform(&ChromeEffect::About { open: Some(true) })
+            .unwrap();
+        chrome.publish_overlays();
+    };
+
+    open(&mut harness);
+    harness.poll_frame().unwrap();
+    assert_eq!(overlays.target(), Target::Surface(Slot::About));
+    harness.key("Escape");
+    harness.poll_frame().unwrap();
+    assert!(!harness.root::<DesktopChrome>().about.is_about_open());
+    assert_eq!(
+        overlays.target(),
+        Target::Window,
+        "the window has the keys back"
+    );
+
+    open(&mut harness);
+    overlays.open(Slot::Search, None);
+    harness.root_mut::<DesktopChrome>().publish_overlays();
+    assert!(!harness.root::<DesktopChrome>().about.is_about_open());
+    assert!(!overlays.is_open(Slot::About));
+}
+
+/// A computer's sheet leads to its Settings pages: the one pressed opens and the sheet goes.
+#[test]
+fn the_about_sheets_updates_link_opens_settings() {
+    en();
+    let (chrome, _handle) = chrome_over_a_desk();
+    let mut harness = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        chrome,
+        (1280, 800),
+        ui::theme::Theme::default(),
+    );
+    {
+        let mut chrome = harness.root_mut::<DesktopChrome>();
+        chrome
+            .perform(&ChromeEffect::About { open: Some(true) })
+            .unwrap();
+        chrome.publish_overlays();
+    }
+    harness.poll_frame().unwrap();
+    harness.click_named("Updates").unwrap();
+    harness.poll_frame().unwrap();
+    let mut chrome = harness.root_mut::<DesktopChrome>();
+    assert_eq!(
+        chrome.take_asks(),
+        [DesktopAsk::OpenSettings("settings://updates".into())]
+    );
+    assert!(!chrome.about.is_about_open());
+}

@@ -18701,6 +18701,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-emoji-catalogue",
+ "tilo-failure",
  "tilo-feedback-transport",
  "tilo-resource",
  "tilo-session-core",

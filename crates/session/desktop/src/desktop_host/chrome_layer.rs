@@ -490,6 +490,7 @@ impl DesktopChrome {
             (Slot::Overview, self.overview.is_open()),
             (Slot::Strips, self.navigator.takes_keys()),
             (Slot::Search, self.search.is_open()),
+            (Slot::About, self.about.is_about_open()),
             (Slot::Centre, centre.is_some()),
         ] {
             // The stack took it down — a press outside it, another surface opening — and the widget
@@ -541,6 +542,10 @@ impl DesktopChrome {
         if self.search.is_open() && !self.overlays.is_open(Slot::Search) {
             self.search.close();
             self.overlays.close(Slot::Search);
+        }
+        if self.about.is_about_open() && !self.overlays.is_open(Slot::About) {
+            self.about.set_about_open(false);
+            self.overlays.close(Slot::About);
         }
         if let Some(notices) = self.notices.as_mut()
             && notices.center_open()
@@ -2200,6 +2205,10 @@ impl Widget for DesktopChrome {
             changed = true;
         }
         changed |= self.about.settle();
+        if let Some(link) = self.about.take_settings_link() {
+            self.ask(DesktopAsk::OpenSettings(link.to_owned()));
+            changed = true;
+        }
         if let Some(choice) = self.workspace_menu.take_choice() {
             self.apply_workspace_choice(choice);
             changed = true;
@@ -2526,7 +2535,7 @@ impl Widget for DesktopChrome {
     /// so a reader standing in the emoji card stays there as the chrome
     /// rebuilds under it rather than falling back to the window.
     fn is_focusable(&self) -> bool {
-        self.about.is_about_open() || self.overlays.target().slot().is_some_and(Slot::is_chrome)
+        self.overlays.target().slot().is_some_and(Slot::is_chrome)
     }
 
     fn set_focus(&mut self, focused: bool) {
