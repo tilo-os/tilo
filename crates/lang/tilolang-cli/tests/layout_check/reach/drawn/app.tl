@@ -19,6 +19,8 @@ default view listing for Shelf
 
 row view note_row for Note
 
+place view shelf_place for Shelf
+
 /// The shelf's own window.
 view listing(s: Shelf) {
     text("A shelf")
@@ -46,6 +48,11 @@ view orphan(s: Shelf) {
 /// A note as the system shows one, in a search result or another app's page.
 view note_row(n: Note) {
     row(n.name)
+}
+
+/// The shelf as a place on the canvas shows it.
+view shelf_place(s: Shelf) {
+    text("A shelf, placed")
 }
 
 scenario "a folder and a note" {

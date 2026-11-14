@@ -333,10 +333,11 @@ fn a_board_lane_draws_every_card_it_has_room_for_and_a_layout_costs_no_more_work
 
 /// A view another app's page draws is laid out there, so it is reached for the package that defines
 /// it though none of that package's own windows shows it; a row view of a type inside a collection
-/// of a union is opened on an item of that type; and a view nothing calls is named as one to
-/// delete, apart from a view a view calls that no scenario reaches.
+/// of a union and a type's place view are opened where the system draws them; and a view nothing
+/// calls is named as one to delete, apart from a view a view calls that no scenario reaches.
 #[test]
-fn a_view_another_app_draws_and_a_union_items_row_view_are_reached_while_a_dead_view_is_named() {
+fn a_view_another_app_draws_and_the_views_the_system_draws_are_reached_while_a_dead_view_is_named()
+{
     let dir = manifest().join("tests/layout_check/reach");
     let report = layout_check::check(&Options {
         dirs: vec![dir.join("drawer"), dir.join("drawn")],

@@ -1350,14 +1350,14 @@ fn listed_of(staged: &mut stage::Staged, ty: &str) -> Option<ResourceRef> {
     resource_of(&row_items(&rows, &named), &named, ty)
 }
 
-/// The views of `meta` the system shows on surfaces
-/// of its own: each action's proposal view, once
-/// each.
+/// The views of `meta` the system shows on surfaces of its own: a type's row and place views, and
+/// each action's proposal view, once each.
 fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta> {
     let ids: BTreeSet<&str> = meta
         .row_views
         .iter()
         .map(|row| row.view.as_str())
+        .chain(meta.place_views.iter().map(|place| place.view.as_str()))
         .chain(
             meta.actions
                 .iter()
@@ -1693,8 +1693,9 @@ impl AppCheck<'_> {
 
     /// The views of types the scenario did not open, on a resource its window names; and the views
     /// the system shows on surfaces of its own rather than in a window of the app: a type's row
-    /// view (a search result, a row of an agent's answer) and an action's proposal view (the card
-    /// asking to run it), on a resource of the type they take.
+    /// view (a search result, a row of an agent's answer), a type's place view (what a place on the
+    /// canvas shows) and an action's proposal view (the card asking to run it), on a resource of
+    /// the type they take.
     fn open_views(&mut self, staged: &mut stage::Staged, title: &str) -> Result<(), String> {
         // A page a person meets from a list is one of that list's own rows, so a view staged over
         // the list opens a resource the list holds where it holds one, and a resource of a type the
