@@ -553,13 +553,19 @@ impl AppBrokerState {
             .workspace()
             .ok_or_else(|| unavailable("caller workspace unavailable"))?;
         let actor = self.caller_actor(caller, workspace);
-        // Ordinary durable observations may reconcile effects too. Only a workspace
-        // that confines its agents to their runs keeps a task agent from
-        // observing on a grant alone: that needs an authenticated admission.
+        // Ordinary durable observations may reconcile effects too. A workspace
+        // that confines its agents keeps an agent from observing on a grant
+        // alone: only one in an agent session that still goes observes.
         if actor.is_agent && !actor.is_app() && self.confines_agents_to_tasks(workspace) {
-            return Err(unavailable(
-                "native task agent requires authenticated task action admission",
-            ));
+            match self.agent_session_of(Some(origin), workspace) {
+                Some(Ok(_)) => {}
+                Some(Err(ended)) => return Err(unavailable(ended)),
+                None => {
+                    return Err(unavailable(
+                        "an agent acts only in a task's run or an agent session",
+                    ));
+                }
+            }
         }
         let owner = self
             .invocation_owner(Some(origin), workspace, &actor)

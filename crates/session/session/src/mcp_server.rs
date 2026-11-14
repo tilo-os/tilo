@@ -39,7 +39,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_broker::collab_app_broker::AppBrokerState;
+use tilo_action_broker::collab_app_broker::{AgentConnection, AppBrokerState};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
@@ -1439,9 +1439,6 @@ pub(crate) struct SessionDoors {
     /// The desk's workspaces, as of the loop's last pass: each one's decimal id, name and the id it
     /// is shared under, by which an action names a workspace.
     workspaces: std::sync::Mutex<Vec<[String; 2]>>,
-    /// The runs the broker reads, which an admitted agent's connection starts its own run among
-    /// ([`DoorRun`]): `None` on a session that hands the broker none.
-    runs: std::sync::OnceLock<Arc<crate::conversations::Runs>>,
     /// The apps whose records the session's services keep, the packages it runs itself: only
     /// their records are read and changed on the loop's pass. Every other app's are the
     /// workspace's, which a connection reads without waiting for a pass.
@@ -1523,7 +1520,6 @@ impl SessionDoors {
             actions: std::sync::OnceLock::new(),
             tabs: std::sync::Mutex::new(HashMap::new()),
             workspaces: std::sync::Mutex::new(Vec::new()),
-            runs: std::sync::OnceLock::new(),
             kept: std::sync::Mutex::default(),
             awaiting: std::sync::Mutex::default(),
             awaited_at: std::sync::Mutex::default(),
@@ -1582,11 +1578,6 @@ impl SessionDoors {
     /// The session's services keep `app`'s records from now on.
     pub(crate) fn keep_records_of(&self, app: &str) {
         self.kept.lock_recover().insert(app.to_owned());
-    }
-
-    /// The runs the broker reads, which each admitted agent's connection starts its run among.
-    pub(crate) fn keep_runs(&self, runs: Arc<crate::conversations::Runs>) {
-        let _ = self.runs.set(runs);
     }
 
     /// Keep where the desk's windows stand now, read from `handle` on the loop's pass.
@@ -1789,10 +1780,9 @@ pub(crate) struct Host {
     /// The session's own actions, when this session serves them: a desktop with no broker
     /// lists them itself.
     session_actions: Option<Arc<crate::session_actions::SessionActions>>,
-    /// The run an admitted agent's connection works in: what it changes, it changes as a step of
-    /// it ([`crate::door_runs`]). `None` for the person's own connection, and where the
-    /// workspace does not confine its agents to runs.
-    run: Option<Arc<DoorRun>>,
+    /// An admitted agent's connection to the broker, as its own agent session. `None` for the
+    /// person's own connection, and on a device with no identity in the workspace.
+    agent: Option<AgentConnection>,
     /// The agent session an admitted agent's connection is: each step it takes says there what
     /// it is doing. `None` for the person's own connection.
     agent_session: Option<Arc<SessionAt>>,
@@ -1881,69 +1871,96 @@ impl SessionAt {
     }
 }
 
-/// The run one admitted agent's connection works in: its task agent's host on the broker, and the
-/// run itself, held for as long as the connection lasts. The host goes first, so the broker hears
-/// the connection leave before its run ends.
-pub(crate) struct DoorRun {
-    host: tilo_action_broker::collab_app_broker::TaskRunHost,
-    /// The run itself, held for as long as the connection lasts: dropping it ends what the broker
-    /// still runs of it.
-    held: crate::door_runs::Held,
-}
-
-impl DoorRun {
-    /// The issue that names its run: what the desk's card takes its work back by.
-    fn issue(&self) -> &str {
-        self.held.issue()
+/// Join `broker` as the agent session `admitted` names, certified by this device for a day at
+/// most. `Ok(None)` where the workspace confines no agent to its session, and on a device with no
+/// identity of its own in the workspace (a development session), which can certify nothing: its
+/// agents act on the workspace's grants as any app does.
+///
+/// # Errors
+/// The device's identity is not the person's, or the broker did not admit the session.
+fn connect(
+    broker: &Arc<AppBrokerState>,
+    admitted: &Admitted<'_>,
+) -> Result<Option<AgentConnection>, String> {
+    if !broker.confines_agents_to_tasks(admitted.workspace) {
+        return Ok(None);
     }
-
-    /// Start the run of the agent `admitted` names, admitted by its person at this door: mint its
-    /// task agent, hold its run beside the conversations' turns (as the run of an agent from
-    /// another of the person's own devices when `from_own_device`), and join the broker as it.
-    /// `Ok(None)` where the workspace does not confine its agents to runs, so it acts on the
-    /// workspace's grants as it always did, and on a device with no identity of its own in the
-    /// workspace (a development session), which can delegate nothing: its agents read, and every
-    /// change they ask for is refused as the broker refuses an agent working in no run.
-    ///
-    /// # Errors
-    /// Why the run could not start: the device's identity is not the person's, or the broker did
-    /// not take the run.
-    fn start(
-        broker: &Arc<AppBrokerState>,
-        runs: Option<&Arc<crate::conversations::Runs>>,
-        admitted: &crate::door_runs::Admitted<'_>,
-        from_own_device: bool,
-    ) -> Result<Option<Self>, String> {
-        use tilo_broker_core::services::TrackerRuns as _;
-        let Some(runs) = runs.filter(|runs| runs.confines_agents_to_tasks(admitted.workspace))
-        else {
-            return Ok(None);
-        };
-        let (device, certificate) = match tilo_identity_host::broker::trusted_current_device(
-            admitted.workspace,
-        ) {
+    let (device, certificate) =
+        match tilo_identity_host::broker::trusted_current_device(admitted.workspace) {
             Ok(device) => device,
             Err(error) => {
                 tracing::warn!(
                     workspace = admitted.workspace,
                     %error,
-                    "MCP server: this device delegates no run here, so the agent changes nothing"
+                    "MCP server: this device certifies no agent here"
                 );
                 return Ok(None);
             }
         };
-        let minted = crate::door_runs::mint(
-            (&device, &certificate),
-            &crate::door_runs::agent_key()?,
-            admitted,
-            tilo_clock::try_unix_now_ns().ok_or("this device has no clock to delegate by")?,
-        )?;
-        let held = runs
-            .doors()
-            .open(admitted.workspace, minted.run, from_own_device);
-        let host = broker.task_run_host(&minted.presentation)?;
-        Ok(Some(Self { host, held }))
+    let presentation = certify(
+        (&device, &certificate),
+        admitted,
+        tilo_clock::try_unix_now_ns().ok_or("this device has no clock to certify by")?,
+    )?;
+    broker
+        .agent_connection(&presentation, admitted.name)
+        .map(Some)
+}
+
+/// What an agent session is admitted for: the workspace it works in, the person who admitted it
+/// (whom the agent acts for), the agent member it is a session of, the session, and the name the
+/// person reads it by (`Claude Code #2`).
+struct Admitted<'a> {
+    workspace: &'a str,
+    person: &'a str,
+    agent: &'a str,
+    session: &'a AgentSessionId,
+    name: &'a str,
+}
+
+/// The presentation an agent session joins the broker with: a key of its own, certified as the
+/// admitted agent by this device (`device`, certified as `certificate`) for a day at most from
+/// `now_ns`, in its session alone.
+///
+/// # Errors
+/// The device's certificate is another person's, or the agent certificate does not sign.
+fn certify(
+    (device, certificate): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
+    admitted: &Admitted<'_>,
+    now_ns: u64,
+) -> Result<Vec<u8>, String> {
+    use ed25519_dalek::Signer as _;
+    use tilo_peer_state::join::agent_cert::{AgentCert, MAX_AGENT_CERT_NS};
+    if tilo_broker_core::person_id_for_root(certificate.user_public_key) != admitted.person {
+        return Err("this device's identity is not the person's who admitted the agent".into());
     }
+    let mut seed = [0_u8; 32];
+    getrandom::fill(&mut seed).map_err(|error| error.to_string())?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let cert = AgentCert::sign(
+        device,
+        certificate.user_public_key,
+        key.verifying_key().to_bytes(),
+        (admitted.agent, admitted.session.as_str().to_owned()),
+        tilo_peer_state::join::WorkspaceId::parse(admitted.workspace)
+            .ok_or("the admission names no workspace")?,
+        now_ns,
+        now_ns.saturating_add(MAX_AGENT_CERT_NS),
+    )
+    .map_err(|error| format!("the agent certificate does not sign: {error}"))?;
+    runtime_collab::AgentJoinIdentity {
+        workspace_id: admitted.workspace.to_owned(),
+        device_certificate: serde_json::to_vec(certificate).map_err(|error| error.to_string())?,
+        certificate: cert.encode(),
+        proof: key
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                admitted.workspace,
+            ))
+            .to_bytes()
+            .to_vec(),
+    }
+    .encode()
+    .map_err(|error| error.to_string())
 }
 
 impl Host {
@@ -1954,7 +1971,7 @@ impl Host {
             session,
             answered: Arc::default(),
             session_actions: None,
-            run: None,
+            agent: None,
             agent_session: None,
         }
     }
@@ -1977,9 +1994,9 @@ impl Host {
         self
     }
 
-    /// The same door, working in `run`: an admitted agent's.
-    fn in_run(mut self, run: Option<DoorRun>) -> Self {
-        self.run = run.map(Arc::new);
+    /// The same door, as the agent session `agent`.
+    fn with_agent(mut self, agent: Option<AgentConnection>) -> Self {
+        self.agent = agent;
         self
     }
 
@@ -2058,10 +2075,9 @@ impl Host {
         if own && self.reads(&request) {
             return self.invoke_read_step(caller, request);
         }
-        // Every other step of an admitted agent's is its run's: an app's action a child of it,
-        // a host step admitted by it, both decided by the person's live grants.
-        if !person && let Some(run) = &self.run {
-            return run.host.invoke(caller, request);
+        // Every other step of an admitted agent's is its session's.
+        if !person && let Some(agent) = &self.agent {
+            return agent.invoke(caller, request);
         }
         match &self.state {
             Some(state) if at_seat => state.action_invoke_local_person(caller, &request),
@@ -2188,9 +2204,10 @@ impl ActionHost for Host {
         if let Some(workspace) = confined {
             let session = Arc::clone(&self.session);
             let agent_session = self.agent_session.clone();
-            let page = match &self.state {
-                Some(state) => state.action_query(caller, &query),
-                None => Pending::ready(Ok(CataloguePage::from_rows(
+            let page = match (&self.agent, &self.state) {
+                (Some(agent), _) => agent.query(caller, query),
+                (None, Some(state)) => state.action_query(caller, &query),
+                (None, None) => Pending::ready(Ok(CataloguePage::from_rows(
                     String::new(),
                     self.session_rows(),
                     &query,
@@ -2247,7 +2264,7 @@ impl ActionHost for Host {
             .rev()
             .find(|(invocation, _)| invocation == id)
             .map(|(_, update)| InvocationState::new(*id, update.clone()));
-        ours.or_else(|| self.run.as_ref()?.host.observe(caller, id))
+        ours.or_else(|| self.agent.as_ref()?.observe(caller, id))
             .or_else(|| {
                 self.state
                     .as_ref()
@@ -2256,9 +2273,9 @@ impl ActionHost for Host {
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
-        self.run
+        self.agent
             .as_ref()
-            .and_then(|run| run.host.next_change(caller, id))
+            .and_then(|agent| agent.next_change(caller, id))
             .or_else(|| {
                 self.state
                     .as_ref()
@@ -2271,9 +2288,8 @@ impl ActionHost for Host {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionHostError>> {
-        // What an admitted agent started is its run's to cancel.
-        if let Some(run) = &self.run {
-            return run.host.cancel(caller, id);
+        if let Some(agent) = &self.agent {
+            return agent.cancel(caller, id);
         }
         match &self.state {
             Some(state) => state.action_cancel(caller, id),
@@ -2286,12 +2302,12 @@ impl ActionHost for Host {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
-        // An admitted agent's step is its run's to ask about: its person answers on this desk's
-        // sheet ([`crate::run_questions`]).
-        if let Some(run) = &self.run
+        // An admitted agent's step is its session's to ask about: its person answers on this
+        // desk's sheet ([`crate::run_questions`]).
+        if let Some(agent) = &self.agent
             && !caller.acting().is_person()
         {
-            return run.host.confirm(caller, request);
+            return agent.confirm(caller, request);
         }
         match &self.state {
             Some(state) => state.request_witness(caller, None, request),
@@ -2341,7 +2357,6 @@ impl Host {
         ServiceRecords {
             state: self.state.as_ref().map(Arc::downgrade),
             session: Arc::clone(&self.session),
-            run: self.run.as_ref().and_then(|run| run.host.record_changes()),
             agent_session: self
                 .agent_session
                 .as_ref()
@@ -2536,18 +2551,16 @@ fn serve_admitted(
 ) {
     let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));
     let admitted = Arc::clone(&tasks);
-    // The agent the person admitted, which works in a run of its own: its workspace, its person
-    // and the agent it is seated as, from the answer to the host the connection is then served
-    // through.
+    // The agent the person admitted: its workspace, its person and the agent member it is a
+    // session of, from the answer to the host the connection is then served through.
     let agent: Arc<std::sync::Mutex<Option<[String; 4]>>> = Arc::default();
     let starting = Arc::clone(&agent);
     // Where the connection came from, when another of the person's devices carried it: the
-    // device whose certificate the remote door verified, which its run then names.
-    let from = facts.origin.as_ref().map(crate::door_runs::device_of);
-    let agent_session = sessions.joining(facts.entrance.door());
-    // An agent from another of the person's own devices, which the door toward them let through:
-    // what this device's setting for such agents may answer for once its run asks.
-    let from_own_device = facts.origin.is_some();
+    // device whose certificate the remote door verified.
+    let from = facts.origin.as_ref().map(|origin| {
+        tilo_actions::InvokerDevice::certified(origin.key(), &origin.device.device_label)
+    });
+    let agent_session = sessions.joining(facts.entrance.door(), from);
     let session_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {
@@ -2565,31 +2578,26 @@ fn serve_admitted(
                 return Ok(host);
             };
             let host = host.in_agent_session(sessions, agent_session.clone(), wake);
-            // The run is named as the desk shows the session: what its history is listed under
-            // and what its questions to the person call it.
-            let seated = sessions.name(&agent_session).unwrap_or(name);
-            let admitted = crate::door_runs::Admitted {
+            let name = sessions.name(&agent_session).unwrap_or(name);
+            let admitted = Admitted {
                 workspace: &workspace,
                 person: &person,
                 agent: &member,
                 session: &agent_session,
-                seated: &seated,
-                origin: from.as_ref(),
+                name: &name,
             };
-            // Every admitted agent's connection works in a run of its own: one that cannot start
-            // acts on nothing, and the client is told why rather than refused action by action.
-            match DoorRun::start(&broker, session.runs.get(), &admitted, from_own_device) {
-                Ok(run) => {
-                    // What it works in, as its card's commands name it: the run taking its work
-                    // back names, and the records it changes there.
-                    if let Some(run) = &run {
-                        sessions.working_in(&agent_session, run.issue());
+            // A session the broker does not admit acts on nothing: the client is told why rather
+            // than refused action by action.
+            match connect(&broker, &admitted) {
+                Ok(connection) => {
+                    if connection.is_some() {
+                        sessions.certified(&agent_session);
                     }
-                    Ok(host.in_run(run))
+                    Ok(host.with_agent(connection))
                 }
                 Err(why) => {
-                    tracing::warn!(%workspace, agent = %seated, %why, "MCP server: the agent's run did not start");
-                    Err(format!("{}: {why}", word("mcp-server-no-run")))
+                    tracing::warn!(%workspace, agent = %name, %why, "MCP server: the agent session was not admitted");
+                    Err(format!("{}: {why}", word("mcp-server-not-started")))
                 }
             }
         },
@@ -2869,7 +2877,6 @@ mod tests {
         let records = ServiceRecords {
             state: None,
             session: Arc::new(SessionDoors::new(Arc::new(|| {}), "person")),
-            run: None,
             agent_session: None,
         };
         let started = std::time::Instant::now();

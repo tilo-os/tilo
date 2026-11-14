@@ -76,9 +76,42 @@ fn store_disclosure(
     .map_err(|reason| ActionHostError::InvalidRequest { reason })
 }
 
+/// The grant allowing the agent session `caller` works in every later step
+/// like `descriptor` of `app`, given by `person`: `None` for a caller in no
+/// agent session, and for a privileged step, which is asked every time.
+fn session_answer(
+    caller: &Caller,
+    workspace: &str,
+    person: &str,
+    (app, descriptor): (&str, &tilo_actions::ActionDescriptor),
+) -> Option<tilo_action_policy::Grant> {
+    let acting = caller.acting();
+    let (session, agent) = acting.agent_session.as_ref().zip(acting.agent_id())?;
+    let need = descriptor.contract.need();
+    if need.privileged {
+        return None;
+    }
+    let scope = crate::services::issue_answer_scope(
+        app,
+        (&descriptor.resource_kind, &descriptor.address.action),
+        descriptor.contract.asks_for_argument(None),
+    );
+    Some(tilo_action_policy::Grant::new(
+        crate::services::issue_answer_id(session.as_str(), (&scope, need.kind)),
+        tilo_action_policy::Grantee::agent(agent.to_owned()),
+        scope.node(workspace),
+        tilo_action_policy::KindSet::of(need.kind),
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(person),
+    ))
+}
+
 /// What the person is asked, and what their answer is bound to.
 pub(super) struct Question {
     pub(super) request: AppActionConsentRequest,
+    /// The grant allowing an agent session every later step like this one,
+    /// where its person may give it.
+    pub(super) answer: Option<tilo_action_policy::Grant>,
     actor: BrokerActor,
     binding: super::WitnessBinding,
     /// The view the caller is shown waiting in, when the action runs in one.
@@ -286,7 +319,7 @@ impl AppBrokerState {
                 workspace: run.cluster_id.clone(),
                 person: binding.starter.ok_or("native task starter absent")?,
                 app_id: run.agent_id.clone(),
-                run: None,
+                agent_session: None,
                 target_app: app.into(),
                 resource: offered.resource.clone(),
                 action: offered.action.clone(),
@@ -301,6 +334,7 @@ impl AppBrokerState {
                 draft: None,
             },
             binding: self.native_witness_binding(actor.id(), publication, argument, invocation),
+            answer: None,
             actor,
             shown: None,
         };
@@ -420,7 +454,7 @@ impl AppBrokerState {
     /// change them ([`tilo_actions::Draft::apply_edits`]); the caller is
     /// handed the changed arguments to invoke with, and any others are
     /// refused at admission like a confirmation for other arguments.
-    fn witness_answer(
+    pub(super) fn witness_answer(
         &self,
         question: &Question,
         request: &InvokeRequest,
@@ -502,7 +536,7 @@ impl AppBrokerState {
                         .as_ref()
                         .is_some_and(|descriptor| &descriptor.address == address)
             });
-        let (app_id, labels, risk, draft) = if let Some(row) = offered {
+        let (answer, app_id, labels, risk, draft) = if let Some(row) = offered {
             let Some(descriptor) = row.action else {
                 return Ok(None);
             };
@@ -516,6 +550,7 @@ impl AppBrokerState {
             }
             .filter(|draft| !draft.fields.is_empty());
             (
+                session_answer(caller, workspace, person, (&row.app_id, &descriptor)),
                 row.app_id,
                 (descriptor.resource_label, descriptor.action_label),
                 descriptor.contract.risk,
@@ -528,6 +563,7 @@ impl AppBrokerState {
                 return Ok(None);
             };
             (
+                None,
                 directory.app_id,
                 (address.resource.clone(), address.action.clone()),
                 tilo_actions::RiskLevel::Low,
@@ -552,7 +588,6 @@ impl AppBrokerState {
                 )?;
                 Some((surface.route.clone(), shown))
             });
-        let asker = asker_id(caller);
         // Only the Store's typed external actions use this disclosure. A broken
         // payload or unavailable identity must not fall back to a generic prompt.
         let moderation = if requires_store_witness(&app_id, &address.action) {
@@ -565,8 +600,8 @@ impl AppBrokerState {
                 handle: format!("confirm:{}", request.invocation.0),
                 workspace: workspace.to_owned(),
                 person: person.to_owned(),
-                app_id: asker,
-                run: None,
+                app_id: asker_id(caller),
+                agent_session: None,
                 target_app: app_id,
                 resource: address.resource.clone(),
                 action: address.action.clone(),
@@ -577,10 +612,13 @@ impl AppBrokerState {
                 confirming: true,
                 moderation,
                 preview: None,
-                scope: None,
+                scope: answer
+                    .as_ref()
+                    .and_then(|_| caller.agent_name().map(str::to_owned)),
                 draft,
             },
             binding,
+            answer,
             actor,
             shown,
         }))

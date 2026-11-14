@@ -17,6 +17,9 @@ pub use tilo_broker_core::access::{
 
 use tokio::sync::oneshot;
 
+/// What the handle of a question an agent session asks begins with.
+pub const AGENT_SESSION_ASK: &str = "agent-session-ask:";
+
 /// What the person is asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppActionConsentRequest {
@@ -28,9 +31,9 @@ pub struct AppActionConsentRequest {
     pub person: String,
     /// The application asking.
     pub app_id: String,
-    /// The run that asks, where a run's step asks: its own issue, which names it among the
-    /// connections of the same agent. `None` for a question about an application's action.
-    pub run: Option<String>,
+    /// The agent session that asks, which names it among the sessions of the same agent. `None`
+    /// for a question about an application's action.
+    pub agent_session: Option<String>,
     /// The application whose action it wants to use.
     pub target_app: String,
     /// The resource of `target_app` that publishes the action, as a grant

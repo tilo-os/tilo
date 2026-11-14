@@ -15,8 +15,6 @@ use super::{DoorAsk, SessionDoors, WAIT, unanswered};
 pub(crate) struct ServiceRecords {
     pub(crate) state: Option<std::sync::Weak<AppBrokerState>>,
     pub(crate) session: Arc<SessionDoors>,
-    /// An admitted agent's run, whose steps its changes of the workspace's records are.
-    pub(crate) run: Option<Arc<dyn tilo_actions::remote::RecordChanges>>,
     /// The agent session an admitted connection is, when it is one: the records it changes are
     /// kept there, as what taking its work back undoes.
     pub(crate) agent_session: Option<(
@@ -117,9 +115,6 @@ impl tilo_actions::remote::RecordChanges for ServiceRecords {
             done,
         })? {
             return answer;
-        }
-        if let Some(run) = &self.run {
-            return run.apply(caller, change);
         }
         self.broker()?
             .record_changes()

@@ -388,6 +388,9 @@ pub struct Hosted {
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
     pub agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
+    /// The agent sessions the person admitted at the MCP server: what the broker admits each
+    /// session's certificate on.
+    pub agent_sessions: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentSessions>>,
     /// The workspaces' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
@@ -1042,6 +1045,7 @@ fn seams(
         activity,
         turns,
         agents,
+        agent_sessions,
         sealed,
         own_device,
         engine,
@@ -1154,6 +1158,7 @@ fn seams(
         // Which agents each workspace keeps, and whose session runs each: the
         // record the broker admits an agent's join on.
         agents: Seam::when(agents),
+        agent_sessions: Seam::when(agent_sessions),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -1691,6 +1696,7 @@ mod tests {
             activity: crate::activity_provider::wire(requests()),
             turns: None,
             agents: None,
+            agent_sessions: None,
             native_media: None,
             sealed: Sealed {
                 broker: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),

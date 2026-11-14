@@ -14,6 +14,8 @@ use tilo_peer_state::owner_commit::{
 };
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
+#[path = "agent_connection_tests.rs"]
+mod agent_connection;
 #[path = "certified_agent_tests.rs"]
 mod certified_agents;
 #[path = "native_task_launch_tests.rs"]
@@ -51,11 +53,8 @@ struct Native {
     /// The owner is still opening, as a session's is at its start: health
     /// says so until it is open.
     opening: std::sync::atomic::AtomicBool,
-    /// The runs ask their person on the host, and keep their questions
-    /// here, as an agent door connection's do.
-    asks_on_host: std::sync::atomic::AtomicBool,
-    /// What the person answered a run "always" for, kept beside it.
-    host_answers: Mutex<Vec<tilo_action_policy::Grant>>,
+    /// The agent sessions going, each with what its person allowed it.
+    sessions: Mutex<Vec<(String, crate::services::GoingSession)>>,
     /// The agents the workspace's record of its agents names.
     listed: Mutex<Vec<crate::services::ListedAgent>>,
 }
@@ -289,47 +288,41 @@ impl TrackerRuns for Native {
                 .turn
                 .as_ref()
                 .and_then(|turn| self.looked.lock().unwrap().get(&turn.message).cloned());
-            let mut policy = tilo_peer_state::workspace::policy_of(
+            let policy = tilo_peer_state::workspace::policy_of(
                 view.peer()
                     .admitted_workspace()
                     .ok_or("native document unavailable")?,
                 requested,
             );
-            policy
-                .grants
-                .extend(self.host_answers.lock().unwrap().iter().cloned());
             requirement.check_tracker_policy(&policy, requested, run, looked.as_ref(), now)
         })
     }
-    fn asks_on_host(&self, _requested: &str, _run: &TrackerRun) -> bool {
-        self.asks_on_host.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    fn keep_question(
+}
+impl crate::services::AgentSessions for Native {
+    fn going(
         &self,
-        _requested: &str,
-        issue: &str,
-        question: Option<crate::services::TrackerQuestion>,
-    ) -> Result<(), String> {
-        self.runs
+        _workspace: &str,
+        _agent: &str,
+        session: &str,
+    ) -> Option<crate::services::GoingSession> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, _)| id == session)
+            .map(|(_, going)| going.clone())
+    }
+
+    fn keep_answer(&self, session: &str, grant: tilo_action_policy::Grant) {
+        if let Some((_, going)) = self
+            .sessions
             .lock()
             .unwrap()
             .iter_mut()
-            .find(|run| run.issue == issue)
-            .ok_or("no such run")?
-            .question = question;
-        Ok(())
-    }
-    fn keep_answer(
-        &self,
-        _requested: &str,
-        _issue: &str,
-        grant: tilo_action_policy::Grant,
-    ) -> Result<(), String> {
-        self.host_answers.lock().unwrap().push(grant);
-        Ok(())
-    }
-    fn kept_answers(&self, _requested: &str, _issue: &str) -> Vec<tilo_action_policy::Grant> {
-        self.host_answers.lock().unwrap().clone()
+            .find(|(id, _)| id == session)
+        {
+            going.answers.push(grant);
+        }
     }
 }
 struct Fixture {
@@ -410,8 +403,7 @@ impl Fixture {
             granted: Mutex::new(None),
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
             opening: std::sync::atomic::AtomicBool::new(false),
-            asks_on_host: std::sync::atomic::AtomicBool::new(false),
-            host_answers: Mutex::new(Vec::new()),
+            sessions: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {
@@ -459,6 +451,7 @@ impl Fixture {
                 workspace_grants: Some(native.clone()),
                 tracker_runs: Some(native.clone()),
                 agents: Some(native.clone()),
+                agent_sessions: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 host_steps,
                 record_changes,

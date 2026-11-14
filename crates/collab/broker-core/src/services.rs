@@ -15,10 +15,10 @@ mod workspace_nodes;
 
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{
-    AGENT_SESSION_PREFIX, AgentRoster, ListedAgent, NativeTaskActionRequirement, NativeTaskBinding,
-    Preview, PreviewSide, TrackerAnswer, TrackerQuestion, TrackerRun, TrackerRuns,
-    confirmation_preview, is_agent_session, is_conversation_turn, issue_answer_id,
-    issue_answer_scope, issue_answers,
+    AGENT_SESSION_PREFIX, AgentRoster, AgentSessions, GoingSession, ListedAgent,
+    NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TrackerAnswer,
+    TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_agent_session,
+    is_conversation_turn, issue_answer_id, issue_answer_scope, issue_answers,
 };
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 

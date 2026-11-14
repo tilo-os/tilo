@@ -427,9 +427,9 @@ impl AppBrokerState {
         self.tracker_runs(workspace).is_some()
     }
 
-    /// Whether agents in `workspace` act only through their runs' admission
-    /// ([`crate::services::TrackerRuns::confines_agents_to_tasks`]).
-    pub(super) fn confines_agents_to_tasks(&self, workspace: &str) -> bool {
+    /// Whether agents in `workspace` act only in a task's run or an agent
+    /// session ([`crate::services::TrackerRuns::confines_agents_to_tasks`]).
+    pub fn confines_agents_to_tasks(&self, workspace: &str) -> bool {
         self.tracker_runs(workspace)
             .is_some_and(|runs| runs.confines_agents_to_tasks(workspace))
     }

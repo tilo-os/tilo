@@ -115,6 +115,7 @@ seams! {
     workspace_memberships: Arc<dyn WorkspaceMemberships>,
     tracker_runs: Arc<dyn TrackerRuns>,
     agents: Arc<dyn tilo_broker_core::services::AgentRoster>,
+    agent_sessions: Arc<dyn tilo_broker_core::services::AgentSessions>,
     native_certificates: Arc<dyn tilo_action_broker::certificate_authority::CertificateAuthority>,
     local_person: Arc<dyn LocalPersonServices>,
     record_changes: Arc<dyn RecordChangeServices>,

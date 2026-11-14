@@ -128,11 +128,16 @@ impl BrokerActor {
             // acts for the person who admitted it, with no more than the
             // workspace grants it (`Caller::acting_for`); a delegated agent
             // device acts for the person its certificate chains to.
-            return match acting.acted_for_person() {
+            let agent = match acting.acted_for_person() {
                 Some(person) if caller.is_session_delegated() => {
                     agent.for_person(person).session_delegated()
                 }
                 Some(person) => agent.for_person(person),
+                None => agent,
+            };
+            // An agent session's changes are caused by the session.
+            return match &acting.agent_session {
+                Some(session) => agent.working_on(session.as_str()),
                 None => agent,
             };
         }

@@ -274,6 +274,17 @@ impl Caller {
         self
     }
 
+    /// An agent caller working in the agent session `session`: what its
+    /// changes are grouped and taken back by. Set only by the host that
+    /// admitted the session; names nothing for a caller that is not an agent.
+    #[must_use]
+    pub fn in_agent_session(mut self, session: impl Into<String>) -> Self {
+        if self.acting.is_agent() {
+            self.acting = self.acting.in_session(session);
+        }
+        self
+    }
+
     /// The name an agent caller goes by ([`Self::named`]).
     #[must_use]
     pub fn agent_name(&self) -> Option<&str> {
@@ -382,9 +393,16 @@ impl Caller {
     #[must_use]
     pub fn agent_run(&self) -> Option<crate::WorkGroup> {
         let agent = self.acting.agent_id()?;
-        let execution = self.execution_id()?;
+        let id = match &self.acting.agent_session {
+            Some(session) => session.as_str().to_owned(),
+            None => format!(
+                "{}:{}",
+                crate::context::AGENT_RUN_GROUP,
+                self.execution_id()?
+            ),
+        };
         Some(crate::WorkGroup {
-            id: format!("{}:{execution}", crate::context::AGENT_RUN_GROUP),
+            id,
             label: self.agent_name().unwrap_or(agent).to_owned(),
             kind: crate::context::AGENT_RUN_GROUP.to_owned(),
             title: None,

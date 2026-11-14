@@ -248,6 +248,8 @@ fn acting_fabric(
 pub(crate) struct Knitted {
     pub(crate) turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     pub(crate) agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
+    pub(crate) agent_sessions:
+        Option<std::sync::Arc<dyn tilo_broker_core::services::AgentSessions>>,
     pub(crate) tools: Option<crate::tools::Handle>,
 }
 
@@ -260,11 +262,6 @@ pub(crate) fn start_action_plane(
     seams: Knitted,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<Plane>, Error> {
-    let Knitted {
-        turns,
-        agents,
-        tools,
-    } = seams;
     let Collaboration {
         revocations,
         sync,
@@ -333,8 +330,9 @@ pub(crate) fn start_action_plane(
             activity: activity_wire,
             // The turns the broker delivers to the agents admitted here, and hears back what they
             // report of them.
-            turns,
-            agents,
+            turns: seams.turns,
+            agents: seams.agents,
+            agent_sessions: seams.agent_sessions,
             sealed,
             own_device,
             record_content: content,
@@ -348,7 +346,7 @@ pub(crate) fn start_action_plane(
             // read by search's own worker off the session's thread.
             lists: options.lists.clone(),
             // Files' waits for the drive and app lists to change, which the tools service answers.
-            tools,
+            tools: seams.tools,
             task_programs,
             session_actions,
             settings_steps,

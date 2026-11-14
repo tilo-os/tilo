@@ -1,24 +1,9 @@
-//! A task agent the broker serves in this process: the desktop's agent door.
-//!
-//! The person admits a client at the door (an AI agent in a terminal), and
-//! the desktop asks Tasks for an issue and a run for it, assigned to a task
-//! agent it minted for that connection (docs/architecture/agents.md, "Task
-//! agents and collaborators"). The connection then joins here as that task
-//! agent, under the task delegation its device signed, exactly as a launched
-//! task agent joins over its channel ([`super::task_agents`]), and receives
-//! its run the same way: a task subscription the tracker's going runs are
-//! delivered to.
-//!
-//! Every invocation it makes is a child of that run, admitted by the run
+//! The host a launched task agent's run takes its steps through: every
+//! invocation it makes is a child of that run, admitted by the run
 //! ([`super::tracker_runs`]): an application's action through the run's
 //! child path, a host step through the run's admission and then the host
-//! step door as the task agent. There is no other way in: a stopped run, a
-//! newer run of the issue or a revoked device cuts the connection's
-//! authority, as it cuts a launched task agent's.
-//!
-//! Discovery is visibility, not admission: the catalogue is the one a
-//! person's device shows the agent it hands a session to, and every action
-//! taken from it is decided by the run.
+//! step door as the task agent. A stopped run, a newer run of the issue or a
+//! revoked device cuts its authority.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -31,16 +16,7 @@ use tilo_actions::remote::{
 use super::durable_local_invocation::LocalCaller;
 use super::native_task_execution::ChildReask;
 use super::published_invocation::InvocationCaller;
-use super::{
-    AdmittedJoinIdentity, AppBrokerState, CrdtRoute, InvocationOwner, PendingTaskRun,
-    TaskSubscription, mpsc,
-};
-
-mod asking;
-
-/// The route a task agent's connection is admitted on: the workspace agent
-/// service's, as a launched task agent joins.
-pub use tilo_actions::remote::task_programs::APP as TASK_AGENT_APP;
+use super::{AdmittedJoinIdentity, AppBrokerState, CrdtRoute, InvocationOwner, PendingTaskRun};
 
 /// How an invocation of this connection is read back.
 #[derive(Clone)]
@@ -91,21 +67,9 @@ struct Inner {
     /// connection's execution.
     caller: Caller,
     started: Mutex<HashMap<tilo_actions::InvocationId, Started>>,
-    /// Whether this host took the run's delivery itself (the agent door's
-    /// connection), so the run's stream ends with it; a launched task
-    /// agent's stream is its channel's.
-    owns_stream: bool,
 }
 
-impl Drop for Inner {
-    fn drop(&mut self) {
-        if self.owns_stream {
-            self.state.disconnect_native_task_stream(self.peer);
-        }
-    }
-}
-
-/// One admitted connection of the agent door, working in its task's run.
+/// A launched task agent, working in its task's run.
 #[derive(Clone)]
 pub struct TaskRunHost(Arc<Inner>);
 
@@ -125,64 +89,8 @@ impl std::fmt::Debug for TaskRunHost {
 }
 
 impl AppBrokerState {
-    /// Join `presentation`, an agent's (the device's certificate, the agent
-    /// certificate it signed and the agent key's proof), and take its run:
-    /// the going run of its session the tracker holds for it.
-    pub fn task_run_host(self: &Arc<Self>, presentation: &[u8]) -> Result<TaskRunHost, String> {
-        let decoded = runtime_collab::AgentJoinIdentity::decode(presentation)
-            .map_err(|error| format!("the agent's presentation is malformed: {error}"))?
-            .ok_or("the agent door joins only as a certified agent")?;
-        let workspace = decoded.workspace_id;
-        let route = CrdtRoute::record(TASK_AGENT_APP, workspace.clone(), "");
-        let admitted = super::verify_join_identity(
-            &route,
-            presentation,
-            self.membership.as_ref(),
-            self.trusted_devices.as_deref().map(Vec::as_slice),
-            self.certificate_authority.get().map(Arc::as_ref),
-        )?;
-        let cert = admitted
-            .agent_cert
-            .as_deref()
-            .ok_or("agent certificate missing")?;
-        let agent = cert.agent_id.clone();
-        self.admit_agent_join(&workspace, &agent, &admitted)?;
-        let peer = self.next_peer_id();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        self.task_subscribers
-            .lock()
-            .map_err(|_| "task subscription registry unavailable")?
-            .insert(
-                peer,
-                TaskSubscription {
-                    agent_id: agent.clone(),
-                    cluster_id: workspace.clone(),
-                    tx,
-                },
-            );
-        // Delivery is synchronous: a going run is in the channel now.
-        self.refresh_tracker_runs(&std::iter::once(workspace).collect());
-        let Ok(run) = rx.try_recv() else {
-            self.disconnect_native_task_stream(peer);
-            return Err("the task's run is not going, so it was delivered nothing".into());
-        };
-        let run = RunRef {
-            run_id: run.run_id,
-            lease: run.lease,
-            task_id: run.task_id,
-        };
-        Ok(TaskRunHost::new(
-            self,
-            (peer, route, admitted),
-            agent,
-            run,
-            true,
-        ))
-    }
-
     /// The host a launched task agent's run takes its host steps through
-    /// (a task's programs), the same the agent door's connection is: on the
-    /// agent's own channel (`peer` on `route`, admitted as `admitted`), in
+    /// (a task's programs): on the agent's own channel (`peer` on `route`, admitted as `admitted`), in
     /// its delivered run `run_id` at `lease`.
     pub(super) fn launched_task_run_host(
         self: &Arc<Self>,
@@ -200,13 +108,7 @@ impl AppBrokerState {
             lease: lease.to_owned(),
             task_id: task_id.to_owned(),
         };
-        Ok(TaskRunHost::new(
-            self,
-            (peer, route, admitted),
-            agent,
-            run,
-            false,
-        ))
+        Ok(TaskRunHost::new(self, (peer, route, admitted), agent, run))
     }
 }
 
@@ -216,7 +118,6 @@ impl TaskRunHost {
         (peer, route, admitted): (u64, CrdtRoute, AdmittedJoinIdentity),
         agent: String,
         run: RunRef,
-        owns_stream: bool,
     ) -> Self {
         let person = admitted.principal_id.clone();
         let caller = Caller::local_person(person.clone())
@@ -233,7 +134,6 @@ impl TaskRunHost {
             run,
             caller,
             started: Mutex::default(),
-            owns_stream,
         }))
     }
 
@@ -318,18 +218,6 @@ impl TaskRunHost {
         &self.0.route.cluster_id
     }
 
-    /// Whether the run still goes: its issue holds it going, for this
-    /// agent. The connection's authority ends with it.
-    pub fn still_goes(&self) -> Result<(), String> {
-        let cert = self
-            .0
-            .admitted
-            .agent_cert
-            .as_deref()
-            .ok_or("agent certificate missing")?;
-        self.0.state.session_still_goes(self.workspace(), cert)
-    }
-
     /// The run as the broker holds it for this connection.
     fn pending_run(&self) -> Result<PendingTaskRun, String> {
         self.0.state.task_run_for(
@@ -372,9 +260,8 @@ impl TaskRunHost {
 
     /// A host step, admitted by the run like any of its children (its
     /// grants, its issue and its starter decide), taken on the host by the
-    /// task agent, and listed in history in the run's group. The one path
-    /// every task agent takes a host step by: the agent door's connection
-    /// and a launched task agent alike. The step is handed this host, so
+    /// task agent, and listed in history in the run's group. The step is
+    /// handed this host, so
     /// what it does in turn (a task's program: its actions, its reads and
     /// changes of records) is the run's too.
     pub(super) fn invoke_host_step(
@@ -462,7 +349,7 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        if let Err(reason) = self.still_goes() {
+        if let Err(reason) = self.pending_run() {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
         self.0.state.action_query(&self.0.caller, &query)
@@ -606,38 +493,6 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
         }
     }
 
-    /// Ask the run's person to confirm `request` on this host's sheet, where the run keeps its
-    /// own questions ([`crate::services::TrackerRuns::asks_on_host`]): the answer is the run's,
-    /// and the same request invoked again goes on with it ([`asking`]).
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
-        if let Err(error) = self.check(caller) {
-            return Pending::ready(Err(error));
-        }
-        let runtime = match super::launchable::delivery_runtime() {
-            Ok(runtime) => runtime,
-            Err(reason) => return Pending::ready(Err(ActionHostError::Unavailable { reason })),
-        };
-        let host = self.clone();
-        let request = request.clone();
-        let (complete, answer) = pending();
-        runtime.spawn(async move {
-            // A caller that stops waiting withdraws the question: the asking is dropped, and
-            // with it the sheet.
-            let asked = tokio::select! {
-                asked = host.ask_person(&request) => Some(asked),
-                () = complete.abandoned() => None,
-            };
-            if let Some(asked) = asked {
-                complete.complete(asked);
-            }
-        });
-        answer
-    }
-
     /// Records outside their apps, read as steps of the run.
     fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
         Some(Arc::new(super::record_read::RunRecords(self.clone())))
@@ -690,19 +545,9 @@ impl TaskRunHost {
             Err(error) => {
                 let error = error.to_string();
                 self.remember(request.invocation, Started::Refused(error.clone()));
-                // A run whose grants ask first asks its person on this host's sheet: its caller
-                // is told the step needs confirming, and asks through `confirm`.
-                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&error)
-                    && self.asks_on_host()
-                {
-                    return Err(ActionHostError::confirmation_required());
-                }
                 return Err(refused(error));
             }
         };
-        if let Err(why) = self.settle_question(request, argument.as_deref()) {
-            tracing::warn!(%why, "agent door: the run's answered question could not be settled");
-        }
         self.remember(
             request.invocation,
             Started::Child {
@@ -723,64 +568,4 @@ impl TaskRunHost {
         );
         Ok(InvocationState::new(request.invocation, update).receipt())
     }
-
-    /// Spend the person's answer to the run's question about `request`, now
-    /// that the confirmed step started. Nothing when it asked nothing.
-    fn settle_question(
-        &self,
-        request: &InvokeRequest,
-        argument: Option<&str>,
-    ) -> Result<(), String> {
-        let run = self.pending_run()?;
-        let current = self.0.state.tracker_run_of(&run)?;
-        let arguments = arguments_of(argument)?;
-        let digest = hex::encode(tilo_actions::draft::arguments_digest(&arguments));
-        let answered = current.question.as_ref().is_some_and(|question| {
-            question.action == request.target.address.action
-                && question.arguments_digest == digest
-                && question.answer != crate::services::TrackerAnswer::Waiting
-        });
-        if !answered {
-            return Ok(());
-        }
-        self.0
-            .state
-            .tracker_runs(self.workspace())
-            .filter(|tracker| tracker.asks_on_host(self.workspace(), &current))
-            .ok_or("the run's tracker is unavailable")?
-            .keep_question(self.workspace(), self.issue(), None)
-    }
-}
-
-/// The JSON argument map an invocation's slot carries.
-fn arguments_of(
-    argument: Option<&str>,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let Some(text) = argument else {
-        return Ok(serde_json::Map::new());
-    };
-    let json = text
-        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-        .unwrap_or(text);
-    serde_json::from_str(json).map_err(|_| "the action's arguments are not a JSON map".into())
-}
-
-/// The id of the question about `request` with `arguments`: the same each
-/// time the step asks, so asking again finds the person's answer.
-fn question_id(
-    request: &InvokeRequest,
-    arguments: &serde_json::Map<String, serde_json::Value>,
-) -> String {
-    let key = format!(
-        "{}\0{}\0{}",
-        tilo_actions::selection::logical_resource_id(&request.target.address.resource),
-        request.target.address.action,
-        hex::encode(tilo_actions::draft::arguments_digest(arguments))
-    );
-    blake3::hash(key.as_bytes())
-        .to_hex()
-        .as_str()
-        .chars()
-        .take(32)
-        .collect()
 }

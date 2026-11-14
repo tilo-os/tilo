@@ -407,15 +407,17 @@ impl Shared {
     /// each record it changed, as the history's own Undo run does.
     #[cfg(target_os = "linux")]
     fn undo_session_run(&self, working: &crate::agent_sessions::Working) {
-        let Some(run) = working.run.as_deref() else {
-            // Its changes were the workspace's own, as any app's: there is no run of it to undo.
-            tracing::info!(program = %working.program, "an agent's card asked to undo a run it did not work in");
+        let Some(session) = &working.session else {
+            // Its changes were the workspace's own, as any app's: there is no group of them to
+            // undo.
+            tracing::info!(program = %working.program, "an agent's card asked to undo the changes of a session that has none of its own");
             return;
         };
-        if let Err(error) = self
-            .activity
-            .undo_run(&working.workspace, run, working.changed.clone())
-        {
+        if let Err(error) = self.activity.undo_run(
+            &working.workspace,
+            session.as_str(),
+            working.changed.clone(),
+        ) {
             self.answer_failed(&t("action-failed-that-agent"), &error);
         }
     }

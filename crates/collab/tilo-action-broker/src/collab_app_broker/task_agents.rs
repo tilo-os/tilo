@@ -1,6 +1,6 @@
-//! Door agents in the broker: a join admitted by the agent certificate a
+//! Certified agents in the broker: a join admitted by the agent certificate a
 //! device of the agent's person signed, checked again on every revalidation,
-//! with whether its session's run still goes.
+//! with whether its agent session still goes.
 
 use super::{
     AdmittedJoinIdentity, AgentCert, AppBrokerState, CrdtRoute, VerifiedJoinIdentity,
@@ -31,55 +31,13 @@ pub(super) fn verify_agent_cert(
         .map_err(|error| format!("agent certificate refused: {error}"))
 }
 
-/// Whether the session `cert` names still goes in `runs`: a going run of
-/// that session for its agent, carrying exactly this certificate.
-pub(super) fn session_goes(
-    runs: &[crate::services::TrackerRun],
-    cert: &AgentCert,
-) -> Result<(), String> {
-    let encoded = cert.encode();
-    let Some(run) = runs.iter().find(|run| run.issue == cert.session) else {
-        return Err("the agent's session has ended (it holds no run)".into());
-    };
-    if run.agent != cert.agent_id || run.delegation() != Ok(Some(encoded.as_slice())) {
-        return Err("the agent's session has ended (its run is another agent's)".into());
-    }
-    if !run.active {
-        return Err("the agent's session has ended (its run ended)".into());
-    }
-    Ok(())
-}
-
-/// Whether an agent's session is still heard: it goes ([`session_goes`]),
-/// or its own agent just finished it (done or failed), so it hears how its
-/// last steps ended. A run its person stopped, or a newer run, ends the
-/// session at once. A run finished this way admits no action.
-///
-/// # Errors
-/// As [`session_goes`], for a run its agent did not finish.
-pub(super) fn session_heard(
-    runs: &[crate::services::TrackerRun],
-    cert: &AgentCert,
-) -> Result<(), String> {
-    let finished_by_it = runs.iter().any(|run| {
-        run.issue == cert.session
-            && run.finished_by_agent
-            && run.agent == cert.agent_id
-            && run.delegation() == Ok(Some(cert.encode().as_slice()))
-    });
-    if finished_by_it {
-        Ok(())
-    } else {
-        session_goes(runs, cert)
-    }
-}
-
 /// Admit an agent's join: the certifying device's certificate is admitted to
 /// the workspace as any device's is (in its device list, not revoked), it
 /// signed the agent certificate for this workspace inside both windows, and
 /// the join proof is the agent key's. The session is then the person's,
 /// handed to the agent ([`admit_agent_cert`]). Whether the workspace lists the
-/// agent and its session still goes is the caller's to ask.
+/// agent and its session still goes is the caller's to ask
+/// ([`AppBrokerState::agent_session_goes`]).
 pub(super) fn verify_agent_join(
     route: &CrdtRoute,
     presentation: &runtime_collab::AgentJoinIdentity,
@@ -144,8 +102,7 @@ pub(super) fn joins_as(admitted: &AdmittedJoinIdentity, kind: &str) -> Result<()
 
 impl AppBrokerState {
     /// Admit a certified agent's join under `handle`: the id its certificate
-    /// names, an agent the workspace lists as kept by the certificate's person,
-    /// in a session that still goes.
+    /// names, in a session that still goes.
     pub(super) fn admit_agent_join(
         &self,
         workspace: &str,
@@ -159,14 +116,45 @@ impl AppBrokerState {
         if handle.trim() != cert.agent_id {
             return Err("an agent joins under the id its certificate names".into());
         }
-        self.agent_listed(workspace, cert)
-            .and_then(|()| self.session_still_goes(workspace, cert))
+        self.agent_session_goes(workspace, cert)
+            .map(drop)
             .map_err(|error| format!("agent join rejected: {error}"))
+    }
+
+    /// The agent session `cert` names, while it goes in `workspace`: the
+    /// workspace lists its agent, kept by the person whose device signed it,
+    /// and the session's connection lasts.
+    pub(super) fn agent_session_goes(
+        &self,
+        workspace: &str,
+        cert: &AgentCert,
+    ) -> Result<crate::services::GoingSession, String> {
+        self.agent_listed(workspace, cert)?;
+        self.services
+            .agent_sessions
+            .as_deref()
+            .ok_or("this host serves no agent sessions")?
+            .going(workspace, &cert.agent_id, &cert.session)
+            .ok_or_else(|| "the agent's session has ended".to_owned())
+    }
+
+    /// The agent session a connection admitted as `origin` works in, when it
+    /// is a certified agent's: `None` for any other connection.
+    pub(super) fn agent_session_of(
+        &self,
+        origin: Option<&super::InvocationCaller>,
+        workspace: &str,
+    ) -> Option<Result<crate::services::GoingSession, String>> {
+        let Some(super::InvocationCaller::Local { admitted, .. }) = origin else {
+            return None;
+        };
+        let cert = admitted.agent_cert.as_deref()?;
+        Some(self.agent_session_goes(workspace, cert))
     }
 
     /// Whether the workspace's record of its agents lists the agent `cert`
     /// names, kept by the person whose device signed it.
-    pub(super) fn agent_listed(&self, workspace: &str, cert: &AgentCert) -> Result<(), String> {
+    fn agent_listed(&self, workspace: &str, cert: &AgentCert) -> Result<(), String> {
         let roster = self
             .services
             .agents
@@ -183,34 +171,6 @@ impl AppBrokerState {
             ));
         }
         Ok(())
-    }
-
-    /// Whether the session of the agent `cert` names is still heard in
-    /// `workspace` ([`session_heard`]).
-    pub(super) fn session_still_heard(
-        &self,
-        workspace: &str,
-        cert: &AgentCert,
-    ) -> Result<(), String> {
-        let runs = self
-            .tracker_runs(workspace)
-            .ok_or("the workspace's tracker is unavailable")?
-            .runs(workspace)?;
-        session_heard(&runs, cert)
-    }
-
-    /// Whether the session `cert` names still goes in `workspace`'s tracker
-    /// ([`session_goes`]).
-    pub(super) fn session_still_goes(
-        &self,
-        workspace: &str,
-        cert: &AgentCert,
-    ) -> Result<(), String> {
-        let runs = self
-            .tracker_runs(workspace)
-            .ok_or("the workspace's tracker is unavailable")?
-            .runs(workspace)?;
-        session_goes(&runs, cert)
     }
 }
 

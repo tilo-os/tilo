@@ -904,10 +904,8 @@ impl Session {
         // control it shows: the session keeps them in its settings service, and this is what the
         // broker hands a change of them, on the loop's pass, as it hands the session's own steps.
         let settings_steps = std::sync::Arc::new(crate::settings_steps::SettingsSteps::new(steps));
-        // The runs the broker reads: each agent the person admits at the door works in a run of its
-        // own among them, beside the conversations' turns.
-        session_doors.keep_runs(conversations.runs());
-        // The agents the person admits at its door, as the desk and the bar show them.
+        // The agent sessions the person admits at the MCP server: what the desk and the bar show,
+        // and what the broker admits each session's certificate on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
         let desk = crate::desk_resource::desk_from(crate::desk_resource::Shared {
             agent_sessions: std::sync::Arc::clone(&agent_sessions),
@@ -1165,6 +1163,7 @@ impl Session {
             crate::doors::plane::Knitted {
                 turns: Some(conversations.runs()),
                 agents: Some(agents.roster()),
+                agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
                 tools: Some(tools.clone()),
             },
             crate::doors::plane::Collaboration {
@@ -1226,7 +1225,7 @@ impl Session {
         ) {
             broker.set_app_action_consent(std::sync::Arc::new(crate::run_questions::Sheet::new(
                 questions,
-                conversations.runs().doors(),
+                std::sync::Arc::clone(&agent_sessions),
             )));
         }
         // Every service this session serves, from the one table that says

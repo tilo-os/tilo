@@ -70,10 +70,15 @@ impl Minted {
 }
 
 impl Fixture {
-    /// The workspace lists the agent, kept by the person, and its session's
-    /// run goes, carrying its certificate.
+    /// The workspace lists the agent, kept by the person, its session goes,
+    /// and a run of it goes, carrying its certificate.
     fn ask(&self, minted: &Minted) {
         self.list_agent(minted);
+        self.native
+            .sessions
+            .lock()
+            .unwrap()
+            .push((TASK_ISSUE.into(), crate::services::GoingSession::default()));
         self.native.runs.lock().unwrap().push(TrackerRun {
             issue: TASK_ISSUE.into(),
             title: "What's left for the release?".into(),
@@ -93,6 +98,7 @@ impl Fixture {
     }
 
     fn end_session(&self) {
+        self.native.sessions.lock().unwrap().clear();
         for run in self.native.runs.lock().unwrap().iter_mut() {
             if run.issue == TASK_ISSUE {
                 run.active = false;
@@ -116,8 +122,7 @@ impl Fixture {
             .agent_cert
             .as_deref()
             .ok_or("no agent certificate")?;
-        self.state.agent_listed(&route.cluster_id, cert)?;
-        self.state.session_still_goes(&route.cluster_id, cert)?;
+        self.state.agent_session_goes(&route.cluster_id, cert)?;
         Ok(admitted)
     }
 
@@ -353,40 +358,6 @@ async fn a_finished_or_cancelled_session_ends_its_agent() {
             assert!(refused.contains("has ended"), "{refused}");
             let rejoined = f.agent_join(&minted).unwrap_err();
             assert!(rejoined.contains("has ended"), "{rejoined}");
-            drop(f);
-        })
-        .await;
-}
-
-/// An agent's own finish ends its session, and the agent still hears how its
-/// last steps ended and tells its host; it never joins again, and a run its
-/// person stopped cuts it off as before.
-#[tokio::test(flavor = "current_thread")]
-async fn an_agent_hears_its_own_finish() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let f = Fixture::new();
-            let now = now_ns();
-            let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
-            f.ask(&minted);
-            let agent = f.agent_channel(300, &minted);
-            let run = delivered(&agent).await;
-            for run in f.native.runs.lock().unwrap().iter_mut() {
-                run.active = false;
-                run.finished_by_agent = true;
-            }
-            f.state.refresh_native_task_delivery();
-            report_progress(&agent, &run)
-                .await
-                .expect("its own finish is still heard");
-            let rejoined = f.agent_join(&minted).unwrap_err();
-            assert!(rejoined.contains("has ended"), "{rejoined}");
-            for run in f.native.runs.lock().unwrap().iter_mut() {
-                run.finished_by_agent = false;
-            }
-            f.state.refresh_native_task_delivery();
-            let refused = report_progress(&agent, &run).await.unwrap_err().to_string();
-            assert!(refused.contains("has ended"), "{refused}");
             drop(f);
         })
         .await;

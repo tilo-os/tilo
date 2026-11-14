@@ -35,8 +35,14 @@ struct Connection {
     /// The environment's server it came in by, by number: none for the session's own. It ends
     /// with that environment.
     environment: Option<u64>,
-    /// The run its changes are steps of. `None` where the workspace confines no agent to a run.
-    run: Option<String>,
+    /// The other device of the person's it came from, as the remote door verified it: none for a
+    /// program of this login.
+    origin: Option<tilo_actions::InvokerDevice>,
+    /// What the person allowed it for every later step like one it asked about.
+    answers: Vec<tilo_action_policy::Grant>,
+    /// Whether it works through the broker as its own agent session: what taking its work back
+    /// names it by. `false` where it acts on the workspace's grants as any app does.
+    certified: bool,
     /// The records it changed, each as the app that keeps it and the record: what taking back its
     /// work undoes.
     changed: Vec<(String, String)>,
@@ -52,8 +58,13 @@ impl AgentSessions {
     }
 
     /// A new connection, by the environment's server `environment` (none for the session's own),
-    /// before the person answers for it: nothing of it shows until it is admitted.
-    pub(crate) fn joining(&self, environment: Option<u64>) -> AgentSessionId {
+    /// from the person's other device `origin` (none for a program of this login), before the
+    /// person answers for it: nothing of it shows until it is admitted.
+    pub(crate) fn joining(
+        &self,
+        environment: Option<u64>,
+        origin: Option<tilo_actions::InvokerDevice>,
+    ) -> AgentSessionId {
         let session = AgentSessionId::new(format!(
             "{}{}",
             tilo_broker_core::services::AGENT_SESSION_PREFIX,
@@ -69,7 +80,9 @@ impl AgentSessions {
                 workspace: String::new(),
                 doing: None,
                 environment,
-                run: None,
+                origin,
+                answers: Vec::new(),
+                certified: false,
                 changed: Vec::new(),
                 stream: None,
             },
@@ -154,11 +167,22 @@ impl AgentSessions {
             .cloned()
     }
 
-    /// `session` works in the run `run`: taking its work back names it.
-    pub(crate) fn working_in(&self, session: &AgentSessionId, run: &str) {
+    /// `session` works through the broker as its own agent session.
+    pub(crate) fn certified(&self, session: &AgentSessionId) {
         if let Some(connection) = self.inner.lock_recover().sessions.get_mut(session) {
-            connection.run = Some(run.to_owned());
+            connection.certified = true;
         }
+    }
+
+    /// The name of `session` in `workspace` while it lasts, when it came from another of the
+    /// person's own devices.
+    pub(crate) fn own_device_session(&self, workspace: &str, session: &str) -> Option<String> {
+        self.inner
+            .lock_recover()
+            .sessions
+            .get(&AgentSessionId::new(session))
+            .filter(|connection| connection.origin.is_some() && connection.workspace == workspace)
+            .map(|connection| connection.name.clone())
     }
 
     /// `session` changed `record` of `app`: one of the records taking its work back undoes.
@@ -181,7 +205,7 @@ impl AgentSessions {
             .map(|connection| Working {
                 workspace: connection.workspace.clone(),
                 program: connection.program.clone(),
-                run: connection.run.clone(),
+                session: connection.certified.then(|| session.clone()),
                 changed: connection.changed.clone(),
                 app: connection
                     .doing
@@ -291,6 +315,37 @@ impl AgentSessions {
     }
 }
 
+impl tilo_broker_core::services::AgentSessions for AgentSessions {
+    fn going(
+        &self,
+        workspace: &str,
+        agent: &str,
+        session: &str,
+    ) -> Option<tilo_broker_core::services::GoingSession> {
+        self.inner
+            .lock_recover()
+            .sessions
+            .get(&AgentSessionId::new(session))
+            .filter(|connection| connection.workspace == workspace && connection.agent == agent)
+            .map(|connection| tilo_broker_core::services::GoingSession {
+                origin: connection.origin.clone(),
+                answers: connection.answers.clone(),
+            })
+    }
+
+    fn keep_answer(&self, session: &str, grant: tilo_action_policy::Grant) {
+        if let Some(connection) = self
+            .inner
+            .lock_recover()
+            .sessions
+            .get_mut(&AgentSessionId::new(session))
+        {
+            connection.answers.retain(|kept| kept.id != grant.id);
+            connection.answers.push(grant);
+        }
+    }
+}
+
 /// An admitted agent session, as presence speaks for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Present {
@@ -324,8 +379,9 @@ pub(crate) struct Working {
     pub(crate) workspace: String,
     /// The program the person's answer was remembered for.
     pub(crate) program: String,
-    /// The run its changes are steps of: `None` where its workspace confines no agent to a run.
-    pub(crate) run: Option<String>,
+    /// The agent session its changes are grouped by: `None` where it acts on the workspace's
+    /// grants as any app does.
+    pub(crate) session: Option<AgentSessionId>,
     /// The records it changed, each as the app that keeps it and the record.
     pub(crate) changed: Vec<(String, String)>,
     /// The app it is working in now, when it says.
@@ -392,7 +448,7 @@ mod tests {
         let sessions = AgentSessions::new();
         let (first, _first_peer) = UnixStream::pair().unwrap();
         let (second, mut second_peer) = UnixStream::pair().unwrap();
-        let one = sessions.joining(None);
+        let one = sessions.joining(None, None);
         assert!(
             sessions.readings().is_empty(),
             "nothing shows before it is admitted"
@@ -401,7 +457,7 @@ mod tests {
         admit(&sessions, &one, "Claude Code #1");
         sessions.attached(&one, &first);
         assert!(sessions.revision() > shown, "the desk is told");
-        let two = sessions.joining(None);
+        let two = sessions.joining(None, None);
         admit(&sessions, &two, "Claude Code #2");
         sessions.attached(&two, &second);
         let here = sessions.here();
@@ -420,20 +476,20 @@ mod tests {
         assert!(sessions.acting(&two, doing.clone()), "its step is news");
         assert!(!sessions.acting(&two, doing), "the same step, once");
 
-        sessions.working_in(&two, "run");
+        sessions.certified(&two);
         sessions.changed(&two, "so.tilo.notes", "main");
         sessions.changed(&two, "so.tilo.notes", "main");
         let working = sessions.working(&two).expect("served here");
-        assert_eq!(working.run.as_deref(), Some("run"));
+        assert_eq!(working.session.as_ref(), Some(&two));
         assert_eq!(
             working.changed,
             [("so.tilo.notes".to_owned(), "main".to_owned())]
         );
         assert_eq!(working.app.as_deref(), Some("so.tilo.notes"));
         assert_eq!(
-            sessions.working(&one).unwrap().run,
+            sessions.working(&one).unwrap().session,
             None,
-            "its own run alone"
+            "it acts on the workspace's grants"
         );
 
         assert!(sessions.stop(&two), "the person's Stop");
@@ -461,7 +517,7 @@ mod tests {
     #[test]
     fn a_session_is_found_by_its_presence_key() {
         let sessions = AgentSessions::new();
-        let one = sessions.joining(None);
+        let one = sessions.joining(None, None);
         admit(&sessions, &one, "Claude Code #1");
         let speaker = [7; 32];
         let member = hex::encode(collab_types::presence::stand_in(speaker, one.as_str()));

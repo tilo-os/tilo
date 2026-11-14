@@ -35,9 +35,8 @@ impl AppBrokerState {
     /// exactly as the same agent's app action in that turn is admitted: the run the agent works
     /// for the turn's message, decided by [`TrackerRuns::authorize_action`] over the person's,
     /// the agent's and the run's live grants, and refused in the same words the app action
-    /// hears. A caller working no turn takes none of them — unless it works in a run of its own
-    /// (`run`, an agent door connection's [`super::TaskRunHost`]): that run is what admits it,
-    /// turn or none, exactly as it admits the connection's app actions.
+    /// hears. A caller working no turn takes none of them — unless it works in a task's run
+    /// (`run`, a launched task agent's [`super::TaskRunHost`]): that run is what admits it.
     ///
     /// A step whose grants ask first is a turn's question on the system's own sheet, through the
     /// one path the app action's ask takes ([`Self::conversation_gate`]): it is held here, and
@@ -61,9 +60,9 @@ impl AppBrokerState {
         ),
         confirmed: bool,
     ) -> Result<TurnStep, ActionHostError> {
-        // A connection's own run (an agent door's) asks its person on the shell's sheet, as its
-        // app actions do; a turn of an issue's run has no sheet a session step could ask on.
-        let door_run = run.is_some();
+        // A task's run asks its caller to confirm; a turn of an issue's run has no sheet a
+        // session step could ask on.
+        let in_run = run.is_some();
         let (_, run) = self.turn_step_run(caller, workspace, (run, turn))?;
         if confirmed {
             return self
@@ -103,7 +102,7 @@ impl AppBrokerState {
         // The turn's grants ask first. A turn that answers a person's message has no issue to
         // hang the question on: it goes to the system's own sheet, exactly as the same agent's
         // app action in the turn does (`super::conversation_ask`).
-        if door_run {
+        if in_run {
             return Err(ActionHostError::confirmation_required());
         }
         if !crate::services::is_conversation_turn(&run.issue) {
@@ -445,7 +444,15 @@ impl AppBrokerState {
         // the whole answer, as they are for the app action: `framework_policy` decides by the
         // workspace's grants alone, and asking it again would hold a step to the person's own
         // record where the turn already held it to the same person's live grants.
-        let by_turn = steps.for_turns() && policy.is_agent();
+        // An agent session takes a step as any of its steps: on the workspace's grants, while
+        // it goes.
+        let session = self.agent_session_of(origin, workspace_id);
+        if let Some(Err(reason)) = &session {
+            return Err(abandon(ActionHostError::Refused {
+                reason: reason.clone(),
+            }));
+        }
+        let by_turn = steps.for_turns() && policy.is_agent() && session.is_none();
         let turn = turn.or_else(|| caller.turn());
         // The argument the step runs with: the person's edits, where this
         // turn's grants asked and they confirmed it.

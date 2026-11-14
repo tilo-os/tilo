@@ -1,15 +1,14 @@
-//! What an agent's run, or an app, asks its person, on this desk's sheet.
+//! What an agent session, or an app, asks its person, on this desk's sheet.
 //!
-//! A run with no issue to ask on (an MCP server connection's, [`crate::door_runs`]) pauses before
-//! a step its grants ask first about, and the broker puts the question to the person here
+//! An agent session (an MCP server connection's, [`crate::agent_sessions`]) pauses before a step
+//! its grants ask first about, and the broker puts the question to the person here
 //! ([`AppActionConsentPrompter`]): the same sheet family that admitted the agent, naming it as the
-//! desk seats it ("Claude Code in dev #1"), the step and what it would do. The person allows it
-//! once, allows the agent every such step for as long as it works here, or denies it, with Deny or
-//! Escape. An agent from another of the
-//! person's devices is asked about on the device it drives, where its run is — unless the person
-//! let such agents act without asking on this device (Settings > Devices & Sync, beside letting
-//! them in without asking): then the setting allows the step once in the person's place, no sheet
-//! goes up, and the run keeps the answer as it keeps any the person gave.
+//! desk names it ("Claude Code in dev #1"), the step and what it would do. The person allows it
+//! once, allows the agent every such step for as long as the session lasts, or denies it, with
+//! Deny or Escape. An agent from another of the person's devices is asked about on the device it
+//! drives, where its session is — unless the person let such agents act without asking on this
+//! device (Settings > Devices & Sync, beside letting them in without asking): then the setting
+//! allows the step once in the person's place, and no sheet goes up.
 //!
 //! An app that takes another app's action is asked about on the same sheet: Today's "Morning
 //! cleanup" deleting the finished tasks in Tasks puts "Today wants to change Tasks" to the person,
@@ -20,17 +19,15 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tilo_action_broker::app_actions::{
-    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+    AGENT_SESSION_ASK, AppActionAnswer, AppActionConsent, AppActionConsentPrompter,
+    AppActionConsentRequest,
 };
 use tilo_service::{Question, Questions};
 
-use crate::door_runs::DoorRuns;
+use crate::agent_sessions::AgentSessions;
 
 /// The kind the session's sheet reads a run's question as.
 pub(crate) const KIND: &str = "session.run-question";
-
-/// What a run's question is named by, as the broker hands it over.
-const RUN_QUESTION: &str = "run-question:";
 
 /// What a question whether an app may take another app's action is named by.
 const APP_ACTION: &str = "app-action:";
@@ -44,7 +41,7 @@ pub(crate) const ALLOW_AGENT: usize = 1;
 pub(crate) struct RunQuestion {
     /// The agent, as the desk seats it; the asking app's id when an app asks.
     pub agent: String,
-    /// The app whose action an app asks to take, by its id; `None` for an agent's run.
+    /// The app whose action an app asks to take, by its id; `None` for an agent session.
     #[serde(default)]
     pub target: Option<String>,
     /// The step it asks to take.
@@ -62,34 +59,33 @@ pub(crate) struct RunQuestion {
 /// The desk's sheet, as the broker asks it.
 pub(crate) struct Sheet {
     questions: Questions,
-    /// The MCP server's runs going now: which of them are agents' from the person's other
-    /// devices.
-    doors: Arc<DoorRuns>,
+    /// The MCP server's agent sessions: which of them came from the person's other devices.
+    sessions: Arc<AgentSessions>,
     /// Whether the person lets such agents act without asking here, as this device's settings
     /// say when a step asks.
     unasked: fn() -> bool,
 }
 
 impl Sheet {
-    /// The sheet over `questions`, knowing the door's runs `doors`.
-    pub(crate) fn new(questions: Questions, doors: Arc<DoorRuns>) -> Self {
+    /// The sheet over `questions`, knowing the agent sessions `sessions`.
+    pub(crate) fn new(questions: Questions, sessions: Arc<AgentSessions>) -> Self {
         Self {
             questions,
-            doors,
+            sessions,
             unasked: crate::remote_door::Remote::acts_without_asking,
         }
     }
 
     /// The setting's answer to `request` in the person's place: allowed once, with no sheet, when
-    /// it is a run's question from an agent of the person's other devices and they let such agents
-    /// act without asking here. `None` asks the person.
+    /// an agent session from the person's other devices asks and they let such agents act without
+    /// asking here. `None` asks the person.
     fn allowed_unasked(&self, request: &AppActionConsentRequest) -> Option<AppActionAnswer> {
-        if !request.handle.starts_with(RUN_QUESTION) {
+        if !asked_by_agent(request) {
             return None;
         }
         let agent = self
-            .doors
-            .own_device_run(&request.workspace, request.run.as_deref()?)?;
+            .sessions
+            .own_device_session(&request.workspace, request.agent_session.as_deref()?)?;
         if !(self.unasked)() {
             return None;
         }
@@ -153,13 +149,18 @@ impl AppActionConsentPrompter for Sheet {
     }
 }
 
+/// Whether an agent session asks `request`.
+fn asked_by_agent(request: &AppActionConsentRequest) -> bool {
+    request.handle.starts_with(AGENT_SESSION_ASK)
+}
+
 /// The sheet's question for `request`.
 fn question(request: &AppActionConsentRequest) -> Question {
-    let run = request.handle.starts_with(RUN_QUESTION);
+    let agent_asks = asked_by_agent(request);
     let agent = request
         .scope
         .clone()
-        .filter(|_| run)
+        .filter(|_| agent_asks)
         .unwrap_or_else(|| request.app_id.clone());
     let fields = request
         .draft
@@ -174,7 +175,7 @@ fn question(request: &AppActionConsentRequest) -> Question {
         .unwrap_or_default();
     let details = RunQuestion {
         agent: agent.clone(),
-        target: (!run).then(|| request.target_app.clone()),
+        target: (!agent_asks).then(|| request.target_app.clone()),
         action: request.action_label.clone(),
         resource: request.resource_label.clone(),
         fields,
@@ -182,9 +183,9 @@ fn question(request: &AppActionConsentRequest) -> Question {
             .ok()
             .and_then(|risk| risk.as_str().map(str::to_owned))
             .unwrap_or_default(),
-        // A run may be allowed for its issue; an app, in the workspace, where it asks for a
-        // grant rather than to confirm one call.
-        may_allow_agent: if run {
+        // An agent session may be allowed for as long as it lasts; an app, in the workspace, where
+        // it asks for a grant rather than to confirm one call.
+        may_allow_agent: if agent_asks {
             request.scope.is_some()
         } else {
             request.handle.starts_with(APP_ACTION)
@@ -193,7 +194,7 @@ fn question(request: &AppActionConsentRequest) -> Question {
     Question {
         handle: request.handle.clone(),
         kind: KIND.to_owned(),
-        app_id: (!run).then(|| request.app_id.clone()),
+        app_id: (!agent_asks).then(|| request.app_id.clone()),
         label: agent,
         details: serde_json::to_value(details).unwrap_or_default(),
     }
@@ -205,11 +206,11 @@ mod tests {
 
     fn request(scope: Option<&str>) -> AppActionConsentRequest {
         AppActionConsentRequest {
-            handle: "run-question:q1".into(),
+            handle: format!("{AGENT_SESSION_ASK}i1"),
             workspace: "w1".into(),
             person: "p".into(),
-            app_id: "task-0123456789ab".into(),
-            run: None,
+            app_id: "claude-code".into(),
+            agent_session: None,
             target_app: "so.tilo.terminal".into(),
             resource: "terminal".into(),
             action: "run".into(),
@@ -227,13 +228,13 @@ mod tests {
 
     async fn answered(choice: Option<usize>, scope: Option<&str>) -> Option<AppActionAnswer> {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), Arc::default());
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
         let answer = sheet.ask(request(scope)).expect("asked");
         let pending = questions.pending();
         assert_eq!(pending.len(), 1, "the sheet is up");
         assert_eq!(pending[0].kind, KIND);
         let shown: RunQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
-        assert_eq!(shown.agent, scope.unwrap_or("task-0123456789ab"));
+        assert_eq!(shown.agent, scope.unwrap_or("claude-code"));
         assert_eq!(shown.may_allow_agent, scope.is_some());
         let given = match choice {
             Some(choice) => questions.answer(
@@ -269,48 +270,46 @@ mod tests {
         );
     }
 
-    /// The run of an agent from another of the person's devices, by its task agent `agent`.
-    fn from_another_device(agent: &str) -> (Arc<DoorRuns>, crate::door_runs::Held) {
-        let doors = Arc::new(DoorRuns::default());
-        let run = tilo_broker_core::services::TrackerRun {
-            issue: format!("{}a1", tilo_broker_core::services::AGENT_SESSION_PREFIX),
-            title: "claude-code@laptop#1".into(),
-            instruction: String::new(),
-            agent: agent.into(),
-            epoch: 1,
-            starter: "p".into(),
-            active: true,
-            finished_by_agent: false,
-            subject: None,
-            question: None,
-            turn: None,
-            delegation: None,
-            origin: Some(tilo_actions::InvokerDevice::certified([0x4c; 32], "Laptop")),
+    /// Two sessions of `agent`: one from another of the person's devices, one of a program of
+    /// this login, in that order.
+    fn sessions_of(agent: &str) -> (Arc<AgentSessions>, [String; 2]) {
+        let sessions = AgentSessions::new();
+        let consent = tilo_runtime::session_door::Consent::Admit {
+            workspace: "w1".to_owned(),
+            agent: agent.to_owned(),
+            person: "p".to_owned(),
+            name: "Claude Code #1".to_owned(),
         };
-        let held = doors.open("w1", run, true);
-        (doors, held)
+        let laptop = tilo_actions::InvokerDevice::certified([0x4c; 32], "Laptop");
+        let remote = sessions.joining(None, Some(laptop));
+        sessions.admit(&remote, &consent, "claude-code", "Studio");
+        let local = sessions.joining(None, None);
+        sessions.admit(&local, &consent, "claude-code", "Studio");
+        (sessions, [remote.0, local.0])
     }
 
-    /// With the person's setting on, the step an agent from another of their devices asks about is
-    /// allowed once with no sheet; with it off, or for any other agent's run or an app, they are
-    /// asked.
+    /// With the person's setting on, the step an agent session from another of their devices
+    /// asks about is allowed once with no sheet; with it off, or for a session of a program of
+    /// this login (even of the same agent) or an app, they are asked.
     #[tokio::test]
     async fn the_setting_allows_an_agent_from_another_device_its_step_unasked() {
-        let (doors, _going) = from_another_device("task-0123456789ab");
+        let (sessions, [remote, local]) = sessions_of("claude-code");
         let sheet = |unasked: fn() -> bool| {
             let questions = Questions::new();
             let sheet = Sheet {
                 questions: questions.clone(),
-                doors: Arc::clone(&doors),
+                sessions: Arc::clone(&sessions),
                 unasked,
             };
             (sheet, questions)
         };
+        let asked_by = |session: &str| AppActionConsentRequest {
+            agent_session: Some(session.to_owned()),
+            ..request(Some("Claude Code #1"))
+        };
 
         let (on, questions) = sheet(|| true);
-        let answer = on
-            .ask(request(Some("claude-code@laptop#1")))
-            .expect("answered");
+        let answer = on.ask(asked_by(&remote)).expect("answered");
         assert!(questions.pending().is_empty(), "no sheet goes up");
         assert_eq!(
             answer.await.ok().map(|answer| answer.consent),
@@ -319,17 +318,15 @@ mod tests {
         );
 
         let (off, questions) = sheet(|| false);
-        let _waiting = off.ask(request(None)).expect("asked");
+        let _waiting = off.ask(asked_by(&remote)).expect("asked");
         assert_eq!(questions.pending().len(), 1, "the person is asked");
 
         let (on, questions) = sheet(|| true);
-        let mut local = request(None);
-        local.app_id = "task-of-this-login".into();
-        let _waiting = on.ask(local).expect("asked");
+        let _waiting = on.ask(asked_by(&local)).expect("asked");
         assert_eq!(
             questions.pending().len(),
             1,
-            "an agent of this login is asked about"
+            "a program of this login is asked about"
         );
 
         let (on, questions) = sheet(|| true);
@@ -344,7 +341,7 @@ mod tests {
     #[tokio::test]
     async fn a_question_nobody_waits_for_leaves_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), Arc::default());
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
         let answer = sheet.ask(request(None)).expect("asked");
         assert_eq!(questions.pending().len(), 1);
         drop(answer);
@@ -379,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn an_apps_change_of_another_app_is_asked_on_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), Arc::default());
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
         for (handle, always) in [("app-action:i1", true), ("confirm:i2", false)] {
             let mut asked = request(None);
             asked.handle = handle.into();

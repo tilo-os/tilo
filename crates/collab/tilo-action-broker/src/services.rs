@@ -841,6 +841,8 @@ pub struct HostServices {
     pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
     /// The workspaces' agents, as their records name them; without it no agent joins.
     pub agents: Option<Arc<dyn AgentRoster>>,
+    /// The agent sessions this host serves; without it no certified agent joins.
+    pub agent_sessions: Option<Arc<dyn AgentSessions>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub record_changes: Option<Arc<dyn RecordChangeServices>>,

@@ -170,7 +170,7 @@ impl AppBrokerState {
             workspace: workspace.to_string(),
             person: person_id.to_owned(),
             app_id: app_id.to_string(),
-            run: None,
+            agent_session: None,
             target_app,
             resource: action.address.resource.clone(),
             action: action.address.action.clone(),

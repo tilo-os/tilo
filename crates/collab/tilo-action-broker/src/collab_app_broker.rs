@@ -1223,6 +1223,7 @@ impl PendingInvocation {
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 pub(super) mod action_host;
 mod admission_memo;
+mod agent_connection;
 mod app_consent;
 mod app_open_door;
 mod conversation_ask;
@@ -1234,9 +1235,9 @@ mod launchable;
 mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
-pub(crate) mod run_question;
 mod task_run_host;
-pub use task_run_host::{TASK_AGENT_APP, TaskRunHost};
+pub use agent_connection::AgentConnection;
+pub use task_run_host::TaskRunHost;
 mod windowless_instances;
 mod witness;
 use witness::requires_store_witness;
@@ -4650,7 +4651,10 @@ impl AppBrokerState {
         // step: a task agent's through its issue's run, offered to the agent working a turn; a
         // session step's listed to every caller the grants allow, as an app action is, and
         // admitted by the turn when an agent takes it.
-        let by_turn = actor.turn().is_some() || actor.issue().is_some();
+        let by_turn = actor.turn().is_some()
+            || actor
+                .issue()
+                .is_some_and(|issue| !crate::services::is_agent_session(issue));
         let task_steps = self
             .services
             .host_steps
@@ -5144,45 +5148,37 @@ impl AppBrokerState {
             None => self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?,
         };
         owner.validate()?;
-        // In native workspaces an agent's action authority comes only from the
-        // authenticated task admission callback, never from ambient context
-        // or a workspace grant alone (including after its run has stopped).
+        // In native workspaces an agent acts only in a task's run, or in an
+        // agent session that still goes, never on a workspace grant alone.
+        let session = self.agent_session_of(origin.as_ref(), &offered.0.route.cluster_id);
         if actor.is_agent
             && !actor.is_app()
             && self.confines_agents_to_tasks(&offered.0.route.cluster_id)
         {
-            match durable {
-                Some(DurableContext::Task { binding, .. })
+            match (durable, &session) {
+                (Some(DurableContext::Task { binding, .. }), _)
                     if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
                 }
+                (None, Some(Ok(_))) => {}
+                (None, Some(Err(ended))) => return Err(ended.clone()),
                 _ => {
-                    return Err(
-                        "native task agent requires authenticated task action admission".into(),
-                    );
+                    return Err("an agent acts only in a task's run or an agent session".into());
                 }
             }
         }
         // Never trust an envelope's invoker: the host sets it.
-        let mut context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
-        // A door connection's run is the host's own and goes by the name its agent is seated as:
-        // what everything the agent writes is named by, after it left too.
-        if let Some(DurableContext::Task { binding, .. }) = &durable
-            && tilo_broker_core::services::is_agent_session(&binding.task_id)
-            && let Some(context) = context.as_mut()
-            && let Some(invoker) = context.invoker.as_mut()
-        {
-            invoker.name = context.group.as_ref().map(|group| group.label.clone());
-        }
-        // Where a run's agent works from is what the agent door verified of
-        // its connection, kept with the run: an envelope names no device.
+        let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        // Where an agent works from is what the host verified of its
+        // connection: an envelope names no device.
         let context = invoker::working_from(
             context,
-            match durable {
-                Some(DurableContext::Task { binding, .. })
+            match (durable, &session) {
+                (Some(DurableContext::Task { binding, .. }), _)
                     if actor.id.strip_prefix("agent:") == Some(binding.agent_id.as_str()) =>
                 {
                     binding.origin.as_ref()
                 }
+                (None, Some(Ok(going))) => going.origin.as_ref(),
                 _ => None,
             },
         );
@@ -5287,14 +5283,11 @@ impl AppBrokerState {
         {
             return Err(format!("the application action is unavailable: {reason}"));
         }
-        // What the run's person answered it "always" for, where its tracker
-        // keeps those answers itself (an agent door connection's run): decided
-        // with the workspace's grants, as an answer granted there is.
-        let answers = match durable {
-            Some(DurableContext::Task { binding, .. }) => self
-                .tracker_runs(&offered.0.route.cluster_id)
-                .map(|tracker| tracker.kept_answers(&offered.0.route.cluster_id, &binding.task_id))
-                .unwrap_or_default(),
+        // What the person allowed an agent session for every later step like
+        // one it asked about: decided with the workspace's grants, as an
+        // answer granted there is.
+        let answers = match (durable, session) {
+            (None, Some(Ok(going))) => going.answers,
             _ => Vec::new(),
         };
         // Every check of this admission is decided on one committed sample,
@@ -6674,10 +6667,7 @@ impl AppBrokerState {
             .and_then(std::convert::identity)
             .and_then(|current| {
                 if let Some(cert) = &current.agent_cert {
-                    // The workspace still lists it, and its own finish ends
-                    // the session, which still hears it.
-                    self.agent_listed(&route.cluster_id, cert)?;
-                    self.session_still_heard(&route.cluster_id, cert)?;
+                    self.agent_session_goes(&route.cluster_id, cert)?;
                 }
                 Ok(current)
             })
