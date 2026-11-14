@@ -168,64 +168,68 @@ fn from_path(outcome: PortalOutcome) -> DestinationOutcome {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_chosen_path_is_written_in_place_and_named_by_its_file() {
-        let dir = std::env::temp_dir().join(format!("tilo-dest-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("report.pdf");
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(PortalOutcome::Opened(path.clone())).unwrap();
-        let DestinationOutcome::Chosen(destination) =
-            DestinationChannel::from_path(rx).try_recv().unwrap()
-        else {
-            panic!("a path was chosen");
-        };
-        assert_eq!(destination.name(), "report.pdf");
-        assert_eq!(destination.location(), Some(path.as_path()));
-        let work = tilo_rt::background::Pumped::new();
-        let _work = work.background().enter();
-        let saved = destination.write(b"%PDF".to_vec());
-        work.run_pending();
-        assert_eq!(saved.recv().unwrap(), SaveOutcome::Saved);
-        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn a_save_destination_is_a_chosen_path_or_the_hosts_keeping_or_nothing;
 
-    #[test]
-    fn a_kept_destination_hands_its_bytes_to_the_host() {
-        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let into = std::sync::Arc::clone(&written);
-        let destination = SaveDestination::kept("notes.pdf", move |bytes| {
-            into.lock().unwrap().extend(bytes);
-            answered(SaveOutcome::Saved)
-        });
-        assert_eq!(destination.name(), "notes.pdf");
-        assert_eq!(destination.location(), None, "no path to save in place");
-        assert_eq!(
-            destination.write(b"%PDF".to_vec()).recv().unwrap(),
-            SaveOutcome::Saved
-        );
-        assert_eq!(*written.lock().unwrap(), b"%PDF");
-        assert_eq!(
-            destination.write(b"!".to_vec()).recv().unwrap(),
-            SaveOutcome::Saved,
-            "a kept destination takes the next save too"
-        );
-        assert_eq!(*written.lock().unwrap(), b"%PDF!");
-    }
-
-    #[test]
-    fn cancelling_or_failing_the_chooser_chooses_nothing() {
-        for (outcome, cancelled) in [
-            (PortalOutcome::Cancelled, true),
-            (PortalOutcome::Failed("gone".into()), false),
-        ] {
+        phase a_chosen_path_is_written_in_place_and_named_by_its_file;
+        {
+            let dir = std::env::temp_dir().join(format!("tilo-dest-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("report.pdf");
             let (tx, rx) = std::sync::mpsc::channel();
-            tx.send(outcome).unwrap();
-            match DestinationChannel::from_path(rx).recv().unwrap() {
-                DestinationOutcome::Cancelled => assert!(cancelled),
-                DestinationOutcome::Failed(reason) => assert_eq!(reason, "gone"),
-                DestinationOutcome::Chosen(_) => panic!("nothing was chosen"),
+            tx.send(PortalOutcome::Opened(path.clone())).unwrap();
+            let DestinationOutcome::Chosen(destination) =
+                DestinationChannel::from_path(rx).try_recv().unwrap()
+            else {
+                panic!("a path was chosen");
+            };
+            assert_eq!(destination.name(), "report.pdf");
+            assert_eq!(destination.location(), Some(path.as_path()));
+            let work = tilo_rt::background::Pumped::new();
+            let _work = work.background().enter();
+            let saved = destination.write(b"%PDF".to_vec());
+            work.run_pending();
+            assert_eq!(saved.recv().unwrap(), SaveOutcome::Saved);
+            assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        phase a_kept_destination_hands_its_bytes_to_the_host;
+        {
+            let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let into = std::sync::Arc::clone(&written);
+            let destination = SaveDestination::kept("notes.pdf", move |bytes| {
+                into.lock().unwrap().extend(bytes);
+                answered(SaveOutcome::Saved)
+            });
+            assert_eq!(destination.name(), "notes.pdf");
+            assert_eq!(destination.location(), None, "no path to save in place");
+            assert_eq!(
+                destination.write(b"%PDF".to_vec()).recv().unwrap(),
+                SaveOutcome::Saved
+            );
+            assert_eq!(*written.lock().unwrap(), b"%PDF");
+            assert_eq!(
+                destination.write(b"!".to_vec()).recv().unwrap(),
+                SaveOutcome::Saved,
+                "a kept destination takes the next save too"
+            );
+            assert_eq!(*written.lock().unwrap(), b"%PDF!");
+        }
+
+        phase cancelling_or_failing_the_chooser_chooses_nothing;
+        {
+            for (outcome, cancelled) in [
+                (PortalOutcome::Cancelled, true),
+                (PortalOutcome::Failed("gone".into()), false),
+            ] {
+                let (tx, rx) = std::sync::mpsc::channel();
+                tx.send(outcome).unwrap();
+                match DestinationChannel::from_path(rx).recv().unwrap() {
+                    DestinationOutcome::Cancelled => assert!(cancelled),
+                    DestinationOutcome::Failed(reason) => assert_eq!(reason, "gone"),
+                    DestinationOutcome::Chosen(_) => panic!("nothing was chosen"),
+                }
             }
         }
     }

@@ -875,134 +875,237 @@ mod tests {
         assert!(rest.is_empty(), "dropping the adopted socket closes it");
     }
 
-    #[test]
-    fn the_shell_chooser_keeps_the_picker_contract() {
-        let chooser = picker(
-            shell(|request| Reply::Failed {
+    tilo_test_env::scenario! {
+        fn an_app_asks_its_shell_and_reports_the_shells_answer;
+
+        phase the_shell_chooser_keeps_the_picker_contract;
+        {
+            let chooser = picker(
+                shell(|request| Reply::Failed {
+                    id: id_of(&request),
+                    reason: "no".into(),
+                }),
+                None,
+            )
+            .unwrap();
+            crate::conformance::check_picker_contract(&*chooser);
+        }
+
+        phase a_pick_carries_the_request_and_delivers_what_the_shell_chose;
+        {
+            let (seen_tx, seen) = std::sync::mpsc::channel();
+            let chooser = picker(
+                shell(move |request| {
+                    let id = id_of(&request);
+                    let _ = seen_tx.send(request);
+                    Reply::Picked {
+                        id,
+                        paths: vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()],
+                    }
+                }),
+                None,
+            )
+            .unwrap();
+            let request = PickRequest::open("Import spreadsheet", "Import")
+                .filter(FileFilter::new("Excel").glob("*.xlsx"));
+            assert_eq!(
+                chooser.pick(request).recv_timeout(answer()).unwrap(),
+                PortalOutcome::Opened("/data/in/x.xlsx".into())
+            );
+            let Request::Pick {
+                mode,
+                multiple,
+                title,
+                accept_label,
+                suggested_name,
+                filters,
+                ..
+            } = seen.recv_timeout(answer()).unwrap()
+            else {
+                panic!("a chooser request is a pick");
+            };
+            assert_eq!(mode, PickMode::Open);
+            assert!(!multiple);
+            assert_eq!(title, "Import spreadsheet");
+            assert_eq!(accept_label, "Import");
+            assert_eq!(suggested_name, None);
+            assert_eq!(
+                filters.first().map(|f| f.globs.clone()),
+                Some(vec!["*.xlsx".to_owned()])
+            );
+
+            assert_eq!(
+                chooser
+                    .pick_multiple(PickRequest::open_multiple("Open", "Open"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                MultiOutcome::Selected(vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()])
+            );
+            let Request::Pick { multiple, .. } = seen.recv_timeout(answer()).unwrap() else {
+                panic!("a chooser request is a pick");
+            };
+            assert!(multiple);
+        }
+
+        phase nobody_at_the_computer_falls_back_to_the_unattended_picker;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let unattended =
+                crate::unattended_picker(directory.path().to_path_buf(), crate::unavailable_picker());
+            let nobody = |request: Request| Reply::Nobody {
                 id: id_of(&request),
-                reason: "no".into(),
-            }),
-            None,
-        )
-        .unwrap();
-        crate::conformance::check_picker_contract(&*chooser);
-    }
+            };
+            let chooser = picker(shell(nobody), unattended).unwrap();
+            assert_eq!(
+                chooser
+                    .pick(PickRequest::save("Save", "Save", "report.xlsx"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                PortalOutcome::Opened(directory.path().join("report.xlsx"))
+            );
+            assert!(matches!(
+                chooser.pick(PickRequest::open("Open", "Open")).recv_timeout(answer()),
+                Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
+            ));
 
-    #[test]
-    fn a_pick_carries_the_request_and_delivers_what_the_shell_chose() {
-        let (seen_tx, seen) = std::sync::mpsc::channel();
-        let chooser = picker(
-            shell(move |request| {
-                let id = id_of(&request);
-                let _ = seen_tx.send(request);
-                Reply::Picked {
+            let alone = picker(shell(nobody), None).unwrap();
+            assert!(matches!(
+                alone
+                    .pick(PickRequest::save("Save", "Save", "report.xlsx"))
+                    .recv_timeout(answer()),
+                Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
+            ));
+        }
+
+        phase opening_a_file_asks_the_shell_and_reports_its_answer;
+        {
+            let chooser = picker(
+                shell(|request| match request {
+                    Request::Open { id, path } if path == Path::new("/data/in/a.docx") => {
+                        Reply::Opened { id }
+                    }
+                    other => Reply::Failed {
+                        id: id_of(&other),
+                        reason: "not granted".into(),
+                    },
+                }),
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                chooser
+                    .launch(LaunchRequest::open("/data/in/a.docx"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                LaunchOutcome::Opened
+            );
+            assert_eq!(
+                chooser
+                    .launch(LaunchRequest::open("/etc/shadow"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                LaunchOutcome::Failed("not granted".into())
+            );
+        }
+
+        phase the_app_chooser_answers_the_app_chosen_or_none;
+        {
+            let terminal = ChosenApp {
+                id: "org.example.Terminal".into(),
+                name: "Terminal".into(),
+                window_ids: vec!["org.example.Terminal".into(), "terminal".into()],
+            };
+            let answer_with = terminal.clone();
+            let link = ShellLink::connect(shell(move |request| match request {
+                Request::ChooseApp { id, purpose } if purpose == "Paste in apps" => Reply::AppChosen {
                     id,
-                    paths: vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()],
-                }
-            }),
-            None,
-        )
-        .unwrap();
-        let request = PickRequest::open("Import spreadsheet", "Import")
-            .filter(FileFilter::new("Excel").glob("*.xlsx"));
-        assert_eq!(
-            chooser.pick(request).recv_timeout(answer()).unwrap(),
-            PortalOutcome::Opened("/data/in/x.xlsx".into())
-        );
-        let Request::Pick {
-            mode,
-            multiple,
-            title,
-            accept_label,
-            suggested_name,
-            filters,
-            ..
-        } = seen.recv_timeout(answer()).unwrap()
-        else {
-            panic!("a chooser request is a pick");
-        };
-        assert_eq!(mode, PickMode::Open);
-        assert!(!multiple);
-        assert_eq!(title, "Import spreadsheet");
-        assert_eq!(accept_label, "Import");
-        assert_eq!(suggested_name, None);
-        assert_eq!(
-            filters.first().map(|f| f.globs.clone()),
-            Some(vec!["*.xlsx".to_owned()])
-        );
+                    app: answer_with.clone(),
+                },
+                other => Reply::Cancelled { id: id_of(&other) },
+            }))
+            .unwrap();
+            let (chosen_tx, chosen) = std::sync::mpsc::channel();
+            let tx = chosen_tx.clone();
+            link.choose_app("Paste in apps", move |outcome| tx.send(outcome).unwrap());
+            assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(Some(terminal)));
+            link.choose_app("Something else", move |outcome| {
+                chosen_tx.send(outcome).unwrap();
+            });
+            assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(None));
+        }
 
-        assert_eq!(
-            chooser
-                .pick_multiple(PickRequest::open_multiple("Open", "Open"))
-                .recv_timeout(answer())
-                .unwrap(),
-            MultiOutcome::Selected(vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()])
-        );
-        let Request::Pick { multiple, .. } = seen.recv_timeout(answer()).unwrap() else {
-            panic!("a chooser request is a pick");
-        };
-        assert!(multiple);
-    }
-
-    #[test]
-    fn nobody_at_the_computer_falls_back_to_the_unattended_picker() {
-        let directory = tempfile::tempdir().unwrap();
-        let unattended =
-            crate::unattended_picker(directory.path().to_path_buf(), crate::unavailable_picker());
-        let nobody = |request: Request| Reply::Nobody {
-            id: id_of(&request),
-        };
-        let chooser = picker(shell(nobody), unattended).unwrap();
-        assert_eq!(
-            chooser
-                .pick(PickRequest::save("Save", "Save", "report.xlsx"))
-                .recv_timeout(answer())
-                .unwrap(),
-            PortalOutcome::Opened(directory.path().join("report.xlsx"))
-        );
-        assert!(matches!(
-            chooser.pick(PickRequest::open("Open", "Open")).recv_timeout(answer()),
-            Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
-        ));
-
-        let alone = picker(shell(nobody), None).unwrap();
-        assert!(matches!(
-            alone
-                .pick(PickRequest::save("Save", "Save", "report.xlsx"))
-                .recv_timeout(answer()),
-            Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
-        ));
-    }
-
-    #[test]
-    fn opening_a_file_asks_the_shell_and_reports_its_answer() {
-        let chooser = picker(
-            shell(|request| match request {
-                Request::Open { id, path } if path == Path::new("/data/in/a.docx") => {
-                    Reply::Opened { id }
-                }
+        phase a_link_opens_through_the_shell_and_only_what_it_leaves_goes_elsewhere;
+        {
+            let elsewhere = Arc::new(Elsewhere::default());
+            let opener = ShellLink::connect(shell(|request| match request {
+                Request::OpenUri { id, uri } if uri.starts_with("settings:") => Reply::Opened { id },
+                Request::OpenUri { id, uri } if uri.starts_with("mailto:") => Reply::Unclaimed { id },
                 other => Reply::Failed {
                     id: id_of(&other),
-                    reason: "not granted".into(),
+                    reason: "the app could not start".into(),
                 },
-            }),
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            chooser
-                .launch(LaunchRequest::open("/data/in/a.docx"))
-                .recv_timeout(answer())
-                .unwrap(),
-            LaunchOutcome::Opened
-        );
-        assert_eq!(
-            chooser
-                .launch(LaunchRequest::open("/etc/shadow"))
-                .recv_timeout(answer())
-                .unwrap(),
-            LaunchOutcome::Failed("not granted".into())
-        );
+            }))
+            .unwrap()
+            .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
+            crate::conformance::check_opener_contract(&*opener);
+
+            opener.open("settings://updates").unwrap();
+            assert!(elsewhere.0.lock().unwrap().is_empty());
+            opener.open("mailto:ada@example.test").unwrap();
+            assert_eq!(*elsewhere.0.lock().unwrap(), ["mailto:ada@example.test"]);
+            let refused = opener.open("web+notes:today").unwrap_err();
+            assert_eq!(refused.to_string(), "the app could not start");
+            assert_eq!(
+                elsewhere.0.lock().unwrap().len(),
+                1,
+                "a refusal is reported, not rerouted"
+            );
+
+            let (app, gone) = UnixStream::pair().unwrap();
+            drop(gone);
+            let alone = ShellLink::connect(app)
+                .unwrap()
+                .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
+            alone.open("https://example.test/").unwrap();
+            assert_eq!(
+                elsewhere.0.lock().unwrap().last().map(String::as_str),
+                Some("https://example.test/"),
+                "without its shell an app's links still open"
+            );
+        }
+
+        phase a_cancelled_pick_and_a_gone_shell_answer_instead_of_hanging;
+        {
+            let chooser = picker(
+                shell(|request| Reply::Cancelled {
+                    id: id_of(&request),
+                }),
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                chooser
+                    .pick(PickRequest::open("Open", "Open"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                PortalOutcome::Cancelled
+            );
+
+            let (app, shell) = UnixStream::pair().unwrap();
+            let chooser = picker(app, None).unwrap();
+            let waiting = chooser.pick(PickRequest::open("Open", "Open"));
+            drop(shell);
+            assert!(matches!(
+                waiting.recv_timeout(answer()),
+                Ok(PortalOutcome::Failed(_))
+            ));
+            assert!(matches!(
+                chooser
+                    .launch(LaunchRequest::open("/data/in/a.docx"))
+                    .recv_timeout(answer()),
+                Ok(LaunchOutcome::Failed(_))
+            ));
+        }
     }
 
     #[derive(Default)]
@@ -1013,104 +1116,5 @@ mod tests {
             self.0.lock().unwrap().push(uri.to_owned());
             Ok(())
         }
-    }
-
-    #[test]
-    fn the_app_chooser_answers_the_app_chosen_or_none() {
-        let terminal = ChosenApp {
-            id: "org.example.Terminal".into(),
-            name: "Terminal".into(),
-            window_ids: vec!["org.example.Terminal".into(), "terminal".into()],
-        };
-        let answer_with = terminal.clone();
-        let link = ShellLink::connect(shell(move |request| match request {
-            Request::ChooseApp { id, purpose } if purpose == "Paste in apps" => Reply::AppChosen {
-                id,
-                app: answer_with.clone(),
-            },
-            other => Reply::Cancelled { id: id_of(&other) },
-        }))
-        .unwrap();
-        let (chosen_tx, chosen) = std::sync::mpsc::channel();
-        let tx = chosen_tx.clone();
-        link.choose_app("Paste in apps", move |outcome| tx.send(outcome).unwrap());
-        assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(Some(terminal)));
-        link.choose_app("Something else", move |outcome| {
-            chosen_tx.send(outcome).unwrap();
-        });
-        assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(None));
-    }
-
-    #[test]
-    fn a_link_opens_through_the_shell_and_only_what_it_leaves_goes_elsewhere() {
-        let elsewhere = Arc::new(Elsewhere::default());
-        let opener = ShellLink::connect(shell(|request| match request {
-            Request::OpenUri { id, uri } if uri.starts_with("settings:") => Reply::Opened { id },
-            Request::OpenUri { id, uri } if uri.starts_with("mailto:") => Reply::Unclaimed { id },
-            other => Reply::Failed {
-                id: id_of(&other),
-                reason: "the app could not start".into(),
-            },
-        }))
-        .unwrap()
-        .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
-        crate::conformance::check_opener_contract(&*opener);
-
-        opener.open("settings://updates").unwrap();
-        assert!(elsewhere.0.lock().unwrap().is_empty());
-        opener.open("mailto:ada@example.test").unwrap();
-        assert_eq!(*elsewhere.0.lock().unwrap(), ["mailto:ada@example.test"]);
-        let refused = opener.open("web+notes:today").unwrap_err();
-        assert_eq!(refused.to_string(), "the app could not start");
-        assert_eq!(
-            elsewhere.0.lock().unwrap().len(),
-            1,
-            "a refusal is reported, not rerouted"
-        );
-
-        let (app, gone) = UnixStream::pair().unwrap();
-        drop(gone);
-        let alone = ShellLink::connect(app)
-            .unwrap()
-            .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
-        alone.open("https://example.test/").unwrap();
-        assert_eq!(
-            elsewhere.0.lock().unwrap().last().map(String::as_str),
-            Some("https://example.test/"),
-            "without its shell an app's links still open"
-        );
-    }
-
-    #[test]
-    fn a_cancelled_pick_and_a_gone_shell_answer_instead_of_hanging() {
-        let chooser = picker(
-            shell(|request| Reply::Cancelled {
-                id: id_of(&request),
-            }),
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            chooser
-                .pick(PickRequest::open("Open", "Open"))
-                .recv_timeout(answer())
-                .unwrap(),
-            PortalOutcome::Cancelled
-        );
-
-        let (app, shell) = UnixStream::pair().unwrap();
-        let chooser = picker(app, None).unwrap();
-        let waiting = chooser.pick(PickRequest::open("Open", "Open"));
-        drop(shell);
-        assert!(matches!(
-            waiting.recv_timeout(answer()),
-            Ok(PortalOutcome::Failed(_))
-        ));
-        assert!(matches!(
-            chooser
-                .launch(LaunchRequest::open("/data/in/a.docx"))
-                .recv_timeout(answer()),
-            Ok(LaunchOutcome::Failed(_))
-        ));
     }
 }

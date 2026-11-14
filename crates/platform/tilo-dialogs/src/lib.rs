@@ -278,23 +278,27 @@ impl PortalFailure {
 mod tests {
     use super::*;
 
-    #[test]
-    fn unavailable_services_conform() {
-        conformance::check_picker_contract(&*unavailable_picker());
-        conformance::check_opener_contract(&*unavailable_opener());
-    }
+    tilo_test_env::scenario! {
+        fn without_a_desktop_every_service_answers_instead_of_hanging;
 
-    #[test]
-    fn the_system_backends_answer_bad_requests_without_a_desktop() {
-        conformance::check_picker_contract(&*system_picker());
-        conformance::check_opener_contract(&*system_opener());
-    }
+        phase unavailable_services_conform;
+        {
+            conformance::check_picker_contract(&*unavailable_picker());
+            conformance::check_opener_contract(&*unavailable_opener());
+        }
 
-    #[test]
-    fn without_a_resolver_requests_fail_rather_than_hang() {
-        let outcome = PickRequest::open("Open", "Open").send().recv().unwrap();
-        assert!(matches!(outcome, PortalOutcome::Failed(_)));
-        assert!(portal::open_uri("https://example.invalid").is_err());
+        phase the_system_backends_answer_bad_requests_without_a_desktop;
+        {
+            conformance::check_picker_contract(&*system_picker());
+            conformance::check_opener_contract(&*system_opener());
+        }
+
+        phase without_a_resolver_requests_fail_rather_than_hang;
+        {
+            let outcome = PickRequest::open("Open", "Open").send().recv().unwrap();
+            assert!(matches!(outcome, PortalOutcome::Failed(_)));
+            assert!(portal::open_uri("https://example.invalid").is_err());
+        }
     }
 }
 
@@ -357,53 +361,57 @@ mod bounded_contents_tests {
         );
     }
 
-    #[test]
-    fn bounded_contents_budget_is_aggregate_and_allows_empty_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a");
-        let b = dir.path().join("b");
-        std::fs::write(&a, b"ab").unwrap();
-        std::fs::write(&b, b"cd").unwrap();
-        let picker = Selected(vec![a.clone(), b]);
-        assert!(
-            matches!(picked(&picker, PickRequest::open_multiple("Open", "Open").max_contents_bytes(3)),
-            ContentsOutcome::Failed(reason) if reason.contains("byte limit"))
-        );
-        let ContentsOutcome::Picked(files) = picked(
-            &picker,
-            PickRequest::open_multiple("Open", "Open").max_contents_bytes(4),
-        ) else {
-            panic!("exact aggregate budget must be accepted");
-        };
-        assert_eq!(files.iter().map(|f| f.bytes.len()).sum::<usize>(), 4);
-        std::fs::write(&a, b"").unwrap();
-        let picker = Selected(vec![a]);
-        let ContentsOutcome::Picked(files) = picked(
-            &picker,
-            PickRequest::open("Open", "Open").max_contents_bytes(0),
-        ) else {
-            panic!("empty file fits a zero byte budget");
-        };
-        assert!(files[0].bytes.is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn bounded_contents_count_every_file_against_one_budget_and_report_failures;
 
-    #[test]
-    fn bounded_contents_reject_a_large_sparse_file_and_report_read_failures() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("weights");
-        std::fs::File::create(&path)
-            .unwrap()
-            .set_len(1 << 34)
-            .unwrap();
-        let picker = Selected(vec![path.clone()]);
-        assert!(
-            matches!(picked(&picker, PickRequest::open("Open", "Open").max_contents_bytes(1024)),
-            ContentsOutcome::Failed(reason) if reason.contains("byte limit"))
-        );
-        std::fs::remove_file(path).unwrap();
-        assert!(
-            matches!(picked(&picker, PickRequest::open("Open", "Open").max_contents_bytes(1024)),
-            ContentsOutcome::Failed(reason) if !reason.is_empty())
-        );
+        phase bounded_contents_budget_is_aggregate_and_allows_empty_files;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let a = dir.path().join("a");
+            let b = dir.path().join("b");
+            std::fs::write(&a, b"ab").unwrap();
+            std::fs::write(&b, b"cd").unwrap();
+            let picker = Selected(vec![a.clone(), b]);
+            assert!(
+                matches!(picked(&picker, PickRequest::open_multiple("Open", "Open").max_contents_bytes(3)),
+                ContentsOutcome::Failed(reason) if reason.contains("byte limit"))
+            );
+            let ContentsOutcome::Picked(files) = picked(
+                &picker,
+                PickRequest::open_multiple("Open", "Open").max_contents_bytes(4),
+            ) else {
+                panic!("exact aggregate budget must be accepted");
+            };
+            assert_eq!(files.iter().map(|f| f.bytes.len()).sum::<usize>(), 4);
+            std::fs::write(&a, b"").unwrap();
+            let picker = Selected(vec![a]);
+            let ContentsOutcome::Picked(files) = picked(
+                &picker,
+                PickRequest::open("Open", "Open").max_contents_bytes(0),
+            ) else {
+                panic!("empty file fits a zero byte budget");
+            };
+            assert!(files[0].bytes.is_empty());
+        }
+
+        phase bounded_contents_reject_a_large_sparse_file_and_report_read_failures;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("weights");
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(1 << 34)
+                .unwrap();
+            let picker = Selected(vec![path.clone()]);
+            assert!(
+                matches!(picked(&picker, PickRequest::open("Open", "Open").max_contents_bytes(1024)),
+                ContentsOutcome::Failed(reason) if reason.contains("byte limit"))
+            );
+            std::fs::remove_file(path).unwrap();
+            assert!(
+                matches!(picked(&picker, PickRequest::open("Open", "Open").max_contents_bytes(1024)),
+                ContentsOutcome::Failed(reason) if !reason.is_empty())
+            );
+        }
     }
 }
