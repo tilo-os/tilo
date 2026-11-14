@@ -1047,119 +1047,123 @@ mod tests {
             .unwrap_or_else(|error| panic!("{action}: {error:?}"));
     }
 
-    #[test]
-    fn the_kept_tree_is_the_one_built_from_scratch_after_any_edit() {
-        let mut app = TestApp::<BoardApp>::new().expect("the board opens");
-        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
-        let mut random = move |below: usize| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            usize::try_from(seed % u64::try_from(below.max(1)).unwrap_or(1)).unwrap_or(0)
-        };
-        for task in 0..12 {
-            call(
-                &mut app,
-                "add",
-                json!({ "title": format!("Task {task}"), "index": task }),
-            );
-        }
-        let mut last = kept_tree(&mut app);
-        for step in 0..160 {
-            let tasks = app.state().tasks.ids().cloned().collect::<Vec<_>>();
-            let notes = app.state().notes.ids().cloned().collect::<Vec<_>>();
-            let task = tasks
-                .get(random(tasks.len()))
-                .map(|id| id.as_str().to_owned());
-            match (random(8), task) {
-                (1, Some(task)) => call(
-                    &mut app,
-                    "set-done",
-                    json!({ "task": task, "done": step % 2 == 0 }),
-                ),
-                (2, Some(task)) => call(
-                    &mut app,
-                    "rename",
-                    json!({ "task": task, "title": format!("Renamed {step}") }),
-                ),
-                (3, Some(task)) if tasks.len() > 4 => {
-                    call(&mut app, "remove", json!({ "task": task }));
-                }
-                (4, Some(task)) => call(
-                    &mut app,
-                    "move-task",
-                    json!({ "task": task, "index": random(tasks.len()) }),
-                ),
-                (5, _) => call(
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+        )]
+        fn the_kept_tree_is_the_one_built_from_scratch_and_shares_what_an_edit_left;
+
+        phase the_kept_tree_is_the_one_built_from_scratch_after_any_edit;
+        {
+            let mut app = TestApp::<BoardApp>::new().expect("the board opens");
+            let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+            let mut random = move |below: usize| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                usize::try_from(seed % u64::try_from(below.max(1)).unwrap_or(1)).unwrap_or(0)
+            };
+            for task in 0..12 {
+                call(
                     &mut app,
                     "add",
-                    json!({ "title": format!("New {step}"), "index": random(tasks.len() + 1) }),
-                ),
-                (6, _) => call(&mut app, "jot", json!({ "text": format!("Note {step}") })),
-                (7, _) if !notes.is_empty() => call(
-                    &mut app,
-                    "drop-note",
-                    json!({ "note": notes[random(notes.len())].as_str() }),
-                ),
-                _ => call(
-                    &mut app,
-                    "draft",
-                    json!({ "title": format!("Draft {step}") }),
-                ),
+                    json!({ "title": format!("Task {task}"), "index": task }),
+                );
             }
-            let next = kept_tree(&mut app);
-            // Every item child the edit left as it was is the very node of
-            // the last tree.
-            let unchanged = |child: &&SharedResource| {
-                next.children()
-                    .iter()
-                    .any(|now| now.id() == child.id() && now.head().label == child.head().label)
-            };
-            let shared =
-                |child: &&SharedResource| next.children().iter().any(|now| now.ptr_eq(child));
-            assert_eq!(
-                last.children().iter().filter(shared).count(),
-                last.children().iter().filter(unchanged).count(),
-                "step {step}: every unchanged item is shared"
-            );
-            last = next;
+            let mut last = kept_tree(&mut app);
+            for step in 0..160 {
+                let tasks = app.state().tasks.ids().cloned().collect::<Vec<_>>();
+                let notes = app.state().notes.ids().cloned().collect::<Vec<_>>();
+                let task = tasks
+                    .get(random(tasks.len()))
+                    .map(|id| id.as_str().to_owned());
+                match (random(8), task) {
+                    (1, Some(task)) => call(
+                        &mut app,
+                        "set-done",
+                        json!({ "task": task, "done": step % 2 == 0 }),
+                    ),
+                    (2, Some(task)) => call(
+                        &mut app,
+                        "rename",
+                        json!({ "task": task, "title": format!("Renamed {step}") }),
+                    ),
+                    (3, Some(task)) if tasks.len() > 4 => {
+                        call(&mut app, "remove", json!({ "task": task }));
+                    }
+                    (4, Some(task)) => call(
+                        &mut app,
+                        "move-task",
+                        json!({ "task": task, "index": random(tasks.len()) }),
+                    ),
+                    (5, _) => call(
+                        &mut app,
+                        "add",
+                        json!({ "title": format!("New {step}"), "index": random(tasks.len() + 1) }),
+                    ),
+                    (6, _) => call(&mut app, "jot", json!({ "text": format!("Note {step}") })),
+                    (7, _) if !notes.is_empty() => call(
+                        &mut app,
+                        "drop-note",
+                        json!({ "note": notes[random(notes.len())].as_str() }),
+                    ),
+                    _ => call(
+                        &mut app,
+                        "draft",
+                        json!({ "title": format!("Draft {step}") }),
+                    ),
+                }
+                let next = kept_tree(&mut app);
+                // Every item child the edit left as it was is the very node of
+                // the last tree.
+                let unchanged = |child: &&SharedResource| {
+                    next.children()
+                        .iter()
+                        .any(|now| now.id() == child.id() && now.head().label == child.head().label)
+                };
+                let shared =
+                    |child: &&SharedResource| next.children().iter().any(|now| now.ptr_eq(child));
+                assert_eq!(
+                    last.children().iter().filter(shared).count(),
+                    last.children().iter().filter(unchanged).count(),
+                    "step {step}: every unchanged item is shared"
+                );
+                last = next;
+            }
         }
-    }
 
-    /// The walk above never leaves the board fewer than four tasks. A board
-    /// opens empty, and its first task and the removal of its last are where
-    /// the kept tree has no item to share or to keep.
-    #[test]
-    fn the_kept_tree_is_the_one_built_from_scratch_as_a_board_fills_and_empties() {
-        let mut app = TestApp::<BoardApp>::new().expect("the board opens");
-        let opened = kept_tree(&mut app);
-        assert_eq!(opened.children().len(), 0, "a board opens with no item");
-        call(&mut app, "add", json!({ "title": "Only", "index": 0 }));
-        let first = kept_tree(&mut app);
-        assert_eq!(first.children().len(), 1, "the first task is the one item");
-        let only = app
-            .state()
-            .tasks
-            .ids()
-            .next()
-            .map(|id| id.as_str().to_owned())
-            .expect("the task just added");
-        call(&mut app, "remove", json!({ "task": only }));
-        let emptied = kept_tree(&mut app);
-        assert_eq!(
-            emptied.children().len(),
-            0,
-            "removing the last task leaves no item"
-        );
-        // A task of the same title after it is another task: nothing kept
-        // for the removed one stands in for it.
-        call(&mut app, "add", json!({ "title": "Only", "index": 0 }));
-        let again = kept_tree(&mut app);
-        assert_eq!(again.children().len(), 1, "the board has one item again");
-    }
-
-    tilo_test_env::scenario! {
-        fn an_edit_publishes_again_only_what_it_changed;
+        phase the_kept_tree_is_the_one_built_from_scratch_as_a_board_fills_and_empties;
+        // The walk above never leaves the board fewer than four tasks. A board
+        // opens empty, and its first task and the removal of its last are where
+        // the kept tree has no item to share or to keep.
+        {
+            let mut app = TestApp::<BoardApp>::new().expect("the board opens");
+            let opened = kept_tree(&mut app);
+            assert_eq!(opened.children().len(), 0, "a board opens with no item");
+            call(&mut app, "add", json!({ "title": "Only", "index": 0 }));
+            let first = kept_tree(&mut app);
+            assert_eq!(first.children().len(), 1, "the first task is the one item");
+            let only = app
+                .state()
+                .tasks
+                .ids()
+                .next()
+                .map(|id| id.as_str().to_owned())
+                .expect("the task just added");
+            call(&mut app, "remove", json!({ "task": only }));
+            let emptied = kept_tree(&mut app);
+            assert_eq!(
+                emptied.children().len(),
+                0,
+                "removing the last task leaves no item"
+            );
+            // A task of the same title after it is another task: nothing kept
+            // for the removed one stands in for it.
+            call(&mut app, "add", json!({ "title": "Only", "index": 0 }));
+            let again = kept_tree(&mut app);
+            assert_eq!(again.children().len(), 1, "the board has one item again");
+        }
 
         phase an_edit_no_item_depends_on_shares_every_item;
         {

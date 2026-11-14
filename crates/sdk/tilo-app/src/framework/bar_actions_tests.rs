@@ -74,6 +74,21 @@ tilo_test_env::scenario! {
         assert!(!bar.press(&ToolbarEvent::Back));
     }
 
+    phase an_effects_entry_reaches_the_effect;
+    {
+        let dispatcher = testing::dispatcher::<Counter>("test.bar");
+        let bar = BarActions::new(dispatcher.clone());
+        let zoom = bar.effect(&CounterView::ZoomIn);
+        assert_eq!(
+            (zoom.name.as_str(), zoom.icon.as_str()),
+            ("Zoom in", "zoom-in")
+        );
+        assert!(zoom.enabled);
+        assert!(bar.press(&press(&zoom)));
+        let (invocation, _) = dispatcher.core().take_attributed().expect("queued");
+        assert_eq!(invocation.address.action, CounterView::ZoomIn.id());
+    }
+
     phase a_commands_entry_hands_its_command_back_and_keeps_its_id;
     {
         let bar = BarCommands::new();
@@ -99,21 +114,6 @@ tilo_test_env::scenario! {
         );
         assert_eq!(other.pressed(&press(&open)), None, "another bar's entry");
     }
-}
-
-#[test]
-fn an_effects_entry_reaches_the_effect() {
-    let dispatcher = testing::dispatcher::<Counter>("test.bar");
-    let bar = BarActions::new(dispatcher.clone());
-    let zoom = bar.effect(&CounterView::ZoomIn);
-    assert_eq!(
-        (zoom.name.as_str(), zoom.icon.as_str()),
-        ("Zoom in", "zoom-in")
-    );
-    assert!(zoom.enabled);
-    assert!(bar.press(&press(&zoom)));
-    let (invocation, _) = dispatcher.core().take_attributed().expect("queued");
-    assert_eq!(invocation.address.action, CounterView::ZoomIn.id());
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1169,6 +1169,86 @@ mod tests {
                     .contains("Lovelace")
             );
         }
+
+        phase a_lent_model_reviews_the_model_view_and_the_review_names_it;
+        // A model the host lends looks over the review: it is asked the model
+        // view alone, and the review says by name which model checked it.
+        {
+            use crate::models::{
+                CompletionFuture, Content, Message, ModelBackend, ModelRequest, ModelResponse, Role,
+                StopReason, Usage,
+            };
+            struct Reviewer(Rc<RefCell<Vec<String>>>);
+            impl ModelBackend for Reviewer {
+                fn complete<'a>(&'a self, request: &'a ModelRequest) -> CompletionFuture<'a> {
+                    let asked: String = request
+                        .messages
+                        .iter()
+                        .flat_map(|message| &message.content)
+                        .filter_map(|content| match content {
+                            Content::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    let index = asked
+                        .lines()
+                        .find_map(|line| line.strip_suffix("] Reply")?.strip_prefix('['))
+                        .unwrap_or("0")
+                        .to_owned();
+                    self.0.borrow_mut().push(asked);
+                    Box::pin(async move {
+                        Ok(ModelResponse {
+                            message: Message::text(
+                                Role::Assistant,
+                                format!("{{\"hide\":[{{\"text\":{index},\"quote\":\"Reply\"}}]}}"),
+                            ),
+                            stop_reason: StopReason::EndTurn,
+                            usage: Usage::default(),
+                            cost_micros: 0,
+                        })
+                    })
+                }
+            }
+            let transport = Rc::new(RefCell::new(Transport::default()));
+            let services = picked_services(&transport);
+            let asked = Rc::new(RefCell::new(Vec::new()));
+            services.set_models(
+                crate::models::Models::new(Rc::new(Reviewer(Rc::clone(&asked)))),
+                "Anthropic claude-haiku-5-5",
+            );
+            let component =
+                prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+            let mut frame = FrameHarness::from_component(
+                component,
+                (720, 900),
+                ComponentRunnerInputs::from_native_process(),
+            )
+            .expect("production component");
+            frame.relayout();
+            describe(&mut frame, "Ada Lovelace says the row is cut off").expect("summary");
+            call(&mut frame, "review", &json!({})).expect("review");
+            services
+                .pump()
+                .expect("the model's answer is laid over the review");
+            frame.relayout();
+            let asked = asked.borrow();
+            assert_eq!(asked.len(), 1, "one pass per review");
+            assert!(
+                !asked[0].contains("Lovelace") && !asked[0].contains("Thanks"),
+                "the model sees placeholders for personal values: {}",
+                asked[0]
+            );
+            let sheet = frame.inspection_json().expect("inspection");
+            assert!(
+                sheet.contains("Checked by rules and Anthropic claude-haiku-5-5, which hid more."),
+                "{sheet}"
+            );
+            call(&mut frame, "submit", &json!({})).expect("send");
+            let sent = transport.borrow();
+            let submission = serde_json::to_string(sent.submissions.first().expect("sent")).unwrap();
+            assert!(!submission.contains("Reply"), "the model's span is hidden");
+            assert!(!submission.contains("Lovelace"), "the floor stands");
+        }
     }
 
     fn find(node: &crate::headless::InspectionNode) -> Option<&crate::headless::InspectionNode> {
@@ -1350,85 +1430,5 @@ mod tests {
             })
             .expect("report begins");
         services
-    }
-
-    /// A model the host lends looks over the review: it is asked the model
-    /// view alone, and the review says by name which model checked it.
-    #[test]
-    fn a_lent_model_reviews_the_model_view_and_the_review_names_it() {
-        use crate::models::{
-            CompletionFuture, Content, Message, ModelBackend, ModelRequest, ModelResponse, Role,
-            StopReason, Usage,
-        };
-        struct Reviewer(Rc<RefCell<Vec<String>>>);
-        impl ModelBackend for Reviewer {
-            fn complete<'a>(&'a self, request: &'a ModelRequest) -> CompletionFuture<'a> {
-                let asked: String = request
-                    .messages
-                    .iter()
-                    .flat_map(|message| &message.content)
-                    .filter_map(|content| match content {
-                        Content::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                let index = asked
-                    .lines()
-                    .find_map(|line| line.strip_suffix("] Reply")?.strip_prefix('['))
-                    .unwrap_or("0")
-                    .to_owned();
-                self.0.borrow_mut().push(asked);
-                Box::pin(async move {
-                    Ok(ModelResponse {
-                        message: Message::text(
-                            Role::Assistant,
-                            format!("{{\"hide\":[{{\"text\":{index},\"quote\":\"Reply\"}}]}}"),
-                        ),
-                        stop_reason: StopReason::EndTurn,
-                        usage: Usage::default(),
-                        cost_micros: 0,
-                    })
-                })
-            }
-        }
-        let transport = Rc::new(RefCell::new(Transport::default()));
-        let services = picked_services(&transport);
-        let asked = Rc::new(RefCell::new(Vec::new()));
-        services.set_models(
-            crate::models::Models::new(Rc::new(Reviewer(Rc::clone(&asked)))),
-            "Anthropic claude-haiku-5-5",
-        );
-        let component =
-            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
-        let mut frame = FrameHarness::from_component(
-            component,
-            (720, 900),
-            ComponentRunnerInputs::from_native_process(),
-        )
-        .expect("production component");
-        frame.relayout();
-        describe(&mut frame, "Ada Lovelace says the row is cut off").expect("summary");
-        call(&mut frame, "review", &json!({})).expect("review");
-        services
-            .pump()
-            .expect("the model's answer is laid over the review");
-        frame.relayout();
-        let asked = asked.borrow();
-        assert_eq!(asked.len(), 1, "one pass per review");
-        assert!(
-            !asked[0].contains("Lovelace") && !asked[0].contains("Thanks"),
-            "the model sees placeholders for personal values: {}",
-            asked[0]
-        );
-        let sheet = frame.inspection_json().expect("inspection");
-        assert!(
-            sheet.contains("Checked by rules and Anthropic claude-haiku-5-5, which hid more."),
-            "{sheet}"
-        );
-        call(&mut frame, "submit", &json!({})).expect("send");
-        let sent = transport.borrow();
-        let submission = serde_json::to_string(sent.submissions.first().expect("sent")).unwrap();
-        assert!(!submission.contains("Reply"), "the model's span is hidden");
-        assert!(!submission.contains("Lovelace"), "the floor stands");
     }
 }

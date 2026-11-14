@@ -324,58 +324,62 @@ mod tests {
             .collect()
     }
 
-    /// Two windows' records, each created on its own with a feed of its
-    /// own, both reach the one record, ids kept, and a setting a window
-    /// changed wins over what a new record starts with.
-    #[test]
-    fn two_orphaned_window_records_merge_into_one_without_loss() {
-        let mut record = window_with_feeds(&[], "newest");
-        let windows = vec![
-            (
+    tilo_test_env::scenario! {
+        fn earlier_windows_records_are_adopted_only_when_they_read;
+
+        phase two_orphaned_window_records_merge_into_one_without_loss;
+        // Two windows' records, each created on its own with a feed of its
+        // own, both reach the one record, ids kept, and a setting a window
+        // changed wins over what a new record starts with.
+        {
+            let mut record = window_with_feeds(&[], "newest");
+            let windows = vec![
+                (
+                    ui_core::record::RecordId::window_default(1),
+                    window_with_feeds(&[("a", "https://a.example/feed")], "newest"),
+                ),
+                (
+                    ui_core::record::RecordId::window_default(2),
+                    stamped_window(
+                        &[
+                            ("a", "https://a.example/feed"),
+                            ("b", "https://b.example/feed"),
+                        ],
+                        "oldest",
+                    ),
+                ),
+                (
+                    ui_core::record::RecordId::window_default(3),
+                    window_with_feeds(&[], "newest"),
+                ),
+            ];
+            adopt(&mut record, &windows, &|_| Ok(())).unwrap();
+            let urls = feeds(&record);
+            assert_eq!(urls.len(), 2, "each feed once: {urls:?}");
+            assert!(urls.iter().any(|url| url.contains("a.example")));
+            assert!(urls.iter().any(|url| url.contains("b.example")));
+            let (sort, _) = record.get(ROOT, "sort").unwrap().unwrap();
+            assert_eq!(
+                sort.to_string(),
+                "\"oldest\"",
+                "a setting a window changed survives a later window that left it alone"
+            );
+            assert_eq!(feeds(&windows[1].1).len(), 2);
+            assert!(
+                record.get(ROOT, "tilo:record").unwrap().is_none(),
+                "a window's identity is never the workspace record's"
+            );
+        }
+
+        phase a_window_record_that_does_not_read_is_left_out;
+        {
+            let mut record = window_with_feeds(&[], "newest");
+            let windows = vec![(
                 ui_core::record::RecordId::window_default(1),
                 window_with_feeds(&[("a", "https://a.example/feed")], "newest"),
-            ),
-            (
-                ui_core::record::RecordId::window_default(2),
-                stamped_window(
-                    &[
-                        ("a", "https://a.example/feed"),
-                        ("b", "https://b.example/feed"),
-                    ],
-                    "oldest",
-                ),
-            ),
-            (
-                ui_core::record::RecordId::window_default(3),
-                window_with_feeds(&[], "newest"),
-            ),
-        ];
-        adopt(&mut record, &windows, &|_| Ok(())).unwrap();
-        let urls = feeds(&record);
-        assert_eq!(urls.len(), 2, "each feed once: {urls:?}");
-        assert!(urls.iter().any(|url| url.contains("a.example")));
-        assert!(urls.iter().any(|url| url.contains("b.example")));
-        let (sort, _) = record.get(ROOT, "sort").unwrap().unwrap();
-        assert_eq!(
-            sort.to_string(),
-            "\"oldest\"",
-            "a setting a window changed survives a later window that left it alone"
-        );
-        assert_eq!(feeds(&windows[1].1).len(), 2);
-        assert!(
-            record.get(ROOT, "tilo:record").unwrap().is_none(),
-            "a window's identity is never the workspace record's"
-        );
-    }
-
-    #[test]
-    fn a_window_record_that_does_not_read_is_left_out() {
-        let mut record = window_with_feeds(&[], "newest");
-        let windows = vec![(
-            ui_core::record::RecordId::window_default(1),
-            window_with_feeds(&[("a", "https://a.example/feed")], "newest"),
-        )];
-        adopt(&mut record, &windows, &|_| Err("not this app's".into())).unwrap();
-        assert!(feeds(&record).is_empty());
+            )];
+            adopt(&mut record, &windows, &|_| Err("not this app's".into())).unwrap();
+            assert!(feeds(&record).is_empty());
+        }
     }
 }

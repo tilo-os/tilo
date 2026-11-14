@@ -135,6 +135,24 @@ tilo_test_env::scenario! {
         assert_eq!(typed_sql(&app), "");
     }
 
+    phase a_parent_action_between_keystrokes_ends_the_word;
+    {
+        let mut app = open(Role::Owner);
+        app.harness().type_text("sel");
+        app.invoke(Invoke::<Query>::apply(&QueryAction::Rename("Totals".into())).unwrap())
+            .unwrap();
+        app.harness().click_named("sql").unwrap();
+        app.harness().key("End");
+        app.harness().type_text("ect");
+        assert_eq!(typed_sql(&app), "select");
+        assert!(app.undo());
+        assert_eq!(
+            typed_sql(&app),
+            "sel",
+            "the letters after the rename are a step of their own"
+        );
+    }
+
     phase a_viewers_keystrokes_change_nothing_and_the_field_shows_the_stored_text;
     {
         let mut app = open(Role::Viewer);
@@ -187,22 +205,4 @@ tilo_test_env::scenario! {
         app.harness().type_text(";");
         assert_eq!(typed_sql(&app), "select 1 from t;");
     }
-}
-
-#[test]
-fn a_parent_action_between_keystrokes_ends_the_word() {
-    let mut app = open(Role::Owner);
-    app.harness().type_text("sel");
-    app.invoke(Invoke::<Query>::apply(&QueryAction::Rename("Totals".into())).unwrap())
-        .unwrap();
-    app.harness().click_named("sql").unwrap();
-    app.harness().key("End");
-    app.harness().type_text("ect");
-    assert_eq!(typed_sql(&app), "select");
-    assert!(app.undo());
-    assert_eq!(
-        typed_sql(&app),
-        "sel",
-        "the letters after the rename are a step of their own"
-    );
 }

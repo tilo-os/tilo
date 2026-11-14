@@ -241,46 +241,46 @@ fn shelf(items: i64) -> Result<TestApp<ShelfApp>, String> {
     Ok(app)
 }
 
-#[test]
-fn the_published_tree_is_the_one_recorded_before_rows_were_indexed() {
-    let mut app = shelf(3).expect("the shelf opens");
-    let (nobody, ada) = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let nobody = outline(&root.publication());
-            let _viewer = ui_core::invocation_scope::ViewerScope::enter(
-                tilo_actions::ParticipantId::new("ada").expect("a participant id"),
-            );
-            (nobody, outline(&root.publication()))
-        })
-        .expect("the root is the shelf's");
-    let recorded: serde_json::Value =
-        serde_json::from_str(include_str!("publication.golden.json")).expect("valid JSON");
-    assert_eq!(nobody, recorded);
-    // What a view binds to where someone is, it binds to that viewer.
-    let waves = |outline: &serde_json::Value| {
-        outline["actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|action| action["address"]["action"] == "wave")
-            .map(|action| action["action_label"].clone())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(waves(&nobody), [json!("Wave at nobody")]);
-    assert_eq!(waves(&ada), [json!("Wave at ada")]);
-    let at_ada = serde_json::to_string(&nobody)
-        .unwrap_or_default()
-        .replace("Wave at nobody", "Wave at ada");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&at_ada).unwrap_or_default(),
-        ada,
-        "the viewer changes nothing else"
-    );
-}
-
 tilo_test_env::scenario! {
-    fn the_publication_binds_rows_and_controls_in_one_walk;
+    fn the_publication_is_the_recorded_one_and_binds_rows_and_controls_in_one_walk;
+
+    phase the_published_tree_is_the_one_recorded_before_rows_were_indexed;
+    {
+        let mut app = shelf(3).expect("the shelf opens");
+        let (nobody, ada) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let nobody = outline(&root.publication());
+                let _viewer = ui_core::invocation_scope::ViewerScope::enter(
+                    tilo_actions::ParticipantId::new("ada").expect("a participant id"),
+                );
+                (nobody, outline(&root.publication()))
+            })
+            .expect("the root is the shelf's");
+        let recorded: serde_json::Value =
+            serde_json::from_str(include_str!("publication.golden.json")).expect("valid JSON");
+        assert_eq!(nobody, recorded);
+        // What a view binds to where someone is, it binds to that viewer.
+        let waves = |outline: &serde_json::Value| {
+            outline["actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|action| action["address"]["action"] == "wave")
+                .map(|action| action["action_label"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(waves(&nobody), [json!("Wave at nobody")]);
+        assert_eq!(waves(&ada), [json!("Wave at ada")]);
+        let at_ada = serde_json::to_string(&nobody)
+            .unwrap_or_default()
+            .replace("Wave at nobody", "Wave at ada");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&at_ada).unwrap_or_default(),
+            ada,
+            "the viewer changes nothing else"
+        );
+    }
 
     phase rows_bind_the_edits_views_offer_in_view_order;
     {
