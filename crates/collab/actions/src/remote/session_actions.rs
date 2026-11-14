@@ -43,7 +43,7 @@ pub const SHOW_PAIR_DEVICE: &str = "show-pair-device";
 
 /// The resource the person's layout is published as: the layout itself, which a place is put
 /// on, brought forward and closed through, and which carries the system's `open`.
-pub const ARRANGEMENT_RESOURCE: &str = "shell:layout";
+pub const LAYOUT_RESOURCE: &str = "shell:layout";
 
 /// The system's `open` on the layout: resource `resource` placed with its own default view
 /// beside the place showing `beside` (the conversation of the turn that asked) or beside the
