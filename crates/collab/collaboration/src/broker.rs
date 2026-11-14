@@ -410,9 +410,6 @@ pub(super) struct BrokerTransport {
     pending_primary: Option<mpsc::Receiver<Result<RouteSpec, String>>>,
     /// The shovel dropped a primary-route reply unanswered: it has exited.
     worker_stopped: bool,
-    /// Whether [`wifi_continuity_command`] has been pointed at this
-    /// transport; done once it has connected.
-    command_bridge_registered: bool,
     /// Durable commands the bounded queue had no room for, in submission
     /// order. They wait here for the shovel to catch up instead of
     /// disabling collaboration; see [`Self::enqueue`].
@@ -608,14 +605,14 @@ impl BrokerTransport {
     }
 
     /// Route the process's published commands and device commands through
-    /// this transport.
-    fn register_command_bridge(&mut self) {
+    /// this transport for its whole life, connecting or connected: a view
+    /// followed while it connects is served when the shovel takes it.
+    fn register_command_bridge(&self) {
         if let Ok(mut bridge) = PUBLISHED_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
             *bridge = Some(self.outbound_tx.downgrade());
-            self.command_bridge_registered = true;
         }
     }
 }
@@ -706,11 +703,6 @@ impl CollabTransport for BrokerTransport {
         self.invocation_owners.clear();
         self.state.begin_poll();
         self.flush_spill();
-        if !self.command_bridge_registered
-            && matches!(self.state.connect_phase(), ConnectPhase::Connected)
-        {
-            self.register_command_bridge();
-        }
         while let Ok(mut evt) = self.inbound_rx.try_recv() {
             match evt._turn.take() {
                 Some(EventTurn::Invocation(turns, owner)) => {
@@ -3208,9 +3200,11 @@ impl CollaborationManager {
     ///
     /// The transport reports [`TransportStatus::Connecting`] until the
     /// shovel is serving commands (or [`TransportStatus::Closed`] if setup
-    /// failed); commands submitted meanwhile queue for it. The returned
-    /// receiver carries the same outcome once, for callers that choose to
-    /// wait for it.
+    /// failed); commands submitted meanwhile queue for it, and the process's
+    /// published-resource bridge points here from the start so a view built
+    /// before the connection lands is watched rather than refused. The
+    /// returned receiver carries the same outcome once, for callers that
+    /// choose to wait for it.
     fn start_sdk(
         source: SdkConnectSource,
         identity: SdkIdentitySource,
@@ -3248,12 +3242,12 @@ impl CollaborationManager {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            command_bridge_registered: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
             _thread: Some(handle),
         };
+        transport.register_command_bridge();
         Ok((transport, init_rx))
     }
 
@@ -3280,10 +3274,7 @@ impl CollaborationManager {
         };
 
         match status {
-            InitStatus::Ready => {
-                transport.register_command_bridge();
-                Ok(transport)
-            }
+            InitStatus::Ready => Ok(transport),
             InitStatus::Failed(e) => {
                 // Let the (empty-body) thread exit cleanly.
                 if let Some(handle) = transport._thread.take() {

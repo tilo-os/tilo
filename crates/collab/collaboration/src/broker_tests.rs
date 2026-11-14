@@ -2450,7 +2450,6 @@ fn parking_transport(capacity: usize) -> (BrokerTransport, tokio_mpsc::Receiver<
         action_directory_tx,
         pending_primary: None,
         worker_stopped: false,
-        command_bridge_registered: false,
         spill: std::collections::VecDeque::new(),
         barrier_slot: None,
         queued_barrier: std::sync::Weak::new(),
@@ -3735,8 +3734,7 @@ tilo_test_env::scenario! {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
-            command_bridge_registered: false,
-            spill: std::collections::VecDeque::new(),
+                spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
             _thread: None,
@@ -5890,3 +5888,28 @@ pub fn notebook_action_catalogue_fixture(
 #[cfg(test)]
 #[path = "broker_catalogue_tests.rs"]
 mod catalogue;
+
+// The process's bridge to its session transport.
+#[cfg(test)]
+mod bridge {
+    use super::*;
+
+    #[test]
+    fn a_transport_carries_the_published_bridge_before_it_connects() {
+        // An app builds its windows before the shovel has joined. A view that
+        // follows a published resource then reaches the connecting transport
+        // (its watch waits in the queue for the shovel) instead of being
+        // refused as if the session had no collaboration service.
+        let (transport, _init) =
+            CollaborationManager::start_sdk(SdkConnectSource::Env, SdkIdentitySource::Ready(None))
+                .expect("the shovel thread starts");
+        let registered = PUBLISHED_COMMAND_BRIDGE
+            .get()
+            .and_then(|bridge| bridge.lock().ok()?.as_ref()?.upgrade());
+        assert!(
+            registered.is_some(),
+            "the process's bridge points at the transport while it connects"
+        );
+        drop(transport);
+    }
+}
