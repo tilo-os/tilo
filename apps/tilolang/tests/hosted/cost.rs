@@ -1591,13 +1591,17 @@ fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row(seeded: &Chunks) {
     );
 }
 
-/// The glide a wheel notch started, run to where it rests on the frame clock: where the list
-/// stands after a notch is what the notch did, not how far the frames the step measured got
-/// before the window was looked at, which is as far as the machine's speed let them.
-fn glide_out(session: &mut Session) {
+/// The glide a wheel notch started at `at`, run to where it rests on the frame clock, the host
+/// answering each frame before the next: where the list stands after a notch is what the notch
+/// did, not how far the frames the step measured got before the window was looked at, which is
+/// as far as the machine's speed let them.
+fn glide_out(session: &mut Session, mut at: ui::time::Instant) {
     use ui::time::testing::with_monotonic_time;
-    let mut at = ui::time::Instant::now();
     for _ in 0..400 {
+        with_monotonic_time(at, || {
+            session.settle_host();
+            session.window.frame();
+        });
         if !session
             .window
             .harness()
@@ -1607,12 +1611,15 @@ fn glide_out(session: &mut Session) {
             return;
         }
         at += ui::time::Duration::from_millis(16);
-        with_monotonic_time(at, || {
-            session.host.turn();
-            session.window.frame();
-        });
     }
     panic!("the list's glide never came to rest");
+}
+
+/// A wheel notch of `dy` lines, its glide run out on the frame clock ([`glide_out`]).
+fn notch(session: &mut Session, dy: f64) {
+    let at = ui::time::Instant::now();
+    ui::time::testing::with_monotonic_time(at, || session.window.scroll(0.0, dy));
+    glide_out(session, at);
 }
 
 /// Scrolling the list: a wheel notch down and back up, the top row changing each time.
@@ -1627,7 +1634,7 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
         costs.add(cost(session, "scroll", |session| {
             session.window.scroll(0.0, if down { -3.0 } else { 3.0 });
         }));
-        glide_out(session);
+        glide_out(session, ui::time::Instant::now());
         session.settle();
         let now = top_shown(session);
         assert_ne!(now, top, "the list scrolled");
@@ -2167,10 +2174,7 @@ fn steps_costs(chunks: Chunks) -> (Vec<(&'static str, Done)>, u64) {
     let at = shown_at(&mut session, &first);
     session.window.move_to(at.0, at.1);
     session.settle();
-    out.push((
-        "scroll",
-        step(&mut session, |session| session.window.scroll(0.0, -3.0)),
-    ));
+    out.push(("scroll", step(&mut session, |session| notch(session, -3.0))));
     // The page of the row at the top of the list, opened where it stands: the page reads the
     // task it shows and the index around it, never the workspace the task is one of.
     let first = top_title(&mut session);
