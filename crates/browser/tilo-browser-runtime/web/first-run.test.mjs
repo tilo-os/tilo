@@ -926,3 +926,69 @@ test('a host that did not answer is named, and one on this computer is not blame
   assert.equal(setupFailure(new TypeError('Failed to fetch'), {site: 'https://tilo.sh'}),
     'Couldn’t reach tilo.sh. Check your connection, then try again.');
 });
+
+// Shown and never copied, the setup code is followed while it is on the
+// screen and an agent that uses it moves the screen on: however the person
+// reached the screen, whatever step the setup was kept at before it showed.
+async function shownCodeIsKept(t, kept, {expire = false} = {}) {
+  const stored = new Map();
+  const code = fakeCode();
+  const next = fakeCode({code: NEXT, expiresAt: 1_300_000});
+  if (kept) stored.set(SETUP, JSON.stringify(typeof kept === 'function' ? kept(code) : kept));
+  const {run, last, fire, state, tick, copied} = fixture({stored});
+  const was = readSetup({getItem: key => stored.get(key) ?? null})?.step ?? null;
+  run.offerSetup(maker(code, next).make, resumer(code, next));
+  run.offerAgentSignIn(maker(fakeCode({code: 'S1G-NNNN'})).make);
+  await settle();
+  let shown = code;
+  if (expire) {
+    await run.copy();
+    await settle();
+    state.clock = 600_000;
+    await tick();
+    assert.deepEqual(last('expired'), ['expired', 'setup', {text: setupPrompt(NEXT)}], `${t}: the fresh prompt shows`);
+    shown = next;
+  }
+  const asked = shown.asked;
+  assert.ok(asked >= 1, `${t}: kept as soon as it is on the screen`);
+  await fire(SHOWN_FOLLOW_MS);
+  await fire(SHOWN_FOLLOW_MS);
+  assert.ok(shown.asked >= asked + 2, `${t}: followed again while it is on the screen`);
+  if (!expire && (was === 'later' || was === 'done')) {
+    assert.equal(readSetup({getItem: key => stored.get(key) ?? null}).step, was,
+      `${t}: a prompt only shown keeps the setup at the step it was kept at`);
+  }
+  Object.assign(shown.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
+  await fire(SHOWN_FOLLOW_MS);
+  assert.equal(last('waiting')?.[2]?.text, setupPrompt(shown.code), `${t}: the screen waits for the agent`);
+  assert.equal(last('steps')[1][1].text, 'Claude Code logged in as you', `${t}: and shows its steps`);
+  assert.equal(readSetup({getItem: key => stored.get(key) ?? null}).step, 'waiting', `${t}: kept as under way`);
+  assert.equal(copied.length, expire ? 1 : 0, `${t}: nothing copied but what the person copied`);
+}
+
+test('a code on the screen works without a copy however the person reached the screen', async () => {
+  await shownCodeIsKept('straight to the site');
+  await shownCodeIsKept('opened at the start', {step: 'start'});
+  await shownCodeIsKept('after joining by an invitation', {step: 'later', at: 1});
+  await shownCodeIsKept('reloaded after joining by an invitation', code => ({step: 'later', at: 1, offer: code.saved}));
+  await shownCodeIsKept('reloaded on the start', code => ({step: 'start', offer: code.saved}));
+  await shownCodeIsKept('from the workspace’s later setup offer, or the person’s card', {step: 'done', at: 1});
+  await shownCodeIsKept('a fresh code after one ran out', null, {expire: true});
+  await shownCodeIsKept('a fresh code after one ran out, after an invitation', {step: 'later', at: 1}, {expire: true});
+});
+
+test('a prompt only shown after an invitation keeps the setup for later, even when another tab changes it', async () => {
+  const stored = new Map([[SETUP, JSON.stringify({step: 'later', at: 1})]]);
+  const code = fakeCode();
+  const {run, fire} = fixture({stored});
+  run.offerSetup(maker(code).make, resumer(code));
+  await settle();
+  assert.equal(setupLater({getItem: key => stored.get(key) ?? null}), true, 'the workspace still offers the setup');
+  // Another tab keeps the same setup (its screen drew something): this one
+  // stays on the start, following its code.
+  stored.set(SETUP, JSON.stringify({...JSON.parse(stored.get(SETUP)), shown: {offer: 'x'}}));
+  run.sync();
+  const asked = code.asked;
+  await fire(SHOWN_FOLLOW_MS);
+  assert.ok(code.asked > asked, 'still followed');
+});

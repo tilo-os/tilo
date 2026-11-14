@@ -287,8 +287,15 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const host = hostOf(site);
   const codes = {};
   for (const kind of ['setup', 'signIn']) codes[kind] = {make: null, resume: null, made: null, making: false, error: null, renew: null, round: 0};
+  // A setup kept for later (the person arrived by an invitation) or over
+  // (the person's card shows the setup again) is on the start once this
+  // screen shows it. Storage keeps that step until the person takes a code
+  // into use, so the workspace still offers the setup and a bare entry opens
+  // where it did; this screen is on the start all the same.
+  const held = step => step === 'later' || step === 'done';
+  const onStart = kept => (held(kept.step) ? {...kept, step: 'start'} : kept);
   let state = readSetup(storage) ?? {step: 'start'};
-  if (state.step === 'done' || state.step === 'later') state = {step: 'start'};
+  if (held(state.step)) state = {step: 'start'};
   let closed = false;
   // What the screen shows now, kept with the setup for the next first paint.
   const frame = {offer: null, prompt: null, lines: null, heading: null, mode: 'setup', copied: false};
@@ -318,12 +325,19 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     return result;
   }});
   // Keep `patch` as the setup now, over whatever another tab kept since.
+  // A save that names no step (a code made ahead, say) leaves a held step
+  // in storage, and this screen where it is: read back as the step, `later`
+  // would take the shown code off the screen (`onScreen`), and the host would
+  // forget a code the person may still hand their agent.
   const save = patch => {
     if (closed) return;
-    state = {...(readSetup(storage) ?? state), ...patch, shown: {...frame}, at: now()};
-    writeSetup(state, storage);
+    const kept = readSetup(storage) ?? state;
+    const next = {...kept, ...patch, shown: {...frame}, at: now()};
+    writeSetup(next, storage);
+    state = 'step' in patch || !held(kept.step) ? next : {...next, step: state.step};
   };
-  const sameState = (a, b) => JSON.stringify({...a, shown: null, at: null}) === JSON.stringify({...b, shown: null, at: null});
+  const sameState = (a, b) => JSON.stringify({...onStart(a), shown: null, at: null})
+    === JSON.stringify({...onStart(b), shown: null, at: null});
   let passkeyRun = null;
   const passkeyWaiting = [];
   let gone = null;
@@ -674,7 +688,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   // Bring the screen to the setup `next` (kept here before, or by another tab).
   const apply = next => {
     if (closed) return;
-    state = next;
+    state = next.step === 'later' ? onStart(next) : next;
     // Whatever is on the screen now is what is watched, if anything (the
     // branches that draw a prompt start it again).
     stopWatch();
