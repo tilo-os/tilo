@@ -651,6 +651,17 @@ pub enum WebViewCommand {
         request_id: u32,
         url: String,
     },
+    /// What a layout snapshot does not say of the page: what the fields `nodes` name show,
+    /// where that is not what they hold (a date, a time or a number in the engine's own
+    /// words), and what class of face the engine sets each of `families` in on its machine,
+    /// each a family list as a style computes it. Answered with
+    /// [`WebViewEvent::PaintShown`]; an engine that predates the ask answers with a layout
+    /// snapshot instead.
+    PaintShown {
+        request_id: u32,
+        nodes: Vec<u64>,
+        families: Vec<String>,
+    },
     ClearWebsiteData,
     SetClearOnExit(bool),
     ShowDeveloperTools,
@@ -1006,6 +1017,17 @@ pub enum WebViewEvent {
     PaintResource {
         request_id: u32,
         bytes: Option<Vec<u8>>,
+    },
+    /// The answer to a [`WebViewCommand::PaintShown`]: what the fields it named show, by
+    /// node (`None` when the engine could not say); for each family list it named, in its
+    /// order, the generic family the engine sets it like (`serif`, `sans-serif`,
+    /// `monospace`) or nothing where it is like none or like several; and whether every
+    /// face the page loads was there when the engine said so.
+    PaintShown {
+        request_id: u32,
+        shown: Option<Vec<(u64, String)>>,
+        classes: Vec<String>,
+        settled: bool,
     },
     DownloadRequested {
         id: String,

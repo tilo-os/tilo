@@ -3092,6 +3092,20 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("styles",VTYPE_LIST))return false;
     auto styles=d->GetList("styles");if(!styles->GetSize() || styles->GetSize()>64)return false;
     for(size_t i=0;i<styles->GetSize();++i)if(styles->GetType(i)!=VTYPE_STRING || styles->GetString(i).empty() || styles->GetString(i).length()>64)return false;
+    // A capture that names fields asks what they show: a few, each by the engine's number for it.
+    // and what class of face each of a few family lists is set in.
+    if(d->HasKey("shown")) {
+      if(!type("shown",VTYPE_LIST))return false;
+      auto shown=d->GetList("shown");if(shown->GetSize()>64)return false;
+      for(size_t i=0;i<shown->GetSize();++i)if(shown->GetType(i)!=VTYPE_INT || shown->GetInt(i)<=0)return false;
+      size_t lists=0;
+      if(d->HasKey("faces")) {
+        if(!type("faces",VTYPE_LIST))return false;
+        auto faces=d->GetList("faces");lists=faces->GetSize();if(lists>32)return false;
+        for(size_t i=0;i<lists;++i)if(faces->GetType(i)!=VTYPE_STRING || faces->GetString(i).empty() || faces->GetString(i).length()>256)return false;
+      }
+      if(!shown->GetSize() && !lists)return false;
+    }
     return true;
   }
   if(op=="selection_text") {

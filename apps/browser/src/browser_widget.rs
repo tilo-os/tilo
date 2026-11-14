@@ -3091,6 +3091,7 @@ impl BrowserWidget {
                 | WebViewEvent::LoadProgress(_)
                 | WebViewEvent::PaintSnapshot { .. }
                 | WebViewEvent::PaintResource { .. }
+                | WebViewEvent::PaintShown { .. }
                 | WebViewEvent::DocumentSize { .. }
                 | WebViewEvent::SelectionText { .. }
                 | WebViewEvent::LinkHovered(_)

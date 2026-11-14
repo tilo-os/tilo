@@ -36,6 +36,11 @@ struct Inner {
     visibility: Vec<bool>,
     paint_snapshot: Option<String>,
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
+    /// What the engine says fields show, by node; `None` for an engine that predates the
+    /// ask and answers it with a snapshot.
+    paint_shown: Option<std::collections::HashMap<u64, String>>,
+    /// The generic family the engine sets a family list like, by the list.
+    paint_classes: std::collections::HashMap<String, String>,
     /// What a capture answers with; a test page's own pixels until one sets others.
     page_capture: Option<Vec<u8>>,
     measures_document: bool,
@@ -108,6 +113,25 @@ impl TestEngine {
     /// JSON), as a real engine would for its current page.
     pub fn set_paint_snapshot(&self, snapshot: impl Into<String>) {
         self.lock_inner().paint_snapshot = Some(snapshot.into());
+    }
+
+    /// Say what the fields `shown` names show when asked, as a real engine says a date in
+    /// its own words. An engine never told this answers the ask with a layout snapshot, as
+    /// one that predates the ask does.
+    pub fn set_paint_shown(&self, shown: impl IntoIterator<Item = (u64, String)>) {
+        self.lock_inner().paint_shown = Some(shown.into_iter().collect());
+    }
+
+    /// Say which generic family the engine sets each family list of `classes` like when
+    /// asked, as a real engine says of its machine's faces; of a list not named it says it
+    /// is like none. The engine answers the ask from now on.
+    pub fn set_paint_classes<'a>(&self, classes: impl IntoIterator<Item = (&'a str, &'a str)>) {
+        let mut inner = self.lock_inner();
+        inner.paint_classes = classes
+            .into_iter()
+            .map(|(list, generic)| (list.to_owned(), generic.to_owned()))
+            .collect();
+        inner.paint_shown.get_or_insert_default();
     }
 
     /// Say the engine measures its document (answers
@@ -833,6 +857,33 @@ impl WebViewEngine for TestEngine {
                     request_id,
                     snapshot,
                 });
+            }
+            WebViewCommand::PaintShown {
+                request_id,
+                nodes,
+                families,
+            } => {
+                let event = match &inner.paint_shown {
+                    Some(shown) => WebViewEvent::PaintShown {
+                        request_id,
+                        shown: Some(
+                            nodes
+                                .iter()
+                                .filter_map(|node| Some((*node, shown.get(node)?.clone())))
+                                .collect(),
+                        ),
+                        classes: families
+                            .iter()
+                            .map(|list| inner.paint_classes.get(list).cloned().unwrap_or_default())
+                            .collect(),
+                        settled: true,
+                    },
+                    None => WebViewEvent::PaintSnapshot {
+                        request_id,
+                        snapshot: inner.paint_snapshot.clone(),
+                    },
+                };
+                inner.events.push(event);
             }
             WebViewCommand::PaintResource { request_id, url } => {
                 let bytes = inner.paint_resources.get(&url).cloned();

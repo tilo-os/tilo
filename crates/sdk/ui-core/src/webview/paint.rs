@@ -9,8 +9,13 @@ pub use tilo_paint_stream as stream;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use tilo_paint_stream::fonts::{ALIKE, family_names, generic_class};
+pub use tilo_paint_stream::fonts::{FontClass, font_class};
+use tilo_paint_stream::snapshot::Told;
 use tilo_paint_stream::wire::Payload;
-use tilo_paint_stream::{BlobRef, Color as PaintColor, Frame, Item, LayerId, Patch, Point, ROOT};
+use tilo_paint_stream::{
+    BlobRef, Color as PaintColor, Frame, Item, ItemKey, LayerId, Patch, Point, ROOT,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
@@ -23,6 +28,28 @@ use tilo_lock::MutexRecover as _;
 const MIN_CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESOURCE_REQUESTS: usize = 8;
+/// Fields one ask of the engine names: a page with more is asked again for the rest.
+pub const MAX_SHOWN_FIELDS: usize = 64;
+/// Family lists one ask of the engine names, and the longest list it is asked about: a
+/// longer one is set in the class it asks for.
+pub const MAX_SHOWN_FAMILIES: usize = 32;
+pub const MAX_FAMILY_LIST: usize = 256;
+/// Password fields remembered of one page.
+const MAX_SECRET_FIELDS: usize = 4096;
+/// How soon the engine is asked again what class of face it sets the page's text in, while
+/// the page still loads faces of its own, and how often.
+const FACES_RECHECK: Duration = Duration::from_secs(1);
+const FACES_RECHECKS: u8 = 8;
+
+/// One ask of the engine for what a snapshot does not say.
+struct ShownRequest {
+    id: u32,
+    at: Instant,
+    /// The fields asked about, each with what it held.
+    fields: Vec<(u64, String)>,
+    /// The family lists asked about.
+    families: Vec<String>,
+}
 const MAX_BLOB_BYTES: usize = 16 << 20;
 /// Patches queued for a stream consumer before it must take a whole frame.
 const MAX_QUEUED_PATCHES: usize = 64;
@@ -65,12 +92,37 @@ pub struct PaintSource {
     resource_requests: HashMap<u32, (String, Instant)>,
     blobs: HashMap<[u8; 32], Arc<Vec<u8>>>,
     vectors: HashMap<[u8; 32], Option<Arc<tilo_paint_stream::svg::Drawing>>>,
+    /// What the engine said of the page beside its layout: what its dates, times and
+    /// numbers show, and which fields were password fields.
+    told: Told,
+    /// The fields the last snapshot named that the engine has not said of yet.
+    asks: Vec<(u64, String)>,
+    /// The family lists the last snapshot's text is set in that the engine has not said
+    /// the class of. A page is not published while there are any: its text would arrive in
+    /// one class of face and again in another.
+    families: Vec<String>,
+    /// The ask the engine has not answered.
+    shown_request: Option<ShownRequest>,
+    /// When the engine is asked again for the classes it said, and how often still: a page
+    /// that loads a face of its own is set in another until the face is there.
+    faces_recheck: Option<(Instant, u8)>,
+    /// The document the engine's answers are about: its address, less the fragment.
+    document: String,
 }
 
 impl PaintSource {
     #[must_use]
     pub fn new(viewport: Point) -> Self {
         Self {
+            told: Told {
+                asking: true,
+                ..Told::default()
+            },
+            asks: Vec::new(),
+            families: Vec::new(),
+            shown_request: None,
+            faces_recheck: None,
+            document: String::new(),
             viewport,
             min_interval: MIN_CAPTURE_INTERVAL,
             dirty: true,
@@ -115,7 +167,12 @@ impl PaintSource {
             .values()
             .filter_map(|(_, at)| at.checked_add(REQUEST_TIMEOUT))
             .min();
-        capture.into_iter().chain(resources).min()
+        let shown = match &self.shown_request {
+            Some(request) => request.at.checked_add(REQUEST_TIMEOUT),
+            None if self.asking() => Some(now),
+            None => self.faces_recheck.map(|(at, _)| at),
+        };
+        capture.into_iter().chain(resources).chain(shown).min()
     }
 
     pub fn set_viewport(&mut self, viewport: Point) {
@@ -159,6 +216,52 @@ impl PaintSource {
         for id in expired {
             if let Some((url, _)) = self.resource_requests.remove(&id) {
                 self.resources.insert(url, ResourceSpec::Failed);
+            }
+        }
+        // An engine that does not answer leaves a field drawn with what it holds and text
+        // set in the class of face its list asks for.
+        if let Some(request) = self
+            .shown_request
+            .take_if(|request| now.saturating_duration_since(request.at) > REQUEST_TIMEOUT)
+        {
+            self.shown(request, &HashMap::new(), &[]);
+        }
+        if self.shown_request.is_none() {
+            let again = self
+                .faces_recheck
+                .take_if(|(at, _)| *at <= now)
+                .map(|(_, left)| left);
+            let (fields, families) = if self.asking() {
+                (
+                    self.asks.drain(..).take(MAX_SHOWN_FIELDS).collect(),
+                    self.families
+                        .drain(..)
+                        .take(MAX_SHOWN_FAMILIES)
+                        .collect::<Vec<_>>(),
+                )
+            } else if again.is_some() {
+                let said = self.told.classes.keys().take(MAX_SHOWN_FAMILIES).cloned();
+                (Vec::new(), said.collect())
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            if !fields.is_empty() || !families.is_empty() {
+                if let Some(left) = again.filter(|left| *left > 0) {
+                    // Kept until the engine says its faces are all there.
+                    self.faces_recheck = now.checked_add(FACES_RECHECK).map(|at| (at, left - 1));
+                }
+                let id = self.request_id();
+                out.push(WebViewCommand::PaintShown {
+                    request_id: id,
+                    nodes: fields.iter().map(|(node, _)| *node).collect(),
+                    families: families.clone(),
+                });
+                self.shown_request = Some(ShownRequest {
+                    id,
+                    at: now,
+                    fields,
+                    families,
+                });
             }
         }
         let rested = self
@@ -239,20 +342,48 @@ impl PaintSource {
                 request_id,
                 snapshot,
             } => {
+                if self
+                    .shown_request
+                    .take_if(|request| request.id == *request_id)
+                    .is_some()
+                {
+                    // An engine that predates the ask read it as a capture: it cannot say
+                    // what a field shows or what face it sets, and what it answered with is
+                    // the page.
+                    self.told.asking = false;
+                    self.asks.clear();
+                    self.families.clear();
+                    self.faces_recheck = None;
+                    return (self.captured(snapshot.as_deref()), true);
+                }
                 if self.capture.map(|(id, _)| id) != Some(*request_id) {
                     return (None, true);
                 }
                 self.capture = None;
-                let Some(raw) = snapshot
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                    .and_then(|v| tilo_paint_stream::snapshot::convert(&v, self.viewport, 0).ok())
+                (self.captured(snapshot.as_deref()), true)
+            }
+            WebViewEvent::PaintShown {
+                request_id,
+                shown,
+                classes,
+                settled,
+            } => {
+                let Some(request) = self
+                    .shown_request
+                    .take_if(|request| request.id == *request_id)
                 else {
                     return (None, true);
                 };
-                self.raw = Some(raw);
-                self.resolve_inline();
-                (self.publish(), true)
+                let said = shown.iter().flatten().cloned().collect();
+                if *settled {
+                    self.faces_recheck = None;
+                } else if self.faces_recheck.is_none() && !request.families.is_empty() {
+                    self.faces_recheck = crate::time::now()
+                        .checked_add(FACES_RECHECK)
+                        .map(|at| (at, FACES_RECHECKS));
+                }
+                self.shown(request, &said, classes);
+                (None, true)
             }
             WebViewEvent::PaintResource { request_id, bytes } => {
                 let Some((url, _)) = self.resource_requests.remove(request_id) else {
@@ -266,11 +397,92 @@ impl PaintSource {
                 self.resources.insert(url, state);
                 (if ready { self.publish() } else { None }, true)
             }
-            WebViewEvent::UriChanged(_) | WebViewEvent::LoadFinishedAt { .. } => {
+            WebViewEvent::UriChanged(uri) => {
+                // Another document: what the engine said was of the one before.
+                let document = uri.split('#').next().unwrap_or_default();
+                if document != self.document {
+                    document.clone_into(&mut self.document);
+                    self.told.shown.clear();
+                    self.told.secret.clear();
+                    self.told.classes.clear();
+                    self.asks.clear();
+                    self.families.clear();
+                    self.faces_recheck = None;
+                }
+                self.dirty = true;
+                (None, false)
+            }
+            WebViewEvent::LoadFinishedAt { .. } => {
                 self.dirty = true;
                 (None, false)
             }
             _ => (None, false),
+        }
+    }
+
+    /// Whether the engine has something to be asked: what a field shows, or what class of
+    /// face it sets a family list in.
+    fn asking(&self) -> bool {
+        self.told.asking && !(self.asks.is_empty() && self.families.is_empty())
+    }
+
+    /// Take the engine's layout snapshot of the page: convert it with what the engine said
+    /// so far, note what it is still to be asked, and publish the page unless its text
+    /// waits for the engine to say what class of face it is set in.
+    fn captured(&mut self, snapshot: Option<&str>) -> Option<PaintUpdate> {
+        let converted = snapshot
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v| {
+                tilo_paint_stream::snapshot::convert_with(&v, self.viewport, 0, &self.told).ok()
+            })?;
+        if self.told.secret.len() > MAX_SECRET_FIELDS {
+            self.told.secret.clear();
+        }
+        self.told.secret.extend(converted.passwords);
+        // What was said of a field the page no longer has is of no use.
+        self.told
+            .shown
+            .retain(|node, _| converted.asks.iter().any(|(asked, _)| asked == node));
+        let told = &self.told.shown;
+        self.asks = converted
+            .asks
+            .into_iter()
+            .filter(|(node, value)| told.get(node).is_none_or(|(held, _)| held != value))
+            .collect();
+        self.families.clear();
+        for family in converted.families {
+            if self.told.asking && family.len() <= MAX_FAMILY_LIST {
+                self.families.push(family);
+            } else {
+                self.told.classes.insert(family, None);
+            }
+        }
+        self.raw = Some(converted.frame);
+        self.resolve_inline();
+        if self.told.asking && !self.families.is_empty() {
+            return None;
+        }
+        self.publish()
+    }
+
+    /// Take what the engine said to one ask: what its fields show (`said`), each for the
+    /// value it held when it was asked, and the class of face it sets each family list like
+    /// (`classes`, in the order asked). A field it said nothing of is drawn with what it
+    /// holds, and a list it said nothing of is set in the class it asks for. The page is
+    /// captured again at once where that changes how it is drawn.
+    fn shown(&mut self, request: ShownRequest, said: &HashMap<u64, String>, classes: &[String]) {
+        let mut changed = !request.fields.is_empty();
+        for (node, value) in request.fields {
+            let text = said.get(&node).cloned();
+            self.told.shown.insert(node, (value, text));
+        }
+        for (index, family) in request.families.into_iter().enumerate() {
+            let class = classes.get(index).and_then(|name| FontClass::named(name));
+            changed |= self.told.classes.insert(family, class) != Some(class);
+        }
+        if changed {
+            self.dirty = true;
+            self.last_capture = None;
         }
     }
 
@@ -865,6 +1077,7 @@ fn weight(w: u16) -> TextWeight {
 /// Draws [`Frame`]s.
 #[derive(Default)]
 pub struct PageRenderer {
+    /// The families this device has, as it names them.
     installed: Option<Vec<String>>,
     families: HashMap<String, FontChoice>,
     images: HashMap<[u8; 32], Option<ImageData>>,
@@ -1006,12 +1219,12 @@ impl PageRenderer {
                 ..
             } => draw_border(canvas.scene, at, rect(*r), widths, colors, *radius),
             Item::Text {
+                key,
                 rect: r,
                 text,
                 font,
                 color: c,
-                ..
-            } => self.draw_text(canvas, at, *r, text, font, *c),
+            } => self.draw_text(canvas, at, (*r, key.part), text, font, *c),
             Item::Image { rect: r, blob, .. } => {
                 if let BlobRef::Hash(hash) = blob
                     && let Some(image) = self.image(canvas.blobs, hash)
@@ -1084,11 +1297,17 @@ impl PageRenderer {
         }
     }
 
+    /// Draw one run of text in its box. A line the engine laid out is fitted to its box's
+    /// width, so it starts and ends where the engine's line does whatever face this device
+    /// sets it in: drawn narrower rather than run into what follows it, and a little wider
+    /// rather than end short. What a field holds ([`ItemKey::SLOT`]) has the field's room
+    /// for a box: it is drawn at its own width, from the side its field aligns it to, and
+    /// only ever narrower.
     fn draw_text(
         &mut self,
         canvas: &mut PageCanvas<'_>,
         at: Affine,
-        r: tilo_paint_stream::Rect,
+        (r, part): (tilo_paint_stream::Rect, u32),
         text: &str,
         font: &tilo_paint_stream::FontSpec,
         c: PaintColor,
@@ -1099,50 +1318,70 @@ impl PageRenderer {
             .with_italic(font.italic)
             .with_family(family);
         let (w, h) = canvas.text.measure_style(text, None, &style);
-        let sx = if w > 0.0 && r.w > 0.0 {
-            f64::from((r.w / w).clamp(0.8, 1.25))
-        } else {
+        let slot = part & ItemKey::SLOT != 0;
+        let sx = if w <= 0.0 || r.w <= 0.0 {
             1.0
+        } else if slot {
+            (r.w / w).clamp(0.5, 1.0)
+        } else {
+            (r.w / w).clamp(0.5, 1.25)
+        };
+        let spare = sx.mul_add(-w, r.w);
+        let dx = if !slot {
+            0.0
+        } else if part & ItemKey::SLOT_END != 0 {
+            spare
+        } else if part & ItemKey::SLOT_CENTRE != 0 {
+            spare / 2.0
+        } else {
+            0.0
         };
         let dy = f64::from((r.h - h) / 2.0);
         let place = at
-            * Affine::translate((f64::from(r.x), f64::from(r.y) + dy))
-            * Affine::scale_non_uniform(sx, 1.0);
+            * Affine::translate((f64::from(r.x + dx), f64::from(r.y) + dy))
+            * Affine::scale_non_uniform(f64::from(sx), 1.0);
         canvas
             .text
             .draw_style(canvas.scene, text, color(c, 1.0), place, None, &style);
     }
 
+    /// The face this device sets a page's family list in: the first family of the list it
+    /// has, or a face it has that is drawn with the same measures (a page that asks for
+    /// Times New Roman is set in Liberation Serif where that is what is installed, which is
+    /// what the engine itself does), and otherwise the face of the list's class
+    /// ([`font_class`]).
     fn family(&mut self, text: &TextRenderer, css: &str) -> FontChoice {
         if let Some(choice) = self.families.get(css) {
             return choice.clone();
         }
-        let installed = self.installed.get_or_insert_with(|| {
-            text.system_families()
-                .into_iter()
-                .map(|f| f.to_ascii_lowercase())
-                .collect()
-        });
-        let mut choice = FontChoice::SansSerif;
-        for name in css.split(',').map(|f| f.trim().trim_matches(['"', '\''])) {
+        let installed = self.installed.get_or_insert_with(|| text.system_families());
+        let has = |wanted: &str| {
+            installed
+                .iter()
+                .find(|family| family.eq_ignore_ascii_case(wanted))
+                .cloned()
+        };
+        let mut choice = None;
+        for name in family_names(css) {
             let lower = name.to_ascii_lowercase();
-            let generic = match lower.as_str() {
-                "monospace" | "ui-monospace" => Some(FontChoice::Monospace),
-                "serif" | "ui-serif" => Some(FontChoice::Serif),
-                "sans-serif" | "system-ui" | "-apple-system" | "ui-sans-serif" => {
-                    Some(FontChoice::SansSerif)
-                }
-                _ => None,
-            };
-            if let Some(g) = generic {
-                choice = g;
+            if generic_class(&lower).is_some() {
                 break;
             }
-            if installed.contains(&lower) {
-                choice = FontChoice::Named(name.to_string());
+            let alike = ALIKE
+                .iter()
+                .find(|group| group.contains(&lower.as_str()))
+                .into_iter()
+                .flat_map(|group| group.iter().copied());
+            if let Some(family) = has(name).or_else(|| alike.into_iter().find_map(has)) {
+                choice = Some(FontChoice::Named(family));
                 break;
             }
         }
+        let choice = choice.unwrap_or_else(|| match font_class(css) {
+            FontClass::Serif => FontChoice::Serif,
+            FontClass::Sans => FontChoice::SansSerif,
+            FontClass::Mono => FontChoice::Monospace,
+        });
         self.families.insert(css.to_string(), choice.clone());
         choice
     }
@@ -1678,6 +1917,334 @@ mod tests {
         let engine = PaintEngine::with_interval(test, Duration::ZERO);
         settle(&engine);
         assert!(engine.paint_frame().is_none());
+    }
+
+    /// A page that names no face is set by its engine in the engine's own standard one, a
+    /// serif, and its fields in the engine's sans: a device that has neither face keeps the
+    /// class of each. A face the device has is the face it sets, and one drawn with the same
+    /// measures stands in for the one a page named.
+    #[test]
+    fn a_family_list_is_set_in_the_face_or_at_least_the_class_its_page_asked_for() {
+        let text = TextRenderer::new();
+        let mut renderer = PageRenderer::new();
+        assert_eq!(
+            renderer.family(&text, "\"Times New Roman\""),
+            FontChoice::Serif,
+            "the engine's standard face, where the device has none like it"
+        );
+        assert_eq!(renderer.family(&text, "Arial"), FontChoice::SansSerif);
+        assert_eq!(
+            renderer.family(&text, "\"Courier New\", monospace"),
+            FontChoice::Monospace
+        );
+        let has = crate::text_render::UI_MONOSPACE_FAMILY;
+        assert_eq!(
+            renderer.family(&text, &format!("Harbour, \"{has}\", serif")),
+            FontChoice::Named(has.to_owned()),
+            "the first face of the list the device has"
+        );
+
+        // A device that has the faces the engine itself sets those pages in.
+        let mut renderer = PageRenderer {
+            installed: Some(vec!["Liberation Serif".into(), "Liberation Sans".into()]),
+            ..PageRenderer::default()
+        };
+        assert_eq!(
+            renderer.family(&text, "\"Times New Roman\""),
+            FontChoice::Named("Liberation Serif".into())
+        );
+        assert_eq!(
+            renderer.family(&text, "Helvetica, sans-serif"),
+            FontChoice::Named("Liberation Sans".into())
+        );
+        assert_eq!(
+            renderer.family(&text, "sans-serif, \"Times New Roman\""),
+            FontChoice::SansSerif,
+            "a generic family ends the list: nothing after it is looked at"
+        );
+    }
+
+    /// The engine suite's form with every common control, as its engine laid it out.
+    const CONTROLS: &str =
+        include_str!("../../../../browser/paint-stream/tests/fixtures/controls.json");
+
+    /// The engine's number for the element of the form whose `id` is `id`.
+    fn control(id: &str) -> u64 {
+        let snapshot: serde_json::Value = serde_json::from_str(CONTROLS).expect("the fixture");
+        let string = |index: &serde_json::Value| {
+            index
+                .as_u64()
+                .and_then(|at| snapshot["strings"].get(usize::try_from(at).ok()?))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
+        let nodes = &snapshot["documents"][0]["nodes"];
+        let found = nodes["attributes"]
+            .as_array()
+            .expect("attributes")
+            .iter()
+            .position(|held| {
+                held.as_array().is_some_and(|held| {
+                    held.chunks_exact(2)
+                        .any(|pair| string(&pair[0]) == "id" && string(&pair[1]) == id)
+                })
+            })
+            .expect("an element of that id");
+        nodes["backendNodeId"][found].as_u64().expect("a node")
+    }
+
+    /// Every run of text a frame draws, with the family list it is sent in.
+    fn runs(frame: &Frame) -> Vec<(String, String)> {
+        frame
+            .layers
+            .values()
+            .flat_map(|layer| &layer.items)
+            .filter_map(|item| match item {
+                Item::Text { text, font, .. } => {
+                    Some((text.trim().to_owned(), font.family.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The asks a test engine was sent for what a snapshot does not say.
+    fn asks(test: &TestEngine) -> Vec<(Vec<u64>, Vec<String>)> {
+        test.commands()
+            .into_iter()
+            .filter_map(|command| match command {
+                WebViewCommand::PaintShown {
+                    nodes, families, ..
+                } => Some((nodes, families)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn controls_engine() -> (Arc<TestEngine>, Arc<PaintEngine>) {
+        let test = TestEngine::new();
+        test.set_paint_snapshot(CONTROLS);
+        let engine = PaintEngine::with_interval(test.clone(), Duration::ZERO);
+        engine.send(WebViewCommand::Resize {
+            width: 1280,
+            height: 800,
+            scale_factor: 1.0,
+        });
+        (test, engine)
+    }
+
+    /// A date shows what the engine words it as, not what its field holds, and a page's
+    /// text is set in the class of face the engine set it in on its machine. Only the
+    /// engine can say either: it is asked once, the page is not published in one face to
+    /// be published again in another, and what it did not say stays as the page gives it.
+    #[test]
+    fn the_engine_is_asked_what_a_date_shows_and_what_class_of_face_it_sets() {
+        let (test, engine) = controls_engine();
+        test.set_paint_shown([
+            (control("date"), "03/01/2027".to_owned()),
+            (control("time"), "02:30 PM".to_owned()),
+        ]);
+        // A machine without a Times sets the page's text in its sans.
+        test.set_paint_classes([
+            ("\"Times New Roman\"", "sans-serif"),
+            ("Arial", "sans-serif"),
+        ]);
+        drop(engine.paint_frame());
+        drop(engine.drain_events());
+        assert!(
+            engine.paint_frame().is_none(),
+            "a page waits for the engine to say what face its text is set in"
+        );
+        settle(&engine);
+        let frame = engine
+            .paint_frame()
+            .expect("the page, once the engine said");
+        let drawn = runs(&frame);
+        let family = |text: &str| {
+            drawn
+                .iter()
+                .find(|(said, _)| said == text)
+                .map(|(_, family)| family.as_str())
+        };
+        assert_eq!(family("03/01/2027"), Some("monospace"), "{drawn:?}");
+        assert_eq!(
+            family("2027-03-01"),
+            None,
+            "what the field holds is not shown"
+        );
+        assert!(family("02:30 PM").is_some());
+        assert_eq!(
+            family("1234.5"),
+            Some("Arial"),
+            "what the engine said nothing of is drawn as its field holds it"
+        );
+        assert_eq!(family("Every control"), Some("sans-serif"));
+        assert_eq!(family("Name"), Some("sans-serif"));
+
+        let asked = asks(&test);
+        assert_eq!(asked.len(), 1, "asked once: {asked:?}");
+        let (nodes, families) = &asked[0];
+        assert!(nodes.contains(&control("date")) && nodes.contains(&control("number")));
+        assert!(
+            !nodes.contains(&control("password")) && !nodes.contains(&control("card")),
+            "the engine is never asked what a secret field shows"
+        );
+        assert_eq!(families, &["\"Times New Roman\"", "Arial", "monospace"]);
+        settle(&engine);
+        assert_eq!(asks(&test).len(), 1, "and not again while the page stays");
+        assert!(
+            runs(&frame)
+                .iter()
+                .all(|(text, _)| { !text.contains("hunter2") && !text.contains("4111") }),
+            "no secret is in the page"
+        );
+    }
+
+    /// An engine that predates the ask reads it as a capture and answers with a snapshot:
+    /// the page is published from that, drawn as it always was, and the engine is not
+    /// asked again.
+    #[test]
+    fn an_engine_that_predates_the_ask_has_its_page_drawn_as_it_gives_it() {
+        let (test, engine) = controls_engine();
+        settle(&engine);
+        let frame = engine.paint_frame().expect("the page");
+        let drawn = runs(&frame);
+        assert!(
+            drawn
+                .iter()
+                .any(|(text, family)| text == "2027-03-01" && family == "monospace"),
+            "{drawn:?}"
+        );
+        assert!(
+            drawn
+                .iter()
+                .any(|(text, family)| text == "Every control" && family == "\"Times New Roman\""),
+            "the list its page computed"
+        );
+        assert_eq!(asks(&test).len(), 1);
+        test.paint_before_page();
+        settle(&engine);
+        assert_eq!(
+            asks(&test).len(),
+            1,
+            "an engine that cannot say is asked once"
+        );
+    }
+
+    /// One run of text on a white page of 400 by 80, and the columns its ink spans.
+    fn inked(part: u32, rect: tilo_paint_stream::Rect, text: &str) -> (usize, usize) {
+        let mut frame = Frame {
+            seq: 1,
+            viewport: Point { x: 400.0, y: 80.0 },
+            background: PaintColor([255, 255, 255, 255]),
+            ..Frame::default()
+        };
+        frame.layers.insert(
+            ROOT,
+            tilo_paint_stream::Layer {
+                size: frame.viewport,
+                opacity: 1.0,
+                items: vec![Item::Text {
+                    key: ItemKey { node: 1, part },
+                    rect,
+                    text: text.to_owned(),
+                    font: tilo_paint_stream::FontSpec {
+                        family: "sans-serif".into(),
+                        size: 20.0,
+                        weight: 400,
+                        italic: false,
+                    },
+                    color: PaintColor([0, 0, 0, 255]),
+                }],
+                ..tilo_paint_stream::Layer::default()
+            },
+        );
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let blobs = |_: &[u8; 32]| None::<Arc<Vec<u8>>>;
+        PageRenderer::new().draw(
+            &mut PageCanvas {
+                scene: &mut scene,
+                transform: Affine::IDENTITY,
+                text: &mut text,
+                blobs: &blobs,
+            },
+            &frame,
+        );
+        let pixels = crate::offscreen::OffscreenRenderer::new(400, 80)
+            .render_resilient(&scene, Color::WHITE);
+        let dark: Vec<usize> = pixels
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(_, pixel)| pixel.iter().take(3).any(|channel| *channel < 128))
+            .map(|(index, _)| index % 400)
+            .collect();
+        (
+            dark.iter().copied().min().expect("the text left ink"),
+            dark.iter().copied().max().expect("the text left ink"),
+        )
+    }
+
+    /// What a field holds is drawn at its own width in the room the field has, from the
+    /// side the field aligns it to: it is not stretched to the field as a line the engine
+    /// laid out is fitted to its box.
+    #[test]
+    fn what_a_field_holds_is_drawn_at_its_own_width_in_the_fields_room() {
+        let room = tilo_paint_stream::Rect::new(20.0, 20.0, 360.0, 30.0);
+        let style = TextStyle::new(20.0);
+        let (natural, _) = TextRenderer::new().measure_style("Brazil", None, &style);
+        let (left, right) = inked(ItemKey::SLOT, room, "Brazil");
+        // Ink is a little narrower than the words' advance: the first and the last letter
+        // stand in from their edges.
+        let drawn = (right - left) as f32;
+        assert!(
+            drawn <= natural + 1.0 && drawn >= natural * 0.85,
+            "{drawn} wide where the words are {natural} wide"
+        );
+        assert!((20..=24).contains(&left), "from the field's start: {left}");
+
+        let (fitted_left, fitted_right) = inked(3, room, "Brazil");
+        assert!(
+            (fitted_right - fitted_left) as f32 > drawn * 1.15,
+            "a line box of the engine's is fitted to: {fitted_left}..{fitted_right}"
+        );
+
+        let (_, end) = inked(ItemKey::SLOT | ItemKey::SLOT_END, room, "Brazil");
+        assert!((372..=380).contains(&end), "to the field's end: {end}");
+        let (from, to) = inked(ItemKey::SLOT | ItemKey::SLOT_CENTRE, room, "Brazil");
+        assert!(
+            (from + to).abs_diff(400) <= 6,
+            "centred in the field: {from}..{to}"
+        );
+    }
+
+    /// A run this device's face sets wider than the engine's did is drawn narrower, so it
+    /// ends where the engine's line ended and never runs into what follows it; what a
+    /// field holds that is longer than its room stays in the room too. Text written right
+    /// to left is drawn in its box like any other.
+    #[test]
+    fn a_run_wider_than_its_box_is_drawn_narrower_and_ends_inside_it() {
+        let words = "The harbour kept its own hours";
+        let style = TextStyle::new(20.0);
+        let (natural, _) = TextRenderer::new().measure_style(words, None, &style);
+        let narrow = tilo_paint_stream::Rect::new(20.0, 20.0, natural * 0.7, 30.0);
+        let end = 20 + (natural * 0.7).ceil() as usize + 1;
+        for part in [16, ItemKey::SLOT] {
+            let (left, right) = inked(part, narrow, words);
+            assert!(
+                left >= 19 && right <= end,
+                "part {part}: {left}..{right} in a box that ends at {end}"
+            );
+        }
+        let hebrew = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
+        let (wide, _) = TextRenderer::new().measure_style(hebrew, None, &style);
+        let boxed = tilo_paint_stream::Rect::new(100.0, 20.0, wide, 30.0);
+        let (left, right) = inked(16, boxed, hebrew);
+        assert!(
+            left >= 98 && right <= 102 + wide.ceil() as usize,
+            "{left}..{right} in a box from 100, {wide} wide"
+        );
     }
 
     /// The toolkit draws the recorded page close to the engine's own pixels.
