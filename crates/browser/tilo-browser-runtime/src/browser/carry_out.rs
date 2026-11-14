@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_actions::remote::ContentLinkAsk;
+use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(module = "/web/carry-out.mjs")]
@@ -72,6 +73,8 @@ struct Inner {
     origin: Option<String>,
     /// Each offered row's link, by its offer's key.
     links: RefCell<HashMap<String, Link>>,
+    /// The desk's notices, where a save that fails is told.
+    notifications: tilo_desktop_surface::DesktopNotifications,
 }
 
 impl Carrying {
@@ -81,12 +84,14 @@ impl Carrying {
         shared: crate::desktop::Shared,
         workspace: String,
         origin: Option<String>,
+        notifications: tilo_desktop_surface::DesktopNotifications,
     ) -> Self {
         let inner = Rc::new(Inner {
             shared,
             workspace,
             origin: origin.map(|origin| origin.trim_end_matches('/').to_owned()),
             links: RefCell::default(),
+            notifications,
         });
         let served = ui::carry_out::serve(Rc::new(Host(Rc::clone(&inner))));
         Self {
@@ -154,19 +159,28 @@ impl Inner {
         let origin = self
             .origin
             .clone()
-            .ok_or_else(|| "this page has no workspace host".to_owned())?;
+            .ok_or_else(|| "This page isn't connected to the workspace.".to_owned())?;
         let door = self
             .shared
             .peer
             .zip(crate::peer::workspace_id(&self.workspace).ok())
             .and_then(|(peer, id)| crate::peer_sync::actions_of(peer, id))
-            .ok_or_else(|| "this page holds no session with the workspace's host".to_owned())?;
+            .ok_or_else(|| "This page isn't connected to the workspace.".to_owned())?;
         let link = door
             .content_link(ask)
             .await
-            .ok_or_else(|| "the host dropped the request".to_owned())?
+            .ok_or_else(|| "The workspace stopped answering.".to_owned())?
             .map_err(|error| error.to_string())?;
         Ok((format!("{origin}{}", link.path), link.expires_in_secs))
+    }
+
+    /// Show `name` did not reach the person's computer, and why. A save that works says nothing:
+    /// the Save dialog or the browser's download manager is where the person watched it.
+    fn not_saved(&self, name: &str, why: &str) {
+        let mut notice = Notification::new(format!("{name} was not saved"), why);
+        notice.severity = NotificationSeverity::Error;
+        self.notifications.post(notice);
+        self.shared.wake();
     }
 }
 
@@ -179,49 +193,47 @@ impl ui::carry_out::CarryHost for Host {
         let target = match choose_carry_target(&ask.name) {
             Ok(target) => target,
             Err(error) => {
-                tracing::warn!("saving {}: {error:?}", ask.name);
+                self.0.not_saved(&ask.name, &js_reason(&error));
                 return;
             }
         };
         let inner = Rc::clone(&self.0);
+        let name = ask.name.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let name = ask.name.clone();
-            let job = ui::jobs::start(ui::jobs::Spec::new(format!("Saving {name}")));
             inner.shared.wake();
-            let outcome = save(&inner, ask, target).await;
-            match outcome {
-                Ok(true) => job.done(format!("Saved {name}")),
-                Ok(false) => job.stopped(),
-                Err(why) => job.failed(format!("{name} was not saved: {why}")),
+            if let Err(why) = save(&inner, ask, target).await {
+                inner.not_saved(&name, &why);
             }
             inner.shared.wake();
         });
     }
 }
 
-/// Mint `ask`'s link and save it to `target` (the dialog's answer): whether it was saved, or
-/// `false` when the person cancelled the dialog.
-async fn save(inner: &Inner, ask: ContentLinkAsk, target: js_sys::Promise) -> Result<bool, String> {
+/// What a browser's error says, in the words it gave.
+fn js_reason(error: &JsValue) -> String {
+    error
+        .as_string()
+        .or_else(|| {
+            js_sys::Reflect::get(error, &"message".into())
+                .ok()
+                .and_then(|message| message.as_string())
+        })
+        .unwrap_or_else(|| "The browser refused.".to_owned())
+}
+
+/// Mint `ask`'s link and save it to `target` (the dialog's answer): why it did not, when it did
+/// not; the person cancelling the dialog is not a failure.
+async fn save(inner: &Inner, ask: ContentLinkAsk, target: js_sys::Promise) -> Result<(), String> {
     let (url, _) = inner.mint(ask).await?;
-    let text = |error: JsValue| {
-        error
-            .as_string()
-            .or_else(|| {
-                js_sys::Reflect::get(&error, &"message".into())
-                    .ok()
-                    .and_then(|message| message.as_string())
-            })
-            .unwrap_or_else(|| "the browser refused".to_owned())
-    };
     let target = wasm_bindgen_futures::JsFuture::from(target)
         .await
-        .map_err(text)?;
+        .map_err(|error| js_reason(&error))?;
     if target.is_null() || target.is_undefined() {
-        return Ok(false);
+        return Ok(());
     }
-    let saving = save_from_link(&target, &url).map_err(text)?;
+    let saving = save_from_link(&target, &url).map_err(|error| js_reason(&error))?;
     wasm_bindgen_futures::JsFuture::from(saving)
         .await
-        .map_err(text)?;
-    Ok(true)
+        .map_err(|error| js_reason(&error))?;
+    Ok(())
 }

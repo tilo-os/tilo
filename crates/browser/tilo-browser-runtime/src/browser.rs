@@ -1474,7 +1474,7 @@ fn present_desktop(
         asks.reveals(),
         &shared.woken,
     )?;
-    let carrying = carrying_of(config, &shared);
+    let carrying = carrying_of(config, &shared, persistence.notifications.clone());
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
@@ -1519,11 +1519,16 @@ fn present_desktop(
 
 /// How the workspace's files leave the page from this desktop: through the host of the workspace
 /// it shows, at the origin the page reached that host at.
-fn carrying_of(config: &Config, shared: &crate::desktop::Shared) -> carry_out::Carrying {
+fn carrying_of(
+    config: &Config,
+    shared: &crate::desktop::Shared,
+    notifications: tilo_desktop_surface::DesktopNotifications,
+) -> carry_out::Carrying {
     carry_out::Carrying::new(
         shared.clone(),
         config.workspace.clone(),
         config.host_origin.clone(),
+        notifications,
     )
 }
 
