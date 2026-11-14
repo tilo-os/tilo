@@ -26,6 +26,18 @@ use tilo_ui::widget::{TileContent, TileHost};
 
 /// The page the publisher's engine drew: a header, a sidebar and a button.
 const PAGE: &str = include_str!("../../../browser/paint-stream/tests/fixtures/layers.top.json");
+/// A form with every common control, its first field being edited, as an engine laid it out
+/// in a window of 1280 by 800: what the engine's theme paints of each control is drawn by the
+/// publisher from the layout.
+const FORM: &str = include_str!("../../../browser/paint-stream/tests/fixtures/controls.json");
+/// What the engine says the form's date and time show.
+const FORM_SHOWN: [(&str, &str); 3] = [
+    ("date", "03/01/2027"),
+    ("nodate", "mm/dd/yyyy"),
+    ("time", "02:30\u{202f}PM"),
+];
+const FORM_WIDTH: u32 = 1280;
+const FORM_HEIGHT: u32 = 800;
 
 const SURFACE: SurfaceId = 42;
 const PUBLISHER: PeerId = 7;
@@ -53,9 +65,20 @@ fn main() {
         write(
             &out,
             &format!("page-tile-{name}.png"),
-            &tile(&theme),
+            &tile(&theme, &engine(PAGE, (WIDTH, HEIGHT), &[]), (WIDTH, HEIGHT)),
             WIDTH,
             HEIGHT,
+        );
+        write(
+            &out,
+            &format!("form-tile-{name}.png"),
+            &tile(
+                &theme,
+                &engine(FORM, (FORM_WIDTH, FORM_HEIGHT), &FORM_SHOWN),
+                (FORM_WIDTH, FORM_HEIGHT),
+            ),
+            FORM_WIDTH,
+            FORM_HEIGHT,
         );
     }
     println!("wrote {}", out.display());
@@ -67,17 +90,52 @@ fn write(out: &Path, name: &str, rgba: &[u8], width: u32, height: u32) {
     println!("{}", path.display());
 }
 
+/// The engine's number for the element of the snapshot `page` whose `id` is `id`.
+fn node_of(page: &serde_json::Value, id: &str) -> Option<u64> {
+    let strings = page.get("strings")?.as_array()?;
+    let string = |index: &serde_json::Value| {
+        index
+            .as_u64()
+            .and_then(|at| strings.get(usize::try_from(at).ok()?))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+    };
+    let nodes = page.pointer("/documents/0/nodes")?;
+    let found = nodes
+        .get("attributes")?
+        .as_array()?
+        .iter()
+        .position(|held| {
+            held.as_array().is_some_and(|held| {
+                held.chunks_exact(2).any(|pair| match pair {
+                    [name, value] => string(name) == "id" && string(value) == id,
+                    _ => false,
+                })
+            })
+        })?;
+    nodes.get("backendNodeId")?.get(found)?.as_u64()
+}
+
 /// The publisher's page as its engine hands it over: a whole frame, then the images it names.
-fn engine() -> std::sync::Arc<PaintEngine> {
+/// `shown` is what the engine says fields of the page show, by their `id`.
+fn engine(page: &str, size: (u32, u32), shown: &[(&str, &str)]) -> std::sync::Arc<PaintEngine> {
     let test = TestEngine::new();
-    test.set_paint_snapshot(PAGE);
+    test.set_paint_snapshot(page);
+    if !shown.is_empty() {
+        let read: serde_json::Value = serde_json::from_str(page).expect("a layout snapshot");
+        test.set_paint_shown(
+            shown
+                .iter()
+                .filter_map(|(id, text)| Some((node_of(&read, id)?, (*text).to_owned()))),
+        );
+    }
     let engine = PaintEngine::with_interval(test, Duration::ZERO);
     engine.send(WebViewCommand::Resize {
-        width: WIDTH,
-        height: HEIGHT,
+        width: size.0,
+        height: size.1,
         scale_factor: 1.0,
     });
-    for _ in 0..4 {
+    for _ in 0..6 {
         drop(engine.paint_frame());
         drop(engine.drain_events());
     }
@@ -139,7 +197,7 @@ fn desk(theme: &Theme) -> Vec<u8> {
         PeerStreamStart::announced(&announcement(tab), LOCAL, "Browser VM", "Browser", false)
             .expect("a page stream");
     peers.borrow_mut().start(&tree, &start);
-    for object in objects(&engine()) {
+    for object in objects(&engine(PAGE, (WIDTH, HEIGHT), &[])) {
         peers.borrow_mut().push_page(PUBLISHER, SURFACE, &object);
     }
     let source = PeerTiles::new(Box::new(NoTiles), Rc::clone(&peers));
@@ -156,16 +214,16 @@ fn desk(theme: &Theme) -> Vec<u8> {
 }
 
 /// The tile alone, which is what a browser tab mounts for the same window.
-fn tile(theme: &Theme) -> Vec<u8> {
+fn tile(theme: &Theme, engine: &PaintEngine, size: (u32, u32)) -> Vec<u8> {
     let mut stream = PageStream::new();
-    for object in objects(&engine()) {
+    for object in objects(engine) {
         stream.apply(&object);
     }
     let stream = Rc::new(RefCell::new(stream));
     let mut harness = FrameHarness::new_with_theme(
         tilo_ui::state::State::new(),
         PageStream::view(&stream, "Browser".into()),
-        (WIDTH, HEIGHT),
+        size,
         theme.clone(),
     );
     harness.relayout();
