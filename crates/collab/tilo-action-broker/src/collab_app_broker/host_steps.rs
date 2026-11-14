@@ -1175,39 +1175,287 @@ mod identity_admin_tests {
         }
     }
 
-    /// On a native host (one with the person's seat), neither an agent nor a
-    /// person that carries no retained custody takes a host step: an agent
-    /// takes one only in its task run (`task_run_host`), a person only
-    /// through the seat. Neither is taken as an actor-only caller.
-    #[test]
-    fn a_keyless_agent_or_person_takes_no_host_step_on_a_native_host() {
-        let host = Arc::new(Host::default());
-        let owner = hex::encode([41; 32]);
-        let mut workspace = Workspace::new(WorkspaceSlot(9), "Identities");
-        workspace.set_owner(owner.clone());
-        workspace.allow_agent("planner", crate::test_support::KindSet::READ);
-        let workspace_id = workspace.id().to_string();
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::test_state(
-            Some(tree.shared().authority()),
-            crate::services::HostServices {
-                host_steps: vec![host.clone()],
-                local_person: Some(Arc::new(NoSeat)),
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the test keeps its fixture and guards alive through its assertions"
+        )]
+        fn host_steps_admit_only_certified_local_custody;
+
+        phase a_keyless_agent_or_person_takes_no_host_step_on_a_native_host;
+        // On a native host (one with the person's seat), neither an agent nor a
+        // person that carries no retained custody takes a host step: an agent
+        // takes one only in its task run (`task_run_host`), a person only
+        // through the seat. Neither is taken as an actor-only caller.
+        {
+            let host = Arc::new(Host::default());
+            let owner = hex::encode([41; 32]);
+            let mut workspace = Workspace::new(WorkspaceSlot(9), "Identities");
+            workspace.set_owner(owner.clone());
+            workspace.allow_agent("planner", crate::test_support::KindSet::READ);
+            let workspace_id = workspace.id().to_string();
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let (state, _bridge_rx) = AppBrokerState::test_state(
+                Some(tree.shared().authority()),
+                crate::services::HostServices {
+                    host_steps: vec![host.clone()],
+                    local_person: Some(Arc::new(NoSeat)),
+                    ..Default::default()
+                },
+            );
+            let agent = Caller::local_agent("planner").in_workspace(workspace_id.clone());
+            assert!(
+                invoked(&state, &agent, &request(identity_admin::LIST, None)).is_err(),
+                "an agent outside any run takes no host step"
+            );
+            let person = Caller::local_person(owner).in_workspace(workspace_id);
+            assert!(
+                invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
+                "a person reaches a native host's steps only with the seat's custody"
+            );
+            assert!(host.started.lock().unwrap().is_empty());
+        }
+
+        phase a_host_service_is_listed_when_only_publishers_are_asked;
+        // Asking only who publishes (`max_results: 0`, how an agent's paths
+        // find an app) lists the host's own services beside apps' windows, and
+        // builds no row; asking a service for its rows still gets them.
+        {
+            let host = Arc::new(Host::default());
+            let (state, owner, workspace) = broker(host);
+            let caller = Caller::local_person(owner).in_workspace(workspace.clone());
+            let ask = |query: tilo_actions::remote::CatalogueQuery| {
+                state
+                    .action_query(&caller, &query)
+                    .wait_timeout(tilo_test_env::hang_bound())
+                    .ok()
+                    .flatten()
+                    .expect("the catalogue answers at once")
+                    .expect("the workspace's owner may ask")
+            };
+            let publishers = ask(tilo_actions::remote::CatalogueQuery {
+                max_results: 0,
                 ..Default::default()
-            },
-        );
-        let agent = Caller::local_agent("planner").in_workspace(workspace_id.clone());
-        assert!(
-            invoked(&state, &agent, &request(identity_admin::LIST, None)).is_err(),
-            "an agent outside any run takes no host step"
-        );
-        let person = Caller::local_person(owner).in_workspace(workspace_id);
-        assert!(
-            invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
-            "a person reaches a native host's steps only with the seat's custody"
-        );
-        assert!(host.started.lock().unwrap().is_empty());
+            });
+            assert!(publishers.rows.is_empty(), "{:?}", publishers.rows);
+            assert!(
+                publishers.providers.iter().any(|provider| {
+                    provider.provider == identity_admin::PROVIDER
+                        && provider.app_id == "so.tilo.settings"
+                        && provider.workspace == workspace
+                        && provider.browsable
+                }),
+                "{:?}",
+                publishers.providers
+            );
+            let rows = ask(tilo_actions::remote::CatalogueQuery {
+                provider: Some(identity_admin::PROVIDER.into()),
+                ..Default::default()
+            });
+            assert!(
+                rows.rows
+                    .iter()
+                    .any(|row| row.provider == identity_admin::PROVIDER),
+                "{:?}",
+                rows.rows
+            );
+        }
+
+        phase certified_host_steps_admit_only_nonforeign_local_custody;
+        {
+            for pairing in [false, true] {
+                for foreign in [false, true] {
+                    let host = Arc::new(PairingHost::default());
+                    let identity = Arc::new(Host::default());
+                    let services = crate::services::HostServices {
+                        host_steps: vec![if pairing {
+                            host.clone() as Arc<dyn HostStepServices>
+                        } else {
+                            identity.clone()
+                        }],
+                        ..Default::default()
+                    };
+                    let f = if foreign {
+                        super::signed_test_support::Fixture::new_certified_foreign(services)
+                    } else {
+                        super::signed_test_support::Fixture::new_certified(services)
+                    };
+                    let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                    if pairing {
+                        asked.target = tilo_actions::remote::device_pairing::target(
+                            tilo_actions::remote::device_pairing::APPROVE,
+                        );
+                    }
+                    let service = if pairing { &host.0 } else { identity.as_ref() };
+                    assert_eq!(
+                        f.query(&asked.target.provider).rows.is_empty(),
+                        foreign,
+                        "only the retained local door offers host steps"
+                    );
+                    assert!(
+                        f.state
+                            .eager_catalogue(
+                                &f.caller,
+                                super::super::action_host::RowScope::Provider(&asked.target.provider),
+                            )
+                            .0
+                            .is_empty(),
+                        "transport keys alone do not offer local host steps"
+                    );
+                    if foreign {
+                        assert!(f.invoke(&asked).is_err());
+                        assert!(service.started.lock().unwrap().is_empty());
+                        continue;
+                    }
+                    assert!(
+                        invoked(&f.state, &f.caller, &asked).is_err(),
+                        "device keys without certified local custody are not a local door"
+                    );
+                    assert!(service.started.lock().unwrap().is_empty());
+                    *service.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
+                    f.invoke(&asked).unwrap();
+                    f.assert_signed(&asked, false);
+                    assert_eq!(service.started.lock().unwrap().len(), 1);
+                    service
+                        .answers
+                        .lock()
+                        .unwrap()
+                        .pop()
+                        .unwrap()
+                        .complete(Ok(tilo_actions::ActionOutput::default()));
+                    f.assert_signed(&asked, true);
+                    f.invoke(&asked).unwrap();
+                    assert_eq!(service.started.lock().unwrap().len(), 1);
+                    f.authority
+                        .revoked
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    asked.invocation = tilo_actions::InvocationId::new();
+                    assert!(f.invoke(&asked).is_err());
+                    drop(f);
+                    assert_eq!(service.started.lock().unwrap().len(), 1);
+                }
+            }
+        }
+
+        phase device_pairing_uses_the_same_signed_admission_and_terminal_path;
+        {
+            let host = Arc::new(PairingHost::default());
+            let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                host_steps: vec![host.clone()],
+                ..Default::default()
+            });
+            let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+            asked.target = tilo_actions::remote::device_pairing::target(
+                tilo_actions::remote::device_pairing::APPROVE,
+            );
+            *host.0.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
+            f.invoke(&asked).unwrap();
+            f.assert_signed(&asked, false);
+            assert_eq!(host.0.started.lock().unwrap().len(), 1);
+            host.0
+                .answers
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap()
+                .complete(Ok(tilo_actions::ActionOutput::default()));
+            let completed = f.assert_signed(&asked, true);
+            assert!(
+                matches!(completed.update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == asked.invocation)
+            );
+            f.invoke(&asked).unwrap();
+            assert_eq!(host.0.started.lock().unwrap().len(), 1);
+        }
+
+        phase host_steps_recheck_live_authority_after_blocked_durable_admission;
+        {
+            use std::sync::{atomic::Ordering, mpsc};
+            use tilo_actions::InvocationUpdate;
+
+            for certified in [false, true] {
+                for change in [
+                    "unchanged",
+                    "certificate",
+                    "execution",
+                    "permission",
+                    "time",
+                ] {
+                    let host = Arc::new(Host::default());
+                    let services = crate::services::HostServices {
+                        host_steps: vec![host.clone()],
+                        ..Default::default()
+                    };
+                    let mut f = if certified {
+                        super::signed_test_support::Fixture::new_certified(services)
+                    } else {
+                        super::signed_test_support::Fixture::new(services)
+                    };
+                    f.caller = f.caller.clone().in_new_execution();
+                    let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                    let (entered, blocked) = mpsc::sync_channel(0);
+                    let (release, resume) = mpsc::sync_channel(0);
+                    f.state
+                        .journal
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .after_admission = Some(Box::new(move || {
+                        entered.send(()).unwrap();
+                        resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+                    }));
+                    let result = std::thread::scope(|scope| {
+                        let state = f.state.clone();
+                        let caller = f.caller.clone();
+                        let origin = f.origin.clone();
+                        let steps = host.clone();
+                        let asked = &asked;
+                        let worker = scope.spawn(move || {
+                            state.invoke_host_step(&caller, Some(&origin), steps.as_ref(), asked)
+                        });
+                        blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+                        // The journal writer holds a signed admission but has not
+                        // returned a dispatch permit. Change authority in that gap.
+                        match change {
+                            "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
+                            "execution" => f.caller.retire_execution(),
+                            "time" => f.retire_policy_origin(),
+                            "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
+                            _ => {}
+                        }
+                        release.send(()).unwrap();
+                        worker.join().unwrap()
+                    });
+                    if change == "unchanged" {
+                        result.expect("unchanged custody must still start");
+                        assert_eq!(host.started.lock().unwrap().len(), 1);
+                        host.answers
+                            .lock()
+                            .unwrap()
+                            .pop()
+                            .unwrap()
+                            .complete(Ok(tilo_actions::ActionOutput::default()));
+                        let record = f.assert_signed(&asked, true);
+                        assert!(matches!(record.update, InvocationUpdate::Succeeded { .. }));
+                    } else {
+                        assert!(result.is_err(), "{certified}/{change}");
+                        assert!(
+                            host.started.lock().unwrap().is_empty(),
+                            "{certified}/{change}"
+                        );
+                        let record = f.assert_signed(&asked, true);
+                        assert!(!record.uncertain);
+                        assert!(
+                            matches!(record.update, InvocationUpdate::Failed { ref error, .. }
+                            if error.code == "host_action_refused")
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn request(step: &str, confirmation: Option<Confirmation>) -> InvokeRequest {
@@ -1269,545 +1517,285 @@ mod identity_admin_tests {
         }
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    /// Asking only who publishes (`max_results: 0`, how an agent's paths
-    /// find an app) lists the host's own services beside apps' windows, and
-    /// builds no row; asking a service for its rows still gets them.
-    #[test]
-    fn a_host_service_is_listed_when_only_publishers_are_asked() {
-        let host = Arc::new(Host::default());
-        let (state, owner, workspace) = broker(host);
-        let caller = Caller::local_person(owner).in_workspace(workspace.clone());
-        let ask = |query: tilo_actions::remote::CatalogueQuery| {
-            state
-                .action_query(&caller, &query)
-                .wait_timeout(tilo_test_env::hang_bound())
-                .ok()
-                .flatten()
-                .expect("the catalogue answers at once")
-                .expect("the workspace's owner may ask")
-        };
-        let publishers = ask(tilo_actions::remote::CatalogueQuery {
-            max_results: 0,
-            ..Default::default()
-        });
-        assert!(publishers.rows.is_empty(), "{:?}", publishers.rows);
-        assert!(
-            publishers.providers.iter().any(|provider| {
-                provider.provider == identity_admin::PROVIDER
-                    && provider.app_id == "so.tilo.settings"
-                    && provider.workspace == workspace
-                    && provider.browsable
-            }),
-            "{:?}",
-            publishers.providers
-        );
-        let rows = ask(tilo_actions::remote::CatalogueQuery {
-            provider: Some(identity_admin::PROVIDER.into()),
-            ..Default::default()
-        });
-        assert!(
-            rows.rows
-                .iter()
-                .any(|row| row.provider == identity_admin::PROVIDER),
-            "{:?}",
-            rows.rows
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the test keeps its fixture and guards alive through its assertions"
+        )]
+        fn identity_admin_is_signed_journaled_and_fail_closed;
 
-    #[test]
-    fn certified_host_steps_admit_only_nonforeign_local_custody() {
-        for pairing in [false, true] {
-            for foreign in [false, true] {
-                let host = Arc::new(PairingHost::default());
-                let identity = Arc::new(Host::default());
-                let services = crate::services::HostServices {
-                    host_steps: vec![if pairing {
-                        host.clone() as Arc<dyn HostStepServices>
-                    } else {
-                        identity.clone()
-                    }],
-                    ..Default::default()
-                };
-                let f = if foreign {
-                    super::signed_test_support::Fixture::new_certified_foreign(services)
-                } else {
-                    super::signed_test_support::Fixture::new_certified(services)
-                };
-                let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-                if pairing {
-                    asked.target = tilo_actions::remote::device_pairing::target(
-                        tilo_actions::remote::device_pairing::APPROVE,
-                    );
-                }
-                let service = if pairing { &host.0 } else { identity.as_ref() };
-                assert_eq!(
-                    f.query(&asked.target.provider).rows.is_empty(),
-                    foreign,
-                    "only the retained local door offers host steps"
-                );
-                assert!(
-                    f.state
-                        .eager_catalogue(
-                            &f.caller,
-                            super::super::action_host::RowScope::Provider(&asked.target.provider),
-                        )
-                        .0
-                        .is_empty(),
-                    "transport keys alone do not offer local host steps"
-                );
-                if foreign {
-                    assert!(f.invoke(&asked).is_err());
-                    assert!(service.started.lock().unwrap().is_empty());
-                    continue;
-                }
-                assert!(
-                    invoked(&f.state, &f.caller, &asked).is_err(),
-                    "device keys without certified local custody are not a local door"
-                );
-                assert!(service.started.lock().unwrap().is_empty());
-                *service.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-                f.invoke(&asked).unwrap();
-                f.assert_signed(&asked, false);
-                assert_eq!(service.started.lock().unwrap().len(), 1);
-                service
-                    .answers
-                    .lock()
-                    .unwrap()
-                    .pop()
-                    .unwrap()
-                    .complete(Ok(tilo_actions::ActionOutput::default()));
-                f.assert_signed(&asked, true);
-                f.invoke(&asked).unwrap();
-                assert_eq!(service.started.lock().unwrap().len(), 1);
-                f.authority
-                    .revoked
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                asked.invocation = tilo_actions::InvocationId::new();
-                assert!(f.invoke(&asked).is_err());
-                drop(f);
-                assert_eq!(service.started.lock().unwrap().len(), 1);
-            }
-        }
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn device_pairing_uses_the_same_signed_admission_and_terminal_path() {
-        let host = Arc::new(PairingHost::default());
-        let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-            host_steps: vec![host.clone()],
-            ..Default::default()
-        });
-        let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-        asked.target = tilo_actions::remote::device_pairing::target(
-            tilo_actions::remote::device_pairing::APPROVE,
-        );
-        *host.0.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-        f.invoke(&asked).unwrap();
-        f.assert_signed(&asked, false);
-        assert_eq!(host.0.started.lock().unwrap().len(), 1);
-        host.0
-            .answers
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap()
-            .complete(Ok(tilo_actions::ActionOutput::default()));
-        let completed = f.assert_signed(&asked, true);
-        assert!(
-            matches!(completed.update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == asked.invocation)
-        );
-        f.invoke(&asked).unwrap();
-        assert_eq!(host.0.started.lock().unwrap().len(), 1);
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn identity_admin_signs_before_start_and_retains_the_original_uuid() {
-        let host = Arc::new(Host::default());
-        let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-            host_steps: vec![host.clone()],
-            ..Default::default()
-        });
-        let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-        *host.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-        let receipt = f.invoke(&asked).unwrap();
-        let accepted = f.assert_signed(&asked, false);
-        assert_eq!(receipt.invocation, asked.invocation);
-        assert!(
-            matches!(accepted.update, tilo_actions::InvocationUpdate::Accepted { invocation } if invocation == asked.invocation)
-        );
-        let repeated = f.invoke(&asked).unwrap();
-        assert_eq!(receipt, repeated);
-        assert_eq!(host.started.lock().unwrap().len(), 1);
-        let mut changed = asked.clone();
-        changed.argument = InvokeArgument::Text("another identity".into());
-        assert!(
-            f.invoke(&changed).is_err(),
-            "changed retry cannot start another step"
-        );
-        host.answers
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap()
-            .complete(Ok(tilo_actions::ActionOutput::default()));
-        let completed = f.assert_signed(&asked, true);
-        assert!(
-            matches!(completed.update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == asked.invocation)
-        );
-        assert_eq!(completed.admission, accepted.admission);
-        f.reopen_journal();
-        assert_eq!(f.assert_signed(&asked, true), completed);
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn identity_admin_persists_failed_and_dropped_host_outcomes() {
-        for dropped in [false, true] {
+        phase identity_admin_signs_before_start_and_retains_the_original_uuid;
+        {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
                 host_steps: vec![host.clone()],
                 ..Default::default()
             });
             let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-            f.invoke(&asked).unwrap();
-            // The service has accepted the effect; losing its answer does not
-            // prove that the effect failed or make it safe to repeat.
+            *host.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
+            let receipt = f.invoke(&asked).unwrap();
+            let accepted = f.assert_signed(&asked, false);
+            assert_eq!(receipt.invocation, asked.invocation);
+            assert!(
+                matches!(accepted.update, tilo_actions::InvocationUpdate::Accepted { invocation } if invocation == asked.invocation)
+            );
+            let repeated = f.invoke(&asked).unwrap();
+            assert_eq!(receipt, repeated);
             assert_eq!(host.started.lock().unwrap().len(), 1);
-            let answer = host.answers.lock().unwrap().pop().unwrap();
-            if dropped {
-                drop(answer);
-            } else {
-                answer.complete(Err(Box::new(tilo_actions::ActionFailure {
-                    code: "identity_busy".into(),
-                    message: "the identity is in use".into(),
-                    details: None,
-                    retryable: true,
-                })));
-            }
+            let mut changed = asked.clone();
+            changed.argument = InvokeArgument::Text("another identity".into());
+            assert!(
+                f.invoke(&changed).is_err(),
+                "changed retry cannot start another step"
+            );
+            host.answers
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap()
+                .complete(Ok(tilo_actions::ActionOutput::default()));
             let completed = f.assert_signed(&asked, true);
             assert!(
-                matches!(completed.update, tilo_actions::InvocationUpdate::Failed { invocation, .. } if invocation == asked.invocation)
+                matches!(completed.update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == asked.invocation)
             );
-            assert_eq!(completed.uncertain, dropped);
-            assert_eq!(
-                completed.terminal.as_ref().unwrap().category,
-                if dropped {
-                    crate::action_evidence::TerminalCategory::Uncertain
-                } else {
-                    crate::action_evidence::TerminalCategory::Failed
-                }
-            );
+            assert_eq!(completed.admission, accepted.admission);
             f.reopen_journal();
             assert_eq!(f.assert_signed(&asked, true), completed);
-            f.invoke(&asked).unwrap();
-            assert_eq!(host.started.lock().unwrap().len(), 1);
         }
-    }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn identity_admin_admission_and_completion_barriers_are_fail_closed() {
-        for admission_failure in [false, true] {
-            let host = Arc::new(Host::default());
-            let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                host_steps: vec![host.clone()],
-                ..Default::default()
-            });
-            let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-            if admission_failure {
-                f.fail_next_barrier();
-                assert!(f.invoke(&asked).is_err());
-                assert!(host.started.lock().unwrap().is_empty());
-                assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
-            } else {
-                let receipt = f.invoke(&asked).unwrap();
-                let job = f.state.remote_job(&f.caller, &receipt.invocation).unwrap();
-                f.fail_next_barrier();
-                host.answers
-                    .lock()
-                    .unwrap()
-                    .pop()
-                    .unwrap()
-                    .complete(Ok(tilo_actions::ActionOutput::default()));
-                assert!(
-                    matches!(f.state.invocation_status(job), Some(
-                    tilo_actions::InvocationUpdate::Accepted { invocation }
-                ) if invocation == asked.invocation),
-                    "failed durability must not publish success"
-                );
-            }
-        }
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn host_steps_recheck_live_authority_after_blocked_durable_admission() {
-        use std::sync::{atomic::Ordering, mpsc};
-        use tilo_actions::InvocationUpdate;
-
-        for certified in [false, true] {
-            for change in [
-                "unchanged",
-                "certificate",
-                "execution",
-                "permission",
-                "time",
-            ] {
+        phase identity_admin_persists_failed_and_dropped_host_outcomes;
+        {
+            for dropped in [false, true] {
                 let host = Arc::new(Host::default());
-                let services = crate::services::HostServices {
+                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
                     host_steps: vec![host.clone()],
                     ..Default::default()
-                };
-                let mut f = if certified {
-                    super::signed_test_support::Fixture::new_certified(services)
-                } else {
-                    super::signed_test_support::Fixture::new(services)
-                };
-                f.caller = f.caller.clone().in_new_execution();
-                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-                let (entered, blocked) = mpsc::sync_channel(0);
-                let (release, resume) = mpsc::sync_channel(0);
-                f.state
-                    .journal
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .after_admission = Some(Box::new(move || {
-                    entered.send(()).unwrap();
-                    resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                }));
-                let result = std::thread::scope(|scope| {
-                    let state = f.state.clone();
-                    let caller = f.caller.clone();
-                    let origin = f.origin.clone();
-                    let steps = host.clone();
-                    let asked = &asked;
-                    let worker = scope.spawn(move || {
-                        state.invoke_host_step(&caller, Some(&origin), steps.as_ref(), asked)
-                    });
-                    blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                    // The journal writer holds a signed admission but has not
-                    // returned a dispatch permit. Change authority in that gap.
-                    match change {
-                        "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
-                        "execution" => f.caller.retire_execution(),
-                        "time" => f.retire_policy_origin(),
-                        "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
-                        _ => {}
-                    }
-                    release.send(()).unwrap();
-                    worker.join().unwrap()
                 });
-                if change == "unchanged" {
-                    result.expect("unchanged custody must still start");
-                    assert_eq!(host.started.lock().unwrap().len(), 1);
+                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                f.invoke(&asked).unwrap();
+                // The service has accepted the effect; losing its answer does not
+                // prove that the effect failed or make it safe to repeat.
+                assert_eq!(host.started.lock().unwrap().len(), 1);
+                let answer = host.answers.lock().unwrap().pop().unwrap();
+                if dropped {
+                    drop(answer);
+                } else {
+                    answer.complete(Err(Box::new(tilo_actions::ActionFailure {
+                        code: "identity_busy".into(),
+                        message: "the identity is in use".into(),
+                        details: None,
+                        retryable: true,
+                    })));
+                }
+                let completed = f.assert_signed(&asked, true);
+                assert!(
+                    matches!(completed.update, tilo_actions::InvocationUpdate::Failed { invocation, .. } if invocation == asked.invocation)
+                );
+                assert_eq!(completed.uncertain, dropped);
+                assert_eq!(
+                    completed.terminal.as_ref().unwrap().category,
+                    if dropped {
+                        crate::action_evidence::TerminalCategory::Uncertain
+                    } else {
+                        crate::action_evidence::TerminalCategory::Failed
+                    }
+                );
+                f.reopen_journal();
+                assert_eq!(f.assert_signed(&asked, true), completed);
+                f.invoke(&asked).unwrap();
+                assert_eq!(host.started.lock().unwrap().len(), 1);
+            }
+        }
+
+        phase identity_admin_admission_and_completion_barriers_are_fail_closed;
+        {
+            for admission_failure in [false, true] {
+                let host = Arc::new(Host::default());
+                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                    host_steps: vec![host.clone()],
+                    ..Default::default()
+                });
+                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                if admission_failure {
+                    f.fail_next_barrier();
+                    assert!(f.invoke(&asked).is_err());
+                    assert!(host.started.lock().unwrap().is_empty());
+                    assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
+                } else {
+                    let receipt = f.invoke(&asked).unwrap();
+                    let job = f.state.remote_job(&f.caller, &receipt.invocation).unwrap();
+                    f.fail_next_barrier();
                     host.answers
                         .lock()
                         .unwrap()
                         .pop()
                         .unwrap()
                         .complete(Ok(tilo_actions::ActionOutput::default()));
-                    let record = f.assert_signed(&asked, true);
-                    assert!(matches!(record.update, InvocationUpdate::Succeeded { .. }));
-                } else {
-                    assert!(result.is_err(), "{certified}/{change}");
                     assert!(
-                        host.started.lock().unwrap().is_empty(),
-                        "{certified}/{change}"
-                    );
-                    let record = f.assert_signed(&asked, true);
-                    assert!(!record.uncertain);
-                    assert!(
-                        matches!(record.update, InvocationUpdate::Failed { ref error, .. }
-                        if error.code == "host_action_refused")
+                        matches!(f.state.invocation_status(job), Some(
+                        tilo_actions::InvocationUpdate::Accepted { invocation }
+                    ) if invocation == asked.invocation),
+                        "failed durability must not publish success"
                     );
                 }
             }
         }
-    }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn identity_admin_refuses_revoked_custody_and_missing_signer_before_start() {
-        for revoked in [false, true] {
-            let host = Arc::new(Host::default());
-            let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                host_steps: vec![host.clone()],
-                ..Default::default()
-            });
-            if revoked {
-                f.authority
-                    .revoked
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            } else {
-                std::fs::remove_file(
-                    tilo_identity_host::provisioning::collaboration_identity_paths().device_privkey,
-                )
-                .unwrap();
+        phase identity_admin_refuses_revoked_custody_and_missing_signer_before_start;
+        {
+            for revoked in [false, true] {
+                let host = Arc::new(Host::default());
+                let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
+                    host_steps: vec![host.clone()],
+                    ..Default::default()
+                });
+                if revoked {
+                    f.authority
+                        .revoked
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    std::fs::remove_file(
+                        tilo_identity_host::provisioning::collaboration_identity_paths().device_privkey,
+                    )
+                    .unwrap();
+                }
+                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                assert!(f.invoke(&asked).is_err());
+                assert!(host.started.lock().unwrap().is_empty());
+                assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
             }
-            let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-            assert!(f.invoke(&asked).is_err());
-            assert!(host.started.lock().unwrap().is_empty());
-            assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
         }
-    }
 
-    #[test]
-    fn identity_admin_is_offered_to_settings_as_its_person_and_removal_asks_first() {
-        let host = Arc::new(Host::default());
-        let (state, owner, workspace) = broker(Arc::clone(&host));
-        let person = Caller::local_person(owner.clone()).in_workspace(workspace.clone());
+        phase identity_admin_is_offered_to_settings_as_its_person_and_removal_asks_first;
+        {
+            let host = Arc::new(Host::default());
+            let (state, owner, workspace) = broker(Arc::clone(&host));
+            let person = Caller::local_person(owner.clone()).in_workspace(workspace.clone());
 
-        let rows = state
-            .eager_catalogue(&person, RowScope::Provider(identity_admin::PROVIDER))
-            .0;
-        assert_eq!(
-            rows.len(),
-            identity_admin::STEPS.len(),
-            "every step is offered to the person here"
-        );
-        assert!(rows.iter().all(
-            |row| row.app_id == "so.tilo.settings" && row.provider == identity_admin::PROVIDER
-        ));
-
-        // Settings reaches the steps as the person using it, without
-        // declaring `[actions] invoke`; another app does not.
-        let list = RemoteActionMessage::Invoke(request(identity_admin::LIST, None));
-        assert_eq!(
-            state
-                .app_door(&person, "so.tilo.settings", &list)
-                .map(|caller| caller.acting().clone())
-                .ok(),
-            Some(person.acting().clone())
-        );
-        assert!(state.app_door(&person, "so.tilo.notes", &list).is_err());
-
-        for step in [
-            identity_admin::ACTIVATE,
-            identity_admin::REMOVE,
-            identity_admin::PROTECT,
-            identity_admin::REVOKE,
-            identity_admin::HOME_PEER_REMOVE,
-        ] {
+            let rows = state
+                .eager_catalogue(&person, RowScope::Provider(identity_admin::PROVIDER))
+                .0;
             assert_eq!(
-                invoked(&state, &person, &request(step, None)),
-                Err(ActionHostError::confirmation_required()),
-                "{step} needs the person's confirmation"
+                rows.len(),
+                identity_admin::STEPS.len(),
+                "every step is offered to the person here"
             );
+            assert!(rows.iter().all(
+                |row| row.app_id == "so.tilo.settings" && row.provider == identity_admin::PROVIDER
+            ));
+
+            // Settings reaches the steps as the person using it, without
+            // declaring `[actions] invoke`; another app does not.
+            let list = RemoteActionMessage::Invoke(request(identity_admin::LIST, None));
+            assert_eq!(
+                state
+                    .app_door(&person, "so.tilo.settings", &list)
+                    .map(|caller| caller.acting().clone())
+                    .ok(),
+                Some(person.acting().clone())
+            );
+            assert!(state.app_door(&person, "so.tilo.notes", &list).is_err());
+
+            for step in [
+                identity_admin::ACTIVATE,
+                identity_admin::REMOVE,
+                identity_admin::PROTECT,
+                identity_admin::REVOKE,
+                identity_admin::HOME_PEER_REMOVE,
+            ] {
+                assert_eq!(
+                    invoked(&state, &person, &request(step, None)),
+                    Err(ActionHostError::confirmation_required()),
+                    "{step} needs the person's confirmation"
+                );
+            }
+            assert!(host.started.lock().unwrap().is_empty(), "nothing started");
+
+            // Listing asks nothing: the person sees their own identities.
+            invoked(&state, &person, &request(identity_admin::LIST, None)).expect("listed");
+            host.started.lock().unwrap().clear();
+            host.answers.lock().unwrap().clear();
+
+            let receipt = invoked(
+                &state,
+                &person,
+                &request(identity_admin::REMOVE, Some(Confirmation::Confirmed)),
+            )
+            .expect("admitted");
+            assert_eq!(
+                *host.started.lock().unwrap(),
+                [(workspace, owner, identity_admin::REMOVE.to_owned())]
+            );
+            let job = state
+                .remote_job(&person, &receipt.invocation)
+                .expect("the invocation has a job");
+            assert!(matches!(
+                state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Accepted { .. })
+            ));
+            let answer = host.answers.lock().unwrap().pop().expect("started");
+            answer.complete(Ok(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({"removed": "work"})),
+                resources: Vec::new(),
+            }));
+            assert!(matches!(
+                state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
         }
-        assert!(host.started.lock().unwrap().is_empty(), "nothing started");
 
-        // Listing asks nothing: the person sees their own identities.
-        invoked(&state, &person, &request(identity_admin::LIST, None)).expect("listed");
-        host.started.lock().unwrap().clear();
-        host.answers.lock().unwrap().clear();
+        phase identity_admin_is_refused_to_strangers_remote_devices_and_unconfined_callers;
+        {
+            let host = Arc::new(Host::default());
+            let (state, owner, workspace) = broker(Arc::clone(&host));
 
-        let receipt = invoked(
-            &state,
-            &person,
-            &request(identity_admin::REMOVE, Some(Confirmation::Confirmed)),
-        )
-        .expect("admitted");
-        assert_eq!(
-            *host.started.lock().unwrap(),
-            [(workspace, owner, identity_admin::REMOVE.to_owned())]
-        );
-        let job = state
-            .remote_job(&person, &receipt.invocation)
-            .expect("the invocation has a job");
-        assert!(matches!(
-            state.invocation_status(job),
-            Some(tilo_actions::InvocationUpdate::Accepted { .. })
-        ));
-        let answer = host.answers.lock().unwrap().pop().expect("started");
-        answer.complete(Ok(tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({"removed": "work"})),
-            resources: Vec::new(),
-        }));
-        assert!(matches!(
-            state.invocation_status(job),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn identity_admin_is_refused_to_strangers_remote_devices_and_unconfined_callers() {
-        let host = Arc::new(Host::default());
-        let (state, owner, workspace) = broker(Arc::clone(&host));
-
-        // A person the workspace's policy grants nothing is offered no step that
-        // changes the identity, and the broker refuses one before the host
-        // hears of it.
-        let stranger = Caller::local_person(hex::encode([7; 32])).in_workspace(workspace.clone());
-        let offered = state
-            .eager_catalogue(&stranger, RowScope::Provider(identity_admin::PROVIDER))
-            .0;
-        assert!(
-            offered.iter().all(|row| row
-                .action
-                .as_ref()
-                .is_some_and(
-                    |descriptor| descriptor.contract.risk != tilo_actions::RiskLevel::Privileged
-                )),
-            "{offered:?}"
-        );
-        for step in [
-            identity_admin::ACTIVATE,
-            identity_admin::PROTECT,
-            identity_admin::REMOVE,
-            identity_admin::REVOKE,
-        ] {
+            // A person the workspace's policy grants nothing is offered no step that
+            // changes the identity, and the broker refuses one before the host
+            // hears of it.
+            let stranger = Caller::local_person(hex::encode([7; 32])).in_workspace(workspace.clone());
+            let offered = state
+                .eager_catalogue(&stranger, RowScope::Provider(identity_admin::PROVIDER))
+                .0;
             assert!(
-                invoked(
-                    &state,
-                    &stranger,
-                    &request(step, Some(Confirmation::Confirmed))
-                )
-                .is_err(),
-                "{step} is refused to a stranger"
+                offered.iter().all(|row| row
+                    .action
+                    .as_ref()
+                    .is_some_and(
+                        |descriptor| descriptor.contract.risk != tilo_actions::RiskLevel::Privileged
+                    )),
+                "{offered:?}"
             );
-        }
+            for step in [
+                identity_admin::ACTIVATE,
+                identity_admin::PROTECT,
+                identity_admin::REMOVE,
+                identity_admin::REVOKE,
+            ] {
+                assert!(
+                    invoked(
+                        &state,
+                        &stranger,
+                        &request(step, Some(Confirmation::Confirmed))
+                    )
+                    .is_err(),
+                    "{step} is refused to a stranger"
+                );
+            }
 
-        // A remote device, or a caller confined to no workspace, is never offered
-        // this machine's identity store.
-        let remote = Caller::authenticated([41; 32], [42; 32]).in_workspace(workspace);
-        assert!(
-            state
-                .eager_catalogue(&remote, RowScope::Provider(identity_admin::PROVIDER))
-                .0
-                .is_empty()
-        );
-        assert!(invoked(&state, &remote, &request(identity_admin::LIST, None)).is_err());
-        let unconfined = Caller::local_person(owner);
-        assert!(invoked(&state, &unconfined, &request(identity_admin::LIST, None)).is_err());
-        assert!(host.started.lock().unwrap().is_empty(), "nothing started");
+            // A remote device, or a caller confined to no workspace, is never offered
+            // this machine's identity store.
+            let remote = Caller::authenticated([41; 32], [42; 32]).in_workspace(workspace);
+            assert!(
+                state
+                    .eager_catalogue(&remote, RowScope::Provider(identity_admin::PROVIDER))
+                    .0
+                    .is_empty()
+            );
+            assert!(invoked(&state, &remote, &request(identity_admin::LIST, None)).is_err());
+            let unconfined = Caller::local_person(owner);
+            assert!(invoked(&state, &unconfined, &request(identity_admin::LIST, None)).is_err());
+            assert!(host.started.lock().unwrap().is_empty(), "nothing started");
+        }
     }
 }
 

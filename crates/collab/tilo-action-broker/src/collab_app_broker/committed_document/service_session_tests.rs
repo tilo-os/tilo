@@ -100,134 +100,138 @@ impl BrowserServiceSessionServices for AdminService {
     fn disconnect(&self, _: u64) {}
 }
 
-#[test]
-fn browser_forget_delegation_rechecks_admin_before_mutation_and_acknowledgement() {
-    let live = Arc::new(AtomicBool::new(true));
-    let command = BrowserServiceSessionCommand::Forget {
-        id: "selected-slack".into(),
-        setup_binding: "operation".into(),
-    };
-    for (admin, revoke, success, calls) in [
-        (false, false, false, 0),
-        (true, false, true, 1),
-        (true, true, false, 1),
-    ] {
-        let service = Arc::new(AdminService {
-            admin: AtomicBool::new(admin),
+tilo_test_env::scenario! {
+    fn browser_session_delegation_rechecks_authority;
+
+    phase browser_forget_delegation_rechecks_admin_before_mutation_and_acknowledgement;
+    {
+        let live = Arc::new(AtomicBool::new(true));
+        let command = BrowserServiceSessionCommand::Forget {
+            id: "selected-slack".into(),
+            setup_binding: "operation".into(),
+        };
+        for (admin, revoke, success, calls) in [
+            (false, false, false, 0),
+            (true, false, true, 1),
+            (true, true, false, 1),
+        ] {
+            let service = Arc::new(AdminService {
+                admin: AtomicBool::new(admin),
+                calls: AtomicUsize::new(0),
+                revoke,
+            });
+            let services = HostServices {
+                browser_service_sessions: Some(service.clone()),
+                ..Default::default()
+            };
+            let result = delegate_browser_service_session_command(
+                &services,
+                &context("so.tilo.browser", live.clone()),
+                &command.encode().unwrap(),
+            );
+            assert_eq!(result.is_ok(), success);
+            assert_eq!(service.calls.load(Ordering::Acquire), calls);
+            if let Ok(bytes) = result {
+                assert!(
+                    BrowserServiceSessionReply::decode(&bytes)
+                        .unwrap()
+                        .matches(&command)
+                );
+            }
+        }
+    }
+
+    phase browser_forget_cannot_use_read_only_provider_authority;
+    {
+        let live = Arc::new(AtomicBool::new(true));
+        let service = Arc::new(Service {
+            live: live.clone(),
             calls: AtomicUsize::new(0),
-            revoke,
+            revoke: false,
         });
         let services = HostServices {
             browser_service_sessions: Some(service.clone()),
             ..Default::default()
         };
-        let result = delegate_browser_service_session_command(
+        let command = BrowserServiceSessionCommand::Forget {
+            id: "selected-slack".into(),
+            setup_binding: "operation".into(),
+        }
+        .encode()
+        .unwrap();
+        assert!(
+            delegate_browser_service_session_command(
+                &services,
+                &context("so.tilo.browser", live),
+                &command,
+            )
+            .is_err()
+        );
+        assert_eq!(service.calls.load(Ordering::Acquire), 0);
+    }
+
+    phase browser_private_delegation_checks_route_and_post_provider_custody;
+    {
+        let live = Arc::new(AtomicBool::new(true));
+        let service = Arc::new(Service {
+            live: live.clone(),
+            calls: AtomicUsize::new(0),
+            revoke: false,
+        });
+        let services = HostServices {
+            browser_service_sessions: Some(service.clone()),
+            ..Default::default()
+        };
+        let command = BrowserServiceSessionCommand::List {}.encode().unwrap();
+        assert!(
+            delegate_browser_service_session_command(
+                &services,
+                &context("so.tilo.files", live.clone()),
+                &command
+            )
+            .is_err()
+        );
+        assert_eq!(service.calls.load(Ordering::Acquire), 0);
+        let reply = delegate_browser_service_session_command(
             &services,
             &context("so.tilo.browser", live.clone()),
-            &command.encode().unwrap(),
+            &command,
+        )
+        .unwrap();
+        assert!(
+            BrowserServiceSessionReply::decode(&reply)
+                .unwrap()
+                .matches(&BrowserServiceSessionCommand::List {})
         );
-        assert_eq!(result.is_ok(), success);
-        assert_eq!(service.calls.load(Ordering::Acquire), calls);
-        if let Ok(bytes) = result {
-            assert!(
-                BrowserServiceSessionReply::decode(&bytes)
-                    .unwrap()
-                    .matches(&command)
-            );
-        }
-    }
-}
-
-#[test]
-fn browser_forget_cannot_use_read_only_provider_authority() {
-    let live = Arc::new(AtomicBool::new(true));
-    let service = Arc::new(Service {
-        live: live.clone(),
-        calls: AtomicUsize::new(0),
-        revoke: false,
-    });
-    let services = HostServices {
-        browser_service_sessions: Some(service.clone()),
-        ..Default::default()
-    };
-    let command = BrowserServiceSessionCommand::Forget {
-        id: "selected-slack".into(),
-        setup_binding: "operation".into(),
-    }
-    .encode()
-    .unwrap();
-    assert!(
-        delegate_browser_service_session_command(
+        assert_eq!(service.calls.load(Ordering::Acquire), 1);
+        assert!(
+            delegate_browser_service_session_command(
+                &services,
+                &context("so.tilo.browser", live.clone()),
+                br#"{"kind":"list","person":"foreign"}"#
+            )
+            .is_err()
+        );
+        assert_eq!(service.calls.load(Ordering::Acquire), 1);
+        let services = HostServices {
+            browser_service_sessions: Some(Arc::new(Service {
+                live: live.clone(),
+                calls: AtomicUsize::new(0),
+                revoke: true,
+            })),
+            ..Default::default()
+        };
+        let error = delegate_browser_service_session_command(
             &services,
             &context("so.tilo.browser", live),
             &command,
         )
-        .is_err()
-    );
-    assert_eq!(service.calls.load(Ordering::Acquire), 0);
-}
-
-#[test]
-fn browser_private_delegation_checks_route_and_post_provider_custody() {
-    let live = Arc::new(AtomicBool::new(true));
-    let service = Arc::new(Service {
-        live: live.clone(),
-        calls: AtomicUsize::new(0),
-        revoke: false,
-    });
-    let services = HostServices {
-        browser_service_sessions: Some(service.clone()),
-        ..Default::default()
-    };
-    let command = BrowserServiceSessionCommand::List {}.encode().unwrap();
-    assert!(
-        delegate_browser_service_session_command(
-            &services,
-            &context("so.tilo.files", live.clone()),
-            &command
-        )
-        .is_err()
-    );
-    assert_eq!(service.calls.load(Ordering::Acquire), 0);
-    let reply = delegate_browser_service_session_command(
-        &services,
-        &context("so.tilo.browser", live.clone()),
-        &command,
-    )
-    .unwrap();
-    assert!(
-        BrowserServiceSessionReply::decode(&reply)
-            .unwrap()
-            .matches(&BrowserServiceSessionCommand::List {})
-    );
-    assert_eq!(service.calls.load(Ordering::Acquire), 1);
-    assert!(
-        delegate_browser_service_session_command(
-            &services,
-            &context("so.tilo.browser", live.clone()),
-            br#"{"kind":"list","person":"foreign"}"#
-        )
-        .is_err()
-    );
-    assert_eq!(service.calls.load(Ordering::Acquire), 1);
-    let services = HostServices {
-        browser_service_sessions: Some(Arc::new(Service {
-            live: live.clone(),
-            calls: AtomicUsize::new(0),
-            revoke: true,
-        })),
-        ..Default::default()
-    };
-    let error = delegate_browser_service_session_command(
-        &services,
-        &context("so.tilo.browser", live),
-        &command,
-    )
-    .unwrap_err();
-    assert!(
-        !error
-            .to_string()
-            .contains("synthetic-private-provider-error")
-    );
-    assert!(error.to_string().contains("request refused"));
+        .unwrap_err();
+        assert!(
+            !error
+                .to_string()
+                .contains("synthetic-private-provider-error")
+        );
+        assert!(error.to_string().contains("request refused"));
+    }
 }

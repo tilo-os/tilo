@@ -224,37 +224,162 @@ async fn an_untrusted_contract_marks_every_observation_of_its_invocation() {
     }
 }
 
-/// An attended action asks the person before it runs for an agent acting
-/// for them: without the person's confirmation it is refused before the app
-/// hears of it, while the person at the device runs it.
-#[test]
-fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it() {
-    let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
-    let workspace = person.workspace().unwrap().to_owned();
-    let agent = Caller::local_person("a1".repeat(32))
-        .in_workspace(workspace)
-        .in_new_execution()
-        .delegated_to("scribe");
-    let asked = state
-        .action_invoke(&agent, None, None, &request())
-        .poll_ready();
-    assert!(
-        matches!(
-            &asked,
-            PendingPoll::Ready(Err(
-                tilo_actions::remote::ActionHostError::ConfirmationRequired { .. }
-            ))
-        ),
-        "the agent waits for the person: {asked:?}"
-    );
-    assert!(app.try_recv().is_err(), "the app never hears of it");
-    assert!(matches!(
-        state
-            .action_invoke(&person, None, None, &request())
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    assert!(app.try_recv().is_ok(), "the person at the device runs it");
+tilo_test_env::scenario! {
+    fn an_agents_action_waits_for_and_follows_its_persons_answer;
+
+    phase an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it;
+    // An attended action asks the person before it runs for an agent acting
+    // for them: without the person's confirmation it is refused before the app
+    // hears of it, while the person at the device runs it.
+    {
+        let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
+        let workspace = person.workspace().unwrap().to_owned();
+        let agent = Caller::local_person("a1".repeat(32))
+            .in_workspace(workspace)
+            .in_new_execution()
+            .delegated_to("scribe");
+        let asked = state
+            .action_invoke(&agent, None, None, &request())
+            .poll_ready();
+        assert!(
+            matches!(
+                &asked,
+                PendingPoll::Ready(Err(
+                    tilo_actions::remote::ActionHostError::ConfirmationRequired { .. }
+                ))
+            ),
+            "the agent waits for the person: {asked:?}"
+        );
+        assert!(app.try_recv().is_err(), "the app never hears of it");
+        assert!(matches!(
+            state
+                .action_invoke(&person, None, None, &request())
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        assert!(app.try_recv().is_ok(), "the person at the device runs it");
+    }
+
+    phase an_agents_change_the_person_denied_is_refused;
+    // The person told the agent not to change the app: its change is refused
+    // before the app hears of it, the action not offered to the agent at all.
+    {
+        for door in agent_doors() {
+            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, door);
+            assert!(
+                matches!(
+                    answered,
+                    PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+                ),
+                "{answered:?}"
+            );
+            assert!(!heard, "the app never hears of it");
+        }
+    }
+
+    phase an_agents_change_the_person_asks_about_waits_for_them;
+    // The person told the agent to ask first: its change waits for the
+    // person's confirmation.
+    {
+        for door in agent_doors() {
+            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, door);
+            assert!(
+                matches!(
+                    answered,
+                    PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired { .. }))
+                ),
+                "{answered:?}"
+            );
+            assert!(!heard, "the app never hears of it");
+        }
+    }
+
+    phase an_agents_change_the_person_allowed_runs;
+    // The person allowed the agent the app's changes: its change runs.
+    {
+        for door in agent_doors() {
+            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, door);
+            assert!(
+                matches!(answered, PendingPoll::Ready(Ok(_))),
+                "{answered:?}"
+            );
+            assert!(heard, "the app runs it");
+        }
+    }
+
+    phase an_admitted_agent_acting_for_its_person_holds_only_its_own_grants;
+    // An agent acting for the person who admitted it may do no more than the
+    // workspace grants it: the owner's authority does not widen it, and it
+    // carries none of the delegation the person's own device gives the agents it
+    // hands a session to. That device-handed session, with the same member
+    // grants, does carry it: its change is offered and asks first.
+    {
+        let owner = "a1".repeat(32);
+        let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
+            vec![tilo_action_policy::Grant::new(
+                "agent-member:scribe",
+                tilo_action_policy::Grantee::agent("scribe"),
+                tilo_action_policy::TreePath::workspace(workspace),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(&owner),
+            )]
+        });
+        let workspace = owner_caller
+            .workspace()
+            .expect("the fixture's workspace")
+            .to_owned();
+        let member = Caller::local_agent("scribe")
+            .acting_for(owner.clone())
+            .in_workspace(workspace.clone())
+            .in_new_execution();
+        assert_eq!(member.acting_for_person(), Some(owner.as_str()));
+        assert!(!member.is_session_delegated());
+        let answered = state
+            .action_invoke(&member, None, None, &request())
+            .poll_ready();
+        assert!(
+            matches!(
+                answered,
+                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+            ),
+            "an observer member is not offered a change: {answered:?}"
+        );
+        assert!(app.try_recv().is_err(), "the app never hears of it");
+
+        let handed = Caller::local_person(owner)
+            .in_workspace(workspace)
+            .in_new_execution()
+            .delegated_to("scribe");
+        assert!(handed.is_session_delegated());
+        let answered = state
+            .action_invoke(&handed, None, None, &request())
+            .poll_ready();
+        assert!(
+            !matches!(
+                answered,
+                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+            ),
+            "the device-handed session carries the device's delegation: {answered:?}"
+        );
+    }
+
+    phase an_agent_carries_the_turn_that_caused_its_ops;
+    // An agent inside a turn carries the message that caused it to every op it
+    // makes, so the receiving device decides it against that message and
+    // presence can show what the agent would click. An agent no turn carries
+    // holds no authority of its own: agents are not members.
+    {
+        let turn = tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1");
+        let handed = Caller::agent_turn("scribe", "ada", turn.clone()).in_workspace("w");
+        assert_eq!(handed.turn(), Some(&turn));
+        assert!(handed.is_session_delegated());
+        let actor = super::BrokerActor::for_caller(&handed);
+        assert_eq!(actor.turn(), Some(&turn), "the broker keeps the cause");
+
+        let alone = super::BrokerActor::for_caller(&Caller::local_agent("scribe").in_workspace("w"));
+        assert!(alone.turn().is_none(), "no turn carries it");
+    }
 }
 
 /// The person's sheet: each question, with where its answer goes.
@@ -479,31 +604,144 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
     assert!(app.try_recv().is_err(), "nothing runs");
 }
 
-#[test]
-fn refused_actions_and_observer_disconnect_do_not_schedule_work() {
-    let (state, caller, mut app) = fixture();
-    let mut events = state.subscribe_execution_activity();
-    let mut refused = request();
-    refused.target.provider = "999".into();
-    assert!(matches!(
-        state
-            .action_invoke(&caller, None, None, &refused)
-            .poll_ready(),
-        PendingPoll::Ready(Err(_))
-    ));
-    assert!(events.try_recv().is_err());
-    assert!(app.try_recv().is_err());
-    drop(events);
-    assert!(matches!(
-        state
+tilo_test_env::scenario! {
+    fn execution_activity_reaches_observers_bounded_and_terminal;
+
+    phase refused_actions_and_observer_disconnect_do_not_schedule_work;
+    {
+        let (state, caller, mut app) = fixture();
+        let mut events = state.subscribe_execution_activity();
+        let mut refused = request();
+        refused.target.provider = "999".into();
+        assert!(matches!(
+            state
+                .action_invoke(&caller, None, None, &refused)
+                .poll_ready(),
+            PendingPoll::Ready(Err(_))
+        ));
+        assert!(events.try_recv().is_err());
+        assert!(app.try_recv().is_err());
+        drop(events);
+        assert!(matches!(
+            state
+                .action_invoke(&caller, None, None, &request())
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        assert!(
+            app.try_recv().is_ok(),
+            "dropping an observer must not end the broker"
+        );
+    }
+
+    phase actions_without_a_host_minted_run_do_not_invent_execution_presence;
+    {
+        let (state, caller, mut app) = fixture();
+        let ordinary = Caller::local_person("a1".repeat(32)).in_workspace(caller.workspace().unwrap());
+        let mut events = state.subscribe_execution_activity();
+        assert!(matches!(
+            state
+                .action_invoke(&ordinary, None, None, &request())
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        assert!(app.try_recv().is_ok());
+        assert!(events.try_recv().is_err());
+    }
+
+    phase observer_backpressure_is_bounded_and_reports_loss_without_replaying_actions;
+    {
+        let (state, caller, mut app) = fixture();
+        let mut events = state.subscribe_execution_activity();
+        for _ in 0..300 {
+            assert!(matches!(
+                state
+                    .action_invoke(&caller, None, None, &request())
+                    .poll_ready(),
+                PendingPoll::Ready(Ok(_))
+            ));
+            assert!(app.try_recv().is_ok());
+        }
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(44))
+        ));
+        let first = events.try_recv().unwrap();
+        assert_eq!(first.sequence, 45);
+        let mut count = 1;
+        while events.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 256);
+        assert!(
+            app.try_recv().is_err(),
+            "observation does not execute or replay actions"
+        );
+    }
+
+    phase disconnect_and_silence_produce_terminal_observations_and_new_brokers_have_new_epochs;
+    {
+        let (state, caller, mut app) = fixture();
+        let mut events = state.subscribe_execution_activity();
+        let _ = state
             .action_invoke(&caller, None, None, &request())
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    assert!(
-        app.try_recv().is_ok(),
-        "dropping an observer must not end the broker"
-    );
+            .poll_ready();
+        app.try_recv().unwrap();
+        let first = events.try_recv().unwrap();
+        state.expire_stale_invocations_at(std::time::Instant::now(), Duration::ZERO, Duration::ZERO);
+        assert_eq!(events.try_recv().unwrap().status, ExecutionStatus::Failed);
+        let _ = state
+            .action_invoke(&caller, None, None, &request())
+            .poll_ready();
+        app.try_recv().unwrap();
+        events.try_recv().unwrap();
+        state.remove_connection(7);
+        assert_eq!(events.try_recv().unwrap().status, ExecutionStatus::Failed);
+        assert!(state.pending_invocations.lock().unwrap().is_empty());
+        let (other, caller, mut app) = fixture();
+        let mut other_events = other.subscribe_execution_activity();
+        let _ = other
+            .action_invoke(&caller, None, None, &request())
+            .poll_ready();
+        app.try_recv().unwrap();
+        assert_ne!(other_events.try_recv().unwrap().epoch, first.epoch);
+    }
+
+    phase closed_application_stream_never_emits_acceptance;
+    {
+        let (state, caller, app) = fixture();
+        let mut events = state.subscribe_execution_activity();
+        drop(app);
+        assert!(matches!(
+            state
+                .action_invoke(&caller, None, None, &request())
+                .poll_ready(),
+            PendingPoll::Ready(Err(_))
+        ));
+        assert!(events.try_recv().is_err());
+        assert!(state.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    phase broker_shutdown_closes_existing_and_later_observers_with_state_retained;
+    {
+        let (state, caller, mut app) = fixture();
+        let mut events = state.subscribe_execution_activity();
+        let _ = state
+            .action_invoke(&caller, None, None, &request())
+            .poll_ready();
+        app.try_recv().unwrap();
+        assert_eq!(events.try_recv().unwrap().status, ExecutionStatus::Accepted);
+        state.stop();
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            state.subscribe_execution_activity().try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        ));
+        state.stop();
+    }
 }
 
 #[tokio::test]
@@ -565,21 +803,6 @@ async fn wrong_peer_stale_progress_and_post_terminal_updates_emit_nothing() {
             .await
             .is_err()
     );
-    assert!(events.try_recv().is_err());
-}
-
-#[test]
-fn actions_without_a_host_minted_run_do_not_invent_execution_presence() {
-    let (state, caller, mut app) = fixture();
-    let ordinary = Caller::local_person("a1".repeat(32)).in_workspace(caller.workspace().unwrap());
-    let mut events = state.subscribe_execution_activity();
-    assert!(matches!(
-        state
-            .action_invoke(&ordinary, None, None, &request())
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    assert!(app.try_recv().is_ok());
     assert!(events.try_recv().is_err());
 }
 
@@ -655,79 +878,6 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
     assert!(events.try_recv().is_err());
 }
 
-#[test]
-fn observer_backpressure_is_bounded_and_reports_loss_without_replaying_actions() {
-    let (state, caller, mut app) = fixture();
-    let mut events = state.subscribe_execution_activity();
-    for _ in 0..300 {
-        assert!(matches!(
-            state
-                .action_invoke(&caller, None, None, &request())
-                .poll_ready(),
-            PendingPoll::Ready(Ok(_))
-        ));
-        assert!(app.try_recv().is_ok());
-    }
-    assert!(matches!(
-        events.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(44))
-    ));
-    let first = events.try_recv().unwrap();
-    assert_eq!(first.sequence, 45);
-    let mut count = 1;
-    while events.try_recv().is_ok() {
-        count += 1;
-    }
-    assert_eq!(count, 256);
-    assert!(
-        app.try_recv().is_err(),
-        "observation does not execute or replay actions"
-    );
-}
-
-#[test]
-fn disconnect_and_silence_produce_terminal_observations_and_new_brokers_have_new_epochs() {
-    let (state, caller, mut app) = fixture();
-    let mut events = state.subscribe_execution_activity();
-    let _ = state
-        .action_invoke(&caller, None, None, &request())
-        .poll_ready();
-    app.try_recv().unwrap();
-    let first = events.try_recv().unwrap();
-    state.expire_stale_invocations_at(std::time::Instant::now(), Duration::ZERO, Duration::ZERO);
-    assert_eq!(events.try_recv().unwrap().status, ExecutionStatus::Failed);
-    let _ = state
-        .action_invoke(&caller, None, None, &request())
-        .poll_ready();
-    app.try_recv().unwrap();
-    events.try_recv().unwrap();
-    state.remove_connection(7);
-    assert_eq!(events.try_recv().unwrap().status, ExecutionStatus::Failed);
-    assert!(state.pending_invocations.lock().unwrap().is_empty());
-    let (other, caller, mut app) = fixture();
-    let mut other_events = other.subscribe_execution_activity();
-    let _ = other
-        .action_invoke(&caller, None, None, &request())
-        .poll_ready();
-    app.try_recv().unwrap();
-    assert_ne!(other_events.try_recv().unwrap().epoch, first.epoch);
-}
-
-#[test]
-fn closed_application_stream_never_emits_acceptance() {
-    let (state, caller, app) = fixture();
-    let mut events = state.subscribe_execution_activity();
-    drop(app);
-    assert!(matches!(
-        state
-            .action_invoke(&caller, None, None, &request())
-            .poll_ready(),
-        PendingPoll::Ready(Err(_))
-    ));
-    assert!(events.try_recv().is_err());
-    assert!(state.pending_invocations.lock().unwrap().is_empty());
-}
-
 #[tokio::test]
 async fn cancellation_is_a_request_until_the_application_confirms_it() {
     let (state, caller, mut app) = fixture();
@@ -790,27 +940,6 @@ async fn cancellation_is_a_request_until_the_application_confirms_it() {
         events.try_recv().unwrap().status,
         ExecutionStatus::Cancelled
     );
-}
-
-#[test]
-fn broker_shutdown_closes_existing_and_later_observers_with_state_retained() {
-    let (state, caller, mut app) = fixture();
-    let mut events = state.subscribe_execution_activity();
-    let _ = state
-        .action_invoke(&caller, None, None, &request())
-        .poll_ready();
-    app.try_recv().unwrap();
-    assert_eq!(events.try_recv().unwrap().status, ExecutionStatus::Accepted);
-    state.stop();
-    assert!(matches!(
-        events.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Closed)
-    ));
-    assert!(matches!(
-        state.subscribe_execution_activity().try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Closed)
-    ));
-    state.stop();
 }
 
 #[tokio::test]
@@ -1018,176 +1147,180 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
     assert!(state.continuing_caller(7, running.invocation).is_none());
 }
 
-/// Doors that take the caller's own invocation id can admit two callers'
-/// invocations under one id on the same app. An edit submitted on behalf of
-/// that id names no single caller, so it is admitted for neither, never for
-/// whichever one the registry happens to find first.
-#[test]
-fn an_invocation_id_two_callers_share_continues_neither() {
-    let (state, agent, _app) = continuation_fixture();
-    let workspace = agent.workspace().unwrap().to_owned();
-    let other = "b2".repeat(32);
-    state
-        .stable_invocation_subscribers
-        .lock()
-        .unwrap()
-        .insert(7);
-    let shared = tilo_actions::InvocationId::new();
-    let start = |person: &str| {
-        let caller = Caller::local_person(person)
-            .in_workspace(workspace.clone())
-            .in_new_execution();
-        state
-            .start_invocation_confirmed_for_origin(
-                7,
-                "test:block-a",
-                "update",
-                InvocationInputs {
-                    original_request: None,
-                    requested: Some(shared),
-                    caller: Some(&caller),
-                    execution: ExecutionScope::for_call(&caller, shared),
-                    argument: None,
-                    actor: &BrokerActor::person(person),
-                    confirmation_token: None,
-                    context: None,
-                },
-                None,
-            )
-            .unwrap()
-            .start_blocking(&state)
-            .unwrap();
-        caller
-    };
-    let first = start(&"a1".repeat(32));
-    assert_eq!(state.continuing_caller(7, shared), Some(first));
-    start(&other);
-    assert!(
-        state.continuing_caller(7, shared).is_none(),
-        "an ambiguous invocation continues for nobody"
-    );
-}
+tilo_test_env::scenario! {
+    fn execution_identity_is_host_owned_and_ends_with_retirement;
 
-#[test]
-fn same_principal_runs_receive_distinct_host_owned_participant_views() {
-    let (state, first, mut app) = fixture();
-    let second = first.clone().in_new_execution();
-    let forged = tilo_actions::ParticipantId::new("person-window-forged").unwrap();
-    let mut participants = Vec::new();
-    for caller in [&first, &second, &first] {
-        let mut request = request();
-        request.context = Some(tilo_actions::ActionContext::default().with_invoker(
-            tilo_actions::ActionInvoker::actor("a1".repeat(32)).with_participant(forged.clone()),
-        ));
+    phase an_invocation_id_two_callers_share_continues_neither;
+    // Doors that take the caller's own invocation id can admit two callers'
+    // invocations under one id on the same app. An edit submitted on behalf of
+    // that id names no single caller, so it is admitted for neither, never for
+    // whichever one the registry happens to find first.
+    {
+        let (state, agent, _app) = continuation_fixture();
+        let workspace = agent.workspace().unwrap().to_owned();
+        let other = "b2".repeat(32);
+        state
+            .stable_invocation_subscribers
+            .lock()
+            .unwrap()
+            .insert(7);
+        let shared = tilo_actions::InvocationId::new();
+        let start = |person: &str| {
+            let caller = Caller::local_person(person)
+                .in_workspace(workspace.clone())
+                .in_new_execution();
+            state
+                .start_invocation_confirmed_for_origin(
+                    7,
+                    "test:block-a",
+                    "update",
+                    InvocationInputs {
+                        original_request: None,
+                        requested: Some(shared),
+                        caller: Some(&caller),
+                        execution: ExecutionScope::for_call(&caller, shared),
+                        argument: None,
+                        actor: &BrokerActor::person(person),
+                        confirmation_token: None,
+                        context: None,
+                    },
+                    None,
+                )
+                .unwrap()
+                .start_blocking(&state)
+                .unwrap();
+            caller
+        };
+        let first = start(&"a1".repeat(32));
+        assert_eq!(state.continuing_caller(7, shared), Some(first));
+        start(&other);
+        assert!(
+            state.continuing_caller(7, shared).is_none(),
+            "an ambiguous invocation continues for nobody"
+        );
+    }
+
+    phase same_principal_runs_receive_distinct_host_owned_participant_views;
+    {
+        let (state, first, mut app) = fixture();
+        let second = first.clone().in_new_execution();
+        let forged = tilo_actions::ParticipantId::new("person-window-forged").unwrap();
+        let mut participants = Vec::new();
+        for caller in [&first, &second, &first] {
+            let mut request = request();
+            request.context = Some(tilo_actions::ActionContext::default().with_invoker(
+                tilo_actions::ActionInvoker::actor("a1".repeat(32)).with_participant(forged.clone()),
+            ));
+            assert!(matches!(
+                state
+                    .action_invoke(caller, None, None, &request)
+                    .poll_ready(),
+                PendingPoll::Ready(Ok(_))
+            ));
+            let delivery = app.try_recv().unwrap();
+            let invoker =
+                tilo_actions::ActionInvoker::delivered(&delivery.actor, delivery.context.as_ref());
+            assert_eq!(invoker.actor, "a1".repeat(32));
+            let participant = invoker.participant.expect("a run owns a participant view");
+            assert_ne!(participant, forged);
+            participants.push(participant);
+        }
+        assert_ne!(participants[0], participants[1]);
+        assert_eq!(participants[0], participants[2]);
+        first.retire_execution();
         assert!(matches!(
             state
-                .action_invoke(caller, None, None, &request)
+                .action_invoke(&first, None, None, &request())
+                .poll_ready(),
+            PendingPoll::Ready(Err(_))
+        ));
+        assert!(
+            app.try_recv().is_err(),
+            "closed run cannot fall back to the person's view"
+        );
+    }
+
+    phase retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can;
+    {
+        let (state, caller, mut app) = fixture();
+        let scoped_request = request();
+        assert!(matches!(
+            state
+                .action_invoke(&caller, None, None, &scoped_request)
                 .poll_ready(),
             PendingPoll::Ready(Ok(_))
         ));
-        let delivery = app.try_recv().unwrap();
-        let invoker =
-            tilo_actions::ActionInvoker::delivered(&delivery.actor, delivery.context.as_ref());
-        assert_eq!(invoker.actor, "a1".repeat(32));
-        let participant = invoker.participant.expect("a run owns a participant view");
-        assert_ne!(participant, forged);
-        participants.push(participant);
+        let delivered = app.try_recv().unwrap();
+        assert!(
+            state
+                .action_observe(&caller, &scoped_request.invocation)
+                .is_some()
+        );
+        assert!(matches!(
+            state
+                .action_query(&caller, &CatalogueQuery::default())
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        let retained = caller.clone();
+        caller.retire_execution();
+        assert!(matches!(
+            state
+                .action_query(&retained, &CatalogueQuery::default())
+                .poll_ready(),
+            PendingPoll::Ready(Err(_))
+        ));
+        assert!(
+            state
+                .action_observe(&retained, &scoped_request.invocation)
+                .is_none()
+        );
+        assert!(
+            crate::collab_app_broker::answered(
+                state.action_cancel(&retained, &scoped_request.invocation)
+            )
+            .is_err()
+        );
+        assert!(
+            state
+                .remote_job(&retained, &scoped_request.invocation)
+                .is_none()
+        );
+        assert!(
+            state.pending_invocations.lock().unwrap()[&delivered.id]
+                .cancellation_requested_at
+                .is_none(),
+            "retirement and refused cancellation must not cancel an admitted job"
+        );
+
+        let legacy = Caller::local_person("a1".repeat(32)).in_workspace(caller.workspace().unwrap());
+        legacy.retire_execution();
+        assert!(matches!(
+            state
+                .action_query(&legacy, &CatalogueQuery::default())
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        let legacy_request = request();
+        assert!(matches!(
+            state
+                .action_invoke(&legacy, None, None, &legacy_request)
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        app.try_recv().unwrap();
+        assert!(
+            state
+                .action_observe(&legacy, &legacy_request.invocation)
+                .is_some()
+        );
+        assert!(
+            crate::collab_app_broker::answered(
+                state.action_cancel(&legacy, &legacy_request.invocation)
+            )
+            .is_ok()
+        );
     }
-    assert_ne!(participants[0], participants[1]);
-    assert_eq!(participants[0], participants[2]);
-    first.retire_execution();
-    assert!(matches!(
-        state
-            .action_invoke(&first, None, None, &request())
-            .poll_ready(),
-        PendingPoll::Ready(Err(_))
-    ));
-    assert!(
-        app.try_recv().is_err(),
-        "closed run cannot fall back to the person's view"
-    );
-}
-
-#[test]
-fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
-    let (state, caller, mut app) = fixture();
-    let scoped_request = request();
-    assert!(matches!(
-        state
-            .action_invoke(&caller, None, None, &scoped_request)
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    let delivered = app.try_recv().unwrap();
-    assert!(
-        state
-            .action_observe(&caller, &scoped_request.invocation)
-            .is_some()
-    );
-    assert!(matches!(
-        state
-            .action_query(&caller, &CatalogueQuery::default())
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    let retained = caller.clone();
-    caller.retire_execution();
-    assert!(matches!(
-        state
-            .action_query(&retained, &CatalogueQuery::default())
-            .poll_ready(),
-        PendingPoll::Ready(Err(_))
-    ));
-    assert!(
-        state
-            .action_observe(&retained, &scoped_request.invocation)
-            .is_none()
-    );
-    assert!(
-        crate::collab_app_broker::answered(
-            state.action_cancel(&retained, &scoped_request.invocation)
-        )
-        .is_err()
-    );
-    assert!(
-        state
-            .remote_job(&retained, &scoped_request.invocation)
-            .is_none()
-    );
-    assert!(
-        state.pending_invocations.lock().unwrap()[&delivered.id]
-            .cancellation_requested_at
-            .is_none(),
-        "retirement and refused cancellation must not cancel an admitted job"
-    );
-
-    let legacy = Caller::local_person("a1".repeat(32)).in_workspace(caller.workspace().unwrap());
-    legacy.retire_execution();
-    assert!(matches!(
-        state
-            .action_query(&legacy, &CatalogueQuery::default())
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    let legacy_request = request();
-    assert!(matches!(
-        state
-            .action_invoke(&legacy, None, None, &legacy_request)
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    app.try_recv().unwrap();
-    assert!(
-        state
-            .action_observe(&legacy, &legacy_request.invocation)
-            .is_some()
-    );
-    assert!(
-        crate::collab_app_broker::answered(
-            state.action_cancel(&legacy, &legacy_request.invocation)
-        )
-        .is_ok()
-    );
 }
 
 /// The broker's door, counting how often a shortcut run observes through it.
@@ -1489,127 +1622,6 @@ fn agent_doors() -> [fn(&str) -> Caller; 2] {
             .in_new_execution()
         },
     ]
-}
-
-/// The person told the agent not to change the app: its change is refused
-/// before the app hears of it, the action not offered to the agent at all.
-#[test]
-fn an_agents_change_the_person_denied_is_refused() {
-    for door in agent_doors() {
-        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, door);
-        assert!(
-            matches!(
-                answered,
-                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
-            ),
-            "{answered:?}"
-        );
-        assert!(!heard, "the app never hears of it");
-    }
-}
-
-/// The person told the agent to ask first: its change waits for the
-/// person's confirmation.
-#[test]
-fn an_agents_change_the_person_asks_about_waits_for_them() {
-    for door in agent_doors() {
-        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, door);
-        assert!(
-            matches!(
-                answered,
-                PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired { .. }))
-            ),
-            "{answered:?}"
-        );
-        assert!(!heard, "the app never hears of it");
-    }
-}
-
-/// The person allowed the agent the app's changes: its change runs.
-#[test]
-fn an_agents_change_the_person_allowed_runs() {
-    for door in agent_doors() {
-        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, door);
-        assert!(
-            matches!(answered, PendingPoll::Ready(Ok(_))),
-            "{answered:?}"
-        );
-        assert!(heard, "the app runs it");
-    }
-}
-
-/// An agent acting for the person who admitted it may do no more than the
-/// workspace grants it: the owner's authority does not widen it, and it
-/// carries none of the delegation the person's own device gives the agents it
-/// hands a session to. That device-handed session, with the same member
-/// grants, does carry it: its change is offered and asks first.
-#[test]
-fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
-    let owner = "a1".repeat(32);
-    let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-        vec![tilo_action_policy::Grant::new(
-            "agent-member:scribe",
-            tilo_action_policy::Grantee::agent("scribe"),
-            tilo_action_policy::TreePath::workspace(workspace),
-            tilo_action_policy::KindSet::READ,
-            tilo_action_policy::Answer::Allow,
-            tilo_action_policy::Grantee::person(&owner),
-        )]
-    });
-    let workspace = owner_caller
-        .workspace()
-        .expect("the fixture's workspace")
-        .to_owned();
-    let member = Caller::local_agent("scribe")
-        .acting_for(owner.clone())
-        .in_workspace(workspace.clone())
-        .in_new_execution();
-    assert_eq!(member.acting_for_person(), Some(owner.as_str()));
-    assert!(!member.is_session_delegated());
-    let answered = state
-        .action_invoke(&member, None, None, &request())
-        .poll_ready();
-    assert!(
-        matches!(
-            answered,
-            PendingPoll::Ready(Err(ActionHostError::UnknownAction))
-        ),
-        "an observer member is not offered a change: {answered:?}"
-    );
-    assert!(app.try_recv().is_err(), "the app never hears of it");
-
-    let handed = Caller::local_person(owner)
-        .in_workspace(workspace)
-        .in_new_execution()
-        .delegated_to("scribe");
-    assert!(handed.is_session_delegated());
-    let answered = state
-        .action_invoke(&handed, None, None, &request())
-        .poll_ready();
-    assert!(
-        !matches!(
-            answered,
-            PendingPoll::Ready(Err(ActionHostError::UnknownAction))
-        ),
-        "the device-handed session carries the device's delegation: {answered:?}"
-    );
-}
-
-/// An agent inside a turn carries the message that caused it to every op it
-/// makes, so the receiving device decides it against that message and
-/// presence can show what the agent would click. An agent no turn carries
-/// holds no authority of its own: agents are not members.
-#[test]
-fn an_agent_carries_the_turn_that_caused_its_ops() {
-    let turn = tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1");
-    let handed = Caller::agent_turn("scribe", "ada", turn.clone()).in_workspace("w");
-    assert_eq!(handed.turn(), Some(&turn));
-    assert!(handed.is_session_delegated());
-    let actor = super::BrokerActor::for_caller(&handed);
-    assert_eq!(actor.turn(), Some(&turn), "the broker keeps the cause");
-
-    let alone = super::BrokerActor::for_caller(&Caller::local_agent("scribe").in_workspace("w"));
-    assert!(alone.turn().is_none(), "no turn carries it");
 }
 
 /// A Store disclosure whose `operation` does not decode is refused with

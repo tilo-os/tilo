@@ -3340,34 +3340,73 @@ mod foreign_caller_tests {
     use tilo_action_policy::roles;
     use tilo_actions::remote::Caller;
 
-    #[test]
-    fn an_admitted_bot_sees_only_its_confined_workspace() {
-        let user = [27; 32];
-        let mut tree = WorkspaceTree::default();
-        for id in [7, 8] {
-            let mut workspace = Workspace::new(WorkspaceSlot(id), "Bot workspace");
-            workspace.set_owner(hex::encode(user));
-            tree.workspaces.push(workspace);
+    tilo_test_env::scenario! {
+        fn a_foreign_caller_is_confined_to_what_its_device_governs;
+
+        phase an_admitted_bot_sees_only_its_confined_workspace;
+        {
+            let user = [27; 32];
+            let mut tree = WorkspaceTree::default();
+            for id in [7, 8] {
+                let mut workspace = Workspace::new(WorkspaceSlot(id), "Bot workspace");
+                workspace.set_owner(hex::encode(user));
+                tree.workspaces.push(workspace);
+            }
+            let workspace_id = tree.workspaces[0].id().to_string();
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &Arc::new(FanoutState::new()),
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(tree.shared()),
+                None,
+            );
+            let bot = Caller::bot("bridge", user, [9; 32]);
+            assert!(state.workspace_ids_for(&bot).is_empty());
+            assert_eq!(
+                state.workspace_ids_for(&bot.clone().in_workspace(&workspace_id)),
+                vec![workspace_id]
+            );
+            assert!(
+                state
+                    .workspace_ids_for(&bot.in_workspace("unknown-workspace"))
+                    .is_empty()
+            );
         }
-        let workspace_id = tree.workspaces[0].id().to_string();
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(tree.shared()),
-            None,
-        );
-        let bot = Caller::bot("bridge", user, [9; 32]);
-        assert!(state.workspace_ids_for(&bot).is_empty());
-        assert_eq!(
-            state.workspace_ids_for(&bot.clone().in_workspace(&workspace_id)),
-            vec![workspace_id]
-        );
-        assert!(
-            state
-                .workspace_ids_for(&bot.in_workspace("unknown-workspace"))
-                .is_empty()
-        );
+
+        phase a_foreign_caller_is_capped_only_in_workspaces_its_device_does_not_govern;
+        {
+            let user = [26; 32];
+            let mut workspace = Workspace::new(WorkspaceSlot(6), "Callers");
+            workspace.set_owner(hex::encode(user));
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let (state, _bridge_rx) = AppBrokerState::new(
+                &Arc::new(FanoutState::new()),
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(tree.shared()),
+                None,
+            );
+            let governor = [7; 32];
+            let authority: Arc<dyn crate::certificate_authority::CertificateAuthority> =
+                Arc::new(GovernedBy(governor));
+            assert!(state.certificate_authority.set(authority).is_ok());
+            let may_administer = |caller: &Caller| {
+                let (workspace, policy, now) = state.workspaces_for(caller).pop().unwrap();
+                policy.may_in(
+                    &workspace,
+                    &roles::governance_action(&workspace.policy.workspace, roles::governance::SETTINGS),
+                    roles::GOVERNANCE_KIND,
+                    now,
+                )
+            };
+            let caller =
+                |device, foreign| Caller::authenticated(user, device).from_foreign_device(foreign);
+
+            assert!(may_administer(&caller(governor, true)));
+            assert!(!may_administer(&caller([8; 32], true)));
+            assert!(may_administer(&caller([8; 32], false)));
+        }
     }
 
     /// Every workspace is governed by one device.
@@ -3384,41 +3423,6 @@ mod foreign_caller_tests {
         fn governs(&self, _workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
             device == Some(&self.0)
         }
-    }
-
-    #[test]
-    fn a_foreign_caller_is_capped_only_in_workspaces_its_device_does_not_govern() {
-        let user = [26; 32];
-        let mut workspace = Workspace::new(WorkspaceSlot(6), "Callers");
-        workspace.set_owner(hex::encode(user));
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(tree.shared()),
-            None,
-        );
-        let governor = [7; 32];
-        let authority: Arc<dyn crate::certificate_authority::CertificateAuthority> =
-            Arc::new(GovernedBy(governor));
-        assert!(state.certificate_authority.set(authority).is_ok());
-        let may_administer = |caller: &Caller| {
-            let (workspace, policy, now) = state.workspaces_for(caller).pop().unwrap();
-            policy.may_in(
-                &workspace,
-                &roles::governance_action(&workspace.policy.workspace, roles::governance::SETTINGS),
-                roles::GOVERNANCE_KIND,
-                now,
-            )
-        };
-        let caller =
-            |device, foreign| Caller::authenticated(user, device).from_foreign_device(foreign);
-
-        assert!(may_administer(&caller(governor, true)));
-        assert!(!may_administer(&caller([8; 32], true)));
-        assert!(may_administer(&caller([8; 32], false)));
     }
 }
 
@@ -3548,104 +3552,120 @@ mod app_close_tests {
         Ok(state.remote_job(caller, &request.invocation).unwrap())
     }
 
-    #[test]
-    fn a_running_app_offers_close_where_the_host_can_close_it() {
-        let launcher = Arc::new(Launcher {
-            closes: true,
-            ..Default::default()
-        });
-        let (state, caller, _) = broker(Arc::clone(&launcher), false);
-        assert_eq!(app_actions(&state, &caller), ["open"]);
-        let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
-        assert_eq!(app_actions(&state, &caller), ["close"]);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the test keeps its fixture and guards alive through its assertions"
+        )]
+        fn closing_a_running_app;
 
-        let request = close_request(&workspace);
-        let job = invoke_close(&state, &caller, &request).unwrap();
-        assert!(matches!(
-            state.invocation_status(job),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-        assert_eq!(
-            *launcher.closed.lock().unwrap(),
-            [("so.tilo.word-processor".to_string(), workspace)]
-        );
+        phase a_running_app_offers_close_where_the_host_can_close_it;
+        {
+            let launcher = Arc::new(Launcher {
+                closes: true,
+                ..Default::default()
+            });
+            let (state, caller, _) = broker(Arc::clone(&launcher), false);
+            assert_eq!(app_actions(&state, &caller), ["open"]);
+            let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
+            assert_eq!(app_actions(&state, &caller), ["close"]);
 
-        let unsupported = Arc::new(Launcher::default());
-        let (state, caller, workspace) = broker(unsupported, true);
-        assert!(app_actions(&state, &caller).is_empty());
-        assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
-    }
+            let request = close_request(&workspace);
+            let job = invoke_close(&state, &caller, &request).unwrap();
+            assert!(matches!(
+                state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+            assert_eq!(
+                *launcher.closed.lock().unwrap(),
+                [("so.tilo.word-processor".to_string(), workspace)]
+            );
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn close_preserves_the_requested_uuid_in_its_terminal_journal_record() {
-        let launcher = Arc::new(Launcher {
-            closes: true,
-            ..Default::default()
-        });
-        let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
-        let scratch = tempfile::tempdir().unwrap();
-        *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(
+            let unsupported = Arc::new(Launcher::default());
+            let (state, caller, workspace) = broker(unsupported, true);
+            assert!(app_actions(&state, &caller).is_empty());
+            assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
+        }
+
+        phase close_preserves_the_requested_uuid_in_its_terminal_journal_record;
+        {
+            let launcher = Arc::new(Launcher {
+                closes: true,
+                ..Default::default()
+            });
+            let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
+            let scratch = tempfile::tempdir().unwrap();
+            *state.journal.lock().unwrap() = Ok(Some(
+                super::super::invocation_journal::InvocationJournal::open(
+                    &scratch.path().join("journal"),
+                )
+                .unwrap(),
+            ));
+            let request = close_request(&workspace);
+            let job = invoke_close(&state, &caller, &request).unwrap();
+            let terminal = state.invocation_status(job).unwrap();
+            assert_eq!(terminal.invocation(), request.invocation);
+            assert!(matches!(
+                terminal,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
+            let journal = state.journal.lock().unwrap();
+            let journal = journal.as_ref().unwrap().as_ref().unwrap();
+            let key = super::super::InvocationKey {
+                workspace,
+                host: journal.host(),
+                owner: super::super::InvocationOwner::Local {
+                    actor: hex::encode([31; 32]),
+                },
+                invocation: request.invocation,
+            };
+            assert_eq!(journal.lookup(&key).unwrap().unwrap().update, terminal);
+            assert_eq!(launcher.closed.lock().unwrap().len(), 1);
+        }
+
+        phase close_requires_original_custody_before_calling_the_launcher;
+        {
+            let launcher = Arc::new(Launcher {
+                closes: true,
+                ..Default::default()
+            });
+            let (state, _, workspace) = broker(Arc::clone(&launcher), true);
+            let caller = Caller::authenticated([31; 32], [32; 32]).in_workspace(&workspace);
+            assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
+            assert!(launcher.closed.lock().unwrap().is_empty());
+            assert!(state.completed_invocations.lock().unwrap().is_empty());
+        }
+
+        phase close_does_not_run_when_the_admission_barrier_fails;
+        {
+            let launcher = Arc::new(Launcher {
+                closes: true,
+                ..Default::default()
+            });
+            let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
+            let scratch = tempfile::tempdir().unwrap();
+            let mut journal = super::super::invocation_journal::InvocationJournal::open(
                 &scratch.path().join("journal"),
             )
-            .unwrap(),
-        ));
-        let request = close_request(&workspace);
-        let job = invoke_close(&state, &caller, &request).unwrap();
-        let terminal = state.invocation_status(job).unwrap();
-        assert_eq!(terminal.invocation(), request.invocation);
-        assert!(matches!(
-            terminal,
-            tilo_actions::InvocationUpdate::Succeeded { .. }
-        ));
-        let journal = state.journal.lock().unwrap();
-        let journal = journal.as_ref().unwrap().as_ref().unwrap();
-        let key = super::super::InvocationKey {
-            workspace,
-            host: journal.host(),
-            owner: super::super::InvocationOwner::Local {
-                actor: hex::encode([31; 32]),
-            },
-            invocation: request.invocation,
-        };
-        assert_eq!(journal.lookup(&key).unwrap().unwrap().update, terminal);
-        assert_eq!(launcher.closed.lock().unwrap().len(), 1);
-    }
+            .unwrap();
+            journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
+            *state.journal.lock().unwrap() = Ok(Some(journal));
+            assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
+            assert!(launcher.closed.lock().unwrap().is_empty());
+            assert!(state.completed_invocations.lock().unwrap().is_empty());
+        }
 
-    #[test]
-    fn close_requires_original_custody_before_calling_the_launcher() {
-        let launcher = Arc::new(Launcher {
-            closes: true,
-            ..Default::default()
-        });
-        let (state, _, workspace) = broker(Arc::clone(&launcher), true);
-        let caller = Caller::authenticated([31; 32], [32; 32]).in_workspace(&workspace);
-        assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
-        assert!(launcher.closed.lock().unwrap().is_empty());
-        assert!(state.completed_invocations.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn close_does_not_run_when_the_admission_barrier_fails() {
-        let launcher = Arc::new(Launcher {
-            closes: true,
-            ..Default::default()
-        });
-        let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
-        let scratch = tempfile::tempdir().unwrap();
-        let mut journal = super::super::invocation_journal::InvocationJournal::open(
-            &scratch.path().join("journal"),
-        )
-        .unwrap();
-        journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
-        *state.journal.lock().unwrap() = Ok(Some(journal));
-        assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
-        assert!(launcher.closed.lock().unwrap().is_empty());
-        assert!(state.completed_invocations.lock().unwrap().is_empty());
+        phase a_caller_who_may_not_change_the_app_cannot_close_it;
+        {
+            let launcher = Arc::new(Launcher {
+                closes: true,
+                ..Default::default()
+            });
+            let (state, _, workspace) = broker(Arc::clone(&launcher), true);
+            let stranger = Caller::authenticated([99; 32], [98; 32]).in_workspace(workspace);
+            assert!(app_actions(&state, &stranger).is_empty());
+            assert!(launcher.closed.lock().unwrap().is_empty());
+        }
     }
 
     /// The page `query` answers `caller`, and how often it read the
@@ -3729,18 +3749,6 @@ mod app_close_tests {
         let stranger = Caller::authenticated([99; 32], [98; 32]).in_workspace(workspace);
         let (rows, _) = state.eager_catalogue(&stranger, RowScope::Provider(&provider));
         assert!(rows.is_empty());
-    }
-
-    #[test]
-    fn a_caller_who_may_not_change_the_app_cannot_close_it() {
-        let launcher = Arc::new(Launcher {
-            closes: true,
-            ..Default::default()
-        });
-        let (state, _, workspace) = broker(Arc::clone(&launcher), true);
-        let stranger = Caller::authenticated([99; 32], [98; 32]).in_workspace(workspace);
-        assert!(app_actions(&state, &stranger).is_empty());
-        assert!(launcher.closed.lock().unwrap().is_empty());
     }
 }
 
