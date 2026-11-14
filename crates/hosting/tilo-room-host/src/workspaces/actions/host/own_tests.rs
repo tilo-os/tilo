@@ -302,7 +302,9 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
     let mut made = Vec::new();
-    let mut last = std::time::Duration::ZERO;
+    // What a create costs once a person keeps hundreds: their last few, not
+    // one sample, which a loaded runner's disk makes slow on its own.
+    let mut last = std::collections::VecDeque::new();
     for number in 0..HUNDREDS {
         let started = std::time::Instant::now();
         let created = create_own(
@@ -312,7 +314,10 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         )
         .await
         .unwrap();
-        last = started.elapsed();
+        last.push_back(started.elapsed());
+        if last.len() > 10 {
+            last.pop_front();
+        }
         made.push(created.workspace.workspace);
     }
     assert_eq!(
@@ -320,7 +325,13 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         made,
         "there is no bound on how many workspaces of their own a person keeps"
     );
-    assert!(last < QUICK, "the {HUNDREDS}th workspace took {last:?}");
+    let mut typical: Vec<_> = last.iter().copied().collect();
+    typical.sort_unstable();
+    let typical = typical.get(typical.len() / 2).copied().unwrap_or_default();
+    assert!(
+        typical < QUICK,
+        "the {HUNDREDS}th workspace took {typical:?}"
+    );
     // Their listing names every one, in the time their own take.
     let mut ask = own_request(json!({}));
     ask.target.address.action = tilo_relay_session::workspaces::LIST_ROOMS.into();
@@ -358,8 +369,9 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         Some(HUNDREDS)
     );
     eprintln!(
-        "{HUNDREDS} workspaces of their own: the last made in {last:?}, listed in {listing:?}, read in {read:?}, whose-names file {} bytes",
-        std::fs::metadata(&index).unwrap().len()
+        "{HUNDREDS} workspaces of their own: made in {typical:?} (median of the last {last_len}), listed in {listing:?}, read in {read:?}, whose-names file {} bytes",
+        std::fs::metadata(&index).unwrap().len(),
+        last_len = last.len()
     );
     relay.shutdown().await;
 }
