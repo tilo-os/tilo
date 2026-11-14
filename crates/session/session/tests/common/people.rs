@@ -439,7 +439,7 @@ pub fn show(device: &Device, site: &Site) {
     });
     let shown = device.act(
         "so.tilo.session",
-        "session:desk\u{1f}switch-workspace",
+        "desktop:chrome\u{1f}switch-workspace",
         &json!({"workspace": site.workspace}),
     );
     assert!(
