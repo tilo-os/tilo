@@ -19,8 +19,8 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
 
   stack.sh up [--images] [--seed] [--discord] [--fresh]
       Start everything and print where it is. By default this checkout's
-      programs and web bundle, built by t's checks (tilo-sh-binaries,
-      lounge-gate-cli, web-desktop-gate-bundle: cached by what they read, so
+      programs and web bundle, built by t's checks (tilo-sh-programs,
+      web-desktop-gate-bundle: cached by what they read, so
       a change reruns only what it touches, and fetched file by file, only
       what changed), run as plain processes, each with its own state and
       runtime directory under the stack's state. Each takes
@@ -888,7 +888,7 @@ build_programs() {
     return
   fi
   if from_t; then
-    t_build programs tilo-sh-binaries lounge-gate-cli
+    t_build programs tilo-sh-programs lounge-fonts
     t_programs
     say "programs built ($((SECONDS - began))s)"
     return
@@ -912,18 +912,17 @@ build_programs() {
 # the stack: laying it out reads the apps' history and the catalog, seconds a
 # check has no reason to spend twice.
 lay_out_lounge() {
-  if [[ -z $lounge ]] && from_t; then
-    # t laid it out (tilo-sh-binaries); a copy of its own, so the next fetch
-    # never rewrites a file the relay runs.
-    t_copy "$t_fetched/target/publish/tilo-sh/lounge" "$native/lounge"
-    lounge=$native/lounge
-  fi
   if [[ -z $lounge ]]; then
-    if [[ ! -f $native/fonts/manifest.toml ]]; then
+    # The catalog t's lounge-fonts check fetched with the programs, else made
+    # here once.
+    local fonts=$native/fonts
+    if from_t; then
+      fonts=$t_fetched/target/publish/lounge/fonts
+    elif [[ ! -f $native/fonts/manifest.toml ]]; then
       say 'fetching the product font catalog (tools/ci/publish/lounge-fonts.sh, once)'
       bash "$repo/tools/ci/publish/lounge-fonts.sh" "$native/fonts" >&2 || die 'could not prepare the fonts'
     fi
-    bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$native/fonts" >/dev/null \
+    bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
       || die 'could not lay out the relay (lounge-context.sh)'
     lounge=$native/lounge
   fi
@@ -974,13 +973,13 @@ bundle_whole() {
 
 # -- t's builds ---------------------------------------------------------------
 # By default (no TILO_SH_CARGO) the programs and the desktop bundle are what
-# t's checks build for the stack's own checks: tilo-sh-binaries (the API
-# server, the fake Discord and the relay's laid-out context), lounge-gate-cli
-# (the tilo command) and web-desktop-gate-bundle (the bundle without its
-# whole-program link: the compile, wasm-bindgen, the split and wasm-opt, all on
-# t). Each check is cached by what it read, so a change reruns the checks it
-# reaches and nothing else, and this machine only fetches: into the same
-# directory each time, where t brings only the files that changed.
+# t's checks build: tilo-sh-programs (every program, in one lounge-gate
+# build), lounge-fonts (the relay's font catalog) and web-desktop-gate-bundle
+# (the bundle without its whole-program link: the compile, wasm-bindgen, the
+# split and wasm-opt, all on t). Each check is cached by what it read, so a
+# change reruns the checks it reaches and nothing else, and this machine only
+# fetches: into the same directory each time, where t brings only the files
+# that changed.
 from_t() { [[ -z ${TILO_SH_PROGRAMS:-} && ${TILO_SH_CARGO:-t} == t ]]; }
 t_fetched=$native/t
 
@@ -1009,26 +1008,16 @@ t_build() {
   say "$what fetched: $(grep -cv ' (unchanged)$' "$log") files new or changed, $(grep -c ' (unchanged)$' "$log") kept ($((SECONDS - began))s)"
 }
 
-# t_copy FROM TO: TO made a copy of FROM, swapped in whole. A copy, not FROM
-# itself: t's next fetch rewrites the files it changed in place, and a service
-# runs from TO meanwhile. Copy-on-write where the file system shares blocks.
-t_copy() {
-  [[ -d $1 ]] || die "t's outputs hold no $1"
-  rm -rf "$2.next"
-  cp -a --reflink=auto "$1" "$2.next" || die "could not copy $1"
-  rm -rf "$2"
-  mv "$2.next" "$2"
-}
-
-# The programs every service runs, gathered from the checks that built them.
+# The programs every service runs: a copy of t's, not t's files themselves,
+# since t's next fetch rewrites the files it changed in place and a service
+# runs from these meanwhile. Copy-on-write where the file system shares blocks.
 t_programs() {
-  local publish=$t_fetched/target/publish next=$native/programs.next file
+  local from=$t_fetched/target/publish/tilo-sh-programs next=$native/programs.next file
   rm -rf "$next"
   mkdir -p "$next"
-  for file in tilo-sh/bin/tilo-api tilo-sh/bin/fake-discord lounge-gate/binaries/tilo-relay \
-    lounge-gate/binaries/discord-worker lounge-gate/cli/tilo; do
-    [[ -x $publish/$file ]] || die "t's outputs hold no $file ($publish)"
-    cp --reflink=auto "$publish/$file" "$next/" || die "could not copy $file"
+  for file in tilo-relay discord-worker tilo-api fake-discord tilo; do
+    [[ -x $from/$file ]] || die "t's outputs hold no $file ($from)"
+    cp --reflink=auto "$from/$file" "$next/" || die "could not copy $file"
   done
   rm -rf "$programs"
   mv "$next" "$programs"

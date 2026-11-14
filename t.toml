@@ -5728,6 +5728,20 @@ outputs = ["/target/publish/tilo-sh/**"]
 git = true
 default = false
 
+# The local tilo.sh stack's programs (os/containers/tilo-sh/stack.sh): the relay, the Discord
+# worker, the API server, the fake Discord and the tilo command, in one `lounge-gate` build, so a
+# change to the relay compiles it once and relinks every program at once rather than in checks
+# that wait on each other. It reads no git, so a commit that changes none of what it compiles
+# takes the last build; the stack lays the relay's context out itself.
+[[check]]
+name = "tilo-sh-programs"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/tilo-sh-programs.sh /target/publish/tilo-sh-programs"
+env = { CARGO_BUILD_JOBS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/tilo-sh-programs/**"]
+default = false
+
 # Production's Caddy, which serves the local stack's relay and site as its tls container and web
 # entry image do: the one pinned release (os/containers/tilo-sh/caddy.env), fetched and checked
 # here, so a check's bring-up downloads nothing.

@@ -10,15 +10,15 @@ os/containers/tilo-sh/stack.sh up
 ```
 
 By default the stack runs this checkout's programs and web bundle as plain
-processes, built by t's checks: `tilo-sh-binaries` and `lounge-gate-cli` (the
-release's code without its whole-program link) and `web-desktop-gate-bundle`
+processes, built by t's checks: `tilo-sh-programs` (every program in one build
+of the release's code without its whole-program link) and `web-desktop-gate-bundle`
 (the shipped bundle's build without its whole-program link; compiled, bound,
 split and optimized on t). A clean checkout is built as its commit, one with
 changes as t finds it when the run starts. Each check is cached by what it
 read, so a change reruns only the checks it reaches, and the stack fetches
 into the same directory each time, where t brings only the files that changed:
-nothing but the fetch, the site's layout and its precompression (at faster
-levels than the image's) runs on your machine. Each service gets its own state
+nothing but the fetch, the relay's and the site's layout and the site's
+precompression (at faster levels than the image's) runs on your machine. Each service gets its own state
 and runtime directory under the stack's state. `stack.sh help` lists every
 command.
 
