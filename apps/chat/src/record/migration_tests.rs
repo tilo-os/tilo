@@ -35,69 +35,308 @@ fn submission() -> ui::feedback::Submission {
     }
 }
 
-/// A chat record of version 4: a filed report's submission, its triage
-/// update and a moderation decision's reports and take-backs as JSON text.
-#[test]
-fn a_chat_record_of_version_four_opens_with_its_reports_and_decisions() {
-    let mut replica = Replica::<Chat>::new();
-    let doc = replica.doc_mut();
-    evolution::fixture(
-        doc,
-        &ROOT,
-        &json!({
-            "feedback": {
-                "f1": {
-                    "k": "a",
-                    "v": {
-                        "submission": ui::serde_json::to_string(&Some(submission())).unwrap(),
-                        "author": "ada",
-                        "ts": 1,
-                        "triage": {
-                            "t1": {
-                                "k": "a",
-                                "v": {
-                                    "author": "mod",
-                                    "ts": 2,
-                                    "update": r#"{"status":"investigating"}"#,
+tilo_test_env::scenario! {
+    /// A chat record stored by each version that shipped, opened by this one.
+    fn a_chat_record_of_each_shipped_version_opens_with_what_it_kept;
+
+    phase a_chat_record_of_version_four_opens_with_its_reports_and_decisions;
+    // A chat record of version 4: a filed report's submission, its triage
+    // update and a moderation decision's reports and take-backs as JSON text.
+    {
+        let mut replica = Replica::<Chat>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &ROOT,
+            &json!({
+                "feedback": {
+                    "f1": {
+                        "k": "a",
+                        "v": {
+                            "submission": ui::serde_json::to_string(&Some(submission())).unwrap(),
+                            "author": "ada",
+                            "ts": 1,
+                            "triage": {
+                                "t1": {
+                                    "k": "a",
+                                    "v": {
+                                        "author": "mod",
+                                        "ts": 2,
+                                        "update": r#"{"status":"investigating"}"#,
+                                    },
                                 },
                             },
                         },
                     },
                 },
-            },
-            "moderation": {
-                "decisions": {
-                    "d1": {
-                        "id": "d1",
-                        "person": "bob",
-                        "reports": r#"["r1"]"#,
-                        "outcome": "ban",
-                        "reasoning": "spam",
-                        "model": "",
-                        "reverted": "[]",
-                        "by": "mod",
-                        "at_ms": 3,
+                "moderation": {
+                    "decisions": {
+                        "d1": {
+                            "id": "d1",
+                            "person": "bob",
+                            "reports": r#"["r1"]"#,
+                            "outcome": "ban",
+                            "reasoning": "spam",
+                            "model": "",
+                            "reverted": "[]",
+                            "by": "mod",
+                            "at_ms": 3,
+                        },
                     },
                 },
+            }),
+        )
+        .unwrap();
+        at_version(doc, 4);
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::read_checked::<Chat>(&old).is_err(), "unmigrated");
+        assert!(evolution::migrate::<Chat>(&mut old).unwrap());
+        let chat = evolution::read_checked::<Chat>(&old).unwrap();
+        let report = chat.feedback.values().next().unwrap();
+        assert_eq!(report.submission, Some(submission()));
+        assert_eq!(
+            report.triage.values().next().unwrap().update,
+            Some(crate::feedback::TriageUpdate::Investigating)
+        );
+        let decision = chat.moderation.decisions.iter().next().unwrap();
+        assert_eq!(decision.reports, ["r1"]);
+        assert!(decision.reverted.is_empty());
+    }
+
+    phase a_chat_kept_flat_before_the_model_opens_with_its_channels_and_categories;
+    {
+        use crate::model::ChannelKind;
+        for version in [5, 1] {
+            let mut doc = crate::testing::chat_kept_flat(version);
+            assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+            let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+            assert_eq!(
+                chat.categories
+                    .iter()
+                    .map(|(id, category)| (id.to_string(), category.name.clone()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("cat_home_text".to_owned(), "Channels".to_owned()),
+                    ("cat_home_voice".to_owned(), "Voice".to_owned()),
+                ],
+                "version {version}"
+            );
+            let mut channels: Vec<_> = chat
+                .channels
+                .iter()
+                .map(|(id, channel)| {
+                    (
+                        id.to_string(),
+                        channel.name.clone(),
+                        channel.category.as_ref().map(ToString::to_string),
+                        channel.kind,
+                    )
+                })
+                .collect();
+            channels.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(
+                channels,
+                [
+                    (
+                        "c_general".to_owned(),
+                        "general".to_owned(),
+                        Some("cat_home_text".to_owned()),
+                        ChannelKind::Text
+                    ),
+                    (
+                        "c_lounge".to_owned(),
+                        "Lounge".to_owned(),
+                        Some("cat_home_voice".to_owned()),
+                        ChannelKind::Voice
+                    ),
+                ],
+                "version {version}"
+            );
+            let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
+                .unwrap()
+                .unwrap();
+            let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
+                .unwrap()
+                .unwrap();
+            assert!(
+                ui::automerge::ReadDoc::get(&doc, &text, "name")
+                    .unwrap()
+                    .is_some(),
+                "the flat fields stay"
+            );
+        }
+    }
+
+    phase a_name_the_item_holds_is_kept_over_its_flat_one;
+    {
+        let mut doc = crate::testing::chat_kept_flat(5);
+        let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
+            .unwrap()
+            .unwrap();
+        let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
+            .unwrap()
+            .unwrap();
+        let (_, held) = ui::automerge::ReadDoc::get(&doc, &text, "v")
+            .unwrap()
+            .unwrap();
+        ui::tilo_resource::write_key(&mut doc, &held, "name", &"Text".to_owned()).unwrap();
+        doc.commit();
+        assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+        let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+        assert_eq!(
+            chat.categories
+                .get(&ui::tilo_resource::Id::from_raw("cat_home_text"))
+                .map(|category| category.name.as_str()),
+            Some("Text")
+        );
+    }
+
+    phase a_chat_of_version_one_or_two_keeps_every_message_draft_and_read_count;
+    {
+        use ui::tilo_resource::Resource as _;
+        let body = vec![tilo_document::ClipBlock {
+            kind: "paragraph".into(),
+            text: "hi @Bo".into(),
+            marks: Vec::new(),
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::new(),
+        }];
+        let mut record = version_one_message(&body);
+        record["messages"]["m2"] = json!({
+            "k": "b",
+            "v": { "channel": "c_general", "author": "bo", "ts": 20, "text": "hello" },
+        });
+        record["drafts"] = json!({ "c_general": { "$text": "half a thought" } });
+        record["read"] = json!({ "ada": { "c_general": 2 }, "bo": { "c_general": 1 } });
+        let kept_flat = json!({
+            "messages": {
+                "c_general": [
+                    { "id": "m1", "author": "ada", "ts": 10, "text": { "$text": "first" } },
+                    { "id": "m2", "author": "bo", "ts": 20, "text": { "$text": "second" } },
+                ],
             },
-        }),
-    )
-    .unwrap();
-    at_version(doc, 4);
-    doc.commit();
-    let mut old = doc.fork();
-    assert!(evolution::read_checked::<Chat>(&old).is_err(), "unmigrated");
-    assert!(evolution::migrate::<Chat>(&mut old).unwrap());
-    let chat = evolution::read_checked::<Chat>(&old).unwrap();
-    let report = chat.feedback.values().next().unwrap();
-    assert_eq!(report.submission, Some(submission()));
-    assert_eq!(
-        report.triage.values().next().unwrap().update,
-        Some(crate::feedback::TriageUpdate::Investigating)
-    );
-    let decision = chat.moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.reports, ["r1"]);
-    assert!(decision.reverted.is_empty());
+        });
+        for (version, shape) in [(2, &record), (1, &record), (1, &kept_flat)] {
+            let mut replica = Replica::<Chat>::new();
+            let doc = replica.doc_mut();
+            evolution::fixture(doc, &ROOT, shape).unwrap();
+            at_version(doc, version);
+            doc.commit();
+            let mut old = doc.fork();
+            let messages = stored(&old, "messages");
+            let drafts = stored(&old, "drafts");
+            assert!(evolution::migrate::<Chat>(&mut old).unwrap());
+            assert_eq!(evolution::stored_version(&old), Chat::VERSION);
+            assert!(evolution::read_checked::<Chat>(&old).is_ok());
+            assert!(messages.is_some());
+            assert_eq!(stored(&old, "messages"), messages, "version {version}");
+            assert_eq!(stored(&old, "drafts"), drafts, "version {version}");
+            if shape.get("read").is_some() {
+                assert_eq!(
+                    stored(&old, "read_counts"),
+                    Some(json!({
+                        "ada": { "c_general": "Int(2)" },
+                        "bo": { "c_general": "Int(1)" },
+                    }))
+                );
+            }
+        }
+    }
+
+    phase the_messages_a_chat_kept_read_under_their_own_ids_authors_and_times;
+    {
+        let expected = [
+            ("m1".to_owned(), "ada".to_owned(), 10, "first".to_owned()),
+            (
+                "m3".to_owned(),
+                "ada".to_owned(),
+                15,
+                "elsewhere".to_owned(),
+            ),
+            (
+                "m2".to_owned(),
+                crate::testing::BO.to_owned(),
+                20,
+                "second".to_owned(),
+            ),
+        ];
+        for (version, flat) in [(2, false), (1, false), (1, true)] {
+            let mut doc = crate::testing::chat_with_kept_messages(version, flat);
+            assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+            assert_eq!(kept(&doc), expected, "version {version}, flat {flat}");
+            assert!(evolution::migrate::<Chat>(&mut doc).is_ok());
+            assert_eq!(kept(&doc), expected, "opened again");
+        }
+    }
+
+    phase two_devices_upgrading_the_same_chat_merge_into_one_copy_of_each_kept_message;
+    {
+        let mut first = crate::testing::chat_with_kept_messages(2, false);
+        let mut second = first.fork();
+        assert!(evolution::migrate::<Chat>(&mut first).unwrap());
+        assert!(evolution::migrate::<Chat>(&mut second).unwrap());
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut first, &mut second).unwrap();
+        let ids: Vec<String> = kept(&first).into_iter().map(|(id, ..)| id).collect();
+        assert_eq!(ids, ["m1", "m3", "m2"]);
+    }
+
+    phase a_chat_record_of_version_six_opens_with_its_triage_updates_stored_by_variant;
+    // A chat record of version 6: a triage step's update stored with its
+    // fields flat beside its variant's name.
+    {
+        let mut replica = Replica::<Chat>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &ROOT,
+            &json!({
+                "feedback": {
+                    "f1": {
+                        "k": "a",
+                        "v": {
+                            "author": "ada",
+                            "ts": 1,
+                            "triage": {
+                                "t1": {
+                                    "k": "a",
+                                    "v": {
+                                        "author": "mod",
+                                        "ts": 2,
+                                        "update": {"$variant": "duplicate", "report": {"$text": "r9"}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }),
+        )
+        .unwrap();
+        at_version(doc, 6);
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::read_checked::<Chat>(&old).is_err(), "unmigrated");
+        assert!(evolution::migrate::<Chat>(&mut old).unwrap());
+        let chat = evolution::read_checked::<Chat>(&old).unwrap();
+        let report = chat.feedback.values().next().unwrap();
+        assert_eq!(
+            report.triage.values().next().unwrap().update,
+            Some(crate::feedback::TriageUpdate::Duplicate {
+                report: "r9".into(),
+            })
+        );
+        assert_eq!(
+            keys_at(
+                &old,
+                &["feedback", "f1", "v", "triage", "t1", "v", "update"]
+            ),
+            ["$field/duplicate/report", "$variant"],
+            "the update's field is stored by its variant"
+        );
+    }
 }
 
 /// The version-1 chat document holding one message with `body` and every
@@ -148,170 +387,372 @@ fn version_one_message(body: &[tilo_document::ClipBlock]) -> ui::serde_json::Val
     })
 }
 
-/// A part of the chat's messages of version 1: a message's paragraphs,
-/// earlier texts, mentions, attachment, shown name and an agent's work as
-/// JSON text.
-#[test]
-fn a_message_part_of_version_one_opens_with_every_message_value() {
-    let body = vec![tilo_document::ClipBlock {
-        kind: "paragraph".into(),
-        text: "hi @Bo".into(),
-        marks: Vec::new(),
-        level: None,
-        ordered: None,
-        align: None,
-        attrs: std::collections::BTreeMap::new(),
-    }];
-    let mut replica = Replica::<ChatPart>::new();
-    let doc = replica.doc_mut();
-    evolution::fixture(doc, &ROOT, &version_one_message(&body)).unwrap();
-    Slot::Key(&ROOT, evolution::VERSION_KEY)
-        .remove(doc)
-        .unwrap();
-    doc.commit();
-    let mut old = doc.fork();
-    assert!(
-        evolution::read_checked::<ChatPart>(&old).is_err(),
-        "unmigrated"
-    );
-    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
-    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
-    // How the agent planned is the run's own record: the part keeps none of it.
-    let messages = stored(&old, "messages").unwrap().to_string();
-    assert!(!messages.contains("its words"), "{messages}");
-    let message = part.messages.values().next().unwrap();
-    assert_eq!(message.body, body);
-    assert_eq!(
-        message.history,
-        [Revision {
-            ts: 5,
-            text: "hey".into()
-        }]
-    );
-    assert_eq!(message.mentions[0].user, "u_bo");
-    assert_eq!(
-        message.attachments,
-        [tilo_reference::Attached::File {
-            name: "a.txt".into(),
-            blob: "ff".into(),
-            size: 5,
-        }],
-        "the file it carried moved to its attachments"
-    );
-    assert_eq!(
-        message.appearance,
-        Some(ShownAs {
-            name: "Bo".into(),
-            avatar: None,
-            persona: None,
-        })
-    );
-    let work = message.work.as_ref().unwrap();
-    assert_eq!(
-        work.state,
-        Some(Transition {
-            state: AgentWorkState::Taken,
-            since: 11,
-        })
-    );
-    assert_eq!(
-        work.stream.as_ref().unwrap().finish,
-        Some(AgentFinish::Complete)
-    );
-    assert_eq!(
-        work.trace.iter().next().unwrap().outcome,
-        Some(AgentStepOutcome::Refused {
-            why: "no such page".into(),
-        })
-    );
-}
+tilo_test_env::scenario! {
+    /// A part of the chat's messages stored by each version that shipped, opened by this one.
+    fn a_message_part_of_each_shipped_version_opens_with_what_it_kept;
 
-#[test]
-fn a_chat_kept_flat_before_the_model_opens_with_its_channels_and_categories() {
-    use crate::model::ChannelKind;
-    for version in [5, 1] {
-        let mut doc = crate::testing::chat_kept_flat(version);
-        assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
-        let chat = evolution::read_checked::<Chat>(&doc).unwrap();
-        assert_eq!(
-            chat.categories
-                .iter()
-                .map(|(id, category)| (id.to_string(), category.name.clone()))
-                .collect::<Vec<_>>(),
-            [
-                ("cat_home_text".to_owned(), "Channels".to_owned()),
-                ("cat_home_voice".to_owned(), "Voice".to_owned()),
-            ],
-            "version {version}"
-        );
-        let mut channels: Vec<_> = chat
-            .channels
-            .iter()
-            .map(|(id, channel)| {
-                (
-                    id.to_string(),
-                    channel.name.clone(),
-                    channel.category.as_ref().map(ToString::to_string),
-                    channel.kind,
-                )
-            })
-            .collect();
-        channels.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(
-            channels,
-            [
-                (
-                    "c_general".to_owned(),
-                    "general".to_owned(),
-                    Some("cat_home_text".to_owned()),
-                    ChannelKind::Text
-                ),
-                (
-                    "c_lounge".to_owned(),
-                    "Lounge".to_owned(),
-                    Some("cat_home_voice".to_owned()),
-                    ChannelKind::Voice
-                ),
-            ],
-            "version {version}"
-        );
-        let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
-            .unwrap()
+    phase a_message_part_of_version_one_opens_with_every_message_value;
+    // A part of the chat's messages of version 1: a message's paragraphs,
+    // earlier texts, mentions, attachment, shown name and an agent's work as
+    // JSON text.
+    {
+        let body = vec![tilo_document::ClipBlock {
+            kind: "paragraph".into(),
+            text: "hi @Bo".into(),
+            marks: Vec::new(),
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::new(),
+        }];
+        let mut replica = Replica::<ChatPart>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(doc, &ROOT, &version_one_message(&body)).unwrap();
+        Slot::Key(&ROOT, evolution::VERSION_KEY)
+            .remove(doc)
             .unwrap();
-        let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
-            .unwrap()
-            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
         assert!(
-            ui::automerge::ReadDoc::get(&doc, &text, "name")
-                .unwrap()
-                .is_some(),
-            "the flat fields stay"
+            evolution::read_checked::<ChatPart>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+        let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+        // How the agent planned is the run's own record: the part keeps none of it.
+        let messages = stored(&old, "messages").unwrap().to_string();
+        assert!(!messages.contains("its words"), "{messages}");
+        let message = part.messages.values().next().unwrap();
+        assert_eq!(message.body, body);
+        assert_eq!(
+            message.history,
+            [Revision {
+                ts: 5,
+                text: "hey".into()
+            }]
+        );
+        assert_eq!(message.mentions[0].user, "u_bo");
+        assert_eq!(
+            message.attachments,
+            [tilo_reference::Attached::File {
+                name: "a.txt".into(),
+                blob: "ff".into(),
+                size: 5,
+            }],
+            "the file it carried moved to its attachments"
+        );
+        assert_eq!(
+            message.appearance,
+            Some(ShownAs {
+                name: "Bo".into(),
+                avatar: None,
+                persona: None,
+            })
+        );
+        let work = message.work.as_ref().unwrap();
+        assert_eq!(
+            work.state,
+            Some(Transition {
+                state: AgentWorkState::Taken,
+                since: 11,
+            })
+        );
+        assert_eq!(
+            work.stream.as_ref().unwrap().finish,
+            Some(AgentFinish::Complete)
+        );
+        assert_eq!(
+            work.trace.iter().next().unwrap().outcome,
+            Some(AgentStepOutcome::Refused {
+                why: "no such page".into(),
+            })
         );
     }
-}
 
-#[test]
-fn a_name_the_item_holds_is_kept_over_its_flat_one() {
-    let mut doc = crate::testing::chat_kept_flat(5);
-    let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
-        .unwrap()
+    phase a_message_part_of_version_three_keeps_the_record_it_was_written_by;
+    // A part of the chat's messages of version 3: a message written by sharing
+    // a record keeps the record it names, as the attachment it now carries.
+    {
+        let mut replica = Replica::<ChatPart>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &ROOT,
+            &json!({
+                "messages": {
+                    "m1": {
+                        "k": "a",
+                        "v": {
+                            "channel": "c_general",
+                            "author": "ada",
+                            "ts": 10,
+                            "text": "Discuss resource",
+                            "body": "[]",
+                            "reactions": {},
+                            "mentions": "[]",
+                            "reference": {
+                                "kind": "notes.page",
+                                "id": "notes.page:1",
+                                "label": "Plan",
+                                "span": {"start": 6, "end": 9, "unit": "chars"},
+                            },
+                            "source_provider": "record:so.tilo.notes:plan",
+                            "share": {"access": "view", "ended": false, "open": true},
+                        },
+                    },
+                },
+            }),
+        )
         .unwrap();
-    let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
-        .unwrap()
+        at_version(doc, 3);
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(
+            evolution::read_checked::<ChatPart>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+        let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+        let message = part.messages.values().next().unwrap();
+        let reference = tilo_reference::ResourceRef::ranged(
+            "notes.page",
+            "notes.page:1",
+            "Plan",
+            tilo_reference::Span::chars(6, 9),
+        );
+        assert_eq!(
+            message.attachments,
+            [tilo_reference::Attached::resource(
+                tilo_reference::ResourceAt {
+                    app: "so.tilo.notes".into(),
+                    record: Some("plan".into()),
+                    reference,
+                },
+                None,
+                "Plan",
+            )],
+            "the record it named is what it carries"
+        );
+        assert_eq!(
+            message.share.as_ref().map(|share| share.access),
+            Some(crate::record::ShareAccess::View),
+            "its live share is untouched"
+        );
+    }
+
+    phase a_message_part_of_version_three_keeps_the_words_of_a_record_it_cannot_address;
+    // A part of the chat's messages of version 3: a message written by sharing
+    // a record whose app was never known keeps its words, quoted, rather than
+    // an address nothing could open.
+    {
+        let mut replica = Replica::<ChatPart>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &ROOT,
+            &json!({
+                "messages": {
+                    "m1": {
+                        "k": "a",
+                        "v": {
+                            "channel": "c_general",
+                            "author": "ada",
+                            "ts": 10,
+                            "text": "Discuss resource",
+                            "body": "[]",
+                            "reactions": {},
+                            "mentions": "[]",
+                            "reference": {
+                                "kind": "notes.page",
+                                "id": "notes.page:1",
+                                "label": "Plan",
+                                "span": {"start": 6, "end": 9, "unit": "chars"},
+                            },
+                        },
+                    },
+                },
+            }),
+        )
         .unwrap();
-    let (_, held) = ui::automerge::ReadDoc::get(&doc, &text, "v")
-        .unwrap()
+        at_version(doc, 3);
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+        let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+        let message = part.messages.values().next().unwrap();
+        assert_eq!(
+            message.attachments,
+            [tilo_reference::Attached::Text {
+                text: "Plan".into(),
+                from: None,
+            }]
+        );
+    }
+
+    phase a_message_part_from_before_a_quoted_run_keeps_its_messages_and_reads_no_run;
+    // A part of the chat's messages from before a reply could quote a run of another: every message
+    // keeps its id, its words and everything else it held, and reads with no quoted run, because
+    // none was written. A reply's `parent` alone still says what it answers.
+    {
+        let mut replica = Replica::<ChatPart>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &ROOT,
+            &json!({
+                "messages": {
+                    "m1": {
+                        "k": "a",
+                        "v": {
+                            "channel": "c_chat",
+                            "author": "ada",
+                            "ts": 10,
+                            "text": {"$text": "The curve is flat, then climbs."},
+                        },
+                    },
+                    "m2": {
+                        "k": "b",
+                        "v": {
+                            "channel": "c_chat",
+                            "author": "bo",
+                            "ts": 20,
+                            "text": {"$text": "so the summer is the flat one"},
+                            "parent": "m1",
+                        },
+                    },
+                },
+            }),
+        )
         .unwrap();
-    ui::tilo_resource::write_key(&mut doc, &held, "name", &"Text".to_owned()).unwrap();
-    doc.commit();
-    assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
-    let chat = evolution::read_checked::<Chat>(&doc).unwrap();
-    assert_eq!(
-        chat.categories
-            .get(&ui::tilo_resource::Id::from_raw("cat_home_text"))
-            .map(|category| category.name.as_str()),
-        Some("Text")
-    );
+        at_version(doc, 5);
+        doc.commit();
+        let old = doc.fork();
+        // A message that quotes no run adds a field a part already reads as absent: nothing stored
+        // changes, so no migration runs and the part opens as it stands.
+        assert!(
+            !evolution::needs_migrate::<ChatPart>(&old),
+            "a field a part reads when absent needs no migration"
+        );
+        let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+        let ids: Vec<String> = part.messages.iter().map(|(id, _)| id.to_string()).collect();
+        assert_eq!(ids, ["m1", "m2"], "every message keeps its own id");
+        let reply = part
+            .messages
+            .get(&ui::tilo_resource::Id::from_raw("m2"))
+            .expect("the reply is held");
+        assert_eq!(reply.parent, Some(ui::tilo_resource::Id::from_raw("m1")));
+        assert_eq!(
+            reply.quoted, None,
+            "a part written before a reply could quote a run reads no run, never one it made up"
+        );
+        assert_eq!(reply.text, "so the summer is the flat one");
+    }
+
+    phase a_message_part_of_version_two_opens_with_its_variants_stored_by_variant;
+    // A part of the chat's messages of version 2: an attachment's, an agent's
+    // state's and an operation's outcome's fields flat beside their variant's
+    // name.
+    {
+        let mut replica = Replica::<ChatPart>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &ROOT,
+            &json!({
+                "messages": {
+                    "m1": {
+                        "k": "a",
+                        "v": {
+                            "channel": "c_general",
+                            "author": "ada",
+                            "ts": 10,
+                            "attachment": {
+                                "$variant": "image",
+                                "name": {"$text": "a.png"},
+                                "blob": {"$text": "ff"},
+                                "w": 2,
+                                "h": 3,
+                            },
+                            "work": {
+                                "state": {
+                                    "state": {
+                                        "$variant": "doing",
+                                        "did": {"$text": "rename"},
+                                        "about": {"$text": "page"},
+                                    },
+                                    "since": 12,
+                                },
+                                "trace": {
+                                    "s1": {
+                                        "id": "s1",
+                                        "sequence": 1,
+                                        "resource": "notes.page:1",
+                                        "label": "Rename",
+                                        "outcome": {"$variant": "refused", "why": {"$text": "no such page"}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }),
+        )
+        .unwrap();
+        at_version(doc, 2);
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(
+            evolution::read_checked::<ChatPart>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+        let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+        let message = part.messages.values().next().unwrap();
+        assert_eq!(
+            message.attachments,
+            [tilo_reference::Attached::Image {
+                name: "a.png".into(),
+                blob: "ff".into(),
+                w: 2,
+                h: 3,
+            }]
+        );
+        let work = message.work.as_ref().unwrap();
+        assert_eq!(
+            work.state,
+            Some(Transition {
+                state: AgentWorkState::Doing {
+                    did: "rename".into(),
+                    about: "page".into(),
+                },
+                since: 12,
+            })
+        );
+        assert_eq!(
+            work.trace.iter().next().unwrap().outcome,
+            Some(AgentStepOutcome::Refused {
+                why: "no such page".into(),
+            })
+        );
+        let fields = keys_at(&old, &["messages", "m1", "v"]);
+        assert!(
+            fields.iter().any(|key| key == "attachments"),
+            "the file moved to the message's attachments: {fields:?}"
+        );
+        assert!(
+            !fields
+                .iter()
+                .any(|key| matches!(key.as_str(), "attachment" | "reference" | "source_provider")),
+            "the fields it replaced are gone: {fields:?}"
+        );
+        assert_eq!(
+            keys_at(
+                &old,
+                &["messages", "m1", "v", "work", "trace", "s1", "outcome"]
+            ),
+            ["$field/refused/why", "$variant"]
+        );
+    }
 }
 
 /// Everything stored under `key` of the document's root, as JSON.
@@ -345,239 +786,6 @@ fn stored(doc: &ui::tilo_resource::Doc, key: &str) -> Option<ui::serde_json::Val
     Some(json_of(doc, found, &id))
 }
 
-#[test]
-fn a_chat_of_version_one_or_two_keeps_every_message_draft_and_read_count() {
-    use ui::tilo_resource::Resource as _;
-    let body = vec![tilo_document::ClipBlock {
-        kind: "paragraph".into(),
-        text: "hi @Bo".into(),
-        marks: Vec::new(),
-        level: None,
-        ordered: None,
-        align: None,
-        attrs: std::collections::BTreeMap::new(),
-    }];
-    let mut record = version_one_message(&body);
-    record["messages"]["m2"] = json!({
-        "k": "b",
-        "v": { "channel": "c_general", "author": "bo", "ts": 20, "text": "hello" },
-    });
-    record["drafts"] = json!({ "c_general": { "$text": "half a thought" } });
-    record["read"] = json!({ "ada": { "c_general": 2 }, "bo": { "c_general": 1 } });
-    let kept_flat = json!({
-        "messages": {
-            "c_general": [
-                { "id": "m1", "author": "ada", "ts": 10, "text": { "$text": "first" } },
-                { "id": "m2", "author": "bo", "ts": 20, "text": { "$text": "second" } },
-            ],
-        },
-    });
-    for (version, shape) in [(2, &record), (1, &record), (1, &kept_flat)] {
-        let mut replica = Replica::<Chat>::new();
-        let doc = replica.doc_mut();
-        evolution::fixture(doc, &ROOT, shape).unwrap();
-        at_version(doc, version);
-        doc.commit();
-        let mut old = doc.fork();
-        let messages = stored(&old, "messages");
-        let drafts = stored(&old, "drafts");
-        assert!(evolution::migrate::<Chat>(&mut old).unwrap());
-        assert_eq!(evolution::stored_version(&old), Chat::VERSION);
-        assert!(evolution::read_checked::<Chat>(&old).is_ok());
-        assert!(messages.is_some());
-        assert_eq!(stored(&old, "messages"), messages, "version {version}");
-        assert_eq!(stored(&old, "drafts"), drafts, "version {version}");
-        if shape.get("read").is_some() {
-            assert_eq!(
-                stored(&old, "read_counts"),
-                Some(json!({
-                    "ada": { "c_general": "Int(2)" },
-                    "bo": { "c_general": "Int(1)" },
-                }))
-            );
-        }
-    }
-}
-
-/// A part of the chat's messages of version 3: a message written by sharing
-/// a record keeps the record it names, as the attachment it now carries.
-#[test]
-fn a_message_part_of_version_three_keeps_the_record_it_was_written_by() {
-    let mut replica = Replica::<ChatPart>::new();
-    let doc = replica.doc_mut();
-    evolution::fixture(
-        doc,
-        &ROOT,
-        &json!({
-            "messages": {
-                "m1": {
-                    "k": "a",
-                    "v": {
-                        "channel": "c_general",
-                        "author": "ada",
-                        "ts": 10,
-                        "text": "Discuss resource",
-                        "body": "[]",
-                        "reactions": {},
-                        "mentions": "[]",
-                        "reference": {
-                            "kind": "notes.page",
-                            "id": "notes.page:1",
-                            "label": "Plan",
-                            "span": {"start": 6, "end": 9, "unit": "chars"},
-                        },
-                        "source_provider": "record:so.tilo.notes:plan",
-                        "share": {"access": "view", "ended": false, "open": true},
-                    },
-                },
-            },
-        }),
-    )
-    .unwrap();
-    at_version(doc, 3);
-    doc.commit();
-    let mut old = doc.fork();
-    assert!(
-        evolution::read_checked::<ChatPart>(&old).is_err(),
-        "unmigrated"
-    );
-    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
-    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
-    let message = part.messages.values().next().unwrap();
-    let reference = tilo_reference::ResourceRef::ranged(
-        "notes.page",
-        "notes.page:1",
-        "Plan",
-        tilo_reference::Span::chars(6, 9),
-    );
-    assert_eq!(
-        message.attachments,
-        [tilo_reference::Attached::resource(
-            tilo_reference::ResourceAt {
-                app: "so.tilo.notes".into(),
-                record: Some("plan".into()),
-                reference,
-            },
-            None,
-            "Plan",
-        )],
-        "the record it named is what it carries"
-    );
-    assert_eq!(
-        message.share.as_ref().map(|share| share.access),
-        Some(crate::record::ShareAccess::View),
-        "its live share is untouched"
-    );
-}
-
-/// A part of the chat's messages of version 3: a message written by sharing
-/// a record whose app was never known keeps its words, quoted, rather than
-/// an address nothing could open.
-#[test]
-fn a_message_part_of_version_three_keeps_the_words_of_a_record_it_cannot_address() {
-    let mut replica = Replica::<ChatPart>::new();
-    let doc = replica.doc_mut();
-    evolution::fixture(
-        doc,
-        &ROOT,
-        &json!({
-            "messages": {
-                "m1": {
-                    "k": "a",
-                    "v": {
-                        "channel": "c_general",
-                        "author": "ada",
-                        "ts": 10,
-                        "text": "Discuss resource",
-                        "body": "[]",
-                        "reactions": {},
-                        "mentions": "[]",
-                        "reference": {
-                            "kind": "notes.page",
-                            "id": "notes.page:1",
-                            "label": "Plan",
-                            "span": {"start": 6, "end": 9, "unit": "chars"},
-                        },
-                    },
-                },
-            },
-        }),
-    )
-    .unwrap();
-    at_version(doc, 3);
-    doc.commit();
-    let mut old = doc.fork();
-    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
-    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
-    let message = part.messages.values().next().unwrap();
-    assert_eq!(
-        message.attachments,
-        [tilo_reference::Attached::Text {
-            text: "Plan".into(),
-            from: None,
-        }]
-    );
-}
-
-/// A part of the chat's messages from before a reply could quote a run of another: every message
-/// keeps its id, its words and everything else it held, and reads with no quoted run, because
-/// none was written. A reply's `parent` alone still says what it answers.
-#[test]
-fn a_message_part_from_before_a_quoted_run_keeps_its_messages_and_reads_no_run() {
-    let mut replica = Replica::<ChatPart>::new();
-    let doc = replica.doc_mut();
-    evolution::fixture(
-        doc,
-        &ROOT,
-        &json!({
-            "messages": {
-                "m1": {
-                    "k": "a",
-                    "v": {
-                        "channel": "c_chat",
-                        "author": "ada",
-                        "ts": 10,
-                        "text": {"$text": "The curve is flat, then climbs."},
-                    },
-                },
-                "m2": {
-                    "k": "b",
-                    "v": {
-                        "channel": "c_chat",
-                        "author": "bo",
-                        "ts": 20,
-                        "text": {"$text": "so the summer is the flat one"},
-                        "parent": "m1",
-                    },
-                },
-            },
-        }),
-    )
-    .unwrap();
-    at_version(doc, 5);
-    doc.commit();
-    let old = doc.fork();
-    // A message that quotes no run adds a field a part already reads as absent: nothing stored
-    // changes, so no migration runs and the part opens as it stands.
-    assert!(
-        !evolution::needs_migrate::<ChatPart>(&old),
-        "a field a part reads when absent needs no migration"
-    );
-    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
-    let ids: Vec<String> = part.messages.iter().map(|(id, _)| id.to_string()).collect();
-    assert_eq!(ids, ["m1", "m2"], "every message keeps its own id");
-    let reply = part
-        .messages
-        .get(&ui::tilo_resource::Id::from_raw("m2"))
-        .expect("the reply is held");
-    assert_eq!(reply.parent, Some(ui::tilo_resource::Id::from_raw("m1")));
-    assert_eq!(
-        reply.quoted, None,
-        "a part written before a reply could quote a run reads no run, never one it made up"
-    );
-    assert_eq!(reply.text, "so the summer is the flat one");
-}
-
 /// Each kept message: its id, author, time and text.
 fn kept(doc: &ui::tilo_resource::Doc) -> Vec<(String, String, i64, String)> {
     crate::record::kept_messages(doc)
@@ -593,43 +801,6 @@ fn kept(doc: &ui::tilo_resource::Doc) -> Vec<(String, String, i64, String)> {
         .collect()
 }
 
-#[test]
-fn the_messages_a_chat_kept_read_under_their_own_ids_authors_and_times() {
-    let expected = [
-        ("m1".to_owned(), "ada".to_owned(), 10, "first".to_owned()),
-        (
-            "m3".to_owned(),
-            "ada".to_owned(),
-            15,
-            "elsewhere".to_owned(),
-        ),
-        (
-            "m2".to_owned(),
-            crate::testing::BO.to_owned(),
-            20,
-            "second".to_owned(),
-        ),
-    ];
-    for (version, flat) in [(2, false), (1, false), (1, true)] {
-        let mut doc = crate::testing::chat_with_kept_messages(version, flat);
-        assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
-        assert_eq!(kept(&doc), expected, "version {version}, flat {flat}");
-        assert!(evolution::migrate::<Chat>(&mut doc).is_ok());
-        assert_eq!(kept(&doc), expected, "opened again");
-    }
-}
-
-#[test]
-fn two_devices_upgrading_the_same_chat_merge_into_one_copy_of_each_kept_message() {
-    let mut first = crate::testing::chat_with_kept_messages(2, false);
-    let mut second = first.fork();
-    assert!(evolution::migrate::<Chat>(&mut first).unwrap());
-    assert!(evolution::migrate::<Chat>(&mut second).unwrap());
-    tilo_automerge::ApplyIncoming::merge_incoming(&mut first, &mut second).unwrap();
-    let ids: Vec<String> = kept(&first).into_iter().map(|(id, ..)| id).collect();
-    assert_eq!(ids, ["m1", "m3", "m2"]);
-}
-
 /// The keys of the map at `path` below the root, sorted.
 fn keys_at(doc: &ui::tilo_resource::Doc, path: &[&str]) -> Vec<String> {
     use ui::automerge::ReadDoc as _;
@@ -640,165 +811,4 @@ fn keys_at(doc: &ui::tilo_resource::Doc, path: &[&str]) -> Vec<String> {
     let mut keys: Vec<String> = doc.keys(&obj).collect();
     keys.sort();
     keys
-}
-
-/// A chat record of version 6: a triage step's update stored with its
-/// fields flat beside its variant's name.
-#[test]
-fn a_chat_record_of_version_six_opens_with_its_triage_updates_stored_by_variant() {
-    let mut replica = Replica::<Chat>::new();
-    let doc = replica.doc_mut();
-    evolution::fixture(
-        doc,
-        &ROOT,
-        &json!({
-            "feedback": {
-                "f1": {
-                    "k": "a",
-                    "v": {
-                        "author": "ada",
-                        "ts": 1,
-                        "triage": {
-                            "t1": {
-                                "k": "a",
-                                "v": {
-                                    "author": "mod",
-                                    "ts": 2,
-                                    "update": {"$variant": "duplicate", "report": {"$text": "r9"}},
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        }),
-    )
-    .unwrap();
-    at_version(doc, 6);
-    doc.commit();
-    let mut old = doc.fork();
-    assert!(evolution::read_checked::<Chat>(&old).is_err(), "unmigrated");
-    assert!(evolution::migrate::<Chat>(&mut old).unwrap());
-    let chat = evolution::read_checked::<Chat>(&old).unwrap();
-    let report = chat.feedback.values().next().unwrap();
-    assert_eq!(
-        report.triage.values().next().unwrap().update,
-        Some(crate::feedback::TriageUpdate::Duplicate {
-            report: "r9".into(),
-        })
-    );
-    assert_eq!(
-        keys_at(
-            &old,
-            &["feedback", "f1", "v", "triage", "t1", "v", "update"]
-        ),
-        ["$field/duplicate/report", "$variant"],
-        "the update's field is stored by its variant"
-    );
-}
-
-/// A part of the chat's messages of version 2: an attachment's, an agent's
-/// state's and an operation's outcome's fields flat beside their variant's
-/// name.
-#[test]
-fn a_message_part_of_version_two_opens_with_its_variants_stored_by_variant() {
-    let mut replica = Replica::<ChatPart>::new();
-    let doc = replica.doc_mut();
-    evolution::fixture(
-        doc,
-        &ROOT,
-        &json!({
-            "messages": {
-                "m1": {
-                    "k": "a",
-                    "v": {
-                        "channel": "c_general",
-                        "author": "ada",
-                        "ts": 10,
-                        "attachment": {
-                            "$variant": "image",
-                            "name": {"$text": "a.png"},
-                            "blob": {"$text": "ff"},
-                            "w": 2,
-                            "h": 3,
-                        },
-                        "work": {
-                            "state": {
-                                "state": {
-                                    "$variant": "doing",
-                                    "did": {"$text": "rename"},
-                                    "about": {"$text": "page"},
-                                },
-                                "since": 12,
-                            },
-                            "trace": {
-                                "s1": {
-                                    "id": "s1",
-                                    "sequence": 1,
-                                    "resource": "notes.page:1",
-                                    "label": "Rename",
-                                    "outcome": {"$variant": "refused", "why": {"$text": "no such page"}},
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        }),
-    )
-    .unwrap();
-    at_version(doc, 2);
-    doc.commit();
-    let mut old = doc.fork();
-    assert!(
-        evolution::read_checked::<ChatPart>(&old).is_err(),
-        "unmigrated"
-    );
-    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
-    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
-    let message = part.messages.values().next().unwrap();
-    assert_eq!(
-        message.attachments,
-        [tilo_reference::Attached::Image {
-            name: "a.png".into(),
-            blob: "ff".into(),
-            w: 2,
-            h: 3,
-        }]
-    );
-    let work = message.work.as_ref().unwrap();
-    assert_eq!(
-        work.state,
-        Some(Transition {
-            state: AgentWorkState::Doing {
-                did: "rename".into(),
-                about: "page".into(),
-            },
-            since: 12,
-        })
-    );
-    assert_eq!(
-        work.trace.iter().next().unwrap().outcome,
-        Some(AgentStepOutcome::Refused {
-            why: "no such page".into(),
-        })
-    );
-    let fields = keys_at(&old, &["messages", "m1", "v"]);
-    assert!(
-        fields.iter().any(|key| key == "attachments"),
-        "the file moved to the message's attachments: {fields:?}"
-    );
-    assert!(
-        !fields
-            .iter()
-            .any(|key| matches!(key.as_str(), "attachment" | "reference" | "source_provider")),
-        "the fields it replaced are gone: {fields:?}"
-    );
-    assert_eq!(
-        keys_at(
-            &old,
-            &["messages", "m1", "v", "work", "trace", "s1", "outcome"]
-        ),
-        ["$field/refused/why", "$variant"]
-    );
 }

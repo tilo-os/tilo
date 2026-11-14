@@ -116,34 +116,220 @@ pub(super) fn post(text: &str) -> Invoke<ChatPart> {
     post_to("c_chat", text)
 }
 
-#[test]
-fn a_bridges_post_keeps_the_name_it_showed_and_a_persons_does_not() {
-    let shown = tilo_actions::Appearance {
-        name: "Grace".into(),
-        avatar: Some("ab".repeat(32)),
-        persona: None,
-    };
-    let mut ada = Talk::new();
-    let mut bridge = ada
-        .part
-        .fork()
-        .as_bot_for("5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1", ADA)
-        .showing(shown.clone());
-    bridge.apply(post("from Discord")).unwrap();
-    ada.part.sync_with(&mut bridge).unwrap();
-    let mut posing = ada.part.fork().as_author(BO).showing(shown.clone());
-    posing.apply(post("not Grace")).unwrap();
-    ada.part.sync_with(&mut posing).unwrap();
-    let rows = ada.rows("c_chat");
-    let of = |text: &str| rows.iter().find(|row| row.text == text).unwrap();
-    let bridged = of("from Discord");
-    assert_eq!(bridged.author, "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1");
-    assert_eq!(bridged.appearance.as_ref(), Some(&shown), "shown as Grace");
-    assert_eq!(
-        of("not Grace").appearance,
-        None,
-        "only a bot shows another name"
-    );
+tilo_test_env::scenario! {
+    /// Who a post is by, and what its author, a member, a guest and a moderator may change.
+    fn authors_and_moderators_decide_what_changes_in_the_record;
+
+    phase a_bridges_post_keeps_the_name_it_showed_and_a_persons_does_not;
+    {
+        let shown = tilo_actions::Appearance {
+            name: "Grace".into(),
+            avatar: Some("ab".repeat(32)),
+            persona: None,
+        };
+        let mut ada = Talk::new();
+        let mut bridge = ada
+            .part
+            .fork()
+            .as_bot_for("5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1", ADA)
+            .showing(shown.clone());
+        bridge.apply(post("from Discord")).unwrap();
+        ada.part.sync_with(&mut bridge).unwrap();
+        let mut posing = ada.part.fork().as_author(BO).showing(shown.clone());
+        posing.apply(post("not Grace")).unwrap();
+        ada.part.sync_with(&mut posing).unwrap();
+        let rows = ada.rows("c_chat");
+        let of = |text: &str| rows.iter().find(|row| row.text == text).unwrap();
+        let bridged = of("from Discord");
+        assert_eq!(bridged.author, "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1");
+        assert_eq!(bridged.appearance.as_ref(), Some(&shown), "shown as Grace");
+        assert_eq!(
+            of("not Grace").appearance,
+            None,
+            "only a bot shows another name"
+        );
+    }
+
+    phase a_member_cannot_backdate_a_post;
+    {
+        let mut ada = Talk::new();
+        ada.set_now_ms(1_234_000);
+        ada.apply(ChatPart::POST.with(chat_part::Post {
+            message: NewMessage {
+                written: Some(5),
+                ..post_fields("c_chat", "from the past")
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            ada.rows("c_chat")[0].ts,
+            1234,
+            "only a message a bot brings over keeps when it was written"
+        );
+    }
+
+    phase an_agent_is_named_once_for_everyone;
+    {
+        const AGENT: &str = "agent-task:33333333-3333-4333-8333-333333333333";
+        let mut ada = workspace();
+        ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
+            participant: AGENT.into(),
+            name: "Tide".parse().unwrap(),
+        }))
+        .unwrap();
+        assert!(
+            ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
+                participant: BO.into(),
+                name: "Not an agent".parse().unwrap(),
+            }))
+            .is_err()
+        );
+        let names = ada.state().unwrap().agent_authors();
+        assert_eq!(names.get(AGENT).map(String::as_str), Some("Tide"));
+        assert_eq!(names.len(), 1);
+    }
+
+    phase only_the_author_edits_or_deletes_and_a_moderator_removes;
+    {
+        let mut ada = Talk::new();
+        ada.apply(post("mine")).unwrap();
+        let message = ada.said("mine");
+        let mut bo = ada.fork_as(BO);
+        assert!(
+            bo.apply(ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+                message: message.clone(),
+                text: "yours now".into(),
+                body: None,
+                mentions: None,
+            }))
+            .is_err(),
+            "nobody edits another's message"
+        );
+        assert!(
+            bo.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
+                message: message.clone(),
+            }))
+            .is_err(),
+            "nobody deletes another's message"
+        );
+        assert_eq!(bo.messages().len(), 1);
+        bo.apply(ChatPart::REMOVE_MESSAGE.with(chat_part::RemoveMessage { message }))
+            .unwrap();
+        assert!(bo.messages().is_empty());
+    }
+
+    phase removing_a_message_sits_under_the_moderation_node;
+    {
+        let field = |id: &str| {
+            ChatPart::declarations()
+                .into_iter()
+                .find(|decl| decl.id == id)
+                .map(|decl| decl.field)
+        };
+        assert_eq!(
+            field("remove-message"),
+            Some(Some(ui::tilo_actions::MODERATION_FIELD))
+        );
+        assert_eq!(field("delete-message"), Some(None));
+    }
+
+    phase the_workspaces_layout_is_kept_by_its_moderators;
+    {
+        let field = |id: &str| {
+            Chat::declarations()
+                .into_iter()
+                .find(|decl| decl.id == id)
+                .map(|decl| decl.field)
+        };
+        for id in [
+            "create-channel",
+            "create-category",
+            "rename-channel",
+            "rename-category",
+            "archive-channel",
+            "set-channel-topic",
+            "move-channel",
+            "move-category",
+            "arrange-channels",
+            "set-channel-category",
+            "delete-channel",
+            "delete-category",
+        ] {
+            assert_eq!(
+                field(id),
+                Some(Some(ui::tilo_actions::MODERATION_FIELD)),
+                "{id}"
+            );
+        }
+        // Talking in a channel is every member's.
+        assert_eq!(field("mark-read"), Some(None));
+        assert!(
+            serde_json::from_value::<chat::RenameChannel>(
+                serde_json::json!({"channel": "c_chat", "name": "  "})
+            )
+            .is_err(),
+            "a blank name is refused where the arguments are read"
+        );
+        let mut talk = Talk::new();
+        talk.chat
+            .apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+                channel: id("c_chat"),
+                name: "#".parse().unwrap(),
+            }))
+            .unwrap_err();
+    }
+
+    phase a_guest_reports_a_message_or_a_person_and_only_moderators_decide;
+    {
+        let mut talk = Talk::new();
+        talk.apply(post("buy cheap links")).unwrap();
+        let message = talk.said("buy cheap links");
+        let mut ada = talk.chat;
+        let mut bo = ada.fork().as_author(BO);
+        bo.apply(Chat::REPORT_MESSAGE.with(chat::ReportMessage {
+            message: message.to_string(),
+            author: ADA.into(),
+            reason: "spam".parse().unwrap(),
+        }))
+        .unwrap();
+        let state = bo.state().unwrap();
+        let report = state.moderation.open_reports().next().unwrap();
+        assert_eq!(report.person, ADA, "a message report names its author");
+        assert_eq!(report.item, Some(message.to_string()));
+        assert!(
+            bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
+                person: id(BO),
+                reason: "me".parse().unwrap(),
+            }))
+            .is_err(),
+            "nobody reports themselves"
+        );
+        bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
+            person: id(ADA),
+            reason: "spamming the channel".parse().unwrap(),
+        }))
+        .unwrap();
+        assert_eq!(
+            bo.state().unwrap().moderation.open_reports_on(ADA).count(),
+            2
+        );
+
+        let field = |id: &str| {
+            Chat::declarations()
+                .into_iter()
+                .find(|decl| decl.id == id)
+                .map(|decl| decl.field)
+        };
+        assert_eq!(field("report-message"), Some(None));
+        assert_eq!(field("report-person"), Some(None));
+        for verb in ["decide-reports", "overturn-decision"] {
+            assert_eq!(
+                field(verb),
+                Some(Some(ui::tilo_actions::MODERATION_FIELD)),
+                "{verb}"
+            );
+        }
+    }
 }
 
 fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
@@ -169,24 +355,6 @@ fn workspace_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
         .collect()
 }
 
-#[test]
-fn a_member_cannot_backdate_a_post() {
-    let mut ada = Talk::new();
-    ada.set_now_ms(1_234_000);
-    ada.apply(ChatPart::POST.with(chat_part::Post {
-        message: NewMessage {
-            written: Some(5),
-            ..post_fields("c_chat", "from the past")
-        },
-    }))
-    .unwrap();
-    assert_eq!(
-        ada.rows("c_chat")[0].ts,
-        1234,
-        "only a message a bot brings over keeps when it was written"
-    );
-}
-
 fn post_to(channel: &str, text: &str) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
         message: post_fields(channel, text),
@@ -206,45 +374,271 @@ fn post_fields(channel: &str, text: &str) -> NewMessage {
     }
 }
 
-#[test]
-fn a_resource_reference_with_no_kind_yet_attaches_until_a_catalogue_names_it() {
-    // An address no loaded package has resolved yet names its resource by its app and its id
-    // alone, the way the one reference form reads an older published id: a published id's app is
-    // dotted and never holds a `:`, so the address says both and leaves the kind to whoever
-    // resolves it.
-    let attached = tilo_reference::Attached::resource(
-        tilo_reference::ResourceAt {
-            app: "so.tilo.lang.board".into(),
-            record: None,
-            reference: tilo_reference::ResourceRef::whole(
-                "",
-                "tl:so.tilo.lang.board:d/f:t1",
-                "Write",
-            ),
-        },
-        None,
-        "Write",
-    );
-    assert!(
-        crate::record::valid_attached(&attached),
-        "a published id with its kind unresolved still attaches"
-    );
-    // What is still refused: an address naming nothing, a path, a URL, and — because an empty
-    // kind only ever names a resource's published address — any id that is not one.
-    for id in [
-        "",
-        "/etc/passwd",
-        "https://example.com/x",
-        "notes.pages/page_1",
-    ] {
-        let mut nameless = attached.clone();
-        if let tilo_reference::Attached::Resource { at, .. } = &mut nameless {
-            at.reference.id = id.to_owned();
-        }
-        assert!(
-            !crate::record::valid_attached(&nameless),
-            "{id:?} is no published resource address"
+tilo_test_env::scenario! {
+    /// What the record takes as a field edit or only through an action, and what it offers of its items.
+    fn the_record_changes_through_its_actions_and_offers_its_items;
+
+    phase a_resource_reference_with_no_kind_yet_attaches_until_a_catalogue_names_it;
+    {
+        // An address no loaded package has resolved yet names its resource by its app and its id
+        // alone, the way the one reference form reads an older published id: a published id's app is
+        // dotted and never holds a `:`, so the address says both and leaves the kind to whoever
+        // resolves it.
+        let attached = tilo_reference::Attached::resource(
+            tilo_reference::ResourceAt {
+                app: "so.tilo.lang.board".into(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole(
+                    "",
+                    "tl:so.tilo.lang.board:d/f:t1",
+                    "Write",
+                ),
+            },
+            None,
+            "Write",
         );
+        assert!(
+            crate::record::valid_attached(&attached),
+            "a published id with its kind unresolved still attaches"
+        );
+        // What is still refused: an address naming nothing, a path, a URL, and — because an empty
+        // kind only ever names a resource's published address — any id that is not one.
+        for id in [
+            "",
+            "/etc/passwd",
+            "https://example.com/x",
+            "notes.pages/page_1",
+        ] {
+            let mut nameless = attached.clone();
+            if let tilo_reference::Attached::Resource { at, .. } = &mut nameless {
+                at.reference.id = id.to_owned();
+            }
+            assert!(
+                !crate::record::valid_attached(&nameless),
+                "{id:?} is no published resource address"
+            );
+        }
+    }
+
+    phase plain_changes_are_field_edits_at_their_paths;
+    {
+        let mut talk = Talk::new();
+        talk.apply(post("pin me")).unwrap();
+        let message = talk.said("pin me");
+        talk.apply(ChatPart::PIN.with(chat_part::Pin {
+            message: message.clone(),
+            pinned: true,
+        }))
+        .unwrap();
+        assert!(talk.messages().get(&message).unwrap().pinned);
+        let mut ada = talk.chat;
+        ada.apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+            channel: id("c_chat"),
+            name: "#lobby".parse().unwrap(),
+        }))
+        .unwrap();
+        ada.apply(Chat::ARCHIVE_CHANNEL.with(chat::ArchiveChannel {
+            channel: id("c_voice"),
+            archived: true,
+        }))
+        .unwrap();
+        ada.apply(Chat::SET_CHANNEL_TOPIC.with(chat::SetChannelTopic {
+            channel: id("c_chat"),
+            topic: "Say hi".into(),
+        }))
+        .unwrap();
+        let status = Chat::paths()
+            .people
+            .item(&id(ADA))
+            .status
+            .set(crate::model::Presence::Dnd);
+        ada.apply(Invoke::edit(&status).unwrap()).unwrap();
+        let chat = ada.state().unwrap();
+        let general = chat.channels.get(&id("c_chat")).unwrap();
+        assert_eq!(
+            (general.name.as_str(), general.topic.as_str()),
+            ("lobby", "Say hi")
+        );
+        assert!(chat.channels.get(&id("c_voice")).unwrap().archived);
+        assert_eq!(chat.user_rows()[0].status, crate::model::Presence::Dnd);
+        let messages = ChatPart::paths().messages.item(&message);
+        for edit in [
+            messages.text.set("rewritten".into()),
+            messages.pinned.set(false),
+        ] {
+            assert!(
+                talk.part.apply(Invoke::edit(&edit).unwrap()).is_err(),
+                "a message's text changes only through edit-message, its pin through pin"
+            );
+        }
+    }
+
+    phase messages_channels_and_categories_change_only_through_their_actions;
+    {
+        let mut talk = Talk::new();
+        // A generic insert naming someone else as the author is refused: only
+        // a post, which takes its author from whoever signed it, makes one.
+        let forged = Message {
+            channel: id("c_chat"),
+            author: ui::tilo_resource::Atom(BO.into()),
+            text: "I never said this".into(),
+            ..Message::default()
+        };
+        let insert = ChatPart::paths()
+            .messages
+            .insert_as(&id("m_forged"), 0, &forged);
+        assert!(talk.part.apply(Invoke::edit(&insert).unwrap()).is_err());
+        assert!(talk.messages().get(&id("m_forged")).is_none());
+        talk.apply(post("my own words")).unwrap();
+        let said = talk.said("my own words");
+        assert_eq!(talk.messages().get(&said).unwrap().author.0, ADA);
+        for edit in [
+            ChatPart::paths().messages.remove(&said),
+            ChatPart::paths().messages.move_to(&said, 0),
+        ] {
+            assert!(talk.part.apply(Invoke::edit(&edit).unwrap()).is_err());
+        }
+
+        // The workspace's layout is the moderators' to change, through its actions:
+        // no generic insert, removal or move of a channel or a category.
+        let mut chat = talk.chat;
+        let before = chat.state().unwrap();
+        let channels = Chat::paths().channels;
+        let categories = Chat::paths().categories;
+        let channel = Conversation {
+            name: "sneaky".into(),
+            ..Conversation::default()
+        };
+        let category = Category {
+            name: "Sneaky".into(),
+        };
+        for edit in [
+            channels.insert_as(&id("c_sneaky"), 0, &channel),
+            channels.remove(&id("c_chat")),
+            channels.move_to(&id("c_voice"), 0),
+            categories.insert_as(&id("cat_sneaky"), 0, &category),
+        ] {
+            assert!(
+                chat.apply(Invoke::edit(&edit).unwrap()).is_err(),
+                "{:?} changed the workspace's layout",
+                edit.op()
+            );
+        }
+        assert_eq!(chat.state().unwrap(), before);
+    }
+
+    phase the_record_offers_each_item_its_views_with_no_window_open;
+    {
+        let mut talk = Talk::new();
+        talk.apply(post("the deck is up")).unwrap();
+        let message = talk.said("the deck is up");
+        let mut children = <Chat as ui::tilo_resource::Resource>::children(&talk.chat.state().unwrap());
+        let part = talk.part.state().unwrap();
+        children.extend(<ChatPart as ui::tilo_resource::Resource>::children(&part));
+        let item = |field: &str, raw: &Id| {
+            let wanted = if field == "messages" {
+                ui::tilo_resource::items::item_resource_id::<ChatPart>(field, raw)
+            } else {
+                ui::tilo_resource::items::item_resource_id::<Chat>(field, raw)
+            };
+            children
+                .iter()
+                .find(|child| child.id.as_str() == wanted)
+                .unwrap_or_else(|| panic!("{wanted} is published"))
+                .clone()
+        };
+        let actions = |resource: &ui::tilo_actions::ResourceSpec| {
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let said = item("messages", &message);
+        for effect in ["reveal-message", "reveal-message-range"] {
+            assert!(
+                actions(&said).iter().any(|id| id == effect),
+                "{effect}: {:?}",
+                actions(&said)
+            );
+        }
+        let range = said
+            .actions
+            .iter()
+            .find(|action| action.id == "reveal-message-range")
+            .unwrap();
+        assert_eq!(
+            range
+                .params()
+                .iter()
+                .map(|param| param.name.to_string())
+                .collect::<Vec<_>>(),
+            ["start", "end", "unit"],
+            "the message is the item; only the range is asked"
+        );
+        let view = said.views.iter().find(|view| view.id == "message").unwrap();
+        assert!(view.primary && view.range.is_some(), "{view:?}");
+
+        let general = item("channels", &id("c_chat"));
+        assert!(actions(&general).iter().any(|id| id == "open-channel"));
+        let person = item("people", &id(BO));
+        assert!(actions(&person).iter().any(|id| id == "open-person"));
+    }
+
+    phase a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it;
+    {
+        let mut ada = workspace();
+        let voice = stored_value(ada.doc(), "channels", VOICE_CHANNEL);
+        // A peer's damaged write: a kind no channel has.
+        ui::tilo_resource::Slot::Key(&voice, "kind")
+            .put_scalar(
+                ada.doc_mut(),
+                automerge::ScalarValue::Str("teleport".into()),
+            )
+            .unwrap();
+        ada.doc_mut().commit();
+
+        let chat = ada
+            .state()
+            .expect("one malformed channel never makes the chat unopenable");
+        assert_eq!(
+            workspace_channels(&chat),
+            [(
+                CHAT_CHANNEL.to_owned(),
+                "chat".to_owned(),
+                ChannelKind::Text
+            )],
+            "the rest of the workspace shows"
+        );
+        let held = chat.channels.quarantined();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].id.as_str(), VOICE_CHANNEL);
+        assert!(held[0].reason.contains("kind"), "{}", held[0].reason);
+
+        // Posting and reading go on around it.
+        ada.apply(Chat::INTRODUCE.with(chat::Introduce {
+            name: "Ada L".into(),
+            initials: "AL".into(),
+            color: 3,
+        }))
+        .unwrap();
+        assert_eq!(
+            ada.state().unwrap().channels.quarantined().len(),
+            1,
+            "kept for repair"
+        );
+
+        ada.apply_confirmed(Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
+            channel: id(VOICE_CHANNEL),
+        }))
+        .unwrap();
+        let chat = ada.state().unwrap();
+        assert!(
+            chat.channels.quarantined().is_empty(),
+            "repaired by deleting it"
+        );
+        assert_eq!(workspace_channels(&chat).len(), 1);
     }
 }
 
@@ -583,134 +977,6 @@ tilo_test_env::scenario! {
     }
 }
 
-#[test]
-fn an_agent_is_named_once_for_everyone() {
-    const AGENT: &str = "agent-task:33333333-3333-4333-8333-333333333333";
-    let mut ada = workspace();
-    ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
-        participant: AGENT.into(),
-        name: "Tide".parse().unwrap(),
-    }))
-    .unwrap();
-    assert!(
-        ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
-            participant: BO.into(),
-            name: "Not an agent".parse().unwrap(),
-        }))
-        .is_err()
-    );
-    let names = ada.state().unwrap().agent_authors();
-    assert_eq!(names.get(AGENT).map(String::as_str), Some("Tide"));
-    assert_eq!(names.len(), 1);
-}
-
-#[test]
-fn plain_changes_are_field_edits_at_their_paths() {
-    let mut talk = Talk::new();
-    talk.apply(post("pin me")).unwrap();
-    let message = talk.said("pin me");
-    talk.apply(ChatPart::PIN.with(chat_part::Pin {
-        message: message.clone(),
-        pinned: true,
-    }))
-    .unwrap();
-    assert!(talk.messages().get(&message).unwrap().pinned);
-    let mut ada = talk.chat;
-    ada.apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
-        channel: id("c_chat"),
-        name: "#lobby".parse().unwrap(),
-    }))
-    .unwrap();
-    ada.apply(Chat::ARCHIVE_CHANNEL.with(chat::ArchiveChannel {
-        channel: id("c_voice"),
-        archived: true,
-    }))
-    .unwrap();
-    ada.apply(Chat::SET_CHANNEL_TOPIC.with(chat::SetChannelTopic {
-        channel: id("c_chat"),
-        topic: "Say hi".into(),
-    }))
-    .unwrap();
-    let status = Chat::paths()
-        .people
-        .item(&id(ADA))
-        .status
-        .set(crate::model::Presence::Dnd);
-    ada.apply(Invoke::edit(&status).unwrap()).unwrap();
-    let chat = ada.state().unwrap();
-    let general = chat.channels.get(&id("c_chat")).unwrap();
-    assert_eq!(
-        (general.name.as_str(), general.topic.as_str()),
-        ("lobby", "Say hi")
-    );
-    assert!(chat.channels.get(&id("c_voice")).unwrap().archived);
-    assert_eq!(chat.user_rows()[0].status, crate::model::Presence::Dnd);
-    let messages = ChatPart::paths().messages.item(&message);
-    for edit in [
-        messages.text.set("rewritten".into()),
-        messages.pinned.set(false),
-    ] {
-        assert!(
-            talk.part.apply(Invoke::edit(&edit).unwrap()).is_err(),
-            "a message's text changes only through edit-message, its pin through pin"
-        );
-    }
-}
-
-#[test]
-fn messages_channels_and_categories_change_only_through_their_actions() {
-    let mut talk = Talk::new();
-    // A generic insert naming someone else as the author is refused: only
-    // a post, which takes its author from whoever signed it, makes one.
-    let forged = Message {
-        channel: id("c_chat"),
-        author: ui::tilo_resource::Atom(BO.into()),
-        text: "I never said this".into(),
-        ..Message::default()
-    };
-    let insert = ChatPart::paths()
-        .messages
-        .insert_as(&id("m_forged"), 0, &forged);
-    assert!(talk.part.apply(Invoke::edit(&insert).unwrap()).is_err());
-    assert!(talk.messages().get(&id("m_forged")).is_none());
-    talk.apply(post("my own words")).unwrap();
-    let said = talk.said("my own words");
-    assert_eq!(talk.messages().get(&said).unwrap().author.0, ADA);
-    for edit in [
-        ChatPart::paths().messages.remove(&said),
-        ChatPart::paths().messages.move_to(&said, 0),
-    ] {
-        assert!(talk.part.apply(Invoke::edit(&edit).unwrap()).is_err());
-    }
-
-    // The workspace's layout is the moderators' to change, through its actions:
-    // no generic insert, removal or move of a channel or a category.
-    let mut chat = talk.chat;
-    let before = chat.state().unwrap();
-    let channels = Chat::paths().channels;
-    let categories = Chat::paths().categories;
-    let channel = Conversation {
-        name: "sneaky".into(),
-        ..Conversation::default()
-    };
-    let category = Category {
-        name: "Sneaky".into(),
-    };
-    for edit in [
-        channels.insert_as(&id("c_sneaky"), 0, &channel),
-        channels.remove(&id("c_chat")),
-        channels.move_to(&id("c_voice"), 0),
-        categories.insert_as(&id("cat_sneaky"), 0, &category),
-    ] {
-        assert!(
-            chat.apply(Invoke::edit(&edit).unwrap()).is_err(),
-            "{:?} changed the workspace's layout",
-            edit.op()
-        );
-    }
-    assert_eq!(chat.state().unwrap(), before);
-}
-
 tilo_test_env::scenario! {
     /// Concurrent writers and a replayed log end in one record.
     /// Each case was a test of its own, on a fixture of its own; a failure
@@ -838,207 +1104,6 @@ tilo_test_env::scenario! {
     }
 }
 
-#[test]
-fn the_record_offers_each_item_its_views_with_no_window_open() {
-    let mut talk = Talk::new();
-    talk.apply(post("the deck is up")).unwrap();
-    let message = talk.said("the deck is up");
-    let mut children = <Chat as ui::tilo_resource::Resource>::children(&talk.chat.state().unwrap());
-    let part = talk.part.state().unwrap();
-    children.extend(<ChatPart as ui::tilo_resource::Resource>::children(&part));
-    let item = |field: &str, raw: &Id| {
-        let wanted = if field == "messages" {
-            ui::tilo_resource::items::item_resource_id::<ChatPart>(field, raw)
-        } else {
-            ui::tilo_resource::items::item_resource_id::<Chat>(field, raw)
-        };
-        children
-            .iter()
-            .find(|child| child.id.as_str() == wanted)
-            .unwrap_or_else(|| panic!("{wanted} is published"))
-            .clone()
-    };
-    let actions = |resource: &ui::tilo_actions::ResourceSpec| {
-        resource
-            .actions
-            .iter()
-            .map(|action| action.id.clone())
-            .collect::<Vec<_>>()
-    };
-
-    let said = item("messages", &message);
-    for effect in ["reveal-message", "reveal-message-range"] {
-        assert!(
-            actions(&said).iter().any(|id| id == effect),
-            "{effect}: {:?}",
-            actions(&said)
-        );
-    }
-    let range = said
-        .actions
-        .iter()
-        .find(|action| action.id == "reveal-message-range")
-        .unwrap();
-    assert_eq!(
-        range
-            .params()
-            .iter()
-            .map(|param| param.name.to_string())
-            .collect::<Vec<_>>(),
-        ["start", "end", "unit"],
-        "the message is the item; only the range is asked"
-    );
-    let view = said.views.iter().find(|view| view.id == "message").unwrap();
-    assert!(view.primary && view.range.is_some(), "{view:?}");
-
-    let general = item("channels", &id("c_chat"));
-    assert!(actions(&general).iter().any(|id| id == "open-channel"));
-    let person = item("people", &id(BO));
-    assert!(actions(&person).iter().any(|id| id == "open-person"));
-}
-
-#[test]
-fn only_the_author_edits_or_deletes_and_a_moderator_removes() {
-    let mut ada = Talk::new();
-    ada.apply(post("mine")).unwrap();
-    let message = ada.said("mine");
-    let mut bo = ada.fork_as(BO);
-    assert!(
-        bo.apply(ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
-            message: message.clone(),
-            text: "yours now".into(),
-            body: None,
-            mentions: None,
-        }))
-        .is_err(),
-        "nobody edits another's message"
-    );
-    assert!(
-        bo.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
-            message: message.clone(),
-        }))
-        .is_err(),
-        "nobody deletes another's message"
-    );
-    assert_eq!(bo.messages().len(), 1);
-    bo.apply(ChatPart::REMOVE_MESSAGE.with(chat_part::RemoveMessage { message }))
-        .unwrap();
-    assert!(bo.messages().is_empty());
-}
-
-#[test]
-fn removing_a_message_sits_under_the_moderation_node() {
-    let field = |id: &str| {
-        ChatPart::declarations()
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .map(|decl| decl.field)
-    };
-    assert_eq!(
-        field("remove-message"),
-        Some(Some(ui::tilo_actions::MODERATION_FIELD))
-    );
-    assert_eq!(field("delete-message"), Some(None));
-}
-
-#[test]
-fn the_workspaces_layout_is_kept_by_its_moderators() {
-    let field = |id: &str| {
-        Chat::declarations()
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .map(|decl| decl.field)
-    };
-    for id in [
-        "create-channel",
-        "create-category",
-        "rename-channel",
-        "rename-category",
-        "archive-channel",
-        "set-channel-topic",
-        "move-channel",
-        "move-category",
-        "arrange-channels",
-        "set-channel-category",
-        "delete-channel",
-        "delete-category",
-    ] {
-        assert_eq!(
-            field(id),
-            Some(Some(ui::tilo_actions::MODERATION_FIELD)),
-            "{id}"
-        );
-    }
-    // Talking in a channel is every member's.
-    assert_eq!(field("mark-read"), Some(None));
-    assert!(
-        serde_json::from_value::<chat::RenameChannel>(
-            serde_json::json!({"channel": "c_chat", "name": "  "})
-        )
-        .is_err(),
-        "a blank name is refused where the arguments are read"
-    );
-    let mut talk = Talk::new();
-    talk.chat
-        .apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
-            channel: id("c_chat"),
-            name: "#".parse().unwrap(),
-        }))
-        .unwrap_err();
-}
-
-#[test]
-fn a_guest_reports_a_message_or_a_person_and_only_moderators_decide() {
-    let mut talk = Talk::new();
-    talk.apply(post("buy cheap links")).unwrap();
-    let message = talk.said("buy cheap links");
-    let mut ada = talk.chat;
-    let mut bo = ada.fork().as_author(BO);
-    bo.apply(Chat::REPORT_MESSAGE.with(chat::ReportMessage {
-        message: message.to_string(),
-        author: ADA.into(),
-        reason: "spam".parse().unwrap(),
-    }))
-    .unwrap();
-    let state = bo.state().unwrap();
-    let report = state.moderation.open_reports().next().unwrap();
-    assert_eq!(report.person, ADA, "a message report names its author");
-    assert_eq!(report.item, Some(message.to_string()));
-    assert!(
-        bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-            person: id(BO),
-            reason: "me".parse().unwrap(),
-        }))
-        .is_err(),
-        "nobody reports themselves"
-    );
-    bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
-        person: id(ADA),
-        reason: "spamming the channel".parse().unwrap(),
-    }))
-    .unwrap();
-    assert_eq!(
-        bo.state().unwrap().moderation.open_reports_on(ADA).count(),
-        2
-    );
-
-    let field = |id: &str| {
-        Chat::declarations()
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .map(|decl| decl.field)
-    };
-    assert_eq!(field("report-message"), Some(None));
-    assert_eq!(field("report-person"), Some(None));
-    for verb in ["decide-reports", "overturn-decision"] {
-        assert_eq!(
-            field(verb),
-            Some(Some(ui::tilo_actions::MODERATION_FIELD)),
-            "{verb}"
-        );
-    }
-}
-
 /// The value map of the item `id` of the collection `field` in `doc`.
 fn stored_value(doc: &automerge::AutoCommit, field: &str, id: &str) -> automerge::ObjId {
     use automerge::ReadDoc as _;
@@ -1046,61 +1111,6 @@ fn stored_value(doc: &automerge::AutoCommit, field: &str, id: &str) -> automerge
     let (_, entry) = doc.get(&map, id).unwrap().unwrap();
     let (_, value) = doc.get(&entry, "v").unwrap().unwrap();
     value
-}
-
-#[test]
-fn a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it() {
-    let mut ada = workspace();
-    let voice = stored_value(ada.doc(), "channels", VOICE_CHANNEL);
-    // A peer's damaged write: a kind no channel has.
-    ui::tilo_resource::Slot::Key(&voice, "kind")
-        .put_scalar(
-            ada.doc_mut(),
-            automerge::ScalarValue::Str("teleport".into()),
-        )
-        .unwrap();
-    ada.doc_mut().commit();
-
-    let chat = ada
-        .state()
-        .expect("one malformed channel never makes the chat unopenable");
-    assert_eq!(
-        workspace_channels(&chat),
-        [(
-            CHAT_CHANNEL.to_owned(),
-            "chat".to_owned(),
-            ChannelKind::Text
-        )],
-        "the rest of the workspace shows"
-    );
-    let held = chat.channels.quarantined();
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0].id.as_str(), VOICE_CHANNEL);
-    assert!(held[0].reason.contains("kind"), "{}", held[0].reason);
-
-    // Posting and reading go on around it.
-    ada.apply(Chat::INTRODUCE.with(chat::Introduce {
-        name: "Ada L".into(),
-        initials: "AL".into(),
-        color: 3,
-    }))
-    .unwrap();
-    assert_eq!(
-        ada.state().unwrap().channels.quarantined().len(),
-        1,
-        "kept for repair"
-    );
-
-    ada.apply_confirmed(Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
-        channel: id(VOICE_CHANNEL),
-    }))
-    .unwrap();
-    let chat = ada.state().unwrap();
-    assert!(
-        chat.channels.quarantined().is_empty(),
-        "repaired by deleting it"
-    );
-    assert_eq!(workspace_channels(&chat).len(), 1);
 }
 
 /// The agent conversation the user's chat holds, under the id version 3
@@ -1226,100 +1236,184 @@ fn channels_with_categories(chat: &Chat) -> Vec<(String, String, Option<String>)
         .collect()
 }
 
-#[test]
-fn the_migration_opens_the_users_chat_with_everything_in_it() {
-    use ui::tilo_resource::evolution;
-    for whole in [false, true] {
-        let mut doc = users_chat(whole);
-        assert!(
-            evolution::migrate::<Chat>(&mut doc).unwrap(),
-            "migrated once"
-        );
-        assert_eq!(evolution::stored_version(&doc), <Chat as Resource>::VERSION);
-        let chat = evolution::read_checked::<Chat>(&doc).expect("the user's chat opens");
-        assert!(chat.categories.quarantined().is_empty());
-        assert!(chat.channels.quarantined().is_empty());
-        assert_eq!(
-            channels_with_categories(&chat),
-            [
-                (
-                    "c_general".to_owned(),
-                    "general".to_owned(),
-                    Some("Channels".to_owned())
-                ),
-                (
-                    "c_lounge".to_owned(),
-                    "Lounge".to_owned(),
-                    Some("Voice".to_owned())
-                ),
-                (OLD_AGENT_CHANNEL.to_owned(), "Scribe".to_owned(), None),
-            ],
-            "every channel stays, in the category it was in"
-        );
-        let scribe = chat
-            .channels
-            .get(&id(OLD_AGENT_CHANNEL))
-            .expect("the agent's conversation stays");
-        assert_eq!(
-            scribe
-                .participants
-                .iter()
-                .map(|key| key.0.as_str())
-                .collect::<Vec<_>>(),
-            ["agent:scribe"],
-            "the agent the conversation was with is now its participant"
-        );
-        let row = chat
-            .conversation_rows(
-                ADA,
-                &crate::messages::Messages::default(),
-                &crate::projection::AgentNames::new(),
-            )
-            .into_iter()
-            .find(|row| row.id == OLD_AGENT_CHANNEL)
-            .expect("the agent's conversation is listed");
-        assert!(
-            row.direct,
-            "it is a conversation, not the workspace's channel"
-        );
-        assert_eq!(row.name, "Scribe", "a conversation with a name keeps it");
-        {
-            use automerge::ReadDoc as _;
-            let (_, channels) = doc.get(automerge::ROOT, "channels").unwrap().unwrap();
-            let (_, held) = doc.get(&channels, OLD_AGENT_CHANNEL).unwrap().unwrap();
-            let (_, entry) = doc.get(&held, "v").unwrap().unwrap();
+tilo_test_env::scenario! {
+    /// The chat a person kept before the workspace's record, after its migration.
+    fn the_migration_keeps_the_users_chat_whole;
+
+    phase the_migration_opens_the_users_chat_with_everything_in_it;
+    {
+        use ui::tilo_resource::evolution;
+        for whole in [false, true] {
+            let mut doc = users_chat(whole);
             assert!(
-                doc.get(&entry, "conversation_with").unwrap().is_none(),
-                "the old field is gone with the migration, not read beside it"
+                evolution::migrate::<Chat>(&mut doc).unwrap(),
+                "migrated once"
+            );
+            assert_eq!(evolution::stored_version(&doc), <Chat as Resource>::VERSION);
+            let chat = evolution::read_checked::<Chat>(&doc).expect("the user's chat opens");
+            assert!(chat.categories.quarantined().is_empty());
+            assert!(chat.channels.quarantined().is_empty());
+            assert_eq!(
+                channels_with_categories(&chat),
+                [
+                    (
+                        "c_general".to_owned(),
+                        "general".to_owned(),
+                        Some("Channels".to_owned())
+                    ),
+                    (
+                        "c_lounge".to_owned(),
+                        "Lounge".to_owned(),
+                        Some("Voice".to_owned())
+                    ),
+                    (OLD_AGENT_CHANNEL.to_owned(), "Scribe".to_owned(), None),
+                ],
+                "every channel stays, in the category it was in"
+            );
+            let scribe = chat
+                .channels
+                .get(&id(OLD_AGENT_CHANNEL))
+                .expect("the agent's conversation stays");
+            assert_eq!(
+                scribe
+                    .participants
+                    .iter()
+                    .map(|key| key.0.as_str())
+                    .collect::<Vec<_>>(),
+                ["agent:scribe"],
+                "the agent the conversation was with is now its participant"
+            );
+            let row = chat
+                .conversation_rows(
+                    ADA,
+                    &crate::messages::Messages::default(),
+                    &crate::projection::AgentNames::new(),
+                )
+                .into_iter()
+                .find(|row| row.id == OLD_AGENT_CHANNEL)
+                .expect("the agent's conversation is listed");
+            assert!(
+                row.direct,
+                "it is a conversation, not the workspace's channel"
+            );
+            assert_eq!(row.name, "Scribe", "a conversation with a name keeps it");
+            {
+                use automerge::ReadDoc as _;
+                let (_, channels) = doc.get(automerge::ROOT, "channels").unwrap().unwrap();
+                let (_, held) = doc.get(&channels, OLD_AGENT_CHANNEL).unwrap().unwrap();
+                let (_, entry) = doc.get(&held, "v").unwrap().unwrap();
+                assert!(
+                    doc.get(&entry, "conversation_with").unwrap().is_none(),
+                    "the old field is gone with the migration, not read beside it"
+                );
+            }
+            assert_eq!(
+                chat.categories
+                    .iter()
+                    .map(|(id, category)| (id.to_string(), category.name.clone()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("cat_home_text".to_owned(), "Channels".to_owned()),
+                    ("cat_home_voice".to_owned(), "Voice".to_owned()),
+                ],
+                "every category stays, the one that did not read among them"
+            );
+            assert!(
+                !chat.channels.contains(&id(CHAT_CHANNEL))
+                    && !chat.channels.contains(&id(VOICE_CHANNEL)),
+                "a workspace that has channels gets no #chat or #voice"
+            );
+            let (_, workspaces) = automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
+                .unwrap()
+                .expect("the workspace structure stays in the record");
+            let (_, home) = automerge::ReadDoc::get(&doc, &workspaces, "ws_home")
+                .unwrap()
+                .expect("each workspace stays");
+            let (_, home) = automerge::ReadDoc::get(&doc, &home, "v").unwrap().unwrap();
+            assert_eq!(
+                ui::tilo_resource::read_key::<String>(&doc, &home, "name").unwrap(),
+                "My Workspace"
             );
         }
+    }
+
+    phase every_id_in_the_users_chat_survives_the_migration_and_its_messages_still_show;
+    {
+        use ui::tilo_resource::evolution;
+        let mut doc = users_chat(false);
+        let before: Vec<Vec<String>> = ["channels", "categories"]
+            .iter()
+            .map(|field| stored_ids(&doc, field))
+            .collect();
+        evolution::migrate::<Chat>(&mut doc).unwrap();
+        let after: Vec<Vec<String>> = ["channels", "categories"]
+            .iter()
+            .map(|field| stored_ids(&doc, field))
+            .collect();
+        assert_eq!(after, before, "no channel or category is re-keyed");
+
+        // Messages live in parts the migration never opens; under their old
+        // channel ids they show where they were written.
+        let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+        let mut part = ChatPart::default();
+        for (message, channel, text) in [
+            ("m_general", "c_general", "said in general"),
+            ("m_scribe", OLD_AGENT_CHANNEL, "said to the agent"),
+        ] {
+            part.messages.push(
+                id(message),
+                crate::record::Message {
+                    channel: id(channel),
+                    author: Atom(ADA.into()),
+                    text: text.into(),
+                    ..crate::record::Message::default()
+                },
+            );
+        }
+        let held = Messages::single(part);
+        for (channel, text, message) in [
+            ("c_general", "said in general", "m_general"),
+            (OLD_AGENT_CHANNEL, "said to the agent", "m_scribe"),
+        ] {
+            let rows = chat.message_rows(&held, channel);
+            assert_eq!(
+                rows.iter()
+                    .map(|row| (row.id.as_str(), row.text.as_str()))
+                    .collect::<Vec<_>>(),
+                [(message, text)]
+            );
+        }
+    }
+
+    phase an_unreadable_category_is_kept_through_the_migration;
+    // A category that does not read at all is kept as it is, held out of the
+    // chat for its repair, through the migration and every later write.
+    {
+        use ui::tilo_resource::evolution;
+        let mut doc = version_3_starter(false, automerge::ScalarValue::Int(5));
+        evolution::migrate::<Chat>(&mut doc).unwrap();
+        let chat = evolution::read_checked::<Chat>(&doc).expect("the chat opens");
         assert_eq!(
             chat.categories
+                .quarantined()
                 .iter()
-                .map(|(id, category)| (id.to_string(), category.name.clone()))
+                .map(|held| held.id.as_str())
                 .collect::<Vec<_>>(),
-            [
-                ("cat_home_text".to_owned(), "Channels".to_owned()),
-                ("cat_home_voice".to_owned(), "Voice".to_owned()),
-            ],
-            "every category stays, the one that did not read among them"
+            ["cat_home_voice"]
         );
+        assert_eq!(chat.channels.len(), 3, "every channel stays");
+        let mut ada = Replica::<Chat>::from_doc(doc).as_author(ADA);
+        ada.apply(Chat::INTRODUCE.with(chat::Introduce {
+            name: "Ada".into(),
+            initials: "AD".into(),
+            color: 1,
+        }))
+        .unwrap();
         assert!(
-            !chat.channels.contains(&id(CHAT_CHANNEL))
-                && !chat.channels.contains(&id(VOICE_CHANNEL)),
-            "a workspace that has channels gets no #chat or #voice"
+            stored_ids(ada.doc(), "categories").contains(&"cat_home_voice".to_owned()),
+            "a later write keeps it"
         );
-        let (_, workspaces) = automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
-            .unwrap()
-            .expect("the workspace structure stays in the record");
-        let (_, home) = automerge::ReadDoc::get(&doc, &workspaces, "ws_home")
-            .unwrap()
-            .expect("each workspace stays");
-        let (_, home) = automerge::ReadDoc::get(&doc, &home, "v").unwrap().unwrap();
-        assert_eq!(
-            ui::tilo_resource::read_key::<String>(&doc, &home, "name").unwrap(),
-            "My Workspace"
-        );
+        assert_eq!(ada.state().unwrap().categories.quarantined().len(), 1);
     }
 }
 
@@ -1352,85 +1446,6 @@ fn the_migrated_chat_draws_no_workspace_of_its_own() {
             .is_none_or(|name| !name.contains("Workspace"))),
         "Chat shows no workspace of its own"
     );
-}
-
-#[test]
-fn every_id_in_the_users_chat_survives_the_migration_and_its_messages_still_show() {
-    use ui::tilo_resource::evolution;
-    let mut doc = users_chat(false);
-    let before: Vec<Vec<String>> = ["channels", "categories"]
-        .iter()
-        .map(|field| stored_ids(&doc, field))
-        .collect();
-    evolution::migrate::<Chat>(&mut doc).unwrap();
-    let after: Vec<Vec<String>> = ["channels", "categories"]
-        .iter()
-        .map(|field| stored_ids(&doc, field))
-        .collect();
-    assert_eq!(after, before, "no channel or category is re-keyed");
-
-    // Messages live in parts the migration never opens; under their old
-    // channel ids they show where they were written.
-    let chat = evolution::read_checked::<Chat>(&doc).unwrap();
-    let mut part = ChatPart::default();
-    for (message, channel, text) in [
-        ("m_general", "c_general", "said in general"),
-        ("m_scribe", OLD_AGENT_CHANNEL, "said to the agent"),
-    ] {
-        part.messages.push(
-            id(message),
-            crate::record::Message {
-                channel: id(channel),
-                author: Atom(ADA.into()),
-                text: text.into(),
-                ..crate::record::Message::default()
-            },
-        );
-    }
-    let held = Messages::single(part);
-    for (channel, text, message) in [
-        ("c_general", "said in general", "m_general"),
-        (OLD_AGENT_CHANNEL, "said to the agent", "m_scribe"),
-    ] {
-        let rows = chat.message_rows(&held, channel);
-        assert_eq!(
-            rows.iter()
-                .map(|row| (row.id.as_str(), row.text.as_str()))
-                .collect::<Vec<_>>(),
-            [(message, text)]
-        );
-    }
-}
-
-/// A category that does not read at all is kept as it is, held out of the
-/// chat for its repair, through the migration and every later write.
-#[test]
-fn an_unreadable_category_is_kept_through_the_migration() {
-    use ui::tilo_resource::evolution;
-    let mut doc = version_3_starter(false, automerge::ScalarValue::Int(5));
-    evolution::migrate::<Chat>(&mut doc).unwrap();
-    let chat = evolution::read_checked::<Chat>(&doc).expect("the chat opens");
-    assert_eq!(
-        chat.categories
-            .quarantined()
-            .iter()
-            .map(|held| held.id.as_str())
-            .collect::<Vec<_>>(),
-        ["cat_home_voice"]
-    );
-    assert_eq!(chat.channels.len(), 3, "every channel stays");
-    let mut ada = Replica::<Chat>::from_doc(doc).as_author(ADA);
-    ada.apply(Chat::INTRODUCE.with(chat::Introduce {
-        name: "Ada".into(),
-        initials: "AD".into(),
-        color: 1,
-    }))
-    .unwrap();
-    assert!(
-        stored_ids(ada.doc(), "categories").contains(&"cat_home_voice".to_owned()),
-        "a later write keeps it"
-    );
-    assert_eq!(ada.state().unwrap().categories.quarantined().len(), 1);
 }
 
 /// The reactions of `message`, the path reacting edits it at.

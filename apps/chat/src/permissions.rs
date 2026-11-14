@@ -134,58 +134,63 @@ mod tests {
         ChatPermissions::from_context(PermissionContext::member("u_guest", Role::Viewer))
     }
 
-    #[test]
-    fn permissions_gate_writes_by_role_but_never_reading_or_leaving() {
-        let p = ChatPermissions::permissive();
-        assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
-        assert!(p.can_participate(), "admin: participate");
-        assert!(p.allows(CallAction::Join), "admin: join");
-        assert!(p.allows(CallAction::ShareScreen), "admin: share screen");
+    tilo_test_env::scenario! {
+        /// What a role and the workspace's grants let a member do.
+        fn roles_and_grants_decide_what_a_member_may_do;
 
-        // Restricted member reads verified embeds but cannot write.
-        let p = restricted_member();
-        assert!(p.can_embed(&"a".repeat(64)), "restricted: verified embed");
-        assert!(
-            !p.can_embed("/var/workspace/secret.png"),
-            "restricted: raw path embed"
-        );
-        // No workspace-admin → can't post / react / start a call…
-        assert!(!p.can_participate(), "restricted: participate");
-        assert!(
-            p.allows(CallAction::Join),
-            "restricted: workspace readers may listen"
-        );
-        assert!(!p.allows(CallAction::Speak), "restricted: speak");
-        // …but a View-only member can still read the workspace, and leaving a call
-        // is never blocked.
-        assert!(p.allows(CallAction::Leave), "restricted: leave");
+        phase permissions_gate_writes_by_role_but_never_reading_or_leaving;
+        {
+            let p = ChatPermissions::permissive();
+            assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
+            assert!(p.can_participate(), "admin: participate");
+            assert!(p.allows(CallAction::Join), "admin: join");
+            assert!(p.allows(CallAction::ShareScreen), "admin: share screen");
 
-        // A member without admin still passes the View check on a workspace
-        // (they can read channels) — it's Edit that's gated.
-        let p = restricted_member();
-        let view_ok = p.ctx.check(&PermissionScope::workspace(ActionKind::Read));
-        assert!(view_ok, "a member can read the workspace");
-        assert!(!p.can_participate(), "but cannot write to it");
-    }
+            // Restricted member reads verified embeds but cannot write.
+            let p = restricted_member();
+            assert!(p.can_embed(&"a".repeat(64)), "restricted: verified embed");
+            assert!(
+                !p.can_embed("/var/workspace/secret.png"),
+                "restricted: raw path embed"
+            );
+            // No workspace-admin → can't post / react / start a call…
+            assert!(!p.can_participate(), "restricted: participate");
+            assert!(
+                p.allows(CallAction::Join),
+                "restricted: workspace readers may listen"
+            );
+            assert!(!p.allows(CallAction::Speak), "restricted: speak");
+            // …but a View-only member can still read the workspace, and leaving a call
+            // is never blocked.
+            assert!(p.allows(CallAction::Leave), "restricted: leave");
 
-    #[test]
-    fn only_moderators_and_owners_moderate() {
-        let as_role =
-            |role| ChatPermissions::from_context(PermissionContext::member("u_someone", role));
-        assert!(as_role(Role::Moderator).can_moderate());
-        assert!(as_role(Role::Owner).can_moderate());
-        assert!(!as_role(Role::Editor).can_moderate());
-        assert!(!as_role(Role::Viewer).can_moderate());
-        assert!(as_role(Role::Moderator).can_participate());
-    }
+            // A member without admin still passes the View check on a workspace
+            // (they can read channels) — it's Edit that's gated.
+            let p = restricted_member();
+            let view_ok = p.ctx.check(&PermissionScope::workspace(ActionKind::Read));
+            assert!(view_ok, "a member can read the workspace");
+            assert!(!p.can_participate(), "but cannot write to it");
+        }
 
-    #[test]
-    fn a_reader_the_workspace_granted_no_files_cannot_open_attachments() {
-        let p = ChatPermissions::from_context(PermissionContext::stranger(crate::model::ME));
-        assert!(
-            !p.can_embed(crate::images::DEMO_CLIP),
-            "attachments stay closed"
-        );
+        phase only_moderators_and_owners_moderate;
+        {
+            let as_role =
+                |role| ChatPermissions::from_context(PermissionContext::member("u_someone", role));
+            assert!(as_role(Role::Moderator).can_moderate());
+            assert!(as_role(Role::Owner).can_moderate());
+            assert!(!as_role(Role::Editor).can_moderate());
+            assert!(!as_role(Role::Viewer).can_moderate());
+            assert!(as_role(Role::Moderator).can_participate());
+        }
+
+        phase a_reader_the_workspace_granted_no_files_cannot_open_attachments;
+        {
+            let p = ChatPermissions::from_context(PermissionContext::stranger(crate::model::ME));
+            assert!(
+                !p.can_embed(crate::images::DEMO_CLIP),
+                "attachments stay closed"
+            );
+        }
     }
 
     #[test]

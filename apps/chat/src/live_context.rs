@@ -166,79 +166,84 @@ mod tests {
         assert!(app.followed_peer().is_none());
     }
 
-    #[test]
-    fn shared_space_context_requires_local_consent_and_stop_withdraws_navigation() {
-        let (mut doc, mut presenter) = workspace();
-        let before = doc.save();
-        let (_, mut follower) = workspace();
-        assert!(ui::view::capability::view_state(&presenter).is_none());
-        presenter
-            .answer_effect(crate::effects::ChatEffect::ShareLiveContext)
-            .unwrap();
-        presenter.scroll = 120.0;
-        let view = ui::view::capability::view_state(&presenter).unwrap();
-        follower.handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged {
-            peer_id: Some("presenter".into()),
-        });
-        ui::view::capability::restore_view_state(&mut follower, &view);
-        assert_eq!(follower.active_channel, "c_crit");
-        assert_eq!(follower.scroll, 120.0);
-        assert!(follower.following_context);
-        assert!(
-            !follower.sharing_context,
-            "following never grants publication consent"
-        );
-        presenter
-            .answer_effect(crate::effects::ChatEffect::StopSharingLiveContext)
-            .unwrap();
-        let withdrawn = ui::view::capability::view_state(&presenter).unwrap_or_default();
-        assert!(withdrawn.view_mode.is_none());
-        ui::view::capability::restore_view_state(&mut follower, &withdrawn);
-        assert!(!follower.following_context);
-        assert_eq!(follower.scroll, 120.0, "withdrawal does not navigate");
-        assert_eq!(doc.save(), before);
-        assert!(!presenter.native_voice.snapshot.capture_active);
-        follower
-            .handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged { peer_id: None });
-        assert!(!follower.following_context);
-    }
+    tilo_test_env::scenario! {
+        /// Following a shared space's context: by local consent, and only to places this chat knows.
+        fn shared_space_context_navigates_only_by_consent_and_to_known_places;
 
-    #[test]
-    fn shared_space_context_cannot_navigate_to_unknown_workspaces_or_import_capture_state() {
-        let (_, mut app) = workspace();
-        let initial = app.active_channel.clone();
-        app.handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged {
-            peer_id: Some("presenter".into()),
-        });
-        for mode in [
-            r#"{"workspace":"other","channel":"c_general","thread":null}"#,
-            r#"{"channel":"c_missing","thread":null}"#,
-            r#"{"channel":"c_crit","thread":"missing"}"#,
-            r#"{"channel":"c_crit","thread":null,"capture":true}"#,
-        ] {
-            ui::view::capability::restore_view_state(
-                &mut app,
-                &ViewContribution {
-                    view_mode: Some(format!("{PREFIX}{mode}")),
-                    scroll: vec![50.0, 0.0],
-                },
+        phase shared_space_context_requires_local_consent_and_stop_withdraws_navigation;
+        {
+            let (mut doc, mut presenter) = workspace();
+            let before = doc.save();
+            let (_, mut follower) = workspace();
+            assert!(ui::view::capability::view_state(&presenter).is_none());
+            presenter
+                .answer_effect(crate::effects::ChatEffect::ShareLiveContext)
+                .unwrap();
+            presenter.scroll = 120.0;
+            let view = ui::view::capability::view_state(&presenter).unwrap();
+            follower.handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged {
+                peer_id: Some("presenter".into()),
+            });
+            ui::view::capability::restore_view_state(&mut follower, &view);
+            assert_eq!(follower.active_channel, "c_crit");
+            assert_eq!(follower.scroll, 120.0);
+            assert!(follower.following_context);
+            assert!(
+                !follower.sharing_context,
+                "following never grants publication consent"
             );
-            assert_eq!(app.active_channel, initial);
-            assert!(!app.following_context);
+            presenter
+                .answer_effect(crate::effects::ChatEffect::StopSharingLiveContext)
+                .unwrap();
+            let withdrawn = ui::view::capability::view_state(&presenter).unwrap_or_default();
+            assert!(withdrawn.view_mode.is_none());
+            ui::view::capability::restore_view_state(&mut follower, &withdrawn);
+            assert!(!follower.following_context);
+            assert_eq!(follower.scroll, 120.0, "withdrawal does not navigate");
+            assert_eq!(doc.save(), before);
+            assert!(!presenter.native_voice.snapshot.capture_active);
+            follower
+                .handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged { peer_id: None });
+            assert!(!follower.following_context);
         }
-        for scroll in [f64::NAN, -1.0, f64::INFINITY] {
-            ui::view::capability::restore_view_state(
-                &mut app,
-                &ViewContribution {
-                    view_mode: Some(format!(
-                        "{PREFIX}{{\"channel\":\"c_general\",\"thread\":null}}"
-                    )),
-                    scroll: vec![scroll, 0.0],
-                },
-            );
-            assert_eq!(app.active_channel, initial);
+
+        phase shared_space_context_cannot_navigate_to_unknown_workspaces_or_import_capture_state;
+        {
+            let (_, mut app) = workspace();
+            let initial = app.active_channel.clone();
+            app.handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged {
+                peer_id: Some("presenter".into()),
+            });
+            for mode in [
+                r#"{"workspace":"other","channel":"c_general","thread":null}"#,
+                r#"{"channel":"c_missing","thread":null}"#,
+                r#"{"channel":"c_crit","thread":"missing"}"#,
+                r#"{"channel":"c_crit","thread":null,"capture":true}"#,
+            ] {
+                ui::view::capability::restore_view_state(
+                    &mut app,
+                    &ViewContribution {
+                        view_mode: Some(format!("{PREFIX}{mode}")),
+                        scroll: vec![50.0, 0.0],
+                    },
+                );
+                assert_eq!(app.active_channel, initial);
+                assert!(!app.following_context);
+            }
+            for scroll in [f64::NAN, -1.0, f64::INFINITY] {
+                ui::view::capability::restore_view_state(
+                    &mut app,
+                    &ViewContribution {
+                        view_mode: Some(format!(
+                            "{PREFIX}{{\"channel\":\"c_general\",\"thread\":null}}"
+                        )),
+                        scroll: vec![scroll, 0.0],
+                    },
+                );
+                assert_eq!(app.active_channel, initial);
+            }
+            assert!(!app.sharing_context);
+            assert!(!app.native_voice.snapshot.capture_active);
         }
-        assert!(!app.sharing_context);
-        assert!(!app.native_voice.snapshot.capture_active);
     }
 }

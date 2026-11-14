@@ -244,69 +244,141 @@ fn assert_reply_unchanged(actual: &crate::model::Message, original: &crate::mode
     assert_eq!(actual.edited, original.edited);
 }
 
-#[test]
-fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
-    let (mut app, mut doc) = chat(backend("Answer"));
-    let start = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let mut message = reply(&doc, &start["reply"]);
-    message.appearance = Some(tilo_actions::Appearance {
-        name: "Another person".into(),
-        avatar: None,
-        persona: None,
-    });
-    let initiator = app.user_name(&message.author);
-    let name = app.message_author_name(&message);
-    assert_eq!(name, "Another person");
-    assert!(
-        matches!(app.message_author(&message, &name, &initiator, None),
-        ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
-    );
-    assert!(
-        app.message_author_label(&message, crate::identity::RoleWord::InName)
-            .contains("requested by")
-    );
-    message.appearance = None;
-    assert_eq!(app.message_author_name(&message), "Assistant");
-    message.appearance = Some(tilo_actions::Appearance {
-        name: "Another person".into(),
-        avatar: None,
-        persona: None,
-    });
-    let stream_work = message.work.take();
-    let name = app.message_author_name(&message);
-    assert_eq!(
-        name, initiator,
-        "ordinary people cannot adopt appearance names"
-    );
-    assert!(
-        matches!(app.message_author(&message, &name, &initiator, None),
-        ui::author::Author::Person { identity, .. } if identity == crate::model::ME)
-    );
-    assert!(!app.model_message_label(&message).contains("Another person"));
-    message.work = stream_work;
-    message.author = "bot:installed".into();
-    let name = app.message_author_name(&message);
-    assert!(matches!(app.message_author(&message, &name, "", None),
-        ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
-    assert!(!app.is_provider_output(&message));
-    let label = app.model_message_label(&message);
-    assert!(label.starts_with("Another person (bot:"));
-    assert!(!label.contains("model output"));
-    message.author = "agent-task:actual".into();
-    app.agent_authors
-        .insert(message.author.clone(), "Actual agent".into());
-    let name = app.message_author_name(&message);
-    assert_eq!(name, app.user_name(&message.author));
-    assert!(name.starts_with("Actual agent"));
-    assert!(matches!(
-        app.message_author(&message, &name, "", None),
-        ui::author::Author::Agent {
-            for_person: None,
-            ..
-        }
-    ));
-    assert!(!app.is_provider_output(&message));
+tilo_test_env::scenario! {
+    /// A model's reply: who it is by, what its tool calls do, and what a denial leaves.
+    fn a_model_reply_keeps_its_author_runs_no_tool_and_survives_a_denial;
+
+    phase stream_display_names_do_not_change_person_bot_or_agent_identity;
+    {
+        let (mut app, mut doc) = chat(backend("Answer"));
+        let start = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let mut message = reply(&doc, &start["reply"]);
+        message.appearance = Some(tilo_actions::Appearance {
+            name: "Another person".into(),
+            avatar: None,
+            persona: None,
+        });
+        let initiator = app.user_name(&message.author);
+        let name = app.message_author_name(&message);
+        assert_eq!(name, "Another person");
+        assert!(
+            matches!(app.message_author(&message, &name, &initiator, None),
+            ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
+        );
+        assert!(
+            app.message_author_label(&message, crate::identity::RoleWord::InName)
+                .contains("requested by")
+        );
+        message.appearance = None;
+        assert_eq!(app.message_author_name(&message), "Assistant");
+        message.appearance = Some(tilo_actions::Appearance {
+            name: "Another person".into(),
+            avatar: None,
+            persona: None,
+        });
+        let stream_work = message.work.take();
+        let name = app.message_author_name(&message);
+        assert_eq!(
+            name, initiator,
+            "ordinary people cannot adopt appearance names"
+        );
+        assert!(
+            matches!(app.message_author(&message, &name, &initiator, None),
+            ui::author::Author::Person { identity, .. } if identity == crate::model::ME)
+        );
+        assert!(!app.model_message_label(&message).contains("Another person"));
+        message.work = stream_work;
+        message.author = "bot:installed".into();
+        let name = app.message_author_name(&message);
+        assert!(matches!(app.message_author(&message, &name, "", None),
+            ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
+        assert!(!app.is_provider_output(&message));
+        let label = app.model_message_label(&message);
+        assert!(label.starts_with("Another person (bot:"));
+        assert!(!label.contains("model output"));
+        message.author = "agent-task:actual".into();
+        app.agent_authors
+            .insert(message.author.clone(), "Actual agent".into());
+        let name = app.message_author_name(&message);
+        assert_eq!(name, app.user_name(&message.author));
+        assert!(name.starts_with("Actual agent"));
+        assert!(matches!(
+            app.message_author(&message, &name, "", None),
+            ui::author::Author::Agent {
+                for_person: None,
+                ..
+            }
+        ));
+        assert!(!app.is_provider_output(&message));
+    }
+
+    phase completed_stream_is_not_duplicated_and_model_tool_calls_are_inert;
+    {
+        let backend = backend("Streamed answer");
+        backend.finish.set(true);
+        backend.stop.set(StopReason::EndTurn);
+        let (mut app, mut doc) = chat(backend.clone());
+        let start = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let message = reply(&doc, &start["reply"]);
+        assert_eq!(message.text, "Streamed answer");
+        assert_eq!(
+            message
+                .work
+                .as_ref()
+                .unwrap()
+                .stream
+                .as_ref()
+                .unwrap()
+                .reasoning,
+            "Provider summary"
+        );
+        assert_eq!(
+            message
+                .work
+                .as_ref()
+                .unwrap()
+                .stream
+                .as_ref()
+                .unwrap()
+                .finish,
+            Some(AgentFinish::Complete)
+        );
+        assert!(
+            message.work.as_ref().unwrap().trace.is_empty(),
+            "model-proposed tools are not actions"
+        );
+        let before = doc.save();
+        assert!(!app.pump_model());
+        assert_eq!(doc.save(), before);
+        let requests = backend.requests.borrow();
+        assert!(requests[0].tools.is_empty());
+        assert_eq!(requests[0].tool_choice, ToolChoice::None);
+    }
+
+    phase denial_retains_partial_output_and_retry_uses_a_fresh_reply;
+    {
+        let backend = backend("Partial");
+        backend.finish.set(true);
+        backend
+            .error
+            .set(Some(ui::models::ErrorKind::PermissionDenied));
+        let (mut app, mut doc) = chat(backend.clone());
+        let first = app.model_command("c_chat", "ask").unwrap();
+        pump(&mut app, &mut doc);
+        let original = reply(&doc, &first["reply"]);
+        let stream = original.work.as_ref().unwrap().stream.as_ref().unwrap();
+        assert_eq!(stream.finish, Some(AgentFinish::Failed));
+        assert!(!stream.detail.is_empty());
+        backend.error.set(None);
+        backend.stop.set(StopReason::EndTurn);
+        let retry = app.model_command("c_chat", "retry").unwrap();
+        assert_ne!(retry["reply"], first["reply"]);
+        pump(&mut app, &mut doc);
+        assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
+        assert_eq!(reply(&doc, &retry["reply"]).text, "Partial");
+    }
 }
 
 tilo_test_env::scenario! {
@@ -443,73 +515,6 @@ tilo_test_env::scenario! {
                 .ends_with(": see this\nplan.txt")
         );
     }
-}
-
-#[test]
-fn completed_stream_is_not_duplicated_and_model_tool_calls_are_inert() {
-    let backend = backend("Streamed answer");
-    backend.finish.set(true);
-    backend.stop.set(StopReason::EndTurn);
-    let (mut app, mut doc) = chat(backend.clone());
-    let start = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let message = reply(&doc, &start["reply"]);
-    assert_eq!(message.text, "Streamed answer");
-    assert_eq!(
-        message
-            .work
-            .as_ref()
-            .unwrap()
-            .stream
-            .as_ref()
-            .unwrap()
-            .reasoning,
-        "Provider summary"
-    );
-    assert_eq!(
-        message
-            .work
-            .as_ref()
-            .unwrap()
-            .stream
-            .as_ref()
-            .unwrap()
-            .finish,
-        Some(AgentFinish::Complete)
-    );
-    assert!(
-        message.work.as_ref().unwrap().trace.is_empty(),
-        "model-proposed tools are not actions"
-    );
-    let before = doc.save();
-    assert!(!app.pump_model());
-    assert_eq!(doc.save(), before);
-    let requests = backend.requests.borrow();
-    assert!(requests[0].tools.is_empty());
-    assert_eq!(requests[0].tool_choice, ToolChoice::None);
-}
-
-#[test]
-fn denial_retains_partial_output_and_retry_uses_a_fresh_reply() {
-    let backend = backend("Partial");
-    backend.finish.set(true);
-    backend
-        .error
-        .set(Some(ui::models::ErrorKind::PermissionDenied));
-    let (mut app, mut doc) = chat(backend.clone());
-    let first = app.model_command("c_chat", "ask").unwrap();
-    pump(&mut app, &mut doc);
-    let original = reply(&doc, &first["reply"]);
-    let stream = original.work.as_ref().unwrap().stream.as_ref().unwrap();
-    assert_eq!(stream.finish, Some(AgentFinish::Failed));
-    assert!(!stream.detail.is_empty());
-    backend.error.set(None);
-    backend.stop.set(StopReason::EndTurn);
-    let retry = app.model_command("c_chat", "retry").unwrap();
-    assert_ne!(retry["reply"], first["reply"]);
-    pump(&mut app, &mut doc);
-    assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
-    assert_eq!(reply(&doc, &retry["reply"]).text, "Partial");
 }
 
 tilo_test_env::scenario! {

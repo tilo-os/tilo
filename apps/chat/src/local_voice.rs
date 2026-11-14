@@ -1031,35 +1031,176 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shared_space_call_status_exposes_muted_join_and_leave_without_starting_capture() {
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let before = doc.save();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.answer_effect(crate::effects::ChatEffect::JoinCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        app.answer_effect(crate::effects::ChatEffect::CallStatus {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        assert_eq!(app.native_voice.snapshot.state, State::Preparing);
-        assert!(app.native_voice.snapshot.muted);
-        assert!(!app.native_voice.snapshot.capture_active);
-        app.answer_effect(crate::effects::ChatEffect::LeaveCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        assert_eq!(app.native_voice.snapshot.state, State::Ended);
-        assert!(app.native_voice.channel.is_none());
-        assert_eq!(
-            doc.save(),
-            before,
-            "call state is transient, never persistent consent"
-        );
+    tilo_test_env::scenario! {
+        /// A join and its status go through the voice service, and nothing but an asked join starts capture.
+        fn the_voice_service_joins_a_call_and_nothing_unasked_starts_capture;
+
+        phase shared_space_call_status_exposes_muted_join_and_leave_without_starting_capture;
+        {
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let before = doc.save();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
+            app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            app.answer_effect(crate::effects::ChatEffect::CallStatus {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            assert_eq!(app.native_voice.snapshot.state, State::Preparing);
+            assert!(app.native_voice.snapshot.muted);
+            assert!(!app.native_voice.snapshot.capture_active);
+            app.answer_effect(crate::effects::ChatEffect::LeaveCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            assert_eq!(app.native_voice.snapshot.state, State::Ended);
+            assert!(app.native_voice.channel.is_none());
+            assert_eq!(
+                doc.save(),
+                before,
+                "call state is transient, never persistent consent"
+            );
+        }
+
+        phase unsolicited_or_invalid_status_cannot_activate_capture;
+        {
+            let mut voice = LocalVoice::default();
+            voice.complete(999, &Ok(live()));
+            assert_eq!(voice.snapshot.state, State::Unavailable);
+            voice
+                .submit(Command::Join {
+                    channel_id: "voice".into(),
+                })
+                .unwrap();
+            let requests = voice.take_requests(ui::time::now());
+            let mut invalid = live();
+            invalid.capture_active = true;
+            voice.complete(request_id(&requests[0]), &Ok(invalid));
+            assert_eq!(voice.snapshot.state, State::Unavailable);
+            assert!(voice.snapshot.muted);
+            assert!(!voice.snapshot.capture_active);
+        }
+
+        phase public_status_retains_a_safe_client_failure_after_cleanup_then_clears_on_rejoin;
+        {
+            let now = ui::time::now();
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let mut app = crate::app::ChatApp::new_ephemeral();
+            app.reload(&doc);
+            app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            let join = app.native_voice.take_requests(now);
+            app.native_voice.complete(request_id(&join[0]), &Ok(live()));
+            let refresh = app
+                .native_voice
+                .take_requests(now + Duration::from_millis(500));
+            app.native_voice.complete(
+                request_id(&refresh[0]),
+                &Err("native media command timed out".into()),
+            );
+            let stop = app.native_voice.take_requests(now + Duration::from_secs(1));
+            let mut ended = Snapshot::unavailable();
+            ended.state = State::Ended;
+            ended.issue = None;
+            app.native_voice.complete(request_id(&stop[0]), &Ok(ended));
+            let ui::framework::Effected::Done(output) = app
+                .answer_effect(crate::effects::ChatEffect::CallStatus {
+                    channel: "c_standup".into(),
+                })
+                .unwrap()
+            else {
+                panic!("status must answer immediately");
+            };
+            let output = output.value.unwrap();
+            assert_eq!(output["reported"]["state"], "ended");
+            assert_eq!(output["clientIssue"], "reply_timeout");
+            assert_eq!(output["channel"], serde_json::Value::Null);
+            app.answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
+            assert_eq!(app.native_voice.client_issue, None);
+            let join = app
+                .native_voice
+                .take_requests(now + Duration::from_millis(1500));
+            let join_id = join
+                .iter()
+                .find_map(|request| match request {
+                    CollabRequest::NativeMediaCommand {
+                        request_id,
+                        command:
+                            Request {
+                                command: Command::Join { .. },
+                                ..
+                            },
+                    } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap();
+            app.native_voice.complete(
+                join_id,
+                &Err("private service detail must not escape".into()),
+            );
+            let ui::framework::Effected::Done(output) = app
+                .answer_effect(crate::effects::ChatEffect::CallStatus {
+                    channel: "c_standup".into(),
+                })
+                .unwrap()
+            else {
+                panic!("status must answer immediately");
+            };
+            let output = output.value.unwrap();
+            assert_eq!(output["clientIssue"], "unavailable");
+            assert!(!output.to_string().contains("private service detail"));
+            assert_eq!(output["reported"]["capture_active"], false);
+        }
+
+        phase reader_pointer_and_resource_join_use_the_same_service_without_document_mutation;
+        {
+            use ui::permissions::{PermissionContext, Role};
+            use ui::widget::Collaborative;
+            let mut doc = automerge::AutoCommit::new();
+            crate::demo::seed(&mut doc).unwrap();
+            let before = doc.save();
+            let mut pointer = crate::app::ChatApp::new_ephemeral();
+            pointer.reload(&doc);
+            pointer.perms = crate::permissions::ChatPermissions::from_context(
+                PermissionContext::member("reader", Role::Viewer),
+            );
+            pointer.on_hit(
+                crate::app::Hit::Channel("c_standup".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            let pointer_requests = pointer.take_collab_requests();
+            let mut resource = crate::app::ChatApp::new_ephemeral();
+            resource.reload(&doc);
+            resource.perms = pointer.perms.clone();
+            resource
+                .answer_effect(crate::effects::ChatEffect::JoinCall {
+                    channel: "c_standup".into(),
+                })
+                .unwrap();
+            let resource_requests = resource.take_collab_requests();
+            let command = |requests: Vec<CollabRequest>| match requests.into_iter().next().unwrap() {
+                CollabRequest::NativeMediaCommand { command, .. } => command,
+                _ => panic!("native service expected"),
+            };
+            assert_eq!(command(pointer_requests), command(resource_requests));
+            assert_eq!(doc.save(), before);
+            assert!(pointer.call.muted);
+            assert!(
+                pointer
+                    .native_voice_command("c_standup", Command::SetMuted { muted: false })
+                    .is_err()
+            );
+        }
     }
 
     tilo_test_env::scenario! {
@@ -1207,25 +1348,6 @@ mod tests {
             voice.complete(request_id(&status[0]), &Ok(snapshot));
             assert_eq!(voice.snapshot.state, State::Unavailable);
         }
-    }
-
-    #[test]
-    fn unsolicited_or_invalid_status_cannot_activate_capture() {
-        let mut voice = LocalVoice::default();
-        voice.complete(999, &Ok(live()));
-        assert_eq!(voice.snapshot.state, State::Unavailable);
-        voice
-            .submit(Command::Join {
-                channel_id: "voice".into(),
-            })
-            .unwrap();
-        let requests = voice.take_requests(ui::time::now());
-        let mut invalid = live();
-        invalid.capture_active = true;
-        voice.complete(request_id(&requests[0]), &Ok(invalid));
-        assert_eq!(voice.snapshot.state, State::Unavailable);
-        assert!(voice.snapshot.muted);
-        assert!(!voice.snapshot.capture_active);
     }
 
     fn watch_of(request: &CollabRequest) -> Option<u64> {
@@ -1394,123 +1516,6 @@ mod tests {
             assert!(voice.snapshot.muted);
             assert!(!voice.snapshot.capture_active);
         }
-    }
-
-    #[test]
-    fn public_status_retains_a_safe_client_failure_after_cleanup_then_clears_on_rejoin() {
-        let now = ui::time::now();
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.answer_effect(crate::effects::ChatEffect::JoinCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        let join = app.native_voice.take_requests(now);
-        app.native_voice.complete(request_id(&join[0]), &Ok(live()));
-        let refresh = app
-            .native_voice
-            .take_requests(now + Duration::from_millis(500));
-        app.native_voice.complete(
-            request_id(&refresh[0]),
-            &Err("native media command timed out".into()),
-        );
-        let stop = app.native_voice.take_requests(now + Duration::from_secs(1));
-        let mut ended = Snapshot::unavailable();
-        ended.state = State::Ended;
-        ended.issue = None;
-        app.native_voice.complete(request_id(&stop[0]), &Ok(ended));
-        let ui::framework::Effected::Done(output) = app
-            .answer_effect(crate::effects::ChatEffect::CallStatus {
-                channel: "c_standup".into(),
-            })
-            .unwrap()
-        else {
-            panic!("status must answer immediately");
-        };
-        let output = output.value.unwrap();
-        assert_eq!(output["reported"]["state"], "ended");
-        assert_eq!(output["clientIssue"], "reply_timeout");
-        assert_eq!(output["channel"], serde_json::Value::Null);
-        app.answer_effect(crate::effects::ChatEffect::JoinCall {
-            channel: "c_standup".into(),
-        })
-        .unwrap();
-        assert_eq!(app.native_voice.client_issue, None);
-        let join = app
-            .native_voice
-            .take_requests(now + Duration::from_millis(1500));
-        let join_id = join
-            .iter()
-            .find_map(|request| match request {
-                CollabRequest::NativeMediaCommand {
-                    request_id,
-                    command:
-                        Request {
-                            command: Command::Join { .. },
-                            ..
-                        },
-                } => Some(*request_id),
-                _ => None,
-            })
-            .unwrap();
-        app.native_voice.complete(
-            join_id,
-            &Err("private service detail must not escape".into()),
-        );
-        let ui::framework::Effected::Done(output) = app
-            .answer_effect(crate::effects::ChatEffect::CallStatus {
-                channel: "c_standup".into(),
-            })
-            .unwrap()
-        else {
-            panic!("status must answer immediately");
-        };
-        let output = output.value.unwrap();
-        assert_eq!(output["clientIssue"], "unavailable");
-        assert!(!output.to_string().contains("private service detail"));
-        assert_eq!(output["reported"]["capture_active"], false);
-    }
-
-    #[test]
-    fn reader_pointer_and_resource_join_use_the_same_service_without_document_mutation() {
-        use ui::permissions::{PermissionContext, Role};
-        use ui::widget::Collaborative;
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
-        let before = doc.save();
-        let mut pointer = crate::app::ChatApp::new_ephemeral();
-        pointer.reload(&doc);
-        pointer.perms = crate::permissions::ChatPermissions::from_context(
-            PermissionContext::member("reader", Role::Viewer),
-        );
-        pointer.on_hit(
-            crate::app::Hit::Channel("c_standup".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        let pointer_requests = pointer.take_collab_requests();
-        let mut resource = crate::app::ChatApp::new_ephemeral();
-        resource.reload(&doc);
-        resource.perms = pointer.perms.clone();
-        resource
-            .answer_effect(crate::effects::ChatEffect::JoinCall {
-                channel: "c_standup".into(),
-            })
-            .unwrap();
-        let resource_requests = resource.take_collab_requests();
-        let command = |requests: Vec<CollabRequest>| match requests.into_iter().next().unwrap() {
-            CollabRequest::NativeMediaCommand { command, .. } => command,
-            _ => panic!("native service expected"),
-        };
-        assert_eq!(command(pointer_requests), command(resource_requests));
-        assert_eq!(doc.save(), before);
-        assert!(pointer.call.muted);
-        assert!(
-            pointer
-                .native_voice_command("c_standup", Command::SetMuted { muted: false })
-                .is_err()
-        );
     }
 
     tilo_test_env::scenario! {

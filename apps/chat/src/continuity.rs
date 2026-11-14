@@ -298,51 +298,163 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_continuity_cannot_claim_ready_or_resume_capture_from_view_state() {
-        let (mut app, _) = app_and_doc();
-        let offered = ChatCallContinuation {
-            workspace_id: "ws_acme".into(),
-            channel_id: "c_huddle".into(),
-            media: ui::realtime_continuity::RealtimeMediaFacets {
-                microphone: true,
-                camera: true,
-                ..Default::default()
-            },
-            controls: ui::realtime_continuity::RealtimeControlIntent {
-                microphone_muted: false,
-                camera_muted: false,
-                ..Default::default()
-            },
-        };
-        app.realtime.pending_restore = Some(offered.clone());
-        app.realtime.offer = Some(("target".into(), offered));
-        app.call.join("c_huddle");
-        assert!(!app.realtime_target_media_ready());
-        assert!(app.call_continuation().is_none());
-        app.realtime.accepted_target = true;
-        app.establish_realtime_target();
-        assert!(app.call.muted && app.call.audio_only && !app.call.sharing);
-        assert_eq!(
-            app.native_voice.snapshot.state,
-            ui::native_media::State::Preparing
-        );
-        assert!(!app.realtime_target_media_ready());
-    }
+    tilo_test_env::scenario! {
+        /// A call continued on another device: what it resumes from, what stops its source and what it never captures.
+        fn a_continued_call_resumes_and_stops_on_exact_events_and_never_captures;
 
-    #[test]
-    fn realtime_request_uses_the_launched_package_id() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_PACKAGE_ID", "so.tilo.chat");
-        let mut realtime = ChatRealtimeContinuity::default();
-        let request = realtime.request(ui::realtime_continuity::RealtimeCommand::TargetFailed {
-            session: "session-1".into(),
-        });
-        drop(env);
-        assert!(matches!(
-            request,
-            ui::collaboration::CollabRequest::RealtimeCommand { .. }
-        ));
+        phase native_continuity_cannot_claim_ready_or_resume_capture_from_view_state;
+        {
+            let (mut app, _) = app_and_doc();
+            let offered = ChatCallContinuation {
+                workspace_id: "ws_acme".into(),
+                channel_id: "c_huddle".into(),
+                media: ui::realtime_continuity::RealtimeMediaFacets {
+                    microphone: true,
+                    camera: true,
+                    ..Default::default()
+                },
+                controls: ui::realtime_continuity::RealtimeControlIntent {
+                    microphone_muted: false,
+                    camera_muted: false,
+                    ..Default::default()
+                },
+            };
+            app.realtime.pending_restore = Some(offered.clone());
+            app.realtime.offer = Some(("target".into(), offered));
+            app.call.join("c_huddle");
+            assert!(!app.realtime_target_media_ready());
+            assert!(app.call_continuation().is_none());
+            app.realtime.accepted_target = true;
+            app.establish_realtime_target();
+            assert!(app.call.muted && app.call.audio_only && !app.call.sharing);
+            assert_eq!(
+                app.native_voice.snapshot.state,
+                ui::native_media::State::Preparing
+            );
+            assert!(!app.realtime_target_media_ready());
+        }
+
+        phase realtime_request_uses_the_launched_package_id;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_PACKAGE_ID", "so.tilo.chat");
+            let mut realtime = ChatRealtimeContinuity::default();
+            let request = realtime.request(ui::realtime_continuity::RealtimeCommand::TargetFailed {
+                session: "session-1".into(),
+            });
+            drop(env);
+            assert!(matches!(
+                request,
+                ui::collaboration::CollabRequest::RealtimeCommand { .. }
+            ));
+        }
+
+        phase a_call_continuation_stored_before_the_workspace_was_named_still_resumes;
+        {
+            let (mut app, doc) = app_and_doc();
+            let stored = serde_json::json!({
+                "workspace_id": crate::app::LEGACY_WORKSPACE_SCOPE,
+                "channel_id": "c_huddle",
+                "media": {
+                    "microphone": true,
+                    "camera": false,
+                    "screen_share": false,
+                    "share_audio": false,
+                },
+                "controls": {
+                    "microphone_muted": false,
+                    "camera_muted": true,
+                    "screen_share_paused": false,
+                    "share_audio_muted": true,
+                },
+            });
+            let metadata = ui::collaboration::ContinuationMetadata {
+                schema_version: CHAT_CONTINUATION_SCHEMA,
+                bytes: serde_json::to_vec(&stored).unwrap(),
+            };
+            assert!(app.restore_call_continuation(&metadata, &doc));
+            let restored = app
+                .realtime
+                .pending_restore
+                .as_ref()
+                .expect("the call resumes");
+            assert_eq!(restored.workspace_id, crate::app::WORKSPACE_SCOPE);
+            assert_eq!(
+                restored.resume_intent().semantic_position.as_deref(),
+                Some(crate::app::WORKSPACE_SCOPE)
+            );
+        }
+
+        phase source_stays_live_until_exact_stop_source_event;
+        {
+            let (mut app, doc) = app_and_doc();
+            app.call.join("c_huddle");
+            app.realtime.session = Some("session-1".into());
+            Collaborative::handle_collab_event(
+                &mut app,
+                &ui::collaboration::CollabEvent::Realtime(
+                    ui::realtime_continuity::RealtimeEvent::RolledBack {
+                        session: "session-1".into(),
+                    },
+                ),
+            );
+            Widget::sync(&mut app, &doc, &ROOT);
+            assert!(app.call.active, "rollback must leave source media live");
+            Collaborative::handle_collab_event(
+                &mut app,
+                &ui::collaboration::CollabEvent::Realtime(
+                    ui::realtime_continuity::RealtimeEvent::StopSource {
+                        session: "foreign".into(),
+                    },
+                ),
+            );
+            Widget::sync(&mut app, &doc, &ROOT);
+            assert!(app.call.active, "foreign cutover cannot stop this call");
+            Collaborative::handle_collab_event(
+                &mut app,
+                &ui::collaboration::CollabEvent::Realtime(
+                    ui::realtime_continuity::RealtimeEvent::StopSource {
+                        session: "session-1".into(),
+                    },
+                ),
+            );
+            assert!(
+                app.call.active,
+                "callback queues the safe document mutation"
+            );
+            Widget::sync(&mut app, &doc, &ROOT);
+            assert!(!app.call.active);
+        }
+
+        phase an_offered_screen_share_never_requests_host_capture;
+        // Chat continuity is voice-only through the native media service: an
+        // offer that claims a screen share never asks the host for a capture
+        // source and never resumes sharing.
+        {
+            let (mut app, doc) = app_and_doc();
+            let offered = ChatCallContinuation {
+                workspace_id: "ws_acme".into(),
+                channel_id: "c_huddle".into(),
+                media: ui::realtime_continuity::RealtimeMediaFacets {
+                    microphone: true,
+                    screen_share: true,
+                    ..Default::default()
+                },
+                controls: ui::realtime_continuity::RealtimeControlIntent::default(),
+            };
+            let metadata = ui::collaboration::ContinuationMetadata {
+                schema_version: CHAT_CONTINUATION_SCHEMA,
+                bytes: serde_json::to_vec(&offered).unwrap(),
+            };
+            assert!(app.restore_call_continuation(&metadata, &doc));
+            app.realtime.offer = Some(("target-session".into(), offered));
+            app.realtime.accepted_target = true;
+            let (services, recorder) = ui::host::HostServices::recording();
+            ui::host::scoped(&services, || Widget::sync(&mut app, &doc, &ROOT));
+            assert!(recorder.screen_capture_requests().is_empty());
+            assert!(!app.call.sharing);
+            assert!(!app.realtime_target_media_ready());
+        }
     }
 
     tilo_test_env::scenario! {
@@ -407,42 +519,6 @@ mod tests {
                 &ROOT,
             ));
         }
-    }
-
-    #[test]
-    fn a_call_continuation_stored_before_the_workspace_was_named_still_resumes() {
-        let (mut app, doc) = app_and_doc();
-        let stored = serde_json::json!({
-            "workspace_id": crate::app::LEGACY_WORKSPACE_SCOPE,
-            "channel_id": "c_huddle",
-            "media": {
-                "microphone": true,
-                "camera": false,
-                "screen_share": false,
-                "share_audio": false,
-            },
-            "controls": {
-                "microphone_muted": false,
-                "camera_muted": true,
-                "screen_share_paused": false,
-                "share_audio_muted": true,
-            },
-        });
-        let metadata = ui::collaboration::ContinuationMetadata {
-            schema_version: CHAT_CONTINUATION_SCHEMA,
-            bytes: serde_json::to_vec(&stored).unwrap(),
-        };
-        assert!(app.restore_call_continuation(&metadata, &doc));
-        let restored = app
-            .realtime
-            .pending_restore
-            .as_ref()
-            .expect("the call resumes");
-        assert_eq!(restored.workspace_id, crate::app::WORKSPACE_SCOPE);
-        assert_eq!(
-            restored.resume_intent().semantic_position.as_deref(),
-            Some(crate::app::WORKSPACE_SCOPE)
-        );
     }
 
     tilo_test_env::scenario! {
@@ -597,76 +673,5 @@ mod tests {
                     ))
             );
         }
-    }
-
-    #[test]
-    fn source_stays_live_until_exact_stop_source_event() {
-        let (mut app, doc) = app_and_doc();
-        app.call.join("c_huddle");
-        app.realtime.session = Some("session-1".into());
-        Collaborative::handle_collab_event(
-            &mut app,
-            &ui::collaboration::CollabEvent::Realtime(
-                ui::realtime_continuity::RealtimeEvent::RolledBack {
-                    session: "session-1".into(),
-                },
-            ),
-        );
-        Widget::sync(&mut app, &doc, &ROOT);
-        assert!(app.call.active, "rollback must leave source media live");
-        Collaborative::handle_collab_event(
-            &mut app,
-            &ui::collaboration::CollabEvent::Realtime(
-                ui::realtime_continuity::RealtimeEvent::StopSource {
-                    session: "foreign".into(),
-                },
-            ),
-        );
-        Widget::sync(&mut app, &doc, &ROOT);
-        assert!(app.call.active, "foreign cutover cannot stop this call");
-        Collaborative::handle_collab_event(
-            &mut app,
-            &ui::collaboration::CollabEvent::Realtime(
-                ui::realtime_continuity::RealtimeEvent::StopSource {
-                    session: "session-1".into(),
-                },
-            ),
-        );
-        assert!(
-            app.call.active,
-            "callback queues the safe document mutation"
-        );
-        Widget::sync(&mut app, &doc, &ROOT);
-        assert!(!app.call.active);
-    }
-
-    /// Chat continuity is voice-only through the native media service: an
-    /// offer that claims a screen share never asks the host for a capture
-    /// source and never resumes sharing.
-    #[test]
-    fn an_offered_screen_share_never_requests_host_capture() {
-        let (mut app, doc) = app_and_doc();
-        let offered = ChatCallContinuation {
-            workspace_id: "ws_acme".into(),
-            channel_id: "c_huddle".into(),
-            media: ui::realtime_continuity::RealtimeMediaFacets {
-                microphone: true,
-                screen_share: true,
-                ..Default::default()
-            },
-            controls: ui::realtime_continuity::RealtimeControlIntent::default(),
-        };
-        let metadata = ui::collaboration::ContinuationMetadata {
-            schema_version: CHAT_CONTINUATION_SCHEMA,
-            bytes: serde_json::to_vec(&offered).unwrap(),
-        };
-        assert!(app.restore_call_continuation(&metadata, &doc));
-        app.realtime.offer = Some(("target-session".into(), offered));
-        app.realtime.accepted_target = true;
-        let (services, recorder) = ui::host::HostServices::recording();
-        ui::host::scoped(&services, || Widget::sync(&mut app, &doc, &ROOT));
-        assert!(recorder.screen_capture_requests().is_empty());
-        assert!(!app.call.sharing);
-        assert!(!app.realtime_target_media_ready());
     }
 }

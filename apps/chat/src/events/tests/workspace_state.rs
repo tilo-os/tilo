@@ -810,88 +810,93 @@ fn an_empty_category_is_listed_only_to_whoever_keeps_the_layout() {
     );
 }
 
-#[test]
-fn the_sidebar_names_the_channels_and_categories_of_a_chat_kept_flat() {
-    let mut doc = crate::testing::chat_kept_flat(5);
-    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
-    let mut app = ChatApp::new_ephemeral();
-    app.reload(&doc);
-    let sections = app.sidebar_sections();
-    let titled: Vec<(&str, &str)> = sections
-        .iter()
-        .filter(|section| !section.title.is_empty())
-        .map(|section| (section.id.as_str(), section.title.as_str()))
-        .collect();
-    assert_eq!(
-        titled,
-        [
-            ("category:cat_home_text", "Channels"),
-            ("category:cat_home_voice", "Voice")
-        ]
-    );
-    let names: Vec<&str> = sections
-        .iter()
-        .flat_map(|section| &section.items)
-        .map(|item| item.label.as_str())
-        .collect();
-    for shown in ["general", "Lounge"] {
-        assert!(names.contains(&shown), "{shown} in {names:?}");
-    }
-}
+tilo_test_env::scenario! {
+    /// A chat an older record kept, as the window shows it once migrated.
+    fn a_chat_an_older_record_kept_shows_its_channels_messages_and_authors;
 
-#[test]
-fn messages_the_chat_record_kept_show_in_their_channel_and_none_is_unread() {
-    let mut doc = crate::testing::chat_with_kept_messages(2, false);
-    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
-    let mut app = ChatApp::new_ephemeral();
-    app.active_channel = "c_general".into();
-    app.reload(&doc);
-    let shown: Vec<(&str, &str, &str)> = app
-        .messages
-        .iter()
-        .map(|message| {
-            (
-                message.id.as_str(),
-                message.author.as_str(),
-                message.text.as_str(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        shown,
-        [("m1", "ada", "first"), ("m2", crate::testing::BO, "second")]
-    );
-    assert_eq!(
-        app.channel("c_random").map(|channel| channel.unread),
-        Some(0)
-    );
-    assert!(
-        app.search_messages
+    phase the_sidebar_names_the_channels_and_categories_of_a_chat_kept_flat;
+    {
+        let mut doc = crate::testing::chat_kept_flat(5);
+        assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+        let mut app = ChatApp::new_ephemeral();
+        app.reload(&doc);
+        let sections = app.sidebar_sections();
+        let titled: Vec<(&str, &str)> = sections
             .iter()
-            .any(|message| message.text == "elsewhere")
-    );
-}
+            .filter(|section| !section.title.is_empty())
+            .map(|section| (section.id.as_str(), section.title.as_str()))
+            .collect();
+        assert_eq!(
+            titled,
+            [
+                ("category:cat_home_text", "Channels"),
+                ("category:cat_home_voice", "Voice")
+            ]
+        );
+        let names: Vec<&str> = sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .map(|item| item.label.as_str())
+            .collect();
+        for shown in ["general", "Lounge"] {
+            assert!(names.contains(&shown), "{shown} in {names:?}");
+        }
+    }
 
-#[test]
-fn a_kept_message_names_its_author_as_the_record_kept_them_and_never_by_their_id() {
-    let mut doc = crate::testing::chat_with_kept_messages(1, true);
-    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
-    let mut app = ChatApp::new_ephemeral();
-    app.active_channel = "c_general".into();
-    app.reload(&doc);
-    assert_eq!(app.user_name("ada"), "Ada Lovelace");
-    let unnamed = app.user_name(crate::testing::BO);
-    assert_eq!(unnamed, crate::identity::unnamed_label(crate::testing::BO));
-    assert!(!unnamed.contains(crate::testing::BO));
-    let held = app.held_messages();
-    let said: Vec<&str> = held
-        .iter()
-        .map(|(_, message)| message.text.as_str())
-        .collect();
-    assert!(
-        said.contains(&"first") && said.contains(&"second"),
-        "{said:?}"
-    );
+    phase messages_the_chat_record_kept_show_in_their_channel_and_none_is_unread;
+    {
+        let mut doc = crate::testing::chat_with_kept_messages(2, false);
+        assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+        let mut app = ChatApp::new_ephemeral();
+        app.active_channel = "c_general".into();
+        app.reload(&doc);
+        let shown: Vec<(&str, &str, &str)> = app
+            .messages
+            .iter()
+            .map(|message| {
+                (
+                    message.id.as_str(),
+                    message.author.as_str(),
+                    message.text.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [("m1", "ada", "first"), ("m2", crate::testing::BO, "second")]
+        );
+        assert_eq!(
+            app.channel("c_random").map(|channel| channel.unread),
+            Some(0)
+        );
+        assert!(
+            app.search_messages
+                .iter()
+                .any(|message| message.text == "elsewhere")
+        );
+    }
+
+    phase a_kept_message_names_its_author_as_the_record_kept_them_and_never_by_their_id;
+    {
+        let mut doc = crate::testing::chat_with_kept_messages(1, true);
+        assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+        let mut app = ChatApp::new_ephemeral();
+        app.active_channel = "c_general".into();
+        app.reload(&doc);
+        assert_eq!(app.user_name("ada"), "Ada Lovelace");
+        let unnamed = app.user_name(crate::testing::BO);
+        assert_eq!(unnamed, crate::identity::unnamed_label(crate::testing::BO));
+        assert!(!unnamed.contains(crate::testing::BO));
+        let held = app.held_messages();
+        let said: Vec<&str> = held
+            .iter()
+            .map(|(_, message)| message.text.as_str())
+            .collect();
+        assert!(
+            said.contains(&"first") && said.contains(&"second"),
+            "{said:?}"
+        );
+    }
 }
 
 tilo_test_env::scenario! {
