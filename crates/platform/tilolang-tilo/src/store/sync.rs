@@ -268,9 +268,6 @@ struct Applied {
     /// the store's own write it made.
     told: bool,
     versions: Ends,
-    /// What deriving the store's writes the changes carry into the overlay wrote, when they
-    /// carry nothing else: what the index takes in of them ([`Inner::as_written`]).
-    written: Option<Vec<super::AsWritten>>,
 }
 
 /// What those who read the mirror had before a sync: the heads the record moved on from, each
@@ -388,7 +385,7 @@ impl Inner {
         // and items it holds where they are.
         self.reapply_kept(chunk);
         let reached = everything(&before, &self.index);
-        self.derive_all(&reached, None, None);
+        self.derive_all(&reached, None);
         self.rebuild_overlay();
         self.changed();
         self.notify_all();
@@ -436,7 +433,6 @@ impl Inner {
             items: taken.items,
             told: taken.told && every_one_an_action,
             versions: taken.versions,
-            written: taken.written.filter(|_| every_one_an_action),
         })
     }
 
@@ -458,14 +454,9 @@ impl Inner {
             },
             |held| everything(&held, &self.index),
         );
-        let written = applied
-            .written
-            .as_deref()
-            .map(|written| (written, &applied.items));
         let (moved, wholes, notified) = self.derive_all(
             &reached,
             Some((&before.from, &applied.ends, &applied.placed)),
-            written,
         );
         // A write routed to a chunk above the record whose document this sync does not carry —
         // a record kept as one document that the store also routes by its manifest, or a caller
