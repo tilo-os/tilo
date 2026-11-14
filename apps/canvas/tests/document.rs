@@ -296,15 +296,24 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
     let mut app = TestApp::<App>::new().unwrap();
     app.harness().resize((868, 772)).unwrap();
     app.harness().key("Shift");
-    let shown = |app: &mut TestApp<App>| app.harness().targets().contains_key("canvas-dock");
+    // The panels slide: they are laid out, the dock's tabs with them, until the slide that puts
+    // them away has ended, and how many frames that takes is the machine's speed. So each reading
+    // is of the window at rest, with nothing of it still asking for a frame: where the panels
+    // stay, not where a slide happens to be.
+    let shown = |app: &mut TestApp<App>| {
+        assert!(
+            app.harness()
+                .settle_for_capture(tilo_test_env::hang_bound()),
+            "the window comes to rest: {:?}",
+            app.harness().frame_requesters()
+        );
+        app.harness().targets().contains_key("canvas-dock")
+    };
     let before = shown(&mut app);
     app.harness()
         .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
             id: "canvas.tools".to_owned(),
         });
-    for _ in 0..4 {
-        app.harness().key("Shift");
-    }
     assert_ne!(
         shown(&mut app),
         before,
@@ -314,9 +323,6 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
         .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
             id: "canvas.tools".to_owned(),
         });
-    for _ in 0..4 {
-        app.harness().key("Shift");
-    }
     assert_eq!(shown(&mut app), before, "and brings them back");
 }
 
