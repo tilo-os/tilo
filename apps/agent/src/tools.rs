@@ -70,10 +70,13 @@ use crate::plan;
 use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 
 pub mod canvas;
+mod prompt;
 mod schema;
 mod summary;
 mod wait;
 pub mod web;
+
+pub(crate) use prompt::LOOP_SYSTEM;
 
 pub use schema::argument_lines_compact;
 
