@@ -775,21 +775,53 @@ fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
     pixels.iter().filter(|pixel| far(**pixel, *ground)).count()
 }
 
+/// The seeded inbox placed through the door, once, and what the session shows and does with it
+/// from then on:
+///
+/// - it stands on the canvas as the mail app's own view of it, and mail's package is loaded because
+///   the place shows it ([`the_inbox_is_drawn_as_mails_inbox`]);
+/// - its conversations come in a turn per level, not one per conversation
+///   ([`the_inbox_filled_in_a_turn_per_level`]);
+/// - once they are drawn, a session left alone runs and draws nothing
+///   ([`the_settled_inbox_draws_nothing_while_idle`]);
+/// - a change to one conversation reads that conversation again, and no other
+///   ([`a_change_to_one_thread_rereads_only_that_threads_reading`]).
+///
+/// One session and one placed inbox hold all four, each driven as a test of it alone drives it. The
+/// steps that only read come first, and the one that changes a record (the flag) comes last, so
+/// nothing a step reads was changed by a step before it.
+#[test]
+fn the_seeded_inbox_placed_through_the_door_fills_in_settles_is_drawn_and_rereads_one_thread() {
+    let _settled = ui::motion::testing::settled();
+    // The bar draws the time, and a minute turning over is a change, not idle work: the test holds
+    // the clock at the minute it runs in, as a capture does, so what it watches at rest is the
+    // shell and nothing else. Held from before the session starts, as the idle watch needs it.
+    ui::time::testing::with_wall(this_minute(), || {
+        let root = private_home();
+        let mut session = seeded_session(root.path());
+        assert!(
+            session.shell_apps().is_empty(),
+            "no app's package is the shell's before a place shows it: {:?}",
+            session.shell_apps()
+        );
+        let rounds_before = session.shell_reading_rounds();
+        place_the_inbox(&mut session, root.path());
+        assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
+        for _ in 0..200 {
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+        the_inbox_filled_in_a_turn_per_level(&session, rounds_before);
+        the_settled_inbox_draws_nothing_while_idle(&mut session);
+        the_inbox_is_drawn_as_mails_inbox(&mut session, root.path());
+        a_change_to_one_thread_rereads_only_that_threads_reading(&mut session);
+    });
+}
+
 /// The seeded inbox placed through the door stands on the canvas as the mail app's own view of it:
 /// a seeded conversation's subject is laid out in it, and drawn where it is laid out in the
-/// snapshot `tilo-control` takes. Mail's package is loaded because the place shows it.
-#[test]
-fn the_seeded_inbox_placed_through_the_door_is_drawn_as_mails_inbox() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = seeded_session(root.path());
-    assert!(
-        session.shell_apps().is_empty(),
-        "no app's package is the shell's before a place shows it: {:?}",
-        session.shell_apps()
-    );
-    place_the_inbox(&mut session, root.path());
-    assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
+/// snapshot `tilo-control` takes. (That mail's package is loaded because the place shows it, and
+/// was not before, is read where the inbox is placed.)
+fn the_inbox_is_drawn_as_mails_inbox(session: &mut Session, root: &std::path::Path) {
     // As it stands once the frames after it settled, not only on the first.
     for _ in 0..50 {
         session.step(Duration::from_millis(1)).expect("step");
@@ -801,10 +833,10 @@ fn the_seeded_inbox_placed_through_the_door_is_drawn_as_mails_inbox() {
         subject.2 > 0.0 && subject.3 > 0.0,
         "the conversation's row has room: {subject:?}"
     );
-    let png = root.path().join("shot.png");
+    let png = root.join("shot.png");
     let answer = control(
-        &mut session,
-        &root.path().join("test-control.sock"),
+        session,
+        &root.join("test-control.sock"),
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
     );
     assert_eq!(
@@ -871,17 +903,12 @@ fn seeded(session: &Session, ty: &str, label: &str) -> tilo_actions::ResourceSpe
 
 /// A change to one conversation the inbox shows reads that conversation's reading again, and no
 /// other: not the mailbox, the mail's root, its account or the other conversations.
-#[test]
-fn a_change_to_one_thread_rereads_only_that_threads_reading() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = seeded_session(root.path());
-    place_the_inbox(&mut session, root.path());
+fn a_change_to_one_thread_rereads_only_that_threads_reading(session: &mut Session) {
     for _ in 0..50 {
         session.step(Duration::from_millis(1)).expect("step");
     }
     let before = session.shell_reads();
-    let thread = seeded(&session, "Thread", "Dinner on Friday?");
+    let thread = seeded(session, "Thread", "Dinner on Friday?");
     assert!(
         before.contains_key(thread.id.as_str()),
         "the inbox read the conversation: {before:?}"
@@ -896,7 +923,7 @@ fn a_change_to_one_thread_rereads_only_that_threads_reading() {
     session
         .invoke(thread.id.as_str(), &flag, &Map::new())
         .expect("the conversation is flagged");
-    until(&mut session, "the conversation read again", |session| {
+    until(session, "the conversation read again", |session| {
         session.shell_reads().get(thread.id.as_str()) != before.get(thread.id.as_str())
     });
     for _ in 0..50 {
@@ -929,52 +956,33 @@ fn this_minute() -> ui::time::SystemTime {
 
 /// A placed inbox settles: once its conversations are drawn, a session left alone runs the shell's
 /// views no more and draws no frame. A list's rows asked of the shell's own runtime go out on the
-/// turn they are asked, rather than the list taking frames until they would.
-#[test]
-fn a_placed_inbox_settles_and_draws_nothing_while_idle() {
-    let _settled = ui::motion::testing::settled();
-    // The bar draws the time, and a minute turning over is a change, not idle work: the test holds
-    // the clock at the minute it runs in, as a capture does, so what it watches at rest is the
-    // shell and nothing else.
-    ui::time::testing::with_wall(this_minute(), || {
-        let root = private_home();
-        let mut session = seeded_session(root.path());
-        place_the_inbox(&mut session, root.path());
-        for _ in 0..200 {
-            session.step(Duration::from_millis(1)).expect("step");
-        }
-        let settled = session.shell_work().expect("the shell runs");
-        for _ in 0..200 {
-            session.step(Duration::from_millis(5)).expect("step");
-        }
-        let idle = session.shell_work().expect("the shell runs");
-        assert_eq!(
-            (idle.turns, idle.drawn),
-            (settled.turns, settled.drawn),
-            "an idle session runs and draws nothing"
-        );
-    });
+/// turn they are asked, rather than the list taking frames until they would. Read after the two
+/// hundred turns that follow the place, with the clock held since before the session started.
+fn the_settled_inbox_draws_nothing_while_idle(session: &mut Session) {
+    let settled = session.shell_work().expect("the shell runs");
+    for _ in 0..200 {
+        session.step(Duration::from_millis(5)).expect("step");
+    }
+    let idle = session.shell_work().expect("the shell runs");
+    assert_eq!(
+        (idle.turns, idle.drawn),
+        (settled.turns, settled.drawn),
+        "an idle session runs and draws nothing"
+    );
 }
 
 /// The inbox's conversations come in together: the session reads what one run of the views read in
 /// one turn, so a placed inbox fills in as many turns as its views reach records deep (the mailbox,
-/// the mail's root, its account, the conversations), however many conversations it lists.
-#[test]
-fn a_placed_inbox_fills_in_a_turn_per_level_not_per_conversation() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = seeded_session(root.path());
-    let before = session.shell_reading_rounds();
-    place_the_inbox(&mut session, root.path());
-    for _ in 0..200 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+/// the mail's root, its account, the conversations), however many conversations it lists. Read
+/// after the two hundred turns that follow the place; `rounds_before` is the shell's count before
+/// the inbox was placed.
+fn the_inbox_filled_in_a_turn_per_level(session: &Session, rounds_before: u64) {
     let threads = session
         .shell_reads()
         .keys()
-        .filter(|id| id.contains(&format!("{MAIL}:")) && seeded_thread(&session, id))
+        .filter(|id| id.contains(&format!("{MAIL}:")) && seeded_thread(session, id))
         .count();
-    let rounds = session.shell_reading_rounds() - before;
+    let rounds = session.shell_reading_rounds() - rounds_before;
     assert!(
         threads > 4,
         "the inbox read its conversations: {:?}",
