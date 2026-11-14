@@ -133,11 +133,11 @@ fn invoked(
     loop {
         let mut attempt = request.clone();
         attempt.invocation = InvocationId::new();
-        let status = match served(
+        let mut status = match served(
             actions,
             workspace,
             caller,
-            RemoteActionMessage::Invoke(attempt),
+            RemoteActionMessage::Invoke(attempt.clone()),
         ) {
             RemoteActionMessage::Receipt(receipt) => receipt.status,
             other => panic!("expected a receipt, got {other:?}"),
@@ -148,10 +148,28 @@ fn invoked(
                 error: ActionHostError::Unavailable { .. }
             }
         ) || matches!(&status, ReceiptStatus::Failed { error } if error.retryable);
-        if !again || Instant::now() >= deadline {
-            return status;
+        if again && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        // A write whose save does not land within the host's grace is answered
+        // accepted: observed, as a page observes it, until it ends.
+        while matches!(status, ReceiptStatus::Accepted) {
+            assert!(Instant::now() < deadline, "the invocation never settled");
+            std::thread::sleep(Duration::from_millis(25));
+            status = match served(
+                actions,
+                workspace,
+                caller,
+                RemoteActionMessage::observe(attempt.invocation),
+            ) {
+                RemoteActionMessage::Update {
+                    state: Some(state), ..
+                } => state.receipt().status,
+                other => panic!("expected an observation, got {other:?}"),
+            };
+        }
+        return status;
     }
 }
 
@@ -305,7 +323,7 @@ fn note_titles(browser: &mut Browser, notes: &DocumentRoute) -> Vec<String> {
 async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str) -> Vec<String> {
     let provider = record_provider(notes);
     let made = browser
-        .invoke(request(
+        .invoke_settled(request(
             &provider,
             ActionAddress::new("notes.notebook", "new-note"),
             json(serde_json::json!({"title": marker})),

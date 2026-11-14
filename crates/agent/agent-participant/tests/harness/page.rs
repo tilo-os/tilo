@@ -367,6 +367,36 @@ impl Page {
         self.receipt(invocation).await
     }
 
+    /// Run `request` and follow it as a page does: the host answers accepted
+    /// while a change's save is still landing, and the invocation is observed
+    /// until it ends.
+    pub async fn invoke_settled(&mut self, request: InvokeRequest) -> InvocationReceipt {
+        let invocation = request.invocation;
+        let deadline = tilo_test_env::hang_deadline();
+        let mut receipt = self.invoke(request).await;
+        while matches!(receipt.status, ReceiptStatus::Accepted) {
+            assert!(
+                Instant::now() < deadline,
+                "the invocation never settled: {receipt:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            self.send(RemoteActionMessage::observe(invocation));
+            let state = self
+                .answer("update", |answer| match answer {
+                    RemoteActionMessage::Update {
+                        invocation: got,
+                        state,
+                    } if *got == invocation => Some(state.clone()),
+                    _ => None,
+                })
+                .await;
+            if let Some(state) = state {
+                receipt = state.receipt();
+            }
+        }
+        receipt
+    }
+
     /// Run one action on the host's agent supervisor.
     pub async fn call(
         &mut self,

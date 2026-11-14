@@ -1023,7 +1023,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     // 6. The workspace's "open an app" action creates a record through the host.
     let opened = browser
-        .invoke(request(
+        .invoke_settled(request(
             &format!("workspace:{WORKSPACE}"),
             ActionAddress::new(format!("app.{SHEETS}"), "open"),
             InvokeArgument::None,
