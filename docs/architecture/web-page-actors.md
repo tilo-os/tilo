@@ -332,8 +332,13 @@ it no name tells the class of, then the class the engine set. A page is not
 handed over while the engine has still to say this of a list its text is
 set in, so no page arrives in one face to arrive again in another; an
 engine that predates the ask, or does not answer within three seconds,
-leaves each list as its page computed it. The files of a page's own faces
-are not carried. A line is fitted to its box's
+leaves each list as its page computed it. What the engine says of a list
+is put on the page as it is handed over, and what it says a field shows
+into the capture it already gave, which is converted again: the page is not
+captured again for either, so a page's first hand-over costs its engine one
+capture. The engine is asked for no capture while it is still to answer,
+since behind a capture its answer would wait as long as the capture takes.
+The files of a page's own faces are not carried. A line is fitted to its box's
 width, drawn narrower rather than run into what follows it. A zoomed page is
 laid out larger than its styles say, by a factor its root element gives, and
 every length a style gives (a text's size, a border, a radius) is carried at
@@ -440,8 +445,15 @@ over, measured over four seconds watched and four unwatched. A change the
 page makes to itself is in what was handed over about 20 ms later. The
 changes are taken where the engine's events are taken, so none waits for a
 frame to be drawn; a change that comes sooner after a capture than those
-50 ms is captured when they have passed, at a wake the view asks for, and a
-capture the engine does not answer within three seconds is asked again.
+50 ms is captured when they have passed, at a wake the view asks for. A
+capture is asked for once, and its answer is the page however long the
+engine takes over it: a large page on a busy machine takes longer than
+three seconds, and asking again would have the engine start over. An engine
+that has not answered after three seconds is asked something small behind
+the capture, and again each time after twice as long. What an engine is
+asked behind a capture it answers behind it, so one still at work answers
+the capture first, and one that lost the request answers the small ask
+alone and is then asked for the capture again.
 
 ## A form as typed actions
 
@@ -864,9 +876,11 @@ down.
   arrives without it, which the device showing the page cannot tell from a
   picture still loading. A page that grows too large while it is watched
   stays on the watching device as it last arrived, and that device is not
-  told. A page so large that the engine cannot capture it within three
-  seconds (a table of 12000 rows) is never handed over, and is said as a
-  page its app has not handed over. A Browser built before this, with two
+  told. A page so large that the engine takes longer than three seconds
+  over its capture (a table of 12000 rows) was never handed over, each
+  capture given up and asked for again; its capture is now waited for, and
+  until it comes the page is said as one its app has not handed over. A
+  Browser built before this, with two
   windows in one process, still mixes their frames on its side; the session
   cannot tell them apart, since such frames name no window. Each session says how far its live plane
   came, what a share waits for, whether a shared window went out and whether
