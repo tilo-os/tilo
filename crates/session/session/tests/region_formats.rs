@@ -14,7 +14,22 @@
 
 use std::time::Duration;
 
-use crate::common::{private_home, seeded_session};
+use tilo_session::{Options, Session};
+
+/// A session with its shell on one display, and nothing published into it. What follows the
+/// person's region is the session's own pass (`Session::follow_formats`): it reads their settings
+/// when they changed and installs the formats its surfaces write by, whatever the session
+/// publishes. The hosts it would tell besides are its launcher's (`Options::launch`), and no
+/// session here has one, so the apps a development session installs and seeds are no part of
+/// what is followed: none is built, installed or seeded for this.
+fn session() -> Session {
+    crate::common::headless(Options {
+        person: crate::common::PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        ..Options::default()
+    })
+}
 
 /// Step the loop once.
 fn step(session: &mut tilo_session::Session) {
@@ -48,8 +63,10 @@ fn choose(first_day: &str, time: &str) {
 
 #[test]
 fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
-    let root = private_home();
-    let mut session = seeded_session(root.path());
+    // The region is the person's settings, kept in a home of this test's own: what it chooses
+    // here is never another test's region, nor this machine's.
+    let _home = tilo_test_env::TestHome::new().expect("a home");
+    let mut session = session();
     let before = ui::format::region::current();
 
     // The person starts their week on Sunday and reads a 12-hour clock: the session's own
